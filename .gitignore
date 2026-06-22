@@ -1,0 +1,6 @@
+/target/
+/.venv/
+/.beads/metadata.json
+/.DS_Store
+/tmp/
+

@@ -1,0 +1,22 @@
+{
+  "template": "livespec-console-beads-fabro",
+  "spec_root": "SPECIFICATION",
+  "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
+  "livespec-orchestrator-beads-fabro": {
+    "format": "beads",
+    "compat": {
+      "livespec": ">=0.1.0,<1.0.0",
+      "pinned": "master"
+    },
+    "connection": {
+      "tenant": "livespec-console-beads-fabro",
+      "prefix": "livespec-console-beads-fabro",
+      "database": "livespec-console-beads-fabro",
+      "server_user": "livespec-console-beads-fabro",
+      "server_host": "127.0.0.1",
+      "server_port": 3307,
+      "fake": false
+    }
+  }
+}
+
