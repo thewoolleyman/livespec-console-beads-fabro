@@ -44,6 +44,31 @@ The console does not own:
 The console may invoke existing CLIs or APIs through ports/adapters, but
 those systems remain the source of truth for their own domains.
 
+```mermaid
+flowchart LR
+  subgraph Console["livespec-console-beads-fabro"]
+    Events["Canonical events"]
+    Commands["Commands"]
+    Projections["Operator projections"]
+    UI["TUI / future GUI"]
+  end
+
+  LiveSpec["livespec core\n/spec lifecycle"]
+  Orchestrator["livespec-orchestrator-beads-fabro\n/Beads + Dispatcher"]
+  Fabro["Fabro\n/run execution + human gates"]
+  GitHub["GitHub\n/PRs + checks"]
+
+  LiveSpec -->|"observed through adapter"| Events
+  Orchestrator -->|"observed through adapter"| Events
+  Fabro -->|"observed through adapter"| Events
+  GitHub -->|"observed through adapter"| Events
+  Events --> Projections --> UI
+  UI --> Commands
+  Commands -->|"ports invoke existing systems"| Orchestrator
+  Commands -->|"ports invoke existing systems"| LiveSpec
+  Commands -->|"ports invoke existing systems"| Fabro
+```
+
 ## Product Shape
 
 The steady-state product is a single Rust executable:
@@ -69,6 +94,32 @@ The first UI is a TUI with arrow-driven selection lists, detail panes,
 command modals, and live updates. A GUI can later consume the same
 events, commands, and projections.
 
+```mermaid
+flowchart TB
+  Binary["Single Rust executable"]
+  Serve["serve"]
+  Tui["tui"]
+  Backfill["backfill"]
+  Tail["events tail"]
+  Snapshot["snapshot"]
+  Doctor["doctor"]
+  Arch["arch-check"]
+
+  Binary --> Serve
+  Binary --> Tui
+  Binary --> Backfill
+  Binary --> Tail
+  Binary --> Snapshot
+  Binary --> Doctor
+  Binary --> Arch
+
+  Serve --> Ingest["ingestors"]
+  Serve --> Store["SQLite WAL event store"]
+  Serve --> Projectors["projectors"]
+  Serve --> Api["API + live fanout"]
+  Serve --> Ui["operator UI"]
+```
+
 ## Architecture
 
 The architecture follows event sourcing, domain-driven design, and
@@ -93,6 +144,91 @@ Adapters start as pull shims over existing systems. Over time, upstream
 systems may emit stronger native events, but the console contract is the
 canonical event shape it consumes.
 
+```mermaid
+flowchart LR
+  subgraph Sources["Source systems"]
+    LS["LiveSpec files + CLIs"]
+    BD["Beads tenant via bd"]
+    DJ["Dispatcher journal"]
+    FR["Fabro API / ps / SSE"]
+    GH["GitHub API"]
+  end
+
+  subgraph Adapters["Pull adapters"]
+    LSA["LiveSpec adapter"]
+    BDA["Beads adapter"]
+    DJA["Dispatcher adapter"]
+    FRA["Fabro adapter"]
+    GHA["GitHub adapter"]
+  end
+
+  subgraph Core["Event-sourced console core"]
+    Log["Append-only event log"]
+    Cmd["Command inbox"]
+    Proj["Rebuildable projections"]
+    Health["Ingestion health"]
+  end
+
+  subgraph Frontends["Operator frontends"]
+    TUI["TUI"]
+    GUI["Future GUI"]
+    API["API clients"]
+  end
+
+  LS --> LSA --> Log
+  BD --> BDA --> Log
+  DJ --> DJA --> Log
+  FR --> FRA --> Log
+  GH --> GHA --> Log
+  Log --> Proj --> Frontends
+  Frontends --> Cmd --> Core
+  Health --> Proj
+```
+
+The hexagonal boundary keeps source-specific mechanics outside the domain:
+
+```mermaid
+flowchart TB
+  subgraph Outer["Outer adapters"]
+    TuiAdapter["TUI adapter"]
+    WebAdapter["Future web adapter"]
+    FabroAdapter["Fabro adapter"]
+    BeadsAdapter["Beads adapter"]
+    LivespecAdapter["LiveSpec adapter"]
+    DispatcherAdapter["Dispatcher adapter"]
+    GithubAdapter["GitHub adapter"]
+    SqliteAdapter["SQLite event-store adapter"]
+  end
+
+  subgraph Application["Application layer"]
+    CommandHandlers["Command handlers"]
+    ProjectorRunners["Projector runners"]
+    IngestionRunners["Ingestion runners"]
+    Ports["Port traits"]
+  end
+
+  subgraph Domain["Domain layer"]
+    Events["Event types"]
+    CommandsDomain["Command types"]
+    Aggregates["Aggregates"]
+    Policies["Policies + invariants"]
+    Errors["Typed domain errors"]
+  end
+
+  TuiAdapter --> CommandHandlers
+  WebAdapter --> CommandHandlers
+  FabroAdapter --> Ports
+  BeadsAdapter --> Ports
+  LivespecAdapter --> Ports
+  DispatcherAdapter --> Ports
+  GithubAdapter --> Ports
+  SqliteAdapter --> Ports
+  CommandHandlers --> Domain
+  ProjectorRunners --> Domain
+  IngestionRunners --> Domain
+  Ports --> Domain
+```
+
 ## Bounded Contexts
 
 Initial bounded contexts:
@@ -113,6 +249,25 @@ Initial bounded contexts:
 
 Each bounded context owns its command vocabulary, events, invariants,
 aggregates, and projections.
+
+```mermaid
+flowchart LR
+  Ingestion["Ingestion\nobserve + checkpoint + backfill"]
+  Factory["Factory\ndrain + dispatch + gates"]
+  Spec["Spec Lifecycle\nnext + doctor + revise signals"]
+  Grooming["Grooming\nneeds-regroom + slicing"]
+  Attention["Attention\nalerts + ack + snooze"]
+  Hygiene["Repository Hygiene\njanitor + stale state"]
+  Config["Configuration\nrepos + endpoints + policy"]
+
+  Ingestion -->|"source health events"| Attention
+  Factory -->|"human gate / failure events"| Attention
+  Spec -->|"revise / doctor events"| Attention
+  Grooming -->|"regroom events"| Attention
+  Hygiene -->|"hygiene findings"| Attention
+  Config --> Ingestion
+  Config --> Factory
+```
 
 ## Terminology
 
@@ -138,4 +293,3 @@ task, or non-converging factory item.
 **Factory** -- The Beads/Fabro execution path: ready work-items selected for
 Dispatcher, run in Fabro sandboxes, gated, merged, closed, bounced, or
 surfaced.
-

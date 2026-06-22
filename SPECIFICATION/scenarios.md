@@ -4,6 +4,21 @@ Behavioral journeys for the console.
 
 ## Scenario 1 -- Operator sees one attention inbox
 
+```mermaid
+flowchart LR
+  Fabro["Fabro human gate"]
+  Spec["LiveSpec revise needed"]
+  Dispatcher["Dispatcher needs-regroom bounce"]
+  Events["Canonical events"]
+  Projection["Attention projection"]
+  TUI["Attention view"]
+
+  Fabro --> Events
+  Spec --> Events
+  Dispatcher --> Events
+  Events --> Projection --> TUI
+```
+
 ```gherkin
 Feature: Unified attention inbox
   As a LiveSpec operator
@@ -20,6 +35,23 @@ Scenario: Mixed source signals appear as attention items
 ```
 
 ## Scenario 2 -- Factory drain command
+
+```mermaid
+sequenceDiagram
+  participant Operator
+  participant TUI
+  participant Factory as Factory context
+  participant Dispatcher
+  participant Events as Event log
+
+  Operator->>TUI: select Drain ready queue
+  TUI->>Factory: factory.drain_requested
+  Factory->>Events: command.accepted
+  Factory->>Dispatcher: dispatcher loop --budget 1
+  Dispatcher-->>Factory: terminal outcome
+  Factory->>Events: factory.drain.completed or failed
+  Events-->>TUI: live projection update
+```
 
 ```gherkin
 Feature: Factory drain command
@@ -39,6 +71,19 @@ Scenario: A bounded drain emits command and outcome events
 
 ## Scenario 3 -- Pull adapter backfill avoids silent missed data
 
+```mermaid
+flowchart TB
+  Start["checkpoint N"]
+  Window["read from N minus safety window"]
+  Normalize["normalize records"]
+  Append["idempotent append"]
+  Advance["advance checkpoint"]
+  Repeat["next poll"]
+
+  Start --> Window --> Normalize --> Append --> Advance --> Repeat
+  Repeat --> Window
+```
+
 ```gherkin
 Feature: Checkpointed pull ingestion
   As a console maintainer
@@ -55,6 +100,18 @@ Scenario: Adapter replays a reconciliation window idempotently
 ```
 
 ## Scenario 4 -- Source cannot prove full transition history
+
+```mermaid
+flowchart LR
+  Source["Beads current state"]
+  Snapshot["state snapshot events"]
+  Finding["completeness finding"]
+  Projection["projection"]
+  Operator["operator sees current truth + caveat"]
+
+  Source --> Snapshot --> Projection --> Operator
+  Source --> Finding --> Projection
+```
 
 ```gherkin
 Feature: Honest completeness findings
@@ -73,6 +130,20 @@ Scenario: Beads current-state snapshot lacks transition history
 
 ## Scenario 5 -- TUI-first operator workflow
 
+```mermaid
+flowchart TB
+  List["Attention list"]
+  Select["Arrow selection"]
+  Detail["Detail pane"]
+  Actions["Action list"]
+  Ack["Acknowledge / snooze"]
+  Fabro["Open or copy Fabro attach command"]
+
+  List --> Select --> Detail --> Actions
+  Actions --> Ack
+  Actions --> Fabro
+```
+
 ```gherkin
 Feature: TUI operator workflow
   As an operator using a terminal
@@ -85,4 +156,3 @@ Scenario: Operator handles a human gate
   Then the TUI shows the repo, work item, Fabro run, latest timeline events, and attach action
   And the operator can acknowledge, snooze, or open/copy the Fabro attach command
 ```
-
