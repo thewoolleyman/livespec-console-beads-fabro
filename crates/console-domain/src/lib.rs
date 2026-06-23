@@ -84,20 +84,26 @@ impl ConsoleEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
+    BeadsWorkItemSnapshotObserved,
     DispatcherNeedsRegroomObserved,
     FabroHumanGateObserved,
     FactoryDrainRequested,
+    LivespecNextSnapshotObserved,
     LivespecReviseRequired,
+    SourceCompletenessFindingObserved,
 }
 
 impl EventType {
     #[must_use]
     pub const fn contract_name(&self) -> &'static str {
         match self {
+            Self::BeadsWorkItemSnapshotObserved => "beads.work_item_snapshot_observed",
             Self::DispatcherNeedsRegroomObserved => "dispatch.needs_regroom_observed",
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
             Self::FactoryDrainRequested => "factory.drain_requested",
+            Self::LivespecNextSnapshotObserved => "spec.next_snapshot_observed",
             Self::LivespecReviseRequired => "spec.revise_required",
+            Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
         }
     }
 }
@@ -209,6 +215,10 @@ mod tests {
     #[test]
     fn event_type_contract_names_are_stable() {
         assert_eq!(
+            EventType::BeadsWorkItemSnapshotObserved.contract_name(),
+            "beads.work_item_snapshot_observed"
+        );
+        assert_eq!(
             EventType::DispatcherNeedsRegroomObserved.contract_name(),
             "dispatch.needs_regroom_observed"
         );
@@ -221,8 +231,16 @@ mod tests {
             "factory.drain_requested"
         );
         assert_eq!(
+            EventType::LivespecNextSnapshotObserved.contract_name(),
+            "spec.next_snapshot_observed"
+        );
+        assert_eq!(
             EventType::LivespecReviseRequired.contract_name(),
             "spec.revise_required"
+        );
+        assert_eq!(
+            EventType::SourceCompletenessFindingObserved.contract_name(),
+            "source.completeness_finding_observed"
         );
     }
 

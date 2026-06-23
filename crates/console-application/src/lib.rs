@@ -2,6 +2,8 @@
 
 use console_domain::{ConsoleEvent, EventType};
 
+pub mod source_adapters;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionItem {
     id: String,
@@ -409,10 +411,13 @@ impl AttentionEvent for EventType {
 
     fn label(&self) -> &'static str {
         match self {
+            Self::BeadsWorkItemSnapshotObserved => "Beads work-item snapshot",
             Self::FabroHumanGateObserved => "Fabro human gate",
+            Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
             Self::DispatcherNeedsRegroomObserved => "Dispatcher needs-regroom",
             Self::FactoryDrainRequested => "Factory drain requested",
+            Self::SourceCompletenessFindingObserved => "Source completeness finding",
         }
     }
 
@@ -422,7 +427,10 @@ impl AttentionEvent for EventType {
             Self::LivespecReviseRequired | Self::DispatcherNeedsRegroomObserved => {
                 OperatorAction::Acknowledge
             }
-            Self::FactoryDrainRequested => OperatorAction::Acknowledge,
+            Self::BeadsWorkItemSnapshotObserved
+            | Self::FactoryDrainRequested
+            | Self::LivespecNextSnapshotObserved
+            | Self::SourceCompletenessFindingObserved => OperatorAction::Acknowledge,
         }
     }
 
@@ -437,7 +445,10 @@ impl AttentionEvent for EventType {
             Self::LivespecReviseRequired | Self::DispatcherNeedsRegroomObserved => {
                 vec![OperatorAction::Acknowledge, OperatorAction::Snooze]
             }
-            Self::FactoryDrainRequested => vec![OperatorAction::Acknowledge],
+            Self::BeadsWorkItemSnapshotObserved
+            | Self::FactoryDrainRequested
+            | Self::LivespecNextSnapshotObserved
+            | Self::SourceCompletenessFindingObserved => vec![OperatorAction::Acknowledge],
         }
     }
 }
@@ -672,15 +683,19 @@ mod tests {
 
     #[test]
     fn non_attention_factory_action_policy_is_stable() {
-        assert!(!EventType::FactoryDrainRequested.requires_attention());
-        assert_eq!(
-            EventType::FactoryDrainRequested.next_operator_action(),
-            OperatorAction::Acknowledge
-        );
-        assert_eq!(
-            EventType::FactoryDrainRequested.actions(),
-            [OperatorAction::Acknowledge]
-        );
+        for event_type in [
+            EventType::BeadsWorkItemSnapshotObserved,
+            EventType::FactoryDrainRequested,
+            EventType::LivespecNextSnapshotObserved,
+            EventType::SourceCompletenessFindingObserved,
+        ] {
+            assert!(!event_type.requires_attention());
+            assert_eq!(
+                event_type.next_operator_action(),
+                OperatorAction::Acknowledge
+            );
+            assert_eq!(event_type.actions(), [OperatorAction::Acknowledge]);
+        }
     }
 
     #[test]
@@ -743,6 +758,10 @@ mod tests {
     #[test]
     fn all_event_type_labels_are_stable() {
         assert_eq!(
+            EventType::BeadsWorkItemSnapshotObserved.label(),
+            "Beads work-item snapshot"
+        );
+        assert_eq!(
             EventType::DispatcherNeedsRegroomObserved.label(),
             "Dispatcher needs-regroom"
         );
@@ -755,8 +774,16 @@ mod tests {
             "Factory drain requested"
         );
         assert_eq!(
+            EventType::LivespecNextSnapshotObserved.label(),
+            "LiveSpec next snapshot"
+        );
+        assert_eq!(
             EventType::LivespecReviseRequired.label(),
             "LiveSpec revise required"
+        );
+        assert_eq!(
+            EventType::SourceCompletenessFindingObserved.label(),
+            "Source completeness finding"
         );
     }
 
