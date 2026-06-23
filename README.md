@@ -21,3 +21,30 @@ experience. A GUI can reuse the same command/event backend later.
 
 The live specification seed is in [SPECIFICATION/](SPECIFICATION/).
 
+## Development
+
+First-touch setup:
+
+```bash
+just bootstrap
+```
+
+Run the local gate:
+
+```bash
+just check
+```
+
+The current bootstrap gate runs Rust formatting, strict Clippy, unit
+tests, and the repo-local architecture check. The full milestone plan in
+`research/tui-first-milestone-bootstrap-plan.md` tracks the remaining
+quality gates: coverage, property tests, fuzzing, mutation testing,
+dependency policy, and richer architecture checks.
+
+## Beads
+
+The repo carries non-secret Beads pointer files in `.beads/`. The
+server-side tenant still has to exist before `bd list` and the
+Beads/Fabro Dispatcher can operate. Run Beads commands through the
+family environment wrapper so the bare `BEADS_DOLT_PASSWORD` is present;
+never print the secret value.

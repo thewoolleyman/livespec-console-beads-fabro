@@ -1,0 +1,15 @@
+[package]
+name = "livespec-console-beads-fabro"
+description = "TUI-first operator console for LiveSpec Beads/Fabro factory work"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+console-application = { path = "../console-application" }
+console-domain = { path = "../console-domain" }
+
+[lints]
+workspace = true

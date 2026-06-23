@@ -1,0 +1,8 @@
+# livespec-console-beads-fabro developer-tooling pins.
+#
+# mise owns non-Rust host binaries used by the repo. Rust itself is pinned by
+# rust-toolchain.toml so cargo/rustc/rustfmt/clippy resolve together.
+
+[tools]
+just     = "1.36.0"
+lefthook = "1.13.6"

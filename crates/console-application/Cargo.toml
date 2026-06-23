@@ -1,0 +1,14 @@
+[package]
+name = "console-application"
+description = "Application use cases and projections for livespec-console-beads-fabro"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+console-domain = { path = "../console-domain" }
+
+[lints]
+workspace = true
