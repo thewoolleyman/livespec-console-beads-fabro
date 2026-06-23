@@ -9,11 +9,9 @@ version.workspace = true
 
 [dependencies]
 console-application = { path = "../console-application", version = "0.1.0" }
+console-domain = { path = "../console-domain", version = "0.1.0" }
 crossterm = "0.29.0"
 ratatui = { version = "0.30.2", default-features = false, features = ["std"] }
-
-[dev-dependencies]
-console-domain = { path = "../console-domain", version = "0.1.0" }
 
 [lints]
 workspace = true

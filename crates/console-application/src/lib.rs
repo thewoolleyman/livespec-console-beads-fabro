@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use console_domain::{ConsoleEvent, EventType};
+use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
 pub mod source_adapters;
 
@@ -349,9 +349,36 @@ impl TuiScreenModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplicationError {
     EmptyOperatorAction,
+    NoSelectedAttentionItem,
+    NoSelectedOperatorAction,
 }
 
 pub type ApplicationResult<T> = Result<T, ApplicationError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorActionOutcome {
+    PersistCommand(CommandEnvelope),
+    OpenAttachCommand(String),
+    CopyAttachCommand(String),
+}
+
+impl OperatorActionOutcome {
+    #[must_use]
+    pub const fn command(&self) -> Option<&CommandEnvelope> {
+        match self {
+            Self::PersistCommand(command) => Some(command),
+            Self::OpenAttachCommand(_) | Self::CopyAttachCommand(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn attach_command(&self) -> Option<&str> {
+        match self {
+            Self::OpenAttachCommand(command) | Self::CopyAttachCommand(command) => Some(command),
+            Self::PersistCommand(_) => None,
+        }
+    }
+}
 
 #[must_use]
 pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
@@ -458,6 +485,37 @@ pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
         return Err(ApplicationError::EmptyOperatorAction);
     }
     Ok(trimmed)
+}
+
+pub fn resolve_selected_operator_action(
+    model: &TuiScreenModel,
+    requested_by: &str,
+) -> ApplicationResult<OperatorActionOutcome> {
+    let requested_by = validate_operator_action(requested_by)?;
+    let detail = model
+        .detail()
+        .ok_or(ApplicationError::NoSelectedAttentionItem)?;
+    let action = model
+        .selected_operator_action()
+        .ok_or(ApplicationError::NoSelectedOperatorAction)?;
+    Ok(match action {
+        OperatorAction::Acknowledge => OperatorActionOutcome::PersistCommand(attention_command(
+            detail,
+            CommandType::AttentionAcknowledgeRequested,
+            requested_by,
+        )),
+        OperatorAction::Snooze => OperatorActionOutcome::PersistCommand(attention_command(
+            detail,
+            CommandType::AttentionSnoozeRequested,
+            requested_by,
+        )),
+        OperatorAction::OpenFabroAttach => {
+            OperatorActionOutcome::OpenAttachCommand(detail.attach_command().to_owned())
+        }
+        OperatorAction::CopyFabroAttach => {
+            OperatorActionOutcome::CopyAttachCommand(detail.attach_command().to_owned())
+        }
+    })
 }
 
 fn attention_events(events: &[ConsoleEvent]) -> Vec<&ConsoleEvent> {
@@ -610,6 +668,21 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
         .unwrap_or_default()
 }
 
+fn attention_command(
+    detail: &AttentionDetail,
+    command_type: CommandType,
+    requested_by: &str,
+) -> CommandEnvelope {
+    let action_name = command_type.contract_name().replace('.', "_");
+    CommandEnvelope::new(
+        format!("cmd_{}_{}", detail.work_item(), action_name),
+        command_type,
+        detail.work_item().to_owned(),
+        format!("{}:{}", detail.work_item(), command_type.contract_name()),
+        requested_by.to_owned(),
+    )
+}
+
 fn build_attention_detail(event: &ConsoleEvent, events: &[ConsoleEvent]) -> AttentionDetail {
     let fabro_run = fabro_run_id(event);
     AttentionDetail::new(
@@ -723,13 +796,13 @@ impl AttentionEvent for EventType {
 
 #[cfg(test)]
 mod tests {
-    use console_domain::{ConsoleEvent, EventType};
+    use console_domain::{CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
     use super::{
         ApplicationError, AttentionEvent, OperatorAction, TuiInteraction, TuiInteractionState,
         TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state, project_attention,
-        reduce_tui_interaction, validate_operator_action,
+        reduce_tui_interaction, resolve_selected_operator_action, validate_operator_action,
     };
 
     #[test]
@@ -963,6 +1036,133 @@ mod tests {
         assert_eq!(
             model.selected_operator_action(),
             Some(OperatorAction::Snooze)
+        );
+    }
+
+    #[test]
+    fn selected_acknowledge_action_resolves_to_attention_command() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+        let outcome = resolve_selected_operator_action(&model, "operator");
+
+        let command = outcome
+            .as_ref()
+            .ok()
+            .and_then(super::OperatorActionOutcome::command);
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_id),
+            Some("cmd_evt_gate_attention_acknowledge_requested")
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::AttentionAcknowledgeRequested)
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::aggregate_id),
+            Some("evt_gate")
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::idempotency_key),
+            Some("evt_gate:attention.acknowledge_requested")
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::requested_by),
+            Some("operator")
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .ok()
+                .and_then(super::OperatorActionOutcome::attach_command),
+            None
+        );
+    }
+
+    #[test]
+    fn selected_snooze_action_resolves_to_attention_command() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 1,
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+        let outcome = resolve_selected_operator_action(&model, "operator");
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .ok()
+                .and_then(super::OperatorActionOutcome::command)
+                .map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::AttentionSnoozeRequested)
+        );
+    }
+
+    #[test]
+    fn selected_attach_actions_resolve_to_local_terminal_effects() {
+        let events = fabro_gate_events();
+        for (selected_action_index, expected) in [
+            (
+                2,
+                super::OperatorActionOutcome::OpenAttachCommand("fabro attach run_17".to_owned()),
+            ),
+            (
+                3,
+                super::OperatorActionOutcome::CopyAttachCommand("fabro attach run_17".to_owned()),
+            ),
+        ] {
+            let state = TuiInteractionState::new(
+                0,
+                TuiOverlay::CommandModal {
+                    selected_action_index,
+                },
+            );
+            let model = build_tui_model_for_state(&events, &state);
+
+            let outcome = resolve_selected_operator_action(&model, "operator");
+
+            assert_eq!(outcome, Ok(expected));
+            assert_eq!(
+                outcome
+                    .as_ref()
+                    .ok()
+                    .and_then(super::OperatorActionOutcome::command),
+                None
+            );
+            assert_eq!(
+                outcome
+                    .as_ref()
+                    .ok()
+                    .and_then(super::OperatorActionOutcome::attach_command),
+                Some("fabro attach run_17")
+            );
+        }
+    }
+
+    #[test]
+    fn operator_action_resolution_requires_selection_action_and_requester() {
+        let empty_model = build_tui_model(&[], 0);
+        let base_model = build_tui_model(&fabro_gate_events(), 0);
+
+        assert_eq!(
+            resolve_selected_operator_action(&empty_model, "operator"),
+            Err(ApplicationError::NoSelectedAttentionItem)
+        );
+        assert_eq!(
+            resolve_selected_operator_action(&base_model, "operator"),
+            Err(ApplicationError::NoSelectedOperatorAction)
+        );
+        assert_eq!(
+            resolve_selected_operator_action(&base_model, "  "),
+            Err(ApplicationError::EmptyOperatorAction)
         );
     }
 

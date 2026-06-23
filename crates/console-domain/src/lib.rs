@@ -163,7 +163,28 @@ impl CommandEnvelope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandType {
+    AttentionAcknowledgeRequested,
+    AttentionSnoozeRequested,
     FactoryDrainRequested,
+}
+
+impl CommandType {
+    #[must_use]
+    pub const fn contract_name(&self) -> &'static str {
+        match self {
+            Self::AttentionAcknowledgeRequested => "attention.acknowledge_requested",
+            Self::AttentionSnoozeRequested => "attention.snooze_requested",
+            Self::FactoryDrainRequested => "factory.drain_requested",
+        }
+    }
+
+    #[must_use]
+    pub const fn context(&self) -> &'static str {
+        match self {
+            Self::AttentionAcknowledgeRequested | Self::AttentionSnoozeRequested => "attention",
+            Self::FactoryDrainRequested => "factory",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +280,32 @@ mod tests {
         assert_eq!(command.aggregate_id(), "repo:livespec");
         assert_eq!(command.idempotency_key(), "repo:livespec:drain:1");
         assert_eq!(command.requested_by(), "operator");
+    }
+
+    #[test]
+    fn command_type_contract_names_are_stable() {
+        assert_eq!(
+            CommandType::AttentionAcknowledgeRequested.contract_name(),
+            "attention.acknowledge_requested"
+        );
+        assert_eq!(
+            CommandType::AttentionSnoozeRequested.contract_name(),
+            "attention.snooze_requested"
+        );
+        assert_eq!(
+            CommandType::FactoryDrainRequested.contract_name(),
+            "factory.drain_requested"
+        );
+    }
+
+    #[test]
+    fn command_type_contexts_are_bounded_context_names() {
+        assert_eq!(
+            CommandType::AttentionAcknowledgeRequested.context(),
+            "attention"
+        );
+        assert_eq!(CommandType::AttentionSnoozeRequested.context(), "attention");
+        assert_eq!(CommandType::FactoryDrainRequested.context(), "factory");
     }
 
     #[test]

@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
 use console_application::{
-    AttentionDetail, AttentionItem, OperatorAction, TimelineEntry, TuiInteraction, TuiOverlay,
-    TuiScreenModel,
+    ApplicationError, AttentionDetail, AttentionItem, OperatorAction, OperatorActionOutcome,
+    TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+    build_tui_model_for_state, reduce_tui_interaction, resolve_selected_operator_action,
 };
+use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -23,6 +25,84 @@ pub enum TuiTerminalInput {
     Interaction(TuiInteraction),
     Confirm,
     Quit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiRuntimeEffect {
+    Render,
+    PersistCommand(CommandEnvelope),
+    OpenAttachCommand(String),
+    CopyAttachCommand(String),
+    Quit,
+    ApplicationError(ApplicationError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiRuntimeStep {
+    state: TuiInteractionState,
+    effect: TuiRuntimeEffect,
+}
+
+impl TuiRuntimeStep {
+    #[must_use]
+    pub const fn new(state: TuiInteractionState, effect: TuiRuntimeEffect) -> Self {
+        Self { state, effect }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> &TuiInteractionState {
+        &self.state
+    }
+
+    #[must_use]
+    pub const fn effect(&self) -> &TuiRuntimeEffect {
+        &self.effect
+    }
+}
+
+#[must_use]
+pub fn step_tui_runtime(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    input: TuiTerminalInput,
+    requested_by: &str,
+) -> TuiRuntimeStep {
+    match input {
+        TuiTerminalInput::Interaction(interaction) => TuiRuntimeStep::new(
+            reduce_tui_interaction(state, events, interaction),
+            TuiRuntimeEffect::Render,
+        ),
+        TuiTerminalInput::Confirm => confirm_operator_action(state, events, requested_by),
+        TuiTerminalInput::Quit => TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
+    }
+}
+
+fn confirm_operator_action(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    requested_by: &str,
+) -> TuiRuntimeStep {
+    let model = build_tui_model_for_state(events, state);
+    let effect = match resolve_selected_operator_action(&model, requested_by) {
+        Ok(outcome) => action_outcome_effect(outcome),
+        Err(error) => TuiRuntimeEffect::ApplicationError(error),
+    };
+    TuiRuntimeStep::new(
+        reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+        effect,
+    )
+}
+
+fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
+    match outcome {
+        OperatorActionOutcome::PersistCommand(command) => TuiRuntimeEffect::PersistCommand(command),
+        OperatorActionOutcome::OpenAttachCommand(command) => {
+            TuiRuntimeEffect::OpenAttachCommand(command)
+        }
+        OperatorActionOutcome::CopyAttachCommand(command) => {
+            TuiRuntimeEffect::CopyAttachCommand(command)
+        }
+    }
 }
 
 #[must_use]
@@ -361,14 +441,14 @@ mod tests {
     use console_application::{
         TuiInteraction, TuiInteractionState, TuiOverlay, build_tui_model, build_tui_model_for_state,
     };
-    use console_domain::{ConsoleEvent, EventType};
+    use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
     use super::{
-        TuiRenderError, TuiTerminalInput, buffer_to_text, key_event_to_terminal_input,
-        render_model, render_to_text,
+        TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, buffer_to_text,
+        key_event_to_terminal_input, render_model, render_to_text, step_tui_runtime,
     };
 
     #[test]
@@ -485,6 +565,111 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Left), &TuiOverlay::None),
             None
         );
+    }
+
+    #[test]
+    fn runtime_step_applies_interaction_without_side_effects() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Interaction(TuiInteraction::SelectNext),
+            "operator",
+        );
+
+        assert_eq!(step.state().selected_attention_index(), 1);
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[test]
+    fn runtime_step_turns_confirmed_acknowledge_into_persisted_command_effect() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        );
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+
+        let command = persisted_command(step.effect());
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::AttentionAcknowledgeRequested)
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::aggregate_id),
+            Some("evt_demo_1")
+        );
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn runtime_step_turns_attach_actions_into_local_effects() {
+        for (selected_action_index, expected_effect) in [
+            (
+                2,
+                TuiRuntimeEffect::OpenAttachCommand("fabro attach run_demo_1".to_owned()),
+            ),
+            (
+                3,
+                TuiRuntimeEffect::CopyAttachCommand("fabro attach run_demo_1".to_owned()),
+            ),
+        ] {
+            let state = TuiInteractionState::new(
+                0,
+                TuiOverlay::CommandModal {
+                    selected_action_index,
+                },
+            );
+            let step = step_tui_runtime(
+                &state,
+                &demo_events(),
+                TuiTerminalInput::Confirm,
+                "operator",
+            );
+
+            assert_eq!(step.effect(), &expected_effect);
+            assert_eq!(persisted_command(step.effect()), None);
+            assert_eq!(step.state().overlay(), &TuiOverlay::None);
+        }
+    }
+
+    #[test]
+    fn runtime_step_reports_application_errors_for_invalid_confirmation() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::NoSelectedOperatorAction
+            )
+        );
+        assert_eq!(persisted_command(step.effect()), None);
+    }
+
+    #[test]
+    fn runtime_step_quit_preserves_state() {
+        let state = TuiInteractionState::new(
+            1,
+            TuiOverlay::Search {
+                query: "gate".to_owned(),
+            },
+        );
+        let step = step_tui_runtime(&state, &demo_events(), TuiTerminalInput::Quit, "operator");
+
+        assert_eq!(step.state(), &state);
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Quit);
     }
 
     #[test]
@@ -663,6 +848,17 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn persisted_command(effect: &TuiRuntimeEffect) -> Option<&console_domain::CommandEnvelope> {
+        match effect {
+            TuiRuntimeEffect::PersistCommand(command) => Some(command),
+            TuiRuntimeEffect::Render
+            | TuiRuntimeEffect::OpenAttachCommand(_)
+            | TuiRuntimeEffect::CopyAttachCommand(_)
+            | TuiRuntimeEffect::Quit
+            | TuiRuntimeEffect::ApplicationError(_) => None,
+        }
     }
 
     fn demo_events() -> [ConsoleEvent; 2] {
