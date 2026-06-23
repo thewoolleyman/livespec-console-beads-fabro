@@ -120,6 +120,79 @@ impl OperatorAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiOverlay {
+    None,
+    Search { query: String },
+    CommandPalette { query: String },
+    CommandModal { selected_action_index: usize },
+}
+
+impl TuiOverlay {
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    #[must_use]
+    pub fn query(&self) -> Option<&str> {
+        match self {
+            Self::Search { query } | Self::CommandPalette { query } => Some(query),
+            Self::None | Self::CommandModal { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn selected_action_index(&self) -> Option<usize> {
+        match self {
+            Self::CommandModal {
+                selected_action_index,
+            } => Some(*selected_action_index),
+            Self::None | Self::Search { .. } | Self::CommandPalette { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiInteraction {
+    SelectNext,
+    SelectPrevious,
+    OpenSearch,
+    OpenCommandPalette,
+    OpenCommandModal,
+    CloseOverlay,
+    TypeChar(char),
+    Backspace,
+    SelectNextAction,
+    SelectPreviousAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiInteractionState {
+    selected_attention_index: usize,
+    overlay: TuiOverlay,
+}
+
+impl TuiInteractionState {
+    #[must_use]
+    pub const fn new(selected_attention_index: usize, overlay: TuiOverlay) -> Self {
+        Self {
+            selected_attention_index,
+            overlay,
+        }
+    }
+
+    #[must_use]
+    pub const fn selected_attention_index(&self) -> usize {
+        self.selected_attention_index
+    }
+
+    #[must_use]
+    pub const fn overlay(&self) -> &TuiOverlay {
+        &self.overlay
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineEntry {
     event_id: String,
     label: String,
@@ -220,32 +293,12 @@ pub struct TuiScreenModel {
     attention_items: Vec<AttentionItem>,
     selected_attention_index: Option<usize>,
     detail: Option<AttentionDetail>,
+    overlay: TuiOverlay,
     header: String,
     footer: String,
 }
 
 impl TuiScreenModel {
-    #[must_use]
-    pub const fn new(
-        active_view: TuiView,
-        navigation: Vec<TuiView>,
-        attention_items: Vec<AttentionItem>,
-        selected_attention_index: Option<usize>,
-        detail: Option<AttentionDetail>,
-        header: String,
-        footer: String,
-    ) -> Self {
-        Self {
-            active_view,
-            navigation,
-            attention_items,
-            selected_attention_index,
-            detail,
-            header,
-            footer,
-        }
-    }
-
     #[must_use]
     pub const fn active_view(&self) -> TuiView {
         self.active_view
@@ -272,6 +325,17 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    pub const fn overlay(&self) -> &TuiOverlay {
+        &self.overlay
+    }
+
+    #[must_use]
+    pub fn selected_operator_action(&self) -> Option<OperatorAction> {
+        let action_index = self.overlay.selected_action_index()?;
+        self.detail()?.actions().get(action_index).copied()
+    }
+
+    #[must_use]
     pub fn header(&self) -> &str {
         &self.header
     }
@@ -291,9 +355,150 @@ pub type ApplicationResult<T> = Result<T, ApplicationError>;
 
 #[must_use]
 pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
+    project_attention_from_events(attention_events(events))
+}
+
+#[must_use]
+pub fn build_tui_model(events: &[ConsoleEvent], requested_selection: usize) -> TuiScreenModel {
+    let state = TuiInteractionState::new(requested_selection, TuiOverlay::None);
+    build_tui_model_for_state(events, &state)
+}
+
+#[must_use]
+pub fn build_tui_model_for_state(
+    events: &[ConsoleEvent],
+    state: &TuiInteractionState,
+) -> TuiScreenModel {
+    let search_query = search_query(state.overlay());
+    let attention_events = attention_events_matching(events, search_query);
+    let attention_items = project_attention_from_events(attention_events.clone());
+    let selected_attention_index =
+        selected_index(attention_items.len(), state.selected_attention_index());
+    let detail = selected_attention_index
+        .map(|index| build_attention_detail(attention_events[index], events));
+    let overlay = normalize_overlay(state.overlay(), detail.as_ref());
+    TuiScreenModel {
+        active_view: TuiView::Attention,
+        navigation: TuiView::all().to_vec(),
+        attention_items,
+        selected_attention_index,
+        detail,
+        overlay,
+        header: format!(
+            "fleet: livespec | mode: tui | attention: {}",
+            attention_events.len()
+        ),
+        footer: "shortcuts: arrows select | enter details | / search | : command palette"
+            .to_owned(),
+    }
+}
+
+#[must_use]
+pub fn reduce_tui_interaction(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
+    let model = build_tui_model_for_state(events, state);
+    match interaction {
+        TuiInteraction::SelectNext => TuiInteractionState::new(
+            move_selection_down(
+                model.attention_items().len(),
+                state.selected_attention_index(),
+            ),
+            state.overlay().clone(),
+        ),
+        TuiInteraction::SelectPrevious => TuiInteractionState::new(
+            move_selection_up(state.selected_attention_index()),
+            state.overlay().clone(),
+        ),
+        TuiInteraction::OpenSearch => TuiInteractionState::new(
+            state.selected_attention_index(),
+            TuiOverlay::Search {
+                query: String::new(),
+            },
+        ),
+        TuiInteraction::OpenCommandPalette => TuiInteractionState::new(
+            state.selected_attention_index(),
+            TuiOverlay::CommandPalette {
+                query: String::new(),
+            },
+        ),
+        TuiInteraction::OpenCommandModal => TuiInteractionState::new(
+            state.selected_attention_index(),
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        ),
+        TuiInteraction::CloseOverlay => {
+            TuiInteractionState::new(state.selected_attention_index(), TuiOverlay::None)
+        }
+        TuiInteraction::TypeChar(value) => TuiInteractionState::new(
+            state.selected_attention_index(),
+            type_overlay_char(state.overlay(), value),
+        ),
+        TuiInteraction::Backspace => TuiInteractionState::new(
+            state.selected_attention_index(),
+            backspace_overlay_query(state.overlay()),
+        ),
+        TuiInteraction::SelectNextAction => TuiInteractionState::new(
+            state.selected_attention_index(),
+            move_action_down(state.overlay(), model.detail()),
+        ),
+        TuiInteraction::SelectPreviousAction => TuiInteractionState::new(
+            state.selected_attention_index(),
+            move_action_up(state.overlay()),
+        ),
+    }
+}
+
+pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
+    let trimmed = action.trim();
+    if trimmed.is_empty() {
+        return Err(ApplicationError::EmptyOperatorAction);
+    }
+    Ok(trimmed)
+}
+
+fn attention_events(events: &[ConsoleEvent]) -> Vec<&ConsoleEvent> {
     events
         .iter()
         .filter(|event| event.event_type().requires_attention())
+        .collect()
+}
+
+fn attention_events_matching<'a>(
+    events: &'a [ConsoleEvent],
+    search_query: Option<&str>,
+) -> Vec<&'a ConsoleEvent> {
+    attention_events(events)
+        .into_iter()
+        .filter(|event| attention_event_matches(event, search_query))
+        .collect()
+}
+
+fn attention_event_matches(event: &ConsoleEvent, search_query: Option<&str>) -> bool {
+    search_query.is_none_or(|query| {
+        query.is_empty()
+            || event
+                .event_type()
+                .label()
+                .to_lowercase()
+                .contains(&query.to_lowercase())
+            || event
+                .source()
+                .to_lowercase()
+                .contains(&query.to_lowercase())
+            || event
+                .stream_id()
+                .to_lowercase()
+                .contains(&query.to_lowercase())
+    })
+}
+
+fn project_attention_from_events(events: Vec<&ConsoleEvent>) -> Vec<AttentionItem> {
+    events
+        .into_iter()
         .map(|event| {
             AttentionItem::new(
                 event.event_id().to_owned(),
@@ -306,40 +511,103 @@ pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
         .collect()
 }
 
-#[must_use]
-pub fn build_tui_model(events: &[ConsoleEvent], requested_selection: usize) -> TuiScreenModel {
-    let attention_events = events
-        .iter()
-        .filter(|event| event.event_type().requires_attention())
-        .collect::<Vec<_>>();
-    let attention_items = project_attention(events);
-    let selected_attention_index = selected_index(attention_items.len(), requested_selection);
-    let detail = selected_attention_index
-        .map(|index| build_attention_detail(attention_events[index], events));
-    TuiScreenModel::new(
-        TuiView::Attention,
-        TuiView::all().to_vec(),
-        attention_items,
-        selected_attention_index,
-        detail,
-        format!(
-            "fleet: livespec | mode: tui | attention: {}",
-            attention_events.len()
-        ),
-        "shortcuts: arrows select | enter details | / search | : command palette".to_owned(),
-    )
+fn search_query(overlay: &TuiOverlay) -> Option<&str> {
+    match overlay {
+        TuiOverlay::Search { query } => Some(query),
+        TuiOverlay::None | TuiOverlay::CommandPalette { .. } | TuiOverlay::CommandModal { .. } => {
+            None
+        }
+    }
 }
 
-pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
-    let trimmed = action.trim();
-    if trimmed.is_empty() {
-        return Err(ApplicationError::EmptyOperatorAction);
+fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::CommandModal {
+            selected_action_index,
+        } => TuiOverlay::CommandModal {
+            selected_action_index: clamp_action_index(detail, *selected_action_index),
+        },
+        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
+            overlay.clone()
+        }
     }
-    Ok(trimmed)
 }
 
 fn selected_index(item_count: usize, requested_selection: usize) -> Option<usize> {
     (item_count > 0).then(|| requested_selection.min(item_count - 1))
+}
+
+fn move_selection_down(item_count: usize, selected_index: usize) -> usize {
+    if item_count == 0 {
+        return 0;
+    }
+    (selected_index + 1).min(item_count - 1)
+}
+
+const fn move_selection_up(selected_index: usize) -> usize {
+    selected_index.saturating_sub(1)
+}
+
+fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::Search { query } => TuiOverlay::Search {
+            query: format!("{query}{value}"),
+        },
+        TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
+            query: format!("{query}{value}"),
+        },
+        TuiOverlay::None | TuiOverlay::CommandModal { .. } => overlay.clone(),
+    }
+}
+
+fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::Search { query } => TuiOverlay::Search {
+            query: query
+                .char_indices()
+                .next_back()
+                .map_or_else(String::new, |(index, _value)| query[..index].to_owned()),
+        },
+        TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
+            query: query
+                .char_indices()
+                .next_back()
+                .map_or_else(String::new, |(index, _value)| query[..index].to_owned()),
+        },
+        TuiOverlay::None | TuiOverlay::CommandModal { .. } => overlay.clone(),
+    }
+}
+
+fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::CommandModal {
+            selected_action_index,
+        } => TuiOverlay::CommandModal {
+            selected_action_index: clamp_action_index(detail, selected_action_index + 1),
+        },
+        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
+            overlay.clone()
+        }
+    }
+}
+
+fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::CommandModal {
+            selected_action_index,
+        } => TuiOverlay::CommandModal {
+            selected_action_index: selected_action_index.saturating_sub(1),
+        },
+        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
+            overlay.clone()
+        }
+    }
+}
+
+fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) -> usize {
+    detail
+        .and_then(|detail| selected_index(detail.actions().len(), requested_index))
+        .unwrap_or_default()
 }
 
 fn build_attention_detail(event: &ConsoleEvent, events: &[ConsoleEvent]) -> AttentionDetail {
@@ -459,8 +727,9 @@ mod tests {
     use proptest::proptest;
 
     use super::{
-        ApplicationError, AttentionEvent, OperatorAction, TuiView, build_tui_model,
-        project_attention, validate_operator_action,
+        ApplicationError, AttentionEvent, OperatorAction, TuiInteraction, TuiInteractionState,
+        TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state, project_attention,
+        reduce_tui_interaction, validate_operator_action,
     };
 
     #[test]
@@ -494,6 +763,8 @@ mod tests {
         assert_eq!(model.attention_items(), []);
         assert_eq!(model.selected_attention_index(), None);
         assert_eq!(model.detail(), None);
+        assert_eq!(model.overlay(), &TuiOverlay::None);
+        assert_eq!(model.selected_operator_action(), None);
         assert_eq!(model.header(), "fleet: livespec | mode: tui | attention: 0");
         assert_eq!(
             model.footer(),
@@ -509,6 +780,209 @@ mod tests {
         assert_eq!(model.attention_items().len(), 3);
         assert_fabro_gate_detail(&model);
         assert_fabro_gate_timeline(&model);
+    }
+
+    #[test]
+    fn tui_interaction_moves_attention_selection_with_arrows() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.selected_attention_index(), 1);
+        assert_eq!(model.selected_attention_index(), Some(1));
+        assert_eq!(
+            model.detail().map(super::AttentionDetail::work_item),
+            Some("evt_regroom")
+        );
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPrevious);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.selected_attention_index(), 0);
+        assert_eq!(model.selected_attention_index(), Some(0));
+        assert_fabro_gate_detail(&model);
+    }
+
+    #[test]
+    fn tui_interaction_clamps_selection_at_list_bounds() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(99, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.selected_attention_index(), 2);
+        assert_eq!(model.selected_attention_index(), Some(2));
+
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let state = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNext);
+
+        assert_eq!(state.selected_attention_index(), 0);
+    }
+
+    #[test]
+    fn tui_search_overlay_filters_attention_items() {
+        let events = fabro_gate_events();
+        let state = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenSearch,
+        );
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('r'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('e'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('v'));
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert!(state.overlay().is_open());
+        assert_eq!(state.overlay().query(), Some("rev"));
+        assert_eq!(
+            model
+                .attention_items()
+                .iter()
+                .map(super::AttentionItem::id)
+                .collect::<Vec<_>>(),
+            ["evt_other"]
+        );
+        assert_eq!(
+            model.detail().map(super::AttentionDetail::work_item),
+            Some("evt_other")
+        );
+        assert_eq!(
+            model.overlay(),
+            &TuiOverlay::Search {
+                query: "rev".to_owned()
+            }
+        );
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.overlay().query(), Some("re"));
+        assert_eq!(model.attention_items().len(), 3);
+    }
+
+    #[test]
+    fn tui_search_matches_source_and_stream_reference() {
+        let events = fabro_gate_events();
+        let source_state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: "RUN_17".to_owned(),
+            },
+        );
+        let stream_state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: "other".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            build_tui_model_for_state(&events, &source_state)
+                .attention_items()
+                .len(),
+            1
+        );
+        assert_eq!(
+            build_tui_model_for_state(&events, &stream_state)
+                .attention_items()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn tui_command_palette_accepts_editable_query() {
+        let events = fabro_gate_events();
+        let state = reduce_tui_interaction(
+            &TuiInteractionState::new(1, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenCommandPalette,
+        );
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('d'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('r'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+
+        assert_eq!(state.selected_attention_index(), 1);
+        assert_eq!(state.overlay().query(), Some("d"));
+        assert_eq!(
+            state.overlay(),
+            &TuiOverlay::CommandPalette {
+                query: "d".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn tui_command_modal_selects_attention_action() {
+        let events = fabro_gate_events();
+        let state = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenCommandModal,
+        );
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.overlay().selected_action_index(), Some(2));
+        assert_eq!(
+            model.selected_operator_action(),
+            Some(OperatorAction::OpenFabroAttach)
+        );
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousAction);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.overlay().selected_action_index(), Some(1));
+        assert_eq!(
+            model.selected_operator_action(),
+            Some(OperatorAction::Snooze)
+        );
+    }
+
+    #[test]
+    fn tui_command_modal_clamps_to_available_actions() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(
+            1,
+            TuiOverlay::CommandModal {
+                selected_action_index: 99,
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(
+            model.overlay(),
+            &TuiOverlay::CommandModal {
+                selected_action_index: 1
+            }
+        );
+        assert_eq!(
+            model.selected_operator_action(),
+            Some(OperatorAction::Snooze)
+        );
+    }
+
+    #[test]
+    fn tui_interaction_closes_overlay_and_ignores_text_outside_queries() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+
+        assert_eq!(state.overlay().query(), None);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('x'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousAction);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenCommandModal);
+        assert_eq!(state.overlay().query(), None);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('x'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::CloseOverlay);
+
+        assert_eq!(state.overlay(), &TuiOverlay::None);
     }
 
     fn fabro_gate_events() -> [ConsoleEvent; 4] {
