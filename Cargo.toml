@@ -5,6 +5,7 @@ members = [
   "crates/console-cli",
   "crates/console-domain",
   "crates/console-eventstore",
+  "crates/console-tui",
 ]
 exclude = [
   "fuzz",
