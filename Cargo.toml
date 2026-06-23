@@ -5,6 +5,9 @@ members = [
   "crates/console-cli",
   "crates/console-domain",
 ]
+exclude = [
+  "fuzz",
+]
 resolver = "3"
 
 [workspace.package]

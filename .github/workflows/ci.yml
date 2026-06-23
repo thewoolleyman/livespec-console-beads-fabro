@@ -17,6 +17,9 @@ jobs:
           - check-format
           - check-clippy
           - check-test
+          - check-nextest
+          - check-coverage
+          - check-deps
           - check-arch
     steps:
       - name: Checkout

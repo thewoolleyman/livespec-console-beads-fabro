@@ -1,0 +1,4 @@
+artifacts/
+target/
+corpus/event_envelope/*
+!corpus/event_envelope/.gitkeep

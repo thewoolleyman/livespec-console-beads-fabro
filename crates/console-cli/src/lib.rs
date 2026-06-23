@@ -123,4 +123,50 @@ mod tests {
         assert_eq!(output.code(), 2);
         assert!(output.message().contains("unknown command: bogus"));
     }
+
+    #[test]
+    fn no_command_prints_help() {
+        let output = run(["bin"]);
+
+        assert_eq!(output.code(), 0);
+        assert!(output.message().contains("Commands:"));
+    }
+
+    #[test]
+    fn bootstrap_commands_report_placeholder_modes() {
+        for (command, expected) in [
+            ("serve", "serve mode bootstrap: not yet wired"),
+            ("backfill", "backfill mode bootstrap: not yet wired"),
+            ("snapshot", "snapshot mode bootstrap: not yet wired"),
+            ("doctor", "doctor bootstrap: no findings"),
+            (
+                "arch-check",
+                "run `just check-arch` for architecture enforcement",
+            ),
+        ] {
+            let output = run(["bin", command]);
+
+            assert_eq!(output.code(), 0);
+            assert_eq!(output.message(), expected);
+        }
+    }
+
+    #[test]
+    fn events_tail_reports_placeholder_mode() {
+        let output = run(["bin", "events", "tail"]);
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(output.message(), "events tail bootstrap: not yet wired");
+    }
+
+    #[test]
+    fn events_without_tail_is_usage_error() {
+        let output = run(["bin", "events"]);
+
+        assert_eq!(output.code(), 2);
+        assert_eq!(
+            output.message(),
+            "usage: livespec-console-beads-fabro events tail"
+        );
+    }
 }

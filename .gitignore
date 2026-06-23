@@ -1,6 +1,6 @@
 /target/
+/mutants.out/
 /.venv/
 /.beads/metadata.json
 /.DS_Store
 /tmp/
-
