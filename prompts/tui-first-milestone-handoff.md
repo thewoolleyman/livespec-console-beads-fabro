@@ -44,7 +44,7 @@ that command.
 
 ## Current Status
 
-As of 2026-06-23:
+As of 2026-06-23 after the first planning PR:
 
 - The repo has only seed docs/spec plus `.livespec.jsonc`.
 - No Rust workspace exists yet.
@@ -55,6 +55,11 @@ As of 2026-06-23:
   actions until Beads is provisioned.
 - The Codex plugins for livespec core, `livespec-driver-codex`, and
   `livespec-orchestrator-beads-fabro` are installed host-wide.
+
+The `bootstrap-rust-infra` branch adds the first Rust workspace,
+`just bootstrap`, `just check`, CI, Claude project settings, a pinned
+Rust toolchain, and committed non-secret `.beads/` pointer files. If
+that branch has merged, refresh this status before continuing.
 
 ## Constraints
 
@@ -74,7 +79,7 @@ As of 2026-06-23:
 
 1. Land the planning/handoff artifacts.
 2. Bootstrap family infrastructure in a secondary worktree.
-3. Provision the Beads tenant and pointer files.
+3. Provision the Beads tenant and verify the pointer files.
 4. File a Beads epic plus small, dependency-aware slices for the TUI
    milestone.
 5. Build the Rust skeleton and quality gates before broad feature work.
