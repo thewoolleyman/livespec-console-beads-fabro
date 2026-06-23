@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
 use console_application::{
-    AttentionDetail, AttentionItem, OperatorAction, TimelineEntry, TuiOverlay, TuiScreenModel,
+    AttentionDetail, AttentionItem, OperatorAction, TimelineEntry, TuiInteraction, TuiOverlay,
+    TuiScreenModel,
 };
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -15,6 +17,111 @@ pub enum TuiRenderError {
 }
 
 pub type TuiRenderResult<T> = Result<T, TuiRenderError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiTerminalInput {
+    Interaction(TuiInteraction),
+    Confirm,
+    Quit,
+}
+
+#[must_use]
+pub const fn key_event_to_terminal_input(
+    event: KeyEvent,
+    overlay: &TuiOverlay,
+) -> Option<TuiTerminalInput> {
+    if event.modifiers.contains(KeyModifiers::CONTROL) && matches!(event.code, KeyCode::Char('c')) {
+        return Some(TuiTerminalInput::Quit);
+    }
+    match event.code {
+        KeyCode::Up => Some(TuiTerminalInput::Interaction(up_interaction(overlay))),
+        KeyCode::Down => Some(TuiTerminalInput::Interaction(down_interaction(overlay))),
+        KeyCode::Esc => Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay)),
+        KeyCode::Enter => Some(enter_input(overlay)),
+        KeyCode::Backspace => Some(TuiTerminalInput::Interaction(TuiInteraction::Backspace)),
+        KeyCode::Char('/') => slash_input(overlay),
+        KeyCode::Char(':') => colon_input(overlay),
+        KeyCode::Char('q') => q_input(overlay),
+        KeyCode::Char(value) => text_input(value, overlay),
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Insert
+        | KeyCode::F(_)
+        | KeyCode::Null
+        | KeyCode::CapsLock
+        | KeyCode::ScrollLock
+        | KeyCode::NumLock
+        | KeyCode::PrintScreen
+        | KeyCode::Pause
+        | KeyCode::Menu
+        | KeyCode::KeypadBegin
+        | KeyCode::Media(_)
+        | KeyCode::Modifier(_) => None,
+    }
+}
+
+const fn up_interaction(overlay: &TuiOverlay) -> TuiInteraction {
+    if matches!(overlay, TuiOverlay::CommandModal { .. }) {
+        return TuiInteraction::SelectPreviousAction;
+    }
+    TuiInteraction::SelectPrevious
+}
+
+const fn down_interaction(overlay: &TuiOverlay) -> TuiInteraction {
+    if matches!(overlay, TuiOverlay::CommandModal { .. }) {
+        return TuiInteraction::SelectNextAction;
+    }
+    TuiInteraction::SelectNext
+}
+
+const fn enter_input(overlay: &TuiOverlay) -> TuiTerminalInput {
+    if matches!(overlay, TuiOverlay::CommandModal { .. }) {
+        return TuiTerminalInput::Confirm;
+    }
+    TuiTerminalInput::Interaction(TuiInteraction::OpenCommandModal)
+}
+
+const fn slash_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+    if matches!(overlay, TuiOverlay::None) {
+        return Some(TuiTerminalInput::Interaction(TuiInteraction::OpenSearch));
+    }
+    text_input('/', overlay)
+}
+
+const fn colon_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+    if matches!(overlay, TuiOverlay::None) {
+        return Some(TuiTerminalInput::Interaction(
+            TuiInteraction::OpenCommandPalette,
+        ));
+    }
+    text_input(':', overlay)
+}
+
+const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+    if matches!(overlay, TuiOverlay::None) {
+        return Some(TuiTerminalInput::Quit);
+    }
+    text_input('q', overlay)
+}
+
+const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+    if matches!(
+        overlay,
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. }
+    ) {
+        return Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(
+            value,
+        )));
+    }
+    None
+}
 
 pub fn render_to_text(model: &TuiScreenModel, width: u16, height: u16) -> TuiRenderResult<String> {
     if width == 0 || height == 0 {
@@ -252,13 +359,133 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 #[cfg(test)]
 mod tests {
     use console_application::{
-        TuiInteractionState, TuiOverlay, build_tui_model, build_tui_model_for_state,
+        TuiInteraction, TuiInteractionState, TuiOverlay, build_tui_model, build_tui_model_for_state,
     };
     use console_domain::{ConsoleEvent, EventType};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
-    use super::{TuiRenderError, buffer_to_text, render_model, render_to_text};
+    use super::{
+        TuiRenderError, TuiTerminalInput, buffer_to_text, key_event_to_terminal_input,
+        render_model, render_to_text,
+    };
+
+    #[test]
+    fn keymap_maps_base_navigation_and_modal_opening() {
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::SelectNext))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectPrevious
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenCommandModal
+            ))
+        );
+    }
+
+    #[test]
+    fn keymap_maps_command_modal_navigation_and_confirm() {
+        let overlay = TuiOverlay::CommandModal {
+            selected_action_index: 1,
+        };
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &overlay),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectNextAction
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &overlay),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectPreviousAction
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &overlay),
+            Some(TuiTerminalInput::Confirm)
+        );
+    }
+
+    #[test]
+    fn keymap_maps_overlay_open_close_and_query_editing() {
+        let search = TuiOverlay::Search {
+            query: "fab".to_owned(),
+        };
+        let palette = TuiOverlay::CommandPalette {
+            query: "dra".to_owned(),
+        };
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('/')), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::OpenSearch))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char(':')), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenCommandPalette
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Backspace), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::Backspace))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('x')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('x')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('/')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('/')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char(':')), &palette),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(':')))
+        );
+    }
+
+    #[test]
+    fn keymap_maps_quit_and_ignores_unhandled_keys() {
+        let search = TuiOverlay::Search {
+            query: "q".to_owned(),
+        };
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('q')), &TuiOverlay::None),
+            Some(TuiTerminalInput::Quit)
+        );
+        assert_eq!(
+            key_event_to_terminal_input(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &TuiOverlay::None,
+            ),
+            Some(TuiTerminalInput::Quit)
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('q')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('q')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('x')), &TuiOverlay::None),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &TuiOverlay::None),
+            None
+        );
+    }
 
     #[test]
     fn render_to_text_draws_required_tui_regions() {
@@ -432,6 +659,10 @@ mod tests {
                 .map(|rendered| rendered.contains("  Copy Fabro attach")),
             Ok(true)
         );
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
     }
 
     fn demo_events() -> [ConsoleEvent; 2] {
