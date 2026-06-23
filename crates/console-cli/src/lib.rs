@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 
-use console_application::{
-    AttentionDetail, OperatorAction, TimelineEntry, TuiScreenModel, build_tui_model,
-};
+use console_application::build_tui_model;
 use console_domain::{ConsoleEvent, EventType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,79 +84,19 @@ fn tui_preview() -> String {
             2,
         ),
     ];
-    format_tui_model(&build_tui_model(&events, 0))
+    let model = build_tui_model(&events, 0);
+    render_tui_preview(&model, 100, 28)
 }
 
-fn format_tui_model(model: &TuiScreenModel) -> String {
-    let mut lines = vec![
-        model.header().to_owned(),
-        format!("view: {}", model.active_view().label()),
-        format!(
-            "navigation: {}",
-            model
-                .navigation()
-                .iter()
-                .map(console_application::TuiView::label)
-                .collect::<Vec<_>>()
-                .join(" | ")
-        ),
-        "attention:".to_owned(),
-    ];
-    lines.extend(
-        model
-            .attention_items()
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let marker = if Some(index) == model.selected_attention_index() {
-                    ">"
-                } else {
-                    " "
-                };
-                format!(
-                    "{marker} {} [{}] next: {}",
-                    item.title(),
-                    item.source_reference(),
-                    item.next_action().label()
-                )
-            }),
-    );
-    if let Some(detail) = model.detail() {
-        lines.extend(format_detail(detail));
+fn render_tui_preview(
+    model: &console_application::TuiScreenModel,
+    width: u16,
+    height: u16,
+) -> String {
+    match console_tui::render_to_text(model, width, height) {
+        Ok(rendered) => rendered,
+        Err(_error) => "TUI render error: empty area".to_owned(),
     }
-    lines.push(model.footer().to_owned());
-    lines.join("\n")
-}
-
-fn format_detail(detail: &AttentionDetail) -> Vec<String> {
-    let mut lines = vec![
-        "detail:".to_owned(),
-        format!("repo: {}", detail.repo()),
-        format!("work item: {}", detail.work_item()),
-        format!("fabro run: {}", detail.fabro_run()),
-        format!("attach: {}", detail.attach_command()),
-        format!("actions: {}", format_actions(detail.actions())),
-        "timeline:".to_owned(),
-    ];
-    lines.extend(detail.timeline().iter().map(format_timeline_entry));
-    lines
-}
-
-fn format_actions(actions: &[OperatorAction]) -> String {
-    actions
-        .iter()
-        .map(OperatorAction::label)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_timeline_entry(entry: &TimelineEntry) -> String {
-    format!(
-        "- {} [{}] {}",
-        entry.event_id(),
-        entry.source(),
-        entry.label()
-    )
 }
 
 fn help_text() -> String {
@@ -179,7 +117,9 @@ fn help_text() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use console_application::build_tui_model;
+
+    use super::{render_tui_preview, run};
 
     #[test]
     fn help_lists_specified_command_shape() {
@@ -195,20 +135,22 @@ mod tests {
         let output = run(["bin", "tui"]);
 
         assert_eq!(output.code(), 0);
-        assert!(output.message().contains("view: Attention"));
+        assert!(output.message().contains("LiveSpec Console"));
+        assert!(output.message().contains("> Attention"));
         assert!(output.message().contains("> Fabro human gate"));
         assert!(
             output
                 .message()
-                .contains("repo: livespec-console-beads-fabro")
+                .contains("Repo: livespec-console-beads-fabro")
         );
-        assert!(output.message().contains("fabro run: run_demo_1"));
-        assert!(output.message().contains("attach: fabro attach run_demo_1"));
+        assert!(output.message().contains("Fabro run: run_demo_1"));
+        assert!(output.message().contains("Attach: fabro attach run_demo_1"));
         assert!(
             output
                 .message()
-                .contains("actions: Acknowledge, Snooze, Open Fabro attach, Copy Fabro attach")
+                .contains("Actions: Acknowledge, Snooze, Open Fabro")
         );
+        assert!(output.message().contains("attach, Copy Fabro attach"));
     }
 
     #[test]
@@ -262,6 +204,16 @@ mod tests {
         assert_eq!(
             output.message(),
             "usage: livespec-console-beads-fabro events tail"
+        );
+    }
+
+    #[test]
+    fn tui_preview_reports_render_errors() {
+        let model = build_tui_model(&[], 0);
+
+        assert_eq!(
+            render_tui_preview(&model, 0, 28),
+            "TUI render error: empty area"
         );
     }
 }

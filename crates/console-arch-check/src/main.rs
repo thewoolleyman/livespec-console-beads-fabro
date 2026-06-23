@@ -8,6 +8,7 @@ const SCANNED_CRATES: &[&str] = &[
     "crates/console-cli",
     "crates/console-domain",
     "crates/console-eventstore",
+    "crates/console-tui",
 ];
 
 const FORBIDDEN_SNIPPETS: &[&str] = &[".unwrap(", ".expect(", "unsafe {"];

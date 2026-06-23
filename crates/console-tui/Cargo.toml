@@ -1,6 +1,6 @@
 [package]
-name = "livespec-console-beads-fabro"
-description = "TUI-first operator console for LiveSpec Beads/Fabro factory work"
+name = "console-tui"
+description = "Terminal UI rendering adapter for livespec-console-beads-fabro"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,8 +9,10 @@ version.workspace = true
 
 [dependencies]
 console-application = { path = "../console-application", version = "0.1.0" }
+ratatui = { version = "0.30.2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
 console-domain = { path = "../console-domain", version = "0.1.0" }
-console-tui = { path = "../console-tui", version = "0.1.0" }
 
 [lints]
 workspace = true
