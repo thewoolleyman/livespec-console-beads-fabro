@@ -56,10 +56,39 @@ As of 2026-06-23 after the first planning PR:
 - The Codex plugins for livespec core, `livespec-driver-codex`, and
   `livespec-orchestrator-beads-fabro` are installed host-wide.
 
-The `bootstrap-rust-infra` branch adds the first Rust workspace,
-`just bootstrap`, `just check`, CI, Claude project settings, a pinned
-Rust toolchain, and committed non-secret `.beads/` pointer files. If
-that branch has merged, refresh this status before continuing.
+The `bootstrap-rust-infra` branch merged as `3c82407`. The repo now has
+the first Rust workspace, `just bootstrap`, `just check`, CI, Claude
+project settings, a pinned Rust toolchain, and committed non-secret
+`.beads/` pointer files.
+
+The Beads/Dolt tenant is provisioned server-side and local
+`.beads/metadata.json` has been regenerated as a gitignored file.
+`bd list` works under `/data/projects/1password-env-wrapper/with-livespec-env.sh`.
+The ledger currently has:
+
+- `livespec-console-beads-fabro-rt3g3t` — blocked planning epic:
+  "Deliver the Rust TUI first milestone".
+- `livespec-console-beads-fabro-i6n4rm` — ready:
+  "Raise Rust quality gates beyond the bootstrap minimum".
+- `livespec-console-beads-fabro-ysvmwh` — ready:
+  "Implement the SQLite event store skeleton".
+- `livespec-console-beads-fabro-y45jhj` — ready:
+  "Replace the TUI preview with a testable TUI model".
+- `livespec-console-beads-fabro-gyxlib` — ready:
+  "Add first source adapter ports and LiveSpec/Beads snapshots".
+
+`orchestrate plan` must be run under the livespec environment wrapper so
+the Beads password is present. It currently returns four factory-safe
+implementation actions, one per ready slice above. The recommended first
+dispatch is `impl:livespec-console-beads-fabro-i6n4rm`, because it
+raises the quality gates before broader product behavior lands.
+
+Known warning: `bd update` / `bd list --ready` currently prints an
+auto-backup warning for `backup_export` permission denial under the
+tenant user. Tenant onboarding did register the `s3` backup remote as
+the backup user; investigate whether this is a Beads auto-backup config
+expectation or a harmless client-side self-heal attempt before treating
+it as a product blocker.
 
 ## Constraints
 
@@ -78,12 +107,16 @@ that branch has merged, refresh this status before continuing.
 ## Next Actions
 
 1. Land the planning/handoff artifacts.
-2. Bootstrap family infrastructure in a secondary worktree.
-3. Provision the Beads tenant and verify the pointer files.
+2. Bootstrap family infrastructure in a secondary worktree. Done in
+   `3c82407`.
+3. Provision the Beads tenant and verify the pointer files. Done; use
+   the livespec env wrapper for all `bd` calls.
 4. File a Beads epic plus small, dependency-aware slices for the TUI
-   milestone.
-5. Build the Rust skeleton and quality gates before broad feature work.
-6. Switch eligible slices to Dispatcher/Fabro execution.
+   milestone. Done; see IDs above.
+5. Dispatch the first ready factory slice after operator action
+   selection. Recommended: `impl:livespec-console-beads-fabro-i6n4rm`.
+6. Continue filing/dispatching slices until the first TUI milestone is
+   complete.
 
 ## Verification
 
