@@ -8,8 +8,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-console-application = { path = "../console-application" }
-console-domain = { path = "../console-domain" }
+console-application = { path = "../console-application", version = "0.1.0" }
+console-domain = { path = "../console-domain", version = "0.1.0" }
 
 [lints]
 workspace = true

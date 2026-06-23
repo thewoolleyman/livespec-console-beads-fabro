@@ -56,6 +56,9 @@ check:
         check-format
         check-clippy
         check-test
+        check-nextest
+        check-coverage
+        check-deps
         check-arch
     )
     failed=()
@@ -79,8 +82,29 @@ check-clippy:
 check-test:
     cargo test --workspace --all-features
 
+check-nextest:
+    just ensure-rust-quality-tools
+    cargo nextest run --workspace --all-features
+
+check-coverage:
+    just ensure-rust-quality-tools
+    cargo llvm-cov --workspace --all-features --lib --fail-under-lines 100
+
+check-deps:
+    just ensure-rust-quality-tools
+    cargo deny check
+    cargo machete
+
 check-arch:
     cargo run --quiet --package console-arch-check
+
+check-fuzz-smoke:
+    just ensure-fuzz-tooling
+    cargo +nightly fuzz run event_envelope -- -max_total_time=5
+
+check-mutants-smoke:
+    just ensure-mutants-tooling
+    cargo mutants --workspace --list --package console-domain --package console-application
 
 check-pre-commit:
     just check-format
@@ -89,3 +113,12 @@ check-pre-commit:
 
 check-pre-push:
     just check
+
+ensure-rust-quality-tools:
+    ./dev-tooling/ensure-rust-quality-tools.sh core
+
+ensure-fuzz-tooling:
+    ./dev-tooling/ensure-rust-quality-tools.sh fuzz
+
+ensure-mutants-tooling:
+    ./dev-tooling/ensure-rust-quality-tools.sh mutants

@@ -35,11 +35,32 @@ Run the local gate:
 just check
 ```
 
-The current bootstrap gate runs Rust formatting, strict Clippy, unit
-tests, and the repo-local architecture check. The full milestone plan in
+The enforced gate runs Rust formatting, strict Clippy, `cargo test`,
+`cargo-nextest`, 100% library line coverage through `cargo-llvm-cov`,
+dependency policy through `cargo-deny`, unused dependency detection
+through `cargo-machete`, and the repo-local architecture check.
+
+Two higher-cost probes are exposed as explicit smoke targets:
+
+```bash
+just check-fuzz-smoke
+just check-mutants-smoke
+```
+
+Fuzzing uses `cargo +nightly fuzz` because sanitizer-backed libFuzzer
+targets require nightly-only compiler flags. The product workspace
+itself remains pinned to stable Rust through `rust-toolchain.toml`.
+The mutation smoke target enumerates candidate mutants only; full
+mutation-score enforcement is tracked for the later milestone gate once
+the domain model has enough behavior to make surviving getter mutants a
+useful failure signal.
+
+The full milestone plan in
 `research/tui-first-milestone-bootstrap-plan.md` tracks the remaining
-quality gates: coverage, property tests, fuzzing, mutation testing,
-dependency policy, and richer architecture checks.
+quality work: growing the fuzz corpus with real event-store inputs,
+turning mutation testing from smoke coverage into a hard release gate,
+and replacing the current text-based architecture check with a richer
+crate graph/source parser.
 
 ## Beads
 

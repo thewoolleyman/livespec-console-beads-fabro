@@ -33,21 +33,6 @@ impl ConsoleEvent {
         }
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub fn fixture(event_id: &str, event_type: EventType, source: &str) -> Self {
-        Self::new(
-            event_id.to_owned(),
-            1,
-            "factory".to_owned(),
-            event_type,
-            source.to_owned(),
-            "factory:livespec-console-beads-fabro".to_owned(),
-            1,
-        )
-    }
-
-    #[cfg(not(test))]
     #[must_use]
     pub fn fixture(event_id: &str, event_type: EventType, source: &str) -> Self {
         Self::new(
@@ -181,6 +166,8 @@ pub fn validate_non_empty_identifier(value: &str) -> DomainResult<&str> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::{prop_assert_eq, proptest};
+
     use super::{
         CommandEnvelope, CommandType, ConsoleEvent, DomainError, EventType,
         validate_non_empty_identifier,
@@ -236,5 +223,28 @@ mod tests {
         let result = validate_non_empty_identifier("  evt_1  ");
 
         assert_eq!(result, Ok("evt_1"));
+    }
+
+    proptest! {
+        #[test]
+        fn identifier_validation_accepts_every_string_with_visible_content(
+            leading in "\\s*",
+            value in "[[:graph:]]+",
+            trailing in "\\s*",
+        ) {
+            let candidate = format!("{leading}{value}{trailing}");
+            let result = validate_non_empty_identifier(&candidate);
+
+            prop_assert_eq!(result, Ok(value.as_str()));
+        }
+
+        #[test]
+        fn identifier_validation_rejects_every_whitespace_only_string(
+            candidate in "\\s*",
+        ) {
+            let result = validate_non_empty_identifier(&candidate);
+
+            prop_assert_eq!(result, Err(DomainError::EmptyIdentifier));
+        }
     }
 }

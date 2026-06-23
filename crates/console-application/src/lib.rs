@@ -89,8 +89,9 @@ impl AttentionEvent for EventType {
 #[cfg(test)]
 mod tests {
     use console_domain::{ConsoleEvent, EventType};
+    use proptest::proptest;
 
-    use super::{ApplicationError, project_attention, validate_operator_action};
+    use super::{ApplicationError, AttentionEvent, project_attention, validate_operator_action};
 
     #[test]
     fn attention_projection_keeps_only_attention_events() {
@@ -120,5 +121,48 @@ mod tests {
         let result = validate_operator_action("  acknowledge  ");
 
         assert_eq!(result, Ok("acknowledge"));
+    }
+
+    #[test]
+    fn all_event_type_labels_are_stable() {
+        assert_eq!(
+            EventType::DispatcherNeedsRegroomObserved.label(),
+            "Dispatcher needs-regroom"
+        );
+        assert_eq!(
+            EventType::FabroHumanGateObserved.label(),
+            "Fabro human gate"
+        );
+        assert_eq!(
+            EventType::FactoryDrainRequested.label(),
+            "Factory drain requested"
+        );
+        assert_eq!(
+            EventType::LivespecReviseRequired.label(),
+            "LiveSpec revise required"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn operator_action_validation_accepts_every_string_with_visible_content(
+            leading in "\\s*",
+            value in "[[:graph:]]+",
+            trailing in "\\s*",
+        ) {
+            let candidate = format!("{leading}{value}{trailing}");
+            let result = validate_operator_action(&candidate);
+
+            proptest::prop_assert_eq!(result, Ok(value.as_str()));
+        }
+
+        #[test]
+        fn operator_action_validation_rejects_every_whitespace_only_string(
+            candidate in "\\s*",
+        ) {
+            let result = validate_operator_action(&candidate);
+
+            proptest::prop_assert_eq!(result, Err(ApplicationError::EmptyOperatorAction));
+        }
     }
 }
