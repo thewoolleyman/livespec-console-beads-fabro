@@ -64,7 +64,14 @@ fn run_events(subcommand: Option<&str>) -> RunOutput {
 }
 
 fn tui_preview() -> String {
-    let events = [
+    let events = demo_events();
+    let model = build_tui_model(&events, 0);
+    render_tui_preview(&model, 100, 28)
+}
+
+#[must_use]
+pub fn demo_events() -> [ConsoleEvent; 2] {
+    [
         ConsoleEvent::new(
             "evt_demo_1".to_owned(),
             1,
@@ -83,9 +90,7 @@ fn tui_preview() -> String {
             "repo:livespec-console-beads-fabro".to_owned(),
             2,
         ),
-    ];
-    let model = build_tui_model(&events, 0);
-    render_tui_preview(&model, 100, 28)
+    ]
 }
 
 fn render_tui_preview(

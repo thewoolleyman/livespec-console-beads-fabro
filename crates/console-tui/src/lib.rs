@@ -13,12 +13,94 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
 
+#[cfg(all(not(test), not(coverage)))]
+use std::io;
+#[cfg(all(not(test), not(coverage)))]
+use std::time::Duration;
+
+#[cfg(all(not(test), not(coverage)))]
+use crossterm::event::{self, Event, KeyEventKind};
+#[cfg(all(not(test), not(coverage)))]
+use crossterm::execute;
+#[cfg(all(not(test), not(coverage)))]
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+#[cfg(all(not(test), not(coverage)))]
+use ratatui::Terminal;
+#[cfg(all(not(test), not(coverage)))]
+use ratatui::backend::CrosstermBackend;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiRenderError {
     EmptyArea,
 }
 
 pub type TuiRenderResult<T> = Result<T, TuiRenderError>;
+
+#[cfg(all(not(test), not(coverage)))]
+pub fn run_interactive_tui(
+    events: &[ConsoleEvent],
+    requested_by: &str,
+) -> io::Result<Vec<TuiRuntimeEffect>> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        let _raw_mode_result = disable_raw_mode();
+        return Err(error);
+    }
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            let _raw_mode_result = disable_raw_mode();
+            return Err(error);
+        }
+    };
+    let result = run_terminal_loop(&mut terminal, events, requested_by);
+    let raw_mode_result = disable_raw_mode();
+    let alternate_screen_result = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let cursor_result = terminal.show_cursor();
+    raw_mode_result?;
+    alternate_screen_result?;
+    cursor_result?;
+    result
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn run_terminal_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    events: &[ConsoleEvent],
+    requested_by: &str,
+) -> io::Result<Vec<TuiRuntimeEffect>> {
+    let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+    let mut effects = Vec::new();
+    loop {
+        let model = build_tui_model_for_state(events, &state);
+        terminal.draw(|frame| render_model(&model, frame.area(), frame.buffer_mut()))?;
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key_event) = event::read()? else {
+            continue;
+        };
+        if key_event.kind != KeyEventKind::Press {
+            continue;
+        }
+        let model = build_tui_model_for_state(events, &state);
+        let Some(input) = key_event_to_terminal_input(key_event, model.overlay()) else {
+            continue;
+        };
+        let step = step_tui_runtime(&state, events, input, requested_by);
+        state = step.state().clone();
+        let effect = step.effect().clone();
+        let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
+        effects.push(effect);
+        if should_quit {
+            return Ok(effects);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuiTerminalInput {
