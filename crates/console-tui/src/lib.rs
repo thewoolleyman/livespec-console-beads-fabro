@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 
-use console_application::{AttentionDetail, AttentionItem, TimelineEntry, TuiScreenModel};
+use console_application::{
+    AttentionDetail, AttentionItem, OperatorAction, TimelineEntry, TuiOverlay, TuiScreenModel,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiRenderError {
@@ -39,6 +41,7 @@ pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     render_header(model, vertical[0], buffer);
     render_body(model, vertical[1], buffer);
     render_footer(model, vertical[2], buffer);
+    render_overlay(model, area, buffer);
 }
 
 fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -65,6 +68,82 @@ fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     Paragraph::new(model.footer())
         .block(Block::new().borders(Borders::ALL).title("Status"))
         .render(area, buffer);
+}
+
+fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    match model.overlay() {
+        TuiOverlay::None => {}
+        TuiOverlay::Search { query } => {
+            render_prompt_overlay("Search", format!("/{query}"), area, buffer);
+        }
+        TuiOverlay::CommandPalette { query } => {
+            render_prompt_overlay("Command Palette", format!(":{query}"), area, buffer);
+        }
+        TuiOverlay::CommandModal {
+            selected_action_index,
+        } => {
+            render_command_modal(
+                model.detail(),
+                *selected_action_index,
+                overlay_rect(area),
+                buffer,
+            );
+        }
+    }
+}
+
+fn render_prompt_overlay(title: &'static str, value: String, area: Rect, buffer: &mut Buffer) {
+    let overlay = overlay_rect(area);
+    Clear.render(overlay, buffer);
+    Paragraph::new(value)
+        .block(Block::new().borders(Borders::ALL).title(title))
+        .render(overlay, buffer);
+}
+
+fn render_command_modal(
+    detail: Option<&AttentionDetail>,
+    selected_action_index: usize,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    Clear.render(area, buffer);
+    let items = detail
+        .map(AttentionDetail::actions)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, action)| action_item_line(index, *action, selected_action_index));
+    List::new(items)
+        .block(Block::new().borders(Borders::ALL).title("Command Modal"))
+        .render(area, buffer);
+}
+
+fn action_item_line(
+    index: usize,
+    action: OperatorAction,
+    selected_action_index: usize,
+) -> ListItem<'static> {
+    let marker = if index == selected_action_index {
+        ">"
+    } else {
+        " "
+    };
+    ListItem::new(format!("{marker} {}", action.label())).style(if index == selected_action_index {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    })
+}
+
+fn overlay_rect(area: Rect) -> Rect {
+    let width = (area.width.saturating_mul(3) / 4).max(1);
+    let height = (area.height / 3).max(1);
+    Rect::new(
+        area.x + ((area.width - width) / 2),
+        area.y + ((area.height - height) / 2),
+        width,
+        height,
+    )
 }
 
 fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -172,7 +251,9 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use console_application::build_tui_model;
+    use console_application::{
+        TuiInteractionState, TuiOverlay, build_tui_model, build_tui_model_for_state,
+    };
     use console_domain::{ConsoleEvent, EventType};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -271,6 +352,84 @@ mod tests {
             output
                 .as_ref()
                 .map(|rendered| rendered.contains("No attention item selected")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_draws_search_overlay() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: "gate".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output.as_ref().map(|rendered| rendered.contains("Search")),
+            Ok(true)
+        );
+        assert_eq!(
+            output.as_ref().map(|rendered| rendered.contains("/gate")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_draws_command_palette_overlay() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: "drain".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Command Palette")),
+            Ok(true)
+        );
+        assert_eq!(
+            output.as_ref().map(|rendered| rendered.contains(":drain")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_draws_command_modal_overlay() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 2,
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Command Modal")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("> Open Fabro attach")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("  Copy Fabro attach")),
             Ok(true)
         );
     }
