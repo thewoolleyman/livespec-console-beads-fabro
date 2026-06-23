@@ -247,7 +247,7 @@ Track 4: Rust quality gates
   crates and any pure adapter-normalization logic.
 - [ ] Dependency policy with `cargo-deny` advisories, bans, licenses,
   and duplicate-version rules.
-- [ ] Unused dependency checks with a maintained Cargo tool such as
+- [x] Unused dependency checks with a maintained Cargo tool such as
   `cargo-machete`.
 - [ ] Unsafe scanning with a maintained Cargo tool such as
   `cargo-geiger`, alongside crate-level `forbid(unsafe_code)`.
@@ -255,13 +255,13 @@ Track 4: Rust quality gates
   conservative source checks.
 - [ ] Filesize and complexity checks for product source files, with
   thresholds codified in the repo rather than enforced by convention.
-- [ ] CI must run the same `just check` aggregate as local development.
+- [x] CI must run the same `just check` aggregate as local development.
 
 Track 5: TUI milestone slices
 
 - [ ] CLI skeleton and configuration loading.
 - [ ] Domain IDs, event envelope, command envelope, and error taxonomy.
-- [ ] SQLite WAL event store with schema and migrations.
+- [x] SQLite WAL event store with schema and migrations.
 - [ ] Command store and command status transitions.
 - [ ] Projector framework and attention projection.
 - [ ] TUI layout: attention list, detail pane, action list, status area.

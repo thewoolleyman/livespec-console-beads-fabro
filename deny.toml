@@ -4,6 +4,7 @@ yanked = "deny"
 [licenses]
 allow = [
   "MIT",
+  "Zlib",
 ]
 confidence-threshold = 0.8
 
