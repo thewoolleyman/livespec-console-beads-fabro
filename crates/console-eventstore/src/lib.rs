@@ -3,7 +3,7 @@
 use std::num::TryFromIntError;
 use std::path::Path;
 
-use console_domain::ConsoleEvent;
+use console_domain::{CommandEnvelope, ConsoleEvent};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 const SCHEMA: &str = r"
@@ -81,6 +81,44 @@ impl From<TryFromIntError> for EventStoreError {
 }
 
 pub type EventStoreResult<T> = Result<T, EventStoreError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandAppend {
+    command: CommandEnvelope,
+    requested_at: String,
+    causation_event_id: Option<String>,
+    correlation_id: String,
+    payload_json: String,
+}
+
+impl CommandAppend {
+    #[must_use]
+    pub const fn new(
+        command: CommandEnvelope,
+        requested_at: String,
+        causation_event_id: Option<String>,
+        correlation_id: String,
+        payload_json: String,
+    ) -> Self {
+        Self {
+            command,
+            requested_at,
+            causation_event_id,
+            correlation_id,
+            payload_json,
+        }
+    }
+
+    #[must_use]
+    pub const fn command(&self) -> &CommandEnvelope {
+        &self.command
+    }
+
+    #[must_use]
+    pub fn causation_event_id(&self) -> Option<&str> {
+        self.causation_event_id.as_deref()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventAppend {
@@ -169,6 +207,104 @@ pub struct StoredEvent {
     event_type: String,
     source: String,
     source_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCommand {
+    command_id: String,
+    context: String,
+    command_type: String,
+    aggregate_id: Option<String>,
+    idempotency_key: String,
+    requested_by: String,
+    status: String,
+}
+
+impl StoredCommand {
+    #[must_use]
+    pub const fn new(
+        command_id: String,
+        context: String,
+        command_type: String,
+        aggregate_id: Option<String>,
+        idempotency_key: String,
+        requested_by: String,
+        status: String,
+    ) -> Self {
+        Self {
+            command_id,
+            context,
+            command_type,
+            aggregate_id,
+            idempotency_key,
+            requested_by,
+            status,
+        }
+    }
+
+    #[must_use]
+    pub fn command_id(&self) -> &str {
+        &self.command_id
+    }
+
+    #[must_use]
+    pub fn context(&self) -> &str {
+        &self.context
+    }
+
+    #[must_use]
+    pub fn command_type(&self) -> &str {
+        &self.command_type
+    }
+
+    #[must_use]
+    pub fn aggregate_id(&self) -> Option<&str> {
+        self.aggregate_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
+
+    #[must_use]
+    pub fn requested_by(&self) -> &str {
+        &self.requested_by
+    }
+
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAppendStatus {
+    Inserted,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandAppendOutcome {
+    command_id: String,
+    status: CommandAppendStatus,
+}
+
+impl CommandAppendOutcome {
+    #[must_use]
+    pub const fn new(command_id: String, status: CommandAppendStatus) -> Self {
+        Self { command_id, status }
+    }
+
+    #[must_use]
+    pub fn command_id(&self) -> &str {
+        &self.command_id
+    }
+
+    #[must_use]
+    pub const fn status(&self) -> CommandAppendStatus {
+        self.status
+    }
 }
 
 impl StoredEvent {
@@ -287,6 +423,56 @@ impl SqliteEventStore {
         Ok(outcome)
     }
 
+    pub fn append_command(
+        &mut self,
+        append: &CommandAppend,
+    ) -> EventStoreResult<CommandAppendOutcome> {
+        let transaction = self.connection.transaction()?;
+        let inserted = transaction.execute(
+            r"
+            insert or ignore into commands (
+              command_id,
+              context,
+              type,
+              aggregate_id,
+              idempotency_key,
+              requested_by,
+              requested_at,
+              causation_event_id,
+              correlation_id,
+              status,
+              payload_json,
+              updated_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?7)
+            ",
+            params![
+                append.command.command_id(),
+                append.command.command_type().context(),
+                append.command.command_type().contract_name(),
+                append.command.aggregate_id(),
+                append.command.idempotency_key(),
+                append.command.requested_by(),
+                append.requested_at,
+                append.causation_event_id,
+                append.correlation_id,
+                append.payload_json,
+            ],
+        )?;
+        let outcome = if inserted == 0 {
+            CommandAppendOutcome::new(
+                find_existing_command_id(&transaction, append)?,
+                CommandAppendStatus::Duplicate,
+            )
+        } else {
+            CommandAppendOutcome::new(
+                append.command.command_id().to_owned(),
+                CommandAppendStatus::Inserted,
+            )
+        };
+        transaction.commit()?;
+        Ok(outcome)
+    }
+
     pub fn list_events(&self) -> EventStoreResult<Vec<StoredEvent>> {
         let sql = "select global_seq, event_id, type, source, source_event_id from events order by global_seq";
         let mut statement = self.connection.prepare(sql)?;
@@ -302,6 +488,29 @@ impl SqliteEventStore {
             ));
         }
         Ok(events)
+    }
+
+    pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
+        let sql = r"
+            select command_id, context, type, aggregate_id, idempotency_key, requested_by, status
+            from commands
+            order by requested_at, command_id
+        ";
+        let mut statement = self.connection.prepare(sql)?;
+        let mut rows = statement.query([])?;
+        let mut commands = Vec::new();
+        while let Some(row) = rows.next()? {
+            commands.push(StoredCommand::new(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ));
+        }
+        Ok(commands)
     }
 }
 
@@ -339,6 +548,35 @@ fn find_existing_sequence(
     sequence_from_rowid(sequence.ok_or(rusqlite::Error::QueryReturnedNoRows)?)
 }
 
+fn find_existing_command_id(
+    transaction: &Transaction<'_>,
+    append: &CommandAppend,
+) -> EventStoreResult<String> {
+    let command_id = transaction
+        .query_row(
+            r"
+            select command_id
+            from commands
+            where idempotency_key = ?1
+            ",
+            params![append.command.idempotency_key()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match command_id {
+        Some(command_id) => Ok(command_id),
+        None => Ok(transaction.query_row(
+            r"
+            select command_id
+            from commands
+            where command_id = ?1
+            ",
+            params![append.command.command_id()],
+            |row| row.get::<_, String>(0),
+        )?),
+    }
+}
+
 fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
     Ok(u64::try_from(value)?)
 }
@@ -346,9 +584,10 @@ fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppendStatus, EventAppend, EventStoreError, SqliteEventStore, sequence_from_rowid,
+        AppendStatus, CommandAppend, CommandAppendStatus, EventAppend, EventStoreError,
+        SqliteEventStore, StoredCommand, sequence_from_rowid,
     };
-    use console_domain::{ConsoleEvent, EventType};
+    use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
     #[test]
     fn opened_store_uses_wal_mode_and_creates_required_tables() -> Result<(), EventStoreError> {
@@ -428,6 +667,119 @@ mod tests {
     }
 
     #[test]
+    fn append_command_persists_pending_command_row() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let append = command_append(
+            "cmd_1",
+            "idem_1",
+            CommandType::AttentionAcknowledgeRequested,
+        );
+
+        let outcome = store.append_command(&append)?;
+        let commands = store.list_commands()?;
+
+        assert_eq!(outcome.status(), CommandAppendStatus::Inserted);
+        assert_eq!(outcome.command_id(), "cmd_1");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command_id(), "cmd_1");
+        assert_eq!(commands[0].context(), "attention");
+        assert_eq!(
+            commands[0].command_type(),
+            "attention.acknowledge_requested"
+        );
+        assert_eq!(commands[0].aggregate_id(), Some("evt_gate"));
+        assert_eq!(commands[0].idempotency_key(), "idem_1");
+        assert_eq!(commands[0].requested_by(), "operator");
+        assert_eq!(commands[0].status(), "pending");
+        assert_eq!(append.command().command_id(), "cmd_1");
+        assert_eq!(append.causation_event_id(), Some("evt_gate"));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_command_id_returns_existing_command_id() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let first = command_append(
+            "cmd_1",
+            "idem_1",
+            CommandType::AttentionAcknowledgeRequested,
+        );
+        let duplicate = command_append("cmd_1", "idem_2", CommandType::AttentionSnoozeRequested);
+
+        let first_outcome = store.append_command(&first)?;
+        let duplicate_outcome = store.append_command(&duplicate)?;
+        let commands = store.list_commands()?;
+
+        assert_eq!(first_outcome.status(), CommandAppendStatus::Inserted);
+        assert_eq!(duplicate_outcome.status(), CommandAppendStatus::Duplicate);
+        assert_eq!(duplicate_outcome.command_id(), "cmd_1");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0].command_type(),
+            "attention.acknowledge_requested"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_idempotency_key_returns_existing_command_id() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let first = command_append(
+            "cmd_1",
+            "idem_1",
+            CommandType::AttentionAcknowledgeRequested,
+        );
+        let duplicate = command_append("cmd_2", "idem_1", CommandType::AttentionSnoozeRequested);
+
+        let first_outcome = store.append_command(&first)?;
+        let duplicate_outcome = store.append_command(&duplicate)?;
+        let commands = store.list_commands()?;
+
+        assert_eq!(first_outcome.status(), CommandAppendStatus::Inserted);
+        assert_eq!(duplicate_outcome.status(), CommandAppendStatus::Duplicate);
+        assert_eq!(duplicate_outcome.command_id(), "cmd_1");
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command_id(), "cmd_1");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_duplicate_command_lookup_returns_sqlite_error() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let append = command_append(
+            "cmd_missing",
+            "idem_missing",
+            CommandType::FactoryDrainRequested,
+        );
+        let transaction = store.connection.transaction()?;
+        let result = super::find_existing_command_id(&transaction, &append);
+
+        assert!(matches!(result, Err(EventStoreError::Sqlite(_error))));
+        Ok(())
+    }
+
+    #[test]
+    fn stored_command_exposes_nullable_aggregate_id() {
+        let command = StoredCommand::new(
+            "cmd_1".to_owned(),
+            "factory".to_owned(),
+            "factory.drain_requested".to_owned(),
+            None,
+            "idem_1".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+
+        assert_eq!(command.command_id(), "cmd_1");
+        assert_eq!(command.context(), "factory");
+        assert_eq!(command.command_type(), "factory.drain_requested");
+        assert_eq!(command.aggregate_id(), None);
+        assert_eq!(command.idempotency_key(), "idem_1");
+        assert_eq!(command.requested_by(), "operator");
+        assert_eq!(command.status(), "pending");
+    }
+
+    #[test]
     fn negative_rowid_is_invalid_sequence() {
         let result = sequence_from_rowid(-1);
 
@@ -451,6 +803,26 @@ mod tests {
             "corr_1".to_owned(),
             source_event_id.map(str::to_owned),
             "{}".to_owned(),
+            "{}".to_owned(),
+        )
+    }
+
+    fn command_append(
+        command_id: &str,
+        idempotency_key: &str,
+        command_type: CommandType,
+    ) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                command_id.to_owned(),
+                command_type,
+                "evt_gate".to_owned(),
+                idempotency_key.to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-06-23T00:00:02Z".to_owned(),
+            Some("evt_gate".to_owned()),
+            "corr_1".to_owned(),
             "{}".to_owned(),
         )
     }
