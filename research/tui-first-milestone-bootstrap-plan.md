@@ -198,6 +198,13 @@ Track 2: Beads and factory readiness
 - [ ] Switch eligible slices to Dispatcher/Fabro execution after the
   repo can run `just check` locally and in CI.
 
+Status update, 2026-06-23: the non-secret `.beads/` pointer files
+merged in `3c82407`; the server-side tenant was provisioned with the
+family password; local gitignored `metadata.json` was regenerated from a
+scratch directory; `bd list` works under the livespec env wrapper; and
+four ready Beads slices now appear in `orchestrate plan`. The remaining
+step is operator selection of the first mutating factory action.
+
 Track 3: Rust workspace and product architecture
 
 - [ ] Create a Cargo workspace with narrow crates:
