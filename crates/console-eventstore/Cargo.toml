@@ -1,0 +1,15 @@
+[package]
+name = "console-eventstore"
+description = "SQLite event-store adapter for livespec-console-beads-fabro"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+console-domain = { path = "../console-domain", version = "0.1.0" }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+
+[lints]
+workspace = true

@@ -90,6 +90,18 @@ pub enum EventType {
     LivespecReviseRequired,
 }
 
+impl EventType {
+    #[must_use]
+    pub const fn contract_name(&self) -> &'static str {
+        match self {
+            Self::DispatcherNeedsRegroomObserved => "dispatch.needs_regroom_observed",
+            Self::FabroHumanGateObserved => "fabro.human_gate_observed",
+            Self::FactoryDrainRequested => "factory.drain_requested",
+            Self::LivespecReviseRequired => "spec.revise_required",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandEnvelope {
     command_id: String,
@@ -192,6 +204,26 @@ mod tests {
         assert_eq!(event.source(), "console");
         assert_eq!(event.stream_id(), "factory:repo");
         assert_eq!(event.stream_seq(), 12);
+    }
+
+    #[test]
+    fn event_type_contract_names_are_stable() {
+        assert_eq!(
+            EventType::DispatcherNeedsRegroomObserved.contract_name(),
+            "dispatch.needs_regroom_observed"
+        );
+        assert_eq!(
+            EventType::FabroHumanGateObserved.contract_name(),
+            "fabro.human_gate_observed"
+        );
+        assert_eq!(
+            EventType::FactoryDrainRequested.contract_name(),
+            "factory.drain_requested"
+        );
+        assert_eq!(
+            EventType::LivespecReviseRequired.contract_name(),
+            "spec.revise_required"
+        );
     }
 
     #[test]

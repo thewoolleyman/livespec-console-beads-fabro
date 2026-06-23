@@ -68,20 +68,28 @@ The ledger currently has:
 
 - `livespec-console-beads-fabro-rt3g3t` — blocked planning epic:
   "Deliver the Rust TUI first milestone".
-- `livespec-console-beads-fabro-i6n4rm` — ready:
-  "Raise Rust quality gates beyond the bootstrap minimum".
-- `livespec-console-beads-fabro-ysvmwh` — ready:
-  "Implement the SQLite event store skeleton".
+- `livespec-console-beads-fabro-i6n4rm` — implementation merged via
+  PR #6; Beads close update is pending a retry because the
+  1Password Environment wrapper returned `rate limit exceeded`.
+- `livespec-console-beads-fabro-ysvmwh` — active:
+  "Implement the SQLite event store skeleton"; current branch
+  `event-store-ysvmwh` adds `console-eventstore`.
 - `livespec-console-beads-fabro-y45jhj` — ready:
   "Replace the TUI preview with a testable TUI model".
 - `livespec-console-beads-fabro-gyxlib` — ready:
   "Add first source adapter ports and LiveSpec/Beads snapshots".
 
 `orchestrate plan` must be run under the livespec environment wrapper so
-the Beads password is present. It currently returns four factory-safe
-implementation actions, one per ready slice above. The recommended first
-dispatch is `impl:livespec-console-beads-fabro-i6n4rm`, because it
-raises the quality gates before broader product behavior lands.
+the Beads password is present. The quality-gate slice has already
+raised the default gate to format, strict Clippy, cargo test,
+cargo-nextest, 100% library line coverage, cargo-deny, cargo-machete,
+and the repo architecture check. Fuzz and mutation discovery smoke
+targets are explicit non-default checks.
+
+The event-store branch adds a SQLite WAL-backed `console-eventstore`
+crate with the required `events`, `commands`, `checkpoints`, and
+`projections` tables; idempotent event append by stable source event
+identity; and durable reads ordered by global sequence.
 
 Known warning: `bd update` / `bd list --ready` currently prints an
 auto-backup warning for `backup_export` permission denial under the
