@@ -38,5 +38,19 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      - name: Install cargo-nextest
+        if: matrix.target == 'check-nextest'
+        uses: taiki-e/install-action@nextest
+
+      - name: Install cargo-llvm-cov
+        if: matrix.target == 'check-coverage'
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install dependency audit tools
+        if: matrix.target == 'check-deps'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+
       - name: just ${{ matrix.target }}
         run: just ${{ matrix.target }}
