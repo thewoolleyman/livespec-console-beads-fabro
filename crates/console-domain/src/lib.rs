@@ -85,9 +85,14 @@ impl ConsoleEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     BeadsWorkItemSnapshotObserved,
+    CommandAccepted,
+    CommandRejected,
     DispatcherNeedsRegroomObserved,
     FabroHumanGateObserved,
+    FactoryDrainCompleted,
+    FactoryDrainFailed,
     FactoryDrainRequested,
+    FactoryDrainStarted,
     LivespecNextSnapshotObserved,
     LivespecReviseRequired,
     SourceCompletenessFindingObserved,
@@ -98,9 +103,14 @@ impl EventType {
     pub const fn contract_name(&self) -> &'static str {
         match self {
             Self::BeadsWorkItemSnapshotObserved => "beads.work_item_snapshot_observed",
+            Self::CommandAccepted => "command.accepted",
+            Self::CommandRejected => "command.rejected",
             Self::DispatcherNeedsRegroomObserved => "dispatch.needs_regroom_observed",
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
+            Self::FactoryDrainCompleted => "factory.drain.completed",
+            Self::FactoryDrainFailed => "factory.drain.failed",
             Self::FactoryDrainRequested => "factory.drain_requested",
+            Self::FactoryDrainStarted => "factory.drain.started",
             Self::LivespecNextSnapshotObserved => "spec.next_snapshot_observed",
             Self::LivespecReviseRequired => "spec.revise_required",
             Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
@@ -111,9 +121,14 @@ impl EventType {
     pub fn from_contract_name(value: &str) -> Option<Self> {
         match value {
             "beads.work_item_snapshot_observed" => Some(Self::BeadsWorkItemSnapshotObserved),
+            "command.accepted" => Some(Self::CommandAccepted),
+            "command.rejected" => Some(Self::CommandRejected),
             "dispatch.needs_regroom_observed" => Some(Self::DispatcherNeedsRegroomObserved),
             "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
+            "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
+            "factory.drain.failed" => Some(Self::FactoryDrainFailed),
             "factory.drain_requested" => Some(Self::FactoryDrainRequested),
+            "factory.drain.started" => Some(Self::FactoryDrainStarted),
             "spec.next_snapshot_observed" => Some(Self::LivespecNextSnapshotObserved),
             "spec.revise_required" => Some(Self::LivespecReviseRequired),
             "source.completeness_finding_observed" => Some(Self::SourceCompletenessFindingObserved),
@@ -254,6 +269,14 @@ mod tests {
             "beads.work_item_snapshot_observed"
         );
         assert_eq!(
+            EventType::CommandAccepted.contract_name(),
+            "command.accepted"
+        );
+        assert_eq!(
+            EventType::CommandRejected.contract_name(),
+            "command.rejected"
+        );
+        assert_eq!(
             EventType::DispatcherNeedsRegroomObserved.contract_name(),
             "dispatch.needs_regroom_observed"
         );
@@ -262,8 +285,20 @@ mod tests {
             "fabro.human_gate_observed"
         );
         assert_eq!(
+            EventType::FactoryDrainCompleted.contract_name(),
+            "factory.drain.completed"
+        );
+        assert_eq!(
+            EventType::FactoryDrainFailed.contract_name(),
+            "factory.drain.failed"
+        );
+        assert_eq!(
             EventType::FactoryDrainRequested.contract_name(),
             "factory.drain_requested"
+        );
+        assert_eq!(
+            EventType::FactoryDrainStarted.contract_name(),
+            "factory.drain.started"
         );
         assert_eq!(
             EventType::LivespecNextSnapshotObserved.contract_name(),
@@ -283,9 +318,14 @@ mod tests {
     fn event_type_contract_names_round_trip() {
         for event_type in [
             EventType::BeadsWorkItemSnapshotObserved,
+            EventType::CommandAccepted,
+            EventType::CommandRejected,
             EventType::DispatcherNeedsRegroomObserved,
             EventType::FabroHumanGateObserved,
+            EventType::FactoryDrainCompleted,
+            EventType::FactoryDrainFailed,
             EventType::FactoryDrainRequested,
+            EventType::FactoryDrainStarted,
             EventType::LivespecNextSnapshotObserved,
             EventType::LivespecReviseRequired,
             EventType::SourceCompletenessFindingObserved,

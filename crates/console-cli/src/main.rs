@@ -127,6 +127,13 @@ fn persist_tui_effects(effects: &[TuiRuntimeEffect]) -> Result<(), String> {
     let requested_at = current_requested_at()?;
     livespec_console_beads_fabro::persist_tui_runtime_effects(&mut store, effects, &requested_at)
         .map_err(|error| format!("{error:?}"))?;
+    let mut factory_port = livespec_console_beads_fabro::SimulatedFactoryDrainPort;
+    livespec_console_beads_fabro::handle_pending_factory_commands(
+        &mut store,
+        &requested_at,
+        &mut factory_port,
+    )
+    .map_err(|error| format!("{error:?}"))?;
     Ok(())
 }
 
