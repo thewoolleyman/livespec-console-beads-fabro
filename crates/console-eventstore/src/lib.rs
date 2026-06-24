@@ -3,7 +3,7 @@
 use std::num::TryFromIntError;
 use std::path::Path;
 
-use console_domain::{CommandEnvelope, ConsoleEvent};
+use console_domain::{CommandEnvelope, ConsoleEvent, EventType};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 const SCHEMA: &str = r"
@@ -66,6 +66,7 @@ create table if not exists projections (
 pub enum EventStoreError {
     InvalidSequence,
     Sqlite(rusqlite::Error),
+    UnknownEventType(String),
 }
 
 impl From<rusqlite::Error> for EventStoreError {
@@ -490,6 +491,33 @@ impl SqliteEventStore {
         Ok(events)
     }
 
+    pub fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
+        let sql = r"
+            select event_id, schema_version, context, type, source, stream_id, stream_seq
+            from events
+            order by global_seq
+        ";
+        let mut statement = self.connection.prepare(sql)?;
+        let mut rows = statement.query([])?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next()? {
+            let event_type_name = row.get::<_, String>(3)?;
+            let Some(event_type) = EventType::from_contract_name(&event_type_name) else {
+                return Err(EventStoreError::UnknownEventType(event_type_name));
+            };
+            events.push(ConsoleEvent::new(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                event_type,
+                row.get(4)?,
+                row.get(5)?,
+                sequence_from_rowid(row.get::<_, i64>(6)?)?,
+            ));
+        }
+        Ok(events)
+    }
+
     pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         let sql = r"
             select command_id, context, type, aggregate_id, idempotency_key, requested_by, status
@@ -630,6 +658,86 @@ mod tests {
         assert_eq!(events[0].source_event_id(), Some("source-1"));
         assert_eq!(append.event().event_id(), "evt_1");
         assert_eq!(append.source_event_id(), Some("source-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn list_console_events_rebuilds_domain_events() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let first = event_append("evt_1", Some("source-1"));
+        let second = EventAppend::new(
+            ConsoleEvent::new(
+                "evt_2".to_owned(),
+                1,
+                "dispatch".to_owned(),
+                EventType::DispatcherNeedsRegroomObserved,
+                "dispatcher".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                2,
+            ),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            "2026-06-23T00:00:00Z".to_owned(),
+            "2026-06-23T00:00:01Z".to_owned(),
+            None,
+            "corr_1".to_owned(),
+            Some("source-2".to_owned()),
+            "{}".to_owned(),
+            "{}".to_owned(),
+        );
+
+        store.append_event(&first)?;
+        store.append_event(&second)?;
+        let events = store.list_console_events()?;
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_id(), "evt_1");
+        assert_eq!(events[0].event_type(), &EventType::FabroHumanGateObserved);
+        assert_eq!(events[0].source(), "fabro");
+        assert_eq!(events[0].stream_seq(), 1);
+        assert_eq!(events[1].event_id(), "evt_2");
+        assert_eq!(
+            events[1].event_type(),
+            &EventType::DispatcherNeedsRegroomObserved
+        );
+        assert_eq!(events[1].context(), "dispatch");
+        assert_eq!(events[1].stream_seq(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn list_console_events_rejects_unknown_event_type() -> Result<(), EventStoreError> {
+        let store = SqliteEventStore::open_in_memory()?;
+
+        let inserted = store.connection.execute(
+            r"
+            insert into events (
+              event_id,
+              context,
+              aggregate_id,
+              stream_id,
+              stream_seq,
+              type,
+              schema_version,
+              occurred_at,
+              observed_at,
+              correlation_id,
+              source,
+              payload_json,
+              metadata_json
+            ) values ('evt_bad', 'factory', 'repo:livespec', 'repo:livespec', 1,
+              'unknown.event', 1, '2026-06-23T00:00:00Z',
+              '2026-06-23T00:00:01Z', 'corr_1', 'test', '{}', '{}')
+            ",
+            [],
+        );
+        assert!(matches!(inserted, Ok(1)));
+
+        let result = store.list_console_events();
+
+        assert!(matches!(
+            result,
+            Err(EventStoreError::UnknownEventType(event_type)) if event_type == "unknown.event"
+        ));
         Ok(())
     }
 

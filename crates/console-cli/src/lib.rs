@@ -2,7 +2,10 @@
 
 use console_application::build_tui_model;
 use console_domain::{CommandEnvelope, ConsoleEvent, EventType};
-use console_eventstore::{CommandAppend, CommandAppendOutcome, EventStoreResult, SqliteEventStore};
+use console_eventstore::{
+    AppendOutcome, CommandAppend, CommandAppendOutcome, EventAppend, EventStoreResult,
+    SqliteEventStore,
+};
 use console_tui::TuiRuntimeEffect;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +73,22 @@ pub fn persist_tui_runtime_effects(
     Ok(outcomes)
 }
 
+pub fn append_demo_events_to_store(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+) -> EventStoreResult<Vec<AppendOutcome>> {
+    let mut outcomes = Vec::new();
+    for event in demo_events() {
+        let append = event_append_from_console_event(&event, observed_at);
+        outcomes.push(store.append_event(&append)?);
+    }
+    Ok(outcomes)
+}
+
+pub fn load_tui_events_from_store(store: &SqliteEventStore) -> EventStoreResult<Vec<ConsoleEvent>> {
+    store.list_console_events()
+}
+
 fn command_append_from_tui_effect(
     effect: &TuiRuntimeEffect,
     requested_at: &str,
@@ -92,6 +111,20 @@ fn command_append_from_tui_effect(
 
 fn command_correlation_id(command: &CommandEnvelope) -> String {
     format!("corr_{}", command.command_id())
+}
+
+fn event_append_from_console_event(event: &ConsoleEvent, observed_at: &str) -> EventAppend {
+    EventAppend::new(
+        event.clone(),
+        event.stream_id().to_owned(),
+        observed_at.to_owned(),
+        observed_at.to_owned(),
+        None,
+        format!("corr_{}", event.event_id()),
+        Some(event.event_id().to_owned()),
+        "{}".to_owned(),
+        "{}".to_owned(),
+    )
 }
 
 fn run_events(subcommand: Option<&str>) -> RunOutput {
@@ -165,10 +198,15 @@ fn help_text() -> String {
 mod tests {
     use console_application::{ApplicationError, build_tui_model};
     use console_domain::{CommandEnvelope, CommandType};
-    use console_eventstore::{CommandAppendStatus, EventStoreError, SqliteEventStore};
+    use console_eventstore::{
+        AppendStatus, CommandAppendStatus, EventStoreError, SqliteEventStore,
+    };
     use console_tui::TuiRuntimeEffect;
 
-    use super::{persist_tui_runtime_effects, render_tui_preview, run};
+    use super::{
+        append_demo_events_to_store, demo_events, load_tui_events_from_store,
+        persist_tui_runtime_effects, render_tui_preview, run,
+    };
 
     #[test]
     fn help_lists_specified_command_shape() {
@@ -325,6 +363,35 @@ mod tests {
 
         assert_eq!(outcomes, []);
         assert_eq!(commands, []);
+        Ok(())
+    }
+
+    #[test]
+    fn demo_backfill_round_trips_through_event_store() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let outcomes = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let events = load_tui_events_from_store(&store)?;
+
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].status(), AppendStatus::Inserted);
+        assert_eq!(outcomes[1].status(), AppendStatus::Inserted);
+        assert_eq!(events, demo_events());
+        Ok(())
+    }
+
+    #[test]
+    fn demo_backfill_is_idempotent_by_source_event_id() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let first = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let second = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let events = load_tui_events_from_store(&store)?;
+
+        assert_eq!(first[0].status(), AppendStatus::Inserted);
+        assert_eq!(second[0].status(), AppendStatus::Duplicate);
+        assert_eq!(second[1].status(), AppendStatus::Duplicate);
+        assert_eq!(events, demo_events());
         Ok(())
     }
 }
