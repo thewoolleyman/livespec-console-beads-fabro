@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 use console_application::build_tui_model;
-use console_domain::{ConsoleEvent, EventType};
+use console_domain::{CommandEnvelope, ConsoleEvent, EventType};
+use console_eventstore::{CommandAppend, CommandAppendOutcome, EventStoreResult, SqliteEventStore};
+use console_tui::TuiRuntimeEffect;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {
@@ -51,6 +53,45 @@ where
         ),
         Some(other) => RunOutput::new(2, format!("unknown command: {other}\n\n{}", help_text())),
     }
+}
+
+pub fn persist_tui_runtime_effects(
+    store: &mut SqliteEventStore,
+    effects: &[TuiRuntimeEffect],
+    requested_at: &str,
+) -> EventStoreResult<Vec<CommandAppendOutcome>> {
+    let mut outcomes = Vec::new();
+    for effect in effects {
+        let Some(append) = command_append_from_tui_effect(effect, requested_at) else {
+            continue;
+        };
+        outcomes.push(store.append_command(&append)?);
+    }
+    Ok(outcomes)
+}
+
+fn command_append_from_tui_effect(
+    effect: &TuiRuntimeEffect,
+    requested_at: &str,
+) -> Option<CommandAppend> {
+    match effect {
+        TuiRuntimeEffect::PersistCommand(command) => Some(CommandAppend::new(
+            command.clone(),
+            requested_at.to_owned(),
+            Some(command.aggregate_id().to_owned()),
+            command_correlation_id(command),
+            "{}".to_owned(),
+        )),
+        TuiRuntimeEffect::Render
+        | TuiRuntimeEffect::OpenAttachCommand(_)
+        | TuiRuntimeEffect::CopyAttachCommand(_)
+        | TuiRuntimeEffect::Quit
+        | TuiRuntimeEffect::ApplicationError(_) => None,
+    }
+}
+
+fn command_correlation_id(command: &CommandEnvelope) -> String {
+    format!("corr_{}", command.command_id())
 }
 
 fn run_events(subcommand: Option<&str>) -> RunOutput {
@@ -122,9 +163,12 @@ fn help_text() -> String {
 
 #[cfg(test)]
 mod tests {
-    use console_application::build_tui_model;
+    use console_application::{ApplicationError, build_tui_model};
+    use console_domain::{CommandEnvelope, CommandType};
+    use console_eventstore::{CommandAppendStatus, EventStoreError, SqliteEventStore};
+    use console_tui::TuiRuntimeEffect;
 
-    use super::{render_tui_preview, run};
+    use super::{persist_tui_runtime_effects, render_tui_preview, run};
 
     #[test]
     fn help_lists_specified_command_shape() {
@@ -220,5 +264,67 @@ mod tests {
             render_tui_preview(&model, 0, 28),
             "TUI render error: empty area"
         );
+    }
+
+    #[test]
+    fn tui_persistence_stores_command_effects() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [
+            TuiRuntimeEffect::OpenAttachCommand("fabro attach run_1".to_owned()),
+            TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+                "cmd_evt_gate_acknowledge_requested".to_owned(),
+                CommandType::AttentionAcknowledgeRequested,
+                "evt_gate".to_owned(),
+                "evt_gate:attention.acknowledge_requested".to_owned(),
+                "operator".to_owned(),
+            )),
+            TuiRuntimeEffect::CopyAttachCommand("fabro attach run_1".to_owned()),
+        ];
+
+        let outcomes = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        let commands = store.list_commands()?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].status(), CommandAppendStatus::Inserted);
+        assert_eq!(
+            outcomes[0].command_id(),
+            "cmd_evt_gate_acknowledge_requested"
+        );
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0].command_id(),
+            "cmd_evt_gate_acknowledge_requested"
+        );
+        assert_eq!(
+            commands[0].command_type(),
+            "attention.acknowledge_requested"
+        );
+        assert_eq!(commands[0].aggregate_id(), Some("evt_gate"));
+        assert_eq!(
+            commands[0].idempotency_key(),
+            "evt_gate:attention.acknowledge_requested"
+        );
+        assert_eq!(commands[0].requested_by(), "operator");
+        assert_eq!(commands[0].status(), "pending");
+        Ok(())
+    }
+
+    #[test]
+    fn tui_persistence_ignores_local_only_effects() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [
+            TuiRuntimeEffect::Render,
+            TuiRuntimeEffect::OpenAttachCommand("fabro attach run_1".to_owned()),
+            TuiRuntimeEffect::CopyAttachCommand("fabro attach run_1".to_owned()),
+            TuiRuntimeEffect::ApplicationError(ApplicationError::NoSelectedOperatorAction),
+            TuiRuntimeEffect::Quit,
+        ];
+
+        let outcomes = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        let commands = store.list_commands()?;
+
+        assert_eq!(outcomes, []);
+        assert_eq!(commands, []);
+        Ok(())
     }
 }
