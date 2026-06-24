@@ -64,6 +64,7 @@ create table if not exists projections (
 
 #[derive(Debug)]
 pub enum EventStoreError {
+    CommandNotFound(String),
     InvalidSequence,
     Sqlite(rusqlite::Error),
     UnknownEventType(String),
@@ -308,6 +309,29 @@ impl CommandAppendOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandStatusUpdateOutcome {
+    command_id: String,
+    status: String,
+}
+
+impl CommandStatusUpdateOutcome {
+    #[must_use]
+    pub const fn new(command_id: String, status: String) -> Self {
+        Self { command_id, status }
+    }
+
+    #[must_use]
+    pub fn command_id(&self) -> &str {
+        &self.command_id
+    }
+
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+}
+
 impl StoredEvent {
     #[must_use]
     pub const fn new(
@@ -540,6 +564,34 @@ impl SqliteEventStore {
         }
         Ok(commands)
     }
+
+    pub fn update_command_status(
+        &mut self,
+        command_id: &str,
+        status: &str,
+        updated_at: &str,
+        result_json: Option<&str>,
+        error_json: Option<&str>,
+    ) -> EventStoreResult<CommandStatusUpdateOutcome> {
+        let updated = self.connection.execute(
+            r"
+            update commands
+            set status = ?2,
+                result_json = ?3,
+                error_json = ?4,
+                updated_at = ?5
+            where command_id = ?1
+            ",
+            params![command_id, status, result_json, error_json, updated_at],
+        )?;
+        if updated == 0 {
+            return Err(EventStoreError::CommandNotFound(command_id.to_owned()));
+        }
+        Ok(CommandStatusUpdateOutcome::new(
+            command_id.to_owned(),
+            status.to_owned(),
+        ))
+    }
 }
 
 fn initialize_connection(connection: &Connection) -> EventStoreResult<()> {
@@ -612,8 +664,8 @@ fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppendStatus, CommandAppend, CommandAppendStatus, EventAppend, EventStoreError,
-        SqliteEventStore, StoredCommand, sequence_from_rowid,
+        AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
+        EventStoreError, SqliteEventStore, StoredCommand, sequence_from_rowid,
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
@@ -848,6 +900,64 @@ mod tests {
         assert_eq!(duplicate_outcome.command_id(), "cmd_1");
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].command_id(), "cmd_1");
+        Ok(())
+    }
+
+    #[test]
+    fn command_status_update_marks_existing_command() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        store.append_command(&append)?;
+
+        let outcome = store.update_command_status(
+            "cmd_1",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            Some(r#"{"event_count":3}"#),
+            None,
+        );
+        let commands = store.list_commands()?;
+
+        assert!(matches!(
+            outcome.as_ref().map(CommandStatusUpdateOutcome::command_id),
+            Ok("cmd_1")
+        ));
+        assert!(matches!(
+            outcome.as_ref().map(CommandStatusUpdateOutcome::status),
+            Ok("completed")
+        ));
+        assert_eq!(commands[0].status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn command_status_update_rejects_unknown_command() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let outcome = store.update_command_status(
+            "cmd_missing",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            None,
+            None,
+        );
+
+        assert!(matches!(
+            outcome,
+            Err(EventStoreError::CommandNotFound(command_id)) if command_id == "cmd_missing"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn command_status_update_reports_sqlite_failure() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.connection.execute_batch("drop table commands")?;
+
+        let outcome =
+            store.update_command_status("cmd_1", "completed", "2026-06-23T00:00:03Z", None, None);
+
+        assert!(matches!(outcome, Err(EventStoreError::Sqlite(_error))));
         Ok(())
     }
 

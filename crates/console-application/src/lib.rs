@@ -349,8 +349,10 @@ impl TuiScreenModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplicationError {
     EmptyOperatorAction,
+    FactoryDrainPortFailed,
     NoSelectedAttentionItem,
     NoSelectedOperatorAction,
+    UnsupportedFactoryCommand,
     UnknownCommandPaletteAction,
 }
 
@@ -378,6 +380,90 @@ impl OperatorActionOutcome {
             Self::OpenAttachCommand(command) | Self::CopyAttachCommand(command) => Some(command),
             Self::PersistCommand(_) => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoryDrainRequest {
+    aggregate_id: String,
+    budget: u16,
+    parallel: u16,
+}
+
+impl FactoryDrainRequest {
+    #[must_use]
+    pub const fn new(aggregate_id: String, budget: u16, parallel: u16) -> Self {
+        Self {
+            aggregate_id,
+            budget,
+            parallel,
+        }
+    }
+
+    #[must_use]
+    pub fn aggregate_id(&self) -> &str {
+        &self.aggregate_id
+    }
+
+    #[must_use]
+    pub const fn budget(&self) -> u16 {
+        self.budget
+    }
+
+    #[must_use]
+    pub const fn parallel(&self) -> u16 {
+        self.parallel
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactoryDrainPortOutcome {
+    Completed { dispatched_items: u16 },
+    Failed,
+}
+
+impl FactoryDrainPortOutcome {
+    #[must_use]
+    pub const fn completed(dispatched_items: u16) -> Self {
+        Self::Completed { dispatched_items }
+    }
+
+    #[must_use]
+    pub const fn failed() -> Self {
+        Self::Failed
+    }
+}
+
+pub trait FactoryDrainPort {
+    fn drain_ready_queue(
+        &mut self,
+        request: &FactoryDrainRequest,
+    ) -> ApplicationResult<FactoryDrainPortOutcome>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoryCommandOutcome {
+    command_status: String,
+    events: Vec<ConsoleEvent>,
+}
+
+impl FactoryCommandOutcome {
+    #[must_use]
+    pub const fn new(command_status: String, events: Vec<ConsoleEvent>) -> Self {
+        Self {
+            command_status,
+            events,
+        }
+    }
+
+    #[must_use]
+    pub fn command_status(&self) -> &str {
+        &self.command_status
+    }
+
+    #[must_use]
+    pub fn events(&self) -> &[ConsoleEvent] {
+        &self.events
     }
 }
 
@@ -548,6 +634,80 @@ fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
         "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
         requested_by.to_owned(),
     )
+}
+
+pub fn handle_factory_drain_command(
+    command: &CommandEnvelope,
+    port: &mut dyn FactoryDrainPort,
+) -> ApplicationResult<FactoryCommandOutcome> {
+    if command.command_type() != &CommandType::FactoryDrainRequested {
+        return Err(ApplicationError::UnsupportedFactoryCommand);
+    }
+    let request = FactoryDrainRequest::new(command.aggregate_id().to_owned(), 1, 1);
+    let port_outcome = port.drain_ready_queue(&request)?;
+    let mut events = vec![
+        factory_command_event(command, EventType::CommandAccepted, "accepted", 1),
+        factory_command_event(command, EventType::FactoryDrainStarted, "started", 2),
+    ];
+    let command_status = match port_outcome {
+        FactoryDrainPortOutcome::Completed {
+            dispatched_items: _dispatched_items,
+        } => {
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDrainCompleted,
+                "completed",
+                3,
+            ));
+            "completed"
+        }
+        FactoryDrainPortOutcome::Failed => {
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDrainFailed,
+                "failed",
+                3,
+            ));
+            "failed"
+        }
+    };
+    Ok(FactoryCommandOutcome::new(
+        command_status.to_owned(),
+        events,
+    ))
+}
+
+fn factory_command_event(
+    command: &CommandEnvelope,
+    event_type: EventType,
+    suffix: &str,
+    stream_seq: u64,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        format!("evt_{}_{}", command.command_id(), suffix),
+        1,
+        factory_command_event_context(event_type).to_owned(),
+        event_type,
+        "console:factory-command-handler".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+}
+
+const fn factory_command_event_context(event_type: EventType) -> &'static str {
+    match event_type {
+        EventType::CommandAccepted | EventType::CommandRejected => "command",
+        EventType::FactoryDrainCompleted
+        | EventType::FactoryDrainFailed
+        | EventType::FactoryDrainRequested
+        | EventType::FactoryDrainStarted => "factory",
+        EventType::BeadsWorkItemSnapshotObserved
+        | EventType::DispatcherNeedsRegroomObserved
+        | EventType::FabroHumanGateObserved
+        | EventType::LivespecNextSnapshotObserved
+        | EventType::LivespecReviseRequired
+        | EventType::SourceCompletenessFindingObserved => "source",
+    }
 }
 
 fn attention_events(events: &[ConsoleEvent]) -> Vec<&ConsoleEvent> {
@@ -746,23 +906,23 @@ fn latest_timeline(
     selected_stream_id: &str,
     requested_count: usize,
 ) -> Vec<TimelineEntry> {
-    let mut matching_events = events
-        .iter()
-        .filter(|event| event.stream_id() == selected_stream_id)
-        .collect::<Vec<_>>();
-    matching_events.sort_by_key(|event| event.stream_seq());
-    matching_events
-        .into_iter()
-        .rev()
-        .take(requested_count)
-        .map(|event| {
-            TimelineEntry::new(
-                event.event_id().to_owned(),
-                event.event_type().label().to_owned(),
-                event.source().to_owned(),
-            )
-        })
-        .collect()
+    let mut matching_events = Vec::new();
+    for event in events {
+        if event.stream_id() == selected_stream_id {
+            matching_events.push(event.clone());
+        }
+    }
+    matching_events.sort_by_key(ConsoleEvent::stream_seq);
+
+    let mut timeline = Vec::new();
+    for event in matching_events.iter().rev().take(requested_count) {
+        timeline.push(TimelineEntry::new(
+            event.event_id().to_owned(),
+            event.event_type().label().to_owned(),
+            event.source().to_owned(),
+        ));
+    }
+    timeline
 }
 
 trait AttentionEvent {
@@ -785,11 +945,16 @@ impl AttentionEvent for EventType {
     fn label(&self) -> &'static str {
         match self {
             Self::BeadsWorkItemSnapshotObserved => "Beads work-item snapshot",
+            Self::CommandAccepted => "Command accepted",
+            Self::CommandRejected => "Command rejected",
             Self::FabroHumanGateObserved => "Fabro human gate",
+            Self::FactoryDrainCompleted => "Factory drain completed",
+            Self::FactoryDrainFailed => "Factory drain failed",
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
             Self::DispatcherNeedsRegroomObserved => "Dispatcher needs-regroom",
             Self::FactoryDrainRequested => "Factory drain requested",
+            Self::FactoryDrainStarted => "Factory drain started",
             Self::SourceCompletenessFindingObserved => "Source completeness finding",
         }
     }
@@ -797,13 +962,7 @@ impl AttentionEvent for EventType {
     fn next_operator_action(&self) -> OperatorAction {
         match self {
             Self::FabroHumanGateObserved => OperatorAction::OpenFabroAttach,
-            Self::LivespecReviseRequired | Self::DispatcherNeedsRegroomObserved => {
-                OperatorAction::Acknowledge
-            }
-            Self::BeadsWorkItemSnapshotObserved
-            | Self::FactoryDrainRequested
-            | Self::LivespecNextSnapshotObserved
-            | Self::SourceCompletenessFindingObserved => OperatorAction::Acknowledge,
+            _other => OperatorAction::Acknowledge,
         }
     }
 
@@ -818,24 +977,22 @@ impl AttentionEvent for EventType {
             Self::LivespecReviseRequired | Self::DispatcherNeedsRegroomObserved => {
                 vec![OperatorAction::Acknowledge, OperatorAction::Snooze]
             }
-            Self::BeadsWorkItemSnapshotObserved
-            | Self::FactoryDrainRequested
-            | Self::LivespecNextSnapshotObserved
-            | Self::SourceCompletenessFindingObserved => vec![OperatorAction::Acknowledge],
+            _other => vec![OperatorAction::Acknowledge],
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use console_domain::{CommandType, ConsoleEvent, EventType};
+    use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
     use super::{
-        ApplicationError, AttentionEvent, OperatorAction, TuiInteraction, TuiInteractionState,
-        TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state, project_attention,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
-        validate_operator_action,
+        ApplicationError, AttentionEvent, FactoryDrainPort, FactoryDrainPortOutcome,
+        FactoryDrainRequest, OperatorAction, TuiInteraction, TuiInteractionState, TuiOverlay,
+        TuiView, build_tui_model, build_tui_model_for_state, handle_factory_drain_command,
+        project_attention, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_selected_operator_action, validate_operator_action,
     };
 
     #[test]
@@ -1200,6 +1357,155 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_resolution_rejects_blank_requester() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: "drain".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&fabro_gate_events(), &state);
+
+        let outcome = resolve_command_palette_action(&model, " ");
+
+        assert_eq!(outcome, Err(ApplicationError::EmptyOperatorAction));
+    }
+
+    #[test]
+    fn selected_operator_action_returns_none_without_detail() {
+        let model = super::TuiScreenModel {
+            active_view: TuiView::Attention,
+            navigation: vec![TuiView::Attention],
+            attention_items: Vec::new(),
+            selected_attention_index: None,
+            detail: None,
+            overlay: TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+            header: "LiveSpec Console".to_owned(),
+            footer: String::new(),
+        };
+
+        assert_eq!(model.selected_operator_action(), None);
+    }
+
+    #[test]
+    fn factory_drain_handler_accepts_starts_and_completes_command() {
+        let command = factory_drain_test_command();
+        let mut port = CompletingDrainPort::default();
+
+        let outcome = handle_factory_drain_command(&command, &mut port);
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("completed")
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events
+                    .iter()
+                    .map(ConsoleEvent::event_type)
+                    .collect::<Vec<_>>()),
+            Ok(vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDrainStarted,
+                &EventType::FactoryDrainCompleted,
+            ])
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events.iter().map(ConsoleEvent::context).collect::<Vec<_>>()),
+            Ok(vec!["command", "factory", "factory"])
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events[0].event_id()),
+            Ok("evt_cmd_drain_accepted")
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events[2].stream_seq()),
+            Ok(3)
+        );
+        assert_eq!(port.requests.len(), 1);
+        assert_eq!(port.requests[0].aggregate_id(), "fleet:livespec");
+        assert_eq!(port.requests[0].budget(), 1);
+        assert_eq!(port.requests[0].parallel(), 1);
+    }
+
+    #[test]
+    fn factory_command_event_context_falls_back_to_source_context() {
+        assert_eq!(
+            super::factory_command_event_context(EventType::SourceCompletenessFindingObserved),
+            "source"
+        );
+    }
+
+    #[test]
+    fn factory_drain_handler_records_failed_terminal_outcome() {
+        let command = factory_drain_test_command();
+        let mut port = FailingDrainPort;
+
+        let outcome = handle_factory_drain_command(&command, &mut port);
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("failed")
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .and_then(|events| {
+                    events
+                        .last()
+                        .map(ConsoleEvent::event_type)
+                        .ok_or(&ApplicationError::NoSelectedAttentionItem)
+                }),
+            Ok(&EventType::FactoryDrainFailed)
+        );
+    }
+
+    #[test]
+    fn factory_drain_handler_rejects_unsupported_command_type() {
+        let command = CommandEnvelope::new(
+            "cmd_ack".to_owned(),
+            CommandType::AttentionAcknowledgeRequested,
+            "evt_gate".to_owned(),
+            "evt_gate:attention.acknowledge_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = CompletingDrainPort::default();
+
+        let outcome = handle_factory_drain_command(&command, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::UnsupportedFactoryCommand));
+        assert_eq!(port.requests, []);
+    }
+
+    #[test]
+    fn factory_drain_handler_propagates_port_error() {
+        let command = factory_drain_test_command();
+        let mut port = ErrorDrainPort;
+
+        let outcome = handle_factory_drain_command(&command, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::FactoryDrainPortFailed));
+    }
+
+    #[test]
     fn selected_attach_actions_resolve_to_local_terminal_effects() {
         let events = fabro_gate_events();
         for (selected_action_index, expected) in [
@@ -1452,7 +1758,12 @@ mod tests {
     fn non_attention_factory_action_policy_is_stable() {
         for event_type in [
             EventType::BeadsWorkItemSnapshotObserved,
+            EventType::CommandAccepted,
+            EventType::CommandRejected,
+            EventType::FactoryDrainCompleted,
+            EventType::FactoryDrainFailed,
             EventType::FactoryDrainRequested,
+            EventType::FactoryDrainStarted,
             EventType::LivespecNextSnapshotObserved,
             EventType::SourceCompletenessFindingObserved,
         ] {
@@ -1481,6 +1792,19 @@ mod tests {
         assert_eq!(
             EventType::DispatcherNeedsRegroomObserved.next_operator_action(),
             OperatorAction::Acknowledge
+        );
+        assert_eq!(
+            EventType::FabroHumanGateObserved.next_operator_action(),
+            OperatorAction::OpenFabroAttach
+        );
+        assert_eq!(
+            EventType::FabroHumanGateObserved.actions(),
+            [
+                OperatorAction::Acknowledge,
+                OperatorAction::Snooze,
+                OperatorAction::OpenFabroAttach,
+                OperatorAction::CopyFabroAttach
+            ]
         );
         assert_eq!(
             EventType::LivespecReviseRequired.actions(),
@@ -1536,9 +1860,23 @@ mod tests {
             EventType::FabroHumanGateObserved.label(),
             "Fabro human gate"
         );
+        assert_eq!(EventType::CommandAccepted.label(), "Command accepted");
+        assert_eq!(EventType::CommandRejected.label(), "Command rejected");
+        assert_eq!(
+            EventType::FactoryDrainCompleted.label(),
+            "Factory drain completed"
+        );
+        assert_eq!(
+            EventType::FactoryDrainFailed.label(),
+            "Factory drain failed"
+        );
         assert_eq!(
             EventType::FactoryDrainRequested.label(),
             "Factory drain requested"
+        );
+        assert_eq!(
+            EventType::FactoryDrainStarted.label(),
+            "Factory drain started"
         );
         assert_eq!(
             EventType::LivespecNextSnapshotObserved.label(),
@@ -1574,6 +1912,53 @@ mod tests {
             let result = validate_operator_action(&candidate);
 
             proptest::prop_assert_eq!(result, Err(ApplicationError::EmptyOperatorAction));
+        }
+    }
+
+    fn factory_drain_test_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_drain".to_owned(),
+            CommandType::FactoryDrainRequested,
+            "fleet:livespec".to_owned(),
+            "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[derive(Default)]
+    struct CompletingDrainPort {
+        requests: Vec<FactoryDrainRequest>,
+    }
+
+    impl FactoryDrainPort for CompletingDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            request: &FactoryDrainRequest,
+        ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
+            self.requests.push(request.clone());
+            Ok(FactoryDrainPortOutcome::completed(1))
+        }
+    }
+
+    struct FailingDrainPort;
+
+    impl FactoryDrainPort for FailingDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
+            Ok(FactoryDrainPortOutcome::failed())
+        }
+    }
+
+    struct ErrorDrainPort;
+
+    impl FactoryDrainPort for ErrorDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
+            Err(ApplicationError::FactoryDrainPortFailed)
         }
     }
 }
