@@ -24,6 +24,9 @@ impl SourceAdapterKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterError {
+    AppendFailed,
+    CheckpointLoadFailed,
+    CheckpointSaveFailed,
     EmptyAdapterId,
     EmptyCheckpoint,
     EmptyDispatchId,
@@ -589,41 +592,52 @@ impl NormalizedSourceEvent {
     }
 }
 
-pub fn normalize_beads_snapshot(snapshot: &BeadsWorkItemSnapshot) -> AdapterResult<AdapterPoll> {
-    let checkpoint = snapshot.source_version().to_string();
+#[must_use]
+pub fn normalize_beads_snapshot(snapshot: &BeadsWorkItemSnapshot) -> AdapterPoll {
     let snapshot_event = beads_snapshot_event(snapshot);
     let finding_event = beads_completeness_finding_event(snapshot);
-    AdapterPoll::new(&checkpoint, vec![snapshot_event, finding_event])
+    poll_from_source_version(
+        snapshot.source_version(),
+        vec![snapshot_event, finding_event],
+    )
 }
 
-pub fn normalize_livespec_next_snapshot(
-    snapshot: LivespecNextSnapshot,
-) -> AdapterResult<AdapterPoll> {
-    let checkpoint = snapshot.source_version().to_string();
+#[must_use]
+pub fn normalize_livespec_next_snapshot(snapshot: LivespecNextSnapshot) -> AdapterPoll {
+    let source_version = snapshot.source_version();
     let event = livespec_next_event(snapshot);
-    AdapterPoll::new(&checkpoint, vec![event])
+    poll_from_source_version(source_version, vec![event])
 }
 
-pub fn normalize_dispatcher_journal_entry(
-    entry: DispatcherJournalEntry,
-) -> AdapterResult<AdapterPoll> {
-    let checkpoint = entry.source_version().to_string();
+#[must_use]
+pub fn normalize_dispatcher_journal_entry(entry: DispatcherJournalEntry) -> AdapterPoll {
+    let source_version = entry.source_version();
     let event = dispatcher_journal_event(entry);
-    AdapterPoll::new(&checkpoint, vec![event])
+    poll_from_source_version(source_version, vec![event])
 }
 
-pub fn normalize_fabro_run_snapshot(snapshot: FabroRunSnapshot) -> AdapterResult<AdapterPoll> {
-    let checkpoint = snapshot.source_version().to_string();
+#[must_use]
+pub fn normalize_fabro_run_snapshot(snapshot: FabroRunSnapshot) -> AdapterPoll {
+    let source_version = snapshot.source_version();
     let event = fabro_run_event(snapshot);
-    AdapterPoll::new(&checkpoint, vec![event])
+    poll_from_source_version(source_version, vec![event])
 }
 
-pub fn normalize_github_pull_request_snapshot(
-    snapshot: GithubPullRequestSnapshot,
-) -> AdapterResult<AdapterPoll> {
-    let checkpoint = snapshot.source_version().to_string();
+#[must_use]
+pub fn normalize_github_pull_request_snapshot(snapshot: GithubPullRequestSnapshot) -> AdapterPoll {
+    let source_version = snapshot.source_version();
     let event = github_pull_request_event(snapshot);
-    AdapterPoll::new(&checkpoint, vec![event])
+    poll_from_source_version(source_version, vec![event])
+}
+
+fn poll_from_source_version(
+    source_version: u64,
+    events: Vec<NormalizedSourceEvent>,
+) -> AdapterPoll {
+    AdapterPoll {
+        checkpoint: source_version.to_string(),
+        events,
+    }
 }
 
 fn beads_snapshot_event(snapshot: &BeadsWorkItemSnapshot) -> NormalizedSourceEvent {
@@ -1284,26 +1298,17 @@ mod tests {
         let snapshot = beads_snapshot_fixture();
         let poll = normalize_beads_snapshot(&snapshot);
 
-        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("7"));
-        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(2));
+        assert_eq!(poll.checkpoint(), "7");
+        assert_eq!(poll.events().len(), 2);
+        assert_eq!(&poll.events()[0], &beads_snapshot_event_fixture());
+        assert_eq!(&poll.events()[1], &beads_completeness_event_fixture());
         assert_eq!(
-            poll.as_ref().map(|value| &value.events()[0]),
-            Ok(&beads_snapshot_event_fixture())
+            poll.events()[0].source_event_id(),
+            "beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
         );
         assert_eq!(
-            poll.as_ref().map(|value| &value.events()[1]),
-            Ok(&beads_completeness_event_fixture())
-        );
-        assert_eq!(
-            poll.as_ref()
-                .map(|value| value.events()[0].source_event_id()),
-            Ok("beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot")
-        );
-        assert_eq!(
-            poll.as_ref().map(|value| value.events()[0].payload()),
-            Ok(&SourcePayload::BeadsWorkItemSnapshot(
-                beads_snapshot_fixture()
-            ))
+            poll.events()[0].payload(),
+            &SourcePayload::BeadsWorkItemSnapshot(beads_snapshot_fixture())
         );
     }
 
@@ -1361,14 +1366,14 @@ mod tests {
 
         let poll = normalize_livespec_next_snapshot(snapshot);
 
-        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("5"));
-        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(poll.checkpoint(), "5");
+        assert_eq!(poll.events().len(), 1);
         assert_eq!(
-            poll.as_ref().map(|value| &value.events()[0]),
-            Ok(&livespec_event_fixture(
+            &poll.events()[0],
+            &livespec_event_fixture(
                 LivespecNextAction::Revise,
                 EventType::LivespecReviseRequired
-            ))
+            )
         );
     }
 
@@ -1384,9 +1389,8 @@ mod tests {
             let poll = normalize_livespec_next_snapshot(snapshot);
 
             assert_eq!(
-                poll.as_ref()
-                    .map(|value| value.events()[0].event().event_type()),
-                Ok(&EventType::LivespecNextSnapshotObserved)
+                poll.events()[0].event().event_type(),
+                &EventType::LivespecNextSnapshotObserved
             );
         }
     }
@@ -1396,24 +1400,16 @@ mod tests {
         let entry = dispatcher_entry_fixture();
         let poll = normalize_dispatcher_journal_entry(entry);
 
-        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("8"));
-        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(poll.checkpoint(), "8");
+        assert_eq!(poll.events().len(), 1);
+        assert_eq!(&poll.events()[0], &dispatcher_event_fixture());
         assert_eq!(
-            poll.as_ref().map(|value| &value.events()[0]),
-            Ok(&dispatcher_event_fixture())
+            poll.events()[0].source_event_id(),
+            "dispatcher:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:dispatch_1:8"
         );
         assert_eq!(
-            poll.as_ref()
-                .map(|value| value.events()[0].source_event_id()),
-            Ok(
-                "dispatcher:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:dispatch_1:8"
-            )
-        );
-        assert_eq!(
-            poll.as_ref().map(|value| value.events()[0].payload()),
-            Ok(&SourcePayload::DispatcherJournalEntry(
-                dispatcher_entry_fixture()
-            ))
+            poll.events()[0].payload(),
+            &SourcePayload::DispatcherJournalEntry(dispatcher_entry_fixture())
         );
     }
 
@@ -1422,20 +1418,16 @@ mod tests {
         let snapshot = fabro_snapshot_fixture();
         let poll = normalize_fabro_run_snapshot(snapshot);
 
-        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("10"));
-        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(poll.checkpoint(), "10");
+        assert_eq!(poll.events().len(), 1);
+        assert_eq!(&poll.events()[0], &fabro_event_fixture());
         assert_eq!(
-            poll.as_ref().map(|value| &value.events()[0]),
-            Ok(&fabro_event_fixture())
+            poll.events()[0].source_event_id(),
+            "fabro:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:run_1:10"
         );
         assert_eq!(
-            poll.as_ref()
-                .map(|value| value.events()[0].source_event_id()),
-            Ok("fabro:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:run_1:10")
-        );
-        assert_eq!(
-            poll.as_ref().map(|value| value.events()[0].payload()),
-            Ok(&SourcePayload::FabroRunSnapshot(fabro_snapshot_fixture()))
+            poll.events()[0].payload(),
+            &SourcePayload::FabroRunSnapshot(fabro_snapshot_fixture())
         );
     }
 
@@ -1444,22 +1436,16 @@ mod tests {
         let snapshot = github_snapshot_fixture();
         let poll = normalize_github_pull_request_snapshot(snapshot);
 
-        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("12"));
-        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(poll.checkpoint(), "12");
+        assert_eq!(poll.events().len(), 1);
+        assert_eq!(&poll.events()[0], &github_event_fixture());
         assert_eq!(
-            poll.as_ref().map(|value| &value.events()[0]),
-            Ok(&github_event_fixture())
+            poll.events()[0].source_event_id(),
+            "github:livespec-console-beads-fabro:pr:22:12"
         );
         assert_eq!(
-            poll.as_ref()
-                .map(|value| value.events()[0].source_event_id()),
-            Ok("github:livespec-console-beads-fabro:pr:22:12")
-        );
-        assert_eq!(
-            poll.as_ref().map(|value| value.events()[0].payload()),
-            Ok(&SourcePayload::GithubPullRequestSnapshot(
-                github_snapshot_fixture()
-            ))
+            poll.events()[0].payload(),
+            &SourcePayload::GithubPullRequestSnapshot(github_snapshot_fixture())
         );
     }
 
