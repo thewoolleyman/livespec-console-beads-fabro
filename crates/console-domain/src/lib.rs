@@ -93,6 +93,7 @@ pub enum EventType {
     FactoryDrainFailed,
     FactoryDrainRequested,
     FactoryDrainStarted,
+    GithubPullRequestSnapshotObserved,
     LivespecNextSnapshotObserved,
     LivespecReviseRequired,
     SourceCompletenessFindingObserved,
@@ -111,6 +112,7 @@ impl EventType {
             Self::FactoryDrainFailed => "factory.drain.failed",
             Self::FactoryDrainRequested => "factory.drain_requested",
             Self::FactoryDrainStarted => "factory.drain.started",
+            Self::GithubPullRequestSnapshotObserved => "pr.snapshot_observed",
             Self::LivespecNextSnapshotObserved => "spec.next_snapshot_observed",
             Self::LivespecReviseRequired => "spec.revise_required",
             Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
@@ -129,6 +131,7 @@ impl EventType {
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
             "factory.drain_requested" => Some(Self::FactoryDrainRequested),
             "factory.drain.started" => Some(Self::FactoryDrainStarted),
+            "pr.snapshot_observed" => Some(Self::GithubPullRequestSnapshotObserved),
             "spec.next_snapshot_observed" => Some(Self::LivespecNextSnapshotObserved),
             "spec.revise_required" => Some(Self::LivespecReviseRequired),
             "source.completeness_finding_observed" => Some(Self::SourceCompletenessFindingObserved),
@@ -301,6 +304,10 @@ mod tests {
             "factory.drain.started"
         );
         assert_eq!(
+            EventType::GithubPullRequestSnapshotObserved.contract_name(),
+            "pr.snapshot_observed"
+        );
+        assert_eq!(
             EventType::LivespecNextSnapshotObserved.contract_name(),
             "spec.next_snapshot_observed"
         );
@@ -326,6 +333,7 @@ mod tests {
             EventType::FactoryDrainFailed,
             EventType::FactoryDrainRequested,
             EventType::FactoryDrainStarted,
+            EventType::GithubPullRequestSnapshotObserved,
             EventType::LivespecNextSnapshotObserved,
             EventType::LivespecReviseRequired,
             EventType::SourceCompletenessFindingObserved,

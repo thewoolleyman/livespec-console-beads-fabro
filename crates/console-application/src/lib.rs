@@ -779,6 +779,7 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         EventType::BeadsWorkItemSnapshotObserved
         | EventType::DispatcherNeedsRegroomObserved
         | EventType::FabroHumanGateObserved
+        | EventType::GithubPullRequestSnapshotObserved
         | EventType::LivespecNextSnapshotObserved
         | EventType::LivespecReviseRequired
         | EventType::SourceCompletenessFindingObserved => "source",
@@ -1162,6 +1163,7 @@ impl AttentionEvent for EventType {
             Self::FabroHumanGateObserved => "Fabro human gate",
             Self::FactoryDrainCompleted => "Factory drain completed",
             Self::FactoryDrainFailed => "Factory drain failed",
+            Self::GithubPullRequestSnapshotObserved => "GitHub pull request snapshot",
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
             Self::DispatcherNeedsRegroomObserved => "Dispatcher needs-regroom",
@@ -2172,6 +2174,7 @@ mod tests {
             EventType::FactoryDrainFailed,
             EventType::FactoryDrainRequested,
             EventType::FactoryDrainStarted,
+            EventType::GithubPullRequestSnapshotObserved,
             EventType::LivespecNextSnapshotObserved,
             EventType::SourceCompletenessFindingObserved,
         ] {
@@ -2285,6 +2288,10 @@ mod tests {
         assert_eq!(
             EventType::FactoryDrainStarted.label(),
             "Factory drain started"
+        );
+        assert_eq!(
+            EventType::GithubPullRequestSnapshotObserved.label(),
+            "GitHub pull request snapshot"
         );
         assert_eq!(
             EventType::LivespecNextSnapshotObserved.label(),

@@ -3,6 +3,9 @@ use console_domain::{ConsoleEvent, EventType};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceAdapterKind {
     Beads,
+    Dispatcher,
+    Fabro,
+    GitHub,
     LiveSpec,
 }
 
@@ -11,6 +14,9 @@ impl SourceAdapterKind {
     pub const fn source_name(&self) -> &'static str {
         match self {
             Self::Beads => "beads",
+            Self::Dispatcher => "dispatcher",
+            Self::Fabro => "fabro",
+            Self::GitHub => "github",
             Self::LiveSpec => "livespec",
         }
     }
@@ -20,8 +26,11 @@ impl SourceAdapterKind {
 pub enum AdapterError {
     EmptyAdapterId,
     EmptyCheckpoint,
+    EmptyDispatchId,
     EmptyRepo,
+    EmptyRunId,
     EmptyWorkItemId,
+    InvalidPullRequestNumber,
     InvalidSourceVersion,
 }
 
@@ -217,6 +226,214 @@ impl LivespecNextSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatcherJournalKind {
+    NeedsRegroom,
+}
+
+impl DispatcherJournalKind {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::NeedsRegroom => "needs-regroom",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatcherJournalEntry {
+    repo: String,
+    work_item_id: String,
+    dispatch_id: String,
+    kind: DispatcherJournalKind,
+    source_version: u64,
+}
+
+impl DispatcherJournalEntry {
+    pub fn new(
+        repo: &str,
+        work_item_id: &str,
+        dispatch_id: &str,
+        kind: DispatcherJournalKind,
+        source_version: u64,
+    ) -> AdapterResult<Self> {
+        if source_version == 0 {
+            return Err(AdapterError::InvalidSourceVersion);
+        }
+        Ok(Self {
+            repo: required_text(repo, AdapterError::EmptyRepo)?,
+            work_item_id: required_text(work_item_id, AdapterError::EmptyWorkItemId)?,
+            dispatch_id: required_text(dispatch_id, AdapterError::EmptyDispatchId)?,
+            kind,
+            source_version,
+        })
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    pub fn dispatch_id(&self) -> &str {
+        &self.dispatch_id
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> DispatcherJournalKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn source_version(&self) -> u64 {
+        self.source_version
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FabroRunState {
+    HumanGate,
+}
+
+impl FabroRunState {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::HumanGate => "human-gate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FabroRunSnapshot {
+    repo: String,
+    work_item_id: String,
+    run_id: String,
+    state: FabroRunState,
+    source_version: u64,
+}
+
+impl FabroRunSnapshot {
+    pub fn new(
+        repo: &str,
+        work_item_id: &str,
+        run_id: &str,
+        state: FabroRunState,
+        source_version: u64,
+    ) -> AdapterResult<Self> {
+        if source_version == 0 {
+            return Err(AdapterError::InvalidSourceVersion);
+        }
+        Ok(Self {
+            repo: required_text(repo, AdapterError::EmptyRepo)?,
+            work_item_id: required_text(work_item_id, AdapterError::EmptyWorkItemId)?,
+            run_id: required_text(run_id, AdapterError::EmptyRunId)?,
+            state,
+            source_version,
+        })
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> FabroRunState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn source_version(&self) -> u64 {
+        self.source_version
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GithubPullRequestState {
+    Open,
+    ChecksPassing,
+    ChecksFailing,
+    Merged,
+}
+
+impl GithubPullRequestState {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::ChecksPassing => "checks-passing",
+            Self::ChecksFailing => "checks-failing",
+            Self::Merged => "merged",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubPullRequestSnapshot {
+    repo: String,
+    pr_number: u64,
+    state: GithubPullRequestState,
+    source_version: u64,
+}
+
+impl GithubPullRequestSnapshot {
+    pub fn new(
+        repo: &str,
+        pr_number: u64,
+        state: GithubPullRequestState,
+        source_version: u64,
+    ) -> AdapterResult<Self> {
+        if pr_number == 0 {
+            return Err(AdapterError::InvalidPullRequestNumber);
+        }
+        if source_version == 0 {
+            return Err(AdapterError::InvalidSourceVersion);
+        }
+        Ok(Self {
+            repo: required_text(repo, AdapterError::EmptyRepo)?,
+            pr_number,
+            state,
+            source_version,
+        })
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub const fn pr_number(&self) -> u64 {
+        self.pr_number
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> GithubPullRequestState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn source_version(&self) -> u64 {
+        self.source_version
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletenessFinding {
     repo: String,
@@ -253,6 +470,9 @@ impl CompletenessFinding {
 pub enum SourcePayload {
     BeadsWorkItemSnapshot(BeadsWorkItemSnapshot),
     CompletenessFinding(CompletenessFinding),
+    DispatcherJournalEntry(DispatcherJournalEntry),
+    FabroRunSnapshot(FabroRunSnapshot),
+    GithubPullRequestSnapshot(GithubPullRequestSnapshot),
     LivespecNextSnapshot(LivespecNextSnapshot),
 }
 
@@ -301,6 +521,28 @@ pub fn normalize_livespec_next_snapshot(
 ) -> AdapterResult<AdapterPoll> {
     let checkpoint = snapshot.source_version().to_string();
     let event = livespec_next_event(snapshot);
+    AdapterPoll::new(&checkpoint, vec![event])
+}
+
+pub fn normalize_dispatcher_journal_entry(
+    entry: DispatcherJournalEntry,
+) -> AdapterResult<AdapterPoll> {
+    let checkpoint = entry.source_version().to_string();
+    let event = dispatcher_journal_event(entry);
+    AdapterPoll::new(&checkpoint, vec![event])
+}
+
+pub fn normalize_fabro_run_snapshot(snapshot: FabroRunSnapshot) -> AdapterResult<AdapterPoll> {
+    let checkpoint = snapshot.source_version().to_string();
+    let event = fabro_run_event(snapshot);
+    AdapterPoll::new(&checkpoint, vec![event])
+}
+
+pub fn normalize_github_pull_request_snapshot(
+    snapshot: GithubPullRequestSnapshot,
+) -> AdapterResult<AdapterPoll> {
+    let checkpoint = snapshot.source_version().to_string();
+    let event = github_pull_request_event(snapshot);
     AdapterPoll::new(&checkpoint, vec![event])
 }
 
@@ -389,6 +631,88 @@ fn livespec_next_event(snapshot: LivespecNextSnapshot) -> NormalizedSourceEvent 
     )
 }
 
+fn dispatcher_journal_event(entry: DispatcherJournalEntry) -> NormalizedSourceEvent {
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!(
+                "evt:dispatcher:{}:{}:{}:{}",
+                entry.repo(),
+                entry.work_item_id(),
+                entry.dispatch_id(),
+                entry.source_version()
+            ),
+            1,
+            "factory".to_owned(),
+            EventType::DispatcherNeedsRegroomObserved,
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            repo_stream(entry.repo()),
+            entry.source_version(),
+        ),
+        format!(
+            "dispatcher:{}:{}:{}:{}",
+            entry.repo(),
+            entry.work_item_id(),
+            entry.dispatch_id(),
+            entry.source_version()
+        ),
+        SourcePayload::DispatcherJournalEntry(entry),
+    )
+}
+
+fn fabro_run_event(snapshot: FabroRunSnapshot) -> NormalizedSourceEvent {
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!(
+                "evt:fabro:{}:{}:{}:{}",
+                snapshot.repo(),
+                snapshot.work_item_id(),
+                snapshot.run_id(),
+                snapshot.source_version()
+            ),
+            1,
+            "factory".to_owned(),
+            EventType::FabroHumanGateObserved,
+            SourceAdapterKind::Fabro.source_name().to_owned(),
+            repo_stream(snapshot.repo()),
+            snapshot.source_version(),
+        ),
+        format!(
+            "fabro:{}:{}:{}:{}",
+            snapshot.repo(),
+            snapshot.work_item_id(),
+            snapshot.run_id(),
+            snapshot.source_version()
+        ),
+        SourcePayload::FabroRunSnapshot(snapshot),
+    )
+}
+
+fn github_pull_request_event(snapshot: GithubPullRequestSnapshot) -> NormalizedSourceEvent {
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!(
+                "evt:github:{}:pr:{}:{}",
+                snapshot.repo(),
+                snapshot.pr_number(),
+                snapshot.source_version()
+            ),
+            1,
+            "source".to_owned(),
+            EventType::GithubPullRequestSnapshotObserved,
+            SourceAdapterKind::GitHub.source_name().to_owned(),
+            repo_stream(snapshot.repo()),
+            snapshot.source_version(),
+        ),
+        format!(
+            "github:{}:pr:{}:{}",
+            snapshot.repo(),
+            snapshot.pr_number(),
+            snapshot.source_version()
+        ),
+        SourcePayload::GithubPullRequestSnapshot(snapshot),
+    )
+}
+
 fn repo_stream(repo: &str) -> String {
     format!("repo:{repo}")
 }
@@ -411,9 +735,11 @@ mod tests {
 
     use super::{
         AdapterError, AdapterPoll, AdapterPollRequest, BeadsWorkItemSnapshot, BeadsWorkItemStatus,
-        CompletenessFinding, LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent,
-        SourceAdapterKind, SourcePayload, normalize_beads_snapshot,
-        normalize_livespec_next_snapshot,
+        CompletenessFinding, DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot,
+        FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, LivespecNextAction,
+        LivespecNextSnapshot, NormalizedSourceEvent, SourceAdapterKind, SourcePayload,
+        normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
     };
 
     #[test]
@@ -449,11 +775,26 @@ mod tests {
     #[test]
     fn source_kind_and_snapshot_labels_are_stable() {
         assert_eq!(SourceAdapterKind::Beads.source_name(), "beads");
+        assert_eq!(SourceAdapterKind::Dispatcher.source_name(), "dispatcher");
+        assert_eq!(SourceAdapterKind::Fabro.source_name(), "fabro");
+        assert_eq!(SourceAdapterKind::GitHub.source_name(), "github");
         assert_eq!(SourceAdapterKind::LiveSpec.source_name(), "livespec");
         assert_eq!(BeadsWorkItemStatus::Ready.label(), "ready");
         assert_eq!(BeadsWorkItemStatus::Closed.label(), "closed");
         assert_eq!(BeadsWorkItemStatus::NeedsRegroom.label(), "needs-regroom");
         assert_eq!(BeadsWorkItemStatus::Manual.label(), "manual");
+        assert_eq!(DispatcherJournalKind::NeedsRegroom.label(), "needs-regroom");
+        assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
+        assert_eq!(GithubPullRequestState::Open.label(), "open");
+        assert_eq!(
+            GithubPullRequestState::ChecksPassing.label(),
+            "checks-passing"
+        );
+        assert_eq!(
+            GithubPullRequestState::ChecksFailing.label(),
+            "checks-failing"
+        );
+        assert_eq!(GithubPullRequestState::Merged.label(), "merged");
         assert_eq!(LivespecNextAction::None.label(), "none");
         assert_eq!(LivespecNextAction::Critique.label(), "critique");
         assert_eq!(LivespecNextAction::Revise.label(), "revise");
@@ -514,6 +855,149 @@ mod tests {
         );
         assert_eq!(
             LivespecNextSnapshot::new("repo", LivespecNextAction::Revise, 0),
+            Err(AdapterError::InvalidSourceVersion)
+        );
+    }
+
+    #[test]
+    fn dispatcher_entry_validates_source_identity() {
+        let entry = DispatcherJournalEntry::new(
+            " repo ",
+            " item ",
+            " dispatch ",
+            DispatcherJournalKind::NeedsRegroom,
+            9,
+        );
+
+        assert_eq!(entry.as_ref().map(DispatcherJournalEntry::repo), Ok("repo"));
+        assert_eq!(
+            entry.as_ref().map(DispatcherJournalEntry::work_item_id),
+            Ok("item")
+        );
+        assert_eq!(
+            entry.as_ref().map(DispatcherJournalEntry::dispatch_id),
+            Ok("dispatch")
+        );
+        assert_eq!(
+            entry.as_ref().map(DispatcherJournalEntry::kind),
+            Ok(DispatcherJournalKind::NeedsRegroom)
+        );
+        assert_eq!(
+            entry.as_ref().map(DispatcherJournalEntry::source_version),
+            Ok(9)
+        );
+        assert_eq!(
+            DispatcherJournalEntry::new(
+                " ",
+                "item",
+                "dispatch",
+                DispatcherJournalKind::NeedsRegroom,
+                1
+            ),
+            Err(AdapterError::EmptyRepo)
+        );
+        assert_eq!(
+            DispatcherJournalEntry::new(
+                "repo",
+                " ",
+                "dispatch",
+                DispatcherJournalKind::NeedsRegroom,
+                1
+            ),
+            Err(AdapterError::EmptyWorkItemId)
+        );
+        assert_eq!(
+            DispatcherJournalEntry::new(
+                "repo",
+                "item",
+                " ",
+                DispatcherJournalKind::NeedsRegroom,
+                1
+            ),
+            Err(AdapterError::EmptyDispatchId)
+        );
+        assert_eq!(
+            DispatcherJournalEntry::new(
+                "repo",
+                "item",
+                "dispatch",
+                DispatcherJournalKind::NeedsRegroom,
+                0
+            ),
+            Err(AdapterError::InvalidSourceVersion)
+        );
+    }
+
+    #[test]
+    fn fabro_snapshot_validates_source_identity() {
+        let snapshot =
+            FabroRunSnapshot::new(" repo ", " item ", " run ", FabroRunState::HumanGate, 11);
+
+        assert_eq!(snapshot.as_ref().map(FabroRunSnapshot::repo), Ok("repo"));
+        assert_eq!(
+            snapshot.as_ref().map(FabroRunSnapshot::work_item_id),
+            Ok("item")
+        );
+        assert_eq!(snapshot.as_ref().map(FabroRunSnapshot::run_id), Ok("run"));
+        assert_eq!(
+            snapshot.as_ref().map(FabroRunSnapshot::state),
+            Ok(FabroRunState::HumanGate)
+        );
+        assert_eq!(
+            snapshot.as_ref().map(FabroRunSnapshot::source_version),
+            Ok(11)
+        );
+        assert_eq!(
+            FabroRunSnapshot::new(" ", "item", "run", FabroRunState::HumanGate, 1),
+            Err(AdapterError::EmptyRepo)
+        );
+        assert_eq!(
+            FabroRunSnapshot::new("repo", " ", "run", FabroRunState::HumanGate, 1),
+            Err(AdapterError::EmptyWorkItemId)
+        );
+        assert_eq!(
+            FabroRunSnapshot::new("repo", "item", " ", FabroRunState::HumanGate, 1),
+            Err(AdapterError::EmptyRunId)
+        );
+        assert_eq!(
+            FabroRunSnapshot::new("repo", "item", "run", FabroRunState::HumanGate, 0),
+            Err(AdapterError::InvalidSourceVersion)
+        );
+    }
+
+    #[test]
+    fn github_snapshot_validates_source_identity() {
+        let snapshot =
+            GithubPullRequestSnapshot::new(" repo ", 42, GithubPullRequestState::ChecksPassing, 13);
+
+        assert_eq!(
+            snapshot.as_ref().map(GithubPullRequestSnapshot::repo),
+            Ok("repo")
+        );
+        assert_eq!(
+            snapshot.as_ref().map(GithubPullRequestSnapshot::pr_number),
+            Ok(42)
+        );
+        assert_eq!(
+            snapshot.as_ref().map(GithubPullRequestSnapshot::state),
+            Ok(GithubPullRequestState::ChecksPassing)
+        );
+        assert_eq!(
+            snapshot
+                .as_ref()
+                .map(GithubPullRequestSnapshot::source_version),
+            Ok(13)
+        );
+        assert_eq!(
+            GithubPullRequestSnapshot::new(" ", 42, GithubPullRequestState::Open, 1),
+            Err(AdapterError::EmptyRepo)
+        );
+        assert_eq!(
+            GithubPullRequestSnapshot::new("repo", 0, GithubPullRequestState::Open, 1),
+            Err(AdapterError::InvalidPullRequestNumber)
+        );
+        assert_eq!(
+            GithubPullRequestSnapshot::new("repo", 42, GithubPullRequestState::Open, 0),
             Err(AdapterError::InvalidSourceVersion)
         );
     }
@@ -662,6 +1146,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dispatcher_entry_normalizes_to_needs_regroom_event() {
+        let entry = dispatcher_entry_fixture();
+        let poll = normalize_dispatcher_journal_entry(entry);
+
+        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("8"));
+        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(
+            poll.as_ref().map(|value| &value.events()[0]),
+            Ok(&dispatcher_event_fixture())
+        );
+        assert_eq!(
+            poll.as_ref()
+                .map(|value| value.events()[0].source_event_id()),
+            Ok(
+                "dispatcher:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:dispatch_1:8"
+            )
+        );
+        assert_eq!(
+            poll.as_ref().map(|value| value.events()[0].payload()),
+            Ok(&SourcePayload::DispatcherJournalEntry(
+                dispatcher_entry_fixture()
+            ))
+        );
+    }
+
+    #[test]
+    fn fabro_snapshot_normalizes_to_human_gate_event() {
+        let snapshot = fabro_snapshot_fixture();
+        let poll = normalize_fabro_run_snapshot(snapshot);
+
+        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("10"));
+        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(
+            poll.as_ref().map(|value| &value.events()[0]),
+            Ok(&fabro_event_fixture())
+        );
+        assert_eq!(
+            poll.as_ref()
+                .map(|value| value.events()[0].source_event_id()),
+            Ok("fabro:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:run_1:10")
+        );
+        assert_eq!(
+            poll.as_ref().map(|value| value.events()[0].payload()),
+            Ok(&SourcePayload::FabroRunSnapshot(fabro_snapshot_fixture()))
+        );
+    }
+
+    #[test]
+    fn github_snapshot_normalizes_to_pr_event() {
+        let snapshot = github_snapshot_fixture();
+        let poll = normalize_github_pull_request_snapshot(snapshot);
+
+        assert_eq!(poll.as_ref().map(AdapterPoll::checkpoint), Ok("12"));
+        assert_eq!(poll.as_ref().map(|value| value.events().len()), Ok(1));
+        assert_eq!(
+            poll.as_ref().map(|value| &value.events()[0]),
+            Ok(&github_event_fixture())
+        );
+        assert_eq!(
+            poll.as_ref()
+                .map(|value| value.events()[0].source_event_id()),
+            Ok("github:livespec-console-beads-fabro:pr:22:12")
+        );
+        assert_eq!(
+            poll.as_ref().map(|value| value.events()[0].payload()),
+            Ok(&SourcePayload::GithubPullRequestSnapshot(
+                github_snapshot_fixture()
+            ))
+        );
+    }
+
     fn livespec_snapshot_fixture(action: LivespecNextAction) -> LivespecNextSnapshot {
         LivespecNextSnapshot {
             repo: "livespec-console-beads-fabro".to_owned(),
@@ -686,6 +1242,87 @@ mod tests {
             ),
             "livespec:livespec-console-beads-fabro:5:next".to_owned(),
             SourcePayload::LivespecNextSnapshot(livespec_snapshot_fixture(action)),
+        )
+    }
+
+    fn dispatcher_entry_fixture() -> DispatcherJournalEntry {
+        DispatcherJournalEntry {
+            repo: "livespec-console-beads-fabro".to_owned(),
+            work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
+            dispatch_id: "dispatch_1".to_owned(),
+            kind: DispatcherJournalKind::NeedsRegroom,
+            source_version: 8,
+        }
+    }
+
+    fn dispatcher_event_fixture() -> NormalizedSourceEvent {
+        NormalizedSourceEvent::new(
+            console_domain::ConsoleEvent::new(
+                "evt:dispatcher:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:dispatch_1:8"
+                    .to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::DispatcherNeedsRegroomObserved,
+                "dispatcher".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                8,
+            ),
+            "dispatcher:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:dispatch_1:8"
+                .to_owned(),
+            SourcePayload::DispatcherJournalEntry(dispatcher_entry_fixture()),
+        )
+    }
+
+    fn fabro_snapshot_fixture() -> FabroRunSnapshot {
+        FabroRunSnapshot {
+            repo: "livespec-console-beads-fabro".to_owned(),
+            work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
+            run_id: "run_1".to_owned(),
+            state: FabroRunState::HumanGate,
+            source_version: 10,
+        }
+    }
+
+    fn fabro_event_fixture() -> NormalizedSourceEvent {
+        NormalizedSourceEvent::new(
+            console_domain::ConsoleEvent::new(
+                "evt:fabro:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:run_1:10"
+                    .to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::FabroHumanGateObserved,
+                "fabro".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                10,
+            ),
+            "fabro:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:run_1:10"
+                .to_owned(),
+            SourcePayload::FabroRunSnapshot(fabro_snapshot_fixture()),
+        )
+    }
+
+    fn github_snapshot_fixture() -> GithubPullRequestSnapshot {
+        GithubPullRequestSnapshot {
+            repo: "livespec-console-beads-fabro".to_owned(),
+            pr_number: 22,
+            state: GithubPullRequestState::ChecksPassing,
+            source_version: 12,
+        }
+    }
+
+    fn github_event_fixture() -> NormalizedSourceEvent {
+        NormalizedSourceEvent::new(
+            console_domain::ConsoleEvent::new(
+                "evt:github:livespec-console-beads-fabro:pr:22:12".to_owned(),
+                1,
+                "source".to_owned(),
+                EventType::GithubPullRequestSnapshotObserved,
+                "github".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                12,
+            ),
+            "github:livespec-console-beads-fabro:pr:22:12".to_owned(),
+            SourcePayload::GithubPullRequestSnapshot(github_snapshot_fixture()),
         )
     }
 
