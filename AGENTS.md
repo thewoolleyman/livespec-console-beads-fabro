@@ -1,8 +1,10 @@
 # Agent instructions
 
-This repo is a new LiveSpec-family peer for the Beads/Fabro operator
-console. It is in seed state: the authoritative design is the live
-specification under `SPECIFICATION/`.
+This repo is a LiveSpec-family peer for the Beads/Fabro operator console.
+The authoritative design is the live specification under `SPECIFICATION/`,
+which now carries a revision history (`SPECIFICATION/history/v001/`). A Rust
+workspace under `crates/` implements the console against that spec; ongoing
+implementation work is tracked in the Beads ledger, not in this file.
 
 ## Repository scope
 
