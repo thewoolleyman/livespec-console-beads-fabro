@@ -444,7 +444,7 @@ pub fn serve_report(
     } else {
         Vec::new()
     };
-    let mut factory_port = SimulatedFactoryDrainPort;
+    let mut factory_port = NotWiredFactoryDrainPort;
     let handled = handle_pending_factory_commands(store, observed_at, &mut factory_port)?;
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
@@ -535,20 +535,20 @@ impl FactoryCommandHandlingOutcome {
     }
 }
 
-pub struct SimulatedFactoryDrainPort;
+/// Honest factory-drain port for the live serve/tui path.
+///
+/// Used until a real Dispatcher-invoking port lands. No real Dispatcher is
+/// wired, so this never fabricates a drain outcome: it reports `NotWired` so
+/// the command handler records an honest not-wired event instead of a
+/// fictitious success.
+pub struct NotWiredFactoryDrainPort;
 
-impl FactoryDrainPort for SimulatedFactoryDrainPort {
+impl FactoryDrainPort for NotWiredFactoryDrainPort {
     fn drain_ready_queue(
         &mut self,
-        request: &FactoryDrainRequest,
+        _request: &FactoryDrainRequest,
     ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
-        if request.budget() == 0 {
-            return Err(ApplicationError::FactoryDrainPortFailed);
-        }
-        if request.parallel() == 0 {
-            return Err(ApplicationError::FactoryDrainPortFailed);
-        }
-        Ok(FactoryDrainPortOutcome::completed(1))
+        Ok(FactoryDrainPortOutcome::not_wired())
     }
 }
 
@@ -927,13 +927,12 @@ mod tests {
     use super::{
         CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
         FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed,
-        SimulatedFactoryDrainPort, TuiSessionOutcome, TuiSessionRunner,
-        append_demo_events_to_store, backfill_demo_report, backfill_source_report,
-        command_status_update_runtime_result, demo_events, doctor_report, events_tail_report,
-        factory_command_from_stored, handle_pending_factory_commands, initial_source_seed,
-        load_tui_events_from_store, persist_tui_runtime_effects, render_tui_preview, run,
-        run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
-        source_polls_from_seed,
+        NotWiredFactoryDrainPort, TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
+        backfill_demo_report, backfill_source_report, command_status_update_runtime_result,
+        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
+        handle_pending_factory_commands, initial_source_seed, load_tui_events_from_store,
+        persist_tui_runtime_effects, render_tui_preview, run, run_store_backed_tui_session,
+        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
     };
 
     #[test]
@@ -1182,7 +1181,8 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_serve_handles_pending_factory_commands() -> Result<(), EventStoreError> {
+    fn store_backed_serve_handles_pending_factory_commands_honestly_not_wired()
+    -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
         let persistence = persist_tui_runtime_effects(
             &mut store,
@@ -1197,12 +1197,15 @@ mod tests {
             "2026-06-23T00:00:02Z",
         );
 
+        // The live serve path has no real Dispatcher port wired, so the pending
+        // drain is handled honestly: accepted + not_wired (two events, no
+        // fabricated start/completion), and the command lands in `not_wired`.
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 6\nevents: 9\nattention: 3\ncommands: 1\npending: 0\nfactory commands handled: 1"
+            "serve: store ready\nbackfill events: 6\nevents: 8\nattention: 3\ncommands: 1\npending: 0\nfactory commands handled: 1"
         );
-        assert_eq!(store.list_commands()?[0].status(), "completed");
+        assert_eq!(store.list_commands()?[0].status(), "not_wired");
         Ok(())
     }
 
@@ -1821,6 +1824,16 @@ mod tests {
     }
 
     #[test]
+    fn not_wired_factory_drain_port_reports_not_wired_without_fabricating_success() {
+        let mut port = NotWiredFactoryDrainPort;
+        let request = FactoryDrainRequest::new("fleet:livespec".to_owned(), 1, 1);
+
+        let outcome = port.drain_ready_queue(&request);
+
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::not_wired()));
+    }
+
+    #[test]
     fn demo_backfill_round_trips_through_event_store() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
@@ -1870,6 +1883,27 @@ mod tests {
 
     fn command_args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// Test double standing in for a real Dispatcher port that completes a
+    /// drain. Production no longer ships a success-fabricating port (the live
+    /// path uses `NotWiredFactoryDrainPort`); this double lets the command and
+    /// session machinery still be exercised against a completing outcome.
+    struct SimulatedFactoryDrainPort;
+
+    impl FactoryDrainPort for SimulatedFactoryDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            request: &FactoryDrainRequest,
+        ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
+            if request.budget() == 0 {
+                return Err(ApplicationError::FactoryDrainPortFailed);
+            }
+            if request.parallel() == 0 {
+                return Err(ApplicationError::FactoryDrainPortFailed);
+            }
+            Ok(FactoryDrainPortOutcome::completed(1))
+        }
     }
 
     struct FailedFactoryDrainPort;
