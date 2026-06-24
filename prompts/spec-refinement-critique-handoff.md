@@ -15,10 +15,15 @@ further implementation. No code changes in this track — spec only.
    reject each, cutting the next `history/vNNN/`.
 3. Repeat until a critique pass surfaces no material findings.
 
-Expected, non-blocking: until upstream `livespec-lly4` lands, revise's
-post-step doctor reports ONE `doctor-template-files-present` failure for
-`diagrams/example.{plantuml,svg}`. That exit-3 is informational; the snapshot
-still cuts. Confirm it is the ONLY fail.
+Run against the fixed core: set
+`LIVESPEC_CORE_PLUGIN_ROOT=/data/projects/livespec/.claude-plugin` so the
+lifecycle uses livespec master (both `livespec-kfjd` and `livespec-lly4` are
+landed there); the doctor gate is then fully green. `livespec-lly4` is landed
+but NOT yet released to the installed plugin, so a DEFAULT run (installed
+plugin) still reports one informational `doctor-template-files-present` failure
+for `diagrams/example.{plantuml,svg}` — that exit-3 is non-blocking and the
+snapshot still cuts. Once livespec cuts a release + `claude plugin marketplace
+upgrade`, the default path is green too.
 
 ## Steering text for `/livespec:critique`
 
