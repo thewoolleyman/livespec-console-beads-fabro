@@ -1,5 +1,15 @@
 # TUI first milestone bootstrap plan
 
+> **Status: historical — superseded.** This is a frozen snapshot of the
+> reasoning captured on 2026-06-23 while bootstrapping the repo. The
+> bootstrap milestone it describes is complete: the Rust workspace, family
+> infrastructure, quality gates, CI, and the Beads tenant are all in place,
+> and `SPECIFICATION/` now carries a `history/v001/` revision. The
+> checklists below are **frozen as of capture** and are **not** a live
+> work tracker — do not check or extend them. Current authoritative state
+> lives in `SPECIFICATION/` (design) and the Beads ledger (implementation
+> work-items). This file is retained only as rationale.
+
 Captured on 2026-06-23 while starting
 `livespec-console-beads-fabro` as a new LiveSpec-family member.
 
@@ -57,8 +67,10 @@ recommends using:
   implement, and verify.
 - The live spec lifecycle only after a conclusion becomes contractual.
 
-This file is the reasoning artifact. The active prompt is
-`prompts/tui-first-milestone-handoff.md`.
+This file is the reasoning artifact. The original kickoff prompt
+(`prompts/tui-first-milestone-handoff.md`) has since been retired; active
+session handoffs now live alongside it under `prompts/` (for example
+`prompts/impl-cleanup-handoff.md`).
 
 ## Driver-Codex Precedent
 

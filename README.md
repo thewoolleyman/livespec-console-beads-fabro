@@ -55,12 +55,14 @@ mutation-score enforcement is tracked for the later milestone gate once
 the domain model has enough behavior to make surviving getter mutants a
 useful failure signal.
 
-The full milestone plan in
-`research/tui-first-milestone-bootstrap-plan.md` tracks the remaining
-quality work: growing the fuzz corpus with real event-store inputs,
-turning mutation testing from smoke coverage into a hard release gate,
-and replacing the current text-based architecture check with a richer
-crate graph/source parser.
+Remaining quality and feature work is tracked in the Beads ledger, with
+authoritative requirements in [SPECIFICATION/](SPECIFICATION/). Known
+follow-ups include growing the fuzz corpus with real event-store inputs,
+turning mutation testing from smoke coverage into a hard release gate, and
+replacing the current text-based architecture check with a richer crate
+graph/source parser. The original bootstrap plan in
+`research/tui-first-milestone-bootstrap-plan.md` is retained only as
+historical rationale and is no longer a live work tracker.
 
 ## Beads
 
