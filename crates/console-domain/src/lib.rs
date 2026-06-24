@@ -98,6 +98,7 @@ pub enum EventType {
     LivespecNextSnapshotObserved,
     LivespecReviseRequired,
     SourceCompletenessFindingObserved,
+    SourceNotObservedFindingObserved,
 }
 
 impl EventType {
@@ -118,6 +119,7 @@ impl EventType {
             Self::LivespecNextSnapshotObserved => "spec.next_snapshot_observed",
             Self::LivespecReviseRequired => "spec.revise_required",
             Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
+            Self::SourceNotObservedFindingObserved => "source.not_observed_finding_observed",
         }
     }
 
@@ -138,6 +140,7 @@ impl EventType {
             "spec.next_snapshot_observed" => Some(Self::LivespecNextSnapshotObserved),
             "spec.revise_required" => Some(Self::LivespecReviseRequired),
             "source.completeness_finding_observed" => Some(Self::SourceCompletenessFindingObserved),
+            "source.not_observed_finding_observed" => Some(Self::SourceNotObservedFindingObserved),
             _unknown => None,
         }
     }
@@ -326,6 +329,10 @@ mod tests {
             EventType::SourceCompletenessFindingObserved.contract_name(),
             "source.completeness_finding_observed"
         );
+        assert_eq!(
+            EventType::SourceNotObservedFindingObserved.contract_name(),
+            "source.not_observed_finding_observed"
+        );
     }
 
     #[test]
@@ -345,6 +352,7 @@ mod tests {
             EventType::LivespecNextSnapshotObserved,
             EventType::LivespecReviseRequired,
             EventType::SourceCompletenessFindingObserved,
+            EventType::SourceNotObservedFindingObserved,
         ] {
             assert_eq!(
                 EventType::from_contract_name(event_type.contract_name()),

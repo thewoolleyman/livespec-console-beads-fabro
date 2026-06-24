@@ -819,7 +819,8 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         | EventType::GithubPullRequestSnapshotObserved
         | EventType::LivespecNextSnapshotObserved
         | EventType::LivespecReviseRequired
-        | EventType::SourceCompletenessFindingObserved => "source",
+        | EventType::SourceCompletenessFindingObserved
+        | EventType::SourceNotObservedFindingObserved => "source",
     }
 }
 
@@ -1209,6 +1210,7 @@ impl AttentionEvent for EventType {
             Self::FactoryDrainRequested => "Factory drain requested",
             Self::FactoryDrainStarted => "Factory drain started",
             Self::SourceCompletenessFindingObserved => "Source completeness finding",
+            Self::SourceNotObservedFindingObserved => "Source not-observed finding",
         }
     }
 
@@ -2384,6 +2386,10 @@ mod tests {
         assert_eq!(
             EventType::SourceCompletenessFindingObserved.label(),
             "Source completeness finding"
+        );
+        assert_eq!(
+            EventType::SourceNotObservedFindingObserved.label(),
+            "Source not-observed finding"
         );
     }
 
