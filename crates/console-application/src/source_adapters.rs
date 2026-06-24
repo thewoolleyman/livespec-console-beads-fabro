@@ -1087,6 +1087,167 @@ fn not_observed_event(
     )
 }
 
+// --- Real source normalizers ------------------------------------------------
+//
+// Each normalizer interprets the raw payload from one source's stable CLI/file
+// into canonical snapshot events. Inputs come from real `bd`, `gh`, the
+// Dispatcher journal, `fabro`, and `livespec`; an uninterpretable payload
+// returns an honest reason so the adapter records a not-observed finding
+// instead of fabricating a snapshot. JSON is read with minimal flat-field
+// extraction rather than a dependency, since only a few identifying fields are
+// needed and any malformed shape degrades to a not-observed finding.
+
+/// Extract the first `"key": "value"` string value from flat JSON-ish text.
+fn first_json_string(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = text.find(&needle)? + needle.len();
+    let after_colon = text[start..].trim_start().strip_prefix(':')?.trim_start();
+    let body = after_colon.strip_prefix('"')?;
+    let end = body.find('"')?;
+    Some(body[..end].to_owned())
+}
+
+/// Extract the first `"key": <number>` unsigned value from flat JSON-ish text.
+fn first_json_u64(text: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{key}\"");
+    let start = text.find(&needle)? + needle.len();
+    let after_colon = text[start..].trim_start().strip_prefix(':')?.trim_start();
+    let digits: String = after_colon
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Stable, non-zero version token for an observed state, so re-observing the
+/// same state yields the same source-event identity (idempotent) while a real
+/// change yields a new one. FNV-1a over the identifying fields; no dependency.
+fn stable_version(parts: &[&str]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= u64::from(b'\x1f');
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash | 1
+}
+
+/// Normalize real `bd` output (e.g. `bd ready --json`) into a Beads snapshot.
+pub fn parse_beads_observation(observed: &ObservedSource) -> Result<ParsedObservation, String> {
+    let work_item_id = first_json_string(observed.stdout(), "id")
+        .ok_or_else(|| "no beads work-item observed".to_owned())?;
+    let status_text = first_json_string(observed.stdout(), "status").unwrap_or_default();
+    let status = match status_text.as_str() {
+        "closed" => BeadsWorkItemStatus::Closed,
+        "blocked" => BeadsWorkItemStatus::NeedsRegroom,
+        _other => BeadsWorkItemStatus::Ready,
+    };
+    let version = stable_version(&[observed.repo(), &work_item_id, status.label()]);
+    let snapshot = BeadsWorkItemSnapshot::new(observed.repo(), &work_item_id, status, version)
+        .map_err(|_error| "invalid beads work-item".to_owned())?;
+    let poll = normalize_beads_snapshot(&snapshot);
+    Ok(ParsedObservation::new(
+        &version.to_string(),
+        poll.events().to_vec(),
+    ))
+}
+
+/// Normalize real `gh pr list --json ...` output into a GitHub PR snapshot.
+pub fn parse_github_observation(observed: &ObservedSource) -> Result<ParsedObservation, String> {
+    let number = first_json_u64(observed.stdout(), "number")
+        .ok_or_else(|| "no pull request observed".to_owned())?;
+    let state_text = first_json_string(observed.stdout(), "state").unwrap_or_default();
+    let state = match state_text.as_str() {
+        "MERGED" => GithubPullRequestState::Merged,
+        "CLOSED" => GithubPullRequestState::ChecksFailing,
+        _other => GithubPullRequestState::Open,
+    };
+    let version = stable_version(&[observed.repo(), &number.to_string(), state.label()]);
+    let snapshot = GithubPullRequestSnapshot::new(observed.repo(), number, state, version)
+        .map_err(|_error| "invalid pull request".to_owned())?;
+    let poll = normalize_github_pull_request_snapshot(snapshot);
+    Ok(ParsedObservation::new(
+        &version.to_string(),
+        poll.events().to_vec(),
+    ))
+}
+
+/// Normalize the last real Dispatcher journal JSONL line into a dispatch event.
+pub fn parse_dispatcher_observation(
+    observed: &ObservedSource,
+) -> Result<ParsedObservation, String> {
+    let line = observed
+        .stdout()
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| "empty dispatcher journal".to_owned())?;
+    let work_item_id = first_json_string(line, "work_item_id")
+        .ok_or_else(|| "no work-item in journal entry".to_owned())?;
+    let dispatch_id = first_json_string(line, "dispatch_id")
+        .ok_or_else(|| "no dispatch id in journal entry".to_owned())?;
+    let version = stable_version(&[&work_item_id, &dispatch_id]);
+    let entry = DispatcherJournalEntry::new(
+        observed.repo(),
+        &work_item_id,
+        &dispatch_id,
+        DispatcherJournalKind::NeedsRegroom,
+        version,
+    )
+    .map_err(|_error| "invalid journal entry".to_owned())?;
+    let poll = normalize_dispatcher_journal_entry(entry);
+    Ok(ParsedObservation::new(
+        &version.to_string(),
+        poll.events().to_vec(),
+    ))
+}
+
+/// Normalize real `fabro ps`/run output into a Fabro run snapshot.
+pub fn parse_fabro_observation(observed: &ObservedSource) -> Result<ParsedObservation, String> {
+    let run_id = first_json_string(observed.stdout(), "run_id")
+        .or_else(|| first_json_string(observed.stdout(), "id"))
+        .ok_or_else(|| "no fabro run observed".to_owned())?;
+    let work_item_id =
+        first_json_string(observed.stdout(), "work_item_id").unwrap_or_else(|| run_id.clone());
+    let version = stable_version(&[&run_id, &work_item_id]);
+    let snapshot = FabroRunSnapshot::new(
+        observed.repo(),
+        &work_item_id,
+        &run_id,
+        FabroRunState::HumanGate,
+        version,
+    )
+    .map_err(|_error| "invalid fabro run".to_owned())?;
+    let poll = normalize_fabro_run_snapshot(snapshot);
+    Ok(ParsedObservation::new(
+        &version.to_string(),
+        poll.events().to_vec(),
+    ))
+}
+
+/// Normalize real `livespec next` output into a `LivespecNextSnapshot`.
+pub fn parse_livespec_observation(observed: &ObservedSource) -> Result<ParsedObservation, String> {
+    let action_text = first_json_string(observed.stdout(), "action")
+        .or_else(|| first_json_string(observed.stdout(), "next"))
+        .ok_or_else(|| "no livespec next action observed".to_owned())?;
+    let action = match action_text.as_str() {
+        "revise" => LivespecNextAction::Revise,
+        "critique" => LivespecNextAction::Critique,
+        _other => LivespecNextAction::None,
+    };
+    let version = stable_version(&[observed.repo(), action.label()]);
+    let snapshot = LivespecNextSnapshot::new(observed.repo(), action, version)
+        .map_err(|_error| "invalid livespec snapshot".to_owned())?;
+    let poll = normalize_livespec_next_snapshot(snapshot);
+    Ok(ParsedObservation::new(
+        &version.to_string(),
+        poll.events().to_vec(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -1103,7 +1264,9 @@ mod tests {
         PullSourcePort, SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort,
         SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome,
         normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot, run_adapter_poll,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+        parse_beads_observation, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, run_adapter_poll,
     };
 
     #[test]
@@ -2199,5 +2362,301 @@ mod tests {
         let poll = AdapterPoll::new(" ", Vec::new());
 
         assert_eq!(poll, Err(AdapterError::EmptyCheckpoint));
+    }
+
+    // --- Real normalizer tests ----------------------------------------------
+
+    fn observed_for(source: SourceAdapterKind, repo: &str, stdout: &str) -> ObservedSource {
+        ObservedSource::new(source, repo, stdout)
+    }
+
+    fn first_payload(parsed: &ParsedObservation) -> &SourcePayload {
+        parsed.events[0].payload()
+    }
+
+    #[test]
+    fn parse_beads_maps_real_statuses_into_snapshots() -> Result<(), String> {
+        for (raw, expected) in [
+            ("closed", BeadsWorkItemStatus::Closed),
+            ("blocked", BeadsWorkItemStatus::NeedsRegroom),
+            ("open", BeadsWorkItemStatus::Ready),
+        ] {
+            let stdout = format!("[{{\"id\": \"console-1\", \"status\": \"{raw}\"}}]");
+            let parsed = parse_beads_observation(&observed_for(
+                SourceAdapterKind::Beads,
+                "console",
+                &stdout,
+            ))?;
+            let version = super::stable_version(&["console", "console-1", expected.label()]);
+
+            assert_eq!(parsed.checkpoint, version.to_string());
+            assert_eq!(parsed.events.len(), 2);
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::BeadsWorkItemSnapshot(BeadsWorkItemSnapshot {
+                    repo: "console".to_owned(),
+                    work_item_id: "console-1".to_owned(),
+                    status: expected,
+                    source_version: version,
+                })
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_beads_reports_missing_and_invalid_records() {
+        assert_eq!(
+            parse_beads_observation(&observed_for(SourceAdapterKind::Beads, "console", "[]")),
+            Err("no beads work-item observed".to_owned())
+        );
+        assert_eq!(
+            parse_beads_observation(&observed_for(
+                SourceAdapterKind::Beads,
+                "",
+                "[{\"id\": \"console-1\"}]"
+            )),
+            Err("invalid beads work-item".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_github_maps_real_states_into_snapshots() -> Result<(), String> {
+        for (raw, expected) in [
+            ("MERGED", GithubPullRequestState::Merged),
+            ("CLOSED", GithubPullRequestState::ChecksFailing),
+            ("OPEN", GithubPullRequestState::Open),
+        ] {
+            let stdout = format!("[{{\"number\": 24, \"state\": \"{raw}\"}}]");
+            let parsed = parse_github_observation(&observed_for(
+                SourceAdapterKind::GitHub,
+                "console",
+                &stdout,
+            ))?;
+            let version = super::stable_version(&["console", "24", expected.label()]);
+
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::GithubPullRequestSnapshot(GithubPullRequestSnapshot {
+                    repo: "console".to_owned(),
+                    pr_number: 24,
+                    state: expected,
+                    source_version: version,
+                })
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_github_reports_missing_and_invalid_records() {
+        assert_eq!(
+            parse_github_observation(&observed_for(SourceAdapterKind::GitHub, "console", "[]")),
+            Err("no pull request observed".to_owned())
+        );
+        assert_eq!(
+            parse_github_observation(&observed_for(
+                SourceAdapterKind::GitHub,
+                "console",
+                "[{\"number\": 0, \"state\": \"OPEN\"}]"
+            )),
+            Err("invalid pull request".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_dispatcher_reads_last_journal_entry() -> Result<(), String> {
+        let stdout = "\n{\"work_item_id\": \"console-1\", \"dispatch_id\": \"dispatch_9\"}\n";
+        let parsed = parse_dispatcher_observation(&observed_for(
+            SourceAdapterKind::Dispatcher,
+            "console",
+            stdout,
+        ))?;
+        let version = super::stable_version(&["console-1", "dispatch_9"]);
+
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: "dispatch_9".to_owned(),
+                kind: DispatcherJournalKind::NeedsRegroom,
+                source_version: version,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dispatcher_reports_missing_and_invalid_records() {
+        assert_eq!(
+            parse_dispatcher_observation(&observed_for(
+                SourceAdapterKind::Dispatcher,
+                "console",
+                "   \n  "
+            )),
+            Err("empty dispatcher journal".to_owned())
+        );
+        assert_eq!(
+            parse_dispatcher_observation(&observed_for(
+                SourceAdapterKind::Dispatcher,
+                "console",
+                "{\"dispatch_id\": \"dispatch_9\"}"
+            )),
+            Err("no work-item in journal entry".to_owned())
+        );
+        assert_eq!(
+            parse_dispatcher_observation(&observed_for(
+                SourceAdapterKind::Dispatcher,
+                "console",
+                "{\"work_item_id\": \"console-1\"}"
+            )),
+            Err("no dispatch id in journal entry".to_owned())
+        );
+        assert_eq!(
+            parse_dispatcher_observation(&observed_for(
+                SourceAdapterKind::Dispatcher,
+                "",
+                "{\"work_item_id\": \"console-1\", \"dispatch_id\": \"dispatch_9\"}"
+            )),
+            Err("invalid journal entry".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_fabro_reads_run_and_falls_back_to_id() -> Result<(), String> {
+        let with_run = parse_fabro_observation(&observed_for(
+            SourceAdapterKind::Fabro,
+            "console",
+            "{\"run_id\": \"run_7\", \"work_item_id\": \"console-1\"}",
+        ))?;
+        let version = super::stable_version(&["run_7", "console-1"]);
+        assert_eq!(
+            first_payload(&with_run),
+            &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                run_id: "run_7".to_owned(),
+                state: FabroRunState::HumanGate,
+                source_version: version,
+            })
+        );
+
+        // No run_id: fall back to id, and default work_item_id to the run id.
+        let fallback = parse_fabro_observation(&observed_for(
+            SourceAdapterKind::Fabro,
+            "console",
+            "{\"id\": \"run_8\"}",
+        ))?;
+        let fallback_version = super::stable_version(&["run_8", "run_8"]);
+        assert_eq!(
+            first_payload(&fallback),
+            &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
+                repo: "console".to_owned(),
+                work_item_id: "run_8".to_owned(),
+                run_id: "run_8".to_owned(),
+                state: FabroRunState::HumanGate,
+                source_version: fallback_version,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_fabro_reports_missing_and_invalid_records() {
+        assert_eq!(
+            parse_fabro_observation(&observed_for(
+                SourceAdapterKind::Fabro,
+                "console",
+                "{\"state\": \"human-gate\"}"
+            )),
+            Err("no fabro run observed".to_owned())
+        );
+        assert_eq!(
+            parse_fabro_observation(&observed_for(
+                SourceAdapterKind::Fabro,
+                "",
+                "{\"run_id\": \"run_7\"}"
+            )),
+            Err("invalid fabro run".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_livespec_maps_real_actions() -> Result<(), String> {
+        for (raw, expected) in [
+            ("revise", LivespecNextAction::Revise),
+            ("critique", LivespecNextAction::Critique),
+            ("none", LivespecNextAction::None),
+        ] {
+            let stdout = format!("{{\"action\": \"{raw}\"}}");
+            let parsed = parse_livespec_observation(&observed_for(
+                SourceAdapterKind::LiveSpec,
+                "console",
+                &stdout,
+            ))?;
+            let version = super::stable_version(&["console", expected.label()]);
+
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::LivespecNextSnapshot(LivespecNextSnapshot {
+                    repo: "console".to_owned(),
+                    action: expected,
+                    source_version: version,
+                })
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_livespec_falls_back_to_next_key_and_reports_errors() -> Result<(), String> {
+        let parsed = parse_livespec_observation(&observed_for(
+            SourceAdapterKind::LiveSpec,
+            "console",
+            "{\"next\": \"revise\"}",
+        ))?;
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::LivespecNextSnapshot(LivespecNextSnapshot {
+                repo: "console".to_owned(),
+                action: LivespecNextAction::Revise,
+                source_version: super::stable_version(&["console", "revise"]),
+            })
+        );
+        assert_eq!(
+            parse_livespec_observation(&observed_for(
+                SourceAdapterKind::LiveSpec,
+                "console",
+                "{\"status\": \"clean\"}"
+            )),
+            Err("no livespec next action observed".to_owned())
+        );
+        assert_eq!(
+            parse_livespec_observation(&observed_for(
+                SourceAdapterKind::LiveSpec,
+                "",
+                "{\"action\": \"revise\"}"
+            )),
+            Err("invalid livespec snapshot".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn json_field_helpers_handle_absent_and_malformed_fields() {
+        assert_eq!(
+            super::first_json_string("{\"a\": \"b\"}", "a").as_deref(),
+            Some("b")
+        );
+        assert_eq!(super::first_json_string("{\"a\": \"b\"}", "z"), None);
+        assert_eq!(super::first_json_string("{\"a\" \"b\"}", "a"), None);
+        assert_eq!(super::first_json_string("{\"a\": bare}", "a"), None);
+        assert_eq!(super::first_json_string("{\"a\": \"b", "a"), None);
+        assert_eq!(super::first_json_u64("{\"n\": 42}", "n"), Some(42));
+        assert_eq!(super::first_json_u64("{\"n\": 42}", "z"), None);
+        assert_eq!(super::first_json_u64("{\"n\" 42}", "n"), None);
+        assert_eq!(super::first_json_u64("{\"n\": x}", "n"), None);
+        assert!(super::stable_version(&["a"]) != 0);
     }
 }
