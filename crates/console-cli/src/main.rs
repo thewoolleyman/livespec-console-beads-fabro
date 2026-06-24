@@ -6,11 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 #[cfg(all(not(test), not(coverage)))]
-use console_domain::ConsoleEvent;
-#[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
-use console_tui::TuiRuntimeEffect;
+use livespec_console_beads_fabro::{ConsoleRuntimeError, TuiSessionRunner};
 #[cfg(all(not(test), not(coverage)))]
 use time::OffsetDateTime;
 #[cfg(all(not(test), not(coverage)))]
@@ -20,6 +18,17 @@ fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     #[cfg(all(not(test), not(coverage)))]
     {
+        if should_run_interactive_tui(&args) && std::io::stdout().is_terminal() {
+            match run_interactive_store_tui() {
+                Ok(()) => {
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("tui error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         if should_run_store_backed_command(&args) {
             match run_store_backed_command(&args) {
                 Ok(output) => {
@@ -28,30 +37,6 @@ fn main() {
                 }
                 Err(error) => {
                     eprintln!("store command error: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        if should_run_interactive_tui(&args) && std::io::stdout().is_terminal() {
-            let events = match load_interactive_tui_events() {
-                Ok(events) => events,
-                Err(error) => {
-                    eprintln!("tui source error: {error}");
-                    std::process::exit(1);
-                }
-            };
-            match console_tui::run_interactive_tui(&events, "operator") {
-                Ok(effects) => match persist_tui_effects(&effects) {
-                    Ok(()) => {
-                        std::process::exit(0);
-                    }
-                    Err(error) => {
-                        eprintln!("tui persistence error: {error}");
-                        std::process::exit(1);
-                    }
-                },
-                Err(error) => {
-                    eprintln!("tui error: {error}");
                     std::process::exit(1);
                 }
             }
@@ -66,7 +51,7 @@ fn main() {
 fn should_run_interactive_tui(args: &[String]) -> bool {
     let command = args.get(1).map(String::as_str);
     let mode = args.get(2).map(String::as_str);
-    command == Some("tui") && mode != Some("--preview")
+    matches!(command, Some("serve" | "tui")) && mode != Some("--preview")
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -94,42 +79,37 @@ fn run_store_backed_command(
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn load_interactive_tui_events() -> Result<Vec<ConsoleEvent>, String> {
-    let path = console_store_path();
-    if !path.exists() {
-        return Ok(livespec_console_beads_fabro::demo_events().to_vec());
-    }
-    let store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
-    let events = livespec_console_beads_fabro::load_tui_events_from_store(&store)
-        .map_err(|error| format!("{error:?}"))?;
-    if events.is_empty() {
-        return Ok(livespec_console_beads_fabro::demo_events().to_vec());
-    }
-    Ok(events)
-}
-
-#[cfg(all(not(test), not(coverage)))]
-fn persist_tui_effects(effects: &[TuiRuntimeEffect]) -> Result<(), String> {
-    if !effects
-        .iter()
-        .any(|effect| matches!(effect, TuiRuntimeEffect::PersistCommand(_)))
-    {
-        return Ok(());
-    }
+fn run_interactive_store_tui() -> Result<(), String> {
     let path = console_store_path();
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
-    let requested_at = current_requested_at()?;
-    livespec_console_beads_fabro::persist_tui_runtime_effects(&mut store, effects, &requested_at)
-        .map_err(|error| format!("{error:?}"))?;
+    let observed_at = current_requested_at()?;
+    let mut runner = InteractiveTuiRunner;
     let mut factory_port = livespec_console_beads_fabro::SimulatedFactoryDrainPort;
-    livespec_console_beads_fabro::handle_pending_factory_commands(
+    livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
-        &requested_at,
+        &observed_at,
+        "operator",
+        &mut runner,
         &mut factory_port,
     )
     .map_err(|error| format!("{error:?}"))?;
     Ok(())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+struct InteractiveTuiRunner;
+
+#[cfg(all(not(test), not(coverage)))]
+impl TuiSessionRunner for InteractiveTuiRunner {
+    fn run_tui(
+        &mut self,
+        events: &[console_domain::ConsoleEvent],
+        requested_by: &str,
+    ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
+        console_tui::run_interactive_tui(events, requested_by)
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+    }
 }
 
 #[cfg(all(not(test), not(coverage)))]
