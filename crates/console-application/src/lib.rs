@@ -469,8 +469,13 @@ impl FactoryDrainRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactoryDrainPortOutcome {
-    Completed { dispatched_items: u16 },
+    Completed {
+        dispatched_items: u16,
+    },
     Failed,
+    /// The drain was requested but no real Dispatcher port is wired, so no
+    /// drain was attempted. Reported honestly instead of fabricating success.
+    NotWired,
 }
 
 impl FactoryDrainPortOutcome {
@@ -482,6 +487,11 @@ impl FactoryDrainPortOutcome {
     #[must_use]
     pub const fn failed() -> Self {
         Self::Failed
+    }
+
+    #[must_use]
+    pub const fn not_wired() -> Self {
+        Self::NotWired
     }
 }
 
@@ -720,14 +730,22 @@ pub fn handle_factory_drain_command(
     }
     let request = FactoryDrainRequest::new(command.aggregate_id().to_owned(), 1, 1);
     let port_outcome = port.drain_ready_queue(&request)?;
-    let mut events = vec![
-        factory_command_event(command, EventType::CommandAccepted, "accepted", 1),
-        factory_command_event(command, EventType::FactoryDrainStarted, "started", 2),
-    ];
+    let mut events = vec![factory_command_event(
+        command,
+        EventType::CommandAccepted,
+        "accepted",
+        1,
+    )];
     let command_status = match port_outcome {
         FactoryDrainPortOutcome::Completed {
             dispatched_items: _dispatched_items,
         } => {
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDrainStarted,
+                "started",
+                2,
+            ));
             events.push(factory_command_event(
                 command,
                 EventType::FactoryDrainCompleted,
@@ -739,11 +757,29 @@ pub fn handle_factory_drain_command(
         FactoryDrainPortOutcome::Failed => {
             events.push(factory_command_event(
                 command,
+                EventType::FactoryDrainStarted,
+                "started",
+                2,
+            ));
+            events.push(factory_command_event(
+                command,
                 EventType::FactoryDrainFailed,
                 "failed",
                 3,
             ));
             "failed"
+        }
+        FactoryDrainPortOutcome::NotWired => {
+            // No real Dispatcher port is wired, so the drain never started.
+            // Emit an honest not-wired outcome rather than a fabricated
+            // start/completion.
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDrainNotWired,
+                "not_wired",
+                2,
+            ));
+            "not_wired"
         }
     };
     Ok(FactoryCommandOutcome::new(
@@ -774,6 +810,7 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         EventType::CommandAccepted | EventType::CommandRejected => "command",
         EventType::FactoryDrainCompleted
         | EventType::FactoryDrainFailed
+        | EventType::FactoryDrainNotWired
         | EventType::FactoryDrainRequested
         | EventType::FactoryDrainStarted => "factory",
         EventType::BeadsWorkItemSnapshotObserved
@@ -1055,8 +1092,9 @@ fn factory_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
                 "Drain terminal outcomes: {}",
                 count_events(events, EventType::FactoryDrainCompleted)
                     + count_events(events, EventType::FactoryDrainFailed)
+                    + count_events(events, EventType::FactoryDrainNotWired)
             ),
-            "Completed and failed drain outcomes are appended as events.".to_owned(),
+            "Completed, failed, and not-wired drain outcomes are appended as events.".to_owned(),
         ),
     ]
 }
@@ -1163,6 +1201,7 @@ impl AttentionEvent for EventType {
             Self::FabroHumanGateObserved => "Fabro human gate",
             Self::FactoryDrainCompleted => "Factory drain completed",
             Self::FactoryDrainFailed => "Factory drain failed",
+            Self::FactoryDrainNotWired => "Factory drain not wired",
             Self::GithubPullRequestSnapshotObserved => "GitHub pull request snapshot",
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
@@ -1777,6 +1816,43 @@ mod tests {
     }
 
     #[test]
+    fn factory_drain_handler_records_not_wired_outcome_without_fabricating_start() {
+        let command = factory_drain_test_command();
+        let mut port = NotWiringDrainPort;
+
+        let outcome = handle_factory_drain_command(&command, &mut port);
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("not_wired")
+        );
+        // An honest not-wired drain never started, so no FactoryDrainStarted
+        // event is fabricated: only acceptance and the not-wired outcome.
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events
+                    .iter()
+                    .map(ConsoleEvent::event_type)
+                    .collect::<Vec<_>>()),
+            Ok(vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDrainNotWired,
+            ])
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(<[ConsoleEvent]>::len),
+            Ok(2)
+        );
+    }
+
+    #[test]
     fn factory_command_event_context_falls_back_to_source_context() {
         assert_eq!(
             super::factory_command_event_context(EventType::SourceCompletenessFindingObserved),
@@ -2282,6 +2358,10 @@ mod tests {
             "Factory drain failed"
         );
         assert_eq!(
+            EventType::FactoryDrainNotWired.label(),
+            "Factory drain not wired"
+        );
+        assert_eq!(
             EventType::FactoryDrainRequested.label(),
             "Factory drain requested"
         );
@@ -2374,6 +2454,17 @@ mod tests {
             _request: &FactoryDrainRequest,
         ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
             Err(ApplicationError::FactoryDrainPortFailed)
+        }
+    }
+
+    struct NotWiringDrainPort;
+
+    impl FactoryDrainPort for NotWiringDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
+            Ok(FactoryDrainPortOutcome::not_wired())
         }
     }
 }

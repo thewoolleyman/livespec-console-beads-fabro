@@ -91,6 +91,7 @@ pub enum EventType {
     FabroHumanGateObserved,
     FactoryDrainCompleted,
     FactoryDrainFailed,
+    FactoryDrainNotWired,
     FactoryDrainRequested,
     FactoryDrainStarted,
     GithubPullRequestSnapshotObserved,
@@ -110,6 +111,7 @@ impl EventType {
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
             Self::FactoryDrainFailed => "factory.drain.failed",
+            Self::FactoryDrainNotWired => "factory.drain.not_wired",
             Self::FactoryDrainRequested => "factory.drain_requested",
             Self::FactoryDrainStarted => "factory.drain.started",
             Self::GithubPullRequestSnapshotObserved => "pr.snapshot_observed",
@@ -129,6 +131,7 @@ impl EventType {
             "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
+            "factory.drain.not_wired" => Some(Self::FactoryDrainNotWired),
             "factory.drain_requested" => Some(Self::FactoryDrainRequested),
             "factory.drain.started" => Some(Self::FactoryDrainStarted),
             "pr.snapshot_observed" => Some(Self::GithubPullRequestSnapshotObserved),
@@ -296,6 +299,10 @@ mod tests {
             "factory.drain.failed"
         );
         assert_eq!(
+            EventType::FactoryDrainNotWired.contract_name(),
+            "factory.drain.not_wired"
+        );
+        assert_eq!(
             EventType::FactoryDrainRequested.contract_name(),
             "factory.drain_requested"
         );
@@ -331,6 +338,7 @@ mod tests {
             EventType::FabroHumanGateObserved,
             EventType::FactoryDrainCompleted,
             EventType::FactoryDrainFailed,
+            EventType::FactoryDrainNotWired,
             EventType::FactoryDrainRequested,
             EventType::FactoryDrainStarted,
             EventType::GithubPullRequestSnapshotObserved,

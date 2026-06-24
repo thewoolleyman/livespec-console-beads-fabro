@@ -85,7 +85,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
     let observed_at = current_requested_at()?;
     let mut runner = InteractiveTuiRunner;
-    let mut factory_port = livespec_console_beads_fabro::SimulatedFactoryDrainPort;
+    let mut factory_port = livespec_console_beads_fabro::NotWiredFactoryDrainPort;
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
         &observed_at,
