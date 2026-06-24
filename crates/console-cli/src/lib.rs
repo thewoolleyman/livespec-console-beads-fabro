@@ -49,6 +49,7 @@ pub fn run_with_store(
     observed_at: &str,
 ) -> RunOutput {
     match command_name(args) {
+        Some("serve") => run_runtime_result(serve_report(store, observed_at), "serve"),
         Some("backfill") => run_store_result(backfill_demo_report(store, observed_at), "backfill"),
         Some("events") => run_events_with_store(args, store),
         Some("snapshot") => run_store_result(snapshot_report(store), "snapshot"),
@@ -82,6 +83,13 @@ fn run_static(values: &[String]) -> RunOutput {
 }
 
 fn run_store_result(result: EventStoreResult<String>, command: &str) -> RunOutput {
+    match result {
+        Ok(message) => RunOutput::new(0, message),
+        Err(error) => RunOutput::new(1, format!("{command} error: {error:?}")),
+    }
+}
+
+fn run_runtime_result(result: ConsoleRuntimeResult<String>, command: &str) -> RunOutput {
     match result {
         Ok(message) => RunOutput::new(0, message),
         Err(error) => RunOutput::new(1, format!("{command} error: {error:?}")),
@@ -199,6 +207,34 @@ pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
         events.len(),
         commands.len(),
         attention_count
+    ))
+}
+
+pub fn serve_report(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+) -> ConsoleRuntimeResult<String> {
+    let events = store.list_console_events()?;
+    let ingestion = if events.is_empty() {
+        append_demo_events_to_store(store, observed_at)?
+    } else {
+        Vec::new()
+    };
+    let mut factory_port = SimulatedFactoryDrainPort;
+    let handled = handle_pending_factory_commands(store, observed_at, &mut factory_port)?;
+    let events = store.list_console_events()?;
+    let commands = store.list_commands()?;
+    let attention_count = project_attention(&events).len();
+    let pending_count = count_commands_with_status(&commands, "pending");
+    let inserted = ingestion
+        .iter()
+        .filter(|outcome| outcome.status() == AppendStatus::Inserted)
+        .count();
+    Ok(format!(
+        "serve: store ready\nbackfill inserted: {inserted}\nevents: {}\nattention: {attention_count}\ncommands: {}\npending: {pending_count}\nfactory commands handled: {}",
+        events.len(),
+        commands.len(),
+        handled.len()
     ))
 }
 
@@ -550,7 +586,7 @@ mod tests {
         backfill_demo_report, command_status_update_runtime_result, demo_events, doctor_report,
         events_tail_report, factory_command_from_stored, handle_pending_factory_commands,
         load_tui_events_from_store, persist_tui_runtime_effects, render_tui_preview, run,
-        run_with_store, snapshot_report,
+        run_with_store, serve_report, snapshot_report,
     };
 
     #[test]
@@ -689,6 +725,64 @@ mod tests {
     }
 
     #[test]
+    fn store_backed_serve_bootstraps_empty_store() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let output = run_with_store(
+            &command_args(&["bin", "serve"]),
+            &mut store,
+            "2026-06-23T00:00:00Z",
+        );
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(
+            output.message(),
+            "serve: store ready\nbackfill inserted: 2\nevents: 2\nattention: 2\ncommands: 0\npending: 0\nfactory commands handled: 0"
+        );
+        assert_eq!(store.list_console_events()?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_serve_handles_pending_factory_commands() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let persistence = persist_tui_runtime_effects(
+            &mut store,
+            &[factory_drain_effect()],
+            "2026-06-23T00:00:01Z",
+        );
+        assert!(persistence.is_ok());
+
+        let output = run_with_store(
+            &command_args(&["bin", "serve"]),
+            &mut store,
+            "2026-06-23T00:00:02Z",
+        );
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(
+            output.message(),
+            "serve: store ready\nbackfill inserted: 2\nevents: 5\nattention: 2\ncommands: 1\npending: 0\nfactory commands handled: 1"
+        );
+        assert_eq!(store.list_commands()?[0].status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_serve_does_not_backfill_non_empty_store() -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+
+        let report = serve_report(&mut store, "2026-06-23T00:00:01Z")?;
+
+        assert_eq!(
+            report,
+            "serve: store ready\nbackfill inserted: 0\nevents: 2\nattention: 2\ncommands: 0\npending: 0\nfactory commands handled: 0"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn store_backed_events_tail_reports_empty_store() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
@@ -734,6 +828,22 @@ mod tests {
 
         assert_eq!(output.code(), 1);
         assert_eq!(output.message(), "snapshot error: InvalidSequence");
+    }
+
+    #[test]
+    fn runtime_result_reports_console_runtime_errors() {
+        let output = super::run_runtime_result(
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::FactoryDrainPortFailed,
+            )),
+            "serve",
+        );
+
+        assert_eq!(output.code(), 1);
+        assert_eq!(
+            output.message(),
+            "serve error: Application(FactoryDrainPortFailed)"
+        );
     }
 
     #[test]
