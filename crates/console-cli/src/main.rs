@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(all(not(test), not(coverage)))]
 use console_domain::ConsoleEvent;
 #[cfg(all(not(test), not(coverage)))]
-use console_eventstore::{AppendStatus, SqliteEventStore};
+use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
 use console_tui::TuiRuntimeEffect;
 #[cfg(all(not(test), not(coverage)))]
@@ -20,14 +20,14 @@ fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     #[cfg(all(not(test), not(coverage)))]
     {
-        if should_run_backfill(&args) {
-            match run_demo_backfill() {
-                Ok(message) => {
-                    println!("{message}");
-                    std::process::exit(0);
+        if should_run_store_backed_command(&args) {
+            match run_store_backed_command(&args) {
+                Ok(output) => {
+                    println!("{}", output.message());
+                    std::process::exit(output.code());
                 }
                 Err(error) => {
-                    eprintln!("backfill error: {error}");
+                    eprintln!("store command error: {error}");
                     std::process::exit(1);
                 }
             }
@@ -70,31 +70,23 @@ fn should_run_interactive_tui(args: &[String]) -> bool {
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn should_run_backfill(args: &[String]) -> bool {
+fn should_run_store_backed_command(args: &[String]) -> bool {
     let command = args.get(1).map(String::as_str);
-    command == Some("backfill")
+    matches!(command, Some("backfill" | "events" | "snapshot" | "doctor"))
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn run_demo_backfill() -> Result<String, String> {
+fn run_store_backed_command(
+    args: &[String],
+) -> Result<livespec_console_beads_fabro::RunOutput, String> {
     let path = console_store_path();
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
     let observed_at = current_requested_at()?;
-    let outcomes =
-        livespec_console_beads_fabro::append_demo_events_to_store(&mut store, &observed_at)
-            .map_err(|error| format!("{error:?}"))?;
-    let inserted = outcomes
-        .iter()
-        .filter(|outcome| outcome.status() == AppendStatus::Inserted)
-        .count();
-    let duplicate = outcomes
-        .iter()
-        .filter(|outcome| outcome.status() == AppendStatus::Duplicate)
-        .count();
-    Ok(format!(
-        "backfill demo events: inserted {inserted}, duplicate {duplicate}, store {}",
-        path.display()
+    Ok(livespec_console_beads_fabro::run_with_store(
+        args,
+        &mut store,
+        &observed_at,
     ))
 }
 

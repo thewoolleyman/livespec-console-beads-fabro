@@ -2,12 +2,12 @@
 
 use console_application::{
     ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-    build_tui_model, handle_factory_drain_command,
+    build_tui_model, handle_factory_drain_command, project_attention,
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{
-    AppendOutcome, CommandAppend, CommandAppendOutcome, CommandStatusUpdateOutcome, EventAppend,
-    EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand,
+    AppendOutcome, AppendStatus, CommandAppend, CommandAppendOutcome, CommandStatusUpdateOutcome,
+    EventAppend, EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand,
 };
 use console_tui::TuiRuntimeEffect;
 
@@ -39,17 +39,37 @@ where
     I: IntoIterator,
     I::Item: Into<String>,
 {
-    let mut values = args.into_iter().map(Into::into);
-    let _binary_name = values.next();
-    let command = values.next();
-    match command.as_deref() {
+    let values = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    run_static(&values)
+}
+
+pub fn run_with_store(
+    args: &[String],
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+) -> RunOutput {
+    match command_name(args) {
+        Some("backfill") => run_store_result(backfill_demo_report(store, observed_at), "backfill"),
+        Some("events") => run_events_with_store(args, store),
+        Some("snapshot") => run_store_result(snapshot_report(store), "snapshot"),
+        Some("doctor") => run_store_result(doctor_report(store), "doctor"),
+        _other => run_static(args),
+    }
+}
+
+fn command_name(values: &[String]) -> Option<&str> {
+    values.get(1).map(String::as_str)
+}
+
+fn run_static(values: &[String]) -> RunOutput {
+    match command_name(values) {
         None | Some("help" | "--help" | "-h") => RunOutput::new(0, help_text()),
         Some("tui") => RunOutput::new(0, tui_preview()),
         Some("serve") => RunOutput::new(0, "serve mode bootstrap: not yet wired".to_owned()),
         Some("backfill") => RunOutput::new(0, "backfill mode bootstrap: not yet wired".to_owned()),
         Some("events") => {
-            let subcommand = values.next();
-            run_events(subcommand.as_deref())
+            let subcommand = values.get(2).map(String::as_str);
+            run_events(subcommand)
         }
         Some("snapshot") => RunOutput::new(0, "snapshot mode bootstrap: not yet wired".to_owned()),
         Some("doctor") => RunOutput::new(0, "doctor bootstrap: no findings".to_owned()),
@@ -61,8 +81,25 @@ where
     }
 }
 
+fn run_store_result(result: EventStoreResult<String>, command: &str) -> RunOutput {
+    match result {
+        Ok(message) => RunOutput::new(0, message),
+        Err(error) => RunOutput::new(1, format!("{command} error: {error:?}")),
+    }
+}
+
+pub trait CommandAppendStore {
+    fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome>;
+}
+
+impl CommandAppendStore for SqliteEventStore {
+    fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome> {
+        Self::append_command(self, append)
+    }
+}
+
 pub fn persist_tui_runtime_effects(
-    store: &mut SqliteEventStore,
+    store: &mut dyn CommandAppendStore,
     effects: &[TuiRuntimeEffect],
     requested_at: &str,
 ) -> EventStoreResult<Vec<CommandAppendOutcome>> {
@@ -76,8 +113,18 @@ pub fn persist_tui_runtime_effects(
     Ok(outcomes)
 }
 
+pub trait EventAppendStore {
+    fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome>;
+}
+
+impl EventAppendStore for SqliteEventStore {
+    fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
+        Self::append_event(self, append)
+    }
+}
+
 pub fn append_demo_events_to_store(
-    store: &mut SqliteEventStore,
+    store: &mut dyn EventAppendStore,
     observed_at: &str,
 ) -> EventStoreResult<Vec<AppendOutcome>> {
     let mut outcomes = Vec::new();
@@ -90,6 +137,76 @@ pub fn append_demo_events_to_store(
 
 pub fn load_tui_events_from_store(store: &SqliteEventStore) -> EventStoreResult<Vec<ConsoleEvent>> {
     store.list_console_events()
+}
+
+pub fn backfill_demo_report(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+) -> EventStoreResult<String> {
+    let outcomes = append_demo_events_to_store(store, observed_at)?;
+    let inserted = outcomes
+        .iter()
+        .filter(|outcome| outcome.status() == AppendStatus::Inserted)
+        .count();
+    let duplicate = outcomes
+        .iter()
+        .filter(|outcome| outcome.status() == AppendStatus::Duplicate)
+        .count();
+    Ok(format!(
+        "backfill demo events: inserted {inserted}, duplicate {duplicate}"
+    ))
+}
+
+pub fn events_tail_report(store: &SqliteEventStore, limit: usize) -> EventStoreResult<String> {
+    let events = store.list_console_events()?;
+    if events.is_empty() {
+        return Ok("events tail: no events".to_owned());
+    }
+    let start = events.len().saturating_sub(limit);
+    let mut lines = vec!["events tail".to_owned()];
+    for event in &events[start..] {
+        lines.push(format!(
+            "{} {} {} {}",
+            event.stream_seq(),
+            event.event_id(),
+            event.event_type().contract_name(),
+            event.source()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+pub fn snapshot_report(store: &SqliteEventStore) -> EventStoreResult<String> {
+    let events = store.list_console_events()?;
+    let commands = store.list_commands()?;
+    let attention_count = project_attention(&events).len();
+    let pending_count = count_commands_with_status(&commands, "pending");
+    Ok(format!(
+        "snapshot: events {}, attention {}, commands {}, pending {}",
+        events.len(),
+        attention_count,
+        commands.len(),
+        pending_count
+    ))
+}
+
+pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
+    let events = store.list_console_events()?;
+    let commands = store.list_commands()?;
+    let attention_count = project_attention(&events).len();
+    Ok(format!(
+        "doctor: no findings\nstore events: {}\ncommands: {}\nattention: {}",
+        events.len(),
+        commands.len(),
+        attention_count
+    ))
+}
+
+fn count_commands_with_status(commands: &[StoredCommand], status: &str) -> usize {
+    commands
+        .iter()
+        .filter(|command| command.status() == status)
+        .count()
 }
 
 #[derive(Debug)]
@@ -346,6 +463,16 @@ fn run_events(subcommand: Option<&str>) -> RunOutput {
     }
 }
 
+fn run_events_with_store(values: &[String], store: &SqliteEventStore) -> RunOutput {
+    match values.get(2).map(String::as_str) {
+        Some("tail") => run_store_result(events_tail_report(store, 20), "events"),
+        _other => RunOutput::new(
+            2,
+            "usage: livespec-console-beads-fabro events tail".to_owned(),
+        ),
+    }
+}
+
 fn tui_preview() -> String {
     let events = demo_events();
     let model = build_tui_model(&events, 0);
@@ -411,17 +538,19 @@ mod tests {
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use console_eventstore::{
-        AppendOutcome, AppendStatus, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
-        EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand,
+        AppendOutcome, AppendStatus, CommandAppend, CommandAppendOutcome, CommandAppendStatus,
+        CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult,
+        SqliteEventStore, StoredCommand,
     };
     use console_tui::TuiRuntimeEffect;
 
     use super::{
-        ConsoleRuntimeError, FactoryCommandHandlingOutcome, FactoryCommandStore,
-        SimulatedFactoryDrainPort, append_demo_events_to_store,
-        command_status_update_runtime_result, demo_events, factory_command_from_stored,
-        handle_pending_factory_commands, load_tui_events_from_store, persist_tui_runtime_effects,
-        render_tui_preview, run,
+        CommandAppendStore, ConsoleRuntimeError, EventAppendStore, FactoryCommandHandlingOutcome,
+        FactoryCommandStore, SimulatedFactoryDrainPort, append_demo_events_to_store,
+        backfill_demo_report, command_status_update_runtime_result, demo_events, doctor_report,
+        events_tail_report, factory_command_from_stored, handle_pending_factory_commands,
+        load_tui_events_from_store, persist_tui_runtime_effects, render_tui_preview, run,
+        run_with_store, snapshot_report,
     };
 
     #[test]
@@ -511,6 +640,159 @@ mod tests {
     }
 
     #[test]
+    fn store_backed_backfill_command_reports_insert_and_duplicate_counts()
+    -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let first = run_with_store(
+            &command_args(&["bin", "backfill"]),
+            &mut store,
+            "2026-06-23T00:00:00Z",
+        );
+        let second = run_with_store(
+            &command_args(&["bin", "backfill"]),
+            &mut store,
+            "2026-06-23T00:00:00Z",
+        );
+
+        assert_eq!(first.code(), 0);
+        assert_eq!(
+            first.message(),
+            "backfill demo events: inserted 2, duplicate 0"
+        );
+        assert_eq!(second.code(), 0);
+        assert_eq!(
+            second.message(),
+            "backfill demo events: inserted 0, duplicate 2"
+        );
+        assert_eq!(store.list_console_events()?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_events_tail_reports_persisted_events() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+
+        let output = run_with_store(
+            &command_args(&["bin", "events", "tail"]),
+            &mut store,
+            "unused",
+        );
+
+        assert_eq!(output.code(), 0);
+        assert!(output.message().contains("events tail"));
+        assert!(output.message().contains("evt_demo_1"));
+        assert!(output.message().contains("fabro.human_gate_observed"));
+        assert!(output.message().contains("evt_demo_2"));
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_events_tail_reports_empty_store() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let output = run_with_store(
+            &command_args(&["bin", "events", "tail"]),
+            &mut store,
+            "unused",
+        );
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(output.message(), "events tail: no events");
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_events_usage_keeps_error_code() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let output = run_with_store(&command_args(&["bin", "events"]), &mut store, "unused");
+
+        assert_eq!(output.code(), 2);
+        assert_eq!(
+            output.message(),
+            "usage: livespec-console-beads-fabro events tail"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_runner_falls_back_to_static_commands() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let output = run_with_store(&command_args(&["bin", "help"]), &mut store, "unused");
+
+        assert_eq!(output.code(), 0);
+        assert!(output.message().contains("Commands:"));
+        Ok(())
+    }
+
+    #[test]
+    fn store_result_reports_event_store_errors() {
+        let output = super::run_store_result(Err(EventStoreError::InvalidSequence), "snapshot");
+
+        assert_eq!(output.code(), 1);
+        assert_eq!(output.message(), "snapshot error: InvalidSequence");
+    }
+
+    #[test]
+    fn store_backed_snapshot_reports_projection_counts() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let persistence = persist_tui_runtime_effects(
+            &mut store,
+            &[factory_drain_effect()],
+            "2026-06-23T00:00:01Z",
+        );
+        assert!(persistence.is_ok());
+
+        let output = run_with_store(&command_args(&["bin", "snapshot"]), &mut store, "unused");
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(
+            output.message(),
+            "snapshot: events 2, attention 2, commands 1, pending 1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_doctor_reports_no_findings_with_store_counts() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+
+        let output = run_with_store(&command_args(&["bin", "doctor"]), &mut store, "unused");
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(
+            output.message(),
+            "doctor: no findings\nstore events: 2\ncommands: 0\nattention: 2"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn store_report_helpers_match_command_output() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        assert_eq!(
+            backfill_demo_report(&mut store, "2026-06-23T00:00:00Z")?,
+            "backfill demo events: inserted 2, duplicate 0"
+        );
+        assert!(events_tail_report(&store, 1)?.contains("evt_demo_2"));
+        assert_eq!(
+            snapshot_report(&store)?,
+            "snapshot: events 2, attention 2, commands 0, pending 0"
+        );
+        assert_eq!(
+            doctor_report(&store)?,
+            "doctor: no findings\nstore events: 2\ncommands: 0\nattention: 2"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn tui_preview_reports_render_errors() {
         let model = build_tui_model(&[], 0);
 
@@ -580,6 +862,22 @@ mod tests {
         assert_eq!(outcomes, []);
         assert_eq!(commands, []);
         Ok(())
+    }
+
+    #[test]
+    fn tui_persistence_reports_command_append_errors() {
+        let mut store = CommandAppendFailingStore;
+        let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+            "cmd_evt_gate_acknowledge_requested".to_owned(),
+            CommandType::AttentionAcknowledgeRequested,
+            "evt_gate".to_owned(),
+            "evt_gate:attention.acknowledge_requested".to_owned(),
+            "operator".to_owned(),
+        ))];
+
+        let outcome = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z");
+
+        assert!(matches!(outcome, Err(EventStoreError::InvalidSequence)));
     }
 
     #[test]
@@ -884,6 +1182,15 @@ mod tests {
     }
 
     #[test]
+    fn demo_backfill_reports_event_append_errors() {
+        let mut store = EventAppendFailingStore;
+
+        let outcome = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z");
+
+        assert!(matches!(outcome, Err(EventStoreError::InvalidSequence)));
+    }
+
+    #[test]
     fn demo_backfill_is_idempotent_by_source_event_id() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
@@ -908,6 +1215,10 @@ mod tests {
         ))
     }
 
+    fn command_args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
     struct FailedFactoryDrainPort;
 
     impl FactoryDrainPort for FailedFactoryDrainPort {
@@ -927,6 +1238,25 @@ mod tests {
             _request: &FactoryDrainRequest,
         ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
             Err(ApplicationError::FactoryDrainPortFailed)
+        }
+    }
+
+    struct CommandAppendFailingStore;
+
+    impl CommandAppendStore for CommandAppendFailingStore {
+        fn append_command(
+            &mut self,
+            _append: &CommandAppend,
+        ) -> EventStoreResult<CommandAppendOutcome> {
+            Err(EventStoreError::InvalidSequence)
+        }
+    }
+
+    struct EventAppendFailingStore;
+
+    impl EventAppendStore for EventAppendFailingStore {
+        fn append_event(&mut self, _append: &EventAppend) -> EventStoreResult<AppendOutcome> {
+            Err(EventStoreError::InvalidSequence)
         }
     }
 
