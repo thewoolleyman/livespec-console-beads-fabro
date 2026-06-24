@@ -1,5 +1,5 @@
 {
-  "template": "livespec-console-beads-fabro",
+  "template": "livespec-with-diagrams",
   "spec_root": "SPECIFICATION",
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
   "livespec-orchestrator-beads-fabro": {
