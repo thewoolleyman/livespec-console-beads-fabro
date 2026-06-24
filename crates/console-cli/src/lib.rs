@@ -3,17 +3,23 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(test)]
+use console_application::source_adapters::{
+    AdapterPoll, AdapterPollRequest, BeadsWorkItemSnapshot, BeadsWorkItemStatus,
+    DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot, FabroRunState,
+    GithubPullRequestSnapshot, GithubPullRequestState, LivespecNextAction, LivespecNextSnapshot,
+    normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+    normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+};
 use console_application::{
-    ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-    build_tui_model, handle_factory_drain_command, project_attention,
+    ApplicationError, FactoryDrainPort, build_tui_model, handle_factory_drain_command,
+    project_attention,
     source_adapters::{
-        AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest,
-        BeadsWorkItemSnapshot, BeadsWorkItemStatus, DispatcherJournalEntry, DispatcherJournalKind,
-        FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState,
-        LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent, PullSourcePort,
-        SourceCheckpointPort, SourceEventAppendPort, normalize_beads_snapshot,
-        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot, run_adapter_poll,
+        AdapterError, AdapterIngestionSummary, NormalizeObservation, NormalizedSourceEvent,
+        ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
+        SourceEventAppendPort, SourceObservationPlan, SourceProbe, parse_beads_observation,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, run_adapter_poll,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -59,12 +65,18 @@ pub fn run_with_store(
     args: &[String],
     store: &mut SqliteEventStore,
     observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
+    factory_port: &mut dyn FactoryDrainPort,
 ) -> RunOutput {
     match command_name(args) {
-        Some("serve") => run_runtime_result(serve_report(store, observed_at), "serve"),
-        Some("backfill") => {
-            run_runtime_result(backfill_source_report(store, observed_at), "backfill")
-        }
+        Some("serve") => run_runtime_result(
+            serve_report(store, observed_at, sources, factory_port),
+            "serve",
+        ),
+        Some("backfill") => run_runtime_result(
+            backfill_source_report(store, observed_at, sources),
+            "backfill",
+        ),
         Some("events") => run_events_with_store(args, store),
         Some("snapshot") => run_store_result(snapshot_report(store), "snapshot"),
         Some("doctor") => run_store_result(doctor_report(store), "doctor"),
@@ -235,11 +247,12 @@ pub fn run_store_backed_tui_session(
     observed_at: &str,
     requested_by: &str,
     runner: &mut dyn TuiSessionRunner,
+    sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
     let existing_events = store.list_console_events()?;
     let ingestion = if existing_events.is_empty() {
-        backfill_source_adapters(store, observed_at)?
+        backfill_source_adapters(store, observed_at, sources)?
     } else {
         Vec::new()
     };
@@ -284,8 +297,9 @@ pub fn backfill_demo_report(
 pub fn backfill_source_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
 ) -> ConsoleRuntimeResult<String> {
-    let summaries = backfill_source_adapters(store, observed_at)?;
+    let summaries = backfill_source_adapters(store, observed_at, sources)?;
     let event_count: usize = summaries
         .iter()
         .map(AdapterIngestionSummary::appended_event_count)
@@ -299,18 +313,18 @@ pub fn backfill_source_report(
 fn backfill_source_adapters(
     store: &mut SqliteEventStore,
     observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
 ) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
     let shared = SharedSqliteStore::new(store);
     let mut summaries = Vec::new();
-    for (adapter_id, poll) in initial_source_polls()? {
-        let source = ScriptedSource::new(poll);
+    for &(adapter_id, source) in sources {
         let mut checkpoints = SqliteCheckpointPort::new(shared.clone(), observed_at);
         let mut event_log = SqliteSourceEventLog::new(shared.clone());
         summaries.push(run_adapter_poll(
             adapter_id,
             1,
             observed_at,
-            &source,
+            source,
             &mut checkpoints,
             &mut event_log,
         )?);
@@ -318,10 +332,71 @@ fn backfill_source_adapters(
     Ok(summaries)
 }
 
-fn initial_source_polls() -> ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> {
-    source_polls_from_seed(&initial_source_seed())
+const DISPATCHER_JOURNAL_PATH: &str = "tmp/dispatcher-journal.jsonl";
+
+/// A live source adapter paired with its adapter id, as references.
+pub type SourceAdapterRef<'a> = (&'a str, &'a dyn PullSourcePort);
+
+/// Build the real source adapters for the live ingestion path.
+///
+/// Each adapter observes its source through the host-backed probe (real `bd`,
+/// `gh`, the Dispatcher journal, `fabro`, `livespec`) or emits an honest
+/// not-observed finding. The binary supplies the probe and borrows the
+/// returned adapters for the lifetime of a serve/tui run.
+pub fn live_source_adapters<'a>(
+    probe: &'a dyn SourceProbe,
+    repo: &str,
+) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
+    let specs: [(
+        &str,
+        SourceAdapterKind,
+        SourceObservationPlan,
+        NormalizeObservation,
+    ); 5] = [
+        (
+            "beads",
+            SourceAdapterKind::Beads,
+            SourceObservationPlan::command("bd", &["ready", "--json"]),
+            parse_beads_observation,
+        ),
+        (
+            "dispatcher",
+            SourceAdapterKind::Dispatcher,
+            SourceObservationPlan::file(DISPATCHER_JOURNAL_PATH),
+            parse_dispatcher_observation,
+        ),
+        (
+            "fabro",
+            SourceAdapterKind::Fabro,
+            SourceObservationPlan::command("fabro", &["ps", "--json"]),
+            parse_fabro_observation,
+        ),
+        (
+            "livespec",
+            SourceAdapterKind::LiveSpec,
+            SourceObservationPlan::command("livespec", &["next", "--json"]),
+            parse_livespec_observation,
+        ),
+        (
+            "github",
+            SourceAdapterKind::GitHub,
+            SourceObservationPlan::command(
+                "gh",
+                &["pr", "list", "--json", "number,state", "--limit", "1"],
+            ),
+            parse_github_observation,
+        ),
+    ];
+    specs
+        .into_iter()
+        .map(|(prefix, source, plan, normalize)| {
+            let adapter = ObservedSourceAdapter::new(probe, source, repo, plan, normalize)?;
+            Ok((format!("{prefix}:{repo}"), adapter))
+        })
+        .collect()
 }
 
+#[cfg(test)]
 fn source_polls_from_seed(
     seed: &InitialSourceSeed<'_>,
 ) -> ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> {
@@ -372,6 +447,7 @@ fn source_polls_from_seed(
     ])
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct InitialSourceSeed<'a> {
     repo: &'a str,
@@ -380,6 +456,7 @@ struct InitialSourceSeed<'a> {
     run_id: &'a str,
 }
 
+#[cfg(test)]
 const fn initial_source_seed() -> InitialSourceSeed<'static> {
     InitialSourceSeed {
         repo: "livespec-console-beads-fabro",
@@ -437,15 +514,16 @@ pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
 pub fn serve_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
+    factory_port: &mut dyn FactoryDrainPort,
 ) -> ConsoleRuntimeResult<String> {
     let events = store.list_console_events()?;
     let ingestion = if events.is_empty() {
-        backfill_source_adapters(store, observed_at)?
+        backfill_source_adapters(store, observed_at, sources)?
     } else {
         Vec::new()
     };
-    let mut factory_port = NotWiredFactoryDrainPort;
-    let handled = handle_pending_factory_commands(store, observed_at, &mut factory_port)?;
+    let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
     let attention_count = project_attention(&events).len();
@@ -532,23 +610,6 @@ impl FactoryCommandHandlingOutcome {
     #[must_use]
     pub const fn appended_event_count(&self) -> usize {
         self.appended_event_count
-    }
-}
-
-/// Honest factory-drain port for the live serve/tui path.
-///
-/// Used until a real Dispatcher-invoking port lands. No real Dispatcher is
-/// wired, so this never fabricates a drain outcome: it reports `NotWired` so
-/// the command handler records an honest not-wired event instead of a
-/// fictitious success.
-pub struct NotWiredFactoryDrainPort;
-
-impl FactoryDrainPort for NotWiredFactoryDrainPort {
-    fn drain_ready_queue(
-        &mut self,
-        _request: &FactoryDrainRequest,
-    ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
-        Ok(FactoryDrainPortOutcome::not_wired())
     }
 }
 
@@ -817,16 +878,19 @@ impl SourceEventAppendPort for SqliteSourceEventLog<'_> {
     }
 }
 
+#[cfg(test)]
 struct ScriptedSource {
     poll: AdapterPoll,
 }
 
+#[cfg(test)]
 impl ScriptedSource {
     const fn new(poll: AdapterPoll) -> Self {
         Self { poll }
     }
 }
 
+#[cfg(test)]
 impl PullSourcePort for ScriptedSource {
     fn poll(&self, _request: &AdapterPollRequest) -> Result<AdapterPoll, AdapterError> {
         Ok(self.poll.clone())
@@ -914,7 +978,8 @@ fn help_text() -> String {
 mod tests {
     use console_application::{
         ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        build_tui_model, source_adapters::AdapterError,
+        build_tui_model,
+        source_adapters::{AdapterError, PullSourcePort, SourceProbe, SourceProbeOutcome},
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use console_eventstore::{
@@ -926,14 +991,56 @@ mod tests {
 
     use super::{
         CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
-        FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed,
-        NotWiredFactoryDrainPort, TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
-        backfill_demo_report, backfill_source_report, command_status_update_runtime_result,
-        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
-        handle_pending_factory_commands, initial_source_seed, load_tui_events_from_store,
-        persist_tui_runtime_effects, render_tui_preview, run, run_store_backed_tui_session,
-        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
+        FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed, ScriptedSource,
+        SourceAdapterRef, TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
+        backfill_demo_report, backfill_source_adapters, backfill_source_report,
+        command_status_update_runtime_result, demo_events, doctor_report, events_tail_report,
+        factory_command_from_stored, handle_pending_factory_commands, initial_source_seed,
+        live_source_adapters, load_tui_events_from_store, persist_tui_runtime_effects,
+        render_tui_preview, run, run_store_backed_tui_session, run_with_store, serve_report,
+        snapshot_report, source_polls_from_seed,
     };
+
+    fn scripted_source_list() -> Vec<(String, ScriptedSource)> {
+        source_polls_from_seed(&initial_source_seed())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(adapter_id, poll)| (adapter_id.to_owned(), ScriptedSource::new(poll)))
+            .collect()
+    }
+
+    fn scripted_source_refs(sources: &[(String, ScriptedSource)]) -> Vec<SourceAdapterRef<'_>> {
+        sources
+            .iter()
+            .map(|(adapter_id, source)| (adapter_id.as_str(), source as &dyn PullSourcePort))
+            .collect()
+    }
+
+    // Most store-backed command tests do not care which sources or factory port
+    // back the run, only that the command dispatches: drive them with the
+    // scripted seed and a completing drain double.
+    fn run_with_store_scripted(
+        args: &[String],
+        store: &mut SqliteEventStore,
+        observed_at: &str,
+    ) -> super::RunOutput {
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
+        let mut port = SimulatedFactoryDrainPort;
+        run_with_store(args, store, observed_at, &sources, &mut port)
+    }
+
+    struct UnavailableProbe;
+
+    impl SourceProbe for UnavailableProbe {
+        fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable("test probe: no command sources")
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable("test probe: no file sources")
+        }
+    }
 
     #[test]
     fn help_lists_specified_command_shape() {
@@ -1026,12 +1133,12 @@ mod tests {
     {
         let mut store = SqliteEventStore::open_in_memory()?;
 
-        let first = run_with_store(
+        let first = run_with_store_scripted(
             &command_args(&["bin", "backfill"]),
             &mut store,
             "2026-06-23T00:00:00Z",
         );
-        let second = run_with_store(
+        let second = run_with_store_scripted(
             &command_args(&["bin", "backfill"]),
             &mut store,
             "2026-06-23T00:00:00Z",
@@ -1074,8 +1181,10 @@ mod tests {
     #[test]
     fn source_backfill_rejects_empty_observed_at() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
 
-        let result = backfill_source_report(&mut store, "");
+        let result = backfill_source_report(&mut store, "", &sources);
 
         assert!(matches!(
             result,
@@ -1143,7 +1252,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
 
-        let output = run_with_store(
+        let output = run_with_store_scripted(
             &command_args(&["bin", "events", "tail"]),
             &mut store,
             "unused",
@@ -1161,7 +1270,7 @@ mod tests {
     fn store_backed_serve_bootstraps_empty_store() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
-        let output = run_with_store(
+        let output = run_with_store_scripted(
             &command_args(&["bin", "serve"]),
             &mut store,
             "2026-06-23T00:00:00Z",
@@ -1181,8 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_serve_handles_pending_factory_commands_honestly_not_wired()
-    -> Result<(), EventStoreError> {
+    fn store_backed_serve_threads_injected_drain_port() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
         let persistence = persist_tui_runtime_effects(
             &mut store,
@@ -1191,21 +1299,22 @@ mod tests {
         );
         assert!(persistence.is_ok());
 
-        let output = run_with_store(
+        // The scripted run injects a completing drain double, so the pending
+        // command is handled through the injected port: accepted + started +
+        // completed (three events) and the command lands `completed`. The honest
+        // not-wired behaviour of the real port is covered in console-application.
+        let output = run_with_store_scripted(
             &command_args(&["bin", "serve"]),
             &mut store,
             "2026-06-23T00:00:02Z",
         );
 
-        // The live serve path has no real Dispatcher port wired, so the pending
-        // drain is handled honestly: accepted + not_wired (two events, no
-        // fabricated start/completion), and the command lands in `not_wired`.
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 6\nevents: 8\nattention: 3\ncommands: 1\npending: 0\nfactory commands handled: 1"
+            "serve: store ready\nbackfill events: 6\nevents: 9\nattention: 3\ncommands: 1\npending: 0\nfactory commands handled: 1"
         );
-        assert_eq!(store.list_commands()?[0].status(), "not_wired");
+        assert_eq!(store.list_commands()?[0].status(), "completed");
         Ok(())
     }
 
@@ -1213,8 +1322,11 @@ mod tests {
     fn store_backed_serve_does_not_backfill_non_empty_store() -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
+        let mut port = SimulatedFactoryDrainPort;
 
-        let report = serve_report(&mut store, "2026-06-23T00:00:01Z")?;
+        let report = serve_report(&mut store, "2026-06-23T00:00:01Z", &sources, &mut port)?;
 
         assert_eq!(
             report,
@@ -1227,7 +1339,7 @@ mod tests {
     fn store_backed_events_tail_reports_empty_store() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
-        let output = run_with_store(
+        let output = run_with_store_scripted(
             &command_args(&["bin", "events", "tail"]),
             &mut store,
             "unused",
@@ -1242,7 +1354,8 @@ mod tests {
     fn store_backed_events_usage_keeps_error_code() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
-        let output = run_with_store(&command_args(&["bin", "events"]), &mut store, "unused");
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "events"]), &mut store, "unused");
 
         assert_eq!(output.code(), 2);
         assert_eq!(
@@ -1256,7 +1369,7 @@ mod tests {
     fn store_backed_runner_falls_back_to_static_commands() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
-        let output = run_with_store(&command_args(&["bin", "help"]), &mut store, "unused");
+        let output = run_with_store_scripted(&command_args(&["bin", "help"]), &mut store, "unused");
 
         assert_eq!(output.code(), 0);
         assert!(output.message().contains("Commands:"));
@@ -1298,7 +1411,8 @@ mod tests {
         );
         assert!(persistence.is_ok());
 
-        let output = run_with_store(&command_args(&["bin", "snapshot"]), &mut store, "unused");
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "snapshot"]), &mut store, "unused");
 
         assert_eq!(output.code(), 0);
         assert_eq!(
@@ -1313,7 +1427,8 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
 
-        let output = run_with_store(&command_args(&["bin", "doctor"]), &mut store, "unused");
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "doctor"]), &mut store, "unused");
 
         assert_eq!(output.code(), 0);
         assert_eq!(
@@ -1326,9 +1441,11 @@ mod tests {
     #[test]
     fn store_report_helpers_match_command_output() -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
 
         assert_eq!(
-            backfill_source_report(&mut store, "2026-06-23T00:00:00Z")?,
+            backfill_source_report(&mut store, "2026-06-23T00:00:00Z", &sources)?,
             "backfill source adapters: adapters 5, events 6"
         );
         assert!(events_tail_report(&store, 1)?.contains("pr.snapshot_observed"));
@@ -1437,12 +1554,15 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-06-23T00:00:02Z",
             "operator",
             &mut runner,
+            &sources,
             &mut factory_port,
         );
         let commands = store.list_commands()?;
@@ -1496,12 +1616,15 @@ mod tests {
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
         let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
         let mut factory_port = SimulatedFactoryDrainPort;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-06-23T00:00:02Z",
             "operator",
             &mut runner,
+            &sources,
             &mut factory_port,
         );
 
@@ -1519,12 +1642,15 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let mut runner = ErroringTuiSessionRunner;
         let mut factory_port = SimulatedFactoryDrainPort;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-06-23T00:00:02Z",
             "operator",
             &mut runner,
+            &sources,
             &mut factory_port,
         );
 
@@ -1824,13 +1950,58 @@ mod tests {
     }
 
     #[test]
-    fn not_wired_factory_drain_port_reports_not_wired_without_fabricating_success() {
-        let mut port = NotWiredFactoryDrainPort;
-        let request = FactoryDrainRequest::new("fleet:livespec".to_owned(), 1, 1);
+    fn live_source_adapters_observe_each_source_through_the_probe()
+    -> Result<(), ConsoleRuntimeError> {
+        let probe = UnavailableProbe;
+        let adapters = live_source_adapters(&probe, "console")?;
 
-        let outcome = port.drain_ready_queue(&request);
+        let adapter_ids: Vec<&str> = adapters
+            .iter()
+            .map(|(adapter_id, _adapter)| adapter_id.as_str())
+            .collect();
+        assert_eq!(
+            adapter_ids,
+            [
+                "beads:console",
+                "dispatcher:console",
+                "fabro:console",
+                "livespec:console",
+                "github:console",
+            ]
+        );
 
-        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::not_wired()));
+        // Polling every adapter exercises both probe capabilities (commands and
+        // the Dispatcher journal file). The probe reports every source
+        // unavailable, so each adapter emits one honest not-observed finding
+        // rather than a fabricated snapshot.
+        let refs: Vec<SourceAdapterRef<'_>> = adapters
+            .iter()
+            .map(|(adapter_id, adapter)| (adapter_id.as_str(), adapter as &dyn PullSourcePort))
+            .collect();
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let summaries = backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &refs)?;
+
+        assert_eq!(summaries.len(), 5);
+        assert_eq!(store.list_console_events()?.len(), 5);
+        for event in store.list_console_events()? {
+            assert_eq!(
+                event.event_type().contract_name(),
+                "source.not_observed_finding_observed"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn live_source_adapters_rejects_empty_repo() {
+        let probe = UnavailableProbe;
+
+        let result = live_source_adapters(&probe, "  ");
+
+        assert!(matches!(
+            result,
+            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyRepo))
+        ));
     }
 
     #[test]
@@ -1887,7 +2058,7 @@ mod tests {
 
     /// Test double standing in for a real Dispatcher port that completes a
     /// drain. Production no longer ships a success-fabricating port (the live
-    /// path uses `NotWiredFactoryDrainPort`); this double lets the command and
+    /// path uses `DispatcherFactoryDrainPort`); this double lets the command and
     /// session machinery still be exercised against a completing outcome.
     struct SimulatedFactoryDrainPort;
 
