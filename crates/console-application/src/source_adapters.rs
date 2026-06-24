@@ -27,6 +27,7 @@ pub enum AdapterError {
     EmptyAdapterId,
     EmptyCheckpoint,
     EmptyDispatchId,
+    EmptyObservedAt,
     EmptyRepo,
     EmptyRunId,
     EmptyWorkItemId,
@@ -43,6 +44,85 @@ pub trait PullSourcePort {
 pub trait SourceCheckpointPort {
     fn load_checkpoint(&self, adapter_id: &str) -> AdapterResult<Option<String>>;
     fn save_checkpoint(&self, adapter_id: &str, checkpoint: &str) -> AdapterResult<()>;
+}
+
+pub trait SourceEventAppendPort {
+    fn append_normalized_event(
+        &mut self,
+        event: &NormalizedSourceEvent,
+        observed_at: &str,
+    ) -> AdapterResult<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterIngestionSummary {
+    adapter_id: String,
+    previous_checkpoint: Option<String>,
+    checkpoint: String,
+    appended_event_count: usize,
+}
+
+impl AdapterIngestionSummary {
+    #[must_use]
+    pub const fn new(
+        adapter_id: String,
+        previous_checkpoint: Option<String>,
+        checkpoint: String,
+        appended_event_count: usize,
+    ) -> Self {
+        Self {
+            adapter_id,
+            previous_checkpoint,
+            checkpoint,
+            appended_event_count,
+        }
+    }
+
+    #[must_use]
+    pub fn adapter_id(&self) -> &str {
+        &self.adapter_id
+    }
+
+    #[must_use]
+    pub fn previous_checkpoint(&self) -> Option<&str> {
+        self.previous_checkpoint.as_deref()
+    }
+
+    #[must_use]
+    pub fn checkpoint(&self) -> &str {
+        &self.checkpoint
+    }
+
+    #[must_use]
+    pub const fn appended_event_count(&self) -> usize {
+        self.appended_event_count
+    }
+}
+
+pub fn run_adapter_poll(
+    adapter_id: &str,
+    safety_window: u64,
+    observed_at: &str,
+    source: &impl PullSourcePort,
+    checkpoints: &mut impl SourceCheckpointPort,
+    event_log: &mut impl SourceEventAppendPort,
+) -> AdapterResult<AdapterIngestionSummary> {
+    let adapter_id = required_text(adapter_id, AdapterError::EmptyAdapterId)?;
+    let observed_at = required_text(observed_at, AdapterError::EmptyObservedAt)?;
+    let previous_checkpoint = checkpoints.load_checkpoint(&adapter_id)?;
+    let request =
+        AdapterPollRequest::new(&adapter_id, previous_checkpoint.as_deref(), safety_window)?;
+    let poll = source.poll(&request)?;
+    for event in poll.events() {
+        event_log.append_normalized_event(event, &observed_at)?;
+    }
+    checkpoints.save_checkpoint(&adapter_id, poll.checkpoint())?;
+    Ok(AdapterIngestionSummary::new(
+        adapter_id,
+        previous_checkpoint,
+        poll.checkpoint().to_owned(),
+        poll.events().len(),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -731,15 +811,20 @@ fn optional_text(value: Option<&str>, error: AdapterError) -> AdapterResult<Opti
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use console_domain::EventType;
 
     use super::{
-        AdapterError, AdapterPoll, AdapterPollRequest, BeadsWorkItemSnapshot, BeadsWorkItemStatus,
-        CompletenessFinding, DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot,
-        FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, LivespecNextAction,
-        LivespecNextSnapshot, NormalizedSourceEvent, SourceAdapterKind, SourcePayload,
-        normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+        AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest, AdapterResult,
+        BeadsWorkItemSnapshot, BeadsWorkItemStatus, CompletenessFinding, DispatcherJournalEntry,
+        DispatcherJournalKind, FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot,
+        GithubPullRequestState, LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent,
+        PullSourcePort, SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort,
+        SourcePayload, normalize_beads_snapshot, normalize_dispatcher_journal_entry,
+        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
+        normalize_livespec_next_snapshot, run_adapter_poll,
     };
 
     #[test]
@@ -769,6 +854,166 @@ mod tests {
         assert_eq!(
             AdapterPollRequest::new("beads", Some(" "), 3),
             Err(AdapterError::EmptyCheckpoint)
+        );
+    }
+
+    #[test]
+    fn adapter_ingestion_appends_events_before_advancing_checkpoint() {
+        let trace = Trace::new();
+        let source = ScriptedSource::new(
+            trace.clone(),
+            AdapterPoll::new("8", vec![beads_snapshot_event_fixture()]),
+        );
+        let mut checkpoints = MemoryCheckpoints::new(trace.clone(), Some("7"));
+        let mut event_log = MemoryEventLog::new(trace.clone(), None);
+
+        let summary = run_adapter_poll(
+            " beads:repo ",
+            3,
+            " 2026-06-24T00:00:00Z ",
+            &source,
+            &mut checkpoints,
+            &mut event_log,
+        );
+
+        assert_eq!(
+            summary.as_ref().map(AdapterIngestionSummary::adapter_id),
+            Ok("beads:repo")
+        );
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::previous_checkpoint),
+            Ok(Some("7"))
+        );
+        assert_eq!(
+            summary.as_ref().map(AdapterIngestionSummary::checkpoint),
+            Ok("8")
+        );
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::appended_event_count),
+            Ok(1)
+        );
+        assert_eq!(
+            trace.entries(),
+            vec![
+                "load:beads:repo".to_owned(),
+                "poll:beads:repo:7:3".to_owned(),
+                "append:evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot:2026-06-24T00:00:00Z"
+                    .to_owned(),
+                "save:beads:repo:8".to_owned(),
+            ]
+        );
+        assert_eq!(checkpoints.saved(), vec!["beads:repo:8".to_owned()]);
+        assert_eq!(
+            event_log.appended,
+            vec![
+                "evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn adapter_ingestion_uses_empty_starting_checkpoint() {
+        let trace = Trace::new();
+        let source = ScriptedSource::new(trace.clone(), AdapterPoll::new("1", Vec::new()));
+        let mut checkpoints = MemoryCheckpoints::new(trace.clone(), None);
+        let mut event_log = MemoryEventLog::new(trace.clone(), None);
+
+        let summary = run_adapter_poll(
+            "github:repo",
+            5,
+            "2026-06-24T00:00:00Z",
+            &source,
+            &mut checkpoints,
+            &mut event_log,
+        );
+
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::previous_checkpoint),
+            Ok(None)
+        );
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::appended_event_count),
+            Ok(0)
+        );
+        assert_eq!(
+            trace.entries(),
+            vec![
+                "load:github:repo".to_owned(),
+                "poll:github:repo:none:5".to_owned(),
+                "save:github:repo:1".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn adapter_ingestion_does_not_advance_checkpoint_after_append_failure() {
+        let trace = Trace::new();
+        let source = ScriptedSource::new(
+            trace.clone(),
+            AdapterPoll::new("8", vec![beads_snapshot_event_fixture()]),
+        );
+        let mut checkpoints = MemoryCheckpoints::new(trace.clone(), Some("7"));
+        let mut event_log = MemoryEventLog::new(trace.clone(), Some(0));
+
+        let summary = run_adapter_poll(
+            "beads:repo",
+            3,
+            "2026-06-24T00:00:00Z",
+            &source,
+            &mut checkpoints,
+            &mut event_log,
+        );
+
+        assert_eq!(summary, Err(AdapterError::InvalidSourceVersion));
+        assert_eq!(
+            trace.entries(),
+            vec![
+                "load:beads:repo".to_owned(),
+                "poll:beads:repo:7:3".to_owned(),
+                "append-failed:evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                    .to_owned(),
+            ]
+        );
+        assert_eq!(checkpoints.saved(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn adapter_ingestion_rejects_empty_runner_inputs() {
+        let trace = Trace::new();
+        let source = ScriptedSource::new(trace.clone(), AdapterPoll::new("1", Vec::new()));
+        let mut checkpoints = MemoryCheckpoints::new(trace.clone(), None);
+        let mut event_log = MemoryEventLog::new(trace, None);
+
+        assert_eq!(
+            run_adapter_poll(
+                " ",
+                1,
+                "2026-06-24T00:00:00Z",
+                &source,
+                &mut checkpoints,
+                &mut event_log,
+            ),
+            Err(AdapterError::EmptyAdapterId)
+        );
+        assert_eq!(
+            run_adapter_poll(
+                "beads:repo",
+                1,
+                " ",
+                &source,
+                &mut checkpoints,
+                &mut event_log,
+            ),
+            Err(AdapterError::EmptyObservedAt)
         );
     }
 
@@ -1324,6 +1569,122 @@ mod tests {
             "github:livespec-console-beads-fabro:pr:22:12".to_owned(),
             SourcePayload::GithubPullRequestSnapshot(github_snapshot_fixture()),
         )
+    }
+
+    #[derive(Clone)]
+    struct Trace {
+        entries: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Trace {
+        fn new() -> Self {
+            Self {
+                entries: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn push(&self, entry: String) {
+            self.entries.borrow_mut().push(entry);
+        }
+
+        fn entries(&self) -> Vec<String> {
+            self.entries.borrow().clone()
+        }
+    }
+
+    struct ScriptedSource {
+        trace: Trace,
+        poll: AdapterResult<AdapterPoll>,
+    }
+
+    impl ScriptedSource {
+        fn new(trace: Trace, poll: AdapterResult<AdapterPoll>) -> Self {
+            Self { trace, poll }
+        }
+    }
+
+    impl PullSourcePort for ScriptedSource {
+        fn poll(&self, request: &AdapterPollRequest) -> AdapterResult<AdapterPoll> {
+            let checkpoint = request
+                .checkpoint()
+                .map_or_else(|| "none".to_owned(), str::to_owned);
+            self.trace.push(format!(
+                "poll:{}:{}:{}",
+                request.adapter_id(),
+                checkpoint,
+                request.safety_window()
+            ));
+            self.poll.clone()
+        }
+    }
+
+    struct MemoryCheckpoints {
+        trace: Trace,
+        checkpoint: Option<String>,
+        saved: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl MemoryCheckpoints {
+        fn new(trace: Trace, checkpoint: Option<&str>) -> Self {
+            Self {
+                trace,
+                checkpoint: checkpoint.map(str::to_owned),
+                saved: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn saved(&self) -> Vec<String> {
+            self.saved.borrow().clone()
+        }
+    }
+
+    impl SourceCheckpointPort for MemoryCheckpoints {
+        fn load_checkpoint(&self, adapter_id: &str) -> AdapterResult<Option<String>> {
+            self.trace.push(format!("load:{adapter_id}"));
+            Ok(self.checkpoint.clone())
+        }
+
+        fn save_checkpoint(&self, adapter_id: &str, checkpoint: &str) -> AdapterResult<()> {
+            self.trace.push(format!("save:{adapter_id}:{checkpoint}"));
+            self.saved
+                .borrow_mut()
+                .push(format!("{adapter_id}:{checkpoint}"));
+            Ok(())
+        }
+    }
+
+    struct MemoryEventLog {
+        trace: Trace,
+        fail_after: Option<usize>,
+        appended: Vec<String>,
+    }
+
+    impl MemoryEventLog {
+        fn new(trace: Trace, fail_after: Option<usize>) -> Self {
+            Self {
+                trace,
+                fail_after,
+                appended: Vec::new(),
+            }
+        }
+    }
+
+    impl SourceEventAppendPort for MemoryEventLog {
+        fn append_normalized_event(
+            &mut self,
+            event: &NormalizedSourceEvent,
+            observed_at: &str,
+        ) -> AdapterResult<()> {
+            if self.fail_after == Some(self.appended.len()) {
+                self.trace
+                    .push(format!("append-failed:{}", event.event().event_id()));
+                return Err(AdapterError::InvalidSourceVersion);
+            }
+            self.trace
+                .push(format!("append:{}:{observed_at}", event.event().event_id()));
+            self.appended.push(event.event().event_id().to_owned());
+            Ok(())
+        }
     }
 
     #[test]
