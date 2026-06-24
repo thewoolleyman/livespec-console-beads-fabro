@@ -1,8 +1,20 @@
 #![forbid(unsafe_code)]
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use console_application::{
     ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
     build_tui_model, handle_factory_drain_command, project_attention,
+    source_adapters::{
+        AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest,
+        BeadsWorkItemSnapshot, BeadsWorkItemStatus, DispatcherJournalEntry, DispatcherJournalKind,
+        FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState,
+        LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent, PullSourcePort,
+        SourceCheckpointPort, SourceEventAppendPort, normalize_beads_snapshot,
+        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot, run_adapter_poll,
+    },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{
@@ -50,7 +62,9 @@ pub fn run_with_store(
 ) -> RunOutput {
     match command_name(args) {
         Some("serve") => run_runtime_result(serve_report(store, observed_at), "serve"),
-        Some("backfill") => run_store_result(backfill_demo_report(store, observed_at), "backfill"),
+        Some("backfill") => {
+            run_runtime_result(backfill_source_report(store, observed_at), "backfill")
+        }
         Some("events") => run_events_with_store(args, store),
         Some("snapshot") => run_store_result(snapshot_report(store), "snapshot"),
         Some("doctor") => run_store_result(doctor_report(store), "doctor"),
@@ -165,6 +179,114 @@ pub fn backfill_demo_report(
     ))
 }
 
+pub fn backfill_source_report(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+) -> ConsoleRuntimeResult<String> {
+    let summaries = backfill_source_adapters(store, observed_at)?;
+    let event_count: usize = summaries
+        .iter()
+        .map(AdapterIngestionSummary::appended_event_count)
+        .sum();
+    Ok(format!(
+        "backfill source adapters: adapters {}, events {event_count}",
+        summaries.len()
+    ))
+}
+
+fn backfill_source_adapters(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
+    let shared = SharedSqliteStore::new(store);
+    let mut summaries = Vec::new();
+    for (adapter_id, poll) in initial_source_polls()? {
+        let source = ScriptedSource::new(poll);
+        let mut checkpoints = SqliteCheckpointPort::new(shared.clone(), observed_at);
+        let mut event_log = SqliteSourceEventLog::new(shared.clone());
+        summaries.push(run_adapter_poll(
+            adapter_id,
+            1,
+            observed_at,
+            &source,
+            &mut checkpoints,
+            &mut event_log,
+        )?);
+    }
+    Ok(summaries)
+}
+
+fn initial_source_polls() -> ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> {
+    source_polls_from_seed(&initial_source_seed())
+}
+
+fn source_polls_from_seed(
+    seed: &InitialSourceSeed<'_>,
+) -> ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> {
+    let beads_snapshot = BeadsWorkItemSnapshot::new(
+        seed.repo,
+        seed.work_item_id,
+        BeadsWorkItemStatus::NeedsRegroom,
+        1,
+    )?;
+    let dispatcher_entry = DispatcherJournalEntry::new(
+        seed.repo,
+        seed.work_item_id,
+        seed.dispatch_id,
+        DispatcherJournalKind::NeedsRegroom,
+        2,
+    )?;
+    let fabro_snapshot = FabroRunSnapshot::new(
+        seed.repo,
+        seed.work_item_id,
+        seed.run_id,
+        FabroRunState::HumanGate,
+        3,
+    )?;
+    let livespec_snapshot = LivespecNextSnapshot::new(seed.repo, LivespecNextAction::Revise, 4)?;
+    let github_snapshot =
+        GithubPullRequestSnapshot::new(seed.repo, 24, GithubPullRequestState::ChecksPassing, 5)?;
+    Ok(vec![
+        (
+            "beads:livespec-console-beads-fabro",
+            normalize_beads_snapshot(&beads_snapshot),
+        ),
+        (
+            "dispatcher:livespec-console-beads-fabro",
+            normalize_dispatcher_journal_entry(dispatcher_entry),
+        ),
+        (
+            "fabro:livespec-console-beads-fabro",
+            normalize_fabro_run_snapshot(fabro_snapshot),
+        ),
+        (
+            "livespec:livespec-console-beads-fabro",
+            normalize_livespec_next_snapshot(livespec_snapshot),
+        ),
+        (
+            "github:livespec-console-beads-fabro",
+            normalize_github_pull_request_snapshot(github_snapshot),
+        ),
+    ])
+}
+
+#[derive(Clone)]
+struct InitialSourceSeed<'a> {
+    repo: &'a str,
+    work_item_id: &'a str,
+    dispatch_id: &'a str,
+    run_id: &'a str,
+}
+
+const fn initial_source_seed() -> InitialSourceSeed<'static> {
+    InitialSourceSeed {
+        repo: "livespec-console-beads-fabro",
+        work_item_id: "livespec-console-beads-fabro-y45jhj",
+        dispatch_id: "dispatch_1",
+        run_id: "run_1",
+    }
+}
+
 pub fn events_tail_report(store: &SqliteEventStore, limit: usize) -> EventStoreResult<String> {
     let events = store.list_console_events()?;
     if events.is_empty() {
@@ -216,7 +338,7 @@ pub fn serve_report(
 ) -> ConsoleRuntimeResult<String> {
     let events = store.list_console_events()?;
     let ingestion = if events.is_empty() {
-        append_demo_events_to_store(store, observed_at)?
+        backfill_source_adapters(store, observed_at)?
     } else {
         Vec::new()
     };
@@ -226,12 +348,12 @@ pub fn serve_report(
     let commands = store.list_commands()?;
     let attention_count = project_attention(&events).len();
     let pending_count = count_commands_with_status(&commands, "pending");
-    let inserted = ingestion
+    let backfill_event_count: usize = ingestion
         .iter()
-        .filter(|outcome| outcome.status() == AppendStatus::Inserted)
-        .count();
+        .map(AdapterIngestionSummary::appended_event_count)
+        .sum();
     Ok(format!(
-        "serve: store ready\nbackfill inserted: {inserted}\nevents: {}\nattention: {attention_count}\ncommands: {}\npending: {pending_count}\nfactory commands handled: {}",
+        "serve: store ready\nbackfill events: {backfill_event_count}\nevents: {}\nattention: {attention_count}\ncommands: {}\npending: {pending_count}\nfactory commands handled: {}",
         events.len(),
         commands.len(),
         handled.len()
@@ -247,9 +369,16 @@ fn count_commands_with_status(commands: &[StoredCommand], status: &str) -> usize
 
 #[derive(Debug)]
 pub enum ConsoleRuntimeError {
+    Adapter(AdapterError),
     Application(ApplicationError),
     EventStore(EventStoreError),
     MissingCommandAggregate(String),
+}
+
+impl From<AdapterError> for ConsoleRuntimeError {
+    fn from(error: AdapterError) -> Self {
+        Self::Adapter(error)
+    }
 }
 
 impl From<ApplicationError> for ConsoleRuntimeError {
@@ -489,6 +618,118 @@ fn event_append_from_console_event(event: &ConsoleEvent, observed_at: &str) -> E
     )
 }
 
+fn event_append_from_normalized_source_event(
+    normalized: &NormalizedSourceEvent,
+    observed_at: &str,
+) -> EventAppend {
+    let event = normalized.event();
+    EventAppend::new(
+        event.clone(),
+        event.stream_id().to_owned(),
+        observed_at.to_owned(),
+        observed_at.to_owned(),
+        None,
+        format!("corr_{}", event.event_id()),
+        Some(normalized.source_event_id().to_owned()),
+        "{}".to_owned(),
+        "{}".to_owned(),
+    )
+}
+
+struct SharedSqliteStore<'a> {
+    store: Rc<RefCell<&'a mut SqliteEventStore>>,
+}
+
+impl<'a> SharedSqliteStore<'a> {
+    fn new(store: &'a mut SqliteEventStore) -> Self {
+        Self {
+            store: Rc::new(RefCell::new(store)),
+        }
+    }
+}
+
+impl Clone for SharedSqliteStore<'_> {
+    fn clone(&self) -> Self {
+        Self {
+            store: Rc::clone(&self.store),
+        }
+    }
+}
+
+struct SqliteCheckpointPort<'a> {
+    shared: SharedSqliteStore<'a>,
+    advanced_at: String,
+}
+
+impl<'a> SqliteCheckpointPort<'a> {
+    fn new(shared: SharedSqliteStore<'a>, advanced_at: &str) -> Self {
+        Self {
+            shared,
+            advanced_at: advanced_at.to_owned(),
+        }
+    }
+}
+
+impl SourceCheckpointPort for SqliteCheckpointPort<'_> {
+    fn load_checkpoint(&self, adapter_id: &str) -> Result<Option<String>, AdapterError> {
+        self.shared
+            .store
+            .borrow()
+            .load_checkpoint(adapter_id)
+            .map_err(|_error| AdapterError::CheckpointLoadFailed)
+    }
+
+    fn save_checkpoint(&self, adapter_id: &str, checkpoint: &str) -> Result<(), AdapterError> {
+        self.shared
+            .store
+            .borrow_mut()
+            .save_checkpoint(adapter_id, checkpoint, &self.advanced_at)
+            .map_err(|_error| AdapterError::CheckpointSaveFailed)
+    }
+}
+
+struct SqliteSourceEventLog<'a> {
+    shared: SharedSqliteStore<'a>,
+}
+
+impl<'a> SqliteSourceEventLog<'a> {
+    const fn new(shared: SharedSqliteStore<'a>) -> Self {
+        Self { shared }
+    }
+}
+
+impl SourceEventAppendPort for SqliteSourceEventLog<'_> {
+    fn append_normalized_event(
+        &mut self,
+        event: &NormalizedSourceEvent,
+        observed_at: &str,
+    ) -> Result<(), AdapterError> {
+        let append = event_append_from_normalized_source_event(event, observed_at);
+        self.shared
+            .store
+            .borrow_mut()
+            .append_event(&append)
+            .map(|_outcome| ())
+            .map_err(|_error| AdapterError::AppendFailed)
+    }
+}
+
+struct ScriptedSource {
+    poll: AdapterPoll,
+}
+
+impl ScriptedSource {
+    const fn new(poll: AdapterPoll) -> Self {
+        Self { poll }
+    }
+}
+
+impl PullSourcePort for ScriptedSource {
+    fn poll(&self, _request: &AdapterPollRequest) -> Result<AdapterPoll, AdapterError> {
+        Ok(self.poll.clone())
+    }
+}
+
 fn run_events(subcommand: Option<&str>) -> RunOutput {
     match subcommand {
         Some("tail") => RunOutput::new(0, "events tail bootstrap: not yet wired".to_owned()),
@@ -570,7 +811,7 @@ fn help_text() -> String {
 mod tests {
     use console_application::{
         ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        build_tui_model,
+        build_tui_model, source_adapters::AdapterError,
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use console_eventstore::{
@@ -582,11 +823,12 @@ mod tests {
 
     use super::{
         CommandAppendStore, ConsoleRuntimeError, EventAppendStore, FactoryCommandHandlingOutcome,
-        FactoryCommandStore, SimulatedFactoryDrainPort, append_demo_events_to_store,
-        backfill_demo_report, command_status_update_runtime_result, demo_events, doctor_report,
-        events_tail_report, factory_command_from_stored, handle_pending_factory_commands,
+        FactoryCommandStore, InitialSourceSeed, SimulatedFactoryDrainPort,
+        append_demo_events_to_store, backfill_demo_report, backfill_source_report,
+        command_status_update_runtime_result, demo_events, doctor_report, events_tail_report,
+        factory_command_from_stored, handle_pending_factory_commands, initial_source_seed,
         load_tui_events_from_store, persist_tui_runtime_effects, render_tui_preview, run,
-        run_with_store, serve_report, snapshot_report,
+        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
     };
 
     #[test]
@@ -676,8 +918,8 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_backfill_command_reports_insert_and_duplicate_counts()
-    -> Result<(), EventStoreError> {
+    fn store_backed_backfill_command_reports_source_adapter_counts() -> Result<(), EventStoreError>
+    {
         let mut store = SqliteEventStore::open_in_memory()?;
 
         let first = run_with_store(
@@ -694,14 +936,101 @@ mod tests {
         assert_eq!(first.code(), 0);
         assert_eq!(
             first.message(),
-            "backfill demo events: inserted 2, duplicate 0"
+            "backfill source adapters: adapters 5, events 6"
         );
         assert_eq!(second.code(), 0);
         assert_eq!(
             second.message(),
-            "backfill demo events: inserted 0, duplicate 2"
+            "backfill source adapters: adapters 5, events 6"
         );
-        assert_eq!(store.list_console_events()?.len(), 2);
+        assert_eq!(store.list_console_events()?.len(), 6);
+        assert_eq!(
+            store.load_checkpoint("beads:livespec-console-beads-fabro")?,
+            Some("1".to_owned())
+        );
+        assert_eq!(
+            store.load_checkpoint("dispatcher:livespec-console-beads-fabro")?,
+            Some("2".to_owned())
+        );
+        assert_eq!(
+            store.load_checkpoint("fabro:livespec-console-beads-fabro")?,
+            Some("3".to_owned())
+        );
+        assert_eq!(
+            store.load_checkpoint("livespec:livespec-console-beads-fabro")?,
+            Some("4".to_owned())
+        );
+        assert_eq!(
+            store.load_checkpoint("github:livespec-console-beads-fabro")?,
+            Some("5".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_backfill_rejects_empty_observed_at() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let result = backfill_source_report(&mut store, "");
+
+        assert!(matches!(
+            result,
+            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyObservedAt))
+        ));
+        assert_eq!(store.list_console_events()?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn source_seed_builder_rejects_invalid_static_identity_fields() {
+        for (seed, expected_error) in [
+            (
+                InitialSourceSeed {
+                    repo: " ",
+                    ..initial_source_seed()
+                },
+                AdapterError::EmptyRepo,
+            ),
+            (
+                InitialSourceSeed {
+                    work_item_id: " ",
+                    ..initial_source_seed()
+                },
+                AdapterError::EmptyWorkItemId,
+            ),
+            (
+                InitialSourceSeed {
+                    dispatch_id: " ",
+                    ..initial_source_seed()
+                },
+                AdapterError::EmptyDispatchId,
+            ),
+            (
+                InitialSourceSeed {
+                    run_id: " ",
+                    ..initial_source_seed()
+                },
+                AdapterError::EmptyRunId,
+            ),
+        ] {
+            let result = source_polls_from_seed(&seed);
+
+            assert!(matches!(
+                result,
+                Err(ConsoleRuntimeError::Adapter(error)) if error == expected_error
+            ));
+        }
+    }
+
+    #[test]
+    fn demo_backfill_report_counts_inserted_and_duplicate_events() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let first = backfill_demo_report(&mut store, "2026-06-23T00:00:00Z")?;
+        let second = backfill_demo_report(&mut store, "2026-06-23T00:00:01Z")?;
+
+        assert_eq!(first, "backfill demo events: inserted 2, duplicate 0");
+        assert_eq!(second, "backfill demo events: inserted 0, duplicate 2");
         Ok(())
     }
 
@@ -737,9 +1066,13 @@ mod tests {
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill inserted: 2\nevents: 2\nattention: 2\ncommands: 0\npending: 0\nfactory commands handled: 0"
+            "serve: store ready\nbackfill events: 6\nevents: 6\nattention: 3\ncommands: 0\npending: 0\nfactory commands handled: 0"
         );
-        assert_eq!(store.list_console_events()?.len(), 2);
+        assert_eq!(store.list_console_events()?.len(), 6);
+        assert_eq!(
+            store.load_checkpoint("github:livespec-console-beads-fabro")?,
+            Some("5".to_owned())
+        );
         Ok(())
     }
 
@@ -762,7 +1095,7 @@ mod tests {
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill inserted: 2\nevents: 5\nattention: 2\ncommands: 1\npending: 0\nfactory commands handled: 1"
+            "serve: store ready\nbackfill events: 6\nevents: 9\nattention: 3\ncommands: 1\npending: 0\nfactory commands handled: 1"
         );
         assert_eq!(store.list_commands()?[0].status(), "completed");
         Ok(())
@@ -777,7 +1110,7 @@ mod tests {
 
         assert_eq!(
             report,
-            "serve: store ready\nbackfill inserted: 0\nevents: 2\nattention: 2\ncommands: 0\npending: 0\nfactory commands handled: 0"
+            "serve: store ready\nbackfill events: 0\nevents: 2\nattention: 2\ncommands: 0\npending: 0\nfactory commands handled: 0"
         );
         Ok(())
     }
@@ -883,21 +1216,21 @@ mod tests {
     }
 
     #[test]
-    fn store_report_helpers_match_command_output() -> Result<(), EventStoreError> {
+    fn store_report_helpers_match_command_output() -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
         assert_eq!(
-            backfill_demo_report(&mut store, "2026-06-23T00:00:00Z")?,
-            "backfill demo events: inserted 2, duplicate 0"
+            backfill_source_report(&mut store, "2026-06-23T00:00:00Z")?,
+            "backfill source adapters: adapters 5, events 6"
         );
-        assert!(events_tail_report(&store, 1)?.contains("evt_demo_2"));
+        assert!(events_tail_report(&store, 1)?.contains("pr.snapshot_observed"));
         assert_eq!(
             snapshot_report(&store)?,
-            "snapshot: events 2, attention 2, commands 0, pending 0"
+            "snapshot: events 6, attention 3, commands 0, pending 0"
         );
         assert_eq!(
             doctor_report(&store)?,
-            "doctor: no findings\nstore events: 2\ncommands: 0\nattention: 2"
+            "doctor: no findings\nstore events: 6\ncommands: 0\nattention: 3"
         );
         Ok(())
     }
