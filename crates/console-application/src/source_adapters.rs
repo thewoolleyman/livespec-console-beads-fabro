@@ -557,6 +557,7 @@ pub enum SourcePayload {
     FabroRunSnapshot(FabroRunSnapshot),
     GithubPullRequestSnapshot(GithubPullRequestSnapshot),
     LivespecNextSnapshot(LivespecNextSnapshot),
+    NotObservedFinding(NotObservedFinding),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -823,6 +824,269 @@ fn optional_text(value: Option<&str>, error: AdapterError) -> AdapterResult<Opti
     value.map_or(Ok(None), |text| required_text(text, error).map(Some))
 }
 
+/// Checkpoint stored for a source that could not be observed on a cold start
+/// (no previous checkpoint to carry forward). It does not advance any real
+/// source position; it only records that the adapter ran and observed nothing.
+const NOT_OBSERVED_CHECKPOINT: &str = "not_observed";
+
+/// Outcome of probing a real source instance.
+///
+/// `Observed` carries the raw payload (CLI stdout or file contents) and whether
+/// the probe reported success; `Unavailable` carries an honest reason the source
+/// could not be reached (binary missing, spawn error, file absent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceProbeOutcome {
+    Observed { stdout: String, success: bool },
+    Unavailable { reason: String },
+}
+
+impl SourceProbeOutcome {
+    #[must_use]
+    pub fn observed(stdout: &str, success: bool) -> Self {
+        Self::Observed {
+            stdout: stdout.to_owned(),
+            success,
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable(reason: &str) -> Self {
+        Self::Unavailable {
+            reason: reason.to_owned(),
+        }
+    }
+}
+
+/// Capability for observing a real source through the host.
+///
+/// Runs a stable CLI or reads a file. UI/domain code must never call sources
+/// directly; adapters reach them only through this port. The concrete
+/// host-backed implementation lives in the binary (`console-cli` `main.rs`),
+/// outside the covered library surface.
+pub trait SourceProbe {
+    fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome;
+    fn read_file(&self, path: &str) -> SourceProbeOutcome;
+}
+
+/// How a given adapter observes its source instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceObservationPlan {
+    Command { program: String, args: Vec<String> },
+    File { path: String },
+}
+
+impl SourceObservationPlan {
+    #[must_use]
+    pub fn command(program: &str, args: &[&str]) -> Self {
+        Self::Command {
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn file(path: &str) -> Self {
+        Self::File {
+            path: path.to_owned(),
+        }
+    }
+}
+
+/// A successful raw observation handed to a source-specific normalizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedSource {
+    source: SourceAdapterKind,
+    repo: String,
+    stdout: String,
+}
+
+impl ObservedSource {
+    #[must_use]
+    pub fn new(source: SourceAdapterKind, repo: &str, stdout: &str) -> Self {
+        Self {
+            source,
+            repo: repo.to_owned(),
+            stdout: stdout.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> SourceAdapterKind {
+        self.source
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub fn stdout(&self) -> &str {
+        &self.stdout
+    }
+}
+
+/// Result of normalizing a real observation into canonical events plus the
+/// checkpoint that identifies the observed state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedObservation {
+    checkpoint: String,
+    events: Vec<NormalizedSourceEvent>,
+}
+
+impl ParsedObservation {
+    #[must_use]
+    pub fn new(checkpoint: &str, events: Vec<NormalizedSourceEvent>) -> Self {
+        Self {
+            checkpoint: checkpoint.to_owned(),
+            events,
+        }
+    }
+}
+
+/// Source-specific normalizer.
+///
+/// Turns a raw observation into canonical events, or returns an honest reason
+/// the observation could not be interpreted (which the adapter records as a
+/// not-observed finding rather than fabricating data).
+pub type NormalizeObservation = fn(&ObservedSource) -> Result<ParsedObservation, String>;
+
+/// A pull adapter that observes a real source through a [`SourceProbe`].
+///
+/// On a successful, interpretable observation it emits the normalized events.
+/// On an unavailable source, a non-zero probe, or an uninterpretable payload it
+/// emits an honest `source.not_observed_finding_observed` event and carries the
+/// previous checkpoint forward instead of advancing it or fabricating a
+/// snapshot.
+pub struct ObservedSourceAdapter<'a> {
+    probe: &'a dyn SourceProbe,
+    source: SourceAdapterKind,
+    repo: String,
+    plan: SourceObservationPlan,
+    normalize: NormalizeObservation,
+}
+
+impl<'a> ObservedSourceAdapter<'a> {
+    pub fn new(
+        probe: &'a dyn SourceProbe,
+        source: SourceAdapterKind,
+        repo: &str,
+        plan: SourceObservationPlan,
+        normalize: NormalizeObservation,
+    ) -> AdapterResult<Self> {
+        Ok(Self {
+            probe,
+            source,
+            repo: required_text(repo, AdapterError::EmptyRepo)?,
+            plan,
+            normalize,
+        })
+    }
+
+    fn observe(&self) -> SourceProbeOutcome {
+        match &self.plan {
+            SourceObservationPlan::Command { program, args } => {
+                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.probe.run_command(program, &arg_refs)
+            }
+            SourceObservationPlan::File { path } => self.probe.read_file(path),
+        }
+    }
+
+    fn not_observed_poll(&self, previous_checkpoint: Option<&str>, reason: &str) -> AdapterPoll {
+        let checkpoint = previous_checkpoint
+            .map_or_else(|| NOT_OBSERVED_CHECKPOINT.to_owned(), ToOwned::to_owned);
+        AdapterPoll {
+            checkpoint,
+            events: vec![not_observed_event(self.source, &self.repo, reason)],
+        }
+    }
+}
+
+impl PullSourcePort for ObservedSourceAdapter<'_> {
+    fn poll(&self, request: &AdapterPollRequest) -> AdapterResult<AdapterPoll> {
+        let previous = request.checkpoint();
+        match self.observe() {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => {
+                let observed = ObservedSource::new(self.source, &self.repo, &stdout);
+                match (self.normalize)(&observed) {
+                    Ok(parsed) if !parsed.events.is_empty() => {
+                        AdapterPoll::new(&parsed.checkpoint, parsed.events)
+                    }
+                    Ok(_empty) => {
+                        Ok(self.not_observed_poll(previous, "source produced no records"))
+                    }
+                    Err(reason) => Ok(self.not_observed_poll(previous, &reason)),
+                }
+            }
+            SourceProbeOutcome::Observed { success: false, .. } => {
+                Ok(self.not_observed_poll(previous, "source command exited non-zero"))
+            }
+            SourceProbeOutcome::Unavailable { reason } => {
+                Ok(self.not_observed_poll(previous, &reason))
+            }
+        }
+    }
+}
+
+/// Honest finding that a source could not be observed this poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotObservedFinding {
+    repo: String,
+    source: SourceAdapterKind,
+    reason: String,
+}
+
+impl NotObservedFinding {
+    #[must_use]
+    pub fn new(repo: &str, source: SourceAdapterKind, reason: &str) -> Self {
+        Self {
+            repo: repo.to_owned(),
+            source,
+            reason: reason.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> SourceAdapterKind {
+        self.source
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+fn not_observed_event(
+    source: SourceAdapterKind,
+    repo: &str,
+    reason: &str,
+) -> NormalizedSourceEvent {
+    let finding = NotObservedFinding::new(repo, source, reason);
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!("evt:{}:{repo}:not_observed", source.source_name()),
+            1,
+            "source".to_owned(),
+            EventType::SourceNotObservedFindingObserved,
+            source.source_name().to_owned(),
+            repo_stream(repo),
+            1,
+        ),
+        format!("{}:{repo}:not_observed", source.source_name()),
+        SourcePayload::NotObservedFinding(finding),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -835,10 +1099,11 @@ mod tests {
         BeadsWorkItemSnapshot, BeadsWorkItemStatus, CompletenessFinding, DispatcherJournalEntry,
         DispatcherJournalKind, FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot,
         GithubPullRequestState, LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent,
+        NotObservedFinding, ObservedSource, ObservedSourceAdapter, ParsedObservation,
         PullSourcePort, SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort,
-        SourcePayload, normalize_beads_snapshot, normalize_dispatcher_journal_entry,
-        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
-        normalize_livespec_next_snapshot, run_adapter_poll,
+        SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome,
+        normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot, run_adapter_poll,
     };
 
     #[test]
@@ -869,6 +1134,262 @@ mod tests {
             AdapterPollRequest::new("beads", Some(" "), 3),
             Err(AdapterError::EmptyCheckpoint)
         );
+    }
+
+    struct StubProbe {
+        command_outcome: SourceProbeOutcome,
+        file_outcome: SourceProbeOutcome,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl StubProbe {
+        fn command(outcome: SourceProbeOutcome) -> Self {
+            Self {
+                command_outcome: outcome,
+                file_outcome: SourceProbeOutcome::unavailable("no file plan in this stub"),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn file(outcome: SourceProbeOutcome) -> Self {
+            Self {
+                command_outcome: SourceProbeOutcome::unavailable("no command plan in this stub"),
+                file_outcome: outcome,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SourceProbe for StubProbe {
+        fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome {
+            self.calls
+                .borrow_mut()
+                .push(format!("cmd:{program} {}", args.join(" ")));
+            self.command_outcome.clone()
+        }
+
+        fn read_file(&self, path: &str) -> SourceProbeOutcome {
+            self.calls.borrow_mut().push(format!("file:{path}"));
+            self.file_outcome.clone()
+        }
+    }
+
+    // Test normalizer: a non-empty payload normalizes into a Beads snapshot
+    // poll; the literal "empty" yields zero events; blank input is an error.
+    fn stub_normalize(observed: &ObservedSource) -> Result<ParsedObservation, String> {
+        let trimmed = observed.stdout().trim();
+        if trimmed.is_empty() {
+            return Err("blank observation".to_owned());
+        }
+        if trimmed == "empty" {
+            return Ok(ParsedObservation::new("v-empty", Vec::new()));
+        }
+        // "broken" drives the builder-error branch (empty work-item id).
+        let work_item_id = if trimmed == "broken" { "" } else { trimmed };
+        let snapshot = BeadsWorkItemSnapshot::new(
+            observed.repo(),
+            work_item_id,
+            BeadsWorkItemStatus::Ready,
+            1,
+        )
+        .map_err(|_error| "snapshot build failed".to_owned())?;
+        let poll = normalize_beads_snapshot(&snapshot);
+        Ok(ParsedObservation::new(
+            "ck-observed",
+            poll.events().to_vec(),
+        ))
+    }
+
+    fn beads_command_adapter(probe: &StubProbe) -> AdapterResult<ObservedSourceAdapter<'_>> {
+        ObservedSourceAdapter::new(
+            probe,
+            SourceAdapterKind::Beads,
+            "console",
+            SourceObservationPlan::command("bd", &["ready", "--json"]),
+            stub_normalize,
+        )
+    }
+
+    fn dispatcher_file_adapter(probe: &StubProbe) -> AdapterResult<ObservedSourceAdapter<'_>> {
+        ObservedSourceAdapter::new(
+            probe,
+            SourceAdapterKind::Dispatcher,
+            "console",
+            SourceObservationPlan::file("/var/log/dispatcher.jsonl"),
+            stub_normalize,
+        )
+    }
+
+    fn cold_request() -> AdapterResult<AdapterPollRequest> {
+        AdapterPollRequest::new("beads:console", None, 1)
+    }
+
+    #[test]
+    fn observed_source_exposes_fields() {
+        let observed = ObservedSource::new(SourceAdapterKind::Beads, "console", "work-1");
+
+        assert_eq!(observed.source(), SourceAdapterKind::Beads);
+        assert_eq!(observed.repo(), "console");
+        assert_eq!(observed.stdout(), "work-1");
+    }
+
+    #[test]
+    fn observation_plan_constructors_capture_inputs() {
+        assert_eq!(
+            SourceObservationPlan::command("bd", &["ready"]),
+            SourceObservationPlan::Command {
+                program: "bd".to_owned(),
+                args: vec!["ready".to_owned()],
+            }
+        );
+        assert_eq!(
+            SourceObservationPlan::file("/tmp/journal.jsonl"),
+            SourceObservationPlan::File {
+                path: "/tmp/journal.jsonl".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn not_observed_finding_exposes_fields() {
+        let finding = NotObservedFinding::new("console", SourceAdapterKind::Fabro, "fabro absent");
+
+        assert_eq!(finding.repo(), "console");
+        assert_eq!(finding.source(), SourceAdapterKind::Fabro);
+        assert_eq!(finding.reason(), "fabro absent");
+    }
+
+    #[test]
+    fn observed_source_adapter_rejects_empty_repo() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+
+        let adapter = ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Beads,
+            "  ",
+            SourceObservationPlan::command("bd", &["ready"]),
+            stub_normalize,
+        );
+
+        assert!(matches!(adapter, Err(AdapterError::EmptyRepo)));
+    }
+
+    #[test]
+    fn observed_source_adapter_emits_parsed_events_on_success() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        let adapter = beads_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_eq!(poll.checkpoint(), "ck-observed");
+        assert_eq!(poll.events().len(), 2);
+        assert_eq!(
+            poll.events()[0].event().event_type(),
+            &EventType::BeadsWorkItemSnapshotObserved
+        );
+        assert_eq!(probe.calls.borrow().as_slice(), ["cmd:bd ready --json"]);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_reads_file_plan() -> AdapterResult<()> {
+        let probe = StubProbe::file(SourceProbeOutcome::observed("work-1", true));
+        let adapter = dispatcher_file_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_eq!(poll.checkpoint(), "ck-observed");
+        assert_eq!(
+            probe.calls.borrow().as_slice(),
+            ["file:/var/log/dispatcher.jsonl"]
+        );
+        Ok(())
+    }
+
+    fn assert_not_observed(poll: &AdapterPoll, expected_reason: &str) {
+        assert_eq!(poll.events().len(), 1);
+        let event = &poll.events()[0];
+        assert_eq!(
+            event.event().event_type(),
+            &EventType::SourceNotObservedFindingObserved
+        );
+        assert_eq!(
+            event.payload(),
+            &SourcePayload::NotObservedFinding(NotObservedFinding::new(
+                "console",
+                SourceAdapterKind::Beads,
+                expected_reason,
+            ))
+        );
+    }
+
+    #[test]
+    fn observed_source_adapter_emits_not_observed_when_unavailable() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::unavailable("bd not found"));
+        let adapter = beads_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_eq!(poll.checkpoint(), "not_observed");
+        assert_not_observed(&poll, "bd not found");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_carries_previous_checkpoint_on_not_observed() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::unavailable("bd not found"));
+        let adapter = beads_command_adapter(&probe)?;
+        let request = AdapterPollRequest::new("beads:console", Some("prior-checkpoint"), 1)?;
+
+        let poll = adapter.poll(&request)?;
+
+        assert_eq!(poll.checkpoint(), "prior-checkpoint");
+        assert_not_observed(&poll, "bd not found");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_emits_not_observed_on_non_zero_exit() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("ignored", false));
+        let adapter = beads_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_not_observed(&poll, "source command exited non-zero");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_emits_not_observed_on_empty_parse() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("empty", true));
+        let adapter = beads_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_not_observed(&poll, "source produced no records");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_emits_not_observed_on_parse_error() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("   ", true));
+        let adapter = beads_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_not_observed(&poll, "blank observation");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_emits_not_observed_on_builder_error() -> AdapterResult<()> {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("broken", true));
+        let adapter = beads_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_not_observed(&poll, "snapshot build failed");
+        Ok(())
     }
 
     #[test]
