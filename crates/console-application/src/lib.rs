@@ -4,6 +4,8 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
 pub mod source_adapters;
 
+use source_adapters::{SourceProbe, SourceProbeOutcome};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionItem {
     id: String,
@@ -500,6 +502,60 @@ pub trait FactoryDrainPort {
         &mut self,
         request: &FactoryDrainRequest,
     ) -> ApplicationResult<FactoryDrainPortOutcome>;
+}
+
+/// Real factory-drain port that invokes the Dispatcher through a [`SourceProbe`].
+///
+/// It reflects the Dispatcher's actual outcome rather than fabricating success:
+/// a successful run completes with the dispatched-item count it reports, a
+/// non-zero run fails, and an unavailable Dispatcher binary yields a not-wired
+/// outcome. The host-backed probe is supplied by the binary, so the live drain
+/// never claims an action that did not happen.
+pub struct DispatcherFactoryDrainPort<'a> {
+    probe: &'a dyn SourceProbe,
+    program: String,
+    args: Vec<String>,
+}
+
+impl<'a> DispatcherFactoryDrainPort<'a> {
+    #[must_use]
+    pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
+        Self {
+            probe,
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+}
+
+impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
+    fn drain_ready_queue(
+        &mut self,
+        _request: &FactoryDrainRequest,
+    ) -> ApplicationResult<FactoryDrainPortOutcome> {
+        let arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        Ok(match self.probe.run_command(&self.program, &arg_refs) {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => FactoryDrainPortOutcome::completed(dispatched_item_count(&stdout)),
+            SourceProbeOutcome::Observed { success: false, .. } => {
+                FactoryDrainPortOutcome::failed()
+            }
+            SourceProbeOutcome::Unavailable { .. } => FactoryDrainPortOutcome::not_wired(),
+        })
+    }
+}
+
+/// First run of digits in the Dispatcher's drain output, as the dispatched-item
+/// count. A report without a count is honestly treated as zero dispatched.
+fn dispatched_item_count(stdout: &str) -> u16 {
+    let digits: String = stdout
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<u16>().unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1242,12 +1298,13 @@ mod tests {
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
+    use super::source_adapters::{SourceProbe, SourceProbeOutcome};
     use super::{
-        ApplicationError, AttentionEvent, FactoryDrainPort, FactoryDrainPortOutcome,
-        FactoryDrainRequest, OperatorAction, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiView, build_tui_model, build_tui_model_for_state, handle_factory_drain_command,
-        project_attention, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_selected_operator_action, validate_operator_action,
+        ApplicationError, AttentionEvent, DispatcherFactoryDrainPort, FactoryDrainPort,
+        FactoryDrainPortOutcome, FactoryDrainRequest, OperatorAction, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state,
+        handle_factory_drain_command, project_attention, reduce_tui_interaction,
+        resolve_command_palette_action, resolve_selected_operator_action, validate_operator_action,
     };
 
     #[test]
@@ -2472,5 +2529,83 @@ mod tests {
         ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
             Ok(FactoryDrainPortOutcome::not_wired())
         }
+    }
+
+    struct StubDrainProbe {
+        outcome: SourceProbeOutcome,
+    }
+
+    impl SourceProbe for StubDrainProbe {
+        fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
+            self.outcome.clone()
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            self.outcome.clone()
+        }
+    }
+
+    fn drain_request() -> FactoryDrainRequest {
+        FactoryDrainRequest::new("fleet:livespec".to_owned(), 1, 1)
+    }
+
+    #[test]
+    fn dispatcher_drain_port_completes_with_reported_count() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("drain: dispatched 3 items", true),
+        };
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain", "--json"]);
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(3)));
+    }
+
+    #[test]
+    fn dispatcher_drain_port_reports_zero_when_no_count() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("drain: ready queue empty", true),
+        };
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"]);
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(0)));
+    }
+
+    #[test]
+    fn dispatcher_drain_port_fails_on_non_zero_run() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("drain error", false),
+        };
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"]);
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::failed()));
+    }
+
+    #[test]
+    fn dispatcher_drain_port_is_not_wired_when_unavailable() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::unavailable("dispatcher binary not found"),
+        };
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"]);
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::not_wired()));
+    }
+
+    #[test]
+    fn stub_drain_probe_serves_both_capabilities() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::unavailable("no source"),
+        };
+
+        assert_eq!(
+            probe.read_file("/unused"),
+            SourceProbeOutcome::unavailable("no source")
+        );
     }
 }
