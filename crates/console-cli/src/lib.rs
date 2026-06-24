@@ -161,6 +161,108 @@ pub fn load_tui_events_from_store(store: &SqliteEventStore) -> EventStoreResult<
     store.list_console_events()
 }
 
+pub trait TuiSessionRunner {
+    fn run_tui(
+        &mut self,
+        events: &[ConsoleEvent],
+        requested_by: &str,
+    ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiSessionOutcome {
+    backfilled_events: usize,
+    presented_events: usize,
+    persisted_commands: usize,
+    handled_commands: usize,
+    final_events: usize,
+    attention_items: usize,
+}
+
+impl TuiSessionOutcome {
+    #[must_use]
+    pub const fn new(
+        backfilled_event_count: usize,
+        presented_event_count: usize,
+        persisted_command_count: usize,
+        handled_command_count: usize,
+        final_event_count: usize,
+        attention_count: usize,
+    ) -> Self {
+        Self {
+            backfilled_events: backfilled_event_count,
+            presented_events: presented_event_count,
+            persisted_commands: persisted_command_count,
+            handled_commands: handled_command_count,
+            final_events: final_event_count,
+            attention_items: attention_count,
+        }
+    }
+
+    #[must_use]
+    pub const fn backfilled_event_count(&self) -> usize {
+        self.backfilled_events
+    }
+
+    #[must_use]
+    pub const fn presented_event_count(&self) -> usize {
+        self.presented_events
+    }
+
+    #[must_use]
+    pub const fn persisted_command_count(&self) -> usize {
+        self.persisted_commands
+    }
+
+    #[must_use]
+    pub const fn handled_command_count(&self) -> usize {
+        self.handled_commands
+    }
+
+    #[must_use]
+    pub const fn final_event_count(&self) -> usize {
+        self.final_events
+    }
+
+    #[must_use]
+    pub const fn attention_count(&self) -> usize {
+        self.attention_items
+    }
+}
+
+pub fn run_store_backed_tui_session(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    requested_by: &str,
+    runner: &mut dyn TuiSessionRunner,
+    factory_port: &mut dyn FactoryDrainPort,
+) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+    let existing_events = store.list_console_events()?;
+    let ingestion = if existing_events.is_empty() {
+        backfill_source_adapters(store, observed_at)?
+    } else {
+        Vec::new()
+    };
+    let presented_events = store.list_console_events()?;
+    let effects = runner.run_tui(&presented_events, requested_by)?;
+    let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
+    let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
+    let final_events = store.list_console_events()?;
+    let attention_count = project_attention(&final_events).len();
+    let backfilled_event_count = ingestion
+        .iter()
+        .map(AdapterIngestionSummary::appended_event_count)
+        .sum();
+    Ok(TuiSessionOutcome::new(
+        backfilled_event_count,
+        presented_events.len(),
+        persisted.len(),
+        handled.len(),
+        final_events.len(),
+        attention_count,
+    ))
+}
+
 pub fn backfill_demo_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -373,6 +475,7 @@ pub enum ConsoleRuntimeError {
     Application(ApplicationError),
     EventStore(EventStoreError),
     MissingCommandAggregate(String),
+    TuiRuntimeFailed,
 }
 
 impl From<AdapterError> for ConsoleRuntimeError {
@@ -822,13 +925,15 @@ mod tests {
     use console_tui::TuiRuntimeEffect;
 
     use super::{
-        CommandAppendStore, ConsoleRuntimeError, EventAppendStore, FactoryCommandHandlingOutcome,
-        FactoryCommandStore, InitialSourceSeed, SimulatedFactoryDrainPort,
+        CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
+        FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed,
+        SimulatedFactoryDrainPort, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, backfill_demo_report, backfill_source_report,
         command_status_update_runtime_result, demo_events, doctor_report, events_tail_report,
         factory_command_from_stored, handle_pending_factory_commands, initial_source_seed,
         load_tui_events_from_store, persist_tui_runtime_effects, render_tui_preview, run,
-        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
+        run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
+        source_polls_from_seed,
     };
 
     #[test]
@@ -1324,6 +1429,111 @@ mod tests {
     }
 
     #[test]
+    fn store_backed_tui_session_backfills_runs_tui_and_handles_factory_command()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
+        let mut factory_port = SimulatedFactoryDrainPort;
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-06-23T00:00:02Z",
+            "operator",
+            &mut runner,
+            &mut factory_port,
+        );
+        let commands = store.list_commands()?;
+
+        assert!(matches!(
+            outcome,
+            Ok(ref value) if value == &TuiSessionOutcome::new(6, 6, 1, 1, 9, 3)
+        ));
+        assert!(matches!(
+            outcome
+                .as_ref()
+                .map(TuiSessionOutcome::backfilled_event_count),
+            Ok(6)
+        ));
+        assert!(matches!(
+            outcome
+                .as_ref()
+                .map(TuiSessionOutcome::presented_event_count),
+            Ok(6)
+        ));
+        assert!(matches!(
+            outcome
+                .as_ref()
+                .map(TuiSessionOutcome::persisted_command_count),
+            Ok(1)
+        ));
+        assert!(matches!(
+            outcome
+                .as_ref()
+                .map(TuiSessionOutcome::handled_command_count),
+            Ok(1)
+        ));
+        assert!(matches!(
+            outcome.as_ref().map(TuiSessionOutcome::final_event_count),
+            Ok(9)
+        ));
+        assert!(matches!(
+            outcome.as_ref().map(TuiSessionOutcome::attention_count),
+            Ok(3)
+        ));
+        assert_eq!(runner.observed_event_count(), 6);
+        assert_eq!(runner.observed_requested_by(), "operator");
+        assert_eq!(commands[0].status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_tui_session_uses_existing_events_without_backfill()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
+        let mut factory_port = SimulatedFactoryDrainPort;
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-06-23T00:00:02Z",
+            "operator",
+            &mut runner,
+            &mut factory_port,
+        );
+
+        assert!(matches!(
+            outcome,
+            Ok(ref value) if value == &TuiSessionOutcome::new(0, 2, 0, 0, 2, 2)
+        ));
+        assert_eq!(runner.observed_event_count(), 2);
+        assert_eq!(store.list_console_events()?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_tui_session_reports_runner_errors() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut runner = ErroringTuiSessionRunner;
+        let mut factory_port = SimulatedFactoryDrainPort;
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-06-23T00:00:02Z",
+            "operator",
+            &mut runner,
+            &mut factory_port,
+        );
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::TuiRuntimeFailed)
+        ));
+        assert_eq!(store.list_console_events()?.len(), 6);
+        Ok(())
+    }
+
+    #[test]
     fn runtime_error_conversions_keep_source_context() {
         assert!(matches!(
             ConsoleRuntimeError::from(ApplicationError::FactoryDrainPortFailed),
@@ -1681,6 +1891,54 @@ mod tests {
             _request: &FactoryDrainRequest,
         ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
             Err(ApplicationError::FactoryDrainPortFailed)
+        }
+    }
+
+    struct ScriptedTuiSessionRunner {
+        effects: Vec<TuiRuntimeEffect>,
+        observed_event_count: usize,
+        observed_requested_by: String,
+    }
+
+    impl ScriptedTuiSessionRunner {
+        fn new(effects: Vec<TuiRuntimeEffect>) -> Self {
+            Self {
+                effects,
+                observed_event_count: 0,
+                observed_requested_by: String::new(),
+            }
+        }
+
+        const fn observed_event_count(&self) -> usize {
+            self.observed_event_count
+        }
+
+        fn observed_requested_by(&self) -> &str {
+            &self.observed_requested_by
+        }
+    }
+
+    impl TuiSessionRunner for ScriptedTuiSessionRunner {
+        fn run_tui(
+            &mut self,
+            events: &[ConsoleEvent],
+            requested_by: &str,
+        ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
+            self.observed_event_count = events.len();
+            self.observed_requested_by = requested_by.to_owned();
+            Ok(self.effects.clone())
+        }
+    }
+
+    struct ErroringTuiSessionRunner;
+
+    impl TuiSessionRunner for ErroringTuiSessionRunner {
+        fn run_tui(
+            &mut self,
+            _events: &[ConsoleEvent],
+            _requested_by: &str,
+        ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
+            Err(ConsoleRuntimeError::TuiRuntimeFailed)
         }
     }
 
