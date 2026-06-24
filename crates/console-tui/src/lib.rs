@@ -3,8 +3,8 @@
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, OperatorAction, OperatorActionOutcome,
     TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-    build_tui_model_for_state, reduce_tui_interaction, resolve_command_palette_action,
-    resolve_selected_operator_action,
+    ViewSummaryItem, build_tui_model_for_state, reduce_tui_interaction,
+    resolve_command_palette_action, resolve_selected_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -212,9 +212,13 @@ pub const fn key_event_to_terminal_input(
         KeyCode::Char(':') => colon_input(overlay),
         KeyCode::Char('q') => q_input(overlay),
         KeyCode::Char(value) => text_input(value, overlay),
-        KeyCode::Left
-        | KeyCode::Right
-        | KeyCode::Home
+        KeyCode::Left => Some(TuiTerminalInput::Interaction(
+            TuiInteraction::SelectPreviousView,
+        )),
+        KeyCode::Right => Some(TuiTerminalInput::Interaction(
+            TuiInteraction::SelectNextView,
+        )),
+        KeyCode::Home
         | KeyCode::End
         | KeyCode::PageUp
         | KeyCode::PageDown
@@ -336,8 +340,13 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         ])
         .split(area);
     render_navigation(model, horizontal[0], buffer);
-    render_attention(model, horizontal[1], buffer);
-    render_detail(model.detail(), horizontal[2], buffer);
+    if model.active_view() == console_application::TuiView::Attention {
+        render_attention(model, horizontal[1], buffer);
+        render_detail(model.detail(), horizontal[2], buffer);
+        return;
+    }
+    render_summary(model, horizontal[1], buffer);
+    render_summary_detail(model.view_items(), horizontal[2], buffer);
 }
 
 fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -448,6 +457,20 @@ fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
+fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    let items = model
+        .view_items()
+        .iter()
+        .map(|item| ListItem::new(format!("  {}", item.title())));
+    List::new(items)
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(model.active_view().label()),
+        )
+        .render(area, buffer);
+}
+
 fn attention_item_line(
     model: &TuiScreenModel,
     index: usize,
@@ -468,6 +491,26 @@ fn attention_item_line(
     } else {
         Style::new()
     })
+}
+
+fn render_summary_detail(items: &[ViewSummaryItem], area: Rect, buffer: &mut Buffer) {
+    let lines = if items.is_empty() {
+        vec![Line::from("No projection rows")]
+    } else {
+        items
+            .iter()
+            .flat_map(|item| {
+                [
+                    Line::from(format!("{}:", item.title())),
+                    Line::from(item.detail().to_owned()),
+                ]
+            })
+            .collect::<Vec<_>>()
+    };
+    Paragraph::new(lines)
+        .block(Block::new().borders(Borders::ALL).title("Detail"))
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
 }
 
 fn render_detail(detail: Option<&AttentionDetail>, area: Rect, buffer: &mut Buffer) {
@@ -528,7 +571,8 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 #[cfg(test)]
 mod tests {
     use console_application::{
-        TuiInteraction, TuiInteractionState, TuiOverlay, build_tui_model, build_tui_model_for_state,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiView, build_tui_model,
+        build_tui_model_for_state,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -537,7 +581,8 @@ mod tests {
 
     use super::{
         TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, buffer_to_text,
-        key_event_to_terminal_input, render_model, render_to_text, step_tui_runtime,
+        key_event_to_terminal_input, render_model, render_summary_detail, render_to_text,
+        step_tui_runtime,
     };
 
     #[test]
@@ -556,6 +601,18 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Enter), &TuiOverlay::None),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenCommandModal
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Right), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectNextView
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &TuiOverlay::None),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectPreviousView
             ))
         );
     }
@@ -651,7 +708,7 @@ mod tests {
             None
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Left), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Home), &TuiOverlay::None),
             None
         );
     }
@@ -667,6 +724,20 @@ mod tests {
         );
 
         assert_eq!(step.state().selected_attention_index(), 1);
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[test]
+    fn runtime_step_applies_view_navigation_without_side_effects() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Interaction(TuiInteraction::SelectNextView),
+            "operator",
+        );
+
+        assert_eq!(step.state().active_view(), TuiView::Spec);
         assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
     }
 
@@ -845,6 +916,49 @@ mod tests {
     }
 
     #[test]
+    fn render_to_text_draws_non_attention_view_summary() {
+        let state = TuiInteractionState::for_view(TuiView::Factory, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&factory_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("> Factory")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Drain commands requested: 1")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Drain terminal outcomes: 1")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Factory commands are persisted")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_summary_detail_draws_empty_projection_state() {
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buffer = Buffer::empty(area);
+
+        render_summary_detail(&[], area, &mut buffer);
+
+        assert!(buffer_to_text(&buffer, area).contains("No projection rows"));
+    }
+
+    #[test]
     fn render_to_text_rejects_empty_area() {
         let model = build_tui_model(&[], 0);
 
@@ -995,6 +1109,29 @@ mod tests {
                 EventType::DispatcherNeedsRegroomObserved,
                 "dispatcher".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
+                2,
+            ),
+        ]
+    }
+
+    fn factory_events() -> [ConsoleEvent; 2] {
+        [
+            ConsoleEvent::new(
+                "evt_drain".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainRequested,
+                "console:factory-command-handler".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_done".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainCompleted,
+                "console:factory-command-handler".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
                 2,
             ),
         ]
