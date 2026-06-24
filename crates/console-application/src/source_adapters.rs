@@ -106,7 +106,7 @@ pub fn run_adapter_poll(
     adapter_id: &str,
     safety_window: u64,
     observed_at: &str,
-    source: &impl PullSourcePort,
+    source: &(impl PullSourcePort + ?Sized),
     checkpoints: &mut impl SourceCheckpointPort,
     event_log: &mut impl SourceEventAppendPort,
 ) -> AdapterResult<AdapterIngestionSummary> {

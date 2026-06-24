@@ -6,9 +6,15 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 #[cfg(all(not(test), not(coverage)))]
+use console_application::DispatcherFactoryDrainPort;
+#[cfg(all(not(test), not(coverage)))]
+use console_application::source_adapters::{
+    ObservedSourceAdapter, PullSourcePort, SourceProbe, SourceProbeOutcome,
+};
+#[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
-use livespec_console_beads_fabro::{ConsoleRuntimeError, TuiSessionRunner};
+use livespec_console_beads_fabro::{ConsoleRuntimeError, SourceAdapterRef, TuiSessionRunner};
 #[cfg(all(not(test), not(coverage)))]
 use time::OffsetDateTime;
 #[cfg(all(not(test), not(coverage)))]
@@ -71,10 +77,19 @@ fn run_store_backed_command(
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
     let observed_at = current_requested_at()?;
+    let probe = SystemSourceProbe;
+    let repo = console_repo();
+    let adapters = livespec_console_beads_fabro::live_source_adapters(&probe, &repo)
+        .map_err(|error| format!("{error:?}"))?;
+    let sources = source_refs(&adapters);
+    let drain_program = drain_program();
+    let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
     Ok(livespec_console_beads_fabro::run_with_store(
         args,
         &mut store,
         &observed_at,
+        &sources,
+        &mut drain,
     ))
 }
 
@@ -84,17 +99,71 @@ fn run_interactive_store_tui() -> Result<(), String> {
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
     let observed_at = current_requested_at()?;
+    let probe = SystemSourceProbe;
+    let repo = console_repo();
+    let adapters = livespec_console_beads_fabro::live_source_adapters(&probe, &repo)
+        .map_err(|error| format!("{error:?}"))?;
+    let sources = source_refs(&adapters);
+    let drain_program = drain_program();
+    let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
     let mut runner = InteractiveTuiRunner;
-    let mut factory_port = livespec_console_beads_fabro::NotWiredFactoryDrainPort;
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
         &observed_at,
         "operator",
         &mut runner,
-        &mut factory_port,
+        &sources,
+        &mut drain,
     )
     .map_err(|error| format!("{error:?}"))?;
     Ok(())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn source_refs<'a>(
+    adapters: &'a [(String, ObservedSourceAdapter<'a>)],
+) -> Vec<SourceAdapterRef<'a>> {
+    adapters
+        .iter()
+        .map(|(adapter_id, adapter)| (adapter_id.as_str(), adapter as &dyn PullSourcePort))
+        .collect()
+}
+
+/// Host-backed probe: run a stable CLI or read a file. The honest source of all
+/// live observations; unreachable sources degrade to not-observed findings.
+#[cfg(all(not(test), not(coverage)))]
+struct SystemSourceProbe;
+
+#[cfg(all(not(test), not(coverage)))]
+impl SourceProbe for SystemSourceProbe {
+    fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome {
+        match std::process::Command::new(program).args(args).output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                SourceProbeOutcome::observed(&stdout, output.status.success())
+            }
+            Err(error) => SourceProbeOutcome::unavailable(&format!("{program}: {error}")),
+        }
+    }
+
+    fn read_file(&self, path: &str) -> SourceProbeOutcome {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => SourceProbeOutcome::observed(&contents, true),
+            Err(error) => SourceProbeOutcome::unavailable(&format!("{path}: {error}")),
+        }
+    }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn console_repo() -> String {
+    std::env::var("LIVESPEC_CONSOLE_REPO")
+        .unwrap_or_else(|_error| "livespec-console-beads-fabro".to_owned())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn drain_program() -> String {
+    std::env::var("LIVESPEC_CONSOLE_DRAIN_PROGRAM")
+        .unwrap_or_else(|_error| "livespec-dispatcher-drain".to_owned())
 }
 
 #[cfg(all(not(test), not(coverage)))]
