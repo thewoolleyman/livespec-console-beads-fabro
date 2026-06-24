@@ -6,7 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 #[cfg(all(not(test), not(coverage)))]
-use console_eventstore::SqliteEventStore;
+use console_domain::ConsoleEvent;
+#[cfg(all(not(test), not(coverage)))]
+use console_eventstore::{AppendStatus, SqliteEventStore};
 #[cfg(all(not(test), not(coverage)))]
 use console_tui::TuiRuntimeEffect;
 #[cfg(all(not(test), not(coverage)))]
@@ -18,11 +20,27 @@ fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     #[cfg(all(not(test), not(coverage)))]
     {
+        if should_run_backfill(&args) {
+            match run_demo_backfill() {
+                Ok(message) => {
+                    println!("{message}");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("backfill error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         if should_run_interactive_tui(&args) && std::io::stdout().is_terminal() {
-            match console_tui::run_interactive_tui(
-                &livespec_console_beads_fabro::demo_events(),
-                "operator",
-            ) {
+            let events = match load_interactive_tui_events() {
+                Ok(events) => events,
+                Err(error) => {
+                    eprintln!("tui source error: {error}");
+                    std::process::exit(1);
+                }
+            };
+            match console_tui::run_interactive_tui(&events, "operator") {
                 Ok(effects) => match persist_tui_effects(&effects) {
                     Ok(()) => {
                         std::process::exit(0);
@@ -49,6 +67,50 @@ fn should_run_interactive_tui(args: &[String]) -> bool {
     let command = args.get(1).map(String::as_str);
     let mode = args.get(2).map(String::as_str);
     command == Some("tui") && mode != Some("--preview")
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn should_run_backfill(args: &[String]) -> bool {
+    let command = args.get(1).map(String::as_str);
+    command == Some("backfill")
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn run_demo_backfill() -> Result<String, String> {
+    let path = console_store_path();
+    create_store_parent(&path)?;
+    let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
+    let observed_at = current_requested_at()?;
+    let outcomes =
+        livespec_console_beads_fabro::append_demo_events_to_store(&mut store, &observed_at)
+            .map_err(|error| format!("{error:?}"))?;
+    let inserted = outcomes
+        .iter()
+        .filter(|outcome| outcome.status() == AppendStatus::Inserted)
+        .count();
+    let duplicate = outcomes
+        .iter()
+        .filter(|outcome| outcome.status() == AppendStatus::Duplicate)
+        .count();
+    Ok(format!(
+        "backfill demo events: inserted {inserted}, duplicate {duplicate}, store {}",
+        path.display()
+    ))
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn load_interactive_tui_events() -> Result<Vec<ConsoleEvent>, String> {
+    let path = console_store_path();
+    if !path.exists() {
+        return Ok(livespec_console_beads_fabro::demo_events().to_vec());
+    }
+    let store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
+    let events = livespec_console_beads_fabro::load_tui_events_from_store(&store)
+        .map_err(|error| format!("{error:?}"))?;
+    if events.is_empty() {
+        return Ok(livespec_console_beads_fabro::demo_events().to_vec());
+    }
+    Ok(events)
 }
 
 #[cfg(all(not(test), not(coverage)))]

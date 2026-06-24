@@ -106,6 +106,20 @@ impl EventType {
             Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
         }
     }
+
+    #[must_use]
+    pub fn from_contract_name(value: &str) -> Option<Self> {
+        match value {
+            "beads.work_item_snapshot_observed" => Some(Self::BeadsWorkItemSnapshotObserved),
+            "dispatch.needs_regroom_observed" => Some(Self::DispatcherNeedsRegroomObserved),
+            "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
+            "factory.drain_requested" => Some(Self::FactoryDrainRequested),
+            "spec.next_snapshot_observed" => Some(Self::LivespecNextSnapshotObserved),
+            "spec.revise_required" => Some(Self::LivespecReviseRequired),
+            "source.completeness_finding_observed" => Some(Self::SourceCompletenessFindingObserved),
+            _unknown => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +277,25 @@ mod tests {
             EventType::SourceCompletenessFindingObserved.contract_name(),
             "source.completeness_finding_observed"
         );
+    }
+
+    #[test]
+    fn event_type_contract_names_round_trip() {
+        for event_type in [
+            EventType::BeadsWorkItemSnapshotObserved,
+            EventType::DispatcherNeedsRegroomObserved,
+            EventType::FabroHumanGateObserved,
+            EventType::FactoryDrainRequested,
+            EventType::LivespecNextSnapshotObserved,
+            EventType::LivespecReviseRequired,
+            EventType::SourceCompletenessFindingObserved,
+        ] {
+            assert_eq!(
+                EventType::from_contract_name(event_type.contract_name()),
+                Some(event_type)
+            );
+        }
+        assert_eq!(EventType::from_contract_name("unknown.event"), None);
     }
 
     #[test]
