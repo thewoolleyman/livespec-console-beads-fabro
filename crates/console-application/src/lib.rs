@@ -351,6 +351,7 @@ pub enum ApplicationError {
     EmptyOperatorAction,
     NoSelectedAttentionItem,
     NoSelectedOperatorAction,
+    UnknownCommandPaletteAction,
 }
 
 pub type ApplicationResult<T> = Result<T, ApplicationError>;
@@ -516,6 +517,37 @@ pub fn resolve_selected_operator_action(
             OperatorActionOutcome::CopyAttachCommand(detail.attach_command().to_owned())
         }
     })
+}
+
+pub fn resolve_command_palette_action(
+    model: &TuiScreenModel,
+    requested_by: &str,
+) -> ApplicationResult<OperatorActionOutcome> {
+    let requested_by = validate_operator_action(requested_by)?;
+    let TuiOverlay::CommandPalette { query } = model.overlay() else {
+        return Err(ApplicationError::NoSelectedOperatorAction);
+    };
+    if command_palette_query_matches_drain(query) {
+        return Ok(OperatorActionOutcome::PersistCommand(
+            factory_drain_command(requested_by),
+        ));
+    }
+    Err(ApplicationError::UnknownCommandPaletteAction)
+}
+
+fn command_palette_query_matches_drain(query: &str) -> bool {
+    let normalized = query.trim().to_lowercase();
+    normalized == "drain" || normalized == "drain ready queue"
+}
+
+fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
+    CommandEnvelope::new(
+        "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+        CommandType::FactoryDrainRequested,
+        "fleet:livespec".to_owned(),
+        "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+        requested_by.to_owned(),
+    )
 }
 
 fn attention_events(events: &[ConsoleEvent]) -> Vec<&ConsoleEvent> {
@@ -802,7 +834,8 @@ mod tests {
     use super::{
         ApplicationError, AttentionEvent, OperatorAction, TuiInteraction, TuiInteractionState,
         TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state, project_attention,
-        reduce_tui_interaction, resolve_selected_operator_action, validate_operator_action,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
+        validate_operator_action,
     };
 
     #[test]
@@ -1104,6 +1137,66 @@ mod tests {
                 .map(console_domain::CommandEnvelope::command_type),
             Some(&CommandType::AttentionSnoozeRequested)
         );
+    }
+
+    #[test]
+    fn command_palette_drain_resolves_to_factory_command() {
+        for query in ["drain", "Drain ready queue", "  drain  "] {
+            let state = TuiInteractionState::new(
+                0,
+                TuiOverlay::CommandPalette {
+                    query: query.to_owned(),
+                },
+            );
+            let model = build_tui_model_for_state(&fabro_gate_events(), &state);
+
+            let outcome = resolve_command_palette_action(&model, "operator");
+            let command = outcome
+                .as_ref()
+                .ok()
+                .and_then(super::OperatorActionOutcome::command);
+
+            assert_eq!(
+                command.map(console_domain::CommandEnvelope::command_type),
+                Some(&CommandType::FactoryDrainRequested)
+            );
+            assert_eq!(
+                command.map(console_domain::CommandEnvelope::aggregate_id),
+                Some("fleet:livespec")
+            );
+            assert_eq!(
+                command.map(console_domain::CommandEnvelope::idempotency_key),
+                Some("fleet:livespec:factory.drain_requested:budget=1:parallel=1")
+            );
+            assert_eq!(
+                command.map(console_domain::CommandEnvelope::requested_by),
+                Some("operator")
+            );
+        }
+    }
+
+    #[test]
+    fn command_palette_rejects_unknown_action() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: "launch".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&fabro_gate_events(), &state);
+
+        let outcome = resolve_command_palette_action(&model, "operator");
+
+        assert_eq!(outcome, Err(ApplicationError::UnknownCommandPaletteAction));
+    }
+
+    #[test]
+    fn command_palette_resolution_requires_command_palette_overlay() {
+        let model = build_tui_model(&fabro_gate_events(), 0);
+
+        let outcome = resolve_command_palette_action(&model, "operator");
+
+        assert_eq!(outcome, Err(ApplicationError::NoSelectedOperatorAction));
     }
 
     #[test]

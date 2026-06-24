@@ -3,7 +3,8 @@
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, OperatorAction, OperatorActionOutcome,
     TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-    build_tui_model_for_state, reduce_tui_interaction, resolve_selected_operator_action,
+    build_tui_model_for_state, reduce_tui_interaction, resolve_command_palette_action,
+    resolve_selected_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -165,7 +166,13 @@ fn confirm_operator_action(
     requested_by: &str,
 ) -> TuiRuntimeStep {
     let model = build_tui_model_for_state(events, state);
-    let effect = match resolve_selected_operator_action(&model, requested_by) {
+    let outcome = match model.overlay() {
+        TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
+        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandModal { .. } => {
+            resolve_selected_operator_action(&model, requested_by)
+        }
+    };
+    let effect = match outcome {
         Ok(outcome) => action_outcome_effect(outcome),
         Err(error) => TuiRuntimeEffect::ApplicationError(error),
     };
@@ -686,6 +693,33 @@ mod tests {
         assert_eq!(
             command.map(console_domain::CommandEnvelope::aggregate_id),
             Some("evt_demo_1")
+        );
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn runtime_step_turns_command_palette_drain_into_persisted_command_effect() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: "drain".to_owned(),
+            },
+        );
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+
+        let command = persisted_command(step.effect());
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::FactoryDrainRequested)
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::aggregate_id),
+            Some("fleet:livespec")
         );
         assert_eq!(step.state().overlay(), &TuiOverlay::None);
     }
