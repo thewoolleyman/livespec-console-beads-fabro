@@ -160,6 +160,8 @@ pub enum TuiInteraction {
     OpenCommandPalette,
     OpenCommandModal,
     CloseOverlay,
+    SelectNextView,
+    SelectPreviousView,
     TypeChar(char),
     Backspace,
     SelectNextAction,
@@ -168,6 +170,7 @@ pub enum TuiInteraction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiInteractionState {
+    active_view: TuiView,
     selected_attention_index: usize,
     overlay: TuiOverlay,
 }
@@ -176,9 +179,28 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn new(selected_attention_index: usize, overlay: TuiOverlay) -> Self {
         Self {
+            active_view: TuiView::Attention,
             selected_attention_index,
             overlay,
         }
+    }
+
+    #[must_use]
+    pub const fn for_view(
+        active_view: TuiView,
+        selected_attention_index: usize,
+        overlay: TuiOverlay,
+    ) -> Self {
+        Self {
+            active_view,
+            selected_attention_index,
+            overlay,
+        }
+    }
+
+    #[must_use]
+    pub const fn active_view(&self) -> TuiView {
+        self.active_view
     }
 
     #[must_use]
@@ -293,6 +315,7 @@ pub struct TuiScreenModel {
     attention_items: Vec<AttentionItem>,
     selected_attention_index: Option<usize>,
     detail: Option<AttentionDetail>,
+    view_items: Vec<ViewSummaryItem>,
     overlay: TuiOverlay,
     header: String,
     footer: String,
@@ -325,6 +348,11 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    pub fn view_items(&self) -> &[ViewSummaryItem] {
+        &self.view_items
+    }
+
+    #[must_use]
     pub const fn overlay(&self) -> &TuiOverlay {
         &self.overlay
     }
@@ -343,6 +371,29 @@ impl TuiScreenModel {
     #[must_use]
     pub fn footer(&self) -> &str {
         &self.footer
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewSummaryItem {
+    title: String,
+    detail: String,
+}
+
+impl ViewSummaryItem {
+    #[must_use]
+    pub const fn new(title: String, detail: String) -> Self {
+        Self { title, detail }
+    }
+
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
     }
 }
 
@@ -491,18 +542,21 @@ pub fn build_tui_model_for_state(
     let detail = selected_attention_index
         .map(|index| build_attention_detail(attention_events[index], events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
+    let active_view = state.active_view();
     TuiScreenModel {
-        active_view: TuiView::Attention,
+        active_view,
         navigation: TuiView::all().to_vec(),
         attention_items,
         selected_attention_index,
         detail,
+        view_items: view_summary_items(active_view, events, attention_events.len()),
         overlay,
         header: format!(
-            "fleet: livespec | mode: tui | attention: {}",
+            "fleet: livespec | mode: tui | view: {} | attention: {}",
+            active_view.label(),
             attention_events.len()
         ),
-        footer: "shortcuts: arrows select | enter details | / search | : command palette"
+        footer: "shortcuts: up/down select | left/right views | enter details | / search | : command palette"
             .to_owned(),
     }
 }
@@ -515,51 +569,72 @@ pub fn reduce_tui_interaction(
 ) -> TuiInteractionState {
     let model = build_tui_model_for_state(events, state);
     match interaction {
-        TuiInteraction::SelectNext => TuiInteractionState::new(
+        TuiInteraction::SelectNext => TuiInteractionState::for_view(
+            state.active_view(),
             move_selection_down(
                 model.attention_items().len(),
                 state.selected_attention_index(),
             ),
             state.overlay().clone(),
         ),
-        TuiInteraction::SelectPrevious => TuiInteractionState::new(
+        TuiInteraction::SelectPrevious => TuiInteractionState::for_view(
+            state.active_view(),
             move_selection_up(state.selected_attention_index()),
             state.overlay().clone(),
         ),
-        TuiInteraction::OpenSearch => TuiInteractionState::new(
+        TuiInteraction::SelectNextView => TuiInteractionState::for_view(
+            move_view_down(state.active_view()),
+            state.selected_attention_index(),
+            state.overlay().clone(),
+        ),
+        TuiInteraction::SelectPreviousView => TuiInteractionState::for_view(
+            move_view_up(state.active_view()),
+            state.selected_attention_index(),
+            state.overlay().clone(),
+        ),
+        TuiInteraction::OpenSearch => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             TuiOverlay::Search {
                 query: String::new(),
             },
         ),
-        TuiInteraction::OpenCommandPalette => TuiInteractionState::new(
+        TuiInteraction::OpenCommandPalette => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             TuiOverlay::CommandPalette {
                 query: String::new(),
             },
         ),
-        TuiInteraction::OpenCommandModal => TuiInteractionState::new(
+        TuiInteraction::OpenCommandModal => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
         ),
-        TuiInteraction::CloseOverlay => {
-            TuiInteractionState::new(state.selected_attention_index(), TuiOverlay::None)
-        }
-        TuiInteraction::TypeChar(value) => TuiInteractionState::new(
+        TuiInteraction::CloseOverlay => TuiInteractionState::for_view(
+            state.active_view(),
+            state.selected_attention_index(),
+            TuiOverlay::None,
+        ),
+        TuiInteraction::TypeChar(value) => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             type_overlay_char(state.overlay(), value),
         ),
-        TuiInteraction::Backspace => TuiInteractionState::new(
+        TuiInteraction::Backspace => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             backspace_overlay_query(state.overlay()),
         ),
-        TuiInteraction::SelectNextAction => TuiInteractionState::new(
+        TuiInteraction::SelectNextAction => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             move_action_down(state.overlay(), model.detail()),
         ),
-        TuiInteraction::SelectPreviousAction => TuiInteractionState::new(
+        TuiInteraction::SelectPreviousAction => TuiInteractionState::for_view(
+            state.active_view(),
             state.selected_attention_index(),
             move_action_up(state.overlay()),
         ),
@@ -798,6 +873,25 @@ const fn move_selection_up(selected_index: usize) -> usize {
     selected_index.saturating_sub(1)
 }
 
+fn move_view_down(active_view: TuiView) -> TuiView {
+    let views = TuiView::all();
+    let index = view_index(active_view);
+    views[(index + 1).min(views.len() - 1)]
+}
+
+fn move_view_up(active_view: TuiView) -> TuiView {
+    let views = TuiView::all();
+    let index = view_index(active_view);
+    views[index.saturating_sub(1)]
+}
+
+fn view_index(active_view: TuiView) -> usize {
+    TuiView::all()
+        .iter()
+        .position(|view| *view == active_view)
+        .unwrap_or_default()
+}
+
 fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
     match overlay {
         TuiOverlay::Search { query } => TuiOverlay::Search {
@@ -885,6 +979,124 @@ fn build_attention_detail(event: &ConsoleEvent, events: &[ConsoleEvent]) -> Atte
         latest_timeline(events, event.stream_id(), 3),
         event.event_type().actions(),
     )
+}
+
+fn view_summary_items(
+    active_view: TuiView,
+    events: &[ConsoleEvent],
+    attention_count: usize,
+) -> Vec<ViewSummaryItem> {
+    match active_view {
+        TuiView::Attention => vec![ViewSummaryItem::new(
+            format!("Attention items: {attention_count}"),
+            "Projection contains events requiring operator review.".to_owned(),
+        )],
+        TuiView::Spec => spec_view_items(events),
+        TuiView::Ready => vec![ViewSummaryItem::new(
+            format!(
+                "Work-item snapshots: {}",
+                count_events(events, EventType::BeadsWorkItemSnapshotObserved)
+            ),
+            "Ready-state detail is derived from Beads snapshot events as adapters fill payloads."
+                .to_owned(),
+        )],
+        TuiView::Factory => factory_view_items(events),
+        TuiView::Manual => vec![ViewSummaryItem::new(
+            format!(
+                "Manual attention signals: {}",
+                count_events(events, EventType::FabroHumanGateObserved)
+                    + count_events(events, EventType::DispatcherNeedsRegroomObserved)
+            ),
+            "Manual work collects human gates and regroom requests from stored events.".to_owned(),
+        )],
+        TuiView::Done => vec![ViewSummaryItem::new(
+            format!(
+                "Factory drains completed: {}",
+                count_events(events, EventType::FactoryDrainCompleted)
+            ),
+            "Done work is projected from terminal success events.".to_owned(),
+        )],
+        TuiView::Events => events_view_items(events),
+        TuiView::Repos => repos_view_items(events),
+    }
+}
+
+fn spec_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
+    vec![
+        ViewSummaryItem::new(
+            format!(
+                "LiveSpec next snapshots: {}",
+                count_events(events, EventType::LivespecNextSnapshotObserved)
+            ),
+            "Spec lifecycle status is projected from LiveSpec adapter observations.".to_owned(),
+        ),
+        ViewSummaryItem::new(
+            format!(
+                "Revise required: {}",
+                count_events(events, EventType::LivespecReviseRequired)
+            ),
+            "Revise-required events stay visible until acknowledged or resolved.".to_owned(),
+        ),
+    ]
+}
+
+fn factory_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
+    vec![
+        ViewSummaryItem::new(
+            format!(
+                "Drain commands requested: {}",
+                count_events(events, EventType::FactoryDrainRequested)
+            ),
+            "Factory commands are persisted before adapter ports perform side effects.".to_owned(),
+        ),
+        ViewSummaryItem::new(
+            format!(
+                "Drain terminal outcomes: {}",
+                count_events(events, EventType::FactoryDrainCompleted)
+                    + count_events(events, EventType::FactoryDrainFailed)
+            ),
+            "Completed and failed drain outcomes are appended as events.".to_owned(),
+        ),
+    ]
+}
+
+fn events_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
+    let latest = events
+        .last()
+        .map_or_else(|| "none".to_owned(), latest_event_summary);
+    vec![
+        ViewSummaryItem::new(
+            format!("Stored events: {}", events.len()),
+            "The event log is the canonical source for projections.".to_owned(),
+        ),
+        ViewSummaryItem::new("Latest event".to_owned(), latest),
+    ]
+}
+
+fn repos_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
+    let mut repos = events.iter().map(repo_id).collect::<Vec<_>>();
+    repos.sort();
+    repos.dedup();
+    vec![ViewSummaryItem::new(
+        format!("Repos observed: {}", repos.len()),
+        repos.join(", "),
+    )]
+}
+
+fn latest_event_summary(event: &ConsoleEvent) -> String {
+    format!(
+        "{} from {} on {}",
+        event.event_type().label(),
+        event.source(),
+        event.stream_id()
+    )
+}
+
+fn count_events(events: &[ConsoleEvent], event_type: EventType) -> usize {
+    events
+        .iter()
+        .filter(|event| event.event_type() == &event_type)
+        .count()
 }
 
 fn repo_id(event: &ConsoleEvent) -> String {
@@ -1026,12 +1238,21 @@ mod tests {
         assert_eq!(model.attention_items(), []);
         assert_eq!(model.selected_attention_index(), None);
         assert_eq!(model.detail(), None);
+        assert_eq!(model.view_items().len(), 1);
+        assert_eq!(model.view_items()[0].title(), "Attention items: 0");
+        assert_eq!(
+            model.view_items()[0].detail(),
+            "Projection contains events requiring operator review."
+        );
         assert_eq!(model.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
-        assert_eq!(model.header(), "fleet: livespec | mode: tui | attention: 0");
+        assert_eq!(
+            model.header(),
+            "fleet: livespec | mode: tui | view: Attention | attention: 0"
+        );
         assert_eq!(
             model.footer(),
-            "shortcuts: arrows select | enter details | / search | : command palette"
+            "shortcuts: up/down select | left/right views | enter details | / search | : command palette"
         );
     }
 
@@ -1066,6 +1287,115 @@ mod tests {
         assert_eq!(state.selected_attention_index(), 0);
         assert_eq!(model.selected_attention_index(), Some(0));
         assert_fabro_gate_detail(&model);
+    }
+
+    #[test]
+    fn tui_interaction_moves_between_required_views() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(1, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextView);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.active_view(), TuiView::Spec);
+        assert_eq!(state.selected_attention_index(), 1);
+        assert_eq!(model.active_view(), TuiView::Spec);
+        assert_eq!(model.view_items()[0].title(), "LiveSpec next snapshots: 0");
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousView);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.active_view(), TuiView::Attention);
+        assert_eq!(model.active_view(), TuiView::Attention);
+
+        let state = TuiInteractionState::for_view(TuiView::Repos, 0, TuiOverlay::None);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextView);
+
+        assert_eq!(state.active_view(), TuiView::Repos);
+    }
+
+    #[test]
+    fn tui_interaction_preserves_active_view_across_overlays() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::for_view(TuiView::Factory, 1, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenSearch);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('g'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::CloseOverlay);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenCommandModal);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousAction);
+
+        assert_eq!(state.active_view(), TuiView::Factory);
+        assert_eq!(state.selected_attention_index(), 1);
+    }
+
+    #[test]
+    fn tui_non_attention_views_project_event_summaries() {
+        let events = view_summary_events();
+
+        for (view, expected_title, expected_detail) in [
+            (
+                TuiView::Spec,
+                "LiveSpec next snapshots: 1",
+                "Spec lifecycle status is projected from LiveSpec adapter observations.",
+            ),
+            (
+                TuiView::Ready,
+                "Work-item snapshots: 1",
+                "Ready-state detail is derived from Beads snapshot events as adapters fill payloads.",
+            ),
+            (
+                TuiView::Factory,
+                "Drain commands requested: 1",
+                "Factory commands are persisted before adapter ports perform side effects.",
+            ),
+            (
+                TuiView::Manual,
+                "Manual attention signals: 2",
+                "Manual work collects human gates and regroom requests from stored events.",
+            ),
+            (
+                TuiView::Done,
+                "Factory drains completed: 1",
+                "Done work is projected from terminal success events.",
+            ),
+            (
+                TuiView::Events,
+                "Stored events: 8",
+                "The event log is the canonical source for projections.",
+            ),
+            (
+                TuiView::Repos,
+                "Repos observed: 2",
+                "livespec-console-beads-fabro, other-repo",
+            ),
+        ] {
+            let state = TuiInteractionState::for_view(view, 0, TuiOverlay::None);
+            let model = build_tui_model_for_state(&events, &state);
+
+            assert_eq!(model.active_view(), view);
+            assert_eq!(model.view_items()[0].title(), expected_title);
+            assert_eq!(model.view_items()[0].detail(), expected_detail);
+        }
+    }
+
+    #[test]
+    fn tui_events_view_reports_empty_and_latest_event_detail() {
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        let empty_model = build_tui_model_for_state(&[], &state);
+
+        assert_eq!(empty_model.view_items()[1].detail(), "none");
+
+        let events = view_summary_events();
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(model.view_items()[1].title(), "Latest event");
+        assert_eq!(
+            model.view_items()[1].detail(),
+            "Factory drain failed from console:factory-command-handler on factory:livespec-console-beads-fabro"
+        );
     }
 
     #[test]
@@ -1379,6 +1709,7 @@ mod tests {
             attention_items: Vec::new(),
             selected_attention_index: None,
             detail: None,
+            view_items: Vec::new(),
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
@@ -1621,6 +1952,83 @@ mod tests {
                 "livespec".to_owned(),
                 "repo:other".to_owned(),
                 4,
+            ),
+        ]
+    }
+
+    fn view_summary_events() -> [ConsoleEvent; 8] {
+        [
+            ConsoleEvent::new(
+                "evt_gate".to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::FabroHumanGateObserved,
+                "fabro:run_17".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_regroom".to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::DispatcherNeedsRegroomObserved,
+                "dispatcher".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                2,
+            ),
+            ConsoleEvent::new(
+                "evt_spec".to_owned(),
+                1,
+                "spec".to_owned(),
+                EventType::LivespecNextSnapshotObserved,
+                "livespec:next".to_owned(),
+                "console:other-repo".to_owned(),
+                3,
+            ),
+            ConsoleEvent::new(
+                "evt_revise".to_owned(),
+                1,
+                "spec".to_owned(),
+                EventType::LivespecReviseRequired,
+                "livespec:next".to_owned(),
+                "console:other-repo".to_owned(),
+                4,
+            ),
+            ConsoleEvent::new(
+                "evt_ready".to_owned(),
+                1,
+                "beads".to_owned(),
+                EventType::BeadsWorkItemSnapshotObserved,
+                "bd:list".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                5,
+            ),
+            ConsoleEvent::new(
+                "evt_drain".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainRequested,
+                "console:factory-command-handler".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                6,
+            ),
+            ConsoleEvent::new(
+                "evt_done".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainCompleted,
+                "console:factory-command-handler".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                7,
+            ),
+            ConsoleEvent::new(
+                "evt_failed".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainFailed,
+                "console:factory-command-handler".to_owned(),
+                "factory:livespec-console-beads-fabro".to_owned(),
+                8,
             ),
         ]
     }
