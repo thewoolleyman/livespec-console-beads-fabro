@@ -72,7 +72,10 @@ fn should_run_interactive_tui(args: &[String]) -> bool {
 #[cfg(all(not(test), not(coverage)))]
 fn should_run_store_backed_command(args: &[String]) -> bool {
     let command = args.get(1).map(String::as_str);
-    matches!(command, Some("backfill" | "events" | "snapshot" | "doctor"))
+    matches!(
+        command,
+        Some("serve" | "backfill" | "events" | "snapshot" | "doctor")
+    )
 }
 
 #[cfg(all(not(test), not(coverage)))]
