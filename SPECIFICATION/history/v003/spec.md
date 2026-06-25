@@ -89,16 +89,12 @@ livespec-console-beads-fabro backfill
 livespec-console-beads-fabro events tail
 livespec-console-beads-fabro snapshot
 livespec-console-beads-fabro doctor
+livespec-console-beads-fabro arch-check
 ```
 
 The first UI is a TUI with arrow-driven selection lists, detail panes,
 command modals, and live updates. A GUI can later consume the same
 events, commands, and projections.
-
-Architecture checks are NOT an operator subcommand: they are a
-contributor quality-gate concern owned by
-`non-functional-requirements.md` -> Architecture Tests and realized as
-the separate `console-arch-check` binary.
 
 ### Initial-adapter fidelity
 
@@ -120,6 +116,7 @@ flowchart TB
   Tail["events tail"]
   Snapshot["snapshot"]
   Doctor["doctor"]
+  Arch["arch-check"]
 
   Binary --> Serve
   Binary --> Tui
@@ -127,6 +124,7 @@ flowchart TB
   Binary --> Tail
   Binary --> Snapshot
   Binary --> Doctor
+  Binary --> Arch
 
   Serve --> Ingest["ingestors"]
   Serve --> Store["SQLite WAL event store"]

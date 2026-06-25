@@ -108,27 +108,23 @@ CI on every push and pull request).** It MUST include:
   `unimplemented`, and forbids `unsafe`)
 - tests with a modern Rust test runner (`cargo nextest`)
 - coverage gated at **100% line AND 100% region**
-  (`cargo llvm-cov --workspace --lib --fail-under-lines 100 --fail-under-regions 100`)
-  over **every** workspace library (`--lib`) target with **no per-crate
-  carve-outs** -- `console-domain`, `console-application`,
-  `console-eventstore`, `console-tui`, and any future library crate.
-  Coverage is a design forcing-function, not a QA afterthought: code
-  that cannot be exercised by a meaningful unit test MUST be treated as
-  a cohesion/coupling smell and redesigned. **No coverage exclusions are
-  permitted** -- regions the language makes uncoverable (macro-generated
-  code, exhaustiveness arms for states the type system already makes
-  impossible) MUST be eliminated by restructuring, never annotated away;
-  a UI or I/O branch that resists coverage (e.g. in the TUI or the SQLite
-  event store) is a redesign signal, not grounds for a carve-out. The
-  binary entry point (`main.rs`) is the only uncovered shim; all testable
-  logic lives in the covered library targets. (`--branch` coverage is
-  unstable in `cargo llvm-cov`; region coverage is the mature falsifiable
-  knob and is what gates today.)
+  (`cargo llvm-cov --fail-under-lines 100 --fail-under-regions 100`)
+  over the bottom-of-pyramid library targets (`console-domain`,
+  `console-application`, `console-eventstore`, and every other `--lib`
+  target). Coverage is a design forcing-function, not a QA afterthought:
+  code that cannot be exercised by a meaningful unit test MUST be
+  treated as a cohesion/coupling smell and redesigned. **No coverage
+  exclusions are permitted** -- regions the language makes uncoverable
+  (macro-generated code, exhaustiveness arms for states the type system
+  already makes impossible) MUST be eliminated by restructuring, never
+  annotated away. The binary entry point (`main.rs`) is a thin,
+  logic-free shim; all testable logic lives in the covered library
+  targets. (`--branch` coverage is unstable in `cargo llvm-cov`; region
+  coverage is the mature falsifiable knob and is what gates today.)
 - property tests for pure logic and replay/projector behavior
 - dependency audit/deny checks (`cargo deny`)
 - architecture checks (see `## Constraints` -> Architecture Tests)
-- the behavioral-coverage linkage check, once its checker lands (see
-  Behavioral Coverage below)
+- the behavioral-coverage linkage check (see Behavioral Coverage below)
 
 `just check` MUST NOT include fuzz or mutation runs.
 
@@ -158,11 +154,10 @@ It MUST include:
 include a full fuzz soak (a longer per-target budget) and a full
 `cargo mutants` sweep over the logic crates. A nightly finding (a new
 crash, or a new surviving mutant not on the allow-list) MUST NOT fail
-the canonical branch; it MUST instead open a **high-priority chore
-work-item, filed ready for pickup**, in the project's Beads tenant
-(`livespec-console-beads-fabro`). This requires CI to hold credentialed
-access to the work-items backend per the Beads/Fabro Family Secret
-Convention below.
+the canonical branch; it MUST instead open a tracked work-item against
+the work-items store. This requires CI to hold credentialed access to
+the work-items backend per the Beads/Fabro Family Secret Convention
+below.
 
 ```mermaid
 flowchart TB
@@ -210,30 +205,12 @@ The linkage MUST be enforced by a mechanical check, run inside
 repository -- porting the discipline of livespec's Python plumbing
 (`dev-tooling/checks/behavior_scenario_link.py` for the clause ->
 scenario guardrail, the shared `spec_clauses.py` gap-id primitive, and
-the `tests/heading-coverage.json` link registry).
-
-Once it exists, the check MUST run in **`fail` mode** -- not advisory:
-the build fails on any normative clause not linked to a scenario, and on
-any scenario without a corresponding test. Implementing that Rust checker
--- and backfilling every clause -> scenario -> test link so it passes --
-is a **release-blocking, highest-priority obligation**, tracked as the
-`scenario-test-rust-checker` work-item; the gate attaches to that real
-checker and runs in `just check` and CI the moment it lands.
-
-Until the checker lands, the requirement is enforced by that tracked
-release-blocking obligation, NOT by a fail-closed CI placeholder. A
-placeholder that hard-fails CI for a not-yet-built checker was found to
-deadlock the merge gate -- it blocks every merge, including the checker's
-own PR and unrelated work -- so it is NOT used. Enforcement attaches to
-the real checker, never to its absence.
-
-**Binding mechanism.** A scenario is identified by its `scenarios.md`
-(or `## Scenarios`) H2 section heading. A clause is bound to a scenario,
-and a scenario to its top-of-pyramid acceptance/integration test,
-through the `tests/heading-coverage.json` link registry (the `clauses[]`
-link shape ported from livespec). A link whose scenario name does not
-resolve to a live H2 heading, or a scenario with no registered test,
-MUST NOT satisfy the guardrail.
+the `tests/heading-coverage.json` link registry). The check MUST support
+a `warn` -> `fail` severity lever; reaching and holding `fail` mode
+(every clause linked, every scenario tested) is a release-blocking,
+highest-priority obligation, not an optional one. A link whose scenario
+name does not resolve to a live scenario heading MUST NOT satisfy the
+guardrail.
 
 ### Beads/Fabro Family Secret Convention
 

@@ -14,11 +14,21 @@ Every canonical event MUST carry:
   "type": "factory.drain.started",
   "source": "console",
   "source_event_id": "optional-source-stable-id",
-  "aggregate_id": "repo:livespec-runtime",
+  "causation_event_id": "optional-causing-command-or-event-id",
   "stream_id": "factory:livespec-runtime",
   "stream_seq": 12,
-  "causation_id": "optional-causing-command-or-event-id",
-  "correlation_id": "corr_...",
+  "subject": {
+    "kind": "repo",
+    "id": "livespec-runtime"
+  },
+  "correlation": {
+    "repo": "livespec-runtime",
+    "work_item_id": "livespec-runtime-x91",
+    "dispatch_id": "optional-dispatch-id",
+    "fabro_run_id": "optional-run-id",
+    "pr_number": 47,
+    "gap_id": "optional-gap-id"
+  },
   "occurred_at": "2026-06-22T00:00:00Z",
   "observed_at": "2026-06-22T00:00:01Z",
   "payload": {},
@@ -29,11 +39,13 @@ Every canonical event MUST carry:
 `event_id` is globally unique. `(source, source_event_id)` MUST be unique
 when `source_event_id` is present so adapter replay is idempotent.
 
-The `events` table (see SQLite Persistence) is a faithful 1:1 projection
-of this envelope: every envelope field is a column and every column has
-an envelope source. `correlation_id` and `causation_id` are scalar ids,
-not structured objects; `aggregate_id` is the event's routing key (e.g.
-`"repo:<id>"`, the same shape as a command's `aggregate_id`).
+The `events` table (see SQLite Persistence) is a faithful projection of
+this envelope: every envelope field maps to exactly one column and no
+column lacks an envelope source. `aggregate_id` is the derived routing
+key `"<subject.kind>:<subject.id>"` (the same shape as a command's
+`aggregate_id`); `subject_kind` / `subject_id` store `subject`;
+`correlation_json` stores the `correlation` object; `causation_id`
+stores `causation_event_id`.
 
 ```mermaid
 flowchart LR
@@ -68,10 +80,7 @@ Commands are persisted intentions, not facts. A command MUST carry:
 
 Commands MAY be rejected. State changes become durable only through
 events such as `command.accepted`, `factory.drain.started`,
-`factory.drain.failed`, `factory.drain.completed`, and
-`factory.drain.not_wired` (the honest outcome a simulated or
-unimplemented drain port emits instead of fabricating success, per the
-honesty rule in the Command Handling section).
+`factory.drain.failed`, and `factory.drain.completed`.
 
 ```mermaid
 sequenceDiagram
@@ -107,15 +116,17 @@ events
   global_seq integer primary key
   event_id text unique
   context text
-  aggregate_id text
+  aggregate_id text          -- derived routing key "<subject_kind>:<subject_id>"
+  subject_kind text
+  subject_id text
   stream_id text
   stream_seq integer
   type text
   schema_version integer
   occurred_at text
   observed_at text
-  causation_id text null
-  correlation_id text
+  causation_id text null     -- the envelope causation_event_id
+  correlation_json text      -- the envelope correlation object
   source text
   source_event_id text null
   payload_json text
@@ -172,12 +183,14 @@ erDiagram
     text event_id UK
     text context
     text aggregate_id
+    text subject_kind
+    text subject_id
     text stream_id
     integer stream_seq
     text type
     integer schema_version
     text causation_id
-    text correlation_id
+    text correlation_json
     text source
     text source_event_id
     text payload_json
