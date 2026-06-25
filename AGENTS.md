@@ -35,6 +35,11 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   learned preferences in this file (or a file it references), NOT in ephemeral
   per-session agent memory. The repo's hook that blocks `~/.claude` memory writes
   is a signal to capture the memory HERE, not to drop it.
+- **Handoffs: update the living handoff file; NEVER print one inline.** When
+  handing off to a future session, UPDATE the existing handoff prompt under
+  `prompts/` (the single living handoff — the one path the next session runs)
+  in place and print its PATH. Do not print a handoff prompt's body in the chat,
+  and do not proliferate new handoff files.
 
 ## Codex dogfooding (OpenAI Codex CLI/TUI)
 
