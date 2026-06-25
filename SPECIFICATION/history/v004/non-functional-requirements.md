@@ -127,8 +127,7 @@ CI on every push and pull request).** It MUST include:
 - property tests for pure logic and replay/projector behavior
 - dependency audit/deny checks (`cargo deny`)
 - architecture checks (see `## Constraints` -> Architecture Tests)
-- the behavioral-coverage linkage check, once its checker lands (see
-  Behavioral Coverage below)
+- the behavioral-coverage linkage check (see Behavioral Coverage below)
 
 `just check` MUST NOT include fuzz or mutation runs.
 
@@ -212,20 +211,17 @@ repository -- porting the discipline of livespec's Python plumbing
 scenario guardrail, the shared `spec_clauses.py` gap-id primitive, and
 the `tests/heading-coverage.json` link registry).
 
-Once it exists, the check MUST run in **`fail` mode** -- not advisory:
-the build fails on any normative clause not linked to a scenario, and on
-any scenario without a corresponding test. Implementing that Rust checker
--- and backfilling every clause -> scenario -> test link so it passes --
-is a **release-blocking, highest-priority obligation**, tracked as the
-`scenario-test-rust-checker` work-item; the gate attaches to that real
-checker and runs in `just check` and CI the moment it lands.
-
-Until the checker lands, the requirement is enforced by that tracked
-release-blocking obligation, NOT by a fail-closed CI placeholder. A
-placeholder that hard-fails CI for a not-yet-built checker was found to
-deadlock the merge gate -- it blocks every merge, including the checker's
-own PR and unrelated work -- so it is NOT used. Enforcement attaches to
-the real checker, never to its absence.
+The check MUST run in **`fail` mode** -- it is NOT advisory and there is
+no standing `warn` grace period: the build fails on any normative clause
+not linked to a scenario, and on any scenario without a corresponding
+test. The gate is additionally **fail-closed**: until the Rust checker
+is implemented, `just check` and CI MUST include a placeholder check
+that fails, so the checker's *absence* is itself a build failure --
+neither a missing link nor a missing checker can pass. Wiring the real
+checker (the impl obligation) MUST include backfilling every clause ->
+scenario -> test link so the gate is green the moment the placeholder is
+replaced. There is no path by which full enforcement quietly never
+arrives.
 
 **Binding mechanism.** A scenario is identified by its `scenarios.md`
 (or `## Scenarios`) H2 section heading. A clause is bound to a scenario,

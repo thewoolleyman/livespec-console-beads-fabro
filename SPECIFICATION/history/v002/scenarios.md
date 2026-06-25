@@ -47,7 +47,7 @@ sequenceDiagram
   Operator->>TUI: select Drain ready queue
   TUI->>Factory: factory.drain_requested
   Factory->>Events: command.accepted
-  Factory->>Dispatcher: invoke configured drain program via drain port
+  Factory->>Dispatcher: dispatcher loop --budget 1
   Dispatcher-->>Factory: terminal outcome
   Factory->>Events: factory.drain.completed or failed
   Events-->>TUI: live projection update
