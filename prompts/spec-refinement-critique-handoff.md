@@ -23,21 +23,40 @@ This track is **dual-output by design**:
 > `/livespec:critique` → `/livespec:revise` sub-track it used to describe has
 > **converged at `v008`** (see Status); its detail lives in git history.
 
-## Status (as of master `1711e52`, history `v008`)
+## Status (as of master `9daa48b`, history `v009`)
 
-- The `/livespec:critique` → `/livespec:revise` track **converged at `v008`**.
-  Recent cuts: `v007` reconciled the coverage gate (line gates today; 100%
-  region is the tracked `coverage-region-gate` target) and the Beads stream
-  label (`work_item.*` → `beads.*`); `v008` added the Control-Plane
-  realization's invoke/command facet. The persistence envelope already matches
-  the eventstore (`v004`). A final critique pass surfaced no further material
-  findings.
+- The **capture-drift + capture-gaps 2-round cycle CONVERGED at `v009`**.
+  `v009` (`impl-drift-reconciliation`, propose-change → revise, landed
+  `9daa48b`) reconciled two impl→spec drifts: the NFR Quality Gate now names
+  `cargo machete` + the dual `cargo test`/`cargo nextest` inner-loop run that
+  `just check`/CI actually execute, and `spec.md` now says arch-check is "NOT
+  an operator **capability**" with the redirect-only `help` entry (was the
+  inaccurate "NOT an operator subcommand"). Round 2 capture-spec-drift
+  surfaced no new drift, so there is **no `v010` cut**. Earlier cuts still
+  stand: `v007` reconciled the coverage gate (line gates today; 100% region is
+  the tracked `coverage-region-gate` target) + the Beads stream label
+  (`work_item.*` → `beads.*`); `v008` added the Control-Plane invoke/command
+  facet; the persistence envelope matches the eventstore (`v004`). The earlier
+  `/livespec:critique` → `/livespec:revise` track remains converged at `v008`.
+- **Both gap runs converged with 0 new fileable work-items.**
+  `detect-impl-gaps` against `v009` = 82 gap-detectable clauses; every UNMET
+  clause maps to one of the 6 tracked obligations below (the Event-Sourcing
+  Safety latent clauses — event upcasting / compensating-event rollback /
+  snapshot-corruption recovery — are MET-by-construction since projections are
+  recomputed from the append-only log, or not-yet-actionable since only
+  `schema_version: 1` exists). The deeper Round 2 pass found Scenarios 6
+  (policy-rejected command → `command.rejected` is never emitted) and 7
+  (command crash-gap reconciliation) are unrealized behaviors that fall within
+  `rrr4i4`'s existing `(b)` clause→scenario→test backfill scope — recorded as a
+  **cross-reference comment on `rrr4i4`** (no duplicate filed).
 - `SPECIFICATION/proposed_changes/` is empty but tracked via its `README.md`,
   so `doctor-static` is **green on a clean checkout** (exit 0).
 - **Impl work-items already filed** in the Beads tenant — run
   `… with-livespec-env.sh bd list` to confirm and DO NOT duplicate:
   - `rrr4i4` P0 epic — port the clause→scenario→test behavioral-coverage
-    checker to Rust (`scenario-test-rust-checker`).
+    checker to Rust (`scenario-test-rust-checker`); now carries a
+    cross-reference comment naming Scenarios 6 & 7 as unrealized behaviors its
+    `(b)` backfill must implement (not just link).
   - `gkqyaf` P1 — upgrade `console-arch-check` from text scans to
     `cargo metadata` + AST checks.
   - `mvu22t` P1 — Rust Red-Green-Replay commit-msg enforcement.
@@ -122,6 +141,14 @@ For each round (run drift, then gaps):
 
 Stop when both streams' second runs surface no new material findings/gaps, or at
 the maintainer's direction.
+
+> **This cycle (through `v009`) reached that bar:** both streams' Round 2 runs
+> surfaced no new material findings (drift: no `v010`; gaps: 0 new items, one
+> `rrr4i4` cross-reference). A next session re-running this handoff should
+> re-confirm convergence — expect `detect-impl-gaps` ≈ 82 clauses, every UNMET
+> one mapping to the 6 obligations above — and stop early, UNLESS new impl/spec
+> content has landed since `9daa48b` that surfaces fresh drift or gaps. Do not
+> manufacture findings to justify another cut.
 
 ## Out of scope for this track
 
