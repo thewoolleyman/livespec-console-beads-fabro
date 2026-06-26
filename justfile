@@ -7,13 +7,17 @@ bootstrap:
     #!/usr/bin/env bash
     set -euo pipefail
     primary_path="$(git worktree list --porcelain | awk 'NR == 1 { print $2 }')"
-    git_common_dir="$(git rev-parse --git-common-dir)"
-    git config --file "${git_common_dir}/config" livespec.primaryPath "${primary_path}"
-    mkdir -p "${git_common_dir}/hooks"
-    cp dev-tooling/git-hook-wrapper.sh "${git_common_dir}/hooks/pre-commit"
-    cp dev-tooling/git-hook-wrapper.sh "${git_common_dir}/hooks/pre-push"
-    cp dev-tooling/git-hook-wrapper.sh "${git_common_dir}/hooks/commit-msg"
-    chmod +x "${git_common_dir}/hooks/pre-commit" "${git_common_dir}/hooks/pre-push" "${git_common_dir}/hooks/commit-msg"
+    # Install the canonical livespec commit-refuse hook by REUSING the shared
+    # livespec-dev-tooling installer (pinned in pyproject.toml's [tool.uv.sources]).
+    # The installed body is STRUCTURAL — it refuses commits/pushes when
+    # git-dir == git-common-dir (a primary checkout) unless livespec.sandboxExempt
+    # is set — so it is ARMED ON INSTALL with NO livespec.primaryPath arming step
+    # to miss (this supersedes the retired `cp dev-tooling/git-hook-wrapper.sh` +
+    # `git config livespec.primaryPath` approach, whose unset-config window failed
+    # OPEN). Per livespec/SPECIFICATION/non-functional-requirements.md
+    # §"Conformance Pattern" concern #1 (Worktree-discipline). The installer
+    # resolves the primary's shared .git/hooks even when run from a linked worktree.
+    just install-commit-refuse-hooks
     [ -d "${primary_path}/.beads" ] && chmod 700 "${primary_path}/.beads" || true
     # Idempotent worktree-root + mise-trust setup. Every git worktree in
     # the fleet lives under a single per-user root, ~/.worktrees/<repo>/
@@ -64,6 +68,13 @@ ensure-codex-plugins:
     codex plugin add livespec@livespec-driver-codex
     codex plugin add livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro
 
+# Install the canonical livespec commit-refuse hook by REUSING the shared
+# livespec-dev-tooling installer module (the SINGLE source of the structural
+# hook body; pinned in pyproject.toml). NOT re-implemented in Rust/shell.
+# Idempotent; worktree-safe (resolves the primary's shared .git/hooks).
+install-commit-refuse-hooks:
+    uv run python -m livespec_dev_tooling.install_commit_refuse_hooks
+
 check:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -75,6 +86,7 @@ check:
         check-coverage
         check-deps
         check-arch
+        check-baseline
     )
     failed=()
     for target in "${targets[@]}"; do
@@ -112,6 +124,16 @@ check-deps:
 
 check-arch:
     cargo run --quiet --package console-arch-check
+
+# Baseline worktree-discipline verifier — the `baseline` profile's Verifier,
+# REUSED from livespec-dev-tooling (NOT re-implemented). Fail-closed: exit 4
+# when the canonical structural commit-refuse hook is absent from the primary's
+# shared .git/hooks (run `just install-commit-refuse-hooks` to install it). Per
+# livespec/SPECIFICATION/non-functional-requirements.md §"Conformance Pattern"
+# concern #1 (Worktree-discipline); the check is layout-independent (consumes no
+# [tool.livespec_dev_tooling] role keys).
+check-baseline:
+    uv run python -m livespec_dev_tooling.checks.primary_checkout_commit_refuse_hook_installed
 
 check-fuzz-smoke:
     just ensure-fuzz-tooling

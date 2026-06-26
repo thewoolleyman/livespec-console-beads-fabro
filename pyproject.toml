@@ -1,0 +1,47 @@
+# pyproject.toml — livespec-console-beads-fabro Python dev-tooling pin.
+#
+# The console is a PURE-RUST workspace (see Cargo.toml / crates/). This file
+# exists for ONE reason: to REUSE the shared livespec-dev-tooling commit-refuse
+# hook installer + the `baseline` worktree-discipline verifier, rather than
+# re-implementing either in Rust or shell. Per
+# livespec/SPECIFICATION/non-functional-requirements.md §"Conformance Pattern"
+# the `baseline` profile's Mechanism/Installer/Verifier are REUSED (pinned and
+# imported from livespec-dev-tooling), never copied — so there is no per-repo
+# body to drift.
+#
+# NO [build-system] / [project.dependencies]: the console publishes no Python
+# package and ships no Python runtime — `uv` resolves only the dev-group tool
+# below into a project-local .venv via `uv sync --all-groups`. mise pins the
+# non-Python binaries (uv, just, lefthook) in .mise.toml.
+
+[project]
+name = "livespec-console-beads-fabro"
+version = "0.0.0"
+description = "Control-Plane operator console for the Beads/Fabro livespec family (pure-Rust; this pyproject carries only the shared dev-tooling reuse pin)"
+requires-python = ">=3.10.16"
+authors = [
+    { name = "Chad Woolley", email = "thewoolleyman@gmail.com" },
+]
+
+[dependency-groups]
+# livespec-dev-tooling is consumed from the github.com sibling-library repo via
+# the uv git source below, per
+# livespec/SPECIFICATION/contracts.md §"Shared code sync — livespec-dev-tooling".
+# Bump-pin PRs land each new release tag per
+# livespec/SPECIFICATION/contracts.md §"Cross-repo coordination — pin-and-bump".
+dev = [
+    "livespec-dev-tooling",
+    # livespec-dev-tooling vendors structlog but declares no runtime
+    # [project.dependencies], so its vendored structlog's own transitive
+    # need for typing-extensions is unmet in this minimal env (other fleet
+    # repos get it incidentally via pyright/hypothesis in their dev groups).
+    # structlog imports `Self` from typing_extensions on Python < 3.11
+    # (`typing.Self` is 3.11+), so the baseline installer/verifier would fail
+    # to import on this repo's pinned 3.10.16 without it. Pinned to the fleet
+    # version. (Systemic fix: livespec-dev-tooling should declare structlog's
+    # runtime deps in [project.dependencies] so every consumer gets them.)
+    "typing-extensions==4.15.0",
+]
+
+[tool.uv.sources]
+livespec-dev-tooling = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git", tag = "v0.19.0" }
