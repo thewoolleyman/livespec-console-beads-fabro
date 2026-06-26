@@ -1,6 +1,13 @@
 {
   "template": "livespec-with-diagrams",
   "spec_root": "SPECIFICATION",
+  // Conformance-Pattern profile (livespec non-functional-requirements
+  // §"Conformance Pattern"): the set of cross-cutting concern-profiles this
+  // governed repo satisfies. `baseline` is the universal floor every governed
+  // repo carries (Worktree-discipline, just-as-sole-runner, plugin-resolution).
+  // This is the LOCAL declaration; the central fleet-manifest entry that mirrors
+  // it (with a `console` repo class) is deferred to livespec-zs22.7.8.
+  "profile": ["baseline"],
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
   "livespec-orchestrator-beads-fabro": {
     "format": "beads",

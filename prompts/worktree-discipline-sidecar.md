@@ -23,13 +23,16 @@ all along.
 
 ## 0. Adopt worktree discipline NOW (the rule this repo was missing)
 
-This repo already carries the enforcement — `dev-tooling/git-hook-wrapper.sh`
-is installed (via `just bootstrap`) as `pre-commit`/`pre-push`/`commit-msg`
-and **refuses any commit or push whose top-level is the primary checkout**
-(`livespec.primaryPath` == `/data/projects/livespec-console-beads-fabro`),
-delegating to lefthook everywhere else. The gap was discipline, not
-machinery: prior sessions edited directly on the primary checkout and let
-changes pile up uncommitted.
+This repo already carries the enforcement — the canonical STRUCTURAL
+commit-refuse hook is installed (via `just install-commit-refuse-hooks`, which
+`just bootstrap` delegates to) as `pre-commit`/`pre-push`/`commit-msg` and
+**refuses any commit or push at the primary checkout** — structurally, whenever
+`git rev-parse --git-dir` equals `git rev-parse --git-common-dir` (a primary
+checkout; worktrees differ), armed on install with no `livespec.primaryPath`
+arming step and so no fail-open window — delegating to lefthook everywhere else.
+The hook body is reused from the livespec-dev-tooling wheel (no per-repo copy).
+The gap was discipline, not machinery: prior sessions edited directly on the
+primary checkout and let changes pile up uncommitted.
 
 From here on, **every mutation happens in an isolated worktree**; never edit
 or commit on the primary checkout. Do not work around the refuse hook; never
@@ -167,10 +170,11 @@ Replace the current `## Mutation protocol` section with:
 ```markdown
 ## Mutation protocol
 
-This repo's commit-refuse hook (`dev-tooling/git-hook-wrapper.sh`, installed by
-`just bootstrap` as `pre-commit`/`pre-push`/`commit-msg`) refuses any commit or
-push at the primary checkout and delegates to lefthook everywhere else. The
-hook is the enforcement; these are the rules it enforces:
+This repo's canonical STRUCTURAL commit-refuse hook (installed by `just
+install-commit-refuse-hooks`, which `just bootstrap` delegates to, as
+`pre-commit`/`pre-push`/`commit-msg`) refuses any commit or push at the primary
+checkout and delegates to lefthook everywhere else. The hook is the
+enforcement; these are the rules it enforces:
 
 - Every mutation happens in an isolated worktree under
   `~/.worktrees/livespec-console-beads-fabro/<branch>`, created from the primary

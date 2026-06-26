@@ -21,6 +21,7 @@ jobs:
           - check-coverage
           - check-deps
           - check-arch
+          - check-primary-checkout-commit-refuse-hook-installed
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,6 +52,18 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny,cargo-machete
+
+      # The shared livespec-dev-tooling commit-refuse-hook verifier checks that
+      # .git/hooks/pre-commit + pre-push carry the canonical refuse-at-primary
+      # body. CI's actions/checkout clone does NOT install the hook, so this
+      # leg installs it first via the REAL shared installer (the same recipe
+      # `just bootstrap` runs), exercising the wheel-installed canonical body
+      # end-to-end. The verifier only READS the files; the hook never fires in
+      # CI, so its lefthook delegation is never reached. `uv` is provided by the
+      # mise-action step above (pinned in .mise.toml).
+      - name: Install commit-refuse hook (satisfy invariant)
+        if: matrix.target == 'check-primary-checkout-commit-refuse-hook-installed'
+        run: just install-commit-refuse-hooks
 
       - name: just ${{ matrix.target }}
         run: just ${{ matrix.target }}

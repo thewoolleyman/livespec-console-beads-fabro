@@ -2,7 +2,17 @@
 #
 # mise owns non-Rust host binaries used by the repo. Rust itself is pinned by
 # rust-toolchain.toml so cargo/rustc/rustfmt/clippy resolve together.
+#
+# `uv` is pinned because this otherwise-pure-Rust repo REUSES (does not
+# re-implement) two shared livespec-dev-tooling Python entry points for the
+# baseline Worktree-discipline conformance concern: the commit-refuse hook
+# installer (`just install-commit-refuse-hooks`) and its fail-closed verifier
+# (`just check-primary-checkout-commit-refuse-hook-installed`). Both run via
+# `uv run --no-project --with <pinned dev-tooling>` — uv is the per-language
+# implementation detail inside those `just` recipes, never a Rust-toolchain
+# concern. CI installs it through `jdx/mise-action`, so it must be a pin here.
 
 [tools]
 just     = "1.36.0"
 lefthook = "1.13.6"
+uv       = "0.9.26"
