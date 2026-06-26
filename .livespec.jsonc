@@ -1,6 +1,14 @@
 {
   "template": "livespec-with-diagrams",
   "spec_root": "SPECIFICATION",
+  // Conformance profile(s) this governed repo satisfies — the LOCAL
+  // declaration (mirroring the central fleet manifest), per
+  // livespec/SPECIFICATION/non-functional-requirements.md §"Conformance
+  // Pattern". `baseline` is the universal worktree-discipline floor: the
+  // structural commit-refuse hook (installed via `just
+  // install-commit-refuse-hooks`, REUSED from livespec-dev-tooling) plus its
+  // verifier `just check-baseline`, wired into the `just check` aggregate.
+  "profile": ["baseline"],
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
   "livespec-orchestrator-beads-fabro": {
     "format": "beads",

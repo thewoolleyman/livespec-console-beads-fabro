@@ -21,6 +21,14 @@ jobs:
           - check-coverage
           - check-deps
           - check-arch
+          # The `baseline` worktree-discipline verifier — REUSES the shared
+          # livespec-dev-tooling installer + verifier (no re-implementation),
+          # per livespec/SPECIFICATION/non-functional-requirements.md
+          # §"Conformance Pattern". A fresh actions/checkout is structurally a
+          # primary (git-dir == git-common-dir) with no bootstrap run, so the
+          # installer step below must install the canonical hook BEFORE the
+          # verifier runs (mirroring livespec-dev-tooling's own CI).
+          - check-baseline
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,7 +36,10 @@ jobs:
       - name: Install pinned binaries via mise
         uses: jdx/mise-action@v2
 
+      # The baseline job is pure-Python (uv) and never touches cargo, so it
+      # skips the cargo cache; the Rust targets keep it.
       - name: Cache cargo registry and build output
+        if: matrix.target != 'check-baseline'
         uses: actions/cache@v4
         with:
           path: |
@@ -37,6 +48,19 @@ jobs:
             target
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
+
+      # ---- baseline (worktree-discipline) reuse: uv env + hook install ----
+      - name: Restore uv download cache
+        if: matrix.target == 'check-baseline'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-
+
+      - name: Install canonical commit-refuse hook (satisfy baseline verifier)
+        if: matrix.target == 'check-baseline'
+        run: just install-commit-refuse-hooks
 
       - name: Install cargo-nextest
         if: matrix.target == 'check-nextest'

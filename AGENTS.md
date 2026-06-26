@@ -138,14 +138,22 @@ warning is correct-by-design (tenant users lack SUPER) — ignore it.
 Every repo change uses a worktree → PR → merge → cleanup path. Treat leaving
 dirty state, committing on the primary checkout, or asking the user whether to
 commit as failures of the workflow, not as acceptable stopping points. The
-commit-refuse hook (`dev-tooling/git-hook-wrapper.sh`, installed by `just
-bootstrap` as `pre-commit`/`pre-push`/`commit-msg`) refuses any commit or push at
-the primary checkout and delegates to lefthook everywhere else.
+commit-refuse hook — the canonical STRUCTURAL body REUSED from
+livespec-dev-tooling, installed by `just bootstrap` (which delegates to `just
+install-commit-refuse-hooks`) as `pre-commit`/`pre-push`/`commit-msg` — refuses
+any commit or push at the primary checkout and delegates to lefthook everywhere
+else. It detects the primary structurally (refuses when `git rev-parse
+--git-dir` equals `git rev-parse --git-common-dir`, unless
+`livespec.sandboxExempt` is set), so it is ARMED ON INSTALL with no
+`livespec.primaryPath` arming step to miss. This is the `baseline` profile of
+livespec's Conformance Pattern (concern #1, Worktree-discipline); `just
+check-baseline` is the fail-closed verifier wired into `just check`.
 
-1. Confirm the primary checkout before editing:
+1. Confirm the primary checkout before editing (the primary is where `git
+   rev-parse --git-dir` equals `git rev-parse --git-common-dir`):
 
    ```bash
-   git config --get livespec.primaryPath
+   git rev-parse --git-dir; git rev-parse --git-common-dir
    git status --short --branch
    ```
 

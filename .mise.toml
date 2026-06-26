@@ -1,8 +1,14 @@
 # livespec-console-beads-fabro developer-tooling pins.
 #
-# mise owns non-Rust host binaries used by the repo. Rust itself is pinned by
-# rust-toolchain.toml so cargo/rustc/rustfmt/clippy resolve together.
+# mise owns non-Rust host binaries used by the repo (uv, just, lefthook).
+# Rust itself is pinned by rust-toolchain.toml so cargo/rustc/rustfmt/clippy
+# resolve together. The console is pure Rust; `uv` is present ONLY so the repo
+# can REUSE the shared livespec-dev-tooling commit-refuse installer + baseline
+# verifier (pinned in pyproject.toml's [tool.uv.sources]) per
+# livespec/SPECIFICATION/non-functional-requirements.md §"Conformance Pattern"
+# (the `baseline` profile). Python packages pin via uv against pyproject.toml.
 
 [tools]
+uv       = "0.9.26"
 just     = "1.36.0"
 lefthook = "1.13.6"
