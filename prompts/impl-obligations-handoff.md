@@ -86,10 +86,13 @@ slice ids: `uljbzh` (A, **✅ CLOSED** — checker landed, PR #48 `edbb06c`),
 deps S6+S7), `cc3nlr` (B-nfr — blocked on SC-nfr landing), `77t6mk` (F =
 fail-flip, closes the epic). SC-nfr was routed to the spec-refinement track
 (PR #46; `SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md`, awaiting
-`/livespec:revise`). **Next action:** implement a now-ready slice —
+`/livespec:revise`). **Next action — start S6:**
 `/livespec-orchestrator-beads-fabro:implement livespec-console-beads-fabro-qvrwag`
-(S6) or `…-idgql3` (S7); both must land before `cvqcnx` (B-ops). The ground
-truth + per-slice scope below remain the authoritative reference for each slice.
+(realize Scenario 6 — the smaller, scaffolded slice: `EventType::CommandRejected`
+is defined but never constructed; add a policy gate before the port, construct
+`command.rejected`, invoke no port, + a Scenario 6 test — see the per-slice scope
+below). **Then** `…-idgql3` (S7); both must land before `cvqcnx` (B-ops). The
+ground truth + per-slice scope below remain the authoritative reference per slice.
 Slice A's shipped shape is the reference for the others: `console-spec-check`
 crate (lib at 100% line coverage + thin `main.rs` shim), the
 `tests/heading-coverage.json` `clauses[]` registry, the
