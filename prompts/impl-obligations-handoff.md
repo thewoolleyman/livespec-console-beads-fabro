@@ -19,22 +19,28 @@ the opposite of the spec-refinement track. Make **NO** changes under
 > (unwrap/expect ban, `EventType`/`CommandType` placement, forbid-unsafe,
 > adapter-module isolation) at the Rust AST level via `syn`, with 17
 > falsifiable tests (PR #42, merge `6171984`; `just check` + CI green). The
-> keystone (`rrr4i4`) was **groomed** (read-only): the cut is drafted below
-> and a load-bearing cross-track finding surfaced (see "The keystone" →
-> NFR-link blocker) — slices are NOT yet filed (the maintainer owns the cut).
-> NOTE: a **concurrent M3 track** also operates this repo/ledger (it added
-> `d5c` and landed baseline-conformance `76c9fc2`); `d5c` is that track's
-> item, not this handoff's. Coordinate; don't clobber its worktrees.
+> keystone (`rrr4i4`) was **groomed AND FILED** (maintainer approved the cut +
+> chose to author NFR scenarios): 6 factory slices filed and `rrr4i4`
+> regroomed out — **`uljbzh`** (checker, **P0, ready, the next action**),
+> `qvrwag` (S6), `idgql3` (S7), `cvqcnx` (B-ops), `cc3nlr` (B-nfr, gated on
+> SC-nfr), `77t6mk` (F, fail-flip). The **SC-nfr** spec change (author NFR
+> contributor scenarios) was routed via PR #46 (merge `82cb978`) and now sits
+> in `SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md` awaiting
+> the spec-refinement track's `/livespec:revise`. NOTE: a **concurrent M3
+> track** also operates this repo/ledger (it added `d5c`/`e8y` and landed
+> baseline-conformance `76c9fc2`); those are that track's items, not this
+> handoff's. Coordinate; don't clobber its worktrees.
 
-## Status (as of master `76c9fc2`, spec `v009`)
+## Status (as of master `82cb978`, spec `v009`)
 
 This handoff's obligations in the Beads tenant — run `… with-livespec-env.sh --
-bd list` to confirm (it will also show `d5c`, the concurrent M3 track's item),
-and **groom every `needs-regroom` epic before implementing**:
+bd list` to confirm (it also shows the concurrent M3 track's `d5c`/`e8y`), and
+**groom every remaining `needs-regroom` epic (`txtzn5`, `topr34`, `pke3y3`)
+before implementing** (`rrr4i4` is already groomed + filed):
 
 | Item | Pri | Ready? | What |
 |---|---|---|---|
-| `rrr4i4` | **P0** | needs-regroom (groomed; cut drafted below) | **THE KEYSTONE.** clause→scenario→test behavioral-coverage Rust checker + `tests/heading-coverage.json` registry, wired into `just check`/CI, + the 82-clause backfill. **Blocked from full `fail` mode by a spec change** — see NFR-link blocker. |
+| `rrr4i4` | **P0** | groomed → **FILED** (regroomed out) | **THE KEYSTONE**, decomposed into 6 filed slices. **`uljbzh`** (P0, ready) = the `console-spec-check` checker + `tests/heading-coverage.json`, warn-wired — **the next keystone action**. Then `qvrwag` (S6) / `idgql3` (S7) / `cvqcnx` (B-ops); `cc3nlr` (B-nfr, gated on SC-nfr landing); `77t6mk` (F = flip to `fail`, closes the epic). SC-nfr routed (PR #46). |
 | `gkqyaf` | P1 | ✅ **CLOSED** | DONE — `console-arch-check` upgraded to `cargo metadata` crate-graph + Rust AST rules. PR #42, merge `6171984`. |
 | `mvu22t` | P1 | **ready** | Red-Green-Replay `commit-msg` enforcement (port livespec's `red_green_replay.py`; canonical source now at `livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py`). The one remaining immediately-dispatchable P1. |
 | `txtzn5` | P1 | needs-regroom | region-coverage gate (`--fail-under-regions 100`) + CI merge-gate fuzz + CI mutation jobs (3 distinct jobs). |
@@ -71,12 +77,17 @@ Per `AGENTS.md` §"Repository mutation protocol", §"Beads runtime prerequisites
   ambiguity or a needed spec change, STOP and route it to the spec-refinement
   track (`capture-spec-drift` → propose-change → revise), then resume.
 
-## The keystone — `rrr4i4` (groomed; awaiting maintainer approval to file)
+## The keystone — `rrr4i4` (groomed → FILED; implement the slices)
 
-`groom` was run **read-only** last session; the ground truth and the drafted
-cut are below. **Nothing is filed** — the maintainer OWNS the cut. Re-run
-`/livespec-orchestrator-beads-fabro:groom livespec-console-beads-fabro-rrr4i4`
-to file the approved slices, OR adjust the cut first.
+The cut below was **approved and FILED**; `rrr4i4` is regroomed out. Filed
+slice ids: **`uljbzh`** (A, P0, **ready — start here**), `qvrwag` (S6),
+`idgql3` (S7), `cvqcnx` (B-ops), `cc3nlr` (B-nfr — blocked on SC-nfr landing),
+`77t6mk` (F = fail-flip, closes the epic). SC-nfr was routed to the
+spec-refinement track (PR #46;
+`SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md`, awaiting
+`/livespec:revise`). **Next action:** `/livespec-orchestrator-beads-fabro:implement
+livespec-console-beads-fabro-uljbzh`. The ground truth + per-slice scope below
+remain the authoritative reference for each slice.
 
 **Ground truth (measured via the real `spec_clauses.py` over the console
 SPECIFICATION):** **82** normative clauses — spec.md 3, contracts.md 20,
@@ -139,11 +150,11 @@ spec-refinement deliverable. Two resolutions, both spec changes to route via
   B-ops, B-nfr, S6, S7. Acceptance: `just check`/CI green in `fail` mode, 0
   unlinked / 82, every scenario tested.
 
-**Recommended filing:** file the truly-ready factory slices now (A, S6, S7,
-B-ops; + F tracked/gated); surface the NFR finding for the maintainer to
-route SC-nfr; defer B-nfr until the spec lands. (Full draft:
-`$CLAUDE_JOB_DIR/tmp/keystone_groom_draft.md` if same session, else
-reconstruct from the ground truth above.)
+**Filing status: DONE.** All six factory slices above are filed (A=`uljbzh`,
+S6=`qvrwag`, S7=`idgql3`, B-ops=`cvqcnx`, B-nfr=`cc3nlr`, F=`77t6mk`) and
+`rrr4i4` is regroomed out. SC-nfr is routed (PR #46). `cc3nlr` (B-nfr) is
+**blocked until SC-nfr lands** on master via `/livespec:revise` — do not
+implement it before then.
 
 **Implement each slice** via
 `/livespec-orchestrator-beads-fabro:implement <slice-id>` — each
@@ -156,9 +167,10 @@ resolves.
 ## Then — the remaining obligations
 
 Use `/livespec-orchestrator-beads-fabro:next` to pick the most-ripe item and
-`/livespec-orchestrator-beads-fabro:list-work-items` for state. `mvu22t` is now
-the only immediately-dispatchable (ready) P1 and is the best next autonomous
-win (gate-hardening momentum) while the keystone cut awaits maintainer approval:
+`/livespec-orchestrator-beads-fabro:list-work-items` for state. The ripest
+action is the keystone foundation **`uljbzh`** (slice A, P0, ready — see above).
+`mvu22t` (P1) is the next independent autonomous win (gate-hardening momentum)
+and can run in parallel:
 
 - **`mvu22t` (ready)** — `/…:implement livespec-console-beads-fabro-mvu22t`.
   First-class in-repo RGR check wired into `commit-msg` + `just check`. Port
