@@ -1,0 +1,15 @@
+[package]
+name = "console-spec-check"
+description = "Behavioral-coverage checker (clause->scenario->test) for livespec-console-beads-fabro"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+serde_json = "1.0"
+sha2 = "0.10"
+
+[lints]
+workspace = true
