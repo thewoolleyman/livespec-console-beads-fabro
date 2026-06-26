@@ -88,6 +88,7 @@ check:
         check-arch
         check-behavior-coverage
         check-baseline
+        check-plugin-resolution
     )
     failed=()
     for target in "${targets[@]}"; do
@@ -147,6 +148,15 @@ check-behavior-coverage:
 # [tool.livespec_dev_tooling] role keys).
 check-baseline:
     uv run python -m livespec_dev_tooling.checks.primary_checkout_commit_refuse_hook_installed
+
+# Baseline plugin-resolution Verifier — the `baseline` profile's second
+# concern (cross-harness plugin-resolution), REUSED from livespec-dev-tooling
+# (NOT re-implemented). Reads the optional `.livespec.jsonc` `harnesses`
+# declaration; fail-closed on a malformed declaration. Per
+# livespec/SPECIFICATION/non-functional-requirements.md §"Conformance Pattern"
+# concern #2 (Plugin-resolution).
+check-plugin-resolution:
+    uv run python -m livespec_dev_tooling.checks.plugin_resolution
 
 check-fuzz-smoke:
     just ensure-fuzz-tooling
