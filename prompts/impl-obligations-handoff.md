@@ -14,24 +14,25 @@ the opposite of the spec-refinement track. Make **NO** changes under
 > follows the spec-refinement track, which **converged at `v009`**
 > (`prompts/spec-refinement-critique-handoff.md`).
 
-> **Progress (last session).** `gkqyaf` is **CLOSED** — `console-arch-check`
-> now enforces crate-graph layering from `cargo metadata` and source rules
-> (unwrap/expect ban, `EventType`/`CommandType` placement, forbid-unsafe,
-> adapter-module isolation) at the Rust AST level via `syn`, with 17
-> falsifiable tests (PR #42, merge `6171984`; `just check` + CI green). The
-> keystone (`rrr4i4`) was **groomed AND FILED** (maintainer approved the cut +
-> chose to author NFR scenarios): 6 factory slices filed and `rrr4i4`
-> regroomed out — **`uljbzh`** (checker, **P0, ready, the next action**),
-> `qvrwag` (S6), `idgql3` (S7), `cvqcnx` (B-ops), `cc3nlr` (B-nfr, gated on
-> SC-nfr), `77t6mk` (F, fail-flip). The **SC-nfr** spec change (author NFR
-> contributor scenarios) was routed via PR #46 (merge `82cb978`) and now sits
-> in `SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md` awaiting
-> the spec-refinement track's `/livespec:revise`. NOTE: a **concurrent M3
-> track** also operates this repo/ledger (it added `d5c`/`e8y` and landed
+> **Progress (last session).** Keystone slice **A — `uljbzh`** is **CLOSED**:
+> the net-new `console-spec-check` crate ports livespec's `spec_clauses` gap-id
+> primitive (parity test vs the orchestrator's vendored Python; real-spec
+> ground truth **82** clauses: spec 3 / contracts 20 / constraints 7 / nfr 52)
+> + the `behavior_scenario_link` clause→scenario guardrail + adds scenario→test
+> enforcement over a net-new `tests/heading-coverage.json`. It is **warn-wired**
+> as `check-behavior-coverage` into `just check` + CI via the
+> `LIVESPEC_BEHAVIOR_SCENARIO_LINK` lever (default `warn`; reports **82 unlinked
+> clauses + 8 untested scenarios**, exits 0 — NO fail-closed placeholder). PR
+> #48, rebase merge `edbb06c`; `just check` + all 9 CI jobs green. Closing it
+> **unblocked `qvrwag` (S6) and `idgql3` (S7)** — both now ready. (Earlier:
+> `gkqyaf` CLOSED, PR #42, `6171984`.) The **SC-nfr** spec change still sits in
+> `SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md` awaiting the
+> spec-refinement track's `/livespec:revise` — it gates `cc3nlr` (B-nfr). NOTE:
+> a **concurrent M3 track** also operates this repo/ledger (`d5c`/`e8y`,
 > baseline-conformance `76c9fc2`); those are that track's items, not this
 > handoff's. Coordinate; don't clobber its worktrees.
 
-## Status (as of master `82cb978`, spec `v009`)
+## Status (as of master `edbb06c`, spec `v009`)
 
 This handoff's obligations in the Beads tenant — run `… with-livespec-env.sh --
 bd list` to confirm (it also shows the concurrent M3 track's `d5c`/`e8y`), and
@@ -40,7 +41,7 @@ before implementing** (`rrr4i4` is already groomed + filed):
 
 | Item | Pri | Ready? | What |
 |---|---|---|---|
-| `rrr4i4` | **P0** | groomed → **FILED** (regroomed out) | **THE KEYSTONE**, decomposed into 6 filed slices. **`uljbzh`** (P0, ready) = the `console-spec-check` checker + `tests/heading-coverage.json`, warn-wired — **the next keystone action**. Then `qvrwag` (S6) / `idgql3` (S7) / `cvqcnx` (B-ops); `cc3nlr` (B-nfr, gated on SC-nfr landing); `77t6mk` (F = flip to `fail`, closes the epic). SC-nfr routed (PR #46). |
+| `rrr4i4` | **P0** | groomed → FILED; **slice A done** | **THE KEYSTONE**, 6 filed slices. **A=`uljbzh` ✅ CLOSED** — `console-spec-check` checker + `tests/heading-coverage.json`, warn-wired (PR #48, `edbb06c`). **Now ready: `qvrwag` (S6), `idgql3` (S7)** → then `cvqcnx` (B-ops, deps S6+S7); `cc3nlr` (B-nfr, gated on SC-nfr landing); `77t6mk` (F = flip lever default to `fail`, closes the epic). SC-nfr routed (PR #46), awaiting `/livespec:revise`. |
 | `gkqyaf` | P1 | ✅ **CLOSED** | DONE — `console-arch-check` upgraded to `cargo metadata` crate-graph + Rust AST rules. PR #42, merge `6171984`. |
 | `mvu22t` | P1 | **ready** | Red-Green-Replay `commit-msg` enforcement (port livespec's `red_green_replay.py`; canonical source now at `livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py`). The one remaining immediately-dispatchable P1. |
 | `txtzn5` | P1 | needs-regroom | region-coverage gate (`--fail-under-regions 100`) + CI merge-gate fuzz + CI mutation jobs (3 distinct jobs). |
@@ -80,14 +81,20 @@ Per `AGENTS.md` §"Repository mutation protocol", §"Beads runtime prerequisites
 ## The keystone — `rrr4i4` (groomed → FILED; implement the slices)
 
 The cut below was **approved and FILED**; `rrr4i4` is regroomed out. Filed
-slice ids: **`uljbzh`** (A, P0, **ready — start here**), `qvrwag` (S6),
-`idgql3` (S7), `cvqcnx` (B-ops), `cc3nlr` (B-nfr — blocked on SC-nfr landing),
-`77t6mk` (F = fail-flip, closes the epic). SC-nfr was routed to the
-spec-refinement track (PR #46;
-`SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md`, awaiting
-`/livespec:revise`). **Next action:** `/livespec-orchestrator-beads-fabro:implement
-livespec-console-beads-fabro-uljbzh`. The ground truth + per-slice scope below
-remain the authoritative reference for each slice.
+slice ids: `uljbzh` (A, **✅ CLOSED** — checker landed, PR #48 `edbb06c`),
+`qvrwag` (S6, **now ready**), `idgql3` (S7, **now ready**), `cvqcnx` (B-ops —
+deps S6+S7), `cc3nlr` (B-nfr — blocked on SC-nfr landing), `77t6mk` (F =
+fail-flip, closes the epic). SC-nfr was routed to the spec-refinement track
+(PR #46; `SPECIFICATION/proposed_changes/nfr-contributor-scenarios.md`, awaiting
+`/livespec:revise`). **Next action:** implement a now-ready slice —
+`/livespec-orchestrator-beads-fabro:implement livespec-console-beads-fabro-qvrwag`
+(S6) or `…-idgql3` (S7); both must land before `cvqcnx` (B-ops). The ground
+truth + per-slice scope below remain the authoritative reference for each slice.
+Slice A's shipped shape is the reference for the others: `console-spec-check`
+crate (lib at 100% line coverage + thin `main.rs` shim), the
+`tests/heading-coverage.json` `clauses[]` registry, the
+`LIVESPEC_BEHAVIOR_SCENARIO_LINK` warn/fail lever, and the audience partition
+(operator clauses → `scenarios.md`; NFR clauses → NFR `## Scenarios`).
 
 **Ground truth (measured via the real `spec_clauses.py` over the console
 SPECIFICATION):** **82** normative clauses — spec.md 3, contracts.md 20,
@@ -150,9 +157,11 @@ spec-refinement deliverable. Two resolutions, both spec changes to route via
   B-ops, B-nfr, S6, S7. Acceptance: `just check`/CI green in `fail` mode, 0
   unlinked / 82, every scenario tested.
 
-**Filing status: DONE.** All six factory slices above are filed (A=`uljbzh`,
-S6=`qvrwag`, S7=`idgql3`, B-ops=`cvqcnx`, B-nfr=`cc3nlr`, F=`77t6mk`) and
-`rrr4i4` is regroomed out. SC-nfr is routed (PR #46). `cc3nlr` (B-nfr) is
+**Filing status: DONE; A landed.** All six factory slices are filed
+(A=`uljbzh` **✅ CLOSED**, S6=`qvrwag`, S7=`idgql3`, B-ops=`cvqcnx`,
+B-nfr=`cc3nlr`, F=`77t6mk`) and `rrr4i4` is regroomed out. With A closed,
+**`qvrwag` (S6) and `idgql3` (S7) are now ready**; `cvqcnx` (B-ops) stays
+blocked until both land. SC-nfr is routed (PR #46); `cc3nlr` (B-nfr) is
 **blocked until SC-nfr lands** on master via `/livespec:revise` — do not
 implement it before then.
 
@@ -167,10 +176,10 @@ resolves.
 ## Then — the remaining obligations
 
 Use `/livespec-orchestrator-beads-fabro:next` to pick the most-ripe item and
-`/livespec-orchestrator-beads-fabro:list-work-items` for state. The ripest
-action is the keystone foundation **`uljbzh`** (slice A, P0, ready — see above).
-`mvu22t` (P1) is the next independent autonomous win (gate-hardening momentum)
-and can run in parallel:
+`/livespec-orchestrator-beads-fabro:list-work-items` for state. With slice A
+(`uljbzh`) closed, the ripest keystone actions are **`qvrwag` (S6)** and
+**`idgql3` (S7)** — both now ready (see the keystone section). `mvu22t` (P1) is
+an independent autonomous win (gate-hardening momentum) and can run in parallel:
 
 - **`mvu22t` (ready)** — `/…:implement livespec-console-beads-fabro-mvu22t`.
   First-class in-repo RGR check wired into `commit-msg` + `just check`. Port
