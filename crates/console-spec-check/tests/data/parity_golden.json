@@ -1,0 +1,44 @@
+[
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "(top)",
+    "line_text": "Intro: the runtime MUST boot before any heading is seen.",
+    "gap_id": "gap-p5qdeqai"
+  },
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "Alpha",
+    "line_text": "Prose under Alpha that SHOULD hold.",
+    "gap_id": "gap-f34kzycq"
+  },
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "Alpha > Beta",
+    "line_text": "The port MUST NOT swallow errors.",
+    "gap_id": "gap-rxphau4e"
+  },
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "Alpha > Beta",
+    "line_text": "Resuming after the fence, scanning SHOULD continue.",
+    "gap_id": "gap-qumdeaxh"
+  },
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "Alpha > Beta > Gamma",
+    "line_text": "A deep clause that SHOULD NOT regress.",
+    "gap_id": "gap-l3uxjmle"
+  },
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "Delta >  > Epsilon",
+    "line_text": "A padded clause that MUST appear with an empty middle crumb.",
+    "gap_id": "gap-nvq2jmqr"
+  },
+  {
+    "spec_file": "parity_fixture.md",
+    "heading_path": "Delta > Zeta MUST Survive As Heading",
+    "line_text": "Under Zeta, callers MUST retry on rejection.",
+    "gap_id": "gap-2eatkd46"
+  }
+]

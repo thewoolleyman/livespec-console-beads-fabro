@@ -86,6 +86,7 @@ check:
         check-coverage
         check-deps
         check-arch
+        check-behavior-coverage
         check-baseline
     )
     failed=()
@@ -124,6 +125,18 @@ check-deps:
 
 check-arch:
     cargo run --quiet --package console-arch-check
+
+# Behavioral-coverage gate (clause -> scenario -> test), per
+# livespec-console-beads-fabro SPECIFICATION/non-functional-requirements.md
+# §"Behavioral Coverage". Ports livespec's spec_clauses gap-id primitive and
+# behavior_scenario_link guardrail and adds scenario -> test enforcement over
+# the tests/heading-coverage.json link registry. The severity lever
+# LIVESPEC_BEHAVIOR_SCENARIO_LINK defaults to `warn`: it reports the
+# unlinked-clause and untested-scenario counts without blocking, so the gate
+# lands during backfill without deadlocking the merge gate; the keystone's
+# final slice flips the default to `fail`.
+check-behavior-coverage:
+    cargo run --quiet --package console-spec-check
 
 # Baseline worktree-discipline verifier — the `baseline` profile's Verifier,
 # REUSED from livespec-dev-tooling (NOT re-implemented). Fail-closed: exit 4

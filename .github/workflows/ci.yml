@@ -21,6 +21,7 @@ jobs:
           - check-coverage
           - check-deps
           - check-arch
+          - check-behavior-coverage
           # The `baseline` worktree-discipline verifier — REUSES the shared
           # livespec-dev-tooling installer + verifier (no re-implementation),
           # per livespec/SPECIFICATION/non-functional-requirements.md
