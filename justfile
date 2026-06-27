@@ -89,6 +89,7 @@ check:
         check-behavior-coverage
         check-baseline
         check-plugin-resolution
+        check-doctor-static
     )
     failed=()
     for target in "${targets[@]}"; do
@@ -157,6 +158,31 @@ check-baseline:
 # concern #2 (Plugin-resolution).
 check-plugin-resolution:
     uv run python -m livespec_dev_tooling.checks.plugin_resolution
+
+# livespec core's doctor STATIC phase (reference-discipline + out-of-band
+# invariants) against THIS repo's SPECIFICATION/ tree, wired fleet-wide per
+# livespec epic livespec-6jfq. core ships the checker: doctor_static.py is
+# self-contained (vendored deps + bare python3), so it runs under plain
+# python3 and NEVER `uv run`. Resolve core's plugin root via
+# LIVESPEC_CORE_PLUGIN_ROOT (CI sets it to a livespec checkout at this repo's
+# .livespec.jsonc compat.pinned tag) → else the installed livespec@livespec
+# plugin cache (local dev). The two reference-discipline checks
+# (no-cross-spec-reference, no-spec-section-citation-in-code) are pure reads;
+# doctor-out-of-band-edits is self-healing — on a drifted tree it writes a
+# history backfill into the worktree and fails, and committing that backfill
+# heals the track; on a clean tree it never fires.
+check-doctor-static:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    core_root="${LIVESPEC_CORE_PLUGIN_ROOT:-}"
+    if [ -z "$core_root" ]; then
+      core_root="$(python3 -c 'import json, pathlib; print(json.loads((pathlib.Path.home() / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))["plugins"]["livespec@livespec"][0]["installPath"])' 2>/dev/null || true)"
+    fi
+    if [ -z "$core_root" ] || [ ! -f "$core_root/scripts/bin/doctor_static.py" ]; then
+      echo "livespec core not found. Set LIVESPEC_CORE_PLUGIN_ROOT to a livespec checkout's .claude-plugin, or install the livespec@livespec plugin (claude plugin install livespec@livespec)." >&2
+      exit 1
+    fi
+    python3 "$core_root/scripts/bin/doctor_static.py" --project-root .
 
 check-fuzz-smoke:
     just ensure-fuzz-tooling
