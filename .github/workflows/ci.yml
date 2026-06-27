@@ -79,3 +79,38 @@ jobs:
 
       - name: just ${{ matrix.target }}
         run: just ${{ matrix.target }}
+
+  # livespec core's doctor STATIC phase (reference-discipline + out-of-band
+  # invariants), wired fleet-wide per livespec epic livespec-6jfq. core ships
+  # the checker (doctor_static.py — self-contained, bare python3); this job
+  # checks core out at the tag THIS repo pins (.livespec.jsonc compat.pinned)
+  # and points the recipe at it via LIVESPEC_CORE_PLUGIN_ROOT. Its OWN job
+  # (not the matrix above) because it needs a second checkout — livespec core
+  # — that no other target does.
+  check-doctor-static:
+    name: check-doctor-static
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned binaries via mise
+        uses: jdx/mise-action@v2
+
+      - name: Resolve pinned livespec core ref (.livespec.jsonc compat.pinned)
+        id: corepin
+        run: |
+          pinned="$(grep -oE '"pinned"[[:space:]]*:[[:space:]]*"[^"]*"' .livespec.jsonc | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')"
+          echo "ref=${pinned:-master}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout livespec core at the pinned ref
+        uses: actions/checkout@v4
+        with:
+          repository: thewoolleyman/livespec
+          ref: ${{ steps.corepin.outputs.ref }}
+          path: .livespec-core
+
+      - name: just check-doctor-static
+        env:
+          LIVESPEC_CORE_PLUGIN_ROOT: ${{ github.workspace }}/.livespec-core/.claude-plugin
+        run: just check-doctor-static
