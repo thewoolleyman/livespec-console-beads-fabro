@@ -1,5 +1,20 @@
 # justfile — livespec-console-beads-fabro task runner.
 
+# Worktree-discipline pack recipe fragments — OPTIONAL imports (`import?`, NOT
+# plain `import`). The two `.just` fragments are gitignored + installed (written
+# by `just install-worktree-pack`, never tracked-committed), so they are ABSENT
+# in a fresh clone until `just bootstrap` runs. A plain `import` of a missing
+# file makes `just` fail to parse the ENTIRE justfile — which would brick `just
+# bootstrap` on a fresh clone. The optional `import?` silently no-ops while a
+# fragment is absent (its recipes simply aren't available until the installer
+# materializes it) and resolves once installed. `worktree.just` adds the
+# worktree-lifecycle recipes; `branch-protection.just` adds the server-side
+# GitHub branch-protection ruleset recipes (protect-default-branch /
+# check-branch-protection) — the server-enforced backstop, a DISTINCT concern
+# from this repo's local 00-no-commit-on-master lefthook commit-msg guard.
+import? 'dev-tooling/worktree.just'
+import? 'dev-tooling/branch-protection.just'
+
 default:
     @just --list
 
@@ -18,6 +33,20 @@ bootstrap:
     # §"Conformance Pattern" concern #1 (Worktree-discipline). The installer
     # resolves the primary's shared .git/hooks even when run from a linked worktree.
     just install-commit-refuse-hooks
+    # Install the worktree-discipline PACK (worktree-lib.sh +
+    # branch-protection.sh + the two `.just` recipe fragments) from the shared
+    # livespec-dev-tooling package — the single canonical source — into
+    # `dev-tooling/`. The installer writes them executable; they are gitignored
+    # (installed, not tracked), so a fresh clone materializes them here on first
+    # bootstrap exactly as the commit-refuse hooks are installed above.
+    just install-worktree-pack
+    # Ensure the per-ecosystem worktree hydration stub stays executable.
+    # worktree-hydrate.sh is the one TRACKED dev-tooling worktree shell script
+    # (the Rust-profile hydration stub); the pack scripts above are written
+    # +chmod'd by `install-worktree-pack`. A checkout can drop the executable
+    # bit, and the worktree-hydrate recipe invokes it directly (./…) — a
+    # non-executable helper would silently no-op. This chmod is idempotent.
+    chmod +x dev-tooling/worktree-hydrate.sh
     [ -d "${primary_path}/.beads" ] && chmod 700 "${primary_path}/.beads" || true
     # Idempotent worktree-root + mise-trust setup. Every git worktree in
     # the fleet lives under a single per-user root, ~/.worktrees/<repo>/
@@ -74,6 +103,21 @@ ensure-codex-plugins:
 # Idempotent; worktree-safe (resolves the primary's shared .git/hooks).
 install-commit-refuse-hooks:
     uv run python -m livespec_dev_tooling.install_commit_refuse_hooks
+
+# Install the canonical worktree-discipline PACK (worktree-lib.sh +
+# branch-protection.sh + the two `.just` recipe fragments imported above) by
+# REUSING the shared livespec-dev-tooling installer module — the SINGLE
+# canonical source of all four bodies (pinned in pyproject.toml). NOT a
+# repo-vendored copy, so there is ZERO drift-prone pack copy in this repo. This
+# is the Installer slot for the pack facet of the Worktree-discipline concern,
+# mirroring `install-commit-refuse-hooks` exactly: `bootstrap` delegates to it,
+# and CI runs it before `check-baseline` so the verifier VALIDATES the installed
+# pack (byte-identical to the package source) rather than skipping it. The
+# installer writes the files into `dev-tooling/` and sets the executable bit;
+# they are gitignored (installed, not tracked), exactly as the commit-refuse
+# hooks are installed into the untracked `.git/hooks/` dir. Idempotent.
+install-worktree-pack:
+    uv run python -m livespec_dev_tooling.install_worktree_pack
 
 check:
     #!/usr/bin/env bash
