@@ -18,53 +18,26 @@ import? 'dev-tooling/branch-protection.just'
 default:
     @just --list
 
+# First-touch setup — a THIN delegator to the shipped LOCAL first-touch
+# reconcile verb (`livespec_dev_tooling.fleet.local_reconcile`), the
+# generalized successor to this recipe's former inline steps (livespec-zs22.8
+# M5), PLUS the member-specific worktree-pack tail the verb does not cover.
+# Reuse-first: NO copied logic — the verb walks the LOCAL obligation partition
+# (`contract.LOCAL_OBLIGATION_ROWS`): mise trust/install, uv sync, the
+# structural commit-refuse hooks (subsuming `lefthook install`), the advisory
+# `refs/notes/*` refspec, the worktree-root mise-trust entry, the beads
+# tenant-dir hardening (resolving the primary via `git rev-parse
+# --git-common-dir`, so no `primary_path` precompute is needed), the
+# beads-runtime detect-and-guide probes, and project-scoped Claude/Codex plugin
+# registration via THIS repo's own `ensure-plugins` / `ensure-codex-plugins`
+# recipes. The TAIL below installs the worktree-discipline pack (worktree-lib.sh
+# + branch-protection.sh + the `.just` recipe fragments) and keeps the tracked
+# worktree-hydrate.sh executable — neither is a verb obligation row, so both
+# MUST survive the rewire. The verb's uv-sync row precedes the tail's `uv run`.
 bootstrap:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    primary_path="$(git worktree list --porcelain | awk 'NR == 1 { print $2 }')"
-    # Install the canonical livespec commit-refuse hook by REUSING the shared
-    # livespec-dev-tooling installer (pinned in pyproject.toml's [tool.uv.sources]).
-    # The installed body is STRUCTURAL — it refuses commits/pushes when
-    # git-dir == git-common-dir (a primary checkout) unless livespec.sandboxExempt
-    # is set — so it is ARMED ON INSTALL with NO livespec.primaryPath arming step
-    # to miss (this supersedes the retired `cp dev-tooling/git-hook-wrapper.sh` +
-    # `git config livespec.primaryPath` approach, whose unset-config window failed
-    # OPEN). Per livespec/SPECIFICATION/non-functional-requirements.md
-    # §"Conformance Pattern" concern #1 (Worktree-discipline). The installer
-    # resolves the primary's shared .git/hooks even when run from a linked worktree.
-    just install-commit-refuse-hooks
-    # Install the worktree-discipline PACK (worktree-lib.sh +
-    # branch-protection.sh + the two `.just` recipe fragments) from the shared
-    # livespec-dev-tooling package — the single canonical source — into
-    # `dev-tooling/`. The installer writes them executable; they are gitignored
-    # (installed, not tracked), so a fresh clone materializes them here on first
-    # bootstrap exactly as the commit-refuse hooks are installed above.
+    uv run python -m livespec_dev_tooling.fleet.local_reconcile
     just install-worktree-pack
-    # Ensure the per-ecosystem worktree hydration stub stays executable.
-    # worktree-hydrate.sh is the one TRACKED dev-tooling worktree shell script
-    # (the Rust-profile hydration stub); the pack scripts above are written
-    # +chmod'd by `install-worktree-pack`. A checkout can drop the executable
-    # bit, and the worktree-hydrate recipe invokes it directly (./…) — a
-    # non-executable helper would silently no-op. This chmod is idempotent.
     chmod +x dev-tooling/worktree-hydrate.sh
-    [ -d "${primary_path}/.beads" ] && chmod 700 "${primary_path}/.beads" || true
-    # Idempotent worktree-root + mise-trust setup. Every git worktree in
-    # the fleet lives under a single per-user root, ~/.worktrees/<repo>/
-    # <branch> (per livespec/SPECIFICATION/non-functional-requirements.md
-    # §"Worktree root and mise trust"). Registering that root as one of
-    # mise's trusted_config_paths makes each freshly created worktree's
-    # .mise.toml auto-trusted, so the first `mise exec` inside it never
-    # stops on the "config not trusted" prompt — the failure that
-    # otherwise wastes a tool round-trip on every new worktree. The grep
-    # guard keeps the global ~/.config/mise/config.toml entry single on
-    # repeated bootstraps; the value is the absolute $HOME-rooted path so
-    # it resolves identically from any invocation site.
-    mkdir -p "${HOME}/.worktrees"
-    if ! mise settings get trusted_config_paths 2>/dev/null | grep -qF "${HOME}/.worktrees"; then
-        mise settings add trusted_config_paths "${HOME}/.worktrees"
-    fi
-    just ensure-plugins
-    just ensure-codex-plugins
 
 ensure-plugins:
     #!/usr/bin/env bash
