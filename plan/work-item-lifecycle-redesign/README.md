@@ -67,13 +67,15 @@ realization** of it, captured and owned where the work lives.
 
 ## Current state of the thread
 
-**Active — go-ahead received; E walk underway.** The core session confirmed
-the boundary and the cross-epic link and gave the go-ahead. The single
-resumable [handoff.md](handoff.md) is written (next action = begin E-1). Each
-resolved decision is recorded in `research/decision-log.md` (created when E-1
-lands) and the handoff's "Next action" is kept current.
+**E walk COMPLETE.** All four decisions (E-1..E-4) are resolved and recorded in
+[research/decision-log.md](research/decision-log.md); the [handoff](handoff.md)
+is current. The **next step is maintainer-owned**: groom epic
+`livespec-console-beads-fabro-vqh36l` into dispatchable, console-local
+implementation slices. This thread is design/planning only — no Rust changes
+were made.
 
-Working model: parts **forced or clearly implied** by the locked core
-contract proceed without a stop (E-1 — work-item source & ingestion); genuine
-design decisions **stop and surface as plain text** for the maintainer (E-2 —
+Working model used: parts **forced or clearly implied** by the locked core
+contract proceeded without a stop (E-1 — source & ingestion; E-3 forced parts —
+attention as pure derivation + snooze/ack deletion); genuine design decisions
+**stopped and were surfaced as plain text** for the maintainer (E-2 —
 lane/view rendering; E-4 — conformance scope + the two residues).

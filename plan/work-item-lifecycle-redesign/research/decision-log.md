@@ -210,3 +210,60 @@ the lane derivation and one relocates to the spec-side view.
 - E-4's rebuild test asserts the attention lens is reproducible purely by
   replaying the work-item observation events (no attention/dismissal state
   persisted) — reinforcing zero-primary-state.
+
+---
+
+## E-4 — rebuild-from-ledger / zero-primary-state conformance — RESOLVED 2026-06-29 (maintainer ratified)
+
+**Decision:** Add a net-new conformance test asserting **rebuild determinism**
+and **no primary work-item lifecycle state** — both scoped to the work-item
+projections (lanes + the Attention lens) and **EXCLUDING** the operator
+`commands` table. **Drop** the dead `projections` table. **Accept**
+`commands.status` as console-local operator-command state via a documented
+carve-out (do **not** event-source it). All three recommendations ratified.
+
+### What the test asserts (ratified)
+
+1. **Rebuild determinism.** Snapshot the work-item projections → **wipe** the
+   console store → **re-backfill from the ledger** by replaying the per-item
+   observation events (E-1's `list-work-items --json` ingestion) → recompute the
+   projections → assert they are **identical** to the snapshot. Projections
+   (lanes + Attention lens) are a pure function of the ledger.
+2. **Structural no-primary-lifecycle-state.** Assert the console store persists
+   **no authoritative work-item lifecycle state** — no primary lane/status/
+   attention column or table; the only persisted work-item data is the
+   observation cache (a cache of the ledger, not primary).
+3. **Scope.** Both assertions cover **work-item projections only (lanes +
+   Attention lens)** and **EXCLUDE** the console-local operator `commands` table
+   (residue B).
+
+### The two residues (ratified)
+
+- **Residue A — dead `projections` table:** **DROP it.** Declared but never
+  read/written outside a table-exists test; keeping it muddies the structural
+  assertion.
+- **Residue B — `commands.status` (in-place mutation, `:568`):** **accept as
+  console-local operator-command state** with a **documented carve-out**, and
+  **exclude it from the rebuild assertion**. It is outbound-action bookkeeping
+  (did the operator's command to the orchestrator apply?) — not a work-item
+  lifecycle state and not derivable from the ledger. **Do NOT event-source it.**
+  The "zero primary **lifecycle** state" invariant is specifically about
+  work-item lifecycle (lanes/attention); the carve-out keeps it precise.
+
+### Impl-details flagged
+
+- Test home is net-new (today only `list_console_events_rebuilds_domain_events`
+  at `console-eventstore/src/lib.rs:748` exists, row→domain only). The
+  conformance test builds work-item projections from a known ledger fixture,
+  snapshots, wipes, re-ingests from the same fixture, rebuilds, asserts equal;
+  plus a structural assertion (no primary work-item-lifecycle column; `commands`
+  is the documented exception). The structural assertion may be expressible via
+  `console-arch-check` / `console-spec-check` or as a store-schema test —
+  settled at impl.
+
+### Downstream impact
+
+- Capstone: locks in E-1 (per-item observation events as the rebuild input),
+  E-2 (lanes + Attention lens as the projections under test), and E-3
+  (Attention lens has no persisted state). **The E walk is complete**; the epic
+  is ready to groom into dispatchable slices (maintainer-owned).
