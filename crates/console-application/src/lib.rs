@@ -68,10 +68,7 @@ impl AttentionItem {
 pub enum TuiView {
     Attention,
     Spec,
-    Ready,
-    Factory,
-    Manual,
-    Done,
+    Lanes,
     Events,
     Repos,
 }
@@ -82,10 +79,7 @@ impl TuiView {
         &[
             Self::Attention,
             Self::Spec,
-            Self::Ready,
-            Self::Factory,
-            Self::Manual,
-            Self::Done,
+            Self::Lanes,
             Self::Events,
             Self::Repos,
         ]
@@ -96,14 +90,19 @@ impl TuiView {
         match self {
             Self::Attention => "Attention",
             Self::Spec => "Spec",
-            Self::Ready => "Ready",
-            Self::Factory => "Factory",
-            Self::Manual => "Manual",
-            Self::Done => "Done",
+            Self::Lanes => "Lanes",
             Self::Events => "Events",
             Self::Repos => "Repos",
         }
     }
+}
+
+/// Which lane sub-view the `Lanes` view is showing: the cross-lane overview
+/// home, or a single lane drilled into for its full rank-ordered list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneFocus {
+    Overview,
+    Lane(Lane),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,12 +172,16 @@ pub enum TuiInteraction {
     Backspace,
     SelectNextAction,
     SelectPreviousAction,
+    DrillIntoLane,
+    ReturnToLaneOverview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiInteractionState {
     active_view: TuiView,
     selected_attention_index: usize,
+    lane_focus: LaneFocus,
+    selected_lane_index: usize,
     overlay: TuiOverlay,
 }
 
@@ -188,6 +191,8 @@ impl TuiInteractionState {
         Self {
             active_view: TuiView::Attention,
             selected_attention_index,
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: 0,
             overlay,
         }
     }
@@ -201,8 +206,42 @@ impl TuiInteractionState {
         Self {
             active_view,
             selected_attention_index,
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: 0,
             overlay,
         }
+    }
+
+    /// Replace the active view, preserving every other field. Used by the
+    /// interaction reducer to keep state changes single-field and readable.
+    #[must_use]
+    pub const fn with_active_view(mut self, active_view: TuiView) -> Self {
+        self.active_view = active_view;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_selected_attention_index(mut self, selected_attention_index: usize) -> Self {
+        self.selected_attention_index = selected_attention_index;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_lane_focus(mut self, lane_focus: LaneFocus) -> Self {
+        self.lane_focus = lane_focus;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_selected_lane_index(mut self, selected_lane_index: usize) -> Self {
+        self.selected_lane_index = selected_lane_index;
+        self
+    }
+
+    #[must_use]
+    pub fn with_overlay(mut self, overlay: TuiOverlay) -> Self {
+        self.overlay = overlay;
+        self
     }
 
     #[must_use]
@@ -213,6 +252,16 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn selected_attention_index(&self) -> usize {
         self.selected_attention_index
+    }
+
+    #[must_use]
+    pub const fn lane_focus(&self) -> LaneFocus {
+        self.lane_focus
+    }
+
+    #[must_use]
+    pub const fn selected_lane_index(&self) -> usize {
+        self.selected_lane_index
     }
 
     #[must_use]
@@ -323,6 +372,9 @@ pub struct TuiScreenModel {
     selected_attention_index: Option<usize>,
     detail: Option<AttentionDetail>,
     view_items: Vec<ViewSummaryItem>,
+    lane_board: LaneBoard,
+    lane_focus: LaneFocus,
+    selected_lane_index: Option<usize>,
     overlay: TuiOverlay,
     header: String,
     footer: String,
@@ -357,6 +409,27 @@ impl TuiScreenModel {
     #[must_use]
     pub fn view_items(&self) -> &[ViewSummaryItem] {
         &self.view_items
+    }
+
+    /// The seven-lane board projected from the work-item snapshot observations,
+    /// rendered by the `Lanes` view's overview and per-lane drill-in.
+    #[must_use]
+    pub const fn lane_board(&self) -> &LaneBoard {
+        &self.lane_board
+    }
+
+    /// Which lane sub-view the `Lanes` view is showing (overview or a drilled-in
+    /// lane).
+    #[must_use]
+    pub const fn lane_focus(&self) -> LaneFocus {
+        self.lane_focus
+    }
+
+    /// The selected lane row in the lane overview, present only while the
+    /// `Lanes` view shows its overview home; `None` otherwise.
+    #[must_use]
+    pub const fn selected_lane_index(&self) -> Option<usize> {
+        self.selected_lane_index
     }
 
     #[must_use]
@@ -763,13 +836,24 @@ pub fn build_tui_model_for_state(
         .map(|index| build_attention_detail(attention_events[index], events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
+    let lane_board = project_lane_board(events);
+    let lane_focus = state.lane_focus();
+    let selected_lane_index = match (active_view, lane_focus) {
+        (TuiView::Lanes, LaneFocus::Overview) => {
+            Some(state.selected_lane_index().min(Lane::all().len() - 1))
+        }
+        _ => None,
+    };
     TuiScreenModel {
         active_view,
         navigation: TuiView::all().to_vec(),
         attention_items,
         selected_attention_index,
         detail,
-        view_items: view_summary_items(active_view, events, attention_events.len()),
+        view_items: view_summary_items(active_view, events),
+        lane_board,
+        lane_focus,
+        selected_lane_index,
         overlay,
         header: format!(
             "fleet: livespec | mode: tui | view: {} | attention: {}",
@@ -789,76 +873,85 @@ pub fn reduce_tui_interaction(
 ) -> TuiInteractionState {
     let model = build_tui_model_for_state(events, state);
     match interaction {
-        TuiInteraction::SelectNext => TuiInteractionState::for_view(
-            state.active_view(),
-            move_selection_down(
+        TuiInteraction::SelectNext => select_next(state, &model),
+        TuiInteraction::SelectPrevious => select_previous(state),
+        TuiInteraction::SelectNextView => state
+            .clone()
+            .with_active_view(move_view_down(state.active_view())),
+        TuiInteraction::SelectPreviousView => state
+            .clone()
+            .with_active_view(move_view_up(state.active_view())),
+        TuiInteraction::OpenSearch => state.clone().with_overlay(TuiOverlay::Search {
+            query: String::new(),
+        }),
+        TuiInteraction::OpenCommandPalette => {
+            state.clone().with_overlay(TuiOverlay::CommandPalette {
+                query: String::new(),
+            })
+        }
+        TuiInteraction::OpenCommandModal => state.clone().with_overlay(TuiOverlay::CommandModal {
+            selected_action_index: 0,
+        }),
+        TuiInteraction::CloseOverlay => state.clone().with_overlay(TuiOverlay::None),
+        TuiInteraction::TypeChar(value) => state
+            .clone()
+            .with_overlay(type_overlay_char(state.overlay(), value)),
+        TuiInteraction::Backspace => state
+            .clone()
+            .with_overlay(backspace_overlay_query(state.overlay())),
+        TuiInteraction::SelectNextAction => state
+            .clone()
+            .with_overlay(move_action_down(state.overlay(), model.detail())),
+        TuiInteraction::SelectPreviousAction => {
+            state.clone().with_overlay(move_action_up(state.overlay()))
+        }
+        TuiInteraction::DrillIntoLane => drill_into_lane(state),
+        TuiInteraction::ReturnToLaneOverview => state.clone().with_lane_focus(LaneFocus::Overview),
+    }
+}
+
+/// Whether the `Lanes` view is showing its cross-lane overview home, where
+/// up/down moves the selected lane row rather than the attention selection.
+fn is_lane_overview(state: &TuiInteractionState) -> bool {
+    state.active_view() == TuiView::Lanes && state.lane_focus() == LaneFocus::Overview
+}
+
+/// Move the selection down, routed to the lane overview row when the lane
+/// overview is active, else to the attention list.
+fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiInteractionState {
+    if is_lane_overview(state) {
+        state.clone().with_selected_lane_index(move_selection_down(
+            Lane::all().len(),
+            state.selected_lane_index(),
+        ))
+    } else {
+        state
+            .clone()
+            .with_selected_attention_index(move_selection_down(
                 model.attention_items().len(),
                 state.selected_attention_index(),
-            ),
-            state.overlay().clone(),
-        ),
-        TuiInteraction::SelectPrevious => TuiInteractionState::for_view(
-            state.active_view(),
-            move_selection_up(state.selected_attention_index()),
-            state.overlay().clone(),
-        ),
-        TuiInteraction::SelectNextView => TuiInteractionState::for_view(
-            move_view_down(state.active_view()),
-            state.selected_attention_index(),
-            state.overlay().clone(),
-        ),
-        TuiInteraction::SelectPreviousView => TuiInteractionState::for_view(
-            move_view_up(state.active_view()),
-            state.selected_attention_index(),
-            state.overlay().clone(),
-        ),
-        TuiInteraction::OpenSearch => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            TuiOverlay::Search {
-                query: String::new(),
-            },
-        ),
-        TuiInteraction::OpenCommandPalette => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            TuiOverlay::CommandPalette {
-                query: String::new(),
-            },
-        ),
-        TuiInteraction::OpenCommandModal => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            TuiOverlay::CommandModal {
-                selected_action_index: 0,
-            },
-        ),
-        TuiInteraction::CloseOverlay => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            TuiOverlay::None,
-        ),
-        TuiInteraction::TypeChar(value) => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            type_overlay_char(state.overlay(), value),
-        ),
-        TuiInteraction::Backspace => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            backspace_overlay_query(state.overlay()),
-        ),
-        TuiInteraction::SelectNextAction => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            move_action_down(state.overlay(), model.detail()),
-        ),
-        TuiInteraction::SelectPreviousAction => TuiInteractionState::for_view(
-            state.active_view(),
-            state.selected_attention_index(),
-            move_action_up(state.overlay()),
-        ),
+            ))
     }
+}
+
+/// Move the selection up, routed to the lane overview row when the lane
+/// overview is active, else to the attention list.
+fn select_previous(state: &TuiInteractionState) -> TuiInteractionState {
+    if is_lane_overview(state) {
+        state
+            .clone()
+            .with_selected_lane_index(move_selection_up(state.selected_lane_index()))
+    } else {
+        state
+            .clone()
+            .with_selected_attention_index(move_selection_up(state.selected_attention_index()))
+    }
+}
+
+/// Drill the lane overview's selected lane into a full per-lane list.
+fn drill_into_lane(state: &TuiInteractionState) -> TuiInteractionState {
+    let lane = Lane::all()[state.selected_lane_index().min(Lane::all().len() - 1)];
+    state.clone().with_lane_focus(LaneFocus::Lane(lane))
 }
 
 pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
@@ -1230,43 +1323,14 @@ fn build_attention_detail(event: &ConsoleEvent, events: &[ConsoleEvent]) -> Atte
     )
 }
 
-fn view_summary_items(
-    active_view: TuiView,
-    events: &[ConsoleEvent],
-    attention_count: usize,
-) -> Vec<ViewSummaryItem> {
+fn view_summary_items(active_view: TuiView, events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
     match active_view {
-        TuiView::Attention => vec![ViewSummaryItem::new(
-            format!("Attention items: {attention_count}"),
-            "Projection contains events requiring operator review.".to_owned(),
-        )],
         TuiView::Spec => spec_view_items(events),
-        TuiView::Ready => vec![ViewSummaryItem::new(
-            format!(
-                "Work-item snapshots: {}",
-                count_events(events, EventType::WorkItemSnapshotObserved)
-            ),
-            "Ready-state detail is derived from work-item snapshot events as adapters fill payloads."
-                .to_owned(),
-        )],
-        TuiView::Factory => factory_view_items(events),
-        TuiView::Manual => vec![ViewSummaryItem::new(
-            format!(
-                "Manual attention signals: {}",
-                count_events(events, EventType::FabroHumanGateObserved)
-                    + count_events(events, EventType::DispatcherNeedsRegroomObserved)
-            ),
-            "Manual work collects human gates and regroom requests from stored events.".to_owned(),
-        )],
-        TuiView::Done => vec![ViewSummaryItem::new(
-            format!(
-                "Factory drains completed: {}",
-                count_events(events, EventType::FactoryDrainCompleted)
-            ),
-            "Done work is projected from terminal success events.".to_owned(),
-        )],
         TuiView::Events => events_view_items(events),
         TuiView::Repos => repos_view_items(events),
+        // The Attention and Lanes views render their own projections (the
+        // attention list / detail and the lane board), not summary rows.
+        TuiView::Attention | TuiView::Lanes => Vec::new(),
     }
 }
 
@@ -1285,27 +1349,6 @@ fn spec_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
                 count_events(events, EventType::LivespecReviseRequired)
             ),
             "Revise-required events stay visible until acknowledged or resolved.".to_owned(),
-        ),
-    ]
-}
-
-fn factory_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
-    vec![
-        ViewSummaryItem::new(
-            format!(
-                "Drain commands requested: {}",
-                count_events(events, EventType::FactoryDrainRequested)
-            ),
-            "Factory commands are persisted before adapter ports perform side effects.".to_owned(),
-        ),
-        ViewSummaryItem::new(
-            format!(
-                "Drain terminal outcomes: {}",
-                count_events(events, EventType::FactoryDrainCompleted)
-                    + count_events(events, EventType::FactoryDrainFailed)
-                    + count_events(events, EventType::FactoryDrainNotWired)
-            ),
-            "Completed, failed, and not-wired drain outcomes are appended as events.".to_owned(),
         ),
     ]
 }
@@ -1455,7 +1498,7 @@ mod tests {
     use super::source_adapters::{Lane, LaneReason, SourceProbe, SourceProbeOutcome};
     use super::{
         ApplicationError, AttentionEvent, DispatcherFactoryDrainPort, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, OperatorAction, TuiInteraction,
+        FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction, TuiInteraction,
         TuiInteractionState, TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state,
         handle_factory_drain_command, project_attention, project_lane_board,
         reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
@@ -1638,12 +1681,13 @@ mod tests {
         assert_eq!(model.attention_items(), []);
         assert_eq!(model.selected_attention_index(), None);
         assert_eq!(model.detail(), None);
-        assert_eq!(model.view_items().len(), 1);
-        assert_eq!(model.view_items()[0].title(), "Attention items: 0");
-        assert_eq!(
-            model.view_items()[0].detail(),
-            "Projection contains events requiring operator review."
-        );
+        // The Attention view renders its attention list, not summary rows, so
+        // it carries no view-summary items; the lane board is always present
+        // (all seven lanes) but no lane row is selected outside the Lanes view.
+        assert!(model.view_items().is_empty());
+        assert_eq!(model.lane_board().columns().len(), Lane::all().len());
+        assert_eq!(model.lane_focus(), super::LaneFocus::Overview);
+        assert_eq!(model.selected_lane_index(), None);
         assert_eq!(model.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
         assert_eq!(
@@ -1717,7 +1761,7 @@ mod tests {
     #[test]
     fn tui_interaction_preserves_active_view_across_overlays() {
         let events = fabro_gate_events();
-        let state = TuiInteractionState::for_view(TuiView::Factory, 1, TuiOverlay::None);
+        let state = TuiInteractionState::for_view(TuiView::Events, 1, TuiOverlay::None);
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenSearch);
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('g'));
@@ -1727,7 +1771,7 @@ mod tests {
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousAction);
 
-        assert_eq!(state.active_view(), TuiView::Factory);
+        assert_eq!(state.active_view(), TuiView::Events);
         assert_eq!(state.selected_attention_index(), 1);
     }
 
@@ -1740,26 +1784,6 @@ mod tests {
                 TuiView::Spec,
                 "LiveSpec next snapshots: 1",
                 "Spec lifecycle status is projected from LiveSpec adapter observations.",
-            ),
-            (
-                TuiView::Ready,
-                "Work-item snapshots: 1",
-                "Ready-state detail is derived from work-item snapshot events as adapters fill payloads.",
-            ),
-            (
-                TuiView::Factory,
-                "Drain commands requested: 1",
-                "Factory commands are persisted before adapter ports perform side effects.",
-            ),
-            (
-                TuiView::Manual,
-                "Manual attention signals: 2",
-                "Manual work collects human gates and regroom requests from stored events.",
-            ),
-            (
-                TuiView::Done,
-                "Factory drains completed: 1",
-                "Done work is projected from terminal success events.",
             ),
             (
                 TuiView::Events,
@@ -1779,6 +1803,88 @@ mod tests {
             assert_eq!(model.view_items()[0].title(), expected_title);
             assert_eq!(model.view_items()[0].detail(), expected_detail);
         }
+    }
+
+    #[test]
+    fn tui_lanes_view_opens_on_the_overview_home_with_the_full_board() {
+        let events = [
+            lane_event("evt_r", "console-r", Lane::Ready, None, "a0", "ready"),
+            lane_event("evt_a", "console-a", Lane::Active, None, "a0", "active"),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(model.active_view(), TuiView::Lanes);
+        assert_eq!(model.lane_focus(), LaneFocus::Overview);
+        assert_eq!(model.selected_lane_index(), Some(0));
+        assert_eq!(model.lane_board().columns().len(), Lane::all().len());
+        assert_eq!(model.lane_board().total(), 2);
+        // The Lanes view renders the board, not summary rows.
+        assert!(model.view_items().is_empty());
+    }
+
+    #[test]
+    fn tui_lanes_overview_arrows_move_the_selected_lane_not_the_attention_list() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.selected_lane_index(), 2);
+        assert_eq!(model.selected_lane_index(), Some(2));
+        // The attention selection is untouched while the lane overview drives
+        // the arrows.
+        assert_eq!(state.selected_attention_index(), 0);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPrevious);
+
+        assert_eq!(state.selected_lane_index(), 1);
+    }
+
+    #[test]
+    fn tui_lanes_overview_clamps_the_selected_lane_at_the_last_lane() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let state = (0..20).fold(state, |state, _step| {
+            reduce_tui_interaction(&state, &[], TuiInteraction::SelectNext)
+        });
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert_eq!(state.selected_lane_index(), Lane::all().len() - 1);
+        assert_eq!(model.selected_lane_index(), Some(Lane::all().len() - 1));
+    }
+
+    #[test]
+    fn tui_lanes_drill_into_selected_lane_and_return_to_overview() {
+        let events = [lane_event(
+            "evt_ready",
+            "console-ready",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+        // Move the selection to the third lane (Ready) and drill into it.
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::DrillIntoLane);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.lane_focus(), LaneFocus::Lane(Lane::Ready));
+        assert_eq!(model.lane_focus(), LaneFocus::Lane(Lane::Ready));
+        // No lane row is highlighted while a lane is drilled in.
+        assert_eq!(model.selected_lane_index(), None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::ReturnToLaneOverview);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.lane_focus(), LaneFocus::Overview);
+        // The overview returns to the lane it drilled in from.
+        assert_eq!(model.selected_lane_index(), Some(2));
     }
 
     #[test]
@@ -2110,6 +2216,9 @@ mod tests {
             selected_attention_index: None,
             detail: None,
             view_items: Vec::new(),
+            lane_board: project_lane_board(&[]),
+            lane_focus: super::LaneFocus::Overview,
+            selected_lane_index: None,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
@@ -2666,10 +2775,7 @@ mod tests {
     fn navigation_and_action_labels_are_stable() {
         assert_eq!(TuiView::Attention.label(), "Attention");
         assert_eq!(TuiView::Spec.label(), "Spec");
-        assert_eq!(TuiView::Ready.label(), "Ready");
-        assert_eq!(TuiView::Factory.label(), "Factory");
-        assert_eq!(TuiView::Manual.label(), "Manual");
-        assert_eq!(TuiView::Done.label(), "Done");
+        assert_eq!(TuiView::Lanes.label(), "Lanes");
         assert_eq!(TuiView::Events.label(), "Events");
         assert_eq!(TuiView::Repos.label(), "Repos");
         assert_eq!(OperatorAction::Acknowledge.label(), "Acknowledge");

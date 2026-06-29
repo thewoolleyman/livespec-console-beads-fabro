@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
+use console_application::source_adapters::Lane;
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, OperatorAction, OperatorActionOutcome,
-    TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-    ViewSummaryItem, build_tui_model_for_state, reduce_tui_interaction,
-    resolve_command_palette_action, resolve_selected_operator_action,
+    ApplicationError, AttentionDetail, AttentionItem, LaneColumn, LaneFocus, LaneWorkItem,
+    OperatorAction, OperatorActionOutcome, TimelineEntry, TuiInteraction, TuiInteractionState,
+    TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, build_tui_model_for_state,
+    reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -89,7 +90,7 @@ fn run_terminal_loop(
             continue;
         }
         let model = build_tui_model_for_state(events, &state);
-        let Some(input) = key_event_to_terminal_input(key_event, model.overlay()) else {
+        let Some(input) = key_event_to_terminal_input(key_event, &model) else {
             continue;
         };
         let step = step_tui_runtime(&state, events, input, requested_by);
@@ -195,18 +196,19 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
 }
 
 #[must_use]
-pub const fn key_event_to_terminal_input(
+pub fn key_event_to_terminal_input(
     event: KeyEvent,
-    overlay: &TuiOverlay,
+    model: &TuiScreenModel,
 ) -> Option<TuiTerminalInput> {
+    let overlay = model.overlay();
     if event.modifiers.contains(KeyModifiers::CONTROL) && matches!(event.code, KeyCode::Char('c')) {
         return Some(TuiTerminalInput::Quit);
     }
     match event.code {
         KeyCode::Up => Some(TuiTerminalInput::Interaction(up_interaction(overlay))),
         KeyCode::Down => Some(TuiTerminalInput::Interaction(down_interaction(overlay))),
-        KeyCode::Esc => Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay)),
-        KeyCode::Enter => Some(enter_input(overlay)),
+        KeyCode::Esc => Some(TuiTerminalInput::Interaction(esc_interaction(model))),
+        KeyCode::Enter => enter_input(model),
         KeyCode::Backspace => Some(TuiTerminalInput::Interaction(TuiInteraction::Backspace)),
         KeyCode::Char('/') => slash_input(overlay),
         KeyCode::Char(':') => colon_input(overlay),
@@ -254,11 +256,36 @@ const fn down_interaction(overlay: &TuiOverlay) -> TuiInteraction {
     TuiInteraction::SelectNext
 }
 
-const fn enter_input(overlay: &TuiOverlay) -> TuiTerminalInput {
-    if matches!(overlay, TuiOverlay::CommandModal { .. }) {
-        return TuiTerminalInput::Confirm;
+/// Enter: confirm a command modal; in the lane overview, drill into the
+/// selected lane; in a drilled-in lane, Enter is inert (no per-item action yet);
+/// otherwise open the command modal on the selected attention item.
+fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    if matches!(model.overlay(), TuiOverlay::CommandModal { .. }) {
+        return Some(TuiTerminalInput::Confirm);
     }
-    TuiTerminalInput::Interaction(TuiInteraction::OpenCommandModal)
+    if model.active_view() == TuiView::Lanes {
+        return match model.lane_focus() {
+            LaneFocus::Overview => {
+                Some(TuiTerminalInput::Interaction(TuiInteraction::DrillIntoLane))
+            }
+            LaneFocus::Lane(_lane) => None,
+        };
+    }
+    Some(TuiTerminalInput::Interaction(
+        TuiInteraction::OpenCommandModal,
+    ))
+}
+
+/// Esc: close an open overlay first; otherwise, in a drilled-in lane, return to
+/// the lane overview; otherwise it is the (inert) close-overlay no-op.
+fn esc_interaction(model: &TuiScreenModel) -> TuiInteraction {
+    if !model.overlay().is_open()
+        && model.active_view() == TuiView::Lanes
+        && matches!(model.lane_focus(), LaneFocus::Lane(_lane))
+    {
+        return TuiInteraction::ReturnToLaneOverview;
+    }
+    TuiInteraction::CloseOverlay
 }
 
 const fn slash_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -331,6 +358,17 @@ fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    // The Lanes view spans the full body width beside the nav; the attention
+    // and summary views keep the list/detail split.
+    if model.active_view() == TuiView::Lanes {
+        let horizontal = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(18), Constraint::Min(3)])
+            .split(area);
+        render_navigation(model, horizontal[0], buffer);
+        render_lanes(model, horizontal[1], buffer);
+        return;
+    }
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -340,13 +378,101 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         ])
         .split(area);
     render_navigation(model, horizontal[0], buffer);
-    if model.active_view() == console_application::TuiView::Attention {
+    if model.active_view() == TuiView::Attention {
         render_attention(model, horizontal[1], buffer);
         render_detail(model.detail(), horizontal[2], buffer);
         return;
     }
     render_summary(model, horizontal[1], buffer);
     render_summary_detail(model.view_items(), horizontal[2], buffer);
+}
+
+/// The number of top rank-ordered items the lane overview previews per lane.
+const LANE_OVERVIEW_PREVIEW: usize = 3;
+
+fn render_lanes(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    match model.lane_focus() {
+        LaneFocus::Overview => render_lane_overview(model, area, buffer),
+        LaneFocus::Lane(lane) => render_lane_drilldown(model, lane, area, buffer),
+    }
+}
+
+/// The lane-overview home: every lane with its count and a preview of its top
+/// rank-ordered items, the selected lane highlighted.
+fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    let selected = model.selected_lane_index();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (index, column) in model.lane_board().columns().iter().enumerate() {
+        let is_selected = Some(index) == selected;
+        let marker = if is_selected { ">" } else { " " };
+        let header = Line::from(format!(
+            "{marker} {} ({})",
+            column.lane().label(),
+            column.count()
+        ));
+        lines.push(if is_selected {
+            header.style(Style::new().add_modifier(Modifier::BOLD))
+        } else {
+            header
+        });
+        for item in column.items().iter().take(LANE_OVERVIEW_PREVIEW) {
+            lines.push(Line::from(lane_item_summary(item)));
+        }
+    }
+    Paragraph::new(lines)
+        .block(Block::new().borders(Borders::ALL).title("Lanes"))
+        .render(area, buffer);
+}
+
+/// A single drilled-in lane: its full rank-ordered item list, full width.
+fn render_lane_drilldown(model: &TuiScreenModel, lane: Lane, area: Rect, buffer: &mut Buffer) {
+    let items: &[LaneWorkItem] = model
+        .lane_board()
+        .column(lane)
+        .map(LaneColumn::items)
+        .unwrap_or_default();
+    let lines = if items.is_empty() {
+        vec![Line::from("No work-items in this lane")]
+    } else {
+        items.iter().map(lane_item_detail).collect::<Vec<_>>()
+    };
+    Paragraph::new(lines)
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(format!("Lane: {}", lane.label())),
+        )
+        .render(area, buffer);
+}
+
+/// A compact overview-line for one work-item: id, status, and (when blocked)
+/// its lane reason.
+fn lane_item_summary(item: &LaneWorkItem) -> String {
+    format!(
+        "    - {} [{}]{}",
+        item.work_item_id(),
+        item.status(),
+        lane_reason_suffix(item)
+    )
+}
+
+/// A full drill-in line for one work-item: id, repo, rank, status, and reason.
+fn lane_item_detail(item: &LaneWorkItem) -> Line<'static> {
+    Line::from(format!(
+        "- {}  {}  rank {}  [{}]{}",
+        item.work_item_id(),
+        item.repo(),
+        item.rank(),
+        item.status(),
+        lane_reason_suffix(item)
+    ))
+}
+
+/// The ` (reason)` suffix for a blocked work-item, or empty when none.
+fn lane_reason_suffix(item: &LaneWorkItem) -> String {
+    item.lane_reason()
+        .map(|reason| format!(" ({})", reason.label()))
+        .unwrap_or_default()
 }
 
 fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -570,9 +696,10 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
+    use console_application::source_adapters::{Lane, LaneReason};
     use console_application::{
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiView, build_tui_model,
-        build_tui_model_for_state,
+        LaneFocus, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
+        build_tui_model, build_tui_model_for_state,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -587,30 +714,31 @@ mod tests {
 
     #[test]
     fn keymap_maps_base_navigation_and_modal_opening() {
+        let model = attention_model(TuiOverlay::None);
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Down), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::SelectNext))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Up), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Up), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::SelectPrevious
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Enter), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenCommandModal
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Right), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Right), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::SelectNextView
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Left), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Left), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::SelectPreviousView
             ))
@@ -618,44 +746,86 @@ mod tests {
     }
 
     #[test]
+    fn keymap_routes_enter_and_esc_through_the_lane_sub_view() {
+        let overview = lanes_model(LaneFocus::Overview, TuiOverlay::None);
+        // Enter drills into the selected lane from the overview.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &overview),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::DrillIntoLane))
+        );
+        // Esc in the overview (no overlay open) is the inert close-overlay.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &overview),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+
+        let drilled = lanes_model(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
+        // Enter is inert while a lane is drilled in (no per-item action yet).
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &drilled),
+            None
+        );
+        // Esc returns to the overview from a drilled-in lane.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &drilled),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::ReturnToLaneOverview
+            ))
+        );
+
+        // With an overlay open, Esc closes it first even while drilled in.
+        let drilled_with_overlay = lanes_model(
+            LaneFocus::Lane(Lane::Ready),
+            TuiOverlay::Search {
+                query: "x".to_owned(),
+            },
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &drilled_with_overlay),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+    }
+
+    #[test]
     fn keymap_maps_command_modal_navigation_and_confirm() {
-        let overlay = TuiOverlay::CommandModal {
+        let model = attention_model(TuiOverlay::CommandModal {
             selected_action_index: 1,
-        };
+        });
 
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Down), &overlay),
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::SelectNextAction
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Up), &overlay),
+            key_event_to_terminal_input(key(KeyCode::Up), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::SelectPreviousAction
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Enter), &overlay),
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
             Some(TuiTerminalInput::Confirm)
         );
     }
 
     #[test]
     fn keymap_maps_overlay_open_close_and_query_editing() {
-        let search = TuiOverlay::Search {
+        let none = attention_model(TuiOverlay::None);
+        let search = attention_model(TuiOverlay::Search {
             query: "fab".to_owned(),
-        };
-        let palette = TuiOverlay::CommandPalette {
+        });
+        let palette = attention_model(TuiOverlay::CommandPalette {
             query: "dra".to_owned(),
-        };
+        });
 
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('/')), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Char('/')), &none),
             Some(TuiTerminalInput::Interaction(TuiInteraction::OpenSearch))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char(':')), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Char(':')), &none),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenCommandPalette
             ))
@@ -684,18 +854,19 @@ mod tests {
 
     #[test]
     fn keymap_maps_quit_and_ignores_unhandled_keys() {
-        let search = TuiOverlay::Search {
+        let none = attention_model(TuiOverlay::None);
+        let search = attention_model(TuiOverlay::Search {
             query: "q".to_owned(),
-        };
+        });
 
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('q')), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Char('q')), &none),
             Some(TuiTerminalInput::Quit)
         );
         assert_eq!(
             key_event_to_terminal_input(
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                &TuiOverlay::None,
+                &none,
             ),
             Some(TuiTerminalInput::Quit)
         );
@@ -704,13 +875,10 @@ mod tests {
             Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('q')))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('x')), &TuiOverlay::None),
+            key_event_to_terminal_input(key(KeyCode::Char('x')), &none),
             None
         );
-        assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Home), &TuiOverlay::None),
-            None
-        );
+        assert_eq!(key_event_to_terminal_input(key(KeyCode::Home), &none), None);
     }
 
     #[test]
@@ -917,7 +1085,7 @@ mod tests {
 
     #[test]
     fn render_to_text_draws_non_attention_view_summary() {
-        let state = TuiInteractionState::for_view(TuiView::Factory, 0, TuiOverlay::None);
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
         let model = build_tui_model_for_state(&factory_events(), &state);
 
         let output = render_to_text(&model, 96, 24);
@@ -925,25 +1093,91 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("> Factory")),
+                .map(|rendered| rendered.contains("> Events")),
             Ok(true)
         );
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Drain commands requested: 1")),
+                .map(|rendered| rendered.contains("Stored events: 2")),
             Ok(true)
         );
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Drain terminal outcomes: 1")),
+                .map(|rendered| rendered.contains("The event log is the canonical source")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_draws_the_lane_overview_with_counts_and_top_items() {
+        // Lane index 2 is `ready` in canonical order; select it for the marker.
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_lane_index(2);
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        // The board title and a count per lane.
+        assert_eq!(output.as_ref().map(|r| r.contains("Lanes")), Ok(true));
+        assert_eq!(output.as_ref().map(|r| r.contains("ready (2)")), Ok(true));
+        assert_eq!(output.as_ref().map(|r| r.contains("blocked (1)")), Ok(true));
+        // The selected lane row (index 2 == ready) is marked.
+        assert_eq!(output.as_ref().map(|r| r.contains("> ready (2)")), Ok(true));
+        // Top rank-ordered items are previewed under their lane, with the
+        // blocked item carrying its lane reason.
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("- console-ready-a [ready]")),
             Ok(true)
         );
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Factory commands are persisted")),
+                .map(|r| r.contains("- console-blocked [blocked] (needs-human)")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_drills_into_a_lane_with_a_full_item_list() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(output.as_ref().map(|r| r.contains("Lane: ready")), Ok(true));
+        // The drill-in shows repo + rank alongside the id.
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("- console-ready-a  console  rank a0  [ready]")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("- console-ready-b  console  rank a1  [ready]")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_drills_into_an_empty_lane_with_a_placeholder() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Done));
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(output.as_ref().map(|r| r.contains("Lane: done")), Ok(true));
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("No work-items in this lane")),
             Ok(true)
         );
     }
@@ -1135,5 +1369,74 @@ mod tests {
                 2,
             ),
         ]
+    }
+
+    /// An Attention-view model carrying the given overlay, for keymap tests
+    /// that exercise overlay-driven behavior in the default view.
+    fn attention_model(overlay: TuiOverlay) -> TuiScreenModel {
+        build_tui_model_for_state(&demo_events(), &TuiInteractionState::new(0, overlay))
+    }
+
+    /// A Lanes-view model in the given lane focus + overlay, over a small board.
+    fn lanes_model(lane_focus: LaneFocus, overlay: TuiOverlay) -> TuiScreenModel {
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, overlay).with_lane_focus(lane_focus);
+        build_tui_model_for_state(&lane_render_events(), &state)
+    }
+
+    /// A small board fixture: two ready items and one blocked (needs-human).
+    fn lane_render_events() -> [ConsoleEvent; 3] {
+        [
+            lane_event(
+                "evt_ra",
+                "console-ready-a",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+            lane_event(
+                "evt_rb",
+                "console-ready-b",
+                Lane::Ready,
+                None,
+                "a1",
+                "ready",
+            ),
+            lane_event(
+                "evt_bl",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+        ]
+    }
+
+    // Build a snapshot-observation event by writing the canonical `payload_json`
+    // directly, mirroring the orchestrator emission the lane board rebuilds from.
+    fn lane_event(
+        event_id: &str,
+        work_item_id: &str,
+        lane: Lane,
+        lane_reason: Option<LaneReason>,
+        rank: &str,
+        status: &str,
+    ) -> ConsoleEvent {
+        let reason_json = lane_reason.map_or_else(
+            || "null".to_owned(),
+            |reason| format!("\"{}\"", reason.label()),
+        );
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","source_version":1}}"#,
+            lane.label()
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
     }
 }
