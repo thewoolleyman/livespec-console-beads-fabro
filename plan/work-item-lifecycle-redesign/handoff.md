@@ -52,19 +52,17 @@ recommendations in `e-decomposition.md`.
 
 ## Next action (exactly one path)
 
-**E-4 — rebuild-from-ledger / zero-primary-state conformance. STOPPED,
-awaiting the maintainer's answer.** E-1, E-2, and E-3 are RESOLVED and recorded
-in [research/decision-log.md](research/decision-log.md). E-4 is a **genuine
-design decision** — what the conformance test asserts (wipe the store +
-re-backfill from the ledger → projections identical; plus a structural "no
-work-item lifecycle state persisted as primary") and how to resolve the **two
-residues** (drop the dead `projections` table; make `commands.status` derived
-vs. accept it as non-lifecycle operator-command state) — so it was **surfaced
-as plain text** for the maintainer and the thread is paused here.
+**E walk COMPLETE — the next step is MAINTAINER-OWNED; do NOT auto-start it.**
+All four decisions (E-1, E-2, E-3, E-4) are RESOLVED and recorded in
+[research/decision-log.md](research/decision-log.md).
 
-When the maintainer's E-4 answer is relayed: record it in the decision-log,
-then update this "Next action" — the E walk completes and the next step is
-grooming the epic `livespec-console-beads-fabro-vqh36l` into dispatchable
-console-local implementation slices (via the orchestrator `groom` operation).
+**Next action: groom epic `livespec-console-beads-fabro-vqh36l` into
+dispatchable, console-local implementation slices** (via the orchestrator
+`groom` operation). This is a **maintainer-owned step** — a resuming agent must
+**not** begin grooming on its own. Grooming cuts the resolved E-1..E-4 design
+into ready, dependency-layered slices (e.g. E-1 source/ingestion + `Beads*`
+rename; E-2 hybrid lane view; E-3 attention-as-derivation + snooze/ack
+deletion; E-4 conformance test), each carrying its own autonomy tier and
+acceptance, filed as children of the epic.
 
-This is design/planning only — **no Rust changes**.
+This thread is design/planning only — **no Rust changes** were made.
