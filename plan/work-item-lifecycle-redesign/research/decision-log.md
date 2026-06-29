@@ -1,6 +1,6 @@
 # Decision log — work-item-lifecycle-redesign
 
-Resolved E-decisions, newest-relevant first. Each entry **supersedes** the
+Resolved E-decisions, in walk order (E-1 → E-4). Each entry **supersedes** the
 corresponding recommendation in [e-decomposition.md](e-decomposition.md). All
 decisions honor [the locked core contract](locked-core-contract.md) and [the
 boundary](boundary.md); design/planning only — no Rust changes are made by
@@ -99,3 +99,114 @@ backend-neutral vocabulary; delete the lane re-derivation. Ingestion emits
   acceptance_policy)` from the same observation.
 - E-4 asserts that replaying these per-item observation events rebuilds the
   projections identically.
+
+---
+
+## E-2 — lane/view rendering — RESOLVED 2026-06-29 (maintainer decision)
+
+**Decision:** **(C) Hybrid.** A **lane-overview home** showing all 7 lanes with
+per-lane counts + the top few `rank`-ordered items each, with **drill-in to a
+full-width per-lane item list**. **Attention is a DERIVED LENS** over the lanes
+— not a standalone view, not an 8th lane.
+
+### Decided (maintainer)
+
+- **Presentation:** hybrid overview + per-lane drill-in (option C). Chosen over
+  a 7-column board (too cramped for a terminal — ~11–17 cols/lane) and over a
+  pure tab-per-lane (which loses the at-a-glance cross-lane overview).
+- **Attention = derived lens** over the same lane data: the subset of items
+  whose state/lane demands a human (the E-3 rule). No stored attention list.
+
+### Consequential nav cleanup (entailed by the decision)
+
+- The pseudo-lane tabs **`Ready` / `Factory` / `Manual` / `Done` collapse into
+  the 7 real lanes** (ad-hoc groupings the lane model subsumes).
+- **`Spec` / `Events` / `Repos` stay** as orthogonal non-lane views.
+- **`Attention` becomes the lens** (a filter over the lanes), replacing the old
+  standalone Attention tab as the sole item-listing view.
+
+### Forced vs chosen
+
+- **Forced:** the 7 lanes themselves and consuming the emitted `lane` (E-1).
+- **Chosen (maintainer):** the hybrid presentation + Attention-as-lens.
+
+### Impl-details flagged
+
+- Per-lane lists are ordered by the fractional **`rank`**; the overview shows
+  counts + top-N per lane (N is an impl/UX tuning detail).
+- The **`blocked`** lane renders its `lane_reason`
+  (`dependency`/`needs-human`/`infra-external`) as a sub-label; the derived
+  `blocked:dependency` overlay (stored `ready` + open dependency) renders in
+  `blocked` and auto-clears when the blocker closes.
+
+---
+
+## E-3 — attention inbox redefinition + snooze/ack deletion — RESOLVED 2026-06-29
+
+**Decision:** Redefine the attention inbox as a **pure derivation of work-item
+lifecycle state** (lane + policy) and **delete the snooze/ack plumbing** across
+all 5 layers. The 3 old event-type triggers are retired — two are subsumed by
+the lane derivation and one relocates to the spec-side view.
+
+### Forced (by the locked core contract — decision 16)
+
+1. **Inbox = pure state/lane derivation.** Rewrite `requires_attention()`
+   (`console-application/src/lib.rs:1244`) from the 3 event-type triggers to a
+   pure function of the ingested work-item observation's
+   `(lane, lane_reason, admission_policy, acceptance_policy)`. An item needs a
+   human **iff** its lifecycle state requires one:
+   - `pending-approval` under **manual admission** → human must admit;
+   - `acceptance` under an **ai-then-human** acceptance policy → human must
+     confirm/reject the shipped artifact;
+   - `blocked` with `lane_reason == needs-human` → human must unblock.
+   Items in other lanes, or with auto policies, are not in the lens. No
+   commands-table / dismissal-state consultation (the old inbox already never
+   consulted the commands table — recon finding 4).
+2. **Snooze/ack deleted (all 5 layers).** Remove:
+   - `CommandType::{AttentionAcknowledgeRequested, AttentionSnoozeRequested}`
+     (`console-domain/src/lib.rs:204`);
+   - `OperatorAction::{Acknowledge, Snooze}`
+     (`console-application/src/lib.rs:106`);
+   - the snooze/ack action-menu entries (`:1280`);
+   - snooze/ack handling in `attention_command` (`:1052`);
+   - the snooze/ack TUI affordances (`console-tui/src/lib.rs:448,903`).
+   Because the inbox is a pure derivation, this is plain plumbing deletion, not
+   a projection-filter unwind (there is no filter to unwind).
+3. **"Not now" = `defer` (a ledger state) or re-rank (a ledger field).** The
+   console's only "not now" is a command to the **orchestrator** to defer or
+   re-rank — never a console-local dismissal. (Wiring that defer/re-rank command
+   UI is downstream impl work; the forced E-3 change is the deletion + the
+   derivation.)
+
+### Accounting for the 3 retired triggers
+
+- **`DispatcherNeedsRegroomObserved`** → **subsumed by the lane derivation**: a
+  needs-regroom item surfaces in whatever lane `lane_of` assigns it; if that
+  lane demands a human it appears in the lens.
+- **`FabroHumanGateObserved`** → **subsumed by the lane derivation**: a fabro
+  run blocked on a human gate manifests as the work-item needing a human, which
+  `lane_of` reflects as `blocked:needs-human` (or `acceptance`). The console
+  reads that lane from `list-work-items` rather than a fabro-specific event.
+  *(Assumption to verify at impl: the orchestrator/ledger reflects a fabro human
+  gate in the work-item's lane. If it does not, this trigger's replacement needs
+  revisiting — surface it then.)*
+- **`LivespecReviseRequired`** → **relocated to the spec-side `Spec` view**: it
+  is a spec-side signal (`livespec next` → revise/critique), not a work-item
+  lifecycle state, so it leaves the work-item attention inbox and is surfaced in
+  the `Spec` view (per recon finding 2: `livespec next --json` is spec-side
+  enrichment, not a work-item source).
+
+### Chosen (console-local)
+
+- **The attention lens is purely work-item-lifecycle-derived.** Non-work-item
+  human signals are surfaced in their own contexts (fabro execution; the `Spec`
+  view), keeping the lens a clean pure derivation of the state machine exactly
+  as the contract states. *(Alternative the maintainer may prefer: a unified
+  "everything needing a human" aggregate lens over both work-item and fabro/spec
+  signals. Recorded as a possible follow-on; not built in E-3.)*
+
+### Downstream impact
+
+- E-4's rebuild test asserts the attention lens is reproducible purely by
+  replaying the work-item observation events (no attention/dismissal state
+  persisted) — reinforcing zero-primary-state.
