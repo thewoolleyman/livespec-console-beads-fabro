@@ -9,6 +9,12 @@ pub struct ConsoleEvent {
     source: String,
     stream_id: String,
     stream_seq: u64,
+    /// Canonical event payload as stored JSON. `None` for an envelope built
+    /// in code that carries no payload; the store re-attaches the persisted
+    /// `payload_json` column when an event is loaded, so a projection can read
+    /// the snapshot an observation captured. The accessor normalizes `None`
+    /// to the empty-object literal `{}`.
+    payload_json: Option<String>,
 }
 
 impl ConsoleEvent {
@@ -30,7 +36,17 @@ impl ConsoleEvent {
             source,
             stream_id,
             stream_seq,
+            payload_json: None,
         }
+    }
+
+    /// Re-attach the persisted `payload_json` to an envelope, used by the
+    /// event store when it loads an event so downstream projections can read
+    /// the captured payload.
+    #[must_use]
+    pub fn with_payload_json(mut self, payload_json: String) -> Self {
+        self.payload_json = Some(payload_json);
+        self
     }
 
     #[must_use]
@@ -79,6 +95,13 @@ impl ConsoleEvent {
     #[must_use]
     pub const fn stream_seq(&self) -> u64 {
         self.stream_seq
+    }
+
+    /// The stored event payload as JSON, defaulting to the empty object `{}`
+    /// when the envelope carries none.
+    #[must_use]
+    pub fn payload_json(&self) -> &str {
+        self.payload_json.as_deref().unwrap_or("{}")
     }
 }
 
@@ -269,6 +292,17 @@ mod tests {
         assert_eq!(event.source(), "console");
         assert_eq!(event.stream_id(), "factory:repo");
         assert_eq!(event.stream_seq(), 12);
+        assert_eq!(event.payload_json(), "{}");
+    }
+
+    #[test]
+    fn event_payload_defaults_to_empty_object_and_round_trips() {
+        let envelope =
+            ConsoleEvent::fixture("evt_1", EventType::WorkItemSnapshotObserved, "source");
+        assert_eq!(envelope.payload_json(), "{}");
+
+        let with_payload = envelope.with_payload_json(r#"{"lane":"ready"}"#.to_owned());
+        assert_eq!(with_payload.payload_json(), r#"{"lane":"ready"}"#);
     }
 
     #[test]

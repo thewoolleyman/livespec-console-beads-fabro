@@ -1,10 +1,15 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
 pub mod source_adapters;
 
-use source_adapters::{SourceProbe, SourceProbeOutcome};
+use source_adapters::{
+    Lane, LaneReason, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+    work_item_snapshot_from_payload_json,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionItem {
@@ -587,6 +592,155 @@ impl FactoryCommandOutcome {
 #[must_use]
 pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
     project_attention_from_events(attention_events(events))
+}
+
+/// One work-item as it lands in a lane, carrying the fields the lane board
+/// renders. Built purely by reducing the persisted work-item snapshot
+/// observations — never stored as primary state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneWorkItem {
+    work_item_id: String,
+    repo: String,
+    lane: Lane,
+    lane_reason: Option<LaneReason>,
+    rank: String,
+    status: String,
+}
+
+impl LaneWorkItem {
+    fn from_snapshot(snapshot: &WorkItemSnapshot) -> Self {
+        Self {
+            work_item_id: snapshot.work_item_id().to_owned(),
+            repo: snapshot.repo().to_owned(),
+            lane: snapshot.lane(),
+            lane_reason: snapshot.lane_reason(),
+            rank: snapshot.rank().to_owned(),
+            status: snapshot.status().to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub const fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    #[must_use]
+    pub const fn lane_reason(&self) -> Option<LaneReason> {
+        self.lane_reason
+    }
+
+    #[must_use]
+    pub fn rank(&self) -> &str {
+        &self.rank
+    }
+
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+/// One lane column of the board: the lane and its rank-ordered items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneColumn {
+    lane: Lane,
+    items: Vec<LaneWorkItem>,
+}
+
+impl LaneColumn {
+    #[must_use]
+    pub const fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    #[must_use]
+    pub fn items(&self) -> &[LaneWorkItem] {
+        &self.items
+    }
+
+    #[must_use]
+    pub const fn count(&self) -> usize {
+        self.items.len()
+    }
+}
+
+/// The seven-lane board: every lane with its rank-ordered items.
+///
+/// A pure derivation of the work-item snapshot observations, so it is
+/// rebuildable from the ledger and never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneBoard {
+    columns: Vec<LaneColumn>,
+}
+
+impl LaneBoard {
+    #[must_use]
+    pub fn columns(&self) -> &[LaneColumn] {
+        &self.columns
+    }
+
+    /// The column for a given lane. Present for every lane because the board
+    /// always carries all seven, so this never returns `None` for a real lane.
+    #[must_use]
+    pub fn column(&self, lane: Lane) -> Option<&LaneColumn> {
+        self.columns.iter().find(|column| column.lane() == lane)
+    }
+
+    /// Total work-items across all lanes.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.columns.iter().map(LaneColumn::count).sum()
+    }
+}
+
+/// Project the seven-lane board by reducing the work-item snapshot observations.
+///
+/// The latest observation per work-item wins (later events supersede earlier
+/// ones), each item lands in its emitted `lane`, and every lane is ordered by
+/// the fractional `rank` (ties broken by id). Events whose payload is not a
+/// complete snapshot are skipped.
+#[must_use]
+pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
+    let mut latest: BTreeMap<String, LaneWorkItem> = BTreeMap::new();
+    for event in events {
+        if *event.event_type() != EventType::WorkItemSnapshotObserved {
+            continue;
+        }
+        let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) else {
+            continue;
+        };
+        latest.insert(
+            snapshot.work_item_id().to_owned(),
+            LaneWorkItem::from_snapshot(&snapshot),
+        );
+    }
+    let columns = Lane::all()
+        .iter()
+        .map(|lane| {
+            let mut items: Vec<LaneWorkItem> = latest
+                .values()
+                .filter(|item| item.lane() == *lane)
+                .cloned()
+                .collect();
+            items.sort_by(|left, right| {
+                left.rank()
+                    .cmp(right.rank())
+                    .then_with(|| left.work_item_id().cmp(right.work_item_id()))
+            });
+            LaneColumn { lane: *lane, items }
+        })
+        .collect();
+    LaneBoard { columns }
 }
 
 #[must_use]
@@ -1298,13 +1452,14 @@ mod tests {
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
-    use super::source_adapters::{SourceProbe, SourceProbeOutcome};
+    use super::source_adapters::{Lane, LaneReason, SourceProbe, SourceProbeOutcome};
     use super::{
         ApplicationError, AttentionEvent, DispatcherFactoryDrainPort, FactoryDrainPort,
         FactoryDrainPortOutcome, FactoryDrainRequest, OperatorAction, TuiInteraction,
         TuiInteractionState, TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state,
-        handle_factory_drain_command, project_attention, reduce_tui_interaction,
-        resolve_command_palette_action, resolve_selected_operator_action, validate_operator_action,
+        handle_factory_drain_command, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
+        validate_operator_action,
     };
 
     #[test]
@@ -1327,6 +1482,151 @@ mod tests {
         );
         assert_eq!(projected[0].next_action(), OperatorAction::OpenFabroAttach);
         assert_eq!(projected[1].source(), "livespec");
+    }
+
+    // Build a snapshot-observation event by writing the canonical `payload_json`
+    // directly, so the projection exercises the real deserialization path
+    // without a fallible constructor in the test.
+    fn lane_event(
+        event_id: &str,
+        work_item_id: &str,
+        lane: Lane,
+        lane_reason: Option<LaneReason>,
+        rank: &str,
+        status: &str,
+    ) -> ConsoleEvent {
+        let reason_json = lane_reason.map_or_else(
+            || "null".to_owned(),
+            |reason| format!("\"{}\"", reason.label()),
+        );
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","source_version":1}}"#,
+            lane.label()
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
+    }
+
+    fn ready_work_item_ids(column: &super::LaneColumn) -> Vec<String> {
+        column
+            .items()
+            .iter()
+            .map(|item| item.work_item_id().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn lane_board_has_all_seven_lanes_in_canonical_order_when_empty() {
+        let board = project_lane_board(&[]);
+
+        let lanes: Vec<Lane> = board
+            .columns()
+            .iter()
+            .map(super::LaneColumn::lane)
+            .collect();
+        assert_eq!(lanes, Lane::all().to_vec());
+        assert_eq!(board.total(), 0);
+        assert_eq!(
+            board.column(Lane::Ready).map(super::LaneColumn::count),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn lane_board_groups_items_and_orders_each_lane_by_rank_then_id() {
+        let events = [
+            lane_event("evt_a", "console-a", Lane::Ready, None, "a3", "ready"),
+            lane_event("evt_b", "console-b", Lane::Ready, None, "a1", "ready"),
+            // Same rank as console-b: the id breaks the tie.
+            lane_event("evt_c", "console-c", Lane::Ready, None, "a1", "ready"),
+            lane_event(
+                "evt_d",
+                "console-d",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a2",
+                "blocked",
+            ),
+        ];
+
+        let board = project_lane_board(&events);
+
+        let ready = board.column(Lane::Ready);
+        // Ordered by rank ("a1" < "a3") then id ("console-b" < "console-c").
+        assert_eq!(
+            ready.map(ready_work_item_ids),
+            Some(vec![
+                "console-b".to_owned(),
+                "console-c".to_owned(),
+                "console-a".to_owned(),
+            ])
+        );
+        let first = &ready.map(super::LaneColumn::items).unwrap_or_default()[0];
+        assert_eq!(first.rank(), "a1");
+        assert_eq!(first.repo(), "console");
+        assert_eq!(first.status(), "ready");
+        assert_eq!(first.lane(), Lane::Ready);
+        assert_eq!(first.lane_reason(), None);
+
+        let blocked = board.column(Lane::Blocked);
+        assert_eq!(blocked.map(super::LaneColumn::count), Some(1));
+        let blocked_first = &blocked.map(super::LaneColumn::items).unwrap_or_default()[0];
+        assert_eq!(blocked_first.lane_reason(), Some(LaneReason::NeedsHuman));
+        assert_eq!(board.total(), 4);
+    }
+
+    #[test]
+    fn lane_board_keeps_only_the_latest_observation_per_work_item() {
+        let events = [
+            // The same work-item moves ready → active; the later observation wins.
+            lane_event("evt_1", "console-1", Lane::Ready, None, "a5", "ready"),
+            lane_event("evt_2", "console-1", Lane::Active, None, "a5", "active"),
+        ];
+
+        let board = project_lane_board(&events);
+
+        assert_eq!(
+            board.column(Lane::Ready).map(super::LaneColumn::count),
+            Some(0)
+        );
+        let active = board.column(Lane::Active);
+        assert_eq!(active.map(super::LaneColumn::count), Some(1));
+        assert_eq!(
+            active
+                .map(super::LaneColumn::items)
+                .unwrap_or_default()
+                .first()
+                .map(super::LaneWorkItem::status),
+            Some("active")
+        );
+        assert_eq!(board.total(), 1);
+    }
+
+    #[test]
+    fn lane_board_skips_non_snapshot_and_unparseable_payloads() {
+        let events = [
+            // A different event type is not a lane source.
+            ConsoleEvent::fixture("evt_gate", EventType::FabroHumanGateObserved, "fabro"),
+            // A snapshot event whose payload is the empty object does not rebuild.
+            ConsoleEvent::fixture(
+                "evt_empty",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            ),
+            lane_event("evt_ok", "console-1", Lane::Backlog, None, "a0", "backlog"),
+        ];
+
+        let board = project_lane_board(&events);
+
+        assert_eq!(board.total(), 1);
+        assert_eq!(
+            board.column(Lane::Backlog).map(super::LaneColumn::count),
+            Some(1)
+        );
     }
 
     #[test]

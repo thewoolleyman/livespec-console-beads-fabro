@@ -517,7 +517,8 @@ impl SqliteEventStore {
 
     pub fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
         let sql = r"
-            select event_id, schema_version, context, type, source, stream_id, stream_seq
+            select event_id, schema_version, context, type, source, stream_id, stream_seq,
+                   payload_json
             from events
             order by global_seq
         ";
@@ -529,15 +530,18 @@ impl SqliteEventStore {
             let Some(event_type) = EventType::from_contract_name(&event_type_name) else {
                 return Err(EventStoreError::UnknownEventType(event_type_name));
             };
-            events.push(ConsoleEvent::new(
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                event_type,
-                row.get(4)?,
-                row.get(5)?,
-                sequence_from_rowid(row.get::<_, i64>(6)?)?,
-            ));
+            events.push(
+                ConsoleEvent::new(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    event_type,
+                    row.get(4)?,
+                    row.get(5)?,
+                    sequence_from_rowid(row.get::<_, i64>(6)?)?,
+                )
+                .with_payload_json(row.get::<_, String>(7)?),
+            );
         }
         Ok(events)
     }
@@ -784,6 +788,35 @@ mod tests {
         );
         assert_eq!(events[1].context(), "dispatch");
         assert_eq!(events[1].stream_seq(), 2);
+        assert_eq!(events[1].payload_json(), "{}");
+        Ok(())
+    }
+
+    #[test]
+    fn list_console_events_attaches_persisted_payload_json() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let payload = r#"{"repo":"console","work_item_id":"console-1","lane":"ready"}"#;
+        let append = EventAppend::new(
+            ConsoleEvent::fixture(
+                "evt_snap",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            ),
+            "repo:console".to_owned(),
+            "2026-06-29T00:00:00Z".to_owned(),
+            "2026-06-29T00:00:01Z".to_owned(),
+            None,
+            "corr_snap".to_owned(),
+            Some("source-snap".to_owned()),
+            payload.to_owned(),
+            "{}".to_owned(),
+        );
+
+        store.append_event(&append)?;
+        let events = store.list_console_events()?;
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload_json(), payload);
         Ok(())
     }
 

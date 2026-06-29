@@ -18,9 +18,10 @@ use console_application::{
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NormalizeObservation, NormalizedSourceEvent,
         ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
-        SourceEventAppendPort, SourceObservationPlan, SourceProbe, parse_dispatcher_observation,
-        parse_fabro_observation, parse_github_observation, parse_livespec_observation,
-        parse_orchestrator_observation, run_adapter_poll,
+        SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
+        work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -407,6 +408,8 @@ fn source_polls_from_seed(
         seed.work_item_id,
         Lane::Blocked,
         Some(LaneReason::NeedsHuman),
+        "a1",
+        "blocked",
         1,
     )?;
     let dispatcher_entry = DispatcherJournalEntry::new(
@@ -798,9 +801,24 @@ fn event_append_from_normalized_source_event(
         None,
         format!("corr_{}", event.event_id()),
         Some(normalized.source_event_id().to_owned()),
-        "{}".to_owned(),
+        normalized_payload_json(normalized.payload()),
         "{}".to_owned(),
     )
+}
+
+/// The persisted `payload_json` for a normalized observation. Work-item
+/// snapshots are serialized in full so the lane board can rebuild from them;
+/// other source payloads carry no projection state yet and persist as `{}`.
+fn normalized_payload_json(payload: &SourcePayload) -> String {
+    match payload {
+        SourcePayload::WorkItemSnapshot(snapshot) => work_item_snapshot_payload_json(snapshot),
+        SourcePayload::CompletenessFinding(_)
+        | SourcePayload::DispatcherJournalEntry(_)
+        | SourcePayload::FabroRunSnapshot(_)
+        | SourcePayload::GithubPullRequestSnapshot(_)
+        | SourcePayload::LivespecNextSnapshot(_)
+        | SourcePayload::NotObservedFinding(_) => "{}".to_owned(),
+    }
 }
 
 struct SharedSqliteStore<'a> {
@@ -981,8 +999,10 @@ fn help_text() -> String {
 mod tests {
     use console_application::{
         ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        build_tui_model,
-        source_adapters::{AdapterError, PullSourcePort, SourceProbe, SourceProbeOutcome},
+        LaneColumn, build_tui_model, project_lane_board,
+        source_adapters::{
+            AdapterError, Lane, LaneReason, PullSourcePort, SourceProbe, SourceProbeOutcome,
+        },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use console_eventstore::{
@@ -2017,7 +2037,7 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         assert_eq!(outcomes[0].status(), AppendStatus::Inserted);
         assert_eq!(outcomes[1].status(), AppendStatus::Inserted);
-        assert_eq!(events, demo_events());
+        assert_eq!(events, persisted_demo_events());
         Ok(())
     }
 
@@ -2041,8 +2061,45 @@ mod tests {
         assert_eq!(first[0].status(), AppendStatus::Inserted);
         assert_eq!(second[0].status(), AppendStatus::Duplicate);
         assert_eq!(second[1].status(), AppendStatus::Duplicate);
-        assert_eq!(events, demo_events());
+        assert_eq!(events, persisted_demo_events());
         Ok(())
+    }
+
+    #[test]
+    fn backfilled_work_item_snapshot_rebuilds_into_its_lane() -> Result<(), ConsoleRuntimeError> {
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
+        let mut store = SqliteEventStore::open_in_memory()?;
+        backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &sources)?;
+
+        // The lane board rebuilds purely from the persisted snapshot payloads:
+        // the seeded work-item is emitted as blocked:needs-human at rank "a1".
+        let events = store.list_console_events()?;
+        let board = project_lane_board(&events);
+
+        assert_eq!(board.column(Lane::Blocked).map(LaneColumn::count), Some(1));
+        let blocked_items = board
+            .column(Lane::Blocked)
+            .map(LaneColumn::items)
+            .unwrap_or_default();
+        assert_eq!(
+            blocked_items[0].work_item_id(),
+            "livespec-console-beads-fabro-y45jhj"
+        );
+        assert_eq!(blocked_items[0].rank(), "a1");
+        assert_eq!(blocked_items[0].lane_reason(), Some(LaneReason::NeedsHuman));
+        assert_eq!(board.total(), 1);
+        Ok(())
+    }
+
+    /// The demo events as they are read back from the store, where the load
+    /// path re-attaches the persisted (empty) `payload_json` that in-memory
+    /// envelopes carry as `None`.
+    fn persisted_demo_events() -> Vec<ConsoleEvent> {
+        demo_events()
+            .into_iter()
+            .map(|event| event.with_payload_json("{}".to_owned()))
+            .collect()
     }
 
     fn factory_drain_effect() -> TuiRuntimeEffect {
