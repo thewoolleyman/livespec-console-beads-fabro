@@ -67,12 +67,13 @@ realization** of it, captured and owned where the work lives.
 
 ## Current state of the thread
 
-**E walk COMPLETE.** All four decisions (E-1..E-4) are resolved and recorded in
-[research/decision-log.md](research/decision-log.md); the [handoff](handoff.md)
-is current. The **next step is maintainer-owned**: groom epic
-`livespec-console-beads-fabro-vqh36l` into dispatchable, console-local
-implementation slices. This thread is design/planning only — no Rust changes
-were made.
+**Design COMPLETE; autonomous implementation rollout UNDERWAY** (L1a =
+orchestrator v0.3.0 released). All four decisions (E-1..E-4) are resolved in
+[research/decision-log.md](research/decision-log.md); implementation now lands
+slice by slice via worktree → PR → rebase-merge (see the decision-log's
+"Implementation rollout" section). **E-1 (source & ingestion) is implemented**;
+**E-2 (hybrid lane TUI view) is next**. The [handoff](handoff.md) is the
+resumable entry point.
 
 Working model used: parts **forced or clearly implied** by the locked core
 contract proceeded without a stop (E-1 — source & ingestion; E-3 forced parts —

@@ -267,3 +267,53 @@ carve-out (do **not** event-source it). All three recommendations ratified.
   E-2 (lanes + Attention lens as the projections under test), and E-3
   (Attention lens has no persisted state). **The E walk is complete**; the epic
   is ready to groom into dispatchable slices (maintainer-owned).
+
+---
+
+# Implementation rollout (L1a released — orchestrator v0.3.0)
+
+The design above is locked. Implementation proceeds slice by slice under the
+autonomous-rollout authorization (orchestrator **v0.3.0** ships the flat
+`lane`/`lane_reason` emission from `list-work-items` — the artifact the console
+consumes). Each slice lands via worktree → PR → rebase-merge; the repo enforces
+**100% line coverage**.
+
+## E-1 — work-item source & ingestion — IMPLEMENTED 2026-06-29
+
+Realizes the E-1 decision in Rust. Landed:
+
+- **Source switch:** the single work-item source now shells the orchestrator's
+  `list-work-items --json` (backend-neutral; `SourceAdapterKind::Orchestrator`,
+  adapter id `orchestrator`), replacing the direct `bd ready --json`
+  reach-around. The console holds **zero** Beads/Dolt knowledge — a workspace
+  grep census proves the only remaining `beads` token is the product/tenant
+  name `livespec-console-beads-fabro`.
+- **Real JSON-array parse:** `parse_orchestrator_observation` uses `serde_json`
+  to deserialize the full array; the `first_json_string` substring hack and the
+  3-way `match status_text` re-derivation are gone.
+- **Consume the emitted lane:** new `Lane` (7 variants) and `LaneReason` (3
+  variants) enums (`serde` kebab-case `Deserialize` + `label()`) are
+  deserialized **directly** from the emitted `lane`/`lane_reason` — the console
+  never re-derives a lane.
+- **Backend-neutral model:** `BeadsWorkItemStatus` deleted; `BeadsWorkItemSnapshot`
+  → `WorkItemSnapshot` carrying `lane`/`lane_reason`; `EventType` variant →
+  `WorkItemSnapshotObserved` (wire name `work_item.snapshot_observed`); event-id
+  prefixes `orchestrator:`. The stored-event cache rename needs no migration
+  (E-4: the events table is a rebuildable cache of the ledger).
+- **One observed event per item** (the per-item granularity decision).
+
+Verification: full `just check` green (incl. `check-deps` on the new `serde`/
+`serde_json` deps, `check-arch`, and `check-coverage` at 100% lines). Tests
+cover the array parse + lane/lane_reason consumption, the empty/malformed/
+invalid-item error paths, and all `Lane`/`LaneReason` variants.
+
+Deferred to later slices (per the decision-log): carrying `rank`/`status`/
+`admission_policy`/`acceptance_policy`/`assignee` into the observation (added
+when E-2/E-3 consume them); the concrete orchestrator-CLI entrypoint +
+credential threading remains an impl-detail (the console shells
+`list-work-items` as an opaque, credential-ambient provider).
+
+## E-2..E-4 — pending implementation
+
+E-2 (hybrid lane TUI view) is next, then E-3 (attention-as-derivation +
+snooze/ack deletion) and E-4 (rebuild-from-ledger conformance test).
