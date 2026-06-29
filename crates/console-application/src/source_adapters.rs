@@ -202,6 +202,21 @@ pub enum Lane {
 }
 
 impl Lane {
+    /// The seven lanes in canonical lifecycle order (backlog → done); the
+    /// lane board renders its columns in this order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Backlog,
+            Self::PendingApproval,
+            Self::Ready,
+            Self::Active,
+            Self::Acceptance,
+            Self::Blocked,
+            Self::Done,
+        ]
+    }
+
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
@@ -241,15 +256,20 @@ pub struct WorkItemSnapshot {
     work_item_id: String,
     lane: Lane,
     lane_reason: Option<LaneReason>,
+    rank: String,
+    status: String,
     source_version: u64,
 }
 
 impl WorkItemSnapshot {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: &str,
         work_item_id: &str,
         lane: Lane,
         lane_reason: Option<LaneReason>,
+        rank: &str,
+        status: &str,
         source_version: u64,
     ) -> AdapterResult<Self> {
         if source_version == 0 {
@@ -260,6 +280,8 @@ impl WorkItemSnapshot {
             work_item_id: required_text(work_item_id, AdapterError::EmptyWorkItemId)?,
             lane,
             lane_reason,
+            rank: rank.to_owned(),
+            status: status.to_owned(),
             source_version,
         })
     }
@@ -284,10 +306,99 @@ impl WorkItemSnapshot {
         self.lane_reason
     }
 
+    /// The first-class fractional `rank` emitted by the orchestrator (a
+    /// lexicographically-ordered key; the bottom sentinel `~` sorts last).
+    /// The lane board orders each lane's items by this key.
+    #[must_use]
+    pub fn rank(&self) -> &str {
+        &self.rank
+    }
+
+    /// The stored 7-state lifecycle status emitted alongside the derived
+    /// `lane` (carried verbatim; never used to re-derive a lane).
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
     #[must_use]
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
+}
+
+/// Bottom-of-list sentinel for a missing `rank`, matching the orchestrator's
+/// own fractional-indexing bottom key so a rank-less item sorts last.
+fn rank_bottom_sentinel() -> String {
+    "~".to_owned()
+}
+
+/// The persisted JSON shape a work-item snapshot observation reads back as.
+///
+/// Owned here so the wire format ingestion writes into `payload_json` is the
+/// exact shape a projection reads back. Robust to an absent `rank` / `status`
+/// (defaulting to the bottom sentinel / empty) so a leaner emission still
+/// round-trips.
+#[derive(serde::Deserialize)]
+struct WorkItemSnapshotPayload {
+    repo: String,
+    work_item_id: String,
+    lane: Lane,
+    #[serde(default)]
+    lane_reason: Option<LaneReason>,
+    #[serde(default = "rank_bottom_sentinel")]
+    rank: String,
+    #[serde(default)]
+    status: String,
+    source_version: u64,
+}
+
+/// Serialize a work-item snapshot into its canonical persisted `payload_json`.
+///
+/// Written with the observation event so a projection can rebuild from it.
+/// Built directly as a [`serde_json::Value`] — whose `to_string` is the
+/// infallible `Display` — over the same field names and kebab-case lane
+/// encodings the typed [`WorkItemSnapshotPayload`] reads back, so the
+/// round-trip is total and carries no unreachable failure arm.
+#[must_use]
+pub fn work_item_snapshot_payload_json(snapshot: &WorkItemSnapshot) -> String {
+    let lane_reason = snapshot
+        .lane_reason
+        .map_or(serde_json::Value::Null, |reason| {
+            serde_json::Value::String(reason.label().to_owned())
+        });
+    let mut object = serde_json::Map::new();
+    object.insert("repo".to_owned(), snapshot.repo.clone().into());
+    object.insert(
+        "work_item_id".to_owned(),
+        snapshot.work_item_id.clone().into(),
+    );
+    object.insert("lane".to_owned(), snapshot.lane.label().into());
+    object.insert("lane_reason".to_owned(), lane_reason);
+    object.insert("rank".to_owned(), snapshot.rank.clone().into());
+    object.insert("status".to_owned(), snapshot.status.clone().into());
+    object.insert("source_version".to_owned(), snapshot.source_version.into());
+    serde_json::Value::Object(object).to_string()
+}
+
+/// Rebuild a work-item snapshot from a persisted `payload_json`.
+///
+/// Returns `None` for any payload that is not a valid, complete snapshot (an
+/// empty object, a different event's payload, or a corrupt cache row) so the
+/// lane reduction skips it instead of failing.
+#[must_use]
+pub fn work_item_snapshot_from_payload_json(payload_json: &str) -> Option<WorkItemSnapshot> {
+    let payload: WorkItemSnapshotPayload = serde_json::from_str(payload_json).ok()?;
+    WorkItemSnapshot::new(
+        &payload.repo,
+        &payload.work_item_id,
+        payload.lane,
+        payload.lane_reason,
+        &payload.rank,
+        &payload.status,
+        payload.source_version,
+    )
+    .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1182,6 +1293,10 @@ pub fn parse_orchestrator_observation(
         lane: Lane,
         #[serde(default)]
         lane_reason: Option<LaneReason>,
+        #[serde(default = "rank_bottom_sentinel")]
+        rank: String,
+        #[serde(default)]
+        status: String,
     }
 
     let items: Vec<WorkItemRecord> = serde_json::from_str(observed.stdout())
@@ -1192,17 +1307,24 @@ pub fn parse_orchestrator_observation(
     let mut events = Vec::new();
     let mut versions = Vec::new();
     for item in items {
+        // rank and status join lane/lane_reason in the identity hash so a
+        // re-rank or status transition appends a fresh observation the lane
+        // board can pick up.
         let version = stable_version(&[
             observed.repo(),
             &item.id,
             item.lane.label(),
             item.lane_reason.map_or("", |reason| reason.label()),
+            &item.rank,
+            &item.status,
         ]);
         let snapshot = WorkItemSnapshot::new(
             observed.repo(),
             &item.id,
             item.lane,
             item.lane_reason,
+            &item.rank,
+            &item.status,
             version,
         )
         .map_err(|_error| "invalid work-item".to_owned())?;
@@ -1326,7 +1448,7 @@ mod tests {
         normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
         normalize_work_item_snapshot, parse_dispatcher_observation, parse_fabro_observation,
         parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
-        run_adapter_poll,
+        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[test]
@@ -1409,8 +1531,16 @@ mod tests {
         }
         // "broken" drives the builder-error branch (empty work-item id).
         let work_item_id = if trimmed == "broken" { "" } else { trimmed };
-        let snapshot = WorkItemSnapshot::new(observed.repo(), work_item_id, Lane::Ready, None, 1)
-            .map_err(|_error| "snapshot build failed".to_owned())?;
+        let snapshot = WorkItemSnapshot::new(
+            observed.repo(),
+            work_item_id,
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+            1,
+        )
+        .map_err(|_error| "snapshot build failed".to_owned())?;
         let poll = normalize_work_item_snapshot(&snapshot);
         Ok(ParsedObservation::new(
             "ck-observed",
@@ -1817,6 +1947,8 @@ mod tests {
             " item ",
             Lane::Blocked,
             Some(LaneReason::NeedsHuman),
+            "a5",
+            "blocked",
             3,
         );
         assert_eq!(snapshot.as_ref().map(WorkItemSnapshot::repo), Ok("repo"));
@@ -1832,20 +1964,25 @@ mod tests {
             snapshot.as_ref().map(WorkItemSnapshot::lane_reason),
             Ok(Some(LaneReason::NeedsHuman))
         );
+        assert_eq!(snapshot.as_ref().map(WorkItemSnapshot::rank), Ok("a5"));
+        assert_eq!(
+            snapshot.as_ref().map(WorkItemSnapshot::status),
+            Ok("blocked")
+        );
         assert_eq!(
             snapshot.as_ref().map(WorkItemSnapshot::source_version),
             Ok(3)
         );
         assert_eq!(
-            WorkItemSnapshot::new(" ", "item", Lane::Ready, None, 1),
+            WorkItemSnapshot::new(" ", "item", Lane::Ready, None, "a0", "ready", 1),
             Err(AdapterError::EmptyRepo)
         );
         assert_eq!(
-            WorkItemSnapshot::new("repo", " ", Lane::Ready, None, 1),
+            WorkItemSnapshot::new("repo", " ", Lane::Ready, None, "a0", "ready", 1),
             Err(AdapterError::EmptyWorkItemId)
         );
         assert_eq!(
-            WorkItemSnapshot::new("repo", "item", Lane::Ready, None, 0),
+            WorkItemSnapshot::new("repo", "item", Lane::Ready, None, "a0", "ready", 0),
             Err(AdapterError::InvalidSourceVersion)
         );
     }
@@ -2075,6 +2212,8 @@ mod tests {
             work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
             lane: Lane::Blocked,
             lane_reason: Some(LaneReason::NeedsHuman),
+            rank: "a8".to_owned(),
+            status: "blocked".to_owned(),
             source_version: 7,
         }
     }
@@ -2518,6 +2657,74 @@ mod tests {
             )),
             Err("invalid work-item".to_owned())
         );
+    }
+
+    #[test]
+    fn parse_orchestrator_carries_rank_and_status() -> Result<(), String> {
+        let stdout = r#"[{"id":"console-1","lane":"active","lane_reason":null,"rank":"a3","status":"active"},
+                         {"id":"console-2","lane":"ready"}]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            stdout,
+        ))?;
+        let snapshots: Vec<&WorkItemSnapshot> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot),
+                _other => None,
+            })
+            .collect();
+
+        // The emitted rank/status are carried verbatim.
+        assert_eq!(snapshots[0].rank(), "a3");
+        assert_eq!(snapshots[0].status(), "active");
+        // An item that omits rank/status defaults to the bottom sentinel and
+        // an empty status rather than failing to parse.
+        assert_eq!(snapshots[1].rank(), "~");
+        assert_eq!(snapshots[1].status(), "");
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_snapshot_payload_round_trips() {
+        let snapshot = work_item_snapshot_fixture();
+
+        let payload_json = work_item_snapshot_payload_json(&snapshot);
+        let rebuilt = work_item_snapshot_from_payload_json(&payload_json);
+
+        assert_eq!(rebuilt.as_ref(), Some(&snapshot));
+    }
+
+    #[test]
+    fn work_item_snapshot_payload_defaults_absent_rank_and_status() {
+        // A leaner payload (no rank/status) still rebuilds, defaulting to the
+        // bottom sentinel and an empty status.
+        let rebuilt = work_item_snapshot_from_payload_json(
+            r#"{"repo":"console","work_item_id":"console-1","lane":"ready","source_version":3}"#,
+        );
+
+        assert_eq!(rebuilt.as_ref().map(WorkItemSnapshot::rank), Some("~"));
+        assert_eq!(rebuilt.as_ref().map(WorkItemSnapshot::status), Some(""));
+        assert_eq!(
+            rebuilt.as_ref().map(WorkItemSnapshot::lane),
+            Some(Lane::Ready)
+        );
+    }
+
+    #[test]
+    fn work_item_snapshot_payload_rejects_non_snapshot_json() {
+        // The empty object, an unrelated payload, and malformed JSON all
+        // decline to rebuild rather than fabricating a lane row.
+        assert_eq!(work_item_snapshot_from_payload_json("{}"), None);
+        assert_eq!(
+            work_item_snapshot_from_payload_json(
+                r#"{"repo":"","work_item_id":"x","lane":"ready","source_version":1}"#
+            ),
+            None
+        );
+        assert_eq!(work_item_snapshot_from_payload_json("not json"), None);
     }
 
     #[test]
