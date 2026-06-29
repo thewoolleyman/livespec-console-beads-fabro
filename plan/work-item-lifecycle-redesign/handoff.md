@@ -52,23 +52,19 @@ recommendations in `e-decomposition.md`.
 
 ## Next action (exactly one path)
 
-**E-2 — lane/view rendering. STOPPED, awaiting the maintainer's answer.**
-E-1 is RESOLVED and recorded in
-[research/decision-log.md](research/decision-log.md) (source switch to
-`list-work-items --json`, consume `lane`/`lane_reason`, rename the `Beads*`
-cluster, delete the 3-way re-derivation, one observed event per item). E-2 is
-a **genuine design decision** (how the 7 lanes render in the ratatui TUI, and
-how Attention relates to the lanes), so it was **surfaced as plain text** for
-the maintainer and the thread is paused here.
+**E-4 — rebuild-from-ledger / zero-primary-state conformance. STOPPED,
+awaiting the maintainer's answer.** E-1, E-2, and E-3 are RESOLVED and recorded
+in [research/decision-log.md](research/decision-log.md). E-4 is a **genuine
+design decision** — what the conformance test asserts (wipe the store +
+re-backfill from the ledger → projections identical; plus a structural "no
+work-item lifecycle state persisted as primary") and how to resolve the **two
+residues** (drop the dead `projections` table; make `commands.status` derived
+vs. accept it as non-lifecycle operator-command state) — so it was **surfaced
+as plain text** for the maintainer and the thread is paused here.
 
-When the maintainer's E-2 answer is relayed: record it in the decision-log
-(superseding the E-2 recommendation in
-[research/e-decomposition.md](research/e-decomposition.md)), then update this
-"Next action" to **E-3 — attention inbox redefinition + snooze/ack deletion**.
-E-3 is largely forced by the contract (inbox = pure derivation; snooze/ack
-deleted) — proceed on the forced parts; surface only any genuine sub-choice.
-Then **E-4 — rebuild-from-ledger / zero-primary-state conformance**, which is a
-genuine design decision (conformance scope + the two residues): STOP and
-surface as plain text.
+When the maintainer's E-4 answer is relayed: record it in the decision-log,
+then update this "Next action" — the E walk completes and the next step is
+grooming the epic `livespec-console-beads-fabro-vqh36l` into dispatchable
+console-local implementation slices (via the orchestrator `groom` operation).
 
 This is design/planning only — **no Rust changes**.
