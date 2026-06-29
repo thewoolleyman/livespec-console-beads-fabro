@@ -313,7 +313,77 @@ when E-2/E-3 consume them); the concrete orchestrator-CLI entrypoint +
 credential threading remains an impl-detail (the console shells
 `list-work-items` as an opaque, credential-ambient provider).
 
-## E-2..E-4 — pending implementation
+## E-2 — hybrid lane TUI view — IN PROGRESS (slice 1 of 2 MERGED 2026-06-29)
 
-E-2 (hybrid lane TUI view) is next, then E-3 (attention-as-derivation +
-snooze/ack deletion) and E-4 (rebuild-from-ledger conformance test).
+E-2 lands in two slices. **Slice 1 (the data spine) is MERGED** (PR #62, master
+`e7898aa`); slice 2 (the TUI lane sub-view) is next.
+
+### E-2a — lane-board data spine — IMPLEMENTED & MERGED (PR #62)
+
+The pure projection the hybrid view will render, with no TUI wiring yet:
+
+- **`rank` + `status` carried** on `WorkItemSnapshot` and the orchestrator
+  `WorkItemRecord`. `rank` is the orchestrator's lexicographic fractional key
+  (`key_between() -> str`); a missing `rank` defaults to the bottom sentinel
+  `"~"`, a missing `status` to `""`. Both join `lane`/`lane_reason` in the
+  observation identity hash, so a re-rank or status transition appends a fresh
+  observation the board picks up.
+- **Payload persistence + reload.** Each snapshot observation persists its
+  `payload_json` (lane, lane_reason, rank, status, source_version); the store
+  re-attaches it on load via the new `ConsoleEvent::payload_json`, so the
+  reduction can read the snapshot an observation captured. Snapshot
+  serialization is built as a `serde_json::Value` (infallible `Display`)
+  mirroring the typed read shape — no unreachable failure arm, keeping the
+  100%-line gate honest.
+- **`project_lane_board`** (console-application): a pure in-memory reduction —
+  **no persisted projection table** (zero-primary-state, E-4). Latest
+  observation per work-item wins; every item lands in its emitted `lane`; the 7
+  lanes render in canonical order, each ordered by `(rank, id)`; non-snapshot /
+  unparseable payloads are skipped.
+
+Verification: full `just check` green (fmt, clippy `-D warnings`, tests, **100%
+line coverage**, `cargo deny` + `machete`, arch-check, behavior-coverage,
+baseline, doctor-static); all 10 CI checks green; rebase-merged.
+
+### E-2b — hybrid lane TUI sub-view — NEXT
+
+Consumes `project_lane_board`: a lane-overview home (all 7 lanes, counts + top
+rank-ordered items) with drill-in to a full-width per-lane list. Collapse the
+`Ready/Factory/Manual/Done` tabs into the 7 lanes routed through a lane
+sub-view; keep `Spec/Events/Repos`; Attention stays a nav entry (its
+rewrite-as-pure-lens is E-3). `TuiView` is kept but reshaped. Touches
+`console-application` (TuiView + interaction state + model), `console-tui`
+(overview + drill-in rendering), and the console-local
+`SPECIFICATION/contracts.md` navigation section (console-owned view model;
+reference core's lane vocabulary, do not re-decide it).
+
+## E-3..E-4 — pending implementation
+
+E-3 (attention-as-derivation + snooze/ack deletion) then E-4
+(rebuild-from-ledger conformance test).
+
+---
+
+# Side-task — L2 tenant migration (9-tenant lockstep) — DONE 2026-06-29
+
+Separate from the E-2 code rollout: this repo's own beads tenant was
+**pre-migration** and needed the fleet's L2 lockstep backfill onto the
+work-item-state-machine schema. Migrated via the orchestrator's own v0.3.0
+primitives (per `livespec-orchestrator-beads-fabro`
+`plan/work-item-state-machine/l2-tenant-migration.md`), under the family env
+wrapper:
+
+1. **Registered the 5 custom lifecycle statuses** (`store.register_custom_statuses`
+   → `bd config set status.custom
+   "backlog,pending-approval,ready:active,active:wip,acceptance:wip"`; idempotent).
+2. **Backfilled `rank`** on all 12 live (non-`done`) heads via the
+   `rebalance_ranks.legacy_seed` primitive, in `(priority, created_at, id)`
+   order → `a0…aB`, written in place through `store.update_work_item_rank`
+   (metadata-only; statuses/labels/edges untouched; every head was rank-less, so
+   nothing was clobbered). Legacy `open` status VALUES were deliberately NOT
+   reclassified (per the runbook's scope boundary).
+
+Verification: the S6 `work_item_state_invariants` doctor check exits **0**
+against the live tenant (no rank WARNINGS, no `active⟹assignee` /
+`blocked⟹blocked_reason` ERRORS). Formalized as the closed work-item
+`livespec-console-beads-fabro-vxq`.

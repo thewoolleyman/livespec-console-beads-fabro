@@ -63,15 +63,31 @@ the decision-log's "Implementation rollout" section.
   emission; the `bd ready` re-derivation and the entire `Beads*` cluster are
   retired (backend-neutral `Orchestrator`/`WorkItemSnapshot`/`Lane`/`LaneReason`
   vocabulary; one observed event per item).
+- **E-2a (lane-board data spine) — IMPLEMENTED & MERGED** (PR #62, master
+  `e7898aa`). `rank`+`status` carried on `WorkItemSnapshot`; snapshot
+  `payload_json` persisted and re-attached on load via
+  `ConsoleEvent::payload_json`; `project_lane_board` reduces
+  `WorkItemSnapshotObserved` events into the 7 lanes (latest-per-item wins,
+  ordered by `(rank, id)`) — a pure derivation, **no projection table**. No TUI
+  wiring yet.
 
-**Next action: implement E-2 — the hybrid lane TUI view.** Per the decision-log
-E-2 entry: a lane-overview home (all 7 lanes, counts + top rank-ordered items)
-with drill-in to a full-width per-lane list, consuming the `WorkItemSnapshot`
-`lane()` from E-1; collapse the `Ready/Factory/Manual/Done` tabs into the 7
-lanes; keep `Spec/Events/Repos`; Attention becomes a derived lens (the lens
-itself is E-3). Then E-3 (attention-as-derivation + snooze/ack deletion) and
-E-4 (rebuild-from-ledger conformance test).
+**Next action: implement E-2b — the hybrid lane TUI sub-view.** Consume
+`project_lane_board`: a lane-overview home (all 7 lanes, counts + top
+rank-ordered items) with drill-in to a full-width per-lane list. Reshape
+`TuiView` and route the 7 lanes through a lane sub-view; collapse the
+`Ready/Factory/Manual/Done` tabs into the 7 lanes; keep `Spec/Events/Repos`;
+Attention stays a nav entry for now (its rewrite-as-pure-lens is E-3). Update
+the console-local `SPECIFICATION/contracts.md` navigation section (console-owned
+view model — reference core's lane vocabulary, do not re-decide it). Then E-3
+(attention-as-derivation + snooze/ack deletion) and E-4 (rebuild-from-ledger
+conformance test).
 
 Discipline: worktree → PR → rebase-merge; `mise exec -- git`; never
 `--no-verify`; halt+report on hook failure; the repo enforces **100% line
 coverage** (`just check-coverage`) — cover every new line/branch.
+
+**Side-task done (separate from E-2 code):** this repo's beads tenant L2
+lockstep migration (register 5 custom statuses + `rank` backfill `a0…aB` on the
+12 live heads via the orchestrator `legacy_seed` primitive) is APPLIED and
+verified (S6 doctor exits 0); formalized as closed work-item
+`livespec-console-beads-fabro-vxq`. See the decision-log's L2 side-task section.
