@@ -313,10 +313,11 @@ when E-2/E-3 consume them); the concrete orchestrator-CLI entrypoint +
 credential threading remains an impl-detail (the console shells
 `list-work-items` as an opaque, credential-ambient provider).
 
-## E-2 — hybrid lane TUI view — IN PROGRESS (slice 1 of 2 MERGED 2026-06-29)
+## E-2 — hybrid lane TUI view — IMPLEMENTED & MERGED (both slices, 2026-06-29)
 
-E-2 lands in two slices. **Slice 1 (the data spine) is MERGED** (PR #62, master
-`e7898aa`); slice 2 (the TUI lane sub-view) is next.
+E-2 landed in two slices, both merged. **Slice 1 (the data spine)** is PR #62
+(master `e7898aa`); **slice 2 (the TUI lane sub-view)** is PR #64 (master
+`a696125`).
 
 ### E-2a — lane-board data spine — IMPLEMENTED & MERGED (PR #62)
 
@@ -345,17 +346,35 @@ Verification: full `just check` green (fmt, clippy `-D warnings`, tests, **100%
 line coverage**, `cargo deny` + `machete`, arch-check, behavior-coverage,
 baseline, doctor-static); all 10 CI checks green; rebase-merged.
 
-### E-2b — hybrid lane TUI sub-view — NEXT
+### E-2b — hybrid lane TUI sub-view — IMPLEMENTED & MERGED (PR #64, master `a696125`)
 
-Consumes `project_lane_board`: a lane-overview home (all 7 lanes, counts + top
-rank-ordered items) with drill-in to a full-width per-lane list. Collapse the
-`Ready/Factory/Manual/Done` tabs into the 7 lanes routed through a lane
-sub-view; keep `Spec/Events/Repos`; Attention stays a nav entry (its
-rewrite-as-pure-lens is E-3). `TuiView` is kept but reshaped. Touches
-`console-application` (TuiView + interaction state + model), `console-tui`
-(overview + drill-in rendering), and the console-local
-`SPECIFICATION/contracts.md` navigation section (console-owned view model;
-reference core's lane vocabulary, do not re-decide it).
+Consumes `project_lane_board` through a reshaped TUI navigation:
+
+- **`TuiView` reshaped** to `{Attention, Spec, Lanes, Events, Repos}`; the ad-hoc
+  `Ready/Factory/Manual/Done` pseudo-lane tabs are collapsed into the single
+  `Lanes` view (the lane model subsumes them). `Spec/Events/Repos` stay as
+  orthogonal non-lane views; `Attention` stays the default (its
+  rewrite-as-pure-lens is E-3).
+- **`LaneFocus { Overview, Lane }`** drives the hybrid sub-view: a lane-overview
+  home (all 7 lanes, counts + a preview of each lane's top rank-ordered items,
+  selected lane highlighted) with drill-in to a single lane's full rank-ordered
+  list. Arrows move the selected lane in the overview; `Enter` drills in; `Esc`
+  returns (closing an open overlay first). Key routing is view/focus-aware, so
+  the keymap consumes the screen model.
+- **State/model**: `TuiInteractionState` carries `lane_focus` +
+  `selected_lane_index` (set via single-field `with_*` helpers so the reducer
+  reads one change per arm); `TuiScreenModel` carries the projected `lane_board`,
+  `lane_focus`, and the clamped overview selection. View-summary rows are dropped
+  for `Attention`/`Lanes`, which render their own projections.
+- **Spec**: the console-local `SPECIFICATION/contracts.md` TUI-nav section is
+  updated to the reshaped view set + the Lanes sub-view (lane vocabulary
+  consumed from core's emitted `lane`/`lane_reason`, never re-derived). The
+  direct spec edit was healed by doctor-static's auto-backfill as history `v010`
+  (committed alongside).
+
+Verification: full `just check` green (fmt, clippy `-D warnings`, tests, **100%
+line coverage**, `cargo deny` + `machete`, arch-check, behavior-coverage,
+baseline, doctor-static); all 10 CI checks green; rebase-merged.
 
 ## E-3..E-4 — pending implementation
 

@@ -68,23 +68,40 @@ the decision-log's "Implementation rollout" section.
   `payload_json` persisted and re-attached on load via
   `ConsoleEvent::payload_json`; `project_lane_board` reduces
   `WorkItemSnapshotObserved` events into the 7 lanes (latest-per-item wins,
-  ordered by `(rank, id)`) — a pure derivation, **no projection table**. No TUI
-  wiring yet.
+  ordered by `(rank, id)`) — a pure derivation, **no projection table**.
+- **E-2b (hybrid lane TUI sub-view) — IMPLEMENTED & MERGED** (PR #64, master
+  `a696125`). `TuiView` reshaped to `{Attention, Spec, Lanes, Events, Repos}`
+  (the `Ready/Factory/Manual/Done` tabs collapsed into the single `Lanes` view);
+  `LaneFocus {Overview, Lane}` drives a hybrid overview-home + per-lane drill-in
+  over `project_lane_board`; key routing is view/focus-aware (`Enter` drills in /
+  `Esc` returns); `SPECIFICATION/contracts.md` TUI-nav section updated (healed by
+  doctor-static auto-backfill as history `v010`).
 
-**Next action: implement E-2b — the hybrid lane TUI sub-view.** Consume
-`project_lane_board`: a lane-overview home (all 7 lanes, counts + top
-rank-ordered items) with drill-in to a full-width per-lane list. Reshape
-`TuiView` and route the 7 lanes through a lane sub-view; collapse the
-`Ready/Factory/Manual/Done` tabs into the 7 lanes; keep `Spec/Events/Repos`;
-Attention stays a nav entry for now (its rewrite-as-pure-lens is E-3). Update
-the console-local `SPECIFICATION/contracts.md` navigation section (console-owned
-view model — reference core's lane vocabulary, do not re-decide it). Then E-3
-(attention-as-derivation + snooze/ack deletion) and E-4 (rebuild-from-ledger
-conformance test).
+**Next action: implement E-3 — attention inbox as a pure derivation + snooze/ack
+deletion.** Per [research/decision-log.md](research/decision-log.md) §E-3:
+rewrite `requires_attention()` from the 3 event-type triggers
+(`FabroHumanGateObserved | LivespecReviseRequired |
+DispatcherNeedsRegroomObserved`) to a pure function of the work-item
+observation's `(lane, lane_reason, admission_policy, acceptance_policy)` — an
+item needs a human iff its lifecycle state requires one (`pending-approval`
+under manual admission; `acceptance` under `ai-then-human`; `blocked` with
+`lane_reason == needs-human`). Delete the snooze/ack plumbing across all 5
+layers (`CommandType::{AttentionAcknowledgeRequested,AttentionSnoozeRequested}`,
+`OperatorAction::{Acknowledge,Snooze}`, the action-menu entries,
+`attention_command` handling, the TUI affordances). Relocate
+`LivespecReviseRequired` to the `Spec` view; account for the other two retired
+triggers via the lane derivation (verify the assumption that the ledger reflects
+a fabro human gate in the work-item's lane — surface if it does not). "Not now"
+becomes a `defer`/re-rank command to the orchestrator, never a console-local
+dismissal. NOTE: E-2b carries `admission_policy`/`acceptance_policy` only as far
+as E-2 needed; E-3 must thread them into the observation if not already present.
+Then E-4 (rebuild-from-ledger conformance test).
 
 Discipline: worktree → PR → rebase-merge; `mise exec -- git`; never
 `--no-verify`; halt+report on hook failure; the repo enforces **100% line
-coverage** (`just check-coverage`) — cover every new line/branch.
+coverage** (`just check-coverage`) — cover every new line/branch. A direct
+`SPECIFICATION/*` edit triggers doctor-static's self-healing history backfill
+(a new `history/vNNN/`) — commit that backfill in the same PR to heal the track.
 
 **Side-task done (separate from E-2 code):** this repo's beads tenant L2
 lockstep migration (register 5 custom statuses + `rank` backfill `a0…aB` on the
