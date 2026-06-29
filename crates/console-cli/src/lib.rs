@@ -5,11 +5,12 @@ use std::rc::Rc;
 
 #[cfg(test)]
 use console_application::source_adapters::{
-    AdapterPoll, AdapterPollRequest, BeadsWorkItemSnapshot, BeadsWorkItemStatus,
-    DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot, FabroRunState,
-    GithubPullRequestSnapshot, GithubPullRequestState, LivespecNextAction, LivespecNextSnapshot,
-    normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+    AdapterPoll, AdapterPollRequest, DispatcherJournalEntry, DispatcherJournalKind,
+    FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane,
+    LaneReason, LivespecNextAction, LivespecNextSnapshot, WorkItemSnapshot,
+    normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
     normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+    normalize_work_item_snapshot,
 };
 use console_application::{
     ApplicationError, FactoryDrainPort, build_tui_model, handle_factory_drain_command,
@@ -17,9 +18,9 @@ use console_application::{
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NormalizeObservation, NormalizedSourceEvent,
         ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
-        SourceEventAppendPort, SourceObservationPlan, SourceProbe, parse_beads_observation,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, run_adapter_poll,
+        SourceEventAppendPort, SourceObservationPlan, SourceProbe, parse_dispatcher_observation,
+        parse_fabro_observation, parse_github_observation, parse_livespec_observation,
+        parse_orchestrator_observation, run_adapter_poll,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -339,8 +340,9 @@ pub type SourceAdapterRef<'a> = (&'a str, &'a dyn PullSourcePort);
 
 /// Build the real source adapters for the live ingestion path.
 ///
-/// Each adapter observes its source through the host-backed probe (real `bd`,
-/// `gh`, the Dispatcher journal, `fabro`, `livespec`) or emits an honest
+/// Each adapter observes its source through the host-backed probe (the
+/// orchestrator's `list-work-items`, `gh`, the Dispatcher journal, `fabro`,
+/// `livespec`) or emits an honest
 /// not-observed finding. The binary supplies the probe and borrows the
 /// returned adapters for the lifetime of a serve/tui run.
 pub fn live_source_adapters<'a>(
@@ -354,10 +356,10 @@ pub fn live_source_adapters<'a>(
         NormalizeObservation,
     ); 5] = [
         (
-            "beads",
-            SourceAdapterKind::Beads,
-            SourceObservationPlan::command("bd", &["ready", "--json"]),
-            parse_beads_observation,
+            "orchestrator",
+            SourceAdapterKind::Orchestrator,
+            SourceObservationPlan::command("list-work-items", &["--json"]),
+            parse_orchestrator_observation,
         ),
         (
             "dispatcher",
@@ -400,10 +402,11 @@ pub fn live_source_adapters<'a>(
 fn source_polls_from_seed(
     seed: &InitialSourceSeed<'_>,
 ) -> ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> {
-    let beads_snapshot = BeadsWorkItemSnapshot::new(
+    let work_item_snapshot = WorkItemSnapshot::new(
         seed.repo,
         seed.work_item_id,
-        BeadsWorkItemStatus::NeedsRegroom,
+        Lane::Blocked,
+        Some(LaneReason::NeedsHuman),
         1,
     )?;
     let dispatcher_entry = DispatcherJournalEntry::new(
@@ -425,8 +428,8 @@ fn source_polls_from_seed(
         GithubPullRequestSnapshot::new(seed.repo, 24, GithubPullRequestState::ChecksPassing, 5)?;
     Ok(vec![
         (
-            "beads:livespec-console-beads-fabro",
-            normalize_beads_snapshot(&beads_snapshot),
+            "orchestrator:livespec-console-beads-fabro",
+            normalize_work_item_snapshot(&work_item_snapshot),
         ),
         (
             "dispatcher:livespec-console-beads-fabro",
@@ -1156,7 +1159,7 @@ mod tests {
         );
         assert_eq!(store.list_console_events()?.len(), 6);
         assert_eq!(
-            store.load_checkpoint("beads:livespec-console-beads-fabro")?,
+            store.load_checkpoint("orchestrator:livespec-console-beads-fabro")?,
             Some("1".to_owned())
         );
         assert_eq!(
@@ -1962,7 +1965,7 @@ mod tests {
         assert_eq!(
             adapter_ids,
             [
-                "beads:console",
+                "orchestrator:console",
                 "dispatcher:console",
                 "fabro:console",
                 "livespec:console",

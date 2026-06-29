@@ -869,7 +869,7 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         | EventType::FactoryDrainNotWired
         | EventType::FactoryDrainRequested
         | EventType::FactoryDrainStarted => "factory",
-        EventType::BeadsWorkItemSnapshotObserved
+        EventType::WorkItemSnapshotObserved
         | EventType::DispatcherNeedsRegroomObserved
         | EventType::FabroHumanGateObserved
         | EventType::GithubPullRequestSnapshotObserved
@@ -1090,9 +1090,9 @@ fn view_summary_items(
         TuiView::Ready => vec![ViewSummaryItem::new(
             format!(
                 "Work-item snapshots: {}",
-                count_events(events, EventType::BeadsWorkItemSnapshotObserved)
+                count_events(events, EventType::WorkItemSnapshotObserved)
             ),
-            "Ready-state detail is derived from Beads snapshot events as adapters fill payloads."
+            "Ready-state detail is derived from work-item snapshot events as adapters fill payloads."
                 .to_owned(),
         )],
         TuiView::Factory => factory_view_items(events),
@@ -1252,7 +1252,7 @@ impl AttentionEvent for EventType {
 
     fn label(&self) -> &'static str {
         match self {
-            Self::BeadsWorkItemSnapshotObserved => "Beads work-item snapshot",
+            Self::WorkItemSnapshotObserved => "Work-item snapshot",
             Self::CommandAccepted => "Command accepted",
             Self::CommandRejected => "Command rejected",
             Self::FabroHumanGateObserved => "Fabro human gate",
@@ -1444,7 +1444,7 @@ mod tests {
             (
                 TuiView::Ready,
                 "Work-item snapshots: 1",
-                "Ready-state detail is derived from Beads snapshot events as adapters fill payloads.",
+                "Ready-state detail is derived from work-item snapshot events as adapters fill payloads.",
             ),
             (
                 TuiView::Factory,
@@ -2134,9 +2134,9 @@ mod tests {
             ConsoleEvent::new(
                 "evt_ready".to_owned(),
                 1,
-                "beads".to_owned(),
-                EventType::BeadsWorkItemSnapshotObserved,
-                "bd:list".to_owned(),
+                "orchestrator".to_owned(),
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator:list-work-items".to_owned(),
                 "factory:livespec-console-beads-fabro".to_owned(),
                 5,
             ),
@@ -2302,7 +2302,7 @@ mod tests {
     #[test]
     fn non_attention_factory_action_policy_is_stable() {
         for event_type in [
-            EventType::BeadsWorkItemSnapshotObserved,
+            EventType::WorkItemSnapshotObserved,
             EventType::CommandAccepted,
             EventType::CommandRejected,
             EventType::FactoryDrainCompleted,
@@ -2395,8 +2395,8 @@ mod tests {
     #[test]
     fn all_event_type_labels_are_stable() {
         assert_eq!(
-            EventType::BeadsWorkItemSnapshotObserved.label(),
-            "Beads work-item snapshot"
+            EventType::WorkItemSnapshotObserved.label(),
+            "Work-item snapshot"
         );
         assert_eq!(
             EventType::DispatcherNeedsRegroomObserved.label(),

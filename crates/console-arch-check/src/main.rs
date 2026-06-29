@@ -566,11 +566,11 @@ mod tests {
     fn adapter_isolation_flags_a_cross_module_reference() -> Result<(), syn::Error> {
         let file = syn::parse_file(
             "mod fabro { pub fn id() -> u8 { 1 } } \
-             mod beads { pub fn other() -> u8 { super::fabro::id() } }",
+             mod alpha { pub fn other() -> u8 { super::fabro::id() } }",
         )?;
         let findings = check_adapter_isolation(&file, "crates/x/src/source_adapters.rs");
         assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].contains("beads"));
+        assert!(findings[0].contains("alpha"));
         assert!(findings[0].contains("fabro"));
         Ok(())
     }
@@ -579,7 +579,7 @@ mod tests {
     fn adapter_isolation_allows_independent_modules() -> Result<(), syn::Error> {
         let file = syn::parse_file(
             "mod fabro { pub fn id() -> u8 { 1 } } \
-             mod beads { pub fn other() -> u8 { 2 } }",
+             mod alpha { pub fn other() -> u8 { 2 } }",
         )?;
         assert!(check_adapter_isolation(&file, "crates/x/src/source_adapters.rs").is_empty());
         Ok(())
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn adapter_isolation_ignores_non_adapter_files() -> Result<(), syn::Error> {
-        let file = syn::parse_file("mod fabro { } mod beads { fn x() { super::fabro::y(); } }")?;
+        let file = syn::parse_file("mod fabro { } mod alpha { fn x() { super::fabro::y(); } }")?;
         assert!(check_adapter_isolation(&file, "crates/x/src/lib.rs").is_empty());
         Ok(())
     }

@@ -996,7 +996,7 @@ mod tests {
     fn missing_checkpoint_loads_as_none() -> Result<(), EventStoreError> {
         let store = SqliteEventStore::open_in_memory()?;
 
-        let checkpoint = store.load_checkpoint("beads:repo")?;
+        let checkpoint = store.load_checkpoint("orchestrator:repo")?;
 
         assert_eq!(checkpoint, None);
         Ok(())
@@ -1006,8 +1006,9 @@ mod tests {
     fn checkpoint_save_and_load_round_trips_latest_value() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
 
-        store.save_checkpoint("beads:repo", r#"{"version":1}"#, "2026-06-24T00:00:00Z")?;
-        store.save_checkpoint("beads:repo", r#"{"version":2}"#, "2026-06-24T00:00:01Z")?;
+        let key = "orchestrator:repo";
+        store.save_checkpoint(key, r#"{"version":1}"#, "2026-06-24T00:00:00Z")?;
+        store.save_checkpoint(key, r#"{"version":2}"#, "2026-06-24T00:00:01Z")?;
         let second_adapter_save = store.save_checkpoint(
             "fabro:repo",
             r#"{"cursor":"run_1"}"#,
@@ -1016,7 +1017,7 @@ mod tests {
 
         assert!(matches!(second_adapter_save, Ok(())));
         assert_eq!(
-            store.load_checkpoint("beads:repo")?,
+            store.load_checkpoint("orchestrator:repo")?,
             Some(r#"{"version":2}"#.to_owned())
         );
         assert_eq!(
@@ -1031,8 +1032,11 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         store.connection.execute_batch("drop table checkpoints")?;
 
-        let result =
-            store.save_checkpoint("beads:repo", r#"{"version":1}"#, "2026-06-24T00:00:00Z");
+        let result = store.save_checkpoint(
+            "orchestrator:repo",
+            r#"{"version":1}"#,
+            "2026-06-24T00:00:00Z",
+        );
 
         assert!(matches!(result, Err(EventStoreError::Sqlite(_error))));
         Ok(())
