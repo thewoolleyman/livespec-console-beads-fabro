@@ -84,7 +84,7 @@ impl ConsoleEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
-    BeadsWorkItemSnapshotObserved,
+    WorkItemSnapshotObserved,
     CommandAccepted,
     CommandRejected,
     DispatcherNeedsRegroomObserved,
@@ -105,7 +105,7 @@ impl EventType {
     #[must_use]
     pub const fn contract_name(&self) -> &'static str {
         match self {
-            Self::BeadsWorkItemSnapshotObserved => "beads.work_item_snapshot_observed",
+            Self::WorkItemSnapshotObserved => "work_item.snapshot_observed",
             Self::CommandAccepted => "command.accepted",
             Self::CommandRejected => "command.rejected",
             Self::DispatcherNeedsRegroomObserved => "dispatch.needs_regroom_observed",
@@ -126,7 +126,7 @@ impl EventType {
     #[must_use]
     pub fn from_contract_name(value: &str) -> Option<Self> {
         match value {
-            "beads.work_item_snapshot_observed" => Some(Self::BeadsWorkItemSnapshotObserved),
+            "work_item.snapshot_observed" => Some(Self::WorkItemSnapshotObserved),
             "command.accepted" => Some(Self::CommandAccepted),
             "command.rejected" => Some(Self::CommandRejected),
             "dispatch.needs_regroom_observed" => Some(Self::DispatcherNeedsRegroomObserved),
@@ -274,8 +274,8 @@ mod tests {
     #[test]
     fn event_type_contract_names_are_stable() {
         assert_eq!(
-            EventType::BeadsWorkItemSnapshotObserved.contract_name(),
-            "beads.work_item_snapshot_observed"
+            EventType::WorkItemSnapshotObserved.contract_name(),
+            "work_item.snapshot_observed"
         );
         assert_eq!(
             EventType::CommandAccepted.contract_name(),
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn event_type_contract_names_round_trip() {
         for event_type in [
-            EventType::BeadsWorkItemSnapshotObserved,
+            EventType::WorkItemSnapshotObserved,
             EventType::CommandAccepted,
             EventType::CommandRejected,
             EventType::DispatcherNeedsRegroomObserved,

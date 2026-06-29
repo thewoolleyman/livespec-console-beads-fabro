@@ -2,7 +2,7 @@ use console_domain::{ConsoleEvent, EventType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceAdapterKind {
-    Beads,
+    Orchestrator,
     Dispatcher,
     Fabro,
     GitHub,
@@ -13,7 +13,7 @@ impl SourceAdapterKind {
     #[must_use]
     pub const fn source_name(&self) -> &'static str {
         match self {
-            Self::Beads => "beads",
+            Self::Orchestrator => "orchestrator",
             Self::Dispatcher => "dispatcher",
             Self::Fabro => "fabro",
             Self::GitHub => "github",
@@ -189,39 +189,67 @@ impl AdapterPoll {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BeadsWorkItemStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Lane {
+    Backlog,
+    PendingApproval,
     Ready,
-    Closed,
-    NeedsRegroom,
-    Manual,
+    Active,
+    Acceptance,
+    Blocked,
+    Done,
 }
 
-impl BeadsWorkItemStatus {
+impl Lane {
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
+            Self::Backlog => "backlog",
+            Self::PendingApproval => "pending-approval",
             Self::Ready => "ready",
-            Self::Closed => "closed",
-            Self::NeedsRegroom => "needs-regroom",
-            Self::Manual => "manual",
+            Self::Active => "active",
+            Self::Acceptance => "acceptance",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LaneReason {
+    NeedsHuman,
+    InfraExternal,
+    Dependency,
+}
+
+impl LaneReason {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::NeedsHuman => "needs-human",
+            Self::InfraExternal => "infra-external",
+            Self::Dependency => "dependency",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BeadsWorkItemSnapshot {
+pub struct WorkItemSnapshot {
     repo: String,
     work_item_id: String,
-    status: BeadsWorkItemStatus,
+    lane: Lane,
+    lane_reason: Option<LaneReason>,
     source_version: u64,
 }
 
-impl BeadsWorkItemSnapshot {
+impl WorkItemSnapshot {
     pub fn new(
         repo: &str,
         work_item_id: &str,
-        status: BeadsWorkItemStatus,
+        lane: Lane,
+        lane_reason: Option<LaneReason>,
         source_version: u64,
     ) -> AdapterResult<Self> {
         if source_version == 0 {
@@ -230,7 +258,8 @@ impl BeadsWorkItemSnapshot {
         Ok(Self {
             repo: required_text(repo, AdapterError::EmptyRepo)?,
             work_item_id: required_text(work_item_id, AdapterError::EmptyWorkItemId)?,
-            status,
+            lane,
+            lane_reason,
             source_version,
         })
     }
@@ -246,8 +275,13 @@ impl BeadsWorkItemSnapshot {
     }
 
     #[must_use]
-    pub const fn status(&self) -> BeadsWorkItemStatus {
-        self.status
+    pub const fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    #[must_use]
+    pub const fn lane_reason(&self) -> Option<LaneReason> {
+        self.lane_reason
     }
 
     #[must_use]
@@ -551,7 +585,7 @@ impl CompletenessFinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourcePayload {
-    BeadsWorkItemSnapshot(BeadsWorkItemSnapshot),
+    WorkItemSnapshot(WorkItemSnapshot),
     CompletenessFinding(CompletenessFinding),
     DispatcherJournalEntry(DispatcherJournalEntry),
     FabroRunSnapshot(FabroRunSnapshot),
@@ -594,9 +628,9 @@ impl NormalizedSourceEvent {
 }
 
 #[must_use]
-pub fn normalize_beads_snapshot(snapshot: &BeadsWorkItemSnapshot) -> AdapterPoll {
-    let snapshot_event = beads_snapshot_event(snapshot);
-    let finding_event = beads_completeness_finding_event(snapshot);
+pub fn normalize_work_item_snapshot(snapshot: &WorkItemSnapshot) -> AdapterPoll {
+    let snapshot_event = work_item_snapshot_event(snapshot);
+    let finding_event = work_item_completeness_finding_event(snapshot);
     poll_from_source_version(
         snapshot.source_version(),
         vec![snapshot_event, finding_event],
@@ -641,54 +675,54 @@ fn poll_from_source_version(
     }
 }
 
-fn beads_snapshot_event(snapshot: &BeadsWorkItemSnapshot) -> NormalizedSourceEvent {
+fn work_item_snapshot_event(snapshot: &WorkItemSnapshot) -> NormalizedSourceEvent {
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
             format!(
-                "evt:beads:{}:{}:{}:snapshot",
+                "evt:orchestrator:{}:{}:{}:snapshot",
                 snapshot.repo(),
                 snapshot.work_item_id(),
                 snapshot.source_version()
             ),
             1,
             "factory".to_owned(),
-            EventType::BeadsWorkItemSnapshotObserved,
-            SourceAdapterKind::Beads.source_name().to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            SourceAdapterKind::Orchestrator.source_name().to_owned(),
             repo_stream(snapshot.repo()),
             snapshot.source_version(),
         ),
         format!(
-            "beads:{}:{}:{}:snapshot",
+            "orchestrator:{}:{}:{}:snapshot",
             snapshot.repo(),
             snapshot.work_item_id(),
             snapshot.source_version()
         ),
-        SourcePayload::BeadsWorkItemSnapshot(snapshot.clone()),
+        SourcePayload::WorkItemSnapshot(snapshot.clone()),
     )
 }
 
-fn beads_completeness_finding_event(snapshot: &BeadsWorkItemSnapshot) -> NormalizedSourceEvent {
+fn work_item_completeness_finding_event(snapshot: &WorkItemSnapshot) -> NormalizedSourceEvent {
     let finding = CompletenessFinding {
         repo: snapshot.repo().to_owned(),
-        source: SourceAdapterKind::Beads,
-        message: "Beads current-state snapshot cannot prove full transition history".to_owned(),
+        source: SourceAdapterKind::Orchestrator,
+        message: "Work-item current-state snapshot cannot prove full transition history".to_owned(),
     };
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
             format!(
-                "evt:beads:{}:{}:completeness",
+                "evt:orchestrator:{}:{}:completeness",
                 snapshot.repo(),
                 snapshot.source_version()
             ),
             1,
             "source".to_owned(),
             EventType::SourceCompletenessFindingObserved,
-            SourceAdapterKind::Beads.source_name().to_owned(),
+            SourceAdapterKind::Orchestrator.source_name().to_owned(),
             repo_stream(snapshot.repo()),
             snapshot.source_version(),
         ),
         format!(
-            "beads:{}:{}:completeness",
+            "orchestrator:{}:{}:completeness",
             snapshot.repo(),
             snapshot.source_version()
         ),
@@ -1090,8 +1124,9 @@ fn not_observed_event(
 // --- Real source normalizers ------------------------------------------------
 //
 // Each normalizer interprets the raw payload from one source's stable CLI/file
-// into canonical snapshot events. Inputs come from real `bd`, `gh`, the
-// Dispatcher journal, `fabro`, and `livespec`; an uninterpretable payload
+// into canonical snapshot events. Inputs come from the orchestrator's
+// `list-work-items`, `gh`, the Dispatcher journal, `fabro`, and `livespec`; an
+// uninterpretable payload
 // returns an honest reason so the adapter records a not-observed finding
 // instead of fabricating a snapshot. JSON is read with minimal flat-field
 // extraction rather than a dependency, since only a few identifying fields are
@@ -1135,24 +1170,48 @@ fn stable_version(parts: &[&str]) -> u64 {
     hash | 1
 }
 
-/// Normalize real `bd` output (e.g. `bd ready --json`) into a Beads snapshot.
-pub fn parse_beads_observation(observed: &ObservedSource) -> Result<ParsedObservation, String> {
-    let work_item_id = first_json_string(observed.stdout(), "id")
-        .ok_or_else(|| "no beads work-item observed".to_owned())?;
-    let status_text = first_json_string(observed.stdout(), "status").unwrap_or_default();
-    let status = match status_text.as_str() {
-        "closed" => BeadsWorkItemStatus::Closed,
-        "blocked" => BeadsWorkItemStatus::NeedsRegroom,
-        _other => BeadsWorkItemStatus::Ready,
-    };
-    let version = stable_version(&[observed.repo(), &work_item_id, status.label()]);
-    let snapshot = BeadsWorkItemSnapshot::new(observed.repo(), &work_item_id, status, version)
-        .map_err(|_error| "invalid beads work-item".to_owned())?;
-    let poll = normalize_beads_snapshot(&snapshot);
-    Ok(ParsedObservation::new(
-        &version.to_string(),
-        poll.events().to_vec(),
-    ))
+/// Normalize real orchestrator `list-work-items --json` output into one
+/// work-item snapshot per item, consuming each item's emitted `lane` and
+/// `lane_reason` directly rather than re-deriving a lane.
+pub fn parse_orchestrator_observation(
+    observed: &ObservedSource,
+) -> Result<ParsedObservation, String> {
+    #[derive(serde::Deserialize)]
+    struct WorkItemRecord {
+        id: String,
+        lane: Lane,
+        #[serde(default)]
+        lane_reason: Option<LaneReason>,
+    }
+
+    let items: Vec<WorkItemRecord> = serde_json::from_str(observed.stdout())
+        .map_err(|_error| "orchestrator list-work-items output is not a JSON array".to_owned())?;
+    if items.is_empty() {
+        return Err("no work-items observed".to_owned());
+    }
+    let mut events = Vec::new();
+    let mut versions = Vec::new();
+    for item in items {
+        let version = stable_version(&[
+            observed.repo(),
+            &item.id,
+            item.lane.label(),
+            item.lane_reason.map_or("", |reason| reason.label()),
+        ]);
+        let snapshot = WorkItemSnapshot::new(
+            observed.repo(),
+            &item.id,
+            item.lane,
+            item.lane_reason,
+            version,
+        )
+        .map_err(|_error| "invalid work-item".to_owned())?;
+        events.extend(normalize_work_item_snapshot(&snapshot).events().to_vec());
+        versions.push(version.to_string());
+    }
+    let checkpoint =
+        stable_version(&versions.iter().map(String::as_str).collect::<Vec<_>>()).to_string();
+    Ok(ParsedObservation::new(&checkpoint, events))
 }
 
 /// Normalize real `gh pr list --json ...` output into a GitHub PR snapshot.
@@ -1257,25 +1316,26 @@ mod tests {
 
     use super::{
         AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest, AdapterResult,
-        BeadsWorkItemSnapshot, BeadsWorkItemStatus, CompletenessFinding, DispatcherJournalEntry,
-        DispatcherJournalKind, FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot,
-        GithubPullRequestState, LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent,
-        NotObservedFinding, ObservedSource, ObservedSourceAdapter, ParsedObservation,
-        PullSourcePort, SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort,
-        SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome,
-        normalize_beads_snapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+        CompletenessFinding, DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot,
+        FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane, LaneReason,
+        LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent, NotObservedFinding,
+        ObservedSource, ObservedSourceAdapter, ParsedObservation, PullSourcePort,
+        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
+        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
         normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
-        parse_beads_observation, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, run_adapter_poll,
+        normalize_work_item_snapshot, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
+        run_adapter_poll,
     };
 
     #[test]
     fn poll_request_keeps_checkpoint_window() {
-        let request = AdapterPollRequest::new("  beads:repo  ", Some(" 42 "), 3);
+        let request = AdapterPollRequest::new("  orchestrator:repo  ", Some(" 42 "), 3);
 
         assert_eq!(
             request.as_ref().map(AdapterPollRequest::adapter_id),
-            Ok("beads:repo")
+            Ok("orchestrator:repo")
         );
         assert_eq!(
             request.as_ref().map(AdapterPollRequest::checkpoint),
@@ -1294,7 +1354,7 @@ mod tests {
             Err(AdapterError::EmptyAdapterId)
         );
         assert_eq!(
-            AdapterPollRequest::new("beads", Some(" "), 3),
+            AdapterPollRequest::new("orchestrator", Some(" "), 3),
             Err(AdapterError::EmptyCheckpoint)
         );
     }
@@ -1337,7 +1397,7 @@ mod tests {
         }
     }
 
-    // Test normalizer: a non-empty payload normalizes into a Beads snapshot
+    // Test normalizer: a non-empty payload normalizes into a work-item snapshot
     // poll; the literal "empty" yields zero events; blank input is an error.
     fn stub_normalize(observed: &ObservedSource) -> Result<ParsedObservation, String> {
         let trimmed = observed.stdout().trim();
@@ -1349,26 +1409,21 @@ mod tests {
         }
         // "broken" drives the builder-error branch (empty work-item id).
         let work_item_id = if trimmed == "broken" { "" } else { trimmed };
-        let snapshot = BeadsWorkItemSnapshot::new(
-            observed.repo(),
-            work_item_id,
-            BeadsWorkItemStatus::Ready,
-            1,
-        )
-        .map_err(|_error| "snapshot build failed".to_owned())?;
-        let poll = normalize_beads_snapshot(&snapshot);
+        let snapshot = WorkItemSnapshot::new(observed.repo(), work_item_id, Lane::Ready, None, 1)
+            .map_err(|_error| "snapshot build failed".to_owned())?;
+        let poll = normalize_work_item_snapshot(&snapshot);
         Ok(ParsedObservation::new(
             "ck-observed",
             poll.events().to_vec(),
         ))
     }
 
-    fn beads_command_adapter(probe: &StubProbe) -> AdapterResult<ObservedSourceAdapter<'_>> {
+    fn orchestrator_command_adapter(probe: &StubProbe) -> AdapterResult<ObservedSourceAdapter<'_>> {
         ObservedSourceAdapter::new(
             probe,
-            SourceAdapterKind::Beads,
+            SourceAdapterKind::Orchestrator,
             "console",
-            SourceObservationPlan::command("bd", &["ready", "--json"]),
+            SourceObservationPlan::command("list-work-items", &["--json"]),
             stub_normalize,
         )
     }
@@ -1384,14 +1439,14 @@ mod tests {
     }
 
     fn cold_request() -> AdapterResult<AdapterPollRequest> {
-        AdapterPollRequest::new("beads:console", None, 1)
+        AdapterPollRequest::new("orchestrator:console", None, 1)
     }
 
     #[test]
     fn observed_source_exposes_fields() {
-        let observed = ObservedSource::new(SourceAdapterKind::Beads, "console", "work-1");
+        let observed = ObservedSource::new(SourceAdapterKind::Orchestrator, "console", "work-1");
 
-        assert_eq!(observed.source(), SourceAdapterKind::Beads);
+        assert_eq!(observed.source(), SourceAdapterKind::Orchestrator);
         assert_eq!(observed.repo(), "console");
         assert_eq!(observed.stdout(), "work-1");
     }
@@ -1399,10 +1454,10 @@ mod tests {
     #[test]
     fn observation_plan_constructors_capture_inputs() {
         assert_eq!(
-            SourceObservationPlan::command("bd", &["ready"]),
+            SourceObservationPlan::command("list-work-items", &["--json"]),
             SourceObservationPlan::Command {
-                program: "bd".to_owned(),
-                args: vec!["ready".to_owned()],
+                program: "list-work-items".to_owned(),
+                args: vec!["--json".to_owned()],
             }
         );
         assert_eq!(
@@ -1428,9 +1483,9 @@ mod tests {
 
         let adapter = ObservedSourceAdapter::new(
             &probe,
-            SourceAdapterKind::Beads,
+            SourceAdapterKind::Orchestrator,
             "  ",
-            SourceObservationPlan::command("bd", &["ready"]),
+            SourceObservationPlan::command("list-work-items", &["--json"]),
             stub_normalize,
         );
 
@@ -1440,7 +1495,7 @@ mod tests {
     #[test]
     fn observed_source_adapter_emits_parsed_events_on_success() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
-        let adapter = beads_command_adapter(&probe)?;
+        let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
@@ -1448,9 +1503,12 @@ mod tests {
         assert_eq!(poll.events().len(), 2);
         assert_eq!(
             poll.events()[0].event().event_type(),
-            &EventType::BeadsWorkItemSnapshotObserved
+            &EventType::WorkItemSnapshotObserved
         );
-        assert_eq!(probe.calls.borrow().as_slice(), ["cmd:bd ready --json"]);
+        assert_eq!(
+            probe.calls.borrow().as_slice(),
+            ["cmd:list-work-items --json"]
+        );
         Ok(())
     }
 
@@ -1480,7 +1538,7 @@ mod tests {
             event.payload(),
             &SourcePayload::NotObservedFinding(NotObservedFinding::new(
                 "console",
-                SourceAdapterKind::Beads,
+                SourceAdapterKind::Orchestrator,
                 expected_reason,
             ))
         );
@@ -1488,33 +1546,33 @@ mod tests {
 
     #[test]
     fn observed_source_adapter_emits_not_observed_when_unavailable() -> AdapterResult<()> {
-        let probe = StubProbe::command(SourceProbeOutcome::unavailable("bd not found"));
-        let adapter = beads_command_adapter(&probe)?;
+        let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
+        let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
         assert_eq!(poll.checkpoint(), "not_observed");
-        assert_not_observed(&poll, "bd not found");
+        assert_not_observed(&poll, "orchestrator not found");
         Ok(())
     }
 
     #[test]
     fn observed_source_adapter_carries_previous_checkpoint_on_not_observed() -> AdapterResult<()> {
-        let probe = StubProbe::command(SourceProbeOutcome::unavailable("bd not found"));
-        let adapter = beads_command_adapter(&probe)?;
-        let request = AdapterPollRequest::new("beads:console", Some("prior-checkpoint"), 1)?;
+        let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
+        let adapter = orchestrator_command_adapter(&probe)?;
+        let request = AdapterPollRequest::new("orchestrator:console", Some("prior-checkpoint"), 1)?;
 
         let poll = adapter.poll(&request)?;
 
         assert_eq!(poll.checkpoint(), "prior-checkpoint");
-        assert_not_observed(&poll, "bd not found");
+        assert_not_observed(&poll, "orchestrator not found");
         Ok(())
     }
 
     #[test]
     fn observed_source_adapter_emits_not_observed_on_non_zero_exit() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::observed("ignored", false));
-        let adapter = beads_command_adapter(&probe)?;
+        let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
@@ -1525,7 +1583,7 @@ mod tests {
     #[test]
     fn observed_source_adapter_emits_not_observed_on_empty_parse() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::observed("empty", true));
-        let adapter = beads_command_adapter(&probe)?;
+        let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
@@ -1536,7 +1594,7 @@ mod tests {
     #[test]
     fn observed_source_adapter_emits_not_observed_on_parse_error() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::observed("   ", true));
-        let adapter = beads_command_adapter(&probe)?;
+        let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
@@ -1547,7 +1605,7 @@ mod tests {
     #[test]
     fn observed_source_adapter_emits_not_observed_on_builder_error() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::observed("broken", true));
-        let adapter = beads_command_adapter(&probe)?;
+        let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
@@ -1560,13 +1618,13 @@ mod tests {
         let trace = Trace::new();
         let source = ScriptedSource::new(
             trace.clone(),
-            AdapterPoll::new("8", vec![beads_snapshot_event_fixture()]),
+            AdapterPoll::new("8", vec![work_item_snapshot_event_fixture()]),
         );
         let mut checkpoints = MemoryCheckpoints::new(trace.clone(), Some("7"));
         let mut event_log = MemoryEventLog::new(trace.clone(), None);
 
         let summary = run_adapter_poll(
-            " beads:repo ",
+            " orchestrator:repo ",
             3,
             " 2026-06-24T00:00:00Z ",
             &source,
@@ -1576,7 +1634,7 @@ mod tests {
 
         assert_eq!(
             summary.as_ref().map(AdapterIngestionSummary::adapter_id),
-            Ok("beads:repo")
+            Ok("orchestrator:repo")
         );
         assert_eq!(
             summary
@@ -1597,18 +1655,18 @@ mod tests {
         assert_eq!(
             trace.entries(),
             vec![
-                "load:beads:repo".to_owned(),
-                "poll:beads:repo:7:3".to_owned(),
-                "append:evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot:2026-06-24T00:00:00Z"
+                "load:orchestrator:repo".to_owned(),
+                "poll:orchestrator:repo:7:3".to_owned(),
+                "append:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot:2026-06-24T00:00:00Z"
                     .to_owned(),
-                "save:beads:repo:8".to_owned(),
+                "save:orchestrator:repo:8".to_owned(),
             ]
         );
-        assert_eq!(checkpoints.saved(), vec!["beads:repo:8".to_owned()]);
+        assert_eq!(checkpoints.saved(), vec!["orchestrator:repo:8".to_owned()]);
         assert_eq!(
             event_log.appended,
             vec![
-                "evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
                     .to_owned()
             ]
         );
@@ -1657,13 +1715,13 @@ mod tests {
         let trace = Trace::new();
         let source = ScriptedSource::new(
             trace.clone(),
-            AdapterPoll::new("8", vec![beads_snapshot_event_fixture()]),
+            AdapterPoll::new("8", vec![work_item_snapshot_event_fixture()]),
         );
         let mut checkpoints = MemoryCheckpoints::new(trace.clone(), Some("7"));
         let mut event_log = MemoryEventLog::new(trace.clone(), Some(0));
 
         let summary = run_adapter_poll(
-            "beads:repo",
+            "orchestrator:repo",
             3,
             "2026-06-24T00:00:00Z",
             &source,
@@ -1675,9 +1733,9 @@ mod tests {
         assert_eq!(
             trace.entries(),
             vec![
-                "load:beads:repo".to_owned(),
-                "poll:beads:repo:7:3".to_owned(),
-                "append-failed:evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "load:orchestrator:repo".to_owned(),
+                "poll:orchestrator:repo:7:3".to_owned(),
+                "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
                     .to_owned(),
             ]
         );
@@ -1704,7 +1762,7 @@ mod tests {
         );
         assert_eq!(
             run_adapter_poll(
-                "beads:repo",
+                "orchestrator:repo",
                 1,
                 " ",
                 &source,
@@ -1717,15 +1775,24 @@ mod tests {
 
     #[test]
     fn source_kind_and_snapshot_labels_are_stable() {
-        assert_eq!(SourceAdapterKind::Beads.source_name(), "beads");
+        assert_eq!(
+            SourceAdapterKind::Orchestrator.source_name(),
+            "orchestrator"
+        );
         assert_eq!(SourceAdapterKind::Dispatcher.source_name(), "dispatcher");
         assert_eq!(SourceAdapterKind::Fabro.source_name(), "fabro");
         assert_eq!(SourceAdapterKind::GitHub.source_name(), "github");
         assert_eq!(SourceAdapterKind::LiveSpec.source_name(), "livespec");
-        assert_eq!(BeadsWorkItemStatus::Ready.label(), "ready");
-        assert_eq!(BeadsWorkItemStatus::Closed.label(), "closed");
-        assert_eq!(BeadsWorkItemStatus::NeedsRegroom.label(), "needs-regroom");
-        assert_eq!(BeadsWorkItemStatus::Manual.label(), "manual");
+        assert_eq!(Lane::Backlog.label(), "backlog");
+        assert_eq!(Lane::PendingApproval.label(), "pending-approval");
+        assert_eq!(Lane::Ready.label(), "ready");
+        assert_eq!(Lane::Active.label(), "active");
+        assert_eq!(Lane::Acceptance.label(), "acceptance");
+        assert_eq!(Lane::Blocked.label(), "blocked");
+        assert_eq!(Lane::Done.label(), "done");
+        assert_eq!(LaneReason::NeedsHuman.label(), "needs-human");
+        assert_eq!(LaneReason::InfraExternal.label(), "infra-external");
+        assert_eq!(LaneReason::Dependency.label(), "dependency");
         assert_eq!(DispatcherJournalKind::NeedsRegroom.label(), "needs-regroom");
         assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
         assert_eq!(GithubPullRequestState::Open.label(), "open");
@@ -1744,35 +1811,41 @@ mod tests {
     }
 
     #[test]
-    fn beads_snapshot_validates_source_identity() {
-        let snapshot =
-            BeadsWorkItemSnapshot::new(" repo ", " item ", BeadsWorkItemStatus::Manual, 3);
-        assert_eq!(
-            snapshot.as_ref().map(BeadsWorkItemSnapshot::repo),
-            Ok("repo")
+    fn work_item_snapshot_validates_source_identity() {
+        let snapshot = WorkItemSnapshot::new(
+            " repo ",
+            " item ",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            3,
         );
+        assert_eq!(snapshot.as_ref().map(WorkItemSnapshot::repo), Ok("repo"));
         assert_eq!(
-            snapshot.as_ref().map(BeadsWorkItemSnapshot::work_item_id),
+            snapshot.as_ref().map(WorkItemSnapshot::work_item_id),
             Ok("item")
         );
         assert_eq!(
-            snapshot.as_ref().map(BeadsWorkItemSnapshot::status),
-            Ok(BeadsWorkItemStatus::Manual)
+            snapshot.as_ref().map(WorkItemSnapshot::lane),
+            Ok(Lane::Blocked)
         );
         assert_eq!(
-            snapshot.as_ref().map(BeadsWorkItemSnapshot::source_version),
+            snapshot.as_ref().map(WorkItemSnapshot::lane_reason),
+            Ok(Some(LaneReason::NeedsHuman))
+        );
+        assert_eq!(
+            snapshot.as_ref().map(WorkItemSnapshot::source_version),
             Ok(3)
         );
         assert_eq!(
-            BeadsWorkItemSnapshot::new(" ", "item", BeadsWorkItemStatus::Ready, 1),
+            WorkItemSnapshot::new(" ", "item", Lane::Ready, None, 1),
             Err(AdapterError::EmptyRepo)
         );
         assert_eq!(
-            BeadsWorkItemSnapshot::new("repo", " ", BeadsWorkItemStatus::Ready, 1),
+            WorkItemSnapshot::new("repo", " ", Lane::Ready, None, 1),
             Err(AdapterError::EmptyWorkItemId)
         );
         assert_eq!(
-            BeadsWorkItemSnapshot::new("repo", "item", BeadsWorkItemStatus::Ready, 0),
+            WorkItemSnapshot::new("repo", "item", Lane::Ready, None, 0),
             Err(AdapterError::InvalidSourceVersion)
         );
     }
@@ -1948,97 +2021,98 @@ mod tests {
     #[test]
     fn completeness_finding_keeps_caveat_fields() {
         let finding =
-            CompletenessFinding::new(" repo ", SourceAdapterKind::Beads, " snapshot only ");
+            CompletenessFinding::new(" repo ", SourceAdapterKind::Orchestrator, " snapshot only ");
 
         assert_eq!(
             finding,
             Ok(CompletenessFinding {
                 repo: "repo".to_owned(),
-                source: SourceAdapterKind::Beads,
+                source: SourceAdapterKind::Orchestrator,
                 message: "snapshot only".to_owned(),
             })
         );
         assert_eq!(finding.as_ref().map(CompletenessFinding::repo), Ok("repo"));
         assert_eq!(
             finding.as_ref().map(CompletenessFinding::source),
-            Ok(SourceAdapterKind::Beads)
+            Ok(SourceAdapterKind::Orchestrator)
         );
         assert_eq!(
             finding.as_ref().map(CompletenessFinding::message),
             Ok("snapshot only")
         );
         assert_eq!(
-            CompletenessFinding::new(" ", SourceAdapterKind::Beads, "snapshot only"),
+            CompletenessFinding::new(" ", SourceAdapterKind::Orchestrator, "snapshot only"),
             Err(AdapterError::EmptyRepo)
         );
         assert_eq!(
-            CompletenessFinding::new("repo", SourceAdapterKind::Beads, " "),
+            CompletenessFinding::new("repo", SourceAdapterKind::Orchestrator, " "),
             Err(AdapterError::EmptyCheckpoint)
         );
     }
 
     #[test]
-    fn beads_snapshot_normalizes_to_snapshot_and_completeness_events() {
-        let snapshot = beads_snapshot_fixture();
-        let poll = normalize_beads_snapshot(&snapshot);
+    fn work_item_snapshot_normalizes_to_snapshot_and_completeness_events() {
+        let snapshot = work_item_snapshot_fixture();
+        let poll = normalize_work_item_snapshot(&snapshot);
 
         assert_eq!(poll.checkpoint(), "7");
         assert_eq!(poll.events().len(), 2);
-        assert_eq!(&poll.events()[0], &beads_snapshot_event_fixture());
-        assert_eq!(&poll.events()[1], &beads_completeness_event_fixture());
+        assert_eq!(&poll.events()[0], &work_item_snapshot_event_fixture());
+        assert_eq!(&poll.events()[1], &work_item_completeness_event_fixture());
         assert_eq!(
             poll.events()[0].source_event_id(),
-            "beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
         );
         assert_eq!(
             poll.events()[0].payload(),
-            &SourcePayload::BeadsWorkItemSnapshot(beads_snapshot_fixture())
+            &SourcePayload::WorkItemSnapshot(work_item_snapshot_fixture())
         );
     }
 
-    fn beads_snapshot_fixture() -> BeadsWorkItemSnapshot {
-        BeadsWorkItemSnapshot {
+    fn work_item_snapshot_fixture() -> WorkItemSnapshot {
+        WorkItemSnapshot {
             repo: "livespec-console-beads-fabro".to_owned(),
             work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
-            status: BeadsWorkItemStatus::NeedsRegroom,
+            lane: Lane::Blocked,
+            lane_reason: Some(LaneReason::NeedsHuman),
             source_version: 7,
         }
     }
 
-    fn beads_snapshot_event_fixture() -> NormalizedSourceEvent {
+    fn work_item_snapshot_event_fixture() -> NormalizedSourceEvent {
         NormalizedSourceEvent::new(
             console_domain::ConsoleEvent::new(
-                "evt:beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
                     .to_owned(),
                 1,
                 "factory".to_owned(),
-                EventType::BeadsWorkItemSnapshotObserved,
-                "beads".to_owned(),
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
                 7,
             ),
-            "beads:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
                 .to_owned(),
-            SourcePayload::BeadsWorkItemSnapshot(beads_snapshot_fixture()),
+            SourcePayload::WorkItemSnapshot(work_item_snapshot_fixture()),
         )
     }
 
-    fn beads_completeness_event_fixture() -> NormalizedSourceEvent {
+    fn work_item_completeness_event_fixture() -> NormalizedSourceEvent {
         NormalizedSourceEvent::new(
             console_domain::ConsoleEvent::new(
-                "evt:beads:livespec-console-beads-fabro:7:completeness".to_owned(),
+                "evt:orchestrator:livespec-console-beads-fabro:7:completeness".to_owned(),
                 1,
                 "source".to_owned(),
                 EventType::SourceCompletenessFindingObserved,
-                "beads".to_owned(),
+                "orchestrator".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
                 7,
             ),
-            "beads:livespec-console-beads-fabro:7:completeness".to_owned(),
+            "orchestrator:livespec-console-beads-fabro:7:completeness".to_owned(),
             SourcePayload::CompletenessFinding(CompletenessFinding {
                 repo: "livespec-console-beads-fabro".to_owned(),
-                source: SourceAdapterKind::Beads,
-                message: "Beads current-state snapshot cannot prove full transition history"
+                source: SourceAdapterKind::Orchestrator,
+                message: "Work-item current-state snapshot cannot prove full transition history"
                     .to_owned(),
             }),
         )
@@ -2375,48 +2449,74 @@ mod tests {
     }
 
     #[test]
-    fn parse_beads_maps_real_statuses_into_snapshots() -> Result<(), String> {
-        for (raw, expected) in [
-            ("closed", BeadsWorkItemStatus::Closed),
-            ("blocked", BeadsWorkItemStatus::NeedsRegroom),
-            ("open", BeadsWorkItemStatus::Ready),
-        ] {
-            let stdout = format!("[{{\"id\": \"console-1\", \"status\": \"{raw}\"}}]");
-            let parsed = parse_beads_observation(&observed_for(
-                SourceAdapterKind::Beads,
-                "console",
-                &stdout,
-            ))?;
-            let version = super::stable_version(&["console", "console-1", expected.label()]);
+    fn parse_orchestrator_consumes_emitted_lanes() -> Result<(), String> {
+        let stdout = "[{\"id\":\"livespec-console-beads-fabro-a1\",\"lane\":\"ready\",\"lane_reason\":null},\
+                      {\"id\":\"livespec-console-beads-fabro-b2\",\"lane\":\"blocked\",\"lane_reason\":\"needs-human\"}]";
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            stdout,
+        ))?;
 
-            assert_eq!(parsed.checkpoint, version.to_string());
-            assert_eq!(parsed.events.len(), 2);
+        // The emitted lane/lane_reason are consumed directly into the snapshot
+        // payloads (never re-derived from any other field).
+        let snapshots: Vec<&WorkItemSnapshot> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot),
+                _other => None,
+            })
+            .collect();
+
+        // One observed snapshot event per work-item.
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].work_item_id(),
+            "livespec-console-beads-fabro-a1"
+        );
+        assert_eq!(snapshots[0].lane(), Lane::Ready);
+        assert_eq!(snapshots[0].lane_reason(), None);
+        assert_eq!(
+            snapshots[1].work_item_id(),
+            "livespec-console-beads-fabro-b2"
+        );
+        assert_eq!(snapshots[1].lane(), Lane::Blocked);
+        assert_eq!(snapshots[1].lane_reason(), Some(LaneReason::NeedsHuman));
+        for snapshot_event in parsed.events.iter().step_by(2) {
             assert_eq!(
-                first_payload(&parsed),
-                &SourcePayload::BeadsWorkItemSnapshot(BeadsWorkItemSnapshot {
-                    repo: "console".to_owned(),
-                    work_item_id: "console-1".to_owned(),
-                    status: expected,
-                    source_version: version,
-                })
+                snapshot_event.event().event_type(),
+                &EventType::WorkItemSnapshotObserved
             );
         }
         Ok(())
     }
 
     #[test]
-    fn parse_beads_reports_missing_and_invalid_records() {
+    fn parse_orchestrator_reports_empty_and_malformed() {
         assert_eq!(
-            parse_beads_observation(&observed_for(SourceAdapterKind::Beads, "console", "[]")),
-            Err("no beads work-item observed".to_owned())
+            parse_orchestrator_observation(&observed_for(
+                SourceAdapterKind::Orchestrator,
+                "console",
+                "[]"
+            )),
+            Err("no work-items observed".to_owned())
         );
         assert_eq!(
-            parse_beads_observation(&observed_for(
-                SourceAdapterKind::Beads,
-                "",
-                "[{\"id\": \"console-1\"}]"
+            parse_orchestrator_observation(&observed_for(
+                SourceAdapterKind::Orchestrator,
+                "console",
+                "not json at all",
             )),
-            Err("invalid beads work-item".to_owned())
+            Err("orchestrator list-work-items output is not a JSON array".to_owned())
+        );
+        assert_eq!(
+            parse_orchestrator_observation(&observed_for(
+                SourceAdapterKind::Orchestrator,
+                "console",
+                r#"[{"id":"","lane":"ready","lane_reason":null}]"#,
+            )),
+            Err("invalid work-item".to_owned())
         );
     }
 
