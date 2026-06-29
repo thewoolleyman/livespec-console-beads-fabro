@@ -52,17 +52,26 @@ recommendations in `e-decomposition.md`.
 
 ## Next action (exactly one path)
 
-**E walk COMPLETE — the next step is MAINTAINER-OWNED; do NOT auto-start it.**
-All four decisions (E-1, E-2, E-3, E-4) are RESOLVED and recorded in
-[research/decision-log.md](research/decision-log.md).
+**AUTONOMOUS IMPLEMENTATION ROLLOUT (design locked; L1a = orchestrator
+v0.3.0 released).** The E walk design (E-1..E-4) is complete in
+[research/decision-log.md](research/decision-log.md); implementation now
+proceeds slice by slice via worktree → PR → rebase-merge. Rollout status is in
+the decision-log's "Implementation rollout" section.
 
-**Next action: groom epic `livespec-console-beads-fabro-vqh36l` into
-dispatchable, console-local implementation slices** (via the orchestrator
-`groom` operation). This is a **maintainer-owned step** — a resuming agent must
-**not** begin grooming on its own. Grooming cuts the resolved E-1..E-4 design
-into ready, dependency-layered slices (e.g. E-1 source/ingestion + `Beads*`
-rename; E-2 hybrid lane view; E-3 attention-as-derivation + snooze/ack
-deletion; E-4 conformance test), each carrying its own autonomy tier and
-acceptance, filed as children of the epic.
+- **E-1 (work-item source & ingestion) — IMPLEMENTED & MERGED.** The console
+  consumes the orchestrator's `list-work-items --json` flat `lane`/`lane_reason`
+  emission; the `bd ready` re-derivation and the entire `Beads*` cluster are
+  retired (backend-neutral `Orchestrator`/`WorkItemSnapshot`/`Lane`/`LaneReason`
+  vocabulary; one observed event per item).
 
-This thread is design/planning only — **no Rust changes** were made.
+**Next action: implement E-2 — the hybrid lane TUI view.** Per the decision-log
+E-2 entry: a lane-overview home (all 7 lanes, counts + top rank-ordered items)
+with drill-in to a full-width per-lane list, consuming the `WorkItemSnapshot`
+`lane()` from E-1; collapse the `Ready/Factory/Manual/Done` tabs into the 7
+lanes; keep `Spec/Events/Repos`; Attention becomes a derived lens (the lens
+itself is E-3). Then E-3 (attention-as-derivation + snooze/ack deletion) and
+E-4 (rebuild-from-ledger conformance test).
+
+Discipline: worktree → PR → rebase-merge; `mise exec -- git`; never
+`--no-verify`; halt+report on hook failure; the repo enforces **100% line
+coverage** (`just check-coverage`) — cover every new line/branch.
