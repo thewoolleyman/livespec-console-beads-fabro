@@ -71,8 +71,10 @@ realization** of it, captured and owned where the work lives.
 orchestrator v0.3.0 released). All four decisions (E-1..E-4) are resolved in
 [research/decision-log.md](research/decision-log.md); implementation now lands
 slice by slice via worktree → PR → rebase-merge (see the decision-log's
-"Implementation rollout" section). **E-1 (source & ingestion) is implemented**;
-**E-2 (hybrid lane TUI view) is next**. The [handoff](handoff.md) is the
+"Implementation rollout" section). **E-1 (source & ingestion) and E-2 (hybrid
+lane TUI view, both slices) are implemented & merged**; **E-3
+(attention-as-derivation + snooze/ack deletion) is next**, then E-4
+(rebuild-from-ledger conformance test). The [handoff](handoff.md) is the
 resumable entry point.
 
 Working model used: parts **forced or clearly implied** by the locked core
