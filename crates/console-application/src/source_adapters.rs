@@ -250,6 +250,40 @@ impl LaneReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdmissionPolicy {
+    #[default]
+    Manual,
+    Auto,
+}
+
+impl AdmissionPolicy {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AcceptancePolicy {
+    #[default]
+    AiThenHuman,
+}
+
+impl AcceptancePolicy {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::AiThenHuman => "ai-then-human",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkItemSnapshot {
     repo: String,
@@ -258,6 +292,8 @@ pub struct WorkItemSnapshot {
     lane_reason: Option<LaneReason>,
     rank: String,
     status: String,
+    admission_policy: AdmissionPolicy,
+    acceptance_policy: AcceptancePolicy,
     source_version: u64,
 }
 
@@ -270,6 +306,8 @@ impl WorkItemSnapshot {
         lane_reason: Option<LaneReason>,
         rank: &str,
         status: &str,
+        admission_policy: AdmissionPolicy,
+        acceptance_policy: AcceptancePolicy,
         source_version: u64,
     ) -> AdapterResult<Self> {
         if source_version == 0 {
@@ -282,6 +320,8 @@ impl WorkItemSnapshot {
             lane_reason,
             rank: rank.to_owned(),
             status: status.to_owned(),
+            admission_policy,
+            acceptance_policy,
             source_version,
         })
     }
@@ -322,6 +362,16 @@ impl WorkItemSnapshot {
     }
 
     #[must_use]
+    pub const fn admission_policy(&self) -> AdmissionPolicy {
+        self.admission_policy
+    }
+
+    #[must_use]
+    pub const fn acceptance_policy(&self) -> AcceptancePolicy {
+        self.acceptance_policy
+    }
+
+    #[must_use]
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
@@ -350,6 +400,10 @@ struct WorkItemSnapshotPayload {
     rank: String,
     #[serde(default)]
     status: String,
+    #[serde(default)]
+    admission_policy: AdmissionPolicy,
+    #[serde(default)]
+    acceptance_policy: AcceptancePolicy,
     source_version: u64,
 }
 
@@ -377,6 +431,14 @@ pub fn work_item_snapshot_payload_json(snapshot: &WorkItemSnapshot) -> String {
     object.insert("lane_reason".to_owned(), lane_reason);
     object.insert("rank".to_owned(), snapshot.rank.clone().into());
     object.insert("status".to_owned(), snapshot.status.clone().into());
+    object.insert(
+        "admission_policy".to_owned(),
+        snapshot.admission_policy.label().into(),
+    );
+    object.insert(
+        "acceptance_policy".to_owned(),
+        snapshot.acceptance_policy.label().into(),
+    );
     object.insert("source_version".to_owned(), snapshot.source_version.into());
     serde_json::Value::Object(object).to_string()
 }
@@ -396,6 +458,8 @@ pub fn work_item_snapshot_from_payload_json(payload_json: &str) -> Option<WorkIt
         payload.lane_reason,
         &payload.rank,
         &payload.status,
+        payload.admission_policy,
+        payload.acceptance_policy,
         payload.source_version,
     )
     .ok()
@@ -1297,6 +1361,10 @@ pub fn parse_orchestrator_observation(
         rank: String,
         #[serde(default)]
         status: String,
+        #[serde(default)]
+        admission_policy: AdmissionPolicy,
+        #[serde(default)]
+        acceptance_policy: AcceptancePolicy,
     }
 
     let items: Vec<WorkItemRecord> = serde_json::from_str(observed.stdout())
@@ -1307,9 +1375,9 @@ pub fn parse_orchestrator_observation(
     let mut events = Vec::new();
     let mut versions = Vec::new();
     for item in items {
-        // rank and status join lane/lane_reason in the identity hash so a
-        // re-rank or status transition appends a fresh observation the lane
-        // board can pick up.
+        // Policy, rank, and status join lane/lane_reason in the identity hash
+        // so a policy edit, re-rank, or status transition appends a fresh
+        // observation the lane/attention projections can pick up.
         let version = stable_version(&[
             observed.repo(),
             &item.id,
@@ -1317,6 +1385,8 @@ pub fn parse_orchestrator_observation(
             item.lane_reason.map_or("", |reason| reason.label()),
             &item.rank,
             &item.status,
+            item.admission_policy.label(),
+            item.acceptance_policy.label(),
         ]);
         let snapshot = WorkItemSnapshot::new(
             observed.repo(),
@@ -1325,6 +1395,8 @@ pub fn parse_orchestrator_observation(
             item.lane_reason,
             &item.rank,
             &item.status,
+            item.admission_policy,
+            item.acceptance_policy,
             version,
         )
         .map_err(|_error| "invalid work-item".to_owned())?;
@@ -1437,18 +1509,19 @@ mod tests {
     use console_domain::EventType;
 
     use super::{
-        AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest, AdapterResult,
-        CompletenessFinding, DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot,
-        FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane, LaneReason,
-        LivespecNextAction, LivespecNextSnapshot, NormalizedSourceEvent, NotObservedFinding,
-        ObservedSource, ObservedSourceAdapter, ParsedObservation, PullSourcePort,
-        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
-        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
-        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
-        normalize_work_item_snapshot, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest,
+        AdapterResult, AdmissionPolicy, CompletenessFinding, DispatcherJournalEntry,
+        DispatcherJournalKind, FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot,
+        GithubPullRequestState, Lane, LaneReason, LivespecNextAction, LivespecNextSnapshot,
+        NormalizedSourceEvent, NotObservedFinding, ObservedSource, ObservedSourceAdapter,
+        ParsedObservation, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
+        SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
+        SourceProbeOutcome, WorkItemSnapshot, normalize_dispatcher_journal_entry,
+        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
+        normalize_livespec_next_snapshot, normalize_work_item_snapshot,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
+        work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[test]
@@ -1538,6 +1611,8 @@ mod tests {
             None,
             "a0",
             "ready",
+            AdmissionPolicy::Manual,
+            AcceptancePolicy::AiThenHuman,
             1,
         )
         .map_err(|_error| "snapshot build failed".to_owned())?;
@@ -1938,6 +2013,9 @@ mod tests {
         assert_eq!(LivespecNextAction::None.label(), "none");
         assert_eq!(LivespecNextAction::Critique.label(), "critique");
         assert_eq!(LivespecNextAction::Revise.label(), "revise");
+        assert_eq!(AdmissionPolicy::Manual.label(), "manual");
+        assert_eq!(AdmissionPolicy::Auto.label(), "auto");
+        assert_eq!(AcceptancePolicy::AiThenHuman.label(), "ai-then-human");
     }
 
     #[test]
@@ -1949,6 +2027,8 @@ mod tests {
             Some(LaneReason::NeedsHuman),
             "a5",
             "blocked",
+            AdmissionPolicy::Auto,
+            AcceptancePolicy::AiThenHuman,
             3,
         );
         assert_eq!(snapshot.as_ref().map(WorkItemSnapshot::repo), Ok("repo"));
@@ -1970,19 +2050,57 @@ mod tests {
             Ok("blocked")
         );
         assert_eq!(
+            snapshot.as_ref().map(WorkItemSnapshot::admission_policy),
+            Ok(AdmissionPolicy::Auto)
+        );
+        assert_eq!(
+            snapshot.as_ref().map(WorkItemSnapshot::acceptance_policy),
+            Ok(AcceptancePolicy::AiThenHuman)
+        );
+        assert_eq!(
             snapshot.as_ref().map(WorkItemSnapshot::source_version),
             Ok(3)
         );
         assert_eq!(
-            WorkItemSnapshot::new(" ", "item", Lane::Ready, None, "a0", "ready", 1),
+            WorkItemSnapshot::new(
+                " ",
+                "item",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                1,
+            ),
             Err(AdapterError::EmptyRepo)
         );
         assert_eq!(
-            WorkItemSnapshot::new("repo", " ", Lane::Ready, None, "a0", "ready", 1),
+            WorkItemSnapshot::new(
+                "repo",
+                " ",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                1,
+            ),
             Err(AdapterError::EmptyWorkItemId)
         );
         assert_eq!(
-            WorkItemSnapshot::new("repo", "item", Lane::Ready, None, "a0", "ready", 0),
+            WorkItemSnapshot::new(
+                "repo",
+                "item",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                0,
+            ),
             Err(AdapterError::InvalidSourceVersion)
         );
     }
@@ -2214,6 +2332,8 @@ mod tests {
             lane_reason: Some(LaneReason::NeedsHuman),
             rank: "a8".to_owned(),
             status: "blocked".to_owned(),
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
             source_version: 7,
         }
     }
@@ -2688,6 +2808,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_orchestrator_carries_policies() -> Result<(), String> {
+        let stdout = r#"[{"id":"console-1","lane":"pending-approval","admission_policy":"auto","acceptance_policy":"ai-then-human"},
+                         {"id":"console-2","lane":"ready"}]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            stdout,
+        ))?;
+        let snapshots: Vec<&WorkItemSnapshot> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot),
+                _other => None,
+            })
+            .collect();
+
+        // The orchestrator-emitted policy fields are carried verbatim.
+        assert_eq!(snapshots[0].admission_policy(), AdmissionPolicy::Auto);
+        assert_eq!(
+            snapshots[0].acceptance_policy(),
+            AcceptancePolicy::AiThenHuman
+        );
+        // A stale/pre-v0.3.0 toolchain omits these fields; default absent
+        // admission to manual and acceptance to ai-then-human.
+        assert_eq!(snapshots[1].admission_policy(), AdmissionPolicy::Manual);
+        assert_eq!(
+            snapshots[1].acceptance_policy(),
+            AcceptancePolicy::AiThenHuman
+        );
+        Ok(())
+    }
+
+    #[test]
     fn work_item_snapshot_payload_round_trips() {
         let snapshot = work_item_snapshot_fixture();
 
@@ -2698,15 +2852,24 @@ mod tests {
     }
 
     #[test]
-    fn work_item_snapshot_payload_defaults_absent_rank_and_status() {
-        // A leaner payload (no rank/status) still rebuilds, defaulting to the
-        // bottom sentinel and an empty status.
+    fn work_item_snapshot_payload_defaults_absent_optional_fields() {
+        // A leaner payload (no rank/status/policies) still rebuilds, defaulting
+        // to the bottom sentinel, an empty status, manual admission, and
+        // ai-then-human acceptance.
         let rebuilt = work_item_snapshot_from_payload_json(
             r#"{"repo":"console","work_item_id":"console-1","lane":"ready","source_version":3}"#,
         );
 
         assert_eq!(rebuilt.as_ref().map(WorkItemSnapshot::rank), Some("~"));
         assert_eq!(rebuilt.as_ref().map(WorkItemSnapshot::status), Some(""));
+        assert_eq!(
+            rebuilt.as_ref().map(WorkItemSnapshot::admission_policy),
+            Some(AdmissionPolicy::Manual)
+        );
+        assert_eq!(
+            rebuilt.as_ref().map(WorkItemSnapshot::acceptance_policy),
+            Some(AcceptancePolicy::AiThenHuman)
+        );
         assert_eq!(
             rebuilt.as_ref().map(WorkItemSnapshot::lane),
             Some(Lane::Ready)

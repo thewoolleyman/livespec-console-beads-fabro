@@ -5,10 +5,10 @@ use std::rc::Rc;
 
 #[cfg(test)]
 use console_application::source_adapters::{
-    AdapterPoll, AdapterPollRequest, DispatcherJournalEntry, DispatcherJournalKind,
-    FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane,
-    LaneReason, LivespecNextAction, LivespecNextSnapshot, WorkItemSnapshot,
-    normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+    AcceptancePolicy, AdapterPoll, AdapterPollRequest, AdmissionPolicy, DispatcherJournalEntry,
+    DispatcherJournalKind, FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot,
+    GithubPullRequestState, Lane, LaneReason, LivespecNextAction, LivespecNextSnapshot,
+    WorkItemSnapshot, normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
     normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
     normalize_work_item_snapshot,
 };
@@ -410,6 +410,8 @@ fn source_polls_from_seed(
         Some(LaneReason::NeedsHuman),
         "a1",
         "blocked",
+        AdmissionPolicy::Manual,
+        AcceptancePolicy::AiThenHuman,
         1,
     )?;
     let dispatcher_entry = DispatcherJournalEntry::new(
