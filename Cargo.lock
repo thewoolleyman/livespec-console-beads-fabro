@@ -160,6 +160,7 @@ dependencies = [
 name = "console-eventstore"
 version = "0.1.0"
 dependencies = [
+ "console-application",
  "console-domain",
  "rusqlite",
 ]
