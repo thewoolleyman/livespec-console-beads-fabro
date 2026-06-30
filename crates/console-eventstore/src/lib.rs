@@ -893,11 +893,7 @@ mod tests {
     #[test]
     fn append_command_persists_pending_command_row() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
-        let append = command_append(
-            "cmd_1",
-            "idem_1",
-            CommandType::AttentionAcknowledgeRequested,
-        );
+        let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
 
         let outcome = store.append_command(&append)?;
         let commands = store.list_commands()?;
@@ -906,11 +902,8 @@ mod tests {
         assert_eq!(outcome.command_id(), "cmd_1");
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].command_id(), "cmd_1");
-        assert_eq!(commands[0].context(), "attention");
-        assert_eq!(
-            commands[0].command_type(),
-            "attention.acknowledge_requested"
-        );
+        assert_eq!(commands[0].context(), "factory");
+        assert_eq!(commands[0].command_type(), "factory.drain_requested");
         assert_eq!(commands[0].aggregate_id(), Some("evt_gate"));
         assert_eq!(commands[0].idempotency_key(), "idem_1");
         assert_eq!(commands[0].requested_by(), "operator");
@@ -923,12 +916,8 @@ mod tests {
     #[test]
     fn duplicate_command_id_returns_existing_command_id() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
-        let first = command_append(
-            "cmd_1",
-            "idem_1",
-            CommandType::AttentionAcknowledgeRequested,
-        );
-        let duplicate = command_append("cmd_1", "idem_2", CommandType::AttentionSnoozeRequested);
+        let first = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        let duplicate = command_append("cmd_1", "idem_2", CommandType::FactoryDrainRequested);
 
         let first_outcome = store.append_command(&first)?;
         let duplicate_outcome = store.append_command(&duplicate)?;
@@ -938,22 +927,15 @@ mod tests {
         assert_eq!(duplicate_outcome.status(), CommandAppendStatus::Duplicate);
         assert_eq!(duplicate_outcome.command_id(), "cmd_1");
         assert_eq!(commands.len(), 1);
-        assert_eq!(
-            commands[0].command_type(),
-            "attention.acknowledge_requested"
-        );
+        assert_eq!(commands[0].command_type(), "factory.drain_requested");
         Ok(())
     }
 
     #[test]
     fn duplicate_idempotency_key_returns_existing_command_id() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
-        let first = command_append(
-            "cmd_1",
-            "idem_1",
-            CommandType::AttentionAcknowledgeRequested,
-        );
-        let duplicate = command_append("cmd_2", "idem_1", CommandType::AttentionSnoozeRequested);
+        let first = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        let duplicate = command_append("cmd_2", "idem_1", CommandType::FactoryDrainRequested);
 
         let first_outcome = store.append_command(&first)?;
         let duplicate_outcome = store.append_command(&duplicate)?;

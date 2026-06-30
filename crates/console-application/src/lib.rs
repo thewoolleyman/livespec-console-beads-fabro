@@ -7,8 +7,8 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 pub mod source_adapters;
 
 use source_adapters::{
-    Lane, LaneReason, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
-    work_item_snapshot_from_payload_json,
+    AcceptancePolicy, AdmissionPolicy, Lane, LaneReason, SourceProbe, SourceProbeOutcome,
+    WorkItemSnapshot, work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub struct AttentionItem {
     title: String,
     source: String,
     source_reference: String,
-    next_action: OperatorAction,
+    next_action: Option<OperatorAction>,
 }
 
 impl AttentionItem {
@@ -27,7 +27,7 @@ impl AttentionItem {
         title: String,
         source: String,
         source_reference: String,
-        next_action: OperatorAction,
+        next_action: Option<OperatorAction>,
     ) -> Self {
         Self {
             id,
@@ -59,7 +59,7 @@ impl AttentionItem {
     }
 
     #[must_use]
-    pub const fn next_action(&self) -> OperatorAction {
+    pub const fn next_action(&self) -> Option<OperatorAction> {
         self.next_action
     }
 }
@@ -107,8 +107,6 @@ pub enum LaneFocus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatorAction {
-    Acknowledge,
-    Snooze,
     OpenFabroAttach,
     CopyFabroAttach,
 }
@@ -117,8 +115,6 @@ impl OperatorAction {
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::Acknowledge => "Acknowledge",
-            Self::Snooze => "Snooze",
             Self::OpenFabroAttach => "Open Fabro attach",
             Self::CopyFabroAttach => "Copy Fabro attach",
         }
@@ -483,7 +479,6 @@ pub enum ApplicationError {
     FactoryDrainPortFailed,
     NoSelectedAttentionItem,
     NoSelectedOperatorAction,
-    UnsupportedFactoryCommand,
     UnknownCommandPaletteAction,
 }
 
@@ -664,7 +659,7 @@ impl FactoryCommandOutcome {
 
 #[must_use]
 pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
-    project_attention_from_events(attention_events(events))
+    project_attention_from_snapshots(attention_snapshots(events))
 }
 
 /// One work-item as it lands in a lane, carrying the fields the lane board
@@ -828,12 +823,12 @@ pub fn build_tui_model_for_state(
     state: &TuiInteractionState,
 ) -> TuiScreenModel {
     let search_query = search_query(state.overlay());
-    let attention_events = attention_events_matching(events, search_query);
-    let attention_items = project_attention_from_events(attention_events.clone());
+    let attention_snapshots = attention_snapshots_matching(events, search_query);
+    let attention_items = project_attention_from_snapshots(attention_snapshots.clone());
     let selected_attention_index =
         selected_index(attention_items.len(), state.selected_attention_index());
     let detail = selected_attention_index
-        .map(|index| build_attention_detail(attention_events[index], events));
+        .map(|index| build_attention_detail(&attention_snapshots[index], events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
     let lane_board = project_lane_board(events);
@@ -858,7 +853,7 @@ pub fn build_tui_model_for_state(
         header: format!(
             "fleet: livespec | mode: tui | view: {} | attention: {}",
             active_view.label(),
-            attention_events.len()
+            attention_snapshots.len()
         ),
         footer: "shortcuts: up/down select | left/right views | enter details | / search | : command palette"
             .to_owned(),
@@ -966,7 +961,7 @@ pub fn resolve_selected_operator_action(
     model: &TuiScreenModel,
     requested_by: &str,
 ) -> ApplicationResult<OperatorActionOutcome> {
-    let requested_by = validate_operator_action(requested_by)?;
+    validate_operator_action(requested_by)?;
     let detail = model
         .detail()
         .ok_or(ApplicationError::NoSelectedAttentionItem)?;
@@ -974,16 +969,6 @@ pub fn resolve_selected_operator_action(
         .selected_operator_action()
         .ok_or(ApplicationError::NoSelectedOperatorAction)?;
     Ok(match action {
-        OperatorAction::Acknowledge => OperatorActionOutcome::PersistCommand(attention_command(
-            detail,
-            CommandType::AttentionAcknowledgeRequested,
-            requested_by,
-        )),
-        OperatorAction::Snooze => OperatorActionOutcome::PersistCommand(attention_command(
-            detail,
-            CommandType::AttentionSnoozeRequested,
-            requested_by,
-        )),
         OperatorAction::OpenFabroAttach => {
             OperatorActionOutcome::OpenAttachCommand(detail.attach_command().to_owned())
         }
@@ -1028,9 +1013,6 @@ pub fn handle_factory_drain_command(
     command: &CommandEnvelope,
     port: &mut dyn FactoryDrainPort,
 ) -> ApplicationResult<FactoryCommandOutcome> {
-    if command.command_type() != &CommandType::FactoryDrainRequested {
-        return Err(ApplicationError::UnsupportedFactoryCommand);
-    }
     let request = FactoryDrainRequest::new(command.aggregate_id().to_owned(), 1, 1);
     let port_outcome = port.drain_ready_queue(&request)?;
     let mut events = vec![factory_command_event(
@@ -1127,55 +1109,126 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
     }
 }
 
-fn attention_events(events: &[ConsoleEvent]) -> Vec<&ConsoleEvent> {
-    events
-        .iter()
-        .filter(|event| event.event_type().requires_attention())
-        .collect()
+#[derive(Debug, Clone)]
+struct AttentionSnapshot {
+    event: ConsoleEvent,
+    snapshot: WorkItemSnapshot,
 }
 
-fn attention_events_matching<'a>(
-    events: &'a [ConsoleEvent],
+fn attention_snapshots(events: &[ConsoleEvent]) -> Vec<AttentionSnapshot> {
+    let mut latest: BTreeMap<String, AttentionSnapshot> = BTreeMap::new();
+    for event in events {
+        if *event.event_type() != EventType::WorkItemSnapshotObserved {
+            continue;
+        }
+        let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) else {
+            continue;
+        };
+        latest.insert(
+            snapshot.work_item_id().to_owned(),
+            AttentionSnapshot {
+                event: event.clone(),
+                snapshot,
+            },
+        );
+    }
+    let mut snapshots: Vec<AttentionSnapshot> = latest
+        .into_values()
+        .filter(|entry| requires_attention(&entry.snapshot))
+        .collect();
+    snapshots.sort_by(|left, right| {
+        left.snapshot
+            .rank()
+            .cmp(right.snapshot.rank())
+            .then_with(|| {
+                left.snapshot
+                    .work_item_id()
+                    .cmp(right.snapshot.work_item_id())
+            })
+    });
+    snapshots
+}
+
+fn attention_snapshots_matching(
+    events: &[ConsoleEvent],
     search_query: Option<&str>,
-) -> Vec<&'a ConsoleEvent> {
-    attention_events(events)
+) -> Vec<AttentionSnapshot> {
+    attention_snapshots(events)
         .into_iter()
-        .filter(|event| attention_event_matches(event, search_query))
+        .filter(|entry| attention_snapshot_matches(entry, search_query))
         .collect()
 }
 
-fn attention_event_matches(event: &ConsoleEvent, search_query: Option<&str>) -> bool {
+fn attention_snapshot_matches(entry: &AttentionSnapshot, search_query: Option<&str>) -> bool {
     search_query.is_none_or(|query| {
+        let snapshot = &entry.snapshot;
         query.is_empty()
-            || event
-                .event_type()
-                .label()
+            || attention_title(snapshot)
                 .to_lowercase()
                 .contains(&query.to_lowercase())
-            || event
+            || snapshot
+                .repo()
+                .to_lowercase()
+                .contains(&query.to_lowercase())
+            || snapshot
+                .work_item_id()
+                .to_lowercase()
+                .contains(&query.to_lowercase())
+            || entry
+                .event
                 .source()
-                .to_lowercase()
-                .contains(&query.to_lowercase())
-            || event
-                .stream_id()
                 .to_lowercase()
                 .contains(&query.to_lowercase())
     })
 }
 
-fn project_attention_from_events(events: Vec<&ConsoleEvent>) -> Vec<AttentionItem> {
-    events
+fn project_attention_from_snapshots(snapshots: Vec<AttentionSnapshot>) -> Vec<AttentionItem> {
+    snapshots
         .into_iter()
-        .map(|event| {
+        .map(|entry| {
             AttentionItem::new(
-                event.event_id().to_owned(),
-                event.event_type().label().to_owned(),
-                event.source().to_owned(),
-                event.stream_id().to_owned(),
-                event.event_type().next_operator_action(),
+                entry.snapshot.work_item_id().to_owned(),
+                attention_title(&entry.snapshot),
+                entry.event.source().to_owned(),
+                entry.snapshot.repo().to_owned(),
+                None,
             )
         })
         .collect()
+}
+
+#[must_use]
+const fn requires_attention(snapshot: &WorkItemSnapshot) -> bool {
+    requires_attention_from_lane(
+        snapshot.lane(),
+        snapshot.lane_reason(),
+        snapshot.admission_policy(),
+        snapshot.acceptance_policy(),
+    )
+}
+
+#[must_use]
+const fn requires_attention_from_lane(
+    lane: Lane,
+    lane_reason: Option<LaneReason>,
+    admission_policy: AdmissionPolicy,
+    acceptance_policy: AcceptancePolicy,
+) -> bool {
+    matches!(
+        (lane, lane_reason, admission_policy, acceptance_policy),
+        (Lane::PendingApproval, _, AdmissionPolicy::Manual, _)
+            | (Lane::Acceptance, _, _, AcceptancePolicy::AiThenHuman)
+            | (Lane::Blocked, Some(LaneReason::NeedsHuman), _, _)
+    )
+}
+
+fn attention_title(snapshot: &WorkItemSnapshot) -> String {
+    match (snapshot.lane(), snapshot.lane_reason()) {
+        (Lane::PendingApproval, _) => "Pending approval".to_owned(),
+        (Lane::Acceptance, _) => "Acceptance review".to_owned(),
+        (Lane::Blocked, Some(reason)) => format!("Blocked: {}", reason.label()),
+        (lane, _) => lane.label().to_owned(),
+    }
 }
 
 fn search_query(overlay: &TuiOverlay) -> Option<&str> {
@@ -1296,30 +1349,16 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
         .unwrap_or_default()
 }
 
-fn attention_command(
-    detail: &AttentionDetail,
-    command_type: CommandType,
-    requested_by: &str,
-) -> CommandEnvelope {
-    let action_name = command_type.contract_name().replace('.', "_");
-    CommandEnvelope::new(
-        format!("cmd_{}_{}", detail.work_item(), action_name),
-        command_type,
-        detail.work_item().to_owned(),
-        format!("{}:{}", detail.work_item(), command_type.contract_name()),
-        requested_by.to_owned(),
-    )
-}
-
-fn build_attention_detail(event: &ConsoleEvent, events: &[ConsoleEvent]) -> AttentionDetail {
+fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) -> AttentionDetail {
+    let event = &entry.event;
     let fabro_run = fabro_run_id(event);
     AttentionDetail::new(
-        repo_id(event),
-        event.event_id().to_owned(),
+        entry.snapshot.repo().to_owned(),
+        entry.snapshot.work_item_id().to_owned(),
         fabro_run.clone(),
         format!("fabro attach {fabro_run}"),
         latest_timeline(events, event.stream_id(), 3),
-        event.event_type().actions(),
+        Vec::new(),
     )
 }
 
@@ -1348,7 +1387,7 @@ fn spec_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
                 "Revise required: {}",
                 count_events(events, EventType::LivespecReviseRequired)
             ),
-            "Revise-required events stay visible until acknowledged or resolved.".to_owned(),
+            "Revise-required events stay visible in the Spec view until resolved.".to_owned(),
         ),
     ]
 }
@@ -1431,22 +1470,10 @@ fn latest_timeline(
 }
 
 trait AttentionEvent {
-    fn requires_attention(&self) -> bool;
     fn label(&self) -> &'static str;
-    fn next_operator_action(&self) -> OperatorAction;
-    fn actions(&self) -> Vec<OperatorAction>;
 }
 
 impl AttentionEvent for EventType {
-    fn requires_attention(&self) -> bool {
-        matches!(
-            self,
-            Self::FabroHumanGateObserved
-                | Self::LivespecReviseRequired
-                | Self::DispatcherNeedsRegroomObserved
-        )
-    }
-
     fn label(&self) -> &'static str {
         match self {
             Self::WorkItemSnapshotObserved => "Work-item snapshot",
@@ -1466,28 +1493,6 @@ impl AttentionEvent for EventType {
             Self::SourceNotObservedFindingObserved => "Source not-observed finding",
         }
     }
-
-    fn next_operator_action(&self) -> OperatorAction {
-        match self {
-            Self::FabroHumanGateObserved => OperatorAction::OpenFabroAttach,
-            _other => OperatorAction::Acknowledge,
-        }
-    }
-
-    fn actions(&self) -> Vec<OperatorAction> {
-        match self {
-            Self::FabroHumanGateObserved => vec![
-                OperatorAction::Acknowledge,
-                OperatorAction::Snooze,
-                OperatorAction::OpenFabroAttach,
-                OperatorAction::CopyFabroAttach,
-            ],
-            Self::LivespecReviseRequired | Self::DispatcherNeedsRegroomObserved => {
-                vec![OperatorAction::Acknowledge, OperatorAction::Snooze]
-            }
-            _other => vec![OperatorAction::Acknowledge],
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1495,36 +1500,219 @@ mod tests {
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
-    use super::source_adapters::{Lane, LaneReason, SourceProbe, SourceProbeOutcome};
+    use super::source_adapters::{
+        AcceptancePolicy, AdmissionPolicy, Lane, LaneReason, SourceProbe, SourceProbeOutcome,
+        WorkItemSnapshot,
+    };
     use super::{
-        ApplicationError, AttentionEvent, DispatcherFactoryDrainPort, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiView, build_tui_model, build_tui_model_for_state,
-        handle_factory_drain_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
-        validate_operator_action,
+        ApplicationError, AttentionDetail, AttentionEvent, DispatcherFactoryDrainPort,
+        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction,
+        OperatorActionOutcome, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, build_tui_model, build_tui_model_for_state, handle_factory_drain_command,
+        project_attention, project_lane_board, reduce_tui_interaction,
+        resolve_command_palette_action, resolve_selected_operator_action, validate_operator_action,
     };
 
     #[test]
-    fn attention_projection_keeps_only_attention_events() {
+    fn attention_projection_is_derived_from_latest_work_item_lanes() {
         let events = [
-            ConsoleEvent::fixture("evt_1", EventType::FabroHumanGateObserved, "fabro"),
-            ConsoleEvent::fixture("evt_2", EventType::FactoryDrainRequested, "console"),
-            ConsoleEvent::fixture("evt_3", EventType::LivespecReviseRequired, "livespec"),
+            lane_event(
+                "evt_ready",
+                "console-ready",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+            lane_event(
+                "evt_blocked",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a2",
+                "blocked",
+            ),
+            lane_event(
+                "evt_pending",
+                "console-pending",
+                Lane::PendingApproval,
+                None,
+                "a0",
+                "pending-approval",
+            ),
+            lane_event(
+                "evt_accept",
+                "console-accept",
+                Lane::Acceptance,
+                None,
+                "a1",
+                "acceptance",
+            ),
+            ConsoleEvent::fixture("evt_revise", EventType::LivespecReviseRequired, "livespec"),
         ];
 
         let projected = project_attention(&events);
 
-        assert_eq!(projected.len(), 2);
-        assert_eq!(projected[0].id(), "evt_1");
-        assert_eq!(projected[0].title(), "Fabro human gate");
-        assert_eq!(projected[0].source(), "fabro");
-        assert_eq!(
-            projected[0].source_reference(),
-            "factory:livespec-console-beads-fabro"
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[0].id(), "console-pending");
+        assert_eq!(projected[0].title(), "Pending approval");
+        assert_eq!(projected[0].source(), "orchestrator");
+        assert_eq!(projected[0].source_reference(), "console");
+        assert_eq!(projected[0].next_action(), None);
+        assert_eq!(projected[1].id(), "console-accept");
+        assert_eq!(projected[1].title(), "Acceptance review");
+        assert_eq!(projected[2].id(), "console-blocked");
+        assert_eq!(projected[2].title(), "Blocked: needs-human");
+    }
+
+    #[test]
+    fn attention_projection_orders_same_rank_by_work_item_id() {
+        let events = [
+            lane_event(
+                "evt_b",
+                "console-b",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            lane_event(
+                "evt_a",
+                "console-a",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+        ];
+
+        let projected = project_attention(&events);
+
+        assert_eq!(projected[0].id(), "console-a");
+        assert_eq!(projected[1].id(), "console-b");
+    }
+
+    #[test]
+    fn attention_title_falls_back_to_lane_label_for_non_attention_lanes() {
+        let snapshot = WorkItemSnapshot::new(
+            "console",
+            "console-ready",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+            AdmissionPolicy::Manual,
+            AcceptancePolicy::AiThenHuman,
+            1,
         );
-        assert_eq!(projected[0].next_action(), OperatorAction::OpenFabroAttach);
-        assert_eq!(projected[1].source(), "livespec");
+
+        assert_eq!(
+            snapshot.as_ref().map(super::attention_title),
+            Ok("ready".to_owned())
+        );
+    }
+
+    #[test]
+    fn attention_projection_uses_the_latest_snapshot_per_work_item() {
+        let events = [
+            lane_event(
+                "evt_old",
+                "console-1",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            lane_event("evt_new", "console-1", Lane::Ready, None, "a0", "ready"),
+        ];
+
+        assert_eq!(project_attention(&events), []);
+    }
+
+    #[test]
+    fn requires_attention_truth_table_is_lane_policy_derived() {
+        for (lane, lane_reason, admission_policy, acceptance_policy, expected) in [
+            (
+                Lane::PendingApproval,
+                None,
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                true,
+            ),
+            (
+                Lane::PendingApproval,
+                None,
+                AdmissionPolicy::Auto,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+            (
+                Lane::Acceptance,
+                None,
+                AdmissionPolicy::Auto,
+                AcceptancePolicy::AiThenHuman,
+                true,
+            ),
+            (
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                AdmissionPolicy::Auto,
+                AcceptancePolicy::AiThenHuman,
+                true,
+            ),
+            (
+                Lane::Blocked,
+                Some(LaneReason::Dependency),
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+            (
+                Lane::Blocked,
+                None,
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+            (
+                Lane::Backlog,
+                None,
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+            (
+                Lane::Ready,
+                None,
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+            (
+                Lane::Active,
+                None,
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+            (
+                Lane::Done,
+                None,
+                AdmissionPolicy::Manual,
+                AcceptancePolicy::AiThenHuman,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                super::requires_attention_from_lane(
+                    lane,
+                    lane_reason,
+                    admission_policy,
+                    acceptance_policy,
+                ),
+                expected
+            );
+        }
     }
 
     // Build a snapshot-observation event by writing the canonical `payload_json`
@@ -1538,13 +1726,38 @@ mod tests {
         rank: &str,
         status: &str,
     ) -> ConsoleEvent {
+        lane_event_with_policies(
+            event_id,
+            work_item_id,
+            lane,
+            lane_reason,
+            rank,
+            status,
+            AdmissionPolicy::Manual,
+            AcceptancePolicy::AiThenHuman,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lane_event_with_policies(
+        event_id: &str,
+        work_item_id: &str,
+        lane: Lane,
+        lane_reason: Option<LaneReason>,
+        rank: &str,
+        status: &str,
+        admission_policy: AdmissionPolicy,
+        acceptance_policy: AcceptancePolicy,
+    ) -> ConsoleEvent {
         let reason_json = lane_reason.map_or_else(
             || "null".to_owned(),
             |reason| format!("\"{}\"", reason.label()),
         );
         let payload = format!(
-            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","source_version":1}}"#,
-            lane.label()
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","admission_policy":"{}","acceptance_policy":"{}","source_version":1}}"#,
+            lane.label(),
+            admission_policy.label(),
+            acceptance_policy.label()
         );
         ConsoleEvent::fixture(
             event_id,
@@ -1701,13 +1914,13 @@ mod tests {
     }
 
     #[test]
-    fn tui_model_shows_fabro_gate_detail_and_actions() {
+    fn tui_model_shows_lane_derived_attention_detail() {
         let model = build_tui_model(&fabro_gate_events(), 0);
 
         assert_eq!(model.selected_attention_index(), Some(0));
         assert_eq!(model.attention_items().len(), 3);
-        assert_fabro_gate_detail(&model);
-        assert_fabro_gate_timeline(&model);
+        assert_lane_attention_detail(&model);
+        assert_lane_attention_timeline(&model);
     }
 
     #[test]
@@ -1722,7 +1935,7 @@ mod tests {
         assert_eq!(model.selected_attention_index(), Some(1));
         assert_eq!(
             model.detail().map(super::AttentionDetail::work_item),
-            Some("evt_regroom")
+            Some("console-accept")
         );
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPrevious);
@@ -1730,7 +1943,7 @@ mod tests {
 
         assert_eq!(state.selected_attention_index(), 0);
         assert_eq!(model.selected_attention_index(), Some(0));
-        assert_fabro_gate_detail(&model);
+        assert_lane_attention_detail(&model);
     }
 
     #[test]
@@ -1929,52 +2142,52 @@ mod tests {
             &events,
             TuiInteraction::OpenSearch,
         );
-        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('r'));
-        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('e'));
-        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('v'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('a'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('c'));
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar('c'));
         let model = build_tui_model_for_state(&events, &state);
 
         assert!(state.overlay().is_open());
-        assert_eq!(state.overlay().query(), Some("rev"));
+        assert_eq!(state.overlay().query(), Some("acc"));
         assert_eq!(
             model
                 .attention_items()
                 .iter()
                 .map(super::AttentionItem::id)
                 .collect::<Vec<_>>(),
-            ["evt_other"]
+            ["console-accept"]
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::work_item),
-            Some("evt_other")
+            Some("console-accept")
         );
         assert_eq!(
             model.overlay(),
             &TuiOverlay::Search {
-                query: "rev".to_owned()
+                query: "acc".to_owned()
             }
         );
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
         let model = build_tui_model_for_state(&events, &state);
 
-        assert_eq!(state.overlay().query(), Some("re"));
-        assert_eq!(model.attention_items().len(), 3);
+        assert_eq!(state.overlay().query(), Some("ac"));
+        assert_eq!(model.attention_items().len(), 1);
     }
 
     #[test]
-    fn tui_search_matches_source_and_stream_reference() {
+    fn tui_search_matches_attention_title_and_work_item() {
         let events = fabro_gate_events();
         let source_state = TuiInteractionState::new(
             0,
             TuiOverlay::Search {
-                query: "RUN_17".to_owned(),
+                query: "accept".to_owned(),
             },
         );
         let stream_state = TuiInteractionState::new(
             0,
             TuiOverlay::Search {
-                query: "other".to_owned(),
+                query: "blocked".to_owned(),
             },
         );
 
@@ -2026,20 +2239,14 @@ mod tests {
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
         let model = build_tui_model_for_state(&events, &state);
 
-        assert_eq!(state.overlay().selected_action_index(), Some(2));
-        assert_eq!(
-            model.selected_operator_action(),
-            Some(OperatorAction::OpenFabroAttach)
-        );
+        assert_eq!(state.overlay().selected_action_index(), Some(0));
+        assert_eq!(model.selected_operator_action(), None);
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousAction);
         let model = build_tui_model_for_state(&events, &state);
 
-        assert_eq!(state.overlay().selected_action_index(), Some(1));
-        assert_eq!(
-            model.selected_operator_action(),
-            Some(OperatorAction::Snooze)
-        );
+        assert_eq!(state.overlay().selected_action_index(), Some(0));
+        assert_eq!(model.selected_operator_action(), None);
     }
 
     #[test]
@@ -2056,80 +2263,10 @@ mod tests {
         assert_eq!(
             model.overlay(),
             &TuiOverlay::CommandModal {
-                selected_action_index: 1
+                selected_action_index: 0
             }
         );
-        assert_eq!(
-            model.selected_operator_action(),
-            Some(OperatorAction::Snooze)
-        );
-    }
-
-    #[test]
-    fn selected_acknowledge_action_resolves_to_attention_command() {
-        let events = fabro_gate_events();
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::CommandModal {
-                selected_action_index: 0,
-            },
-        );
-        let model = build_tui_model_for_state(&events, &state);
-        let outcome = resolve_selected_operator_action(&model, "operator");
-
-        let command = outcome
-            .as_ref()
-            .ok()
-            .and_then(super::OperatorActionOutcome::command);
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::command_id),
-            Some("cmd_evt_gate_attention_acknowledge_requested")
-        );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::AttentionAcknowledgeRequested)
-        );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::aggregate_id),
-            Some("evt_gate")
-        );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::idempotency_key),
-            Some("evt_gate:attention.acknowledge_requested")
-        );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::requested_by),
-            Some("operator")
-        );
-        assert_eq!(
-            outcome
-                .as_ref()
-                .ok()
-                .and_then(super::OperatorActionOutcome::attach_command),
-            None
-        );
-    }
-
-    #[test]
-    fn selected_snooze_action_resolves_to_attention_command() {
-        let events = fabro_gate_events();
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::CommandModal {
-                selected_action_index: 1,
-            },
-        );
-        let model = build_tui_model_for_state(&events, &state);
-        let outcome = resolve_selected_operator_action(&model, "operator");
-
-        assert_eq!(
-            outcome
-                .as_ref()
-                .ok()
-                .and_then(super::OperatorActionOutcome::command)
-                .map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::AttentionSnoozeRequested)
-        );
+        assert_eq!(model.selected_operator_action(), None);
     }
 
     #[test]
@@ -2356,23 +2493,6 @@ mod tests {
     }
 
     #[test]
-    fn factory_drain_handler_rejects_unsupported_command_type() {
-        let command = CommandEnvelope::new(
-            "cmd_ack".to_owned(),
-            CommandType::AttentionAcknowledgeRequested,
-            "evt_gate".to_owned(),
-            "evt_gate:attention.acknowledge_requested".to_owned(),
-            "operator".to_owned(),
-        );
-        let mut port = CompletingDrainPort::default();
-
-        let outcome = handle_factory_drain_command(&command, &mut port);
-
-        assert_eq!(outcome, Err(ApplicationError::UnsupportedFactoryCommand));
-        assert_eq!(port.requests, []);
-    }
-
-    #[test]
     fn factory_drain_handler_propagates_port_error() {
         let command = factory_drain_test_command();
         let mut port = ErrorDrainPort;
@@ -2380,47 +2500,6 @@ mod tests {
         let outcome = handle_factory_drain_command(&command, &mut port);
 
         assert_eq!(outcome, Err(ApplicationError::FactoryDrainPortFailed));
-    }
-
-    #[test]
-    fn selected_attach_actions_resolve_to_local_terminal_effects() {
-        let events = fabro_gate_events();
-        for (selected_action_index, expected) in [
-            (
-                2,
-                super::OperatorActionOutcome::OpenAttachCommand("fabro attach run_17".to_owned()),
-            ),
-            (
-                3,
-                super::OperatorActionOutcome::CopyAttachCommand("fabro attach run_17".to_owned()),
-            ),
-        ] {
-            let state = TuiInteractionState::new(
-                0,
-                TuiOverlay::CommandModal {
-                    selected_action_index,
-                },
-            );
-            let model = build_tui_model_for_state(&events, &state);
-
-            let outcome = resolve_selected_operator_action(&model, "operator");
-
-            assert_eq!(outcome, Ok(expected));
-            assert_eq!(
-                outcome
-                    .as_ref()
-                    .ok()
-                    .and_then(super::OperatorActionOutcome::command),
-                None
-            );
-            assert_eq!(
-                outcome
-                    .as_ref()
-                    .ok()
-                    .and_then(super::OperatorActionOutcome::attach_command),
-                Some("fabro attach run_17")
-            );
-        }
     }
 
     #[test]
@@ -2439,6 +2518,74 @@ mod tests {
         assert_eq!(
             resolve_selected_operator_action(&base_model, "  "),
             Err(ApplicationError::EmptyOperatorAction)
+        );
+    }
+
+    #[test]
+    fn operator_action_resolution_keeps_attach_actions_local() {
+        let model = TuiScreenModel {
+            active_view: TuiView::Attention,
+            navigation: TuiView::all().to_vec(),
+            attention_items: vec![],
+            selected_attention_index: Some(0),
+            detail: Some(AttentionDetail::new(
+                "repo".to_owned(),
+                "work-item".to_owned(),
+                "run".to_owned(),
+                "fabro attach run".to_owned(),
+                vec![],
+                vec![
+                    OperatorAction::OpenFabroAttach,
+                    OperatorAction::CopyFabroAttach,
+                ],
+            )),
+            view_items: vec![],
+            lane_board: project_lane_board(&[]),
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: Some(0),
+            overlay: TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+            header: String::new(),
+            footer: String::new(),
+        };
+
+        let open = resolve_selected_operator_action(&model, "operator");
+        let copy = resolve_selected_operator_action(
+            &TuiScreenModel {
+                overlay: TuiOverlay::CommandModal {
+                    selected_action_index: 1,
+                },
+                ..model
+            },
+            "operator",
+        );
+
+        assert_eq!(
+            open,
+            Ok(OperatorActionOutcome::OpenAttachCommand(
+                "fabro attach run".to_owned()
+            ))
+        );
+        assert_eq!(
+            copy,
+            Ok(OperatorActionOutcome::CopyAttachCommand(
+                "fabro attach run".to_owned()
+            ))
+        );
+        assert_eq!(
+            open.as_ref().ok().and_then(OperatorActionOutcome::command),
+            None
+        );
+        assert_eq!(
+            copy.as_ref()
+                .ok()
+                .and_then(OperatorActionOutcome::attach_command),
+            Some("fabro attach run")
+        );
+        assert_eq!(
+            OperatorActionOutcome::PersistCommand(factory_drain_test_command()).attach_command(),
+            None
         );
     }
 
@@ -2469,35 +2616,32 @@ mod tests {
                 "factory".to_owned(),
                 EventType::FactoryDrainRequested,
                 "console".to_owned(),
-                "repo:livespec-console-beads-fabro".to_owned(),
+                "repo:console".to_owned(),
                 1,
             ),
-            ConsoleEvent::new(
-                "evt_gate".to_owned(),
-                1,
-                "factory".to_owned(),
-                EventType::FabroHumanGateObserved,
-                "fabro:run_17".to_owned(),
-                "repo:livespec-console-beads-fabro".to_owned(),
-                2,
+            lane_event(
+                "evt_pending",
+                "console-pending",
+                Lane::PendingApproval,
+                None,
+                "a0",
+                "pending-approval",
             ),
-            ConsoleEvent::new(
-                "evt_regroom".to_owned(),
-                1,
-                "factory".to_owned(),
-                EventType::DispatcherNeedsRegroomObserved,
-                "dispatcher".to_owned(),
-                "repo:livespec-console-beads-fabro".to_owned(),
-                3,
+            lane_event(
+                "evt_accept",
+                "console-accept",
+                Lane::Acceptance,
+                None,
+                "a1",
+                "acceptance",
             ),
-            ConsoleEvent::new(
-                "evt_other".to_owned(),
-                1,
-                "factory".to_owned(),
-                EventType::LivespecReviseRequired,
-                "livespec".to_owned(),
-                "repo:other".to_owned(),
-                4,
+            lane_event(
+                "evt_blocked",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a2",
+                "blocked",
             ),
         ]
     }
@@ -2579,38 +2723,30 @@ mod tests {
         ]
     }
 
-    fn assert_fabro_gate_detail(model: &super::TuiScreenModel) {
+    fn assert_lane_attention_detail(model: &super::TuiScreenModel) {
         assert_eq!(
             model.detail().map(super::AttentionDetail::repo),
-            Some("livespec-console-beads-fabro")
+            Some("console")
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::work_item),
-            Some("evt_gate")
+            Some("console-pending")
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::fabro_run),
-            Some("run_17")
+            Some("evt_pending")
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::attach_command),
-            Some("fabro attach run_17")
+            Some("fabro attach evt_pending")
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
-            Some(
-                [
-                    OperatorAction::Acknowledge,
-                    OperatorAction::Snooze,
-                    OperatorAction::OpenFabroAttach,
-                    OperatorAction::CopyFabroAttach,
-                ]
-                .as_slice()
-            )
+            Some([].as_slice())
         );
     }
 
-    fn assert_fabro_gate_timeline(model: &super::TuiScreenModel) {
+    fn assert_lane_attention_timeline(model: &super::TuiScreenModel) {
         assert_eq!(
             model.detail().map(|detail| detail.timeline().len()),
             Some(3)
@@ -2620,35 +2756,35 @@ mod tests {
                 .detail()
                 .and_then(|detail| detail.timeline().first())
                 .map(super::TimelineEntry::event_id),
-            Some("evt_regroom")
+            Some("evt_blocked")
         );
         assert_eq!(
             model
                 .detail()
                 .and_then(|detail| detail.timeline().first())
                 .map(super::TimelineEntry::source),
-            Some("dispatcher")
+            Some("orchestrator")
         );
         assert_eq!(
             model
                 .detail()
                 .and_then(|detail| detail.timeline().first())
                 .map(super::TimelineEntry::label),
-            Some("Dispatcher needs-regroom")
+            Some("Work-item snapshot")
         );
         assert_eq!(
             model
                 .detail()
                 .and_then(|detail| detail.timeline().get(1))
                 .map(super::TimelineEntry::event_id),
-            Some("evt_gate")
+            Some("evt_accept")
         );
         assert_eq!(
             model
                 .detail()
                 .and_then(|detail| detail.timeline().get(2))
                 .map(super::TimelineEntry::event_id),
-            Some("evt_old")
+            Some("evt_pending")
         );
     }
 
@@ -2687,8 +2823,22 @@ mod tests {
     #[test]
     fn tui_model_clamps_selection_to_last_attention_item() {
         let events = [
-            ConsoleEvent::fixture("evt_1", EventType::FabroHumanGateObserved, "fabro"),
-            ConsoleEvent::fixture("evt_2", EventType::LivespecReviseRequired, "livespec"),
+            lane_event(
+                "evt_1",
+                "console-1",
+                Lane::PendingApproval,
+                None,
+                "a0",
+                "pending-approval",
+            ),
+            lane_event(
+                "evt_2",
+                "console-2",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a1",
+                "blocked",
+            ),
         ];
 
         let model = build_tui_model(&events, 99);
@@ -2696,7 +2846,7 @@ mod tests {
         assert_eq!(model.selected_attention_index(), Some(1));
         assert_eq!(
             model.detail().map(super::AttentionDetail::work_item),
-            Some("evt_2")
+            Some("console-2")
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::fabro_run),
@@ -2704,70 +2854,7 @@ mod tests {
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
-            Some([OperatorAction::Acknowledge, OperatorAction::Snooze].as_slice())
-        );
-    }
-
-    #[test]
-    fn non_attention_factory_action_policy_is_stable() {
-        for event_type in [
-            EventType::WorkItemSnapshotObserved,
-            EventType::CommandAccepted,
-            EventType::CommandRejected,
-            EventType::FactoryDrainCompleted,
-            EventType::FactoryDrainFailed,
-            EventType::FactoryDrainRequested,
-            EventType::FactoryDrainStarted,
-            EventType::GithubPullRequestSnapshotObserved,
-            EventType::LivespecNextSnapshotObserved,
-            EventType::SourceCompletenessFindingObserved,
-        ] {
-            assert!(!event_type.requires_attention());
-            assert_eq!(
-                event_type.next_operator_action(),
-                OperatorAction::Acknowledge
-            );
-            assert_eq!(event_type.actions(), [OperatorAction::Acknowledge]);
-        }
-    }
-
-    #[test]
-    fn attention_event_policy_is_stable_for_every_attention_type() {
-        for event_type in [
-            EventType::FabroHumanGateObserved,
-            EventType::LivespecReviseRequired,
-            EventType::DispatcherNeedsRegroomObserved,
-        ] {
-            assert!(event_type.requires_attention());
-        }
-        assert_eq!(
-            EventType::LivespecReviseRequired.next_operator_action(),
-            OperatorAction::Acknowledge
-        );
-        assert_eq!(
-            EventType::DispatcherNeedsRegroomObserved.next_operator_action(),
-            OperatorAction::Acknowledge
-        );
-        assert_eq!(
-            EventType::FabroHumanGateObserved.next_operator_action(),
-            OperatorAction::OpenFabroAttach
-        );
-        assert_eq!(
-            EventType::FabroHumanGateObserved.actions(),
-            [
-                OperatorAction::Acknowledge,
-                OperatorAction::Snooze,
-                OperatorAction::OpenFabroAttach,
-                OperatorAction::CopyFabroAttach
-            ]
-        );
-        assert_eq!(
-            EventType::LivespecReviseRequired.actions(),
-            [OperatorAction::Acknowledge, OperatorAction::Snooze]
-        );
-        assert_eq!(
-            EventType::DispatcherNeedsRegroomObserved.actions(),
-            [OperatorAction::Acknowledge, OperatorAction::Snooze]
+            Some([].as_slice())
         );
     }
 
@@ -2778,8 +2865,6 @@ mod tests {
         assert_eq!(TuiView::Lanes.label(), "Lanes");
         assert_eq!(TuiView::Events.label(), "Events");
         assert_eq!(TuiView::Repos.label(), "Repos");
-        assert_eq!(OperatorAction::Acknowledge.label(), "Acknowledge");
-        assert_eq!(OperatorAction::Snooze.label(), "Snooze");
         assert_eq!(OperatorAction::OpenFabroAttach.label(), "Open Fabro attach");
         assert_eq!(OperatorAction::CopyFabroAttach.label(), "Copy Fabro attach");
     }
@@ -2792,10 +2877,10 @@ mod tests {
     }
 
     #[test]
-    fn operator_action_validation_trims_valid_input() {
-        let result = validate_operator_action("  acknowledge  ");
+    fn operator_action_validation_trims_valid_requester() {
+        let result = validate_operator_action("  operator  ");
 
-        assert_eq!(result, Ok("acknowledge"));
+        assert_eq!(result, Ok("operator"));
     }
 
     #[test]
