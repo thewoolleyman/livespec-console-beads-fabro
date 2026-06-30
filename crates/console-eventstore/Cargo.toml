@@ -11,5 +11,8 @@ version.workspace = true
 console-domain = { path = "../console-domain", version = "0.1.0" }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 
+[dev-dependencies]
+console-application = { path = "../console-application", version = "0.1.0" }
+
 [lints]
 workspace = true

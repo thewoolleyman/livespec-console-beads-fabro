@@ -52,14 +52,6 @@ create table if not exists checkpoints (
   checkpoint_json text not null,
   advanced_at text not null
 );
-
-create table if not exists projections (
-  name text not null,
-  version integer not null,
-  checkpoint_seq integer not null,
-  state_json text not null,
-  primary key (name, version)
-);
 ";
 
 #[derive(Debug)]
@@ -700,7 +692,11 @@ fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
 mod tests {
     use super::{
         AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
-        EventStoreError, SqliteEventStore, StoredCommand, sequence_from_rowid,
+        EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand, sequence_from_rowid,
+    };
+    use console_application::{
+        build_tui_model,
+        source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane, LaneReason},
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
@@ -717,10 +713,11 @@ mod tests {
             store
                 .connection
                 .query_row("pragma journal_mode", [], |row| row.get(0))?;
-        for table_name in ["events", "commands", "checkpoints", "projections"] {
+        for table_name in ["events", "commands", "checkpoints"] {
             let sql = format!("select count(*) from {table_name}");
             assert!(store.connection.prepare(&sql).is_ok());
         }
+        assert!(!table_select_prepares(&store, "projections"));
 
         assert_eq!(journal_mode, "wal");
         let _remove_result = std::fs::remove_file(&path);
@@ -817,6 +814,101 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload_json(), payload);
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_projections_rebuild_identically_after_store_wipe_and_ledger_replay()
+    -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let pending = work_item_append(
+            "evt_console_1_pending",
+            "console-1",
+            Lane::PendingApproval,
+            None,
+            "a1",
+            "pending-approval",
+            1,
+        );
+        let ready = work_item_append(
+            "evt_console_2_ready",
+            "console-2",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+            2,
+        );
+        let blocked = work_item_append(
+            "evt_console_1_blocked",
+            "console-1",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            "a2",
+            "blocked",
+            3,
+        );
+        store.append_event(&pending)?;
+        store.append_event(&ready)?;
+        store.append_event(&blocked)?;
+
+        let command = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        store.append_command(&command)?;
+        let status_update = store.update_command_status(
+            "cmd_1",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            Some(r#"{"event_count":3}"#),
+            None,
+        );
+        assert!(matches!(
+            status_update,
+            Ok(CommandStatusUpdateOutcome { .. })
+        ));
+
+        let original_events = store.list_console_events()?;
+        let original_model = build_tui_model(&original_events, 0);
+
+        let mut rebuilt = SqliteEventStore::open_in_memory()?;
+        for event in original_events
+            .iter()
+            .filter(|event| event.event_type() == &EventType::WorkItemSnapshotObserved)
+        {
+            rebuilt.append_event(&replayed_work_item_append(event))?;
+        }
+        let rebuilt_events = rebuilt.list_console_events()?;
+        let rebuilt_model = build_tui_model(&rebuilt_events, 0);
+
+        assert_eq!(rebuilt.list_commands()?, []);
+        assert_eq!(rebuilt_events.len(), 3);
+        assert_eq!(rebuilt_model.lane_board(), original_model.lane_board());
+        assert_eq!(
+            rebuilt_model.attention_items(),
+            original_model.attention_items()
+        );
+        assert_eq!(rebuilt_model.detail(), original_model.detail());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_has_no_primary_work_item_lifecycle_state_outside_command_carve_out()
+    -> Result<(), EventStoreError> {
+        let store = SqliteEventStore::open_in_memory()?;
+
+        assert!(!table_select_prepares(&store, "projections"));
+        for table_name in ["events", "checkpoints"] {
+            for column_name in table_columns(&store, table_name)? {
+                assert!(!matches!(
+                    column_name.as_str(),
+                    "lane" | "lane_reason" | "work_item_status" | "status"
+                ));
+            }
+        }
+        // `commands.status` is console-local operator-command state, not
+        // work-item lifecycle state. It is intentionally excluded from
+        // rebuild determinism and must not be event-sourced as a work-item
+        // projection.
+        assert!(table_columns(&store, "commands")?.contains(&"status".to_owned()));
         Ok(())
     }
 
@@ -1105,6 +1197,98 @@ mod tests {
         let result = EventStoreError::from(rusqlite::Error::InvalidQuery);
 
         assert!(matches!(result, EventStoreError::Sqlite(_error)));
+    }
+
+    fn table_select_prepares(store: &SqliteEventStore, table_name: &str) -> bool {
+        store
+            .connection
+            .prepare(&format!("select count(*) from {table_name}"))
+            .is_ok()
+    }
+
+    fn table_columns(store: &SqliteEventStore, table_name: &str) -> EventStoreResult<Vec<String>> {
+        let mut statement = store
+            .connection
+            .prepare(&format!("pragma table_info({table_name})"))?;
+        let mut rows = statement.query([])?;
+        let mut columns = Vec::new();
+        while let Some(row) = rows.next()? {
+            columns.push(row.get(1)?);
+        }
+        Ok(columns)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn work_item_append(
+        event_id: &str,
+        work_item_id: &str,
+        lane: Lane,
+        lane_reason: Option<LaneReason>,
+        rank: &str,
+        status: &str,
+        source_version: u64,
+    ) -> EventAppend {
+        let event = ConsoleEvent::new(
+            event_id.to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            "repo:console".to_owned(),
+            source_version,
+        );
+        EventAppend::new(
+            event,
+            "repo:console".to_owned(),
+            format!("2026-06-29T00:00:0{source_version}Z"),
+            format!("2026-06-29T00:00:1{source_version}Z"),
+            None,
+            "corr_work_items".to_owned(),
+            Some(format!("source-{event_id}")),
+            work_item_payload_json(
+                work_item_id,
+                lane,
+                lane_reason,
+                rank,
+                status,
+                source_version,
+            ),
+            "{}".to_owned(),
+        )
+    }
+
+    fn work_item_payload_json(
+        work_item_id: &str,
+        lane: Lane,
+        lane_reason: Option<LaneReason>,
+        rank: &str,
+        status: &str,
+        source_version: u64,
+    ) -> String {
+        let reason_json = lane_reason.map_or_else(
+            || "null".to_owned(),
+            |reason| format!("\"{}\"", reason.label()),
+        );
+        format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","admission_policy":"{}","acceptance_policy":"{}","source_version":{source_version}}}"#,
+            lane.label(),
+            AdmissionPolicy::Manual.label(),
+            AcceptancePolicy::AiThenHuman.label()
+        )
+    }
+
+    fn replayed_work_item_append(event: &ConsoleEvent) -> EventAppend {
+        EventAppend::new(
+            event.clone(),
+            event.stream_id().to_owned(),
+            "2026-06-29T00:01:00Z".to_owned(),
+            "2026-06-29T00:01:01Z".to_owned(),
+            None,
+            "corr_rebuild".to_owned(),
+            Some(format!("replay:{}", event.event_id())),
+            event.payload_json().to_owned(),
+            "{}".to_owned(),
+        )
     }
 
     fn event_append(event_id: &str, source_event_id: Option<&str>) -> EventAppend {
