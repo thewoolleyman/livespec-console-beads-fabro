@@ -454,35 +454,65 @@ wrapper (`with-livespec-env.sh`):
   `active` with no live run. Recovery: reset `active → ready` (`bd update <id>
   --status ready`) and re-dispatch once the launch precondition is fixed.
 
-### BLOCKER — the `fabro` runtime is not provisioned in this environment (2026-06-30)
+### Launch gates resolved + the real janitor blocker (2026-06-30)
 
-The full dispatch pipeline is proven working up to the launch step: E-3a
-(`en67su`) cleared admission (`admission:auto`) and the `run-config-overlay`
-stage (`GH_TOKEN` aliased), and the Dispatcher then tried to **launch the Fabro
-run** — which died with `FileNotFoundError: [Errno 2] No such file or directory:
-'fabro'`. The `fabro` CLI is **not installed** here: absent from PATH, npm,
-pipx, cargo bin, and `/usr/local/bin`; the Dispatcher invokes a bare `fabro`
-(`--fabro-bin` default; `orchestrate run` passes no override and there is no
-env/config resolver). The source repo IS present (`/data/projects/fabro`,
-version **0.254.0** — matching the Dispatcher's expectation) but unbuilt, and
-its `.env.example` shows a heavyweight credential surface (Anthropic/OpenAI/
-Daytona keys, GitHub-App + Slack secrets) plus the ACP/host-Codex credential the
-Dispatcher's C-mode requires.
+Dispatch then surfaced (and cleared) a chain of environment/code gates:
 
-**Therefore NO autonomous factory dispatch can execute in this environment until
-`fabro` is provisioned** — independent of the lane/admission/token recipe, which
-is fully worked out and staged. Provisioning `fabro` (build-from-source vs.
-remote install script vs. whether this host is even the intended dispatch host,
-and wiring its backend credentials) is a cross-repo, infra-provisioning decision
-surfaced to the maintainer/core session rather than self-resolved.
+1. **`fabro` runtime** — initially appeared unprovisioned (bare-`fabro`
+   `FileNotFoundError`); in fact it WAS provisioned at `~/.fabro/bin/fabro`
+   (v0.254.0), reachable under the env wrapper via `export
+   PATH="$HOME/.fabro/bin:$PATH"` (the wrapper's PATH excludes `~/.local/bin`).
+2. **`fabro` server** — not running; started with `fabro server start` (daemon on
+   `127.0.0.1:32276`, the endpoint the Dispatcher's fabro client expects).
+3. **Sandbox janitor `check-doctor-static`** — the REAL E-3a blocker. A 23-min
+   run implemented the slice and then **failed the janitor** because
+   `check-doctor-static` could not resolve the livespec **CORE** plugin inside
+   the sandbox: the run-config overlay projected only
+   `CLAUDE_CODE_OAUTH_TOKEN`/`GH_TOKEN`/`LIVESPEC_SIBLING_CLONES_ROOT`, **not**
+   `LIVESPEC_CORE_PLUGIN_ROOT`, and the fail-closed sandbox env allowlist +
+   registry-less container left core unreachable (even though it is mounted at
+   `/workspace/siblings/livespec/.claude-plugin`).
 
-### Slice status (paused on the `fabro` blocker)
+**Orchestrator fix (cross-repo, landed in v0.3.2):** `render_run_config_overlay`
+now also projects `LIVESPEC_CORE_PLUGIN_ROOT` at the in-sandbox core-sibling
+clone (PR #222, `d62499b`), test-driven Red→Green. The factory's top-of-pyramid
+golden masters could not catch this (hermetic merge gate = simulation; live
+golden master = operator-gated + core-independent fixture — the Slice-6/VP4
+gap), so a deterministic real-artifact overlay-completeness guard + a
+CORE-dependent e2e skeleton were added (PR #224, `1b17bdf`). The JSON-L
+orchestrator has no Fabro overlay, so the bug class does not exist there. With
+v0.3.2 the source-dispatched E-3a run went **janitor-green** end-to-end.
 
-- **E-3a `en67su`** — staged `ready` + `admission:auto` (approved); dispatch
-  reaches fabro-launch and is blocked on the missing runtime. **Not started.**
-- **E-3b `pdc7ma`** — pending E-3a closure (dependency); same `null → manual`
-  admission default applies when its turn comes.
-- **E-4 `4rt6zi`** — pending E-3b closure (dependency); same admission default.
+### Token gate — sandbox PR-create (open; maintainer credential action)
+
+The validated E-3a run then failed only at **PR creation**: the Dispatcher
+projects `GH_TOKEN = LIVESPEC_FAMILY_GITHUB_TOKEN` into the sandbox, and that
+fine-grained PAT lacks `Pull requests: write` on `livespec-console-beads-fabro`
+(`GraphQL: Resource not accessible by personal access token (createPullRequest)`)
+— it needs the grant on **every** targeted family repo, and the entrypoint
+hardcodes the token so adopters can't bring their own. Two orchestrator-tenant
+work-items track this: **`bd-ib-p2e`** (stopgap: grant the PAT PR-write on the
+console repo + audit all family repos — maintainer credential action) and
+**`bd-ib-gsl`** (durable: switch the factory `GH_TOKEN` to a GitHub App
+installation token + parameterize the entrypoint token source for adopters).
+Per the maintainer: E-3b/E-4 IMPL may run via the factory (impl+janitor need no
+token); the factory PR-create is **held** for the token grant.
+
+### Slice status (2026-06-30)
+
+- **E-3a `en67su`** — **factory-produced + janitor-green + Opus-reviewed**
+  (Fabro run `01KWBYVJ4NNSACS4MT183VEATH`); pushed to
+  `feat/livespec-console-beads-fabro-en67su` and finalized via the human's native
+  `gh` auth (PR #67) because of the token gate. **Implementation DONE.**
+- **E-3b `pdc7ma`** — dispatchable once E-3a closes (clears the dep); IMPL via the
+  factory, PR-create held for the token.
+- **E-4 `4rt6zi`** — pending E-3b closure.
+
+**Standing-config note:** the console's normal `orchestrate run` uses the
+enabled-plugin **cache**, not source; for it to carry the v0.3.2 fix the console
+scope needs `claude plugin update` → v0.3.2 + a session restart (likely a
+maintainer/console-session step). The source-dispatched drive does not depend on
+it.
 
 ---
 

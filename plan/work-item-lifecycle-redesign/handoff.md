@@ -77,40 +77,50 @@ the decision-log's "Implementation rollout" section.
   `Esc` returns); `SPECIFICATION/contracts.md` TUI-nav section updated (healed by
   doctor-static auto-backfill as history `v010`).
 
-**Next action: resume the E-3/E-4 autonomous factory drive — currently BLOCKED
-on `fabro` runtime provisioning.** E-3 was groomed into dispatchable slices
-(E-3a `en67su` → E-3b `pdc7ma` → E-4 `4rt6zi`, a dependency chain). Per the
-core session's standing rule, ready implementation is dispatched **through the
-factory** via `/livespec-orchestrator-beads-fabro:orchestrate run` — NOT
-hand-coded inline. Per the maintainer's Option-A authorization (decision-log
-§E-3 "Resolution"), the **coordinator/orchestrator session owns the admission,
-merge, and routine post-merge acceptance gates** for these factory-safe,
-in-intent, reversible slices and does not bounce them to the maintainer.
+**Next action: continue the E-3/E-4 factory drive — E-3a DONE; E-3b next; the
+factory PR-create step is HELD for a token grant.** E-3 was groomed into
+dispatchable slices (E-3a `en67su` → E-3b `pdc7ma` → E-4 `4rt6zi`, a dependency
+chain). Per the core session's standing rule, ready implementation is dispatched
+**through the factory** — NOT hand-coded inline. Per Option-A (decision-log §E-3
+"Resolution"), the **coordinator/orchestrator session owns the admission, merge,
+and routine post-merge acceptance gates** for these factory-safe slices.
 
-**Per-slice dispatch recipe (worked out 2026-06-30; under `with-livespec-env.sh`,
-from this repo root):**
+**E-3a is implemented** (Fabro run `01KWBYVJ4NNSACS4MT183VEATH`: implement +
+janitor-green + Opus review), finalized via the human's native `gh` auth as
+**PR #67** (the factory's own PR-create is blocked by the token gate below).
+
+**Per-slice dispatch recipe (updated 2026-06-30; under `with-livespec-env.sh`,
+from the console repo root):**
 1. `bd update <id> --status ready` (legacy `open` heads aren't in the ready set
    the `next` ranker reads — the L2 migration left legacy statuses unreclassified).
-2. `bd update <id> --add-label admission:auto` (the explicit admission approval;
-   the valve admits ONLY `admission_policy == "auto"`, default is `manual`).
-3. `export GH_TOKEN="$LIVESPEC_FAMILY_GITHUB_TOKEN"` then `orchestrate run
-   --action impl:<id> --json` (the Dispatcher projects `GH_TOKEN` into the Fabro
-   sandbox; absent → refused at `run-config-overlay`).
-4. Janitor (`just check` + doctor) + ship-on-green merge; then confirm the
-   `ai-then-human` acceptance as the human leg (→ `done`), clearing the next
-   slice's dependency.
-   *Recovery:* a post-admission launch failure strands the item in `active`
-   (admission runs `ready → active` first) — reset `active → ready` and re-dispatch.
+2. `bd update <id> --add-label admission:auto` (the valve admits ONLY
+   `admission_policy == "auto"`; default is `manual`).
+3. Dispatch via the **source** dispatcher until the cache is refreshed to v0.3.2:
+   ```
+   export PATH="$HOME/.fabro/bin:$PATH"        # wrapper PATH excludes ~/.local/bin
+   export GH_TOKEN="$LIVESPEC_FAMILY_GITHUB_TOKEN"
+   python3 /data/projects/livespec-orchestrator-beads-fabro/.claude-plugin/scripts/bin/orchestrate.py \
+     run --repo /data/projects/livespec-console-beads-fabro --action impl:<id> --json
+   ```
+   Prereqs: `fabro` at `~/.fabro/bin/fabro` (v0.254.0); `fabro server start` live
+   on `127.0.0.1:32276`. The source dispatcher carries the v0.3.2
+   `LIVESPEC_CORE_PLUGIN_ROOT` overlay fix so the sandbox `check-doctor-static`
+   resolves CORE.
+4. Impl + janitor are green WITHOUT the token. **The factory's PR-create FAILS**
+   (`createPullRequest` — the projected family PAT lacks PR-write on the console
+   repo; orchestrator work-items `bd-ib-p2e` stopgap / `bd-ib-gsl` durable). Until
+   the maintainer grants the token: the slice's branch
+   (`feat/<id>`) is pushed + janitor-green; finalize via the human's native `gh`
+   auth (open PR → CI → rebase-merge), then advance the item to `done`
+   (`ai-then-human` acceptance, coordinator as the human leg), clearing the next
+   slice's dep.
+   *Recovery:* a post-admission launch failure strands the item in `active` —
+   reset `active → ready` and re-dispatch.
 
-**⛔ BLOCKER (decision-log §E-3 "BLOCKER"): `fabro` is not installed in this
-environment** (source present at `/data/projects/fabro` v0.254.0, unbuilt; absent
-from PATH/npm/pipx/cargo). The recipe above is proven through admission +
-`run-config-overlay`; the Dispatcher then dies at fabro-launch
-(`FileNotFoundError: 'fabro'`). NO autonomous dispatch can execute until `fabro`
-is provisioned (+ its backend/ACP + host-Codex credentials). This was surfaced
-to the core/maintainer session as a cross-repo infra-provisioning decision. To
-resume: provision `fabro` (or point `--fabro-bin` at a built binary), then run
-the recipe for `en67su` (already staged `ready` + `admission:auto`).
+**Standing-config note:** the console's normal `orchestrate run` uses the
+enabled-plugin **cache** (still pre-fix). For it to carry v0.3.2, the console
+scope needs `claude plugin update` → v0.3.2 + a session restart (maintainer /
+console-session step). Until then, dispatch via the **source** path above.
 
 E-3 design content to implement (decision-log §E-3): rewrite
 `requires_attention()` to a pure function of `(lane, lane_reason,
