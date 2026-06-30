@@ -10,8 +10,8 @@
 # materializes it) and resolves once installed. `worktree.just` adds the
 # worktree-lifecycle recipes; `branch-protection.just` adds the server-side
 # GitHub branch-protection ruleset recipes (protect-default-branch /
-# check-branch-protection) — the server-enforced backstop, a DISTINCT concern
-# from this repo's local 00-no-commit-on-master lefthook commit-msg guard.
+# check-branch-protection) — the server-enforced backstop for the structural
+# commit-refuse hook installed by `just bootstrap`.
 import? 'dev-tooling/worktree.just'
 import? 'dev-tooling/branch-protection.just'
 
