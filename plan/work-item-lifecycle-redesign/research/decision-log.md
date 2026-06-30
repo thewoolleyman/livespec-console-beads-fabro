@@ -376,10 +376,113 @@ Verification: full `just check` green (fmt, clippy `-D warnings`, tests, **100%
 line coverage**, `cargo deny` + `machete`, arch-check, behavior-coverage,
 baseline, doctor-static); all 10 CI checks green; rebase-merged.
 
-## E-3..E-4 — pending implementation
+## E-3 / E-4 — implementation via autonomous factory drive (started 2026-06-30)
 
-E-3 (attention-as-derivation + snooze/ack deletion) then E-4
-(rebuild-from-ledger conformance test).
+E-3 was groomed into two dispatchable slices, then E-4:
+
+- **E-3a** `livespec-console-beads-fabro-en67su` — thread
+  `admission_policy`/`acceptance_policy` into work-item ingestion (no deps).
+- **E-3b** `livespec-console-beads-fabro-pdc7ma` — attention inbox as a pure
+  lane derivation + snooze/ack deletion (depends on E-3a).
+- **E-4** `livespec-console-beads-fabro-4rt6zi` — rebuild-from-ledger /
+  zero-primary-state conformance test (depends on E-3b).
+
+### Admission-gate finding (2026-06-30)
+
+When the v0.3.1 orchestrator cleared the earlier exit-3 (missing `.fabro`
+workflow config) dispatcher blocker, dispatching E-3a through the factory
+(`orchestrate run --action impl:<id>`) surfaced **two further, separate gates
+the design walk had not anticipated**:
+
+1. **Lane gate (mechanical).** The whole tenant was legacy `open` (16) / `done`
+   (21) — **zero items in any working lane**. The L2 migration deliberately left
+   legacy `open` statuses unreclassified (its scope boundary), but the `next`
+   ranker only surfaces items whose stored status is exactly `ready`
+   (`livespec_runtime.work_items.lifecycle.is_item_ready` ≡
+   `lane_of(...).name == "ready"`). So `orchestrate plan` returned **0 impl
+   actions**. Fix: transition the head slice's status `open → ready` (en67su
+   already carried a `ready` *label* — intent was clear; only its 7-state
+   *status* had not caught up).
+2. **Admission gate (human-delegable policy valve).** Even in the `ready` lane,
+   the Dispatcher's admission valve (`_dispatcher_valves.plan_admissions`)
+   admits **only** items whose effective `admission_policy == "auto"`. The
+   default for an absent policy is **`manual`** (`DEFAULT_ADMISSION_POLICY` — the
+   safe default for "risky/irreversible work"), so all three freeform-captured
+   E-walk slices (`admission_policy: null → manual`) were **held** at
+   `admission-held` and surfaced for an explicit human approval. There is **no
+   label/flag override** — the *sole* admit criterion is the policy being
+   `auto`.
+
+### Resolution — Option A: coordinator-owned gates, autonomous drive (2026-06-30)
+
+The coordinator (orchestrator session) is the **assignee** and **owns the
+admission, merge, and routine post-merge acceptance gates** for these
+factory-safe, in-intent, reversible slices — they are **not** bounced to the
+maintainer. Per slice, as each becomes the dependency head:
+
+1. Status `open → ready` (`bd update <id> --status ready`).
+2. Approve admission: `bd update <id> --add-label admission:auto` (materializes
+   `admission_policy=auto`; the explicit human-leg approval the valve requires).
+3. Dispatch: `orchestrate run --action impl:<id>` (Dispatcher `loop --mode
+   shadow --item <id>`: shadow = dispatch only the named item; the cost gate
+   *warns* rather than *refuses*, since per-run cost is unobservable in this
+   fabro version — `autonomous` mode would be refused).
+4. The janitor gate (`just check` + doctor) + ship-on-green handle merge.
+5. Post-merge acceptance is `ai-then-human` (`acceptance_policy: null →
+   ai-then-human`); the coordinator is the **human leg** and confirms routine
+   factory-safe slices itself (→ `done`), which clears the next slice's
+   dependency.
+
+Surface to the core/maintainer session **only** on a genuine need: a real
+failure, an irreversible/risky or cross-repo call, or genuine ambiguity.
+
+### Operational dispatch prerequisites (discovered 2026-06-30)
+
+Running `orchestrate run` against this tenant requires, under the family env
+wrapper (`with-livespec-env.sh`):
+
+- **`GH_TOKEN` aliased from the family token** before dispatch — the run-config
+  overlay projects `GH_TOKEN` into the Fabro sandbox env table (the
+  server-spawned worker env is allowlist-scrubbed, so `{{ env.* }}` cannot
+  deliver an unset var). Without it the Dispatcher refuses at the
+  `run-config-overlay` stage. Recipe: `export
+  GH_TOKEN="$LIVESPEC_FAMILY_GITHUB_TOKEN"` inside the wrapped shell (secret
+  stays in-process; never echoed).
+- **Recovery from a post-admission launch failure.** The admission valve
+  transitions `ready → active` (and sets `assignee=fabro`) *before* the
+  run-config-overlay / launch stages, so a failure there strands the item in
+  `active` with no live run. Recovery: reset `active → ready` (`bd update <id>
+  --status ready`) and re-dispatch once the launch precondition is fixed.
+
+### BLOCKER — the `fabro` runtime is not provisioned in this environment (2026-06-30)
+
+The full dispatch pipeline is proven working up to the launch step: E-3a
+(`en67su`) cleared admission (`admission:auto`) and the `run-config-overlay`
+stage (`GH_TOKEN` aliased), and the Dispatcher then tried to **launch the Fabro
+run** — which died with `FileNotFoundError: [Errno 2] No such file or directory:
+'fabro'`. The `fabro` CLI is **not installed** here: absent from PATH, npm,
+pipx, cargo bin, and `/usr/local/bin`; the Dispatcher invokes a bare `fabro`
+(`--fabro-bin` default; `orchestrate run` passes no override and there is no
+env/config resolver). The source repo IS present (`/data/projects/fabro`,
+version **0.254.0** — matching the Dispatcher's expectation) but unbuilt, and
+its `.env.example` shows a heavyweight credential surface (Anthropic/OpenAI/
+Daytona keys, GitHub-App + Slack secrets) plus the ACP/host-Codex credential the
+Dispatcher's C-mode requires.
+
+**Therefore NO autonomous factory dispatch can execute in this environment until
+`fabro` is provisioned** — independent of the lane/admission/token recipe, which
+is fully worked out and staged. Provisioning `fabro` (build-from-source vs.
+remote install script vs. whether this host is even the intended dispatch host,
+and wiring its backend credentials) is a cross-repo, infra-provisioning decision
+surfaced to the maintainer/core session rather than self-resolved.
+
+### Slice status (paused on the `fabro` blocker)
+
+- **E-3a `en67su`** — staged `ready` + `admission:auto` (approved); dispatch
+  reaches fabro-launch and is blocked on the missing runtime. **Not started.**
+- **E-3b `pdc7ma`** — pending E-3a closure (dependency); same `null → manual`
+  admission default applies when its turn comes.
+- **E-4 `4rt6zi`** — pending E-3b closure (dependency); same admission default.
 
 ---
 
