@@ -77,25 +77,47 @@ the decision-log's "Implementation rollout" section.
   `Esc` returns); `SPECIFICATION/contracts.md` TUI-nav section updated (healed by
   doctor-static auto-backfill as history `v010`).
 
-**Next action: implement E-3 — attention inbox as a pure derivation + snooze/ack
-deletion.** Per [research/decision-log.md](research/decision-log.md) §E-3:
-rewrite `requires_attention()` from the 3 event-type triggers
-(`FabroHumanGateObserved | LivespecReviseRequired |
-DispatcherNeedsRegroomObserved`) to a pure function of the work-item
-observation's `(lane, lane_reason, admission_policy, acceptance_policy)` — an
-item needs a human iff its lifecycle state requires one (`pending-approval`
-under manual admission; `acceptance` under `ai-then-human`; `blocked` with
-`lane_reason == needs-human`). Delete the snooze/ack plumbing across all 5
-layers (`CommandType::{AttentionAcknowledgeRequested,AttentionSnoozeRequested}`,
-`OperatorAction::{Acknowledge,Snooze}`, the action-menu entries,
-`attention_command` handling, the TUI affordances). Relocate
-`LivespecReviseRequired` to the `Spec` view; account for the other two retired
-triggers via the lane derivation (verify the assumption that the ledger reflects
-a fabro human gate in the work-item's lane — surface if it does not). "Not now"
-becomes a `defer`/re-rank command to the orchestrator, never a console-local
-dismissal. NOTE: E-2b carries `admission_policy`/`acceptance_policy` only as far
-as E-2 needed; E-3 must thread them into the observation if not already present.
-Then E-4 (rebuild-from-ledger conformance test).
+**Next action: resume the E-3/E-4 autonomous factory drive — currently BLOCKED
+on `fabro` runtime provisioning.** E-3 was groomed into dispatchable slices
+(E-3a `en67su` → E-3b `pdc7ma` → E-4 `4rt6zi`, a dependency chain). Per the
+core session's standing rule, ready implementation is dispatched **through the
+factory** via `/livespec-orchestrator-beads-fabro:orchestrate run` — NOT
+hand-coded inline. Per the maintainer's Option-A authorization (decision-log
+§E-3 "Resolution"), the **coordinator/orchestrator session owns the admission,
+merge, and routine post-merge acceptance gates** for these factory-safe,
+in-intent, reversible slices and does not bounce them to the maintainer.
+
+**Per-slice dispatch recipe (worked out 2026-06-30; under `with-livespec-env.sh`,
+from this repo root):**
+1. `bd update <id> --status ready` (legacy `open` heads aren't in the ready set
+   the `next` ranker reads — the L2 migration left legacy statuses unreclassified).
+2. `bd update <id> --add-label admission:auto` (the explicit admission approval;
+   the valve admits ONLY `admission_policy == "auto"`, default is `manual`).
+3. `export GH_TOKEN="$LIVESPEC_FAMILY_GITHUB_TOKEN"` then `orchestrate run
+   --action impl:<id> --json` (the Dispatcher projects `GH_TOKEN` into the Fabro
+   sandbox; absent → refused at `run-config-overlay`).
+4. Janitor (`just check` + doctor) + ship-on-green merge; then confirm the
+   `ai-then-human` acceptance as the human leg (→ `done`), clearing the next
+   slice's dependency.
+   *Recovery:* a post-admission launch failure strands the item in `active`
+   (admission runs `ready → active` first) — reset `active → ready` and re-dispatch.
+
+**⛔ BLOCKER (decision-log §E-3 "BLOCKER"): `fabro` is not installed in this
+environment** (source present at `/data/projects/fabro` v0.254.0, unbuilt; absent
+from PATH/npm/pipx/cargo). The recipe above is proven through admission +
+`run-config-overlay`; the Dispatcher then dies at fabro-launch
+(`FileNotFoundError: 'fabro'`). NO autonomous dispatch can execute until `fabro`
+is provisioned (+ its backend/ACP + host-Codex credentials). This was surfaced
+to the core/maintainer session as a cross-repo infra-provisioning decision. To
+resume: provision `fabro` (or point `--fabro-bin` at a built binary), then run
+the recipe for `en67su` (already staged `ready` + `admission:auto`).
+
+E-3 design content to implement (decision-log §E-3): rewrite
+`requires_attention()` to a pure function of `(lane, lane_reason,
+admission_policy, acceptance_policy)`; delete snooze/ack across all 5 layers;
+relocate `LivespecReviseRequired` to the `Spec` view. E-3a first threads
+`admission_policy`/`acceptance_policy` into the console's ingestion. Then E-4
+(rebuild-from-ledger conformance test).
 
 Discipline: worktree → PR → rebase-merge; `mise exec -- git`; never
 `--no-verify`; halt+report on hook failure; the repo enforces **100% line
