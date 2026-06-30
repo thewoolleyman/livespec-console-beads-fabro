@@ -498,15 +498,29 @@ installation token + parameterize the entrypoint token source for adopters).
 Per the maintainer: E-3b/E-4 IMPL may run via the factory (impl+janitor need no
 token); the factory PR-create is **held** for the token grant.
 
-### Slice status (2026-06-30)
+### Slice status — E-walk COMPLETE (2026-06-30)
 
-- **E-3a `en67su`** — **factory-produced + janitor-green + Opus-reviewed**
-  (Fabro run `01KWBYVJ4NNSACS4MT183VEATH`); pushed to
-  `feat/livespec-console-beads-fabro-en67su` and finalized via the human's native
-  `gh` auth (PR #67) because of the token gate. **Implementation DONE.**
-- **E-3b `pdc7ma`** — dispatchable once E-3a closes (clears the dep); IMPL via the
-  factory, PR-create held for the token.
-- **E-4 `4rt6zi`** — pending E-3b closure.
+All three slices are factory-produced (Fabro implement-work-item: implement +
+janitor-green + Opus review), then published via the human's native `gh` auth
+(the **native-auth bridge**: the sandbox's projected family token can push but
+lacks `Pull requests: write` on this repo — the open token gate, tracked as
+orchestrator `bd-ib-p2e` stopgap / `bd-ib-gsl` durable). Each closed
+`done`/`resolution:completed` (`ai-then-human` acceptance, coordinator as the
+human leg):
+
+- **E-3a `en67su`** — thread admission/acceptance policies into ingestion. Fabro
+  run `01KWBYVJ4NNSACS4MT183VEATH` → **PR #67 merged**.
+- **E-3b `pdc7ma`** — attention inbox as pure lane derivation + snooze/ack
+  deletion (+ v011 spec backfill). Fabro run `01KWC5E015XM3DAPE1VDCQG8TR` →
+  recovered from the run's implement diff → **PR #69 merged**.
+- **E-4 `4rt6zi`** — rebuild-from-ledger / zero-primary-state conformance test +
+  drop the dead `projections` table. Fabro run `01KWCBR7CTJ9R59S891AHAB2RH` →
+  **PR #70 merged**.
+
+**The E-walk (E-1 … E-4) is fully implemented and merged.** The redesign epic
+`livespec-console-beads-fabro-vqh36l` is ready to close/groom (its E-1..E-4 scope
+is delivered). Open follow-ons (not blocking): the token gate (`bd-ib-p2e` /
+`bd-ib-gsl`) and the standing-config cache refresh below.
 
 **Standing-config note:** the console's normal `orchestrate run` uses the
 enabled-plugin **cache**, not source; for it to carry the v0.3.2 fix the console

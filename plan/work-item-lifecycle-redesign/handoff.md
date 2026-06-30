@@ -77,57 +77,46 @@ the decision-log's "Implementation rollout" section.
   `Esc` returns); `SPECIFICATION/contracts.md` TUI-nav section updated (healed by
   doctor-static auto-backfill as history `v010`).
 
-**Next action: continue the E-3/E-4 factory drive — E-3a DONE; E-3b next; the
-factory PR-create step is HELD for a token grant.** E-3 was groomed into
-dispatchable slices (E-3a `en67su` → E-3b `pdc7ma` → E-4 `4rt6zi`, a dependency
-chain). Per the core session's standing rule, ready implementation is dispatched
-**through the factory** — NOT hand-coded inline. Per Option-A (decision-log §E-3
-"Resolution"), the **coordinator/orchestrator session owns the admission, merge,
-and routine post-merge acceptance gates** for these factory-safe slices.
+- **E-3a (ingestion: admission/acceptance policies) — IMPLEMENTED & MERGED**
+  (PR #67). Fabro run `01KWBYVJ4NNSACS4MT183VEATH`.
+- **E-3b (attention inbox as pure lane derivation + snooze/ack deletion) —
+  IMPLEMENTED & MERGED** (PR #69, + v011 spec backfill). Fabro run
+  `01KWC5E015XM3DAPE1VDCQG8TR`.
+- **E-4 (rebuild-from-ledger / zero-primary-state conformance test; drop dead
+  `projections` table) — IMPLEMENTED & MERGED** (PR #70). Fabro run
+  `01KWCBR7CTJ9R59S891AHAB2RH`.
 
-**E-3a is implemented** (Fabro run `01KWBYVJ4NNSACS4MT183VEATH`: implement +
-janitor-green + Opus review), finalized via the human's native `gh` auth as
-**PR #67** (the factory's own PR-create is blocked by the token gate below).
+**Next action: the E-walk (E-1 … E-4) is COMPLETE — all slices implemented &
+merged.** The redesign epic `livespec-console-beads-fabro-vqh36l` is ready to
+**close/groom** (its E-1..E-4 scope is delivered). What remains are non-blocking
+follow-ons, none of which gate the E-walk:
 
-**Per-slice dispatch recipe (updated 2026-06-30; under `with-livespec-env.sh`,
-from the console repo root):**
-1. `bd update <id> --status ready` (legacy `open` heads aren't in the ready set
-   the `next` ranker reads — the L2 migration left legacy statuses unreclassified).
-2. `bd update <id> --add-label admission:auto` (the valve admits ONLY
-   `admission_policy == "auto"`; default is `manual`).
-3. Dispatch via the **source** dispatcher until the cache is refreshed to v0.3.2:
-   ```
-   export PATH="$HOME/.fabro/bin:$PATH"        # wrapper PATH excludes ~/.local/bin
-   export GH_TOKEN="$LIVESPEC_FAMILY_GITHUB_TOKEN"
-   python3 /data/projects/livespec-orchestrator-beads-fabro/.claude-plugin/scripts/bin/orchestrate.py \
-     run --repo /data/projects/livespec-console-beads-fabro --action impl:<id> --json
-   ```
-   Prereqs: `fabro` at `~/.fabro/bin/fabro` (v0.254.0); `fabro server start` live
-   on `127.0.0.1:32276`. The source dispatcher carries the v0.3.2
-   `LIVESPEC_CORE_PLUGIN_ROOT` overlay fix so the sandbox `check-doctor-static`
-   resolves CORE.
-4. Impl + janitor are green WITHOUT the token. **The factory's PR-create FAILS**
-   (`createPullRequest` — the projected family PAT lacks PR-write on the console
-   repo; orchestrator work-items `bd-ib-p2e` stopgap / `bd-ib-gsl` durable). Until
-   the maintainer grants the token: the slice's branch
-   (`feat/<id>`) is pushed + janitor-green; finalize via the human's native `gh`
-   auth (open PR → CI → rebase-merge), then advance the item to `done`
-   (`ai-then-human` acceptance, coordinator as the human leg), clearing the next
-   slice's dep.
-   *Recovery:* a post-admission launch failure strands the item in `active` —
-   reset `active → ready` and re-dispatch.
+1. **Token gate (orchestrator tenant work-items).** The factory's in-sandbox
+   `gh pr create` is blocked — the projected `LIVESPEC_FAMILY_GITHUB_TOKEN` lacks
+   `Pull requests: write` on this repo, so E-3a/E-3b/E-4 were published via the
+   **native-auth bridge** (a human's `gh` auth). Resolve via `bd-ib-p2e`
+   (stopgap: grant the PAT PR-write on all targeted family repos) and/or
+   `bd-ib-gsl` (durable: GitHub App installation token + parameterize the
+   entrypoint token source for adopters).
+2. **Standing-config cache refresh.** The console's normal `orchestrate run` uses
+   the enabled-plugin **cache** (still pre-`LIVESPEC_CORE_PLUGIN_ROOT`-fix). For
+   it to carry the v0.3.2 fix, the console scope needs `claude plugin update` →
+   v0.3.2 + a session restart (maintainer / console-session step). The drive used
+   the **source** dispatcher, which already carries the fix.
 
-**Standing-config note:** the console's normal `orchestrate run` uses the
-enabled-plugin **cache** (still pre-fix). For it to carry v0.3.2, the console
-scope needs `claude plugin update` → v0.3.2 + a session restart (maintainer /
-console-session step). Until then, dispatch via the **source** path above.
-
-E-3 design content to implement (decision-log §E-3): rewrite
-`requires_attention()` to a pure function of `(lane, lane_reason,
-admission_policy, acceptance_policy)`; delete snooze/ack across all 5 layers;
-relocate `LivespecReviseRequired` to the `Spec` view. E-3a first threads
-`admission_policy`/`acceptance_policy` into the console's ingestion. Then E-4
-(rebuild-from-ledger conformance test).
+**Reusable per-slice factory recipe (worked out 2026-06-30; for future drives),
+under `with-livespec-env.sh` from the console repo root:** (1) `bd update <id>
+--status ready`; (2) `bd update <id> --add-label admission:auto` (the valve
+admits ONLY `admission_policy == "auto"`); (3) `export
+PATH="$HOME/.fabro/bin:$PATH"` + `export GH_TOKEN="$LIVESPEC_FAMILY_GITHUB_TOKEN"`
++ `python3 <orchestrator-source>/.claude-plugin/scripts/bin/orchestrate.py run
+--repo <console> --action impl:<id> --json` (prereqs: `fabro` 0.254.0 +
+`fabro server start` on `127.0.0.1:32276`); (4) impl+janitor run token-free —
+publish the pushed `feat/<id>` branch via native `gh` auth → PR → CI →
+rebase-merge → close `<id>` `done`/`resolution:completed`. If a run fails before
+pushing, recover its implement diff via `fabro dump <run-id> -o <dir>` →
+`stages/002-implement@1/diff.patch`. A SPECIFICATION edit needs a `docs(spec):
+backfill vNNN` commit (doctor-static self-heal) in the same PR.
 
 Discipline: worktree → PR → rebase-merge; `mise exec -- git`; never
 `--no-verify`; halt+report on hook failure; the repo enforces **100% line
