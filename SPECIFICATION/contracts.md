@@ -346,8 +346,6 @@ Initial commands:
 - `factory.pause_requested`
 - `factory.resume_requested`
 - `spec.doctor_requested`
-- `attention.acknowledge_requested`
-- `attention.snooze_requested`
 - `grooming.regroom_requested`
 
 ```mermaid

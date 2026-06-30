@@ -135,13 +135,9 @@ flowchart TB
   List["Attention list"]
   Select["Arrow selection"]
   Detail["Detail pane"]
-  Actions["Action list"]
-  Ack["Acknowledge / snooze"]
-  Fabro["Open or copy Fabro attach command"]
+  Timeline["Latest timeline"]
 
-  List --> Select --> Detail --> Actions
-  Actions --> Ack
-  Actions --> Fabro
+  List --> Select --> Detail --> Timeline
 ```
 
 ```gherkin
@@ -150,11 +146,11 @@ Feature: TUI operator workflow
   I want arrow-driven views and detail panes
   So that I can drive common orchestration actions before the GUI exists
 
-Scenario: Operator handles a human gate
-  Given a selected Attention item represents a Fabro human gate
+Scenario: Operator inspects a lane-derived attention item
+  Given a selected Attention item is derived from a blocked needs-human work-item lane
   When the operator opens the detail pane
-  Then the TUI shows the repo, work item, Fabro run, latest timeline events, and attach action
-  And the operator can acknowledge, snooze, or open/copy the Fabro attach command
+  Then the TUI shows the repo, work item, and latest timeline events
+  And no local dismiss command is offered from the attention lens
 ```
 
 ## Scenario 6 -- Policy-rejected command produces no side effect

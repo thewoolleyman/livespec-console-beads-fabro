@@ -607,12 +607,11 @@ fn attention_item_line(
     } else {
         " "
     };
-    ListItem::new(format!(
-        "{marker} {} [{}]",
-        item.title(),
-        item.next_action().label()
-    ))
-    .style(if Some(index) == model.selected_attention_index() {
+    let label = item.next_action().map_or_else(
+        || format!("{marker} {}", item.title()),
+        |action| format!("{marker} {} [{}]", item.title(), action.label()),
+    );
+    ListItem::new(label).style(if Some(index) == model.selected_attention_index() {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()
@@ -656,7 +655,9 @@ fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
         Line::from(format!("Work item: {}", detail.work_item())),
         Line::from(format!("Fabro run: {}", detail.fabro_run())),
         Line::from(format!("Attach: {}", detail.attach_command())),
-        Line::from(format!(
+    ];
+    if !detail.actions().is_empty() {
+        lines.push(Line::from(format!(
             "Actions: {}",
             detail
                 .actions()
@@ -664,9 +665,9 @@ fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
                 .map(console_application::OperatorAction::label)
                 .collect::<Vec<_>>()
                 .join(", ")
-        )),
-        Line::from("Timeline:"),
-    ];
+        )));
+    }
+    lines.push(Line::from("Timeline:"));
     lines.extend(detail.timeline().iter().map(timeline_line));
     lines
 }
@@ -696,10 +697,13 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use console_application::source_adapters::{Lane, LaneReason};
+    use console_application::source_adapters::Lane;
+    #[cfg(test)]
+    use console_application::source_adapters::LaneReason;
     use console_application::{
-        LaneFocus, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-        build_tui_model, build_tui_model_for_state,
+        AttentionDetail, AttentionItem, LaneFocus, OperatorAction, OperatorActionOutcome,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        build_tui_model_for_state,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -707,8 +711,9 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::{
-        TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, buffer_to_text,
-        key_event_to_terminal_input, render_model, render_summary_detail, render_to_text,
+        TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, action_outcome_effect,
+        attention_item_line, buffer_to_text, detail_lines, key_event_to_terminal_input,
+        render_command_modal, render_model, render_summary_detail, render_to_text,
         step_tui_runtime,
     };
 
@@ -910,33 +915,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_step_turns_confirmed_acknowledge_into_persisted_command_effect() {
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::CommandModal {
-                selected_action_index: 0,
-            },
-        );
-        let step = step_tui_runtime(
-            &state,
-            &demo_events(),
-            TuiTerminalInput::Confirm,
-            "operator",
-        );
-
-        let command = persisted_command(step.effect());
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::AttentionAcknowledgeRequested)
-        );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::aggregate_id),
-            Some("evt_demo_1")
-        );
-        assert_eq!(step.state().overlay(), &TuiOverlay::None);
-    }
-
-    #[test]
     fn runtime_step_turns_command_palette_drain_into_persisted_command_effect() {
         let state = TuiInteractionState::new(
             0,
@@ -964,34 +942,28 @@ mod tests {
     }
 
     #[test]
-    fn runtime_step_turns_attach_actions_into_local_effects() {
-        for (selected_action_index, expected_effect) in [
-            (
-                2,
-                TuiRuntimeEffect::OpenAttachCommand("fabro attach run_demo_1".to_owned()),
-            ),
-            (
-                3,
-                TuiRuntimeEffect::CopyAttachCommand("fabro attach run_demo_1".to_owned()),
-            ),
-        ] {
-            let state = TuiInteractionState::new(
-                0,
-                TuiOverlay::CommandModal {
-                    selected_action_index,
-                },
-            );
-            let step = step_tui_runtime(
-                &state,
-                &demo_events(),
-                TuiTerminalInput::Confirm,
-                "operator",
-            );
+    fn runtime_step_has_no_deleted_attention_command_effects() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        );
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
 
-            assert_eq!(step.effect(), &expected_effect);
-            assert_eq!(persisted_command(step.effect()), None);
-            assert_eq!(step.state().overlay(), &TuiOverlay::None);
-        }
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::NoSelectedOperatorAction,
+            )
+        );
+        assert_eq!(persisted_command(step.effect()), None);
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
     }
 
     #[test]
@@ -1052,7 +1024,7 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Fabro human gate")),
+                .map(|rendered| rendered.contains("Blocked: needs-human")),
             Ok(true)
         );
         assert_eq!(
@@ -1062,19 +1034,13 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Repo: livespec-console-beads-fabro")),
+                .map(|rendered| rendered.contains("Repo: console")),
             Ok(true)
         );
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Actions: Acknowledge, Snooze, Open Fabro")),
-            Ok(true)
-        );
-        assert_eq!(
-            output
-                .as_ref()
-                .map(|rendered| rendered.contains("attach, Copy Fabro attach")),
+                .map(|rendered| !rendered.contains("Actions:")),
             Ok(true)
         );
         assert_eq!(
@@ -1279,6 +1245,84 @@ mod tests {
     }
 
     #[test]
+    fn render_command_modal_draws_available_attach_actions() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            "fabro attach run".to_owned(),
+            vec![],
+            vec![
+                OperatorAction::OpenFabroAttach,
+                OperatorAction::CopyFabroAttach,
+            ],
+        );
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buffer = Buffer::empty(area);
+
+        render_command_modal(Some(&detail), 1, area, &mut buffer);
+        let output = buffer_to_text(&buffer, area);
+
+        assert!(output.contains("Open Fabro attach"));
+        assert!(output.contains("> Copy Fabro attach"));
+    }
+
+    #[test]
+    fn detail_lines_include_attach_actions_when_present() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            "fabro attach run".to_owned(),
+            vec![],
+            vec![
+                OperatorAction::OpenFabroAttach,
+                OperatorAction::CopyFabroAttach,
+            ],
+        );
+
+        let rendered = detail_lines(&detail)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Actions: Open Fabro attach, Copy Fabro attach"));
+    }
+
+    #[test]
+    fn attention_item_line_keeps_optional_next_action_label() {
+        let model = attention_model(TuiOverlay::None);
+        let item = AttentionItem::new(
+            "work-item".to_owned(),
+            "Needs review".to_owned(),
+            "source".to_owned(),
+            "repo".to_owned(),
+            Some(OperatorAction::OpenFabroAttach),
+        );
+
+        let rendered = format!("{:?}", attention_item_line(&model, 0, &item));
+
+        assert!(rendered.contains("> Needs review [Open Fabro attach]"));
+    }
+
+    #[test]
+    fn action_outcome_effect_maps_attach_outcomes() {
+        assert_eq!(
+            action_outcome_effect(OperatorActionOutcome::OpenAttachCommand(
+                "fabro attach run".to_owned()
+            )),
+            TuiRuntimeEffect::OpenAttachCommand("fabro attach run".to_owned())
+        );
+        assert_eq!(
+            action_outcome_effect(OperatorActionOutcome::CopyAttachCommand(
+                "fabro attach run".to_owned()
+            )),
+            TuiRuntimeEffect::CopyAttachCommand("fabro attach run".to_owned())
+        );
+    }
+
+    #[test]
     fn render_to_text_draws_command_modal_overlay() {
         let state = TuiInteractionState::new(
             0,
@@ -1299,13 +1343,13 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("> Open Fabro attach")),
+                .map(|rendered| !rendered.contains("Open Fabro attach")),
             Ok(true)
         );
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("  Copy Fabro attach")),
+                .map(|rendered| !rendered.contains("Copy Fabro attach")),
             Ok(true)
         );
     }
@@ -1327,23 +1371,21 @@ mod tests {
 
     fn demo_events() -> [ConsoleEvent; 2] {
         [
-            ConsoleEvent::new(
-                "evt_demo_1".to_owned(),
-                1,
-                "factory".to_owned(),
-                EventType::FabroHumanGateObserved,
-                "fabro:run_demo_1".to_owned(),
-                "repo:livespec-console-beads-fabro".to_owned(),
-                1,
+            lane_event(
+                "evt_demo_1",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
             ),
-            ConsoleEvent::new(
-                "evt_demo_2".to_owned(),
-                1,
-                "factory".to_owned(),
-                EventType::DispatcherNeedsRegroomObserved,
-                "dispatcher".to_owned(),
-                "repo:livespec-console-beads-fabro".to_owned(),
-                2,
+            lane_event(
+                "evt_demo_2",
+                "console-accept",
+                Lane::Acceptance,
+                None,
+                "a1",
+                "acceptance",
             ),
         ]
     }

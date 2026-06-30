@@ -224,8 +224,6 @@ impl CommandEnvelope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandType {
-    AttentionAcknowledgeRequested,
-    AttentionSnoozeRequested,
     FactoryDrainRequested,
 }
 
@@ -233,8 +231,6 @@ impl CommandType {
     #[must_use]
     pub const fn contract_name(&self) -> &'static str {
         match self {
-            Self::AttentionAcknowledgeRequested => "attention.acknowledge_requested",
-            Self::AttentionSnoozeRequested => "attention.snooze_requested",
             Self::FactoryDrainRequested => "factory.drain_requested",
         }
     }
@@ -242,7 +238,6 @@ impl CommandType {
     #[must_use]
     pub const fn context(&self) -> &'static str {
         match self {
-            Self::AttentionAcknowledgeRequested | Self::AttentionSnoozeRequested => "attention",
             Self::FactoryDrainRequested => "factory",
         }
     }
@@ -416,14 +411,6 @@ mod tests {
     #[test]
     fn command_type_contract_names_are_stable() {
         assert_eq!(
-            CommandType::AttentionAcknowledgeRequested.contract_name(),
-            "attention.acknowledge_requested"
-        );
-        assert_eq!(
-            CommandType::AttentionSnoozeRequested.contract_name(),
-            "attention.snooze_requested"
-        );
-        assert_eq!(
             CommandType::FactoryDrainRequested.contract_name(),
             "factory.drain_requested"
         );
@@ -431,11 +418,6 @@ mod tests {
 
     #[test]
     fn command_type_contexts_are_bounded_context_names() {
-        assert_eq!(
-            CommandType::AttentionAcknowledgeRequested.context(),
-            "attention"
-        );
-        assert_eq!(CommandType::AttentionSnoozeRequested.context(), "attention");
         assert_eq!(CommandType::FactoryDrainRequested.context(), "factory");
     }
 
