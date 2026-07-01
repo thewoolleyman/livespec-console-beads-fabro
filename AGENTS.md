@@ -179,3 +179,14 @@ Rust product changes follow Red-Green-Replay (enforced by the commit-msg hook
 once the Rust checker lands); docs / spec / config changes use `docs(...)` /
 `chore(...)` subjects and are exempt. Keep the specification cohesive; do not
 import orchestrator-only concerns except through explicit contracts.
+
+## Post-merge janitor: Rust toolchain on the mise PATH
+
+The factory Dispatcher's post-merge janitor re-runs `mise exec -- just check` in a
+fresh detached worktree under a scrubbed, non-interactive PATH. rustup (not mise)
+owns the Rust toolchain — pinned by `rust-toolchain.toml` — and installs
+`cargo`/`rustc`/`rustfmt`/`clippy` under `~/.cargo/bin`. An interactive shell gets
+that directory from rustup's profile snippet, but the janitor's minimal env does
+not, so `.mise.toml` exposes it via `[env] _.path = ["~/.cargo/bin"]`. Removing
+that entry reintroduces `cargo: not found` (exit 127) in the janitor even when the
+PR merged green.
