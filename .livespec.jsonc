@@ -18,6 +18,8 @@
     "codex":  { "status": "exempt", "reason": "livespec-console-beads-fabro is the Rust Control-Plane console; it ships no command/skill surface to resolve from a harness" }
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
+  // Credential-injection wrapper (fleet default) prefixed to the beads CLIs so a bare invocation self-heals its tenant secret.
+  "credential_wrapper": ["/usr/local/bin/with-livespec-env.sh", "--"],
   "livespec-orchestrator-beads-fabro": {
     "format": "beads",
     "compat": {
