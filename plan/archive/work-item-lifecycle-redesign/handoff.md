@@ -1,3 +1,29 @@
+> # ✅ CLOSED — epic complete (exit gate met 2026-07-01)
+>
+> This planning thread is **CLOSED**; the work-item-lifecycle epic's **exit
+> gate is MET** and this snapshot is archived (`plan/archive/`). Everything
+> below the banner is preserved verbatim as the **historical record** — it is
+> no longer the live next-action.
+>
+> **What closed the epic:**
+> - The console **E-walk is COMPLETE** — E-3a / E-3b / E-4 all merged
+>   (factory-implemented).
+> - The maintainer's **session-9 hold condition** ("factory self-publishes
+>   with zero native-auth bridge, fully clean-green dispatch") was
+>   **satisfied** by the clean-green proof dispatch: item `zgd` → **PR #74**,
+>   authored **and** merged by `app/livespec-pr-bot` via the factory's own
+>   **GitHub App installation token** (**zero native-auth bridge**), post-merge
+>   janitor **GREEN**, `zgd` → **done**, master CI **green**.
+> - The anchor epic **`livespec-35s3zo`** + all per-repo **L2 migration
+>   epics** + this console epic **`livespec-console-beads-fabro-vqh36l`** are
+>   now **CLOSED**.
+> - The local **overseer skill is KEPT and UPDATED** — deletion deferred to
+>   the future console operator-cockpit milestone (**decision 47**); **NOT
+>   deleted**.
+>
+> The token-gate / standing-config follow-ons noted below were non-blocking
+> for the E-walk and did not gate this close.
+
 # Handoff — work-item-lifecycle-redesign
 
 Single resumable execution-coordination point for this planning thread. A
