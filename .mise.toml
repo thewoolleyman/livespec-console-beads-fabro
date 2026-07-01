@@ -8,6 +8,18 @@
 # livespec/SPECIFICATION/non-functional-requirements.md §"Conformance Pattern"
 # (the `baseline` profile). Python packages pin via uv against pyproject.toml.
 
+[env]
+# Expose rustup's shim dir on the mise PATH. rustup (not mise) owns the Rust
+# toolchain — pinned by rust-toolchain.toml — and installs cargo/rustc/rustfmt/
+# clippy under ~/.cargo/bin. Interactive shells get that dir from rustup's
+# profile snippet, but non-interactive `mise exec -- just check` under a scrubbed
+# PATH does not. The Dispatcher's post-merge janitor is exactly that context: it
+# runs `mise exec -- just check` in a fresh worktree under a minimal env, so
+# without this cargo is invisible and every Rust target fails `cargo: not found`.
+# Adding the dir here keeps rust-toolchain.toml as the single toolchain pin while
+# making `mise exec` self-sufficient regardless of the ambient PATH.
+_.path = ["~/.cargo/bin"]
+
 [tools]
 uv       = "0.9.26"
 just     = "1.36.0"
