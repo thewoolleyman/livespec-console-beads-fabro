@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
 //! `console-spec-check` — behavioral-coverage primitives (clause -> scenario
-//! -> test), per `SPECIFICATION/non-functional-requirements.md` §"Behavioral
-//! Coverage".
+//! -> test), per the Behavioral Coverage section of
+//! `SPECIFICATION/non-functional-requirements.md`.
 //!
 //! This library ports livespec's Python plumbing to Rust:
 //!

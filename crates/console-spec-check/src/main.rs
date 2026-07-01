@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
 //! `console-spec-check` — the behavioral-coverage gate (clause -> scenario ->
-//! test), per `SPECIFICATION/non-functional-requirements.md` §"Behavioral
-//! Coverage".
+//! test), per the Behavioral Coverage section of
+//! `SPECIFICATION/non-functional-requirements.md`.
 //!
 //! Thin I/O shim around the `console_spec_check` library: it reads the
 //! SPECIFICATION sources and the `tests/heading-coverage.json` link registry

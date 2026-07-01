@@ -11,8 +11,8 @@
 //! comments, string literals, and identifiers such as `unwrap_or`.
 //!
 //! Each rule is falsifiable: a reviewer can name an input that makes it
-//! fail (see the test fixtures), satisfying
-//! `SPECIFICATION/non-functional-requirements.md` §"Architecture Tests".
+//! fail (see the test fixtures), satisfying the Architecture Tests
+//! obligation in `SPECIFICATION/non-functional-requirements.md`.
 
 use std::collections::BTreeSet;
 use std::fs;

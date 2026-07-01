@@ -1,7 +1,7 @@
 //! Unit tests for the behavioral-coverage primitives.
 //!
-//! Frozen at Red per `SPECIFICATION/non-functional-requirements.md`
-//! §"Red-Green-Replay". The gap-id parity vectors in
+//! Frozen at Red per the Red-Green-Replay section of
+//! `SPECIFICATION/non-functional-requirements.md`. The gap-id parity vectors in
 //! `tests/data/parity_golden.json` are generated from the family's vendored
 //! `spec_clauses.py` primitive (the exact module the orchestrator's
 //! `detect-impl-gaps` vendors), so the Rust port's gap-ids are pinned
