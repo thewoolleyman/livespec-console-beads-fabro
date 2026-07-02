@@ -678,11 +678,14 @@ pub fn handle_pending_factory_commands(
             continue;
         };
         let command_outcome = handle_factory_drain_command(&command, port)?;
+        let mut inserted_event_count = 0;
         for event in command_outcome.events() {
             let append = event_append_from_command_event(event, &command, handled_at);
-            store.append_event(&append)?;
+            if store.append_event(&append)?.status() == AppendStatus::Inserted {
+                inserted_event_count += 1;
+            }
         }
-        let result_json = format!(r#"{{"event_count":{}}}"#, command_outcome.events().len());
+        let result_json = format!(r#"{{"event_count":{inserted_event_count}}}"#);
         let error_json = if command_outcome.command_status() == "failed" {
             Some("{}")
         } else {
@@ -699,7 +702,7 @@ pub fn handle_pending_factory_commands(
         outcomes.push(FactoryCommandHandlingOutcome::new(
             status_outcome.command_id().to_owned(),
             status_outcome.status().to_owned(),
-            command_outcome.events().len(),
+            inserted_event_count,
         ));
     }
     Ok(outcomes)
