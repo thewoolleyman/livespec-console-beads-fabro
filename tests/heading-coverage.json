@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "scenario": "Scenario 7 -- Crash-gap recovery reconstructs a missing outcome",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_7_crash_gap.rs::scenario_7_reconciliation_reconstructs_missing_outcome_after_crash",
+    "clauses": []
+  }
+]
