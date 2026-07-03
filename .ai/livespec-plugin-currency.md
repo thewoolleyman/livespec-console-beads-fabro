@@ -56,11 +56,3 @@ Consequence for the "Beads runtime prerequisites" guidance in `AGENTS.md`
 pre-self-heal builds. On orchestrator **≥ 0.4.0 the plugin skills
 self-authenticate**, so a persistent `Access denied` there points at a genuinely
 missing/rotated secret or a wrapper misconfig — not merely "run under the wrapper."
-
-## `livespec-impl-plaintext` is superseded
-
-The `thewoolleyman/livespec-impl-plaintext` repo/marketplace now ships the
-`livespec-orchestrator-git-jsonl` plugin at HEAD; the old `livespec-impl-plaintext`
-plugin name no longer resolves (`claude plugin update` → "Plugin not found").
-A project still on it needs a **backend migration** (change `.livespec.jsonc`
-`implementation.plugin`), which is a maintainer decision, not a version bump.

@@ -46,10 +46,9 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       — keeping the livespec plugins current: per-project pins go stale,
       `claude plugin update <name>@<marketplace> --scope project` (why the
       `name@marketplace` form is required) vs. host-wide `codex plugin
-      marketplace upgrade`, "latest" = the `vX.Y.Z` tag, the beads self-heal
-      landing in orchestrator ≥ 0.4.0 (and how that qualifies the "Access
-      denied ⇒ outside the wrapper" rule below), and the superseded
-      `livespec-impl-plaintext`.
+      marketplace upgrade`, "latest" = the `vX.Y.Z` tag, and the beads
+      self-heal landing in orchestrator ≥ 0.4.0 (and how that qualifies the
+      "Access denied ⇒ outside the wrapper" rule below).
 - **Handoffs: update the living handoff file; NEVER print one inline.** When
   handing off to a future session, UPDATE the existing handoff prompt under
   `prompts/` (the single living handoff — the one path the next session runs)
