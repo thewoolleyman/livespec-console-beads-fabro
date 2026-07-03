@@ -64,12 +64,14 @@ fn derive_gap_id_matches_python_known_vectors() {
 #[test]
 fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::error::Error>> {
     // Ground truth measured via the family `spec_clauses.py` over the console
-    // SPECIFICATION (the keystone groom): 82 normative clauses, 3/20/7/52.
+    // SPECIFICATION. Updated for the v013 full-autonomous-mode revision, which
+    // added normative clauses to spec.md, contracts.md, and constraints.md:
+    // 116 normative clauses, 14/32/18/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
-        ("spec.md", 3_usize),
-        ("contracts.md", 20),
-        ("constraints.md", 7),
+        ("spec.md", 14_usize),
+        ("contracts.md", 32),
+        ("constraints.md", 18),
         ("non-functional-requirements.md", 52),
     ];
     let mut total = 0;
@@ -79,7 +81,10 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         assert_eq!(count, want, "clause count for {file}");
         total += count;
     }
-    assert_eq!(total, 82, "total normative clauses across the console spec");
+    assert_eq!(
+        total, 116,
+        "total normative clauses across the console spec"
+    );
     Ok(())
 }
 
