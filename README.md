@@ -61,7 +61,7 @@ follow-ups include growing the fuzz corpus with real event-store inputs,
 turning mutation testing from smoke coverage into a hard release gate, and
 replacing the current text-based architecture check with a richer crate
 graph/source parser. The original bootstrap plan in
-`research/tui-first-milestone-bootstrap-plan.md` is retained only as
+`archive/research/tui-first-milestone-bootstrap-plan.md` is retained only as
 historical rationale and is no longer a live work tracker.
 
 ## Beads

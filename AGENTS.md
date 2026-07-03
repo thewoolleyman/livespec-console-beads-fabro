@@ -53,11 +53,13 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       marketplace upgrade`, "latest" = the `vX.Y.Z` tag, and the beads
       self-heal landing in orchestrator ≥ 0.4.0 (and how that qualifies the
       "Access denied ⇒ outside the wrapper" rule below).
-- **Handoffs: update the living handoff file; NEVER print one inline.** When
-  handing off to a future session, UPDATE the existing handoff prompt under
-  `prompts/` (the single living handoff — the one path the next session runs)
-  in place and print its PATH. Do not print a handoff prompt's body in the chat,
-  and do not proliferate new handoff files.
+- **Handoffs: update the living plan-thread handoff; NEVER print one inline.**
+  Session handoffs live at `plan/<topic>/handoff.md` (one durable thread per
+  topic; resume via `/livespec-orchestrator-beads-fabro:plan <topic>`); UPDATE
+  it in place and print its PATH. Completed threads archive to
+  `plan/archive/<topic>/`; legacy prompt handoffs live in `archive/prompts/`.
+  Do not print a handoff body in the chat, and do not proliferate new handoff
+  files.
 
 ## Codex dogfooding (OpenAI Codex CLI/TUI)
 
