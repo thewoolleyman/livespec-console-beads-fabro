@@ -42,6 +42,10 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       spec-ground-truth coupling), reading CI logs (incl. the empty
       `gh run view --log-failed` gotcha), and verifying the CI'd commit before
       trusting a local test run.
+    - [`.ai/fleet-repo-naming.md`](.ai/fleet-repo-naming.md)
+      — never use bare "beads-fabro" (two sibling repos end in it); the
+      repo ↔ tenant ↔ ID-prefix map, and targeting repos by full
+      `/data/projects/<full-name>` path for destructive / tenant ops.
     - [`.ai/livespec-plugin-currency.md`](.ai/livespec-plugin-currency.md)
       — keeping the livespec plugins current: per-project pins go stale,
       `claude plugin update <name>@<marketplace> --scope project` (why the
