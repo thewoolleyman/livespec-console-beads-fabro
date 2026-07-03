@@ -39,6 +39,14 @@ bootstrap:
     just install-worktree-pack
     chmod +x dev-tooling/worktree-hydrate.sh
 
+# Idempotent: marketplace add / install / update all exit 0 when the target is
+# already present / already at latest. The `update` calls after each `install`
+# are required for currency — `install` is a no-op when any version is already
+# present locally, so without `update` a bumped upstream release never reaches a
+# previously-bootstrapped working copy. The SessionStart hook in
+# `.claude/settings.json` runs this recipe so each new session's project-scope
+# plugins are current; the plugin set mirrors this repo's `.claude/settings.json`
+# `enabledPlugins`.
 ensure-plugins:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -52,6 +60,9 @@ ensure-plugins:
     claude plugin install -s project livespec@livespec
     claude plugin install -s project livespec@livespec-driver-claude
     claude plugin install -s project livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro
+    claude plugin update -s project livespec@livespec
+    claude plugin update -s project livespec@livespec-driver-claude
+    claude plugin update -s project livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro
 
 ensure-codex-plugins:
     #!/usr/bin/env bash
