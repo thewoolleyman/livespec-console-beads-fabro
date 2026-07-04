@@ -6,14 +6,16 @@ tenant). Status is DERIVED from the ledger — run
 family env wrapper, from the repo root) and read the items named below;
 this file stores no status and no shadow work queue.
 
-**Thread state:** ratified. The proposal set was AMENDED 2026-07-04 per an
-independent read-only verification (one minor blocker + four advisories),
-re-verified clean, and RATIFIED 2026-07-04 — all four proposals accepted as
-one accept-all per-file decision, cutting `SPECIFICATION/history/v014/`
-(PR #92, merge commit `df70a7c`). Every maintainer gate below is
-now executed or resolved. No maintainer gate remains open; the remaining
-work is normal factory-dispatchable impl tracked in the ledger. The overseer
-triggers the re-archive separately after verification.
+**Thread state:** ARCHIVED — closed out 2026-07-04 (maintainer-verified). The
+proposal set was AMENDED 2026-07-04 per an independent read-only verification
+(one minor blocker + four advisories), re-verified clean, and RATIFIED
+2026-07-04 — all four proposals accepted as one accept-all per-file decision,
+cutting `SPECIFICATION/history/v014/` (PR #92, merge commit `df70a7c`). rt4 was
+re-statused `open` → `backlog`; the ratification-gate work-item
+`livespec-console-beads-fabro-iblkzp` is CLOSED (resolution: completed). Every
+maintainer gate below is executed or resolved; no maintainer gate remains open.
+The remaining work is normal factory-dispatchable impl tracked in the ledger.
+This thread now lives under `plan/archive/console-cruft-cleanup/`.
 
 ## What this thread is
 
@@ -54,16 +56,16 @@ classifications, and its anti-findings are in
    through this repo's warn-default behavioral-coverage gate), and
    `crates/console-spec-check/src/tests.rs` ground-truth clause counts
    moved in lockstep (contracts.md 32→36; total 116→120). Gate work-item
-   `livespec-console-beads-fabro-iblkzp` (the ratification gate, was
-   `blocked: needs-human` in Attention) is satisfied by this execution and
-   is ready to close on verification — NOT closed by this session (the
-   directive scoped the only work-item mutation to rt4).
+   `livespec-console-beads-fabro-iblkzp` (the ratification gate) is CLOSED
+   (resolution: completed, 2026-07-04) — its acceptance (a new
+   `history/vNNN/` recording the four dispositions + `proposed_changes/`
+   consumed) is met by v014.
 2. **The dependency-linked code rename** — work-item
    `livespec-console-beads-fabro-mb64bv` (`DispatcherJournalKind::NeedsRegroom`
    / `dispatch.needs_regroom_observed` → backlog-bounce vocabulary). Its
-   `depends_on` edge → `iblkzp` clears once `iblkzp` closes; then it is
-   normal factory-dispatchable impl work (no manual step beyond the normal
-   admission path). NOT a maintainer gate.
+   `depends_on` edge → `iblkzp` cleared when `iblkzp` closed (2026-07-04); it
+   now rests at `pending-approval`, awaiting the maintainer's explicit approve
+   through the operator surface. NOT a maintainer gate.
 3. **Upstream pending proposal** — RESOLVED. The orchestrator proposal
    `approval-is-the-pending-approval-to-ready-transition` ratified
    2026-07-04 as that repo's `SPECIFICATION/history/v029/`, so proposal 3
@@ -82,7 +84,8 @@ classifications, and its anti-findings are in
 - Docs-only cruft fixes (README arch-check staleness + gate list +
   retired `host-only` marker; the banned "DoR" acronym in
   `plan/impl-dispatch/handoff.md`) — PR #88.
-- The ratification — PR #92 (`SPECIFICATION/history/v014/`).
+- The ratification — PR #92 (`SPECIFICATION/history/v014/`, merge `df70a7c`).
+- The handoff update recording the ratification — PR #93.
 
 ## Impl work remaining (ledger-tracked, no maintainer gate)
 
@@ -98,11 +101,14 @@ normal factory/admission path (none is a planning-thread gate):
   impl-impact note; the Scenario 11 top-of-pyramid test lands with this
   slice, replacing the `TODO` in `tests/heading-coverage.json`.
 
-## Close-out condition
+## Close-out (final)
 
-No maintainer gate remains open. Once PR #92 is merged (done) and the
-overseer verifies, this thread is eligible for re-archive. The remaining
-impl slices are ordinary ledger work and do NOT keep the planning thread
-open. Definition-of-Ready for that re-archive: v014 present + doctor green
-(met), rt4 dispositioned (met), no open maintainer gate (met). The overseer
-triggers the re-archive separately.
+CLOSED OUT 2026-07-04, maintainer-verified. Definition-of-Ready for archive,
+all met: v014 present + doctor green; rt4 dispositioned (`open` → `backlog`);
+the ratification-gate work-item `iblkzp` CLOSED (resolution: completed); no
+open maintainer gate. PR #92 ratified the spec (merge `df70a7c`); PR #93
+recorded the ratification in this handoff; this PR moves the thread to
+`plan/archive/console-cruft-cleanup/`. The remaining impl slices (`mb64bv`
+rename — now `pending-approval`; the arch-check zero-Beads rule; the
+valve/policy command slice) are ordinary ledger work, tracked independently of
+this archived planning thread.
