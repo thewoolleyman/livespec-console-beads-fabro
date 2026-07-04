@@ -48,21 +48,7 @@ bootstrap:
 # plugins are current; the plugin set mirrors this repo's `.claude/settings.json`
 # `enabledPlugins`.
 ensure-plugins:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "claude CLI not found; skipping project-scoped Claude plugin install." >&2
-        exit 0
-    fi
-    claude plugin marketplace add --scope project thewoolleyman/livespec@release
-    claude plugin marketplace add --scope project thewoolleyman/livespec-driver-claude@release
-    claude plugin marketplace add --scope project thewoolleyman/livespec-orchestrator-beads-fabro@release
-    claude plugin install -s project livespec@livespec
-    claude plugin install -s project livespec@livespec-driver-claude
-    claude plugin install -s project livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro
-    claude plugin update -s project livespec@livespec
-    claude plugin update -s project livespec@livespec-driver-claude
-    claude plugin update -s project livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro
+    mise exec -- uv run --no-sync python -m livespec_dev_tooling.fleet.ensure_plugins
 
 ensure-codex-plugins:
     #!/usr/bin/env bash
