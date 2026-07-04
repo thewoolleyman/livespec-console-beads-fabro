@@ -6,8 +6,16 @@ tenant). Status is DERIVED from the ledger — run
 family env wrapper, from the repo root) and read the items named below;
 this file stores no status and no shadow work queue.
 
-**Thread state:** filing complete; every remaining step is behind the
-maintainer ratification gate below. A thread with open maintainer gates
+**Thread state:** filing complete; the proposal set was AMENDED
+2026-07-04 per an independent read-only verification (one minor blocker
+— the Bounded-Contexts list/diagram drift in proposal 3, which added a
+bullet with no matching mermaid node — plus four advisories:
+pending-anchor markers on Scenario 11, durable by-topic citations
+replacing `proposed_changes/` paths in would-be-ratified text, a pinned
+arch-check list insertion point, and a selective-disposition preamble
+note). Independent RE-VERIFICATION of the amended set is pending; do
+not run `/livespec:revise` before it passes. Every remaining step is
+behind the maintainer gates below. A thread with open maintainer gates
 is NEVER archived — this thread stays under `plan/` until the gates are
 executed.
 
@@ -37,15 +45,19 @@ classifications, and its anti-findings are in
 
 ## Open gates (all maintainer-owned)
 
-1. **Ratification of the proposal set** — work-item
-   `livespec-console-beads-fabro-iblkzp` (blocked: needs-human, in
-   Attention). Run `/livespec:revise` in THIS repo over
-   `SPECIFICATION/proposed_changes/console-cruft-cleanup.md` (four
-   independently accept/rejectable proposals; recommendation in the
-   work-item: accept all four). Co-edit at ratification: proposal 3
-   adds one `scenarios.md` H2, so the revise pass lands the matching
-   `tests/heading-coverage.json` entry (`test` MAY be `"TODO"` with a
-   reason).
+1. **Re-verification, then ratification of the proposal set** —
+   work-item `livespec-console-beads-fabro-iblkzp` (blocked:
+   needs-human, in Attention). ORDER MATTERS: first an independent
+   re-verification of the amended
+   `SPECIFICATION/proposed_changes/console-cruft-cleanup.md` (the
+   2026-07-04 amendment addressed one blocker + four advisories); only
+   after it passes, run `/livespec:revise` in THIS repo over that file
+   (four independently accept/rejectable proposals; recommendation in
+   the work-item: accept all four; the file's own preamble explains
+   accept-all vs. selective disposition). Co-edit at ratification:
+   proposal 3 adds one `scenarios.md` H2, so the revise pass lands the
+   matching `tests/heading-coverage.json` entry (`test` MAY be `"TODO"`
+   with a reason).
 2. **The dependency-linked code rename** — work-item
    `livespec-console-beads-fabro-mb64bv` (`pending-approval`, with a
    `depends_on` edge → `iblkzp`; once approved into `ready` the open

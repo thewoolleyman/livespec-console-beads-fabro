@@ -4,6 +4,12 @@ author: claude-fable-5
 created_at: 2026-07-04T05:41:09Z
 ---
 
+Disposition note: accepting all four proposals disposes as one per-file
+decision (proposal topic `console-cruft-cleanup`); selective disposition
+uses the revise modify disposition (or a pre-split of this file), which
+is how the "independently ratifiable" property of these proposals is
+exercised.
+
 ## Proposal: Retire the Beads adapter — the orchestrator CLI is the console's only work-item source
 
 ### Target specification files
@@ -73,7 +79,7 @@ with one added sentence: "Work-item state enters the console ONLY through the or
 >   (`list-work-items --json`), carrying the orchestrator-computed `lane` /
 >   `lane_reason` verbatim.
 
-**non-functional-requirements.md §"Architecture Tests"** — in "Concretely, the checks MUST enforce at least:", add the bullet "- no crate invokes `bd` or embeds a Beads-native read path (the zero-Beads-knowledge rule), and".
+**non-functional-requirements.md §"Architecture Tests"** — in "Concretely, the checks MUST enforce at least:", insert the bullet "- no crate invokes `bd` or embeds a Beads-native read path (the zero-Beads-knowledge rule), and" immediately AFTER the existing bullet "- UI does not call Beads/Fabro/LiveSpec/GitHub directly, and" and BEFORE "- product crates do not use `unwrap`/`expect` outside allowed scopes, and". The new bullet keeps its trailing ", and" (a non-final list position); the final bullet "- all use cases return typed `Result`." is unchanged.
 
 **non-functional-requirements.md §"Contributor Scenario H"** gherkin, second scenario — after "And UI crates talk only to projections and command APIs, never directly to Beads, Fabro, LiveSpec, Dispatcher, or GitHub", add the line "And no crate invokes bd or parses Beads-native records; work-item state enters only through the orchestrator-CLI port" (co-edited per the behavior => scenario split; the H2 heading is unchanged).
 
@@ -170,7 +176,7 @@ with:
 
 (`grooming.regroom_requested` is deleted: there is no needs-regroom state to request — a non-convergence bounce is Dispatcher-owned machinery landing the item in `backlog`, and the human regroom disposition on a live change is `work_item.reject_requested` with mode `regroom`. Nothing implements the deleted command — the shipped domain enum carries only `factory.drain_requested` — so no code is orphaned.)
 
-Follow the list with this paragraph: "The five `work_item.*` commands are the Work-item Lifecycle context's vocabulary. Each maps 1:1 onto the orchestrator's published `orchestrate run` action-id surface, and the console MUST issue them ONLY through that surface — it never writes the ledger directly: `work_item.approve_requested` → `approve:<work-item-id>`; `work_item.accept_requested` → `accept:<work-item-id>`; `work_item.reject_requested` (payload `mode ∈ {rework, regroom}`) → `reject:<work-item-id>:rework|regroom`; `work_item.set_admission_requested` (payload `policy ∈ {auto, manual}`) → `set-admission:<work-item-id>:<policy>`; `work_item.set_acceptance_requested` (payload `policy ∈ {ai-only, human-only, ai-then-human}`) → `set-acceptance:<work-item-id>:<policy>`. Approve semantics and the two policy-edit action ids follow the PENDING orchestrator proposal (repo `thewoolleyman/livespec-orchestrator-beads-fabro`, `SPECIFICATION/proposed_changes/approval-is-the-pending-approval-to-ready-transition.md`): approve is the human approval act — the `pending-approval → ready` transition — and a policy edit never moves an item between states (the no-surprise-transitions rule); this mapping cites that proposal as its pending anchor and tracks its ratified form. The honesty rule of this section applies unchanged: a simulated or unimplemented orchestrator port MUST surface a not-observed / not_wired outcome and MUST NOT fabricate success. Snooze/acknowledge remain killed (design record decision 16): there is no local-dismiss command; \"not now\" is defer/re-rank via the orchestrator."
+Follow the list with this paragraph: "The five `work_item.*` commands are the Work-item Lifecycle context's vocabulary. Each maps 1:1 onto the orchestrator's published `orchestrate run` action-id surface, and the console MUST issue them ONLY through that surface — it never writes the ledger directly: `work_item.approve_requested` → `approve:<work-item-id>`; `work_item.accept_requested` → `accept:<work-item-id>`; `work_item.reject_requested` (payload `mode ∈ {rework, regroom}`) → `reject:<work-item-id>:rework|regroom`; `work_item.set_admission_requested` (payload `policy ∈ {auto, manual}`) → `set-admission:<work-item-id>:<policy>`; `work_item.set_acceptance_requested` (payload `policy ∈ {ai-only, human-only, ai-then-human}`) → `set-acceptance:<work-item-id>:<policy>`. Approve semantics and the two policy-edit action ids follow the PENDING orchestrator proposal (topic `approval-is-the-pending-approval-to-ready-transition`, repo `thewoolleyman/livespec-orchestrator-beads-fabro`): approve is the human approval act — the `pending-approval → ready` transition — and a policy edit never moves an item between states (the no-surprise-transitions rule). This mapping cites that proposal BY TOPIC as its pending anchor — no `proposed_changes/` path lands in ratified text, because that path dangles once the proposal ratifies and archives into `history/`; upon its ratification the reference becomes that repo's ratified `SPECIFICATION/contracts.md` sections (§"Work-item state semantics" and the `orchestrate` action-id surface), and updating it is part of the already-planned post-ratification alignment. The honesty rule of this section applies unchanged: a simulated or unimplemented orchestrator port MUST surface a not-observed / not_wired outcome and MUST NOT fabricate success. Snooze/acknowledge remain killed (design record decision 16): there is no local-dismiss command; \"not now\" is defer/re-rank via the orchestrator."
 
 **spec.md §"Bounded Contexts"** — after the **Grooming** bullet, add:
 
@@ -178,6 +184,8 @@ Follow the list with this paragraph: "The five `work_item.*` commands are the Wo
 >   reject) and the policy-edit commands (set-admission / set-acceptance),
 >   issued through the orchestrator's published `orchestrate` action surface;
 >   observes the resulting lane transitions.
+
+**spec.md §"Bounded Contexts"** mermaid — the diagram mirrors the bullet list 1:1, so the new context needs a matching node and edge. After the node line `Attention["Attention\nlane-derived inbox"]`, add the node `WorkItemLifecycle["Work-item Lifecycle\nvalves + policy edits"]`; beside the section's existing context-to-Attention edges, add the edge `WorkItemLifecycle -->|"valve + policy outcome events"| Attention`. Edge reasoning: every operator-facing context in this diagram edges INTO the Attention inbox (`Ingestion`, `Factory`, `Grooming`, `Hygiene` all do), and the valve/policy outcome events are exactly what resolve or update the Attention items the valves act on, so the new context follows the section's existing edge semantics. The label uses this diagram's existing `\n` line-break style and carries no temporal markers. (The `Grooming` node's own label is edited by the "Retire needs-regroom vocabulary" proposal beside this one; the two diagram edits touch different lines and compose in either ratification order.)
 
 **spec.md §"Purpose"** — replace the operator-question bullet:
 
@@ -192,6 +200,16 @@ with:
 **scenarios.md** — add a new H2 section at the end:
 
 > ## Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface
+>
+> Pending anchor: the approve and policy-edit scenes below follow the
+> PENDING orchestrator proposal (topic
+> `approval-is-the-pending-approval-to-ready-transition`, repo
+> `thewoolleyman/livespec-orchestrator-beads-fabro`); if that proposal is
+> rejected or ratifies in a different form, this scenario reworks
+> alongside the command-mapping paragraph in `contracts.md`. Upon its
+> ratification the reference becomes that repo's ratified
+> `SPECIFICATION/contracts.md` §"Work-item state semantics", updated as
+> part of the post-ratification alignment.
 >
 > ```gherkin
 > Feature: Human valve and policy-edit commands
@@ -262,9 +280,12 @@ with:
 > capture surface, so the intake Definition-of-Ready checklist and the
 > item's effective `admission_policy` route its lifecycle state -- an
 > item is never filed directly into `ready` (approval IS the
-> `pending-approval → ready` transition; pending anchor: repo
-> `thewoolleyman/livespec-orchestrator-beads-fabro`,
-> `SPECIFICATION/proposed_changes/approval-is-the-pending-approval-to-ready-transition.md`).
+> `pending-approval → ready` transition; pending anchor: the orchestrator
+> proposal topic `approval-is-the-pending-approval-to-ready-transition`,
+> repo `thewoolleyman/livespec-orchestrator-beads-fabro` -- upon its
+> ratification this reference becomes that repo's ratified
+> `SPECIFICATION/contracts.md` §"Work-item state semantics", updated as
+> part of the post-ratification alignment).
 
 **non-functional-requirements.md §"Contributor Scenario C"** mermaid — `Chore["finding -> ready chore work-item; never fail master"]` becomes `Chore["finding -> top-ranked chore work-item; never fail master"]`.
 
