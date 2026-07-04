@@ -12,7 +12,8 @@ The console owns the human operator view across:
 - Dispatcher waves and journals
 - Fabro runs and human gates
 - GitHub pull requests and checks
-- manual / host-only work that must not enter the factory
+- work held for the operator's explicit approval rather than
+  autonomous dispatch
 
 The initial product direction is a single Rust executable with an
 event-sourced core, pull adapters with durable checkpoint/backfill,
@@ -38,7 +39,8 @@ just check
 The enforced gate runs Rust formatting, strict Clippy, `cargo test`,
 `cargo-nextest`, 100% library line coverage through `cargo-llvm-cov`,
 dependency policy through `cargo-deny`, unused dependency detection
-through `cargo-machete`, and the repo-local architecture check.
+through `cargo-machete`, the repo-local AST-based architecture check,
+and the behavioral-coverage link check (`check-behavior-coverage`).
 
 Two higher-cost probes are exposed as explicit smoke targets:
 
@@ -57,10 +59,9 @@ useful failure signal.
 
 Remaining quality and feature work is tracked in the Beads ledger, with
 authoritative requirements in [SPECIFICATION/](SPECIFICATION/). Known
-follow-ups include growing the fuzz corpus with real event-store inputs,
-turning mutation testing from smoke coverage into a hard release gate, and
-replacing the current text-based architecture check with a richer crate
-graph/source parser. The original bootstrap plan in
+follow-ups include growing the fuzz corpus with real event-store inputs
+and turning mutation testing from smoke coverage into a hard release
+gate. The original bootstrap plan in
 `archive/research/tui-first-milestone-bootstrap-plan.md` is retained only as
 historical rationale and is no longer a live work tracker.
 
