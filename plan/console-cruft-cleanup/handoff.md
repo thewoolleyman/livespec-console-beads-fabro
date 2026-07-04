@@ -6,18 +6,14 @@ tenant). Status is DERIVED from the ledger — run
 family env wrapper, from the repo root) and read the items named below;
 this file stores no status and no shadow work queue.
 
-**Thread state:** filing complete; the proposal set was AMENDED
-2026-07-04 per an independent read-only verification (one minor blocker
-— the Bounded-Contexts list/diagram drift in proposal 3, which added a
-bullet with no matching mermaid node — plus four advisories:
-pending-anchor markers on Scenario 11, durable by-topic citations
-replacing `proposed_changes/` paths in would-be-ratified text, a pinned
-arch-check list insertion point, and a selective-disposition preamble
-note). Independent RE-VERIFICATION of the amended set is pending; do
-not run `/livespec:revise` before it passes. Every remaining step is
-behind the maintainer gates below. A thread with open maintainer gates
-is NEVER archived — this thread stays under `plan/` until the gates are
-executed.
+**Thread state:** ratified. The proposal set was AMENDED 2026-07-04 per an
+independent read-only verification (one minor blocker + four advisories),
+re-verified clean, and RATIFIED 2026-07-04 — all four proposals accepted as
+one accept-all per-file decision, cutting `SPECIFICATION/history/v014/`
+(PR #92, merge commit `df70a7c`). Every maintainer gate below is
+now executed or resolved. No maintainer gate remains open; the remaining
+work is normal factory-dispatchable impl tracked in the ledger. The overseer
+triggers the re-archive separately after verification.
 
 ## What this thread is
 
@@ -26,66 +22,87 @@ or wrong cruft in `livespec-console-beads-fabro` — the console spec was
 authored before the work-item-state-machine design session (2026-06-27)
 and was only partially re-derived against it. The audit, its
 classifications, and its anti-findings are in
-`research/audit-findings.md` (read it first).
+`research/audit-findings.md`.
 
 ## Read-first chain
 
-1. `research/audit-findings.md` (this thread) — the full audit record:
-   what was found, what was verified correct, where each finding went.
-2. `SPECIFICATION/proposed_changes/console-cruft-cleanup.md` (this
-   repo) — the four filed proposals awaiting ratification.
+1. `research/audit-findings.md` (this thread) — the full audit record.
+2. `SPECIFICATION/history/v014/proposed_changes/console-cruft-cleanup.md`
+   (this repo) — the four ratified proposals, with their paired
+   `console-cruft-cleanup-revision.md` (decision: accept).
 3. The design of record: repo `thewoolleyman/livespec`,
    `plan/archive/work-item-state-machine/research/02-design.md` (§3,
    §7, §8) and `03-decision-log.md` (decisions 3, 15, 16, 17, 22–32).
-4. The pending upstream anchor: repo
-   `thewoolleyman/livespec-orchestrator-beads-fabro`,
-   `SPECIFICATION/proposed_changes/approval-is-the-pending-approval-to-ready-transition.md`
-   — proposal 3 of this thread's set cites it as PENDING (approve
-   semantics + the `set-admission:`/`set-acceptance:` action ids).
+4. The upstream anchor, now RATIFIED: repo
+   `thewoolleyman/livespec-orchestrator-beads-fabro`, ratified as that
+   repo's `SPECIFICATION/history/v029/` (topic
+   `approval-is-the-pending-approval-to-ready-transition`); the live
+   `SPECIFICATION/contracts.md` "Work-item state semantics" section and
+   the `orchestrate` action-id surface. This thread's proposals cite it
+   in resolved (non-pending) prose form.
 
-## Open gates (all maintainer-owned)
+## Gates — all executed or resolved
 
-1. **Re-verification, then ratification of the proposal set** —
-   work-item `livespec-console-beads-fabro-iblkzp` (blocked:
-   needs-human, in Attention). ORDER MATTERS: first an independent
-   re-verification of the amended
-   `SPECIFICATION/proposed_changes/console-cruft-cleanup.md` (the
-   2026-07-04 amendment addressed one blocker + four advisories); only
-   after it passes, run `/livespec:revise` in THIS repo over that file
-   (four independently accept/rejectable proposals; recommendation in
-   the work-item: accept all four; the file's own preamble explains
-   accept-all vs. selective disposition). Co-edit at ratification:
-   proposal 3 adds one `scenarios.md` H2, so the revise pass lands the
-   matching `tests/heading-coverage.json` entry (`test` MAY be `"TODO"`
-   with a reason).
+1. **Re-verification + ratification of the proposal set** — EXECUTED
+   2026-07-04. Independent re-verification of the amended
+   `console-cruft-cleanup.md` returned NO BLOCKERS; `/livespec:revise`
+   accepted all four proposals in one accept-all per-file decision,
+   cutting `SPECIFICATION/history/v014/`. Post-step doctor static: green
+   (19 pass, 2 skip, 0 fail). Co-edits landed in the same PR:
+   `tests/heading-coverage.json` gained the Scenario 11 entry
+   (`test="TODO"` + a reason naming its test tier — the literal TODO rides
+   through this repo's warn-default behavioral-coverage gate), and
+   `crates/console-spec-check/src/tests.rs` ground-truth clause counts
+   moved in lockstep (contracts.md 32→36; total 116→120). Gate work-item
+   `livespec-console-beads-fabro-iblkzp` (the ratification gate, was
+   `blocked: needs-human` in Attention) is satisfied by this execution and
+   is ready to close on verification — NOT closed by this session (the
+   directive scoped the only work-item mutation to rt4).
 2. **The dependency-linked code rename** — work-item
-   `livespec-console-beads-fabro-mb64bv` (`pending-approval`, with a
-   `depends_on` edge → `iblkzp`; once approved into `ready` the open
-   dependency renders it blocked:dependency until the gate closes, and
-   the Dispatcher will not admit it before then). Factory-dispatchable
-   after ratification; no manual step beyond the normal admission path.
-3. **Upstream pending proposal** (context, owned by the orchestrator
-   repo, not this thread): if
-   `approval-is-the-pending-approval-to-ready-transition` ratifies in a
-   different form or is rejected, proposal 3's mapping paragraph tracks
-   whatever replaces it — revisit wording at ratification time.
-4. **Surfaced, not acted on:** one legacy `open`-status ledger item
-   remains in this repo's tenant (`livespec-console-beads-fabro-rt4`,
-   "Implement full autonomous mode (operator surface)") — a leftover
-   from the fleet 7-state remediation, for the maintainer to
-   re-status or close; this track did not silently rewrite it.
+   `livespec-console-beads-fabro-mb64bv` (`DispatcherJournalKind::NeedsRegroom`
+   / `dispatch.needs_regroom_observed` → backlog-bounce vocabulary). Its
+   `depends_on` edge → `iblkzp` clears once `iblkzp` closes; then it is
+   normal factory-dispatchable impl work (no manual step beyond the normal
+   admission path). NOT a maintainer gate.
+3. **Upstream pending proposal** — RESOLVED. The orchestrator proposal
+   `approval-is-the-pending-approval-to-ready-transition` ratified
+   2026-07-04 as that repo's `SPECIFICATION/history/v029/`, so proposal 3
+   and proposal 4's pending-anchor hedges were dropped at ratification and
+   cite the ratified sections directly. No longer pending.
+4. **Legacy `open` ledger item** — DISPOSITIONED.
+   `livespec-console-beads-fabro-rt4` ("Implement full autonomous mode
+   (operator surface)") was re-statused from the retired legacy `open`
+   status to `backlog` (the 7-state lifecycle decomposition state) per the
+   maintainer decision recorded by the overseer 2026-07-04, with a
+   journaled comment naming the actor (claude-opus-4-8, this session) and
+   the decision. The maintainer classified it epic-shaped future work.
 
 ## Already merged / no gate
 
 - Docs-only cruft fixes (README arch-check staleness + gate list +
   retired `host-only` marker; the banned "DoR" acronym in
-  `plan/impl-dispatch/handoff.md`) — PR #88 in this repo.
+  `plan/impl-dispatch/handoff.md`) — PR #88.
+- The ratification — PR #92 (`SPECIFICATION/history/v014/`).
 
-## Next action (single path)
+## Impl work remaining (ledger-tracked, no maintainer gate)
 
-Execute gate 1: run `/livespec:revise` in this repo and disposition the
-four proposals of
-`SPECIFICATION/proposed_changes/console-cruft-cleanup.md`. Everything
-else (the `mb64bv` rename slice, the arch-check zero-Beads rule, the
-valve-command implementation slice recorded in proposal 3's impl-impact
-note) unblocks or is filed from that pass.
+Authorized-at-ratification slices, now unblocked, that proceed through the
+normal factory/admission path (none is a planning-thread gate):
+
+- `mb64bv` — the dispatcher-journal vocabulary rename (needs-regroom →
+  backlog-bounce), dependency-linked behind the now-executed gate.
+- The arch-check zero-Beads-knowledge rule (NFR Architecture Tests now
+  enumerate it; `console-arch-check` gains the check).
+- The five `work_item.*` valve/policy commands (domain `CommandType`
+  variants + handlers + orchestrator port) recorded in proposal 3's
+  impl-impact note; the Scenario 11 top-of-pyramid test lands with this
+  slice, replacing the `TODO` in `tests/heading-coverage.json`.
+
+## Close-out condition
+
+No maintainer gate remains open. Once PR #92 is merged (done) and the
+overseer verifies, this thread is eligible for re-archive. The remaining
+impl slices are ordinary ledger work and do NOT keep the planning thread
+open. Definition-of-Ready for that re-archive: v014 present + doctor green
+(met), rt4 dispositioned (met), no open maintainer gate (met). The overseer
+triggers the re-archive separately.
