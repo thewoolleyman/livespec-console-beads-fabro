@@ -47,10 +47,11 @@ classifications, and its anti-findings are in
    `tests/heading-coverage.json` entry (`test` MAY be `"TODO"` with a
    reason).
 2. **The dependency-linked code rename** — work-item
-   `livespec-console-beads-fabro-mb64bv` (`pending-approval`,
-   `depends_on` → `iblkzp`, so it renders blocked:dependency until the
-   gate closes). Factory-dispatchable after ratification; no manual
-   step beyond the normal admission path.
+   `livespec-console-beads-fabro-mb64bv` (`pending-approval`, with a
+   `depends_on` edge → `iblkzp`; once approved into `ready` the open
+   dependency renders it blocked:dependency until the gate closes, and
+   the Dispatcher will not admit it before then). Factory-dispatchable
+   after ratification; no manual step beyond the normal admission path.
 3. **Upstream pending proposal** (context, owned by the orchestrator
    repo, not this thread): if
    `approval-is-the-pending-approval-to-ready-transition` ratifies in a
