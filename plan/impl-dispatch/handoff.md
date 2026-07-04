@@ -36,8 +36,9 @@ contributor scenarios.
      crash-gap reconciliation reconstructs a missing outcome).
    Promotion used the impl plugin's own store seams (`update_work_item_status`
    + `client.update_issue(add_labels=[...])`) because no CLI exists for a
-   `backlog → ready` promotion with policy-setting (intake DoR is applied at
-   capture time, not retroactively).
+   `backlog → ready` promotion with policy-setting (the intake
+   Definition-of-Ready checklist is applied at capture time, not
+   retroactively).
 
 ## Dependency chain (why these two first)
 
