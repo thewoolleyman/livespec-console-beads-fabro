@@ -754,7 +754,7 @@ mod tests {
                 "evt_2".to_owned(),
                 1,
                 "dispatch".to_owned(),
-                EventType::DispatcherNeedsRegroomObserved,
+                EventType::DispatcherBacklogBounceObserved,
                 "dispatcher".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
                 2,
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(events[1].event_id(), "evt_2");
         assert_eq!(
             events[1].event_type(),
-            &EventType::DispatcherNeedsRegroomObserved
+            &EventType::DispatcherBacklogBounceObserved
         );
         assert_eq!(events[1].context(), "dispatch");
         assert_eq!(events[1].stream_seq(), 2);

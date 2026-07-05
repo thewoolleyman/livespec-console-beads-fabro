@@ -16,7 +16,7 @@ fuzz_target!(|data: &[u8]| {
         Err(_error) => u64::MAX,
     };
     let event_type = match selector % 4 {
-        0 => EventType::DispatcherNeedsRegroomObserved,
+        0 => EventType::DispatcherBacklogBounceObserved,
         1 => EventType::FabroHumanGateObserved,
         2 => EventType::FactoryDrainRequested,
         _ => EventType::LivespecReviseRequired,

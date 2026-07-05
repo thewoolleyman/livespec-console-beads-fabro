@@ -520,14 +520,14 @@ impl LivespecNextSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatcherJournalKind {
-    NeedsRegroom,
+    BacklogBounce,
 }
 
 impl DispatcherJournalKind {
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::NeedsRegroom => "needs-regroom",
+            Self::BacklogBounce => "backlog-bounce",
         }
     }
 }
@@ -947,7 +947,7 @@ fn dispatcher_journal_event(entry: DispatcherJournalEntry) -> NormalizedSourceEv
             ),
             1,
             "factory".to_owned(),
-            EventType::DispatcherNeedsRegroomObserved,
+            EventType::DispatcherBacklogBounceObserved,
             SourceAdapterKind::Dispatcher.source_name().to_owned(),
             repo_stream(entry.repo()),
             entry.source_version(),
@@ -1447,7 +1447,7 @@ pub fn parse_dispatcher_observation(
         observed.repo(),
         &work_item_id,
         &dispatch_id,
-        DispatcherJournalKind::NeedsRegroom,
+        DispatcherJournalKind::BacklogBounce,
         version,
     )
     .map_err(|_error| "invalid journal entry".to_owned())?;
@@ -1998,7 +1998,10 @@ mod tests {
         assert_eq!(LaneReason::NeedsHuman.label(), "needs-human");
         assert_eq!(LaneReason::InfraExternal.label(), "infra-external");
         assert_eq!(LaneReason::Dependency.label(), "dependency");
-        assert_eq!(DispatcherJournalKind::NeedsRegroom.label(), "needs-regroom");
+        assert_eq!(
+            DispatcherJournalKind::BacklogBounce.label(),
+            "backlog-bounce"
+        );
         assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
         assert_eq!(GithubPullRequestState::Open.label(), "open");
         assert_eq!(
@@ -2136,7 +2139,7 @@ mod tests {
             " repo ",
             " item ",
             " dispatch ",
-            DispatcherJournalKind::NeedsRegroom,
+            DispatcherJournalKind::BacklogBounce,
             9,
         );
 
@@ -2151,7 +2154,7 @@ mod tests {
         );
         assert_eq!(
             entry.as_ref().map(DispatcherJournalEntry::kind),
-            Ok(DispatcherJournalKind::NeedsRegroom)
+            Ok(DispatcherJournalKind::BacklogBounce)
         );
         assert_eq!(
             entry.as_ref().map(DispatcherJournalEntry::source_version),
@@ -2162,7 +2165,7 @@ mod tests {
                 " ",
                 "item",
                 "dispatch",
-                DispatcherJournalKind::NeedsRegroom,
+                DispatcherJournalKind::BacklogBounce,
                 1
             ),
             Err(AdapterError::EmptyRepo)
@@ -2172,7 +2175,7 @@ mod tests {
                 "repo",
                 " ",
                 "dispatch",
-                DispatcherJournalKind::NeedsRegroom,
+                DispatcherJournalKind::BacklogBounce,
                 1
             ),
             Err(AdapterError::EmptyWorkItemId)
@@ -2182,7 +2185,7 @@ mod tests {
                 "repo",
                 "item",
                 " ",
-                DispatcherJournalKind::NeedsRegroom,
+                DispatcherJournalKind::BacklogBounce,
                 1
             ),
             Err(AdapterError::EmptyDispatchId)
@@ -2192,7 +2195,7 @@ mod tests {
                 "repo",
                 "item",
                 "dispatch",
-                DispatcherJournalKind::NeedsRegroom,
+                DispatcherJournalKind::BacklogBounce,
                 0
             ),
             Err(AdapterError::InvalidSourceVersion)
@@ -2413,7 +2416,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_entry_normalizes_to_needs_regroom_event() {
+    fn dispatcher_entry_normalizes_to_backlog_bounce_event() {
         let entry = dispatcher_entry_fixture();
         let poll = normalize_dispatcher_journal_entry(entry);
 
@@ -2498,7 +2501,7 @@ mod tests {
             repo: "livespec-console-beads-fabro".to_owned(),
             work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
             dispatch_id: "dispatch_1".to_owned(),
-            kind: DispatcherJournalKind::NeedsRegroom,
+            kind: DispatcherJournalKind::BacklogBounce,
             source_version: 8,
         }
     }
@@ -2510,7 +2513,7 @@ mod tests {
                     .to_owned(),
                 1,
                 "factory".to_owned(),
-                EventType::DispatcherNeedsRegroomObserved,
+                EventType::DispatcherBacklogBounceObserved,
                 "dispatcher".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
                 8,
@@ -2950,7 +2953,7 @@ mod tests {
                 repo: "console".to_owned(),
                 work_item_id: "console-1".to_owned(),
                 dispatch_id: "dispatch_9".to_owned(),
-                kind: DispatcherJournalKind::NeedsRegroom,
+                kind: DispatcherJournalKind::BacklogBounce,
                 source_version: version,
             })
         );

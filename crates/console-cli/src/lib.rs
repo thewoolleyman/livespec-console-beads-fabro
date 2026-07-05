@@ -418,7 +418,7 @@ fn source_polls_from_seed(
         seed.repo,
         seed.work_item_id,
         seed.dispatch_id,
-        DispatcherJournalKind::NeedsRegroom,
+        DispatcherJournalKind::BacklogBounce,
         2,
     )?;
     let fabro_snapshot = FabroRunSnapshot::new(

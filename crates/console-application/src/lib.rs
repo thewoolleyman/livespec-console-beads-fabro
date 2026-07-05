@@ -1146,7 +1146,7 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         | EventType::FactoryDrainRequested
         | EventType::FactoryDrainStarted => "factory",
         EventType::WorkItemSnapshotObserved
-        | EventType::DispatcherNeedsRegroomObserved
+        | EventType::DispatcherBacklogBounceObserved
         | EventType::FabroHumanGateObserved
         | EventType::GithubPullRequestSnapshotObserved
         | EventType::LivespecNextSnapshotObserved
@@ -1533,7 +1533,7 @@ impl AttentionEvent for EventType {
             Self::GithubPullRequestSnapshotObserved => "GitHub pull request snapshot",
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
-            Self::DispatcherNeedsRegroomObserved => "Dispatcher needs-regroom",
+            Self::DispatcherBacklogBounceObserved => "Dispatcher backlog bounce",
             Self::FactoryDrainRequested => "Factory drain requested",
             Self::FactoryDrainStarted => "Factory drain started",
             Self::SourceCompletenessFindingObserved => "Source completeness finding",
@@ -2744,10 +2744,10 @@ mod tests {
                 1,
             ),
             ConsoleEvent::new(
-                "evt_regroom".to_owned(),
+                "evt_backlog_bounce".to_owned(),
                 1,
                 "factory".to_owned(),
-                EventType::DispatcherNeedsRegroomObserved,
+                EventType::DispatcherBacklogBounceObserved,
                 "dispatcher".to_owned(),
                 "factory:livespec-console-beads-fabro".to_owned(),
                 2,
@@ -2976,8 +2976,8 @@ mod tests {
             "Work-item snapshot"
         );
         assert_eq!(
-            EventType::DispatcherNeedsRegroomObserved.label(),
-            "Dispatcher needs-regroom"
+            EventType::DispatcherBacklogBounceObserved.label(),
+            "Dispatcher backlog bounce"
         );
         assert_eq!(
             EventType::FabroHumanGateObserved.label(),
