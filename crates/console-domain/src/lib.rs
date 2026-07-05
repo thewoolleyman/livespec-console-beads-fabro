@@ -110,7 +110,7 @@ pub enum EventType {
     WorkItemSnapshotObserved,
     CommandAccepted,
     CommandRejected,
-    DispatcherNeedsRegroomObserved,
+    DispatcherBacklogBounceObserved,
     FabroHumanGateObserved,
     FactoryDrainCompleted,
     FactoryDrainFailed,
@@ -131,7 +131,7 @@ impl EventType {
             Self::WorkItemSnapshotObserved => "work_item.snapshot_observed",
             Self::CommandAccepted => "command.accepted",
             Self::CommandRejected => "command.rejected",
-            Self::DispatcherNeedsRegroomObserved => "dispatch.needs_regroom_observed",
+            Self::DispatcherBacklogBounceObserved => "dispatch.backlog_bounce_observed",
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
             Self::FactoryDrainFailed => "factory.drain.failed",
@@ -152,7 +152,7 @@ impl EventType {
             "work_item.snapshot_observed" => Some(Self::WorkItemSnapshotObserved),
             "command.accepted" => Some(Self::CommandAccepted),
             "command.rejected" => Some(Self::CommandRejected),
-            "dispatch.needs_regroom_observed" => Some(Self::DispatcherNeedsRegroomObserved),
+            "dispatch.backlog_bounce_observed" => Some(Self::DispatcherBacklogBounceObserved),
             "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
@@ -315,8 +315,8 @@ mod tests {
             "command.rejected"
         );
         assert_eq!(
-            EventType::DispatcherNeedsRegroomObserved.contract_name(),
-            "dispatch.needs_regroom_observed"
+            EventType::DispatcherBacklogBounceObserved.contract_name(),
+            "dispatch.backlog_bounce_observed"
         );
         assert_eq!(
             EventType::FabroHumanGateObserved.contract_name(),
@@ -370,7 +370,7 @@ mod tests {
             EventType::WorkItemSnapshotObserved,
             EventType::CommandAccepted,
             EventType::CommandRejected,
-            EventType::DispatcherNeedsRegroomObserved,
+            EventType::DispatcherBacklogBounceObserved,
             EventType::FabroHumanGateObserved,
             EventType::FactoryDrainCompleted,
             EventType::FactoryDrainFailed,
