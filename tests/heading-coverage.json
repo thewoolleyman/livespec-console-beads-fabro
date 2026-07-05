@@ -1,5 +1,11 @@
 [
   {
+    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_6_policy_rejected_drain.rs::scenario_6_policy_rejected_drain_emits_rejection_without_invoking_port",
+    "clauses": []
+  },
+  {
     "scenario": "Scenario 7 -- Crash-gap recovery reconstructs a missing outcome",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/scenario_7_crash_gap.rs::scenario_7_reconciliation_reconstructs_missing_outcome_after_crash",

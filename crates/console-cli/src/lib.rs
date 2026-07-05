@@ -13,8 +13,8 @@ use console_application::source_adapters::{
     normalize_work_item_snapshot,
 };
 use console_application::{
-    ApplicationError, FactoryDrainPort, build_tui_model, handle_factory_drain_command,
-    project_attention,
+    ApplicationError, FactoryDrainPolicy, FactoryDrainPort, build_tui_model,
+    handle_factory_drain_command, project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NormalizeObservation, NormalizedSourceEvent,
         ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
@@ -624,6 +624,8 @@ impl FactoryCommandHandlingOutcome {
 pub trait FactoryCommandStore {
     fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>>;
 
+    fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>>;
+
     fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome>;
 
     fn update_command_status(
@@ -639,6 +641,10 @@ pub trait FactoryCommandStore {
 impl FactoryCommandStore for SqliteEventStore {
     fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         Self::list_commands(self)
+    }
+
+    fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
+        Self::list_console_events(self)
     }
 
     fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
@@ -669,6 +675,8 @@ pub fn handle_pending_factory_commands(
     handled_at: &str,
     port: &mut dyn FactoryDrainPort,
 ) -> ConsoleRuntimeResult<Vec<FactoryCommandHandlingOutcome>> {
+    let policy_events = store.list_console_events()?;
+    let policy = FactoryDrainPolicy::from_events(&policy_events);
     let mut outcomes = Vec::new();
     for stored_command in store.list_commands()? {
         if stored_command.status() != "pending" {
@@ -677,7 +685,7 @@ pub fn handle_pending_factory_commands(
         let Some(command) = factory_command_from_stored(&stored_command)? else {
             continue;
         };
-        let command_outcome = handle_factory_drain_command(&command, port)?;
+        let command_outcome = handle_factory_drain_command(&command, &policy, port)?;
         let mut inserted_event_count = 0;
         for event in command_outcome.events() {
             let append = event_append_from_command_event(event, &command, handled_at);
@@ -686,7 +694,7 @@ pub fn handle_pending_factory_commands(
             }
         }
         let result_json = format!(r#"{{"event_count":{inserted_event_count}}}"#);
-        let error_json = if command_outcome.command_status() == "failed" {
+        let error_json = if matches!(command_outcome.command_status(), "failed" | "rejected") {
             Some("{}")
         } else {
             None
@@ -1006,7 +1014,8 @@ mod tests {
         ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
         LaneColumn, build_tui_model, project_lane_board,
         source_adapters::{
-            AdapterError, Lane, LaneReason, PullSourcePort, SourceProbe, SourceProbeOutcome,
+            AcceptancePolicy, AdapterError, AdmissionPolicy, Lane, LaneReason, PullSourcePort,
+            SourceProbe, SourceProbeOutcome, WorkItemSnapshot, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1035,6 +1044,27 @@ mod tests {
             .into_iter()
             .map(|(adapter_id, poll)| (adapter_id.to_owned(), ScriptedSource::new(poll)))
             .collect()
+    }
+
+    fn scripted_source_list_with_ready_work() -> Vec<(String, ScriptedSource)> {
+        let mut sources = scripted_source_list();
+        if let Ok(snapshot) = WorkItemSnapshot::new(
+            "livespec-console-beads-fabro",
+            "livespec-console-beads-fabro-ready",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+            AdmissionPolicy::Manual,
+            AcceptancePolicy::AiThenHuman,
+            7,
+        ) {
+            sources.push((
+                "orchestrator-ready:livespec-console-beads-fabro".to_owned(),
+                ScriptedSource::new(normalize_work_item_snapshot(&snapshot)),
+            ));
+        }
+        sources
     }
 
     fn scripted_source_refs(sources: &[(String, ScriptedSource)]) -> Vec<SourceAdapterRef<'_>> {
@@ -1322,16 +1352,21 @@ mod tests {
         // command is handled through the injected port: accepted + started +
         // completed (three events) and the command lands `completed`. The honest
         // not-wired behaviour of the real port is covered in console-application.
-        let output = run_with_store_scripted(
+        let scripted = scripted_source_list_with_ready_work();
+        let sources = scripted_source_refs(&scripted);
+        let mut port = SimulatedFactoryDrainPort;
+        let output = run_with_store(
             &command_args(&["bin", "serve"]),
             &mut store,
             "2026-06-23T00:00:02Z",
+            &sources,
+            &mut port,
         );
 
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 6\nevents: 9\nattention: 1\ncommands: 1\npending: 0\nfactory commands handled: 1"
+            "serve: store ready\nbackfill events: 8\nevents: 11\nattention: 1\ncommands: 1\npending: 0\nfactory commands handled: 1"
         );
         assert_eq!(store.list_commands()?[0].status(), "completed");
         Ok(())
@@ -1570,7 +1605,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
-        let scripted = scripted_source_list();
+        let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
 
         let outcome = run_store_backed_tui_session(
@@ -1585,19 +1620,19 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            Ok(ref value) if value == &TuiSessionOutcome::new(6, 6, 1, 1, 9, 1)
+            Ok(ref value) if value == &TuiSessionOutcome::new(8, 8, 1, 1, 11, 1)
         ));
         assert!(matches!(
             outcome
                 .as_ref()
                 .map(TuiSessionOutcome::backfilled_event_count),
-            Ok(6)
+            Ok(8)
         ));
         assert!(matches!(
             outcome
                 .as_ref()
                 .map(TuiSessionOutcome::presented_event_count),
-            Ok(6)
+            Ok(8)
         ));
         assert!(matches!(
             outcome
@@ -1613,13 +1648,13 @@ mod tests {
         ));
         assert!(matches!(
             outcome.as_ref().map(TuiSessionOutcome::final_event_count),
-            Ok(9)
+            Ok(11)
         ));
         assert!(matches!(
             outcome.as_ref().map(TuiSessionOutcome::attention_count),
             Ok(1)
         ));
-        assert_eq!(runner.observed_event_count(), 6);
+        assert_eq!(runner.observed_event_count(), 8);
         assert_eq!(runner.observed_requested_by(), "operator");
         assert_eq!(commands[0].status(), "completed");
         Ok(())
@@ -1717,6 +1752,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let effects = [factory_drain_effect()];
         persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z")?;
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
@@ -1746,6 +1782,7 @@ mod tests {
                 .map(ConsoleEvent::event_type)
                 .collect::<Vec<_>>(),
             [
+                &EventType::WorkItemSnapshotObserved,
                 &EventType::CommandAccepted,
                 &EventType::FactoryDrainStarted,
                 &EventType::FactoryDrainCompleted
@@ -1759,6 +1796,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let effects = [factory_drain_effect()];
         persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z")?;
         let mut port = FailedFactoryDrainPort;
 
         let outcomes =
@@ -2102,6 +2140,38 @@ mod tests {
         demo_events().into_iter().collect()
     }
 
+    fn append_ready_work_item(
+        store: &mut SqliteEventStore,
+        observed_at: &str,
+    ) -> Result<(), EventStoreError> {
+        let event = ConsoleEvent::new(
+            "evt_ready_work".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            "fleet:livespec:ready-work".to_owned(),
+            1,
+        )
+        .with_payload_json(
+            r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
+                .to_owned(),
+        );
+        store.append_event(&EventAppend::new(
+            event,
+            "fleet:livespec:ready-work".to_owned(),
+            observed_at.to_owned(),
+            observed_at.to_owned(),
+            None,
+            "corr_evt_ready_work".to_owned(),
+            Some("evt_ready_work".to_owned()),
+            r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
+                .to_owned(),
+            "{}".to_owned(),
+        ))?;
+        Ok(())
+    }
+
     fn factory_drain_effect() -> TuiRuntimeEffect {
         TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
@@ -2292,6 +2362,22 @@ mod tests {
                 return Err(EventStoreError::InvalidSequence);
             }
             Ok(self.commands())
+        }
+
+        fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
+            Ok(vec![ConsoleEvent::new(
+                "evt_ready_work".to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator".to_owned(),
+                "fleet:livespec:ready-work".to_owned(),
+                1,
+            )
+            .with_payload_json(
+                r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
+                    .to_owned(),
+            )])
         }
 
         fn append_event(&mut self, _append: &EventAppend) -> EventStoreResult<AppendOutcome> {

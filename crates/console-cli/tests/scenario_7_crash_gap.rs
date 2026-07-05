@@ -17,6 +17,7 @@ fn scenario_7_reconciliation_reconstructs_missing_outcome_after_crash()
         "corr_cmd_drain".to_owned(),
         "{}".to_owned(),
     ))?;
+    append_ready_work_item(&mut store)?;
     append_command_event(
         &mut store,
         &command,
@@ -56,6 +57,7 @@ fn scenario_7_reconciliation_reconstructs_missing_outcome_after_crash()
             .map(ConsoleEvent::event_type)
             .collect::<Vec<_>>(),
         [
+            &EventType::WorkItemSnapshotObserved,
             &EventType::CommandAccepted,
             &EventType::FactoryDrainStarted,
             &EventType::FactoryDrainCompleted,
@@ -72,6 +74,35 @@ fn factory_drain_command() -> CommandEnvelope {
         "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
         "operator".to_owned(),
     )
+}
+
+fn append_ready_work_item(store: &mut SqliteEventStore) -> Result<(), ConsoleRuntimeError> {
+    let event = ConsoleEvent::new(
+        "evt_ready_work".to_owned(),
+        1,
+        "factory".to_owned(),
+        EventType::WorkItemSnapshotObserved,
+        "orchestrator".to_owned(),
+        "fleet:livespec:ready-work".to_owned(),
+        1,
+    )
+    .with_payload_json(
+        r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
+            .to_owned(),
+    );
+    store.append_event(&EventAppend::new(
+        event,
+        "fleet:livespec:ready-work".to_owned(),
+        "2026-06-30T00:00:00Z".to_owned(),
+        "2026-06-30T00:00:00Z".to_owned(),
+        None,
+        "corr_evt_ready_work".to_owned(),
+        Some("evt_ready_work".to_owned()),
+        r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
+            .to_owned(),
+        "{}".to_owned(),
+    ))?;
+    Ok(())
 }
 
 fn append_command_event(

@@ -577,6 +577,37 @@ pub trait FactoryDrainPort {
     ) -> ApplicationResult<FactoryDrainPortOutcome>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactoryDrainPolicy {
+    ready_work_item_count: usize,
+}
+
+impl FactoryDrainPolicy {
+    #[must_use]
+    pub const fn new(ready_work_item_count: usize) -> Self {
+        Self {
+            ready_work_item_count,
+        }
+    }
+
+    #[must_use]
+    pub fn from_events(events: &[ConsoleEvent]) -> Self {
+        let ready_work_item_count = project_lane_board(events)
+            .column(Lane::Ready)
+            .map_or(0, LaneColumn::count);
+        Self::new(ready_work_item_count)
+    }
+
+    #[must_use]
+    pub const fn rejection_reason(&self) -> Option<&'static str> {
+        if self.ready_work_item_count == 0 {
+            Some("no ready implementation work")
+        } else {
+            None
+        }
+    }
+}
+
 /// Real factory-drain port that invokes the Dispatcher through a [`SourceProbe`].
 ///
 /// It reflects the Dispatcher's actual outcome rather than fabricating success:
@@ -1011,8 +1042,15 @@ fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
 
 pub fn handle_factory_drain_command(
     command: &CommandEnvelope,
+    policy: &FactoryDrainPolicy,
     port: &mut dyn FactoryDrainPort,
 ) -> ApplicationResult<FactoryCommandOutcome> {
+    if let Some(reason) = policy.rejection_reason() {
+        return Ok(FactoryCommandOutcome::new(
+            "rejected".to_owned(),
+            vec![rejected_factory_command_event(command, reason)],
+        ));
+    }
     let request = FactoryDrainRequest::new(command.aggregate_id().to_owned(), 1, 1);
     let port_outcome = port.drain_ready_queue(&request)?;
     let mut events = vec![factory_command_event(
@@ -1071,6 +1109,15 @@ pub fn handle_factory_drain_command(
         command_status.to_owned(),
         events,
     ))
+}
+
+fn rejected_factory_command_event(command: &CommandEnvelope, reason: &str) -> ConsoleEvent {
+    factory_command_event(command, EventType::CommandRejected, "rejected", 1).with_payload_json(
+        serde_json::json!({
+            "reason": reason,
+        })
+        .to_string(),
+    )
 }
 
 fn factory_command_event(
@@ -1506,11 +1553,12 @@ mod tests {
     };
     use super::{
         ApplicationError, AttentionDetail, AttentionEvent, DispatcherFactoryDrainPort,
-        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction,
-        OperatorActionOutcome, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, build_tui_model, build_tui_model_for_state, handle_factory_drain_command,
-        project_attention, project_lane_board, reduce_tui_interaction,
-        resolve_command_palette_action, resolve_selected_operator_action, validate_operator_action,
+        FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+        LaneFocus, OperatorAction, OperatorActionOutcome, TuiInteraction, TuiInteractionState,
+        TuiOverlay, TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
+        handle_factory_drain_command, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
+        validate_operator_action,
     };
 
     #[test]
@@ -2371,7 +2419,8 @@ mod tests {
         let command = factory_drain_test_command();
         let mut port = CompletingDrainPort::default();
 
-        let outcome = handle_factory_drain_command(&command, &mut port);
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port);
 
         assert_eq!(
             outcome
@@ -2425,7 +2474,8 @@ mod tests {
         let command = factory_drain_test_command();
         let mut port = NotWiringDrainPort;
 
-        let outcome = handle_factory_drain_command(&command, &mut port);
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port);
 
         assert_eq!(
             outcome
@@ -2466,11 +2516,46 @@ mod tests {
     }
 
     #[test]
+    fn factory_drain_handler_rejects_policy_invalid_command_without_invoking_port() {
+        let command = factory_drain_test_command();
+        let mut port = CompletingDrainPort::default();
+
+        let outcome =
+            handle_factory_drain_command(&command, &FactoryDrainPolicy::new(0), &mut port);
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("rejected")
+        );
+        assert_eq!(port.requests, []);
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events
+                    .iter()
+                    .map(ConsoleEvent::event_type)
+                    .collect::<Vec<_>>()),
+            Ok(vec![&EventType::CommandRejected])
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events[0].payload_json()),
+            Ok(r#"{"reason":"no ready implementation work"}"#)
+        );
+    }
+
+    #[test]
     fn factory_drain_handler_records_failed_terminal_outcome() {
         let command = factory_drain_test_command();
         let mut port = FailingDrainPort;
 
-        let outcome = handle_factory_drain_command(&command, &mut port);
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port);
 
         assert_eq!(
             outcome
@@ -2497,7 +2582,8 @@ mod tests {
         let command = factory_drain_test_command();
         let mut port = ErrorDrainPort;
 
-        let outcome = handle_factory_drain_command(&command, &mut port);
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port);
 
         assert_eq!(outcome, Err(ApplicationError::FactoryDrainPortFailed));
     }
@@ -2972,6 +3058,10 @@ mod tests {
             "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
             "operator".to_owned(),
         )
+    }
+
+    const fn ready_factory_drain_policy() -> FactoryDrainPolicy {
+        FactoryDrainPolicy::new(1)
     }
 
     #[derive(Default)]
