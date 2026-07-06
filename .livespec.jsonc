@@ -24,7 +24,13 @@
     "format": "beads",
     "compat": {
       "livespec": ">=0.1.0,<1.0.0",
-      "pinned": "master"
+      // Pinned to the latest livespec-core RELEASE tag, not the moving
+      // `master` ref: a release is reproducible and carries release-gate
+      // validation, per the fleet "pins track the latest RELEASE, not raw
+      // master" discipline. Advanced off the `master` bootstrap placeholder
+      // (which left CI hostage to core master's transient content); the
+      // bump-pin fan-out rewrites this to each new release tag going forward.
+      "pinned": "v0.6.9"
     },
     "connection": {
       "tenant": "livespec-console-beads-fabro",
