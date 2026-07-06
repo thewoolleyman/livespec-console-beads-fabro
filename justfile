@@ -190,7 +190,11 @@ check-doctor-static:
     set -euo pipefail
     core_root="${LIVESPEC_CORE_PLUGIN_ROOT:-}"
     if [ -z "$core_root" ]; then
-      core_root="$(python3 -c 'import json, pathlib; print(json.loads((pathlib.Path.home() / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))["plugins"]["livespec@livespec"][0]["installPath"])' 2>/dev/null || true)"
+      # Resolve the CURRENT released core build (== marketplace clone HEAD), NOT
+      # installed_plugins.json[...]["livespec@livespec"][0] — that per-project list is
+      # unordered and its first row can be a different, stale project on a mixed-build
+      # host, which the c1k9 currency gate then correctly blocks (livespec-q2me).
+      core_root="$(python3 -c 'import subprocess, pathlib; mk = pathlib.Path.home() / ".claude" / "plugins" / "marketplaces" / "livespec"; head = subprocess.run(["git", "-C", str(mk), "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True).stdout.strip().lower(); cache = pathlib.Path.home() / ".claude" / "plugins" / "cache" / "livespec" / "livespec" / head; print(cache if head and (cache / "scripts" / "bin" / "doctor_static.py").is_file() else "")' 2>/dev/null || true)"
     fi
     if [ -z "$core_root" ] || [ ! -f "$core_root/scripts/bin/doctor_static.py" ]; then
       echo "livespec core not found. Set LIVESPEC_CORE_PLUGIN_ROOT to a livespec checkout's .claude-plugin, or install the livespec@livespec plugin (claude plugin install livespec@livespec)." >&2
