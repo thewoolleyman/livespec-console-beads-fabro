@@ -9,12 +9,14 @@ use std::path::{Path, PathBuf};
 use console_application::DispatcherFactoryDrainPort;
 #[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
-    ObservedSourceAdapter, PullSourcePort, SourceProbe, SourceProbeOutcome,
+    ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
-use livespec_console_beads_fabro::{ConsoleRuntimeError, SourceAdapterRef, TuiSessionRunner};
+use livespec_console_beads_fabro::{
+    ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef, TuiSessionRunner,
+};
 #[cfg(all(not(test), not(coverage)))]
 use time::OffsetDateTime;
 #[cfg(all(not(test), not(coverage)))]
@@ -82,6 +84,9 @@ fn run_store_backed_command(
     let adapters = livespec_console_beads_fabro::live_source_adapters(&probe, &repo)
         .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
+    let needs_attention_port =
+        ProbeNeedsAttentionPort::new(&probe, &needs_attention_program(), &["--json"]);
+    let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let drain_program = drain_program();
     let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
     Ok(livespec_console_beads_fabro::run_with_store(
@@ -90,6 +95,7 @@ fn run_store_backed_command(
         &observed_at,
         &sources,
         &mut drain,
+        &needs_attention,
     ))
 }
 
@@ -104,6 +110,9 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let adapters = livespec_console_beads_fabro::live_source_adapters(&probe, &repo)
         .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
+    let needs_attention_port =
+        ProbeNeedsAttentionPort::new(&probe, &needs_attention_program(), &["--json"]);
+    let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let drain_program = drain_program();
     let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
     let mut runner = InteractiveTuiRunner;
@@ -114,6 +123,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &mut runner,
         &sources,
         &mut drain,
+        &needs_attention,
     )
     .map_err(|error| format!("{error:?}"))?;
     Ok(())
@@ -164,6 +174,12 @@ fn console_repo() -> String {
 fn drain_program() -> String {
     std::env::var("LIVESPEC_CONSOLE_DRAIN_PROGRAM")
         .unwrap_or_else(|_error| "livespec-dispatcher-drain".to_owned())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn needs_attention_program() -> String {
+    std::env::var("LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM")
+        .unwrap_or_else(|_error| "needs-attention".to_owned())
 }
 
 #[cfg(all(not(test), not(coverage)))]

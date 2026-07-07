@@ -7,8 +7,9 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 pub mod source_adapters;
 
 use source_adapters::{
-    AcceptancePolicy, AdmissionPolicy, Lane, LaneReason, SourceProbe, SourceProbeOutcome,
-    WorkItemSnapshot, work_item_snapshot_from_payload_json,
+    AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
+    SourceProbe, SourceProbeOutcome, WorkItemSnapshot, materialize_attention_items,
+    work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,9 +689,44 @@ impl FactoryCommandOutcome {
     }
 }
 
+/// Project the needs-attention inbox by folding the `attention_item.*` stream.
+///
+/// `appeared` / `changed` upsert an item by its stable `id`, `resolved` removes
+/// it; each surviving item is then rendered, ordered by `id`. Re-sourced (v016 /
+/// CN1) from the diffed `attention_item.*` stream instead of re-deriving
+/// attention from work-item lane snapshots: the inbox is now the product
+/// needs-attention surface the console ingests and diffs at ingest, not a single
+/// work-item lane (contracts.md §"Initial Adapters"; scenarios.md Scenario 12).
 #[must_use]
 pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
-    project_attention_from_snapshots(attention_snapshots(events))
+    materialize_attention_items(events)
+        .iter()
+        .map(attention_item_from_snapshot)
+        .collect()
+}
+
+/// Render one ingested attention item into the projection entry the inbox
+/// carries: its stable id, its summary as the title, its kind as the source,
+/// and its composed source reference.
+fn attention_item_from_snapshot(item: &AttentionItemSnapshot) -> AttentionItem {
+    let source_reference = attention_source_reference(item.source_ref());
+    AttentionItem::new(
+        item.id().to_owned(),
+        item.summary().to_owned(),
+        item.kind().to_owned(),
+        source_reference,
+        None,
+    )
+}
+
+/// Render an attention item's source reference: the repo, narrowed to a specific
+/// work-item or filesystem path when the composed snapshot carries one.
+fn attention_source_reference(source_ref: &AttentionSourceRef) -> String {
+    match (source_ref.work_item(), source_ref.path()) {
+        (Some(work_item), _) => format!("{}:{work_item}", source_ref.repo()),
+        (None, Some(path)) => format!("{}:{path}", source_ref.repo()),
+        (None, None) => source_ref.repo().to_owned(),
+    }
 }
 
 /// One work-item as it lands in a lane, carrying the fields the lane board
@@ -1152,7 +1188,10 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         | EventType::LivespecNextSnapshotObserved
         | EventType::LivespecReviseRequired
         | EventType::SourceCompletenessFindingObserved
-        | EventType::SourceNotObservedFindingObserved => "source",
+        | EventType::SourceNotObservedFindingObserved
+        | EventType::AttentionItemAppeared
+        | EventType::AttentionItemChanged
+        | EventType::AttentionItemResolved => "source",
     }
 }
 
@@ -1538,6 +1577,9 @@ impl AttentionEvent for EventType {
             Self::FactoryDrainStarted => "Factory drain started",
             Self::SourceCompletenessFindingObserved => "Source completeness finding",
             Self::SourceNotObservedFindingObserved => "Source not-observed finding",
+            Self::AttentionItemAppeared => "Attention item appeared",
+            Self::AttentionItemChanged => "Attention item changed",
+            Self::AttentionItemResolved => "Attention item resolved",
         }
     }
 }
@@ -1548,22 +1590,38 @@ mod tests {
     use proptest::proptest;
 
     use super::source_adapters::{
-        AcceptancePolicy, AdmissionPolicy, Lane, LaneReason, SourceProbe, SourceProbeOutcome,
-        WorkItemSnapshot,
+        AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
+        AttentionSourceRef, Lane, LaneReason, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+        attention_item_payload_json, attention_resolved_payload_json,
     };
     use super::{
-        ApplicationError, AttentionDetail, AttentionEvent, DispatcherFactoryDrainPort,
-        FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        LaneFocus, OperatorAction, OperatorActionOutcome, TuiInteraction, TuiInteractionState,
-        TuiOverlay, TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
-        handle_factory_drain_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
-        validate_operator_action,
+        ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
+        DispatcherFactoryDrainPort, FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome,
+        FactoryDrainRequest, LaneFocus, OperatorAction, OperatorActionOutcome, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        build_tui_model_for_state, handle_factory_drain_command, project_attention,
+        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_selected_operator_action, validate_operator_action,
     };
 
     #[test]
-    fn attention_projection_is_derived_from_latest_work_item_lanes() {
+    fn attention_projection_folds_the_attention_item_stream_ordered_by_id() {
+        // Re-sourced (v016 / CN1): the inbox is the diffed `attention_item.*`
+        // stream, not re-derived from work-item lanes. Non-attention events and
+        // work-item snapshots are ignored by this projection.
         let events = [
+            attention_appeared(
+                "evt_accept",
+                &attention_item("wi-accept", "acceptance", "Acceptance review"),
+            ),
+            attention_appeared(
+                "evt_blocked",
+                &attention_item("wi-blocked", "human-valve", "Blocked: needs-human"),
+            ),
+            attention_appeared(
+                "evt_pending",
+                &attention_item("wi-pending", "human-valve", "Pending approval"),
+            ),
             lane_event(
                 "evt_ready",
                 "console-ready",
@@ -1572,72 +1630,46 @@ mod tests {
                 "a0",
                 "ready",
             ),
-            lane_event(
-                "evt_blocked",
-                "console-blocked",
-                Lane::Blocked,
-                Some(LaneReason::NeedsHuman),
-                "a2",
-                "blocked",
-            ),
-            lane_event(
-                "evt_pending",
-                "console-pending",
-                Lane::PendingApproval,
-                None,
-                "a0",
-                "pending-approval",
-            ),
-            lane_event(
-                "evt_accept",
-                "console-accept",
-                Lane::Acceptance,
-                None,
-                "a1",
-                "acceptance",
-            ),
             ConsoleEvent::fixture("evt_revise", EventType::LivespecReviseRequired, "livespec"),
         ];
 
         let projected = project_attention(&events);
 
         assert_eq!(projected.len(), 3);
-        assert_eq!(projected[0].id(), "console-pending");
-        assert_eq!(projected[0].title(), "Pending approval");
-        assert_eq!(projected[0].source(), "orchestrator");
-        assert_eq!(projected[0].source_reference(), "console");
+        assert_eq!(projected[0].id(), "wi-accept");
+        assert_eq!(projected[0].title(), "Acceptance review");
+        assert_eq!(projected[0].source(), "acceptance");
+        assert_eq!(projected[0].source_reference(), "console:wi-accept");
         assert_eq!(projected[0].next_action(), None);
-        assert_eq!(projected[1].id(), "console-accept");
-        assert_eq!(projected[1].title(), "Acceptance review");
-        assert_eq!(projected[2].id(), "console-blocked");
-        assert_eq!(projected[2].title(), "Blocked: needs-human");
+        assert_eq!(projected[1].id(), "wi-blocked");
+        assert_eq!(projected[1].title(), "Blocked: needs-human");
+        assert_eq!(projected[2].id(), "wi-pending");
+        assert_eq!(projected[2].title(), "Pending approval");
     }
 
     #[test]
-    fn attention_projection_orders_same_rank_by_work_item_id() {
+    fn attention_projection_applies_changed_and_resolved_events() {
         let events = [
-            lane_event(
-                "evt_b",
-                "console-b",
-                Lane::Blocked,
-                Some(LaneReason::NeedsHuman),
-                "a0",
-                "blocked",
+            attention_appeared(
+                "evt_a1",
+                &attention_item("wi-a", "human-valve", "old summary"),
             ),
-            lane_event(
-                "evt_a",
-                "console-a",
-                Lane::Blocked,
-                Some(LaneReason::NeedsHuman),
-                "a0",
-                "blocked",
+            attention_appeared(
+                "evt_b1",
+                &attention_item("wi-b", "human-valve", "b summary"),
             ),
+            attention_changed(
+                "evt_a2",
+                &attention_item("wi-a", "human-valve", "new summary"),
+            ),
+            attention_resolved("evt_b2", "wi-b"),
         ];
 
         let projected = project_attention(&events);
 
-        assert_eq!(projected[0].id(), "console-a");
-        assert_eq!(projected[1].id(), "console-b");
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].id(), "wi-a");
+        assert_eq!(projected[0].title(), "new summary");
     }
 
     #[test]
@@ -1661,20 +1693,81 @@ mod tests {
     }
 
     #[test]
-    fn attention_projection_uses_the_latest_snapshot_per_work_item() {
+    fn attention_projection_renders_source_reference_variants_and_resolves_empty() {
+        // A resolved id with no prior appeared leaves the inbox empty, and
+        // work-item lane snapshots never enter the inbox.
+        assert_eq!(
+            project_attention(&[
+                attention_resolved("evt_r", "wi-missing"),
+                lane_event("evt_new", "console-1", Lane::Ready, None, "a0", "ready"),
+            ]),
+            []
+        );
+
+        // source_reference narrows to a path when there is no work-item, and is
+        // the bare repo when the item carries neither.
+        let path_item = AttentionItemSnapshot::new(
+            "wi-path",
+            "hygiene",
+            "high",
+            "Hygiene finding",
+            AttentionSourceRef::new("console", None, Some("SPECIFICATION/spec.md")),
+            AttentionHandoff::new("fix", None, "fix-it"),
+        );
+        let repo_item = AttentionItemSnapshot::new(
+            "wi-repo",
+            "internal",
+            "low",
+            "Internal note",
+            AttentionSourceRef::new("console", None, None),
+            AttentionHandoff::new("noop", None, "noop"),
+        );
+
+        let projected = project_attention(&[
+            attention_appeared("evt_path", &path_item),
+            attention_appeared("evt_repo", &repo_item),
+        ]);
+
+        assert_eq!(projected[0].id(), "wi-path");
+        assert_eq!(
+            projected[0].source_reference(),
+            "console:SPECIFICATION/spec.md"
+        );
+        assert_eq!(projected[1].id(), "wi-repo");
+        assert_eq!(projected[1].source_reference(), "console");
+    }
+
+    #[test]
+    fn tui_attention_list_orders_same_rank_items_by_work_item_id() {
+        // The TUI's own lane-derived attention list (Scenario 5, retained) still
+        // orders same-rank items by work-item id.
         let events = [
             lane_event(
-                "evt_old",
-                "console-1",
+                "evt_b",
+                "console-b",
                 Lane::Blocked,
                 Some(LaneReason::NeedsHuman),
                 "a0",
                 "blocked",
             ),
-            lane_event("evt_new", "console-1", Lane::Ready, None, "a0", "ready"),
+            lane_event(
+                "evt_a",
+                "console-a",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
         ];
 
-        assert_eq!(project_attention(&events), []);
+        let model = build_tui_model(&events, 0);
+        let ids: Vec<&str> = model
+            .attention_items()
+            .iter()
+            .map(AttentionItem::id)
+            .collect();
+
+        assert_eq!(ids, ["console-a", "console-b"]);
     }
 
     #[test]
@@ -1761,6 +1854,43 @@ mod tests {
                 expected
             );
         }
+    }
+
+    // Build attention-item fixtures and the `attention_item.*` events the
+    // re-sourced projection folds, writing the canonical `payload_json` directly
+    // so the projection exercises the real deserialization path.
+    fn attention_item(id: &str, kind: &str, summary: &str) -> AttentionItemSnapshot {
+        AttentionItemSnapshot::new(
+            id,
+            kind,
+            "high",
+            summary,
+            AttentionSourceRef::new("console", Some(id), None),
+            AttentionHandoff::new("approve", None, &format!("approve:{id}")),
+        )
+    }
+
+    fn attention_appeared(event_id: &str, item: &AttentionItemSnapshot) -> ConsoleEvent {
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::AttentionItemAppeared,
+            "needs-attention",
+        )
+        .with_payload_json(attention_item_payload_json(item))
+    }
+
+    fn attention_changed(event_id: &str, item: &AttentionItemSnapshot) -> ConsoleEvent {
+        ConsoleEvent::fixture(event_id, EventType::AttentionItemChanged, "needs-attention")
+            .with_payload_json(attention_item_payload_json(item))
+    }
+
+    fn attention_resolved(event_id: &str, id: &str) -> ConsoleEvent {
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::AttentionItemResolved,
+            "needs-attention",
+        )
+        .with_payload_json(attention_resolved_payload_json(id))
     }
 
     // Build a snapshot-observation event by writing the canonical `payload_json`
@@ -3024,6 +3154,18 @@ mod tests {
         assert_eq!(
             EventType::SourceNotObservedFindingObserved.label(),
             "Source not-observed finding"
+        );
+        assert_eq!(
+            EventType::AttentionItemAppeared.label(),
+            "Attention item appeared"
+        );
+        assert_eq!(
+            EventType::AttentionItemChanged.label(),
+            "Attention item changed"
+        );
+        assert_eq!(
+            EventType::AttentionItemResolved.label(),
+            "Attention item resolved"
         );
     }
 
