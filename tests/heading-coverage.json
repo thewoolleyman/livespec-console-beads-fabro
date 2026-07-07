@@ -17,5 +17,12 @@
     "test": "TODO",
     "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ (the Scenario 7 precedent). Not yet built because the five work_item.* CommandType variants, their handlers, and the orchestrator port are unbuilt; the test lands with the valve/policy-command implementation slice recorded in the console-cruft-cleanup proposal-3 impl-impact note. TODO rides through this repo's behavioral-coverage gate: console-spec-check counts any non-empty test string as satisfying scenario->test, and the LIVESPEC_BEHAVIOR_SCENARIO_LINK lever defaults to warn (non-blocking). Replace TODO with the real test path when the slice lands.",
     "clauses": []
+  },
+  {
+    "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ (the Scenario 7 precedent). Not yet built because the needs-attention snapshot-source port, the diff-at-ingest adapter, and the attention_item.appeared/.changed/.resolved event variants are unbuilt; the test lands with the CN1 implementation slice (spec_commitment_hint cn1-needs-attention-snapshot-port-diff-events). TODO rides through this repo's behavioral-coverage gate: console-spec-check counts any non-empty test string as satisfying scenario->test, and the LIVESPEC_BEHAVIOR_SCENARIO_LINK lever defaults to warn (non-blocking). Replace TODO with the real test path when the slice lands.",
+    "clauses": []
   }
 ]

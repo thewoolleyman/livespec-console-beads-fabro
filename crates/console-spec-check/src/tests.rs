@@ -64,14 +64,16 @@ fn derive_gap_id_matches_python_known_vectors() {
 #[test]
 fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::error::Error>> {
     // Ground truth measured via the family `spec_clauses.py` over the console
-    // SPECIFICATION. Updated for the v014 console-cruft-cleanup revision, which
-    // added four normative clauses to contracts.md (the Work-items adapter's
-    // two zero-Beads `MUST NOT`s and the `work_item.*` command-mapping
-    // paragraph's `MUST` / `MUST NOT` pair): 120 normative clauses, 14/36/18/52.
+    // SPECIFICATION. Updated for the v016 CN1 revision (needs-attention
+    // snapshot port + diff adapter + attention_item.* events), which added one
+    // normative clause to contracts.md -- the needs-attention adapter's
+    // `MUST NOT reach around this port to recompute the inbox`: 121 normative
+    // clauses, 14/37/18/52. (The earlier v014 console-cruft-cleanup revision
+    // added four normative clauses to contracts.md.)
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 14_usize),
-        ("contracts.md", 36),
+        ("contracts.md", 37),
         ("constraints.md", 18),
         ("non-functional-requirements.md", 52),
     ];
@@ -83,7 +85,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 120,
+        total, 121,
         "total normative clauses across the console spec"
     );
     Ok(())
