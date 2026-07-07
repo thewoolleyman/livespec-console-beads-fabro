@@ -1,0 +1,253 @@
+# Run config for the implement-work-item phase graph — Architecture C:
+# Fabro-owned docker sandbox mode (work-item livespec-impl-beads-wwn;
+# design: livespec/tmp/fabro-architecture-c-design.md, proven end-to-end
+# by the A2 probe run 01KTVX6AV677VBWPG63ERB4VH0 / dev-tooling PR #97).
+#
+# Launched by the Dispatcher (commands/dispatcher.py) from the TARGET
+# repo's primary checkout as the invoking working directory:
+#
+#   cd <repo> && fabro run <materialized-config> --goal-file <brief>
+#
+# Fabro detects the GitHub origin from the cwd and clones FRESH inside
+# the docker sandbox — local working-tree state never enters the run.
+# The sandbox clone is the secondary-worktree EQUIVALENT under the
+# family discipline: the prepare steps below provision it exactly like
+# `just bootstrap` EXCEPT that the commit-refuse wrapper's refuse branch
+# is DECLARED EXEMPT here so the Red-Green-Replay lefthook gates run on
+# every in-sandbox commit. The sandbox is a fresh FULL clone, so under
+# the structural commit-refuse mechanism (livespec-zs22.7.3: refuse when
+# git-dir == git-common-dir) it reads structurally as a primary checkout
+# and its refuse branch WOULD fire. The prepare step sets
+# `git config livespec.sandboxExempt true` — an explicit, declared marker
+# the hook body reads to skip the refuse branch (per livespec core
+# non-functional-requirements §"Conformance Pattern" concern #1
+# Worktree-discipline, Exemption slot). This marker is set
+# UNCONDITIONALLY and is backward-compatible: the legacy
+# `livespec.primaryPath`-based body never reads it and (with primaryPath
+# left unset) already fails open here, so setting the marker is a no-op
+# for not-yet-migrated repos and arms every dispatched sandbox for the
+# structural transition.
+#
+# CREDENTIAL CHANNEL (work-item livespec-impl-beads-am9, amended after
+# the 2026-06-12 shadow shakedown): this committed file carries NO
+# secret VALUE and NO `{{ env }}` interpolation. The Dispatcher
+# materializes an UNCOMMITTED per-dispatch overlay of this file (mode
+# 600, deleted when the run returns) that (a) rewrites the `graph`
+# path below to an absolute path so it resolves from outside this
+# directory, (b) APPENDS one depth-1 sibling-clone
+# [[run.prepare.steps]] block per fleet member (from livespec master's
+# .livespec-fleet-manifest.jsonc, fetched host-side via `gh api`; the dispatch
+# target is excluded) so cross-repo checks resolve family siblings
+# under /workspace/siblings inside the sandbox (work-item
+# livespec-impl-beads-8m2), and (c) APPENDS an
+# [environments.livespec-ci.env] table carrying the real
+# CLAUDE_CODE_OAUTH_TOKEN value read from the Dispatcher's process
+# environment and a GH_TOKEN freshly minted from the GitHub App
+# installation-token provider (github-app-auth Pillars 1+2: the dispatch
+# TARGET's credential_wrapper injects the full per-wrapper set: GITHUB_APP_ID,
+# GITHUB_PRIVATE_KEY, BEADS_DOLT_PASSWORD, and CLAUDE_CODE_OAUTH_TOKEN; no
+# fleet-PAT fallback) — the run-scoped credential projection per the
+# family-secrets scoped transient-materialization rule — plus the NON-secret
+# LIVESPEC_SIBLING_CLONES_ROOT key (it rides in the same appended table because
+# TOML forbids declaring that table twice, and the environment env table is the
+# container-level channel that reaches every node's subprocesses, including
+# `just check` and `gh pr create`). The Dispatcher is invoked under the
+# dispatch target's own configured credential_wrapper from the target repo's
+# .livespec.jsonc and refuses to dispatch when a credential is absent,
+# and fails fast when the fleet manifest is unreachable or malformed.
+# WHY NOT `{{ env }}` INTERPOLATION (do not re-attempt it): fabro
+# resolves interpolations in the WORKER process, which fabro-server
+# spawns with a fail-closed env allowlist (fabro-server/src/
+# spawn_env.rs — PATH/HOME/TMPDIR/USER/RUST_*/FABRO_*/TERM etc. only),
+# so for server-mediated runs the token never reaches the resolver and
+# the LITERAL `{{ env.X }}` string flows into the sandbox. Proven
+# empirically 2026-06-12 (runs 01KTX65N…/01KTX6HRWDEQ…): with the
+# token present in BOTH the dispatcher's env AND the server daemon's
+# env, the ACP node still received the literal string -> API 401.
+# See commands/_dispatcher_plan.py `render_run_config_overlay`.
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+[run]
+goal = "Implement one ready work-item per the livespec family discipline"
+
+[run.inputs]
+# ACP coding-agent adapter for the implement/fix/pr/review_fix nodes (the
+# IMPLEMENTER nodes). Defaults to the Claude adapter; the Dispatcher
+# overrides it per provider via `fabro run --input acp_adapter=...` to route
+# the implementer work to a Codex worker (Slice B / bd-ib-g7e34u wires the
+# Codex credential projection that makes that switch live).
+acp_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
+
+# ACP adapter for the REVIEW node (Slice A / bd-ib-egms32) — the Claude
+# subscription, pinned to Opus 4.8 + high thinking. The model CANNOT be set
+# as a node attr or model_stylesheet: `model`/`reasoning_effort` are API-only
+# attributes fabro REJECTS on acp nodes (fabro-validate backend_valid rule).
+# The Claude ACP adapter is Claude Code under the hood, so it reads Claude
+# Code's own env — the model is pinned by prefixing ANTHROPIC_MODEL +
+# CLAUDE_CODE_EFFORT_LEVEL onto the command (fabro parses leading KEY=val
+# assignments into the child's env). KNOWN CAVEAT: some claude-code-acp
+# versions have ignored ANTHROPIC_MODEL and defaulted to haiku, so "the
+# review node actually runs on Opus 4.8" is a live acceptance check — pin a
+# recent @latest and verify the model in the run transcript.
+review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @zed-industries/claude-code-acp@latest"
+
+[run.environment]
+id = "livespec-ci"
+
+[environments.livespec-ci]
+provider = "docker"
+
+[environments.livespec-ci.image]
+# GHCR-published family sandbox image (mise + uv + just + lefthook +
+# node/ACP adapter + gh; Dockerfile in livespec-dev-tooling). Published
+# by dev-tooling PR #111 (2026-06-12) to
+# ghcr.io/thewoolleyman/livespec-fabro-sandbox. Tag format:
+#   sha-<short>  — per master-build (mutable; tracks HEAD)
+#   v<X.Y.Z>     — per release tag (immutable)
+#
+# CURRENT PIN: sha-ea684ad (dev-tooling master as of 2026-06-12).
+# Bump to v0.13.0 once the dev-tooling v0.13.0 release tag publishes
+# (work-item livespec-impl-beads-873; dev-tooling p60 release pending).
+#
+# PIN SURFACE NOTE: this image reference is a manual pin. The v013
+# pin_autodiscovery formats (.livespec.jsonc compat.pinned,
+# pyproject.toml [tool.uv.sources], .vendor.jsonc, .copier-answers.yml,
+# .github/workflows uses: refs) do not cover workflow.toml docker images,
+# so bumps must be applied here manually. The producer-side lockstep gate
+# (livespec_dev_tooling.fabro_image_pin_lockstep) guards the Dockerfile
+# ARG pins in livespec-dev-tooling and does not run in consumer repos.
+#
+# HOST-LOCAL STEP: if ~/.fabro/environments/livespec-ci.toml exists on
+# a developer's machine (the pre-p60 local-image fallback), update its
+# `image` key to match this committed value so host-local `fabro run`
+# invocations use the same GHCR tag. The host-local file MUST contain
+# only `provider = "docker"` + `[image] docker = "..."` — never an
+# `[env]` table (the Dispatcher's per-dispatch overlay owns that block;
+# TOML forbids duplicate table declarations).
+docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:sha-ea684ad"
+
+[environments.livespec-ci.resources]
+cpu = 4
+memory = "8GB"
+
+# NOTE: deliberately NO [environments.livespec-ci.env] table here. The
+# Dispatcher's per-dispatch overlay APPENDS that table carrying the
+# real CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN values plus the non-secret
+# LIVESPEC_SIBLING_CLONES_ROOT key at dispatch time (TOML forbids
+# duplicate table declarations, so this committed file must not declare
+# it — which is also why the non-secret key lives in the appended
+# table rather than here). A fabro env-interpolation line
+# (`{{ env.* }}` style) for the token would NOT work either — the
+# server-spawned worker resolves interpolations under a fail-closed
+# env allowlist (fabro-server/src/spawn_env.rs) and would pass the
+# literal string through to the sandbox (API 401). See the CREDENTIAL
+# CHANNEL note in the header.
+
+[run.clone]
+enabled = true
+
+# Fabro-managed run/meta branches stay LOCAL to the sandbox (push=false,
+# probe discipline): the pr stage publishes the work under
+# refs/heads/feat/<work-item-id> itself, so fabro/run/* never pollutes
+# the remote.
+[run.run_branch]
+enabled = true
+push = false
+
+[run.meta_branch]
+enabled = true
+push = false
+
+[run.checkpoint]
+# Hooks stay ON for checkpoint commits: the corrected content-trigger
+# red-green-replay gate (livespec-dev-tooling v0.11.0, bumped
+# family-wide) passes machine/empty checkpoint commits naturally, so
+# the interim skip_git_hooks=true escape from the probe is retired.
+skip_git_hooks = false
+exclude_globs = ["**/.venv/**", "**/node_modules/**", "**/.cache/**"]
+
+# Our pr graph node owns the family `gh pr` flow (body conventions,
+# rebase auto-merge arming); Fabro's native PR surface stays off.
+[run.pull_request]
+enabled = false
+
+# --- Prepare steps: provision the clone as the secondary-worktree
+# --- equivalent (Architecture C "RGR steeling", minus primaryPath).
+
+[[run.prepare.steps]]
+# Fabro's sandbox clone is hardcoded shallow (GIT_CLONE_DEPTH=10, no
+# config knob in v0.254.0); the RGR range checks and `just check` diff
+# origin/master..HEAD, which needs the master merge-base present.
+script = "git fetch --unshallow --quiet"
+
+[[run.prepare.steps]]
+script = "mise trust && mise install --quiet"
+
+[[run.prepare.steps]]
+# Console is a Rust workspace; rustup (rust-toolchain.toml pins 1.92.0 + clippy/rustfmt)
+# is not in the fleet uv/Python sandbox image. Provision it so `just check` and the
+# lefthook checkpoint hooks find cargo at ~/.cargo/bin (already on the mise PATH via .mise.toml _.path).
+script = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0 --profile minimal --component clippy,rustfmt"
+
+[[run.prepare.steps]]
+script = "uv sync --all-groups"
+
+[[run.prepare.steps]]
+script = "uv run lefthook install"
+
+[[run.prepare.steps]]
+# Install the canonical STRUCTURAL commit-refuse hook at pre-commit,
+# pre-push AND commit-msg via the livespec-dev-tooling installer module.
+# FAMILY-UNIFORM: the canonical body ships in the wheel as
+# `livespec_dev_tooling.install_commit_refuse_hooks.CANONICAL_HOOK_BODY`
+# (no per-repo vendored `.sh` to derive or glob for), so every dispatched
+# sandbox installs the identical body the same way — this replaces the
+# old data-driven `cp dev-tooling/<hook>.sh` derivation. The prior
+# `uv sync --all-groups` step has already installed `livespec_dev_tooling`
+# into the sandbox venv, so `uv run` resolves the module. The installer
+# satisfies the content-based primary_checkout_commit_refuse_hook_installed
+# check, and the structural body's lefthook delegation fires the
+# Red-Green-Replay gates on every in-sandbox commit (the refuse branch is
+# skipped by the sandboxExempt marker set in the next step).
+script = "uv run python -m livespec_dev_tooling.install_commit_refuse_hooks"
+
+[[run.prepare.steps]]
+# Declare the sandbox EXEMPT from the commit-refuse refuse branch
+# (livespec-zs22.7.3, Conformance Pattern concern #1 Worktree-discipline,
+# Exemption slot). The sandbox is a fresh FULL clone — structurally a
+# primary checkout — so the structural commit-refuse hook would refuse
+# its in-sandbox Red-Green-Replay commits. This explicit, declared marker
+# (read by the hook body via `git config --get livespec.sandboxExempt`)
+# skips the refuse branch so commits proceed; the lefthook delegation in
+# the hook body still fires the RGR gates. Set UNCONDITIONALLY and
+# backward-compatible: the legacy livespec.primaryPath-based body never
+# reads this key, so it is a harmless no-op until each repo migrates to
+# the structural body. Local config only — never leaves the ephemeral
+# sandbox (pushes carry refs, not config).
+script = "git config livespec.sandboxExempt true"
+
+[[run.prepare.steps]]
+# Dispatch-time baseline conformance gate — Verifier #1 (Conformance
+# Pattern concern #1 Worktree-discipline). After the canonical
+# commit-refuse hook is installed and the sandbox is declared exempt
+# above, assert the hook is ACTUALLY present at the primary's shared
+# .git/hooks via the SHARED livespec-dev-tooling Verifier (reused, not
+# re-implemented; the earlier `uv sync --all-groups` step installed
+# `livespec_dev_tooling` into the sandbox venv). A non-zero exit aborts
+# the run before any work is driven — the gate makes every dispatched
+# sandbox conformant by construction. Codified in SPECIFICATION/
+# contracts.md §"Dispatch-time baseline conformance gate".
+script = "uv run python -m livespec_dev_tooling.checks.primary_checkout_commit_refuse_hook_installed"
+
+[[run.prepare.steps]]
+# Dispatch-time baseline conformance gate — Verifier #2 (Conformance
+# Pattern concern #2 cross-harness plugin-resolution). Declaration-
+# integrity (mock) mode: reads the dispatched repo's optional
+# .livespec.jsonc `harnesses` declaration and fail-closes on a malformed
+# one. A non-zero exit aborts the run. Same SHARED Verifier the
+# commit-time and fleet-time tiers run — enforcement-in-depth, one
+# Verifier layered across the tiers.
+script = "uv run python -m livespec_dev_tooling.checks.plugin_resolution"

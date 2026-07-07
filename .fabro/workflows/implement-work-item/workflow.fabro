@@ -1,0 +1,298 @@
+// implement-work-item — the family-discipline phase graph.
+//
+// This is the Fabro Loop half of the Beads/Dolt + Fabro reference
+// orchestrator (livespec spec.md §"Contract + reference implementations
+// architecture"). One run consumes ONE ready work-item and produces one
+// merged-or-failed implementation attempt:
+//
+//   implement (Red-Green-Replay) -> janitor hard gate (`mise exec --
+//   just check`, bounded fix loop) -> Claude review gate (advisory,
+//   ship-on-cap; work-item bd-ib-egms32) -> PR + rebase auto-merge
+//   arming, with an in-loop `escalate` human gate (work-item
+//   livespec-impl-beads-4zl) for outcomes the loop cannot
+//   auto-resolve: the run parks in Fabro's native `blocked` status and
+//   the human's answer routes BACK into the loop (`fabro attach`).
+//
+// The run executes in an ISOLATED Fabro-owned docker sandbox clone
+// (Architecture C, workflow.toml): Fabro clones the repo fresh inside
+// the sandbox and checks out a managed run branch before the first node
+// runs — the graph never creates worktrees and never touches the host.
+// The per-item brief (work-item id, title, description, publish branch)
+// arrives via the run goal (`--goal-file`), rendered into the prompts
+// as the `goal` template variable. (Keep brace tokens out of comments
+// BEFORE the digraph line — a brace there breaks Fabro's graph render in
+// the web UI; cosmetic, execution is unaffected. See fabro-sh/fabro#508.)
+//
+// Agent nodes use the ACP backend: the Claude Code adapter reads
+// CLAUDE_CODE_OAUTH_TOKEN from the sandbox environment, injected at
+// dispatch time via the Dispatcher's uncommitted run-config overlay
+// (see workflow.toml §"CREDENTIAL CHANNEL"). Per
+// docs.fabro.sh/core-concepts/agents §"ACP backend", ACP requires a
+// local or Docker sandbox (the Dispatcher runs the docker provider).
+digraph ImplementWorkItem {
+    // Retry discipline (work-item livespec-impl-beads-bn4, 2026-06-12
+    // shakedown): `default_max_retries=0` keeps every node single-shot
+    // EXCEPT the two goal-gated nodes below, which carry an explicit
+    // `max_retries=1`. Fabro's node-retry layer is failure-category-
+    // aware BY ENGINE DESIGN (docs.fabro.sh/execution/failures §"What
+    // gets retried"): only failures classified `transient_infra` (ACP
+    // turn timeout, rate limit, network, 5xx) re-execute the handler;
+    // `deterministic` failures fail immediately WITHOUT consuming the
+    // retry budget and route via the `outcome=failed` edges to the
+    // human gate exactly as before. So: transient -> ONE auto-retry;
+    // categorical -> park at needs-human. `stall_timeout` stays 7200s:
+    // it is the zero-EVENT watchdog (cancels the run on 2h of event
+    // silence), not the per-turn ceiling — an active agent turn streams
+    // events continuously, so a longer implement turn does not trip it.
+    graph [
+        goal="Implement one ready work-item per the livespec family discipline"
+        default_max_retries=0
+        stall_timeout="7200s"
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // timeout=14400s (was 7200s): two heavy multi-RGR items (dev-tooling
+    // p60, git-jsonl tenpup, both 2026-06-12) died at "ACP turn timed
+    // out" at ~120m — the node timeout is the per-turn ceiling for the
+    // ACP backend (the run PARKED at the human gate afterwards, i.e. the
+    // node failed; the stall watchdog by contrast CANCELS the whole run,
+    // so it was not the stall_timeout). 4h gives multi-part items one
+    // unattended turn of headroom; the Dispatcher's own fabro-run
+    // subprocess budget covers the worst case (see _dispatcher_engine
+    // _FABRO_TIMEOUT_SECONDS).
+    //
+    // retry_target: fires ONLY at exit-node goal-gate enforcement (the
+    // `outcome=failed` edge to the human gate takes precedence at node
+    // failure — docs.fabro.sh/execution/failures §"When failures become
+    // fatal"). With the `abandon` terminal node below, the only path
+    // that reaches exit with this gate unsatisfied is a human [R]
+    // answer after an implement failure; the jump back here re-attempts
+    // the implement instead of failing a run whose fix path went green.
+    implement [
+        label="Implement (Red-Green-Replay)"
+        backend="acp"
+        acp.command="{{ inputs.acp_adapter }}"
+        timeout="14400s"
+        max_retries=1
+        goal_gate=true
+        retry_target="implement"
+        prompt="@prompts/implement.md"
+    ]
+
+    // Janitor hard gate: a non-zero `just check` MUST prevent the PR
+    // stage (livespec non-functional-requirements.md §"Orchestrator-
+    // internal Dispatcher guidance"). Script outcome routes the edges:
+    // exit 0 -> succeeded -> pr; non-zero -> failed -> fix loop.
+    janitor [
+        label="Janitor: just check"
+        shape=parallelogram
+        timeout="3600s"
+        script="mise exec -- just check"
+    ]
+
+    fix [
+        label="Fix janitor failures"
+        backend="acp"
+        acp.command="{{ inputs.acp_adapter }}"
+        timeout="3600s"
+        max_visits=3
+        prompt="@prompts/fix.md"
+    ]
+
+    // max_retries=1 + retry_target: same bn4 retry discipline as the
+    // implement node (transient -> one auto-retry; deterministic ->
+    // park via the Blocked edge). The retry_target is structurally
+    // unreachable here — the only edge into exit is `pr -> exit`, taken
+    // when pr did NOT fail — it exists to satisfy fabro's
+    // goal_gate_has_retry lint alongside the real node-retry budget.
+    pr [
+        label="Open PR + arm rebase auto-merge"
+        backend="acp"
+        acp.command="{{ inputs.acp_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        goal_gate=true
+        retry_target="pr"
+        prompt="@prompts/pr.md"
+    ]
+
+    // Review gate (Slice A / bd-ib-egms32): a Claude Opus 4.8 /
+    // high-thinking REVIEW-ONLY node between a green janitor and pr. It
+    // runs on the Claude subscription via the `review_adapter` input,
+    // which env-pins the model: `model`/`reasoning_effort` are API-only
+    // attributes fabro REJECTS on acp nodes (fabro-validate backend_valid
+    // rule), so Opus 4.8 + high effort are pinned through the adapter's
+    // OWN env (ANTHROPIC_MODEL + CLAUDE_CODE_EFFORT_LEVEL) — NOT a node
+    // attr or a model_stylesheet. max_retries=1 gives a transient ACP
+    // blip one auto-retry before the `outcome=failed` edge escalates.
+    // Deliberately NO max_visits: the review<->review_fix loop is bounded
+    // GRACEFULLY by the edge guard below (on review's own visit count); a
+    // max_visits here would hard-abort (VisitLimitExceeded) on the very
+    // visit that should ship.
+    review [
+        label="Review (Claude Opus 4.8): correctness + senior-engineer design lens"
+        backend="acp"
+        acp.command="{{ inputs.review_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        prompt="@prompts/review.md"
+    ]
+
+    // Review-fix (Slice A / bd-ib-egms32): the implementer addresses the
+    // reviewer's BLOCKING findings (or rejects each with a one-line
+    // rationale), then re-validates through the janitor. A SEPARATE node
+    // from `fix` ON PURPOSE: it keeps the working janitor<->fix hard-gate
+    // loop and its visit budget completely untouched, and decouples the
+    // two fix budgets. Mirrors `fix` (implementer adapter, re-enters
+    // janitor); its own max_visits=3 is the ungraceful backstop — the
+    // graceful bound is review's edge guard, which caps review_fix entries
+    // at two.
+    review_fix [
+        label="Address review findings (or reject with rationale)"
+        backend="acp"
+        acp.command="{{ inputs.acp_adapter }}"
+        timeout="3600s"
+        max_visits=3
+        prompt="@prompts/review-fix.md"
+    ]
+
+    // In-loop human escalation (livespec-impl-beads-4zl): outcomes the
+    // loop cannot auto-resolve park the run at this gate — Fabro's
+    // native `blocked` status — instead of going quiet. A foreground
+    // `fabro run` RETURNS at the gate (the Dispatcher's slot frees)
+    // while a server-side engine stays alive holding the run; `fabro
+    // attach <run-id>` is the answer path (resume is only for a dead
+    // engine). The answer routes BACK into the loop via the labeled
+    // edges below. [A] Abandon routes to the `abandon` terminal command
+    // node, which fails the run WITHOUT reaching exit, so the work-item
+    // stays open for triage.
+    escalate [
+        shape=hexagon
+        label="Needs human: the loop cannot auto-resolve this work-item"
+    ]
+
+    // Terminal abandon node (bn4): a deliberate dead end (no outgoing
+    // edges — fabro validate accepts a dead-end node but rejects a
+    // conditional-only edge set). Pre-bn4, [A] Abandon routed straight
+    // to exit and relied on "goal gate unsatisfied at exit WITH NO
+    // RETRY TARGET" to fail the run — but wiring retry_target on the
+    // goal-gated nodes (above) would have turned that exact path into
+    // a jump BACK into the loop, making Abandon un-answerable. This
+    // node restores hard termination: the script always exits 1 (a
+    // deterministic, never-retried failure), there is no outgoing edge
+    // to follow and no retry target on the node or graph, so the run
+    // terminates non-green BEFORE the exit node's goal-gate enforcement
+    // can bounce it (docs.fabro.sh/execution/failures §"When failures
+    // become fatal", step 7).
+    abandon [
+        label="Abandon: terminate non-green (work-item stays open)"
+        shape=parallelogram
+        timeout="60s"
+        script="echo 'operator abandoned the run; work-item left open for triage' >&2; exit 1"
+    ]
+
+    // Terminal non-converged node (work-item livespec-impl-beads-rw75ym,
+    // Scenario 14): the "non-converged" EXIT EDGE that routes a fix-loop-cap
+    // exhaustion BACK to the Dispatcher (-> needs-regroom) within Fabro's
+    // EXISTING DOT vocabulary — a plain dead-end command node, the same
+    // shape the `abandon` terminal uses, requiring NO Fabro platform or
+    // setup change. The fix-loop CAP is the unchanged `< 3` visit guard on
+    // the janitor->fix edge below (two fix attempts); the THIRD Red, which
+    // used to park at the human gate, now routes HERE instead. The script
+    // emits the LIVESPEC_NON_CONVERGED sentinel to stderr and exits 1
+    // (deterministic, never-retried), so the run terminates non-green and
+    // the foreground `fabro run` surfaces the sentinel in its output. The
+    // Dispatcher's `is_non_convergence_outcome` matches that sentinel in
+    // the failed outcome's detail and marks the slice `needs-regroom`
+    // (escalate-don't-drop), never infinite-retrying. The sentinel string
+    // is shared with the Dispatcher consumer
+    // (commands/_dispatcher_plan.NON_CONVERGED_MARKER) — keep the two in
+    // lockstep. A dead end (no outgoing edge) is what makes the run
+    // terminate rather than loop; same fabro-validate-accepted shape as
+    // `abandon`.
+    non_converged [
+        label="Non-converged: fix-loop cap hit; route back to Dispatcher (needs-regroom)"
+        shape=parallelogram
+        timeout="60s"
+        script="echo 'LIVESPEC_NON_CONVERGED: janitor fix-loop cap hit without converging; routing back to the Dispatcher for needs-regroom' >&2; exit 1"
+    ]
+
+    start -> implement
+
+    // A failed implement (structured needs-human ending, see
+    // prompts/implement.md) routes to the human gate — conditional
+    // edges take priority over the unconditional fallback; everything
+    // else proceeds to the janitor.
+    implement -> escalate [label="Blocked", condition="outcome=failed"]
+    implement -> janitor
+
+    // Janitor outcome routing: exit 0 -> Green -> review (-> pr on
+    // approve); non-zero -> Red -> fix while the loop budget remains,
+    // then Exhausted -> non_converged.
+    //
+    // The fix-loop CAP is enforced HERE, as a visit guard on the
+    // janitor's own visit count, NOT by fix's max_visits alone:
+    // verified against fabro v0.254.0 source (fabro-core executor.rs),
+    // a node that reaches max_visits ABORTS the whole run at entry
+    // (Error::VisitLimitExceeded) — it does NOT emit outcome=failed,
+    // so no edge could route the exhaustion onward. Janitor visit N means
+    // N-1 completed fix attempts; the `< 3` guard allows two fix attempts,
+    // then the third Red falls through to the `non_converged` terminal.
+    // fix's max_visits=3 stays as the abort backstop (unreachable unless
+    // this routing regresses).
+    //
+    // Scenario 14 (work-item livespec-impl-beads-rw75ym): the Exhausted
+    // edge routes to `non_converged` (the non-converged EXIT EDGE back to
+    // the Dispatcher -> needs-regroom), NOT to `escalate`. A non-converging
+    // slice is the empirical "too big" signal and belongs in grooming, not
+    // the in-loop human gate — the Dispatcher marks it `needs-regroom` and
+    // surfaces it (escalate-don't-drop), rather than the operator answering
+    // [R]/[I]/[A] only to face the same non-convergence again.
+    janitor -> review [label="Green", condition="outcome=succeeded"]
+    janitor -> fix [label="Red", condition="outcome!=succeeded && context.internal.node_visit_count < 3"]
+    janitor -> non_converged [label="Exhausted (fix-loop cap)"]
+    fix -> janitor
+
+    // Review gate routing (Slice A / bd-ib-egms32). The review node emits a
+    // routing verdict (prompts/review.md) -> {"preferred_next_label":
+    // "approve"|"fix"} on its last line. fabro's select_edge
+    // (fabro-workflow graph/routing.rs) resolves in strict precedence:
+    // (1) satisfied conditions first, then (2) preferred_label among
+    // CONDITIONLESS edges, then (4) the unconditional fallthrough. So:
+    //   - approve            -> condition pass empty; preferred_label
+    //                           "approve" matches the conditionless
+    //                           `review -> pr` edge.
+    //   - fix & under cap    -> the label-aware count guard below is TRUE
+    //                           -> review_fix (Phase 1, by condition).
+    //   - fix & cap reached  -> guard FALSE; the conditioned fix edge is
+    //                           skipped by the preferred_label pass too, so
+    //                           it FALLS THROUGH to the conditionless
+    //                           `review -> pr` edge. SHIP-ON-CAP: the
+    //                           janitor is green and the reviewer is
+    //                           advisory, so a non-converging REVIEW never
+    //                           starves a mechanically-valid PR.
+    //   - node failure       -> `outcome=failed`; weight=100 wins the
+    //                           failed-vs-fix tiebreak deterministically.
+    // The guard reads `preferred_label` (a bare outcome key; `=`, not `==`)
+    // AND review's OWN node_visit_count (the source node, inclusive of the
+    // current visit), so review<->review_fix is bounded gracefully on
+    // review's visits (two fix rounds, ship on the third) while the
+    // janitor<->fix loop above is left entirely untouched.
+    review -> escalate   [label="Blocked", condition="outcome=failed", weight=100]
+    review -> review_fix [label="fix", condition="preferred_label=fix && context.internal.node_visit_count < 3"]
+    review -> pr         [label="approve"]
+    review_fix -> janitor
+
+    // A failed pr stage (hook rejection, gh failure — structured
+    // needs-human ending per prompts/pr.md) parks at the gate too.
+    pr -> escalate [label="Blocked", condition="outcome=failed"]
+    pr -> exit
+
+    // The human's answer = one of these labels; it routes the run back
+    // INTO the loop (or to the abandon terminal node, for triage).
+    escalate -> fix       [label="[R] Retry the fix"]
+    escalate -> implement [label="[I] Re-implement from scratch"]
+    escalate -> abandon   [label="[A] Abandon (leave open for triage)"]
+}
