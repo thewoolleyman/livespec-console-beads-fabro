@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use console_domain::{ConsoleEvent, EventType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7,6 +9,7 @@ pub enum SourceAdapterKind {
     Fabro,
     GitHub,
     LiveSpec,
+    NeedsAttention,
 }
 
 impl SourceAdapterKind {
@@ -18,6 +21,7 @@ impl SourceAdapterKind {
             Self::Fabro => "fabro",
             Self::GitHub => "github",
             Self::LiveSpec => "livespec",
+            Self::NeedsAttention => "needs-attention",
         }
     }
 }
@@ -767,6 +771,9 @@ pub enum SourcePayload {
     GithubPullRequestSnapshot(GithubPullRequestSnapshot),
     LivespecNextSnapshot(LivespecNextSnapshot),
     NotObservedFinding(NotObservedFinding),
+    AttentionItemAppeared(AttentionItemSnapshot),
+    AttentionItemChanged(AttentionItemSnapshot),
+    AttentionItemResolved(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1501,27 +1508,513 @@ pub fn parse_livespec_observation(observed: &ObservedSource) -> Result<ParsedObs
     ))
 }
 
+// --- needs-attention snapshot source, diff-at-ingest, and attention_item.* ---
+//
+// The console consumes the product `needs-attention --json` surface through a
+// dedicated snapshot-source port, then DIFFS each freshly-read snapshot against
+// the prior ingested one (materialized from the console's own `attention_item.*`
+// stream) at ingest, emitting `attention_item.appeared` / `.changed` /
+// `.resolved` events keyed by each item's stable `id`. The surface is stateless
+// / point-in-time, so this diff-at-ingest is what turns the point-in-time
+// snapshots into a durable event stream: ALL event-sourcing lives in the
+// console (contracts.md §"Initial Adapters"; scenarios.md Scenario 12).
+
+/// The reference an attention item points at.
+///
+/// Always a repo, optionally a specific work-item or a filesystem path within
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct AttentionSourceRef {
+    repo: String,
+    #[serde(default)]
+    work_item: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+impl AttentionSourceRef {
+    #[must_use]
+    pub fn new(repo: &str, work_item: Option<&str>, path: Option<&str>) -> Self {
+        Self {
+            repo: repo.to_owned(),
+            work_item: work_item.map(ToOwned::to_owned),
+            path: path.map(ToOwned::to_owned),
+        }
+    }
+
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    pub fn work_item(&self) -> Option<&str> {
+        self.work_item.as_deref()
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+/// The operator handoff an attention item carries: how to act on it.
+///
+/// Its kind, an optional orchestrator action-id, and the concrete command to
+/// run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct AttentionHandoff {
+    kind: String,
+    #[serde(default)]
+    action_id: Option<String>,
+    command: String,
+}
+
+impl AttentionHandoff {
+    #[must_use]
+    pub fn new(kind: &str, action_id: Option<&str>, command: &str) -> Self {
+        Self {
+            kind: kind.to_owned(),
+            action_id: action_id.map(ToOwned::to_owned),
+            command: command.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    #[must_use]
+    pub fn action_id(&self) -> Option<&str> {
+        self.action_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+}
+
+/// One item in the product needs-attention snapshot.
+///
+/// The stable diff key `id` plus its composed content (kind, urgency, summary,
+/// source reference, and operator handoff). The console consumes this composed
+/// item verbatim; it re-derives none of the primitives the surface composed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct AttentionItemSnapshot {
+    id: String,
+    kind: String,
+    urgency: String,
+    summary: String,
+    source_ref: AttentionSourceRef,
+    handoff: AttentionHandoff,
+}
+
+impl AttentionItemSnapshot {
+    #[must_use]
+    pub fn new(
+        id: &str,
+        kind: &str,
+        urgency: &str,
+        summary: &str,
+        source_ref: AttentionSourceRef,
+        handoff: AttentionHandoff,
+    ) -> Self {
+        Self {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+            urgency: urgency.to_owned(),
+            summary: summary.to_owned(),
+            source_ref,
+            handoff,
+        }
+    }
+
+    /// The stable natural key per kind — the diff key that keys every
+    /// `attention_item.*` event.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    #[must_use]
+    pub fn urgency(&self) -> &str {
+        &self.urgency
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    #[must_use]
+    pub const fn source_ref(&self) -> &AttentionSourceRef {
+        &self.source_ref
+    }
+
+    #[must_use]
+    pub const fn handoff(&self) -> &AttentionHandoff {
+        &self.handoff
+    }
+}
+
+/// The dedicated snapshot-source port for the product needs-attention surface.
+///
+/// Reads the surface as a point-in-time snapshot, or an honest reason it could
+/// not be observed. The `needs-attention` CLI surface is owned by the
+/// orchestrator plugin, not the console; the console reads it ONLY through this
+/// port and never reaches around it to recompute the inbox.
+pub trait NeedsAttentionSnapshotPort {
+    fn read_snapshot(&self) -> NeedsAttentionReadOutcome;
+}
+
+/// Outcome of reading the product needs-attention snapshot.
+///
+/// The composed items, or an honest reason the surface could not be observed
+/// this poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NeedsAttentionReadOutcome {
+    Observed(Vec<AttentionItemSnapshot>),
+    Unavailable(String),
+}
+
+/// Snapshot-source port backed by a [`SourceProbe`].
+///
+/// Runs the orchestrator's `needs-attention --json` CLI and parses its flat
+/// `attention[]` array. An unreachable binary, a non-zero exit, or an
+/// uninterpretable payload degrades to `Unavailable` rather than fabricating an
+/// empty inbox.
+pub struct ProbeNeedsAttentionPort<'a> {
+    probe: &'a dyn SourceProbe,
+    program: String,
+    args: Vec<String>,
+}
+
+impl<'a> ProbeNeedsAttentionPort<'a> {
+    #[must_use]
+    pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
+        Self {
+            probe,
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+}
+
+impl NeedsAttentionSnapshotPort for ProbeNeedsAttentionPort<'_> {
+    fn read_snapshot(&self) -> NeedsAttentionReadOutcome {
+        let arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        match self.probe.run_command(&self.program, &arg_refs) {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => match parse_needs_attention_snapshot(&stdout) {
+                Ok(items) => NeedsAttentionReadOutcome::Observed(items),
+                Err(reason) => NeedsAttentionReadOutcome::Unavailable(reason),
+            },
+            SourceProbeOutcome::Observed { success: false, .. } => {
+                NeedsAttentionReadOutcome::Unavailable(
+                    "needs-attention command exited non-zero".to_owned(),
+                )
+            }
+            SourceProbeOutcome::Unavailable { reason } => {
+                NeedsAttentionReadOutcome::Unavailable(reason)
+            }
+        }
+    }
+}
+
+/// Parse the product `needs-attention --json` output into one
+/// [`AttentionItemSnapshot`] per item.
+///
+/// The output is a JSON object with a flat `attention[]` array. An empty array
+/// is a valid empty snapshot (nothing needs attention). A payload that is not
+/// the expected shape, or an item missing a stable `id`, returns an honest
+/// reason so the adapter records a not-observed finding instead of fabricating
+/// an inbox.
+///
+/// # Errors
+/// Returns a reason string when the output is not a JSON object carrying an
+/// `attention` array of well-shaped items, or when any item lacks a stable `id`.
+pub fn parse_needs_attention_snapshot(stdout: &str) -> Result<Vec<AttentionItemSnapshot>, String> {
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(default)]
+        attention: Vec<AttentionItemSnapshot>,
+    }
+
+    let envelope: Envelope = serde_json::from_str(stdout).map_err(|_error| {
+        "needs-attention output is not a JSON object with an attention array".to_owned()
+    })?;
+    for item in &envelope.attention {
+        if item.id.trim().is_empty() {
+            return Err("needs-attention item is missing a stable id".to_owned());
+        }
+    }
+    Ok(envelope.attention)
+}
+
+/// Rebuild the prior ingested needs-attention snapshot from the console's own
+/// `attention_item.*` event stream.
+///
+/// `appeared` / `changed` upsert an item by its stable `id`, `resolved` removes
+/// it. This is the "last ingested snapshot" the diff-at-ingest compares against
+/// — the event log is the durable prior, so no side checkpoint is needed.
+#[must_use]
+pub fn materialize_attention_items(events: &[ConsoleEvent]) -> Vec<AttentionItemSnapshot> {
+    let mut latest: BTreeMap<String, AttentionItemSnapshot> = BTreeMap::new();
+    for event in events {
+        match event.event_type() {
+            EventType::AttentionItemAppeared | EventType::AttentionItemChanged => {
+                if let Some(item) = attention_item_snapshot_from_payload_json(event.payload_json())
+                {
+                    let _ = latest.insert(item.id().to_owned(), item);
+                }
+            }
+            EventType::AttentionItemResolved => {
+                if let Some(id) = attention_resolved_id_from_payload_json(event.payload_json()) {
+                    let _ = latest.remove(&id);
+                }
+            }
+            _other => {}
+        }
+    }
+    latest.into_values().collect()
+}
+
+/// Diff a freshly-read needs-attention snapshot against the prior ingested one.
+///
+/// Emits the canonical `attention_item.appeared` / `.changed` / `.resolved`
+/// events keyed by each item's stable `id`. The diff is idempotent: an `id`
+/// present in both whose composed content is unchanged emits nothing. Output is
+/// deterministic (ordered by `id`): appeared/changed first over the new
+/// snapshot, then resolved over the prior snapshot.
+#[must_use]
+pub fn diff_needs_attention(
+    repo: &str,
+    prior: &[AttentionItemSnapshot],
+    next: &[AttentionItemSnapshot],
+) -> Vec<NormalizedSourceEvent> {
+    let prior_by_id: BTreeMap<&str, &AttentionItemSnapshot> =
+        prior.iter().map(|item| (item.id(), item)).collect();
+    let next_by_id: BTreeMap<&str, &AttentionItemSnapshot> =
+        next.iter().map(|item| (item.id(), item)).collect();
+    let mut events = Vec::new();
+    for (&id, &item) in &next_by_id {
+        match prior_by_id.get(id) {
+            None => events.push(attention_item_event(repo, item, AttentionChange::Appeared)),
+            Some(&prior_item) if prior_item != item => {
+                events.push(attention_item_event(repo, item, AttentionChange::Changed));
+            }
+            Some(_unchanged) => {}
+        }
+    }
+    for (&id, &item) in &prior_by_id {
+        if !next_by_id.contains_key(id) {
+            events.push(attention_item_resolved_event(repo, item));
+        }
+    }
+    events
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttentionChange {
+    Appeared,
+    Changed,
+}
+
+fn attention_item_event(
+    repo: &str,
+    item: &AttentionItemSnapshot,
+    change: AttentionChange,
+) -> NormalizedSourceEvent {
+    let (event_type, payload, tag) = match change {
+        AttentionChange::Appeared => (
+            EventType::AttentionItemAppeared,
+            SourcePayload::AttentionItemAppeared(item.clone()),
+            "appeared",
+        ),
+        AttentionChange::Changed => (
+            EventType::AttentionItemChanged,
+            SourcePayload::AttentionItemChanged(item.clone()),
+            "changed",
+        ),
+    };
+    let version = attention_item_version(repo, item);
+    let source_event_id = format!("needs-attention:{repo}:{}:{tag}:{version}", item.id());
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!("evt:{source_event_id}"),
+            1,
+            "needs-attention".to_owned(),
+            event_type,
+            SourceAdapterKind::NeedsAttention.source_name().to_owned(),
+            attention_item_stream(repo, item.id()),
+            version,
+        ),
+        source_event_id,
+        payload,
+    )
+}
+
+fn attention_item_resolved_event(
+    repo: &str,
+    item: &AttentionItemSnapshot,
+) -> NormalizedSourceEvent {
+    let version = attention_stream_seq(&[repo, item.id(), "resolved"]);
+    let source_event_id = format!("needs-attention:{repo}:{}:resolved:{version}", item.id());
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!("evt:{source_event_id}"),
+            1,
+            "needs-attention".to_owned(),
+            EventType::AttentionItemResolved,
+            SourceAdapterKind::NeedsAttention.source_name().to_owned(),
+            attention_item_stream(repo, item.id()),
+            version,
+        ),
+        source_event_id,
+        SourcePayload::AttentionItemResolved(item.id().to_owned()),
+    )
+}
+
+/// Content-addressed version for an attention item: the same composed content
+/// yields the same identity (idempotent), any change yields a new one. Masked to
+/// 63 bits so it round-trips through the event store's signed-integer
+/// `stream_seq` column without overflow.
+fn attention_item_version(repo: &str, item: &AttentionItemSnapshot) -> u64 {
+    attention_stream_seq(&[
+        repo,
+        item.id(),
+        item.kind(),
+        item.urgency(),
+        item.summary(),
+        item.source_ref().repo(),
+        item.source_ref().work_item().unwrap_or(""),
+        item.source_ref().path().unwrap_or(""),
+        item.handoff().kind(),
+        item.handoff().action_id().unwrap_or(""),
+        item.handoff().command(),
+    ])
+}
+
+/// A stable content hash masked to 63 bits so it fits the event store's signed
+/// `stream_seq` column (still non-zero: `stable_version` forces the low bit).
+fn attention_stream_seq(parts: &[&str]) -> u64 {
+    stable_version(parts) & 0x7fff_ffff_ffff_ffff
+}
+
+fn attention_item_stream(repo: &str, id: &str) -> String {
+    format!("attention_item:{repo}:{id}")
+}
+
+/// Serialize an attention item into its canonical persisted `payload_json`.
+///
+/// The exact shape [`attention_item_snapshot_from_payload_json`] reads back,
+/// built as a [`serde_json::Value`] so the round-trip is total and carries no
+/// unreachable failure arm.
+#[must_use]
+pub fn attention_item_payload_json(item: &AttentionItemSnapshot) -> String {
+    let mut source_ref = serde_json::Map::new();
+    let _ = source_ref.insert("repo".to_owned(), item.source_ref.repo.clone().into());
+    let _ = source_ref.insert(
+        "work_item".to_owned(),
+        optional_json_string(item.source_ref.work_item.as_deref()),
+    );
+    let _ = source_ref.insert(
+        "path".to_owned(),
+        optional_json_string(item.source_ref.path.as_deref()),
+    );
+    let mut handoff = serde_json::Map::new();
+    let _ = handoff.insert("kind".to_owned(), item.handoff.kind.clone().into());
+    let _ = handoff.insert(
+        "action_id".to_owned(),
+        optional_json_string(item.handoff.action_id.as_deref()),
+    );
+    let _ = handoff.insert("command".to_owned(), item.handoff.command.clone().into());
+    let mut object = serde_json::Map::new();
+    let _ = object.insert("id".to_owned(), item.id.clone().into());
+    let _ = object.insert("kind".to_owned(), item.kind.clone().into());
+    let _ = object.insert("urgency".to_owned(), item.urgency.clone().into());
+    let _ = object.insert("summary".to_owned(), item.summary.clone().into());
+    let _ = object.insert(
+        "source_ref".to_owned(),
+        serde_json::Value::Object(source_ref),
+    );
+    let _ = object.insert("handoff".to_owned(), serde_json::Value::Object(handoff));
+    serde_json::Value::Object(object).to_string()
+}
+
+fn optional_json_string(value: Option<&str>) -> serde_json::Value {
+    value.map_or(serde_json::Value::Null, |text| {
+        serde_json::Value::String(text.to_owned())
+    })
+}
+
+/// Rebuild an attention item from a persisted `payload_json`.
+///
+/// Returns `None` for any payload that is not a complete attention item (a
+/// resolved marker, a different event's payload, or a corrupt row) so the fold
+/// skips it.
+#[must_use]
+pub fn attention_item_snapshot_from_payload_json(
+    payload_json: &str,
+) -> Option<AttentionItemSnapshot> {
+    serde_json::from_str(payload_json).ok()
+}
+
+/// The canonical `payload_json` for an `attention_item.resolved` event: just the
+/// resolved item's stable `id`.
+#[must_use]
+pub fn attention_resolved_payload_json(id: &str) -> String {
+    let mut object = serde_json::Map::new();
+    let _ = object.insert("id".to_owned(), id.to_owned().into());
+    serde_json::Value::Object(object).to_string()
+}
+
+/// Read the resolved item's stable `id` back from an `attention_item.resolved`
+/// payload; `None` for any other payload shape.
+#[must_use]
+pub fn attention_resolved_id_from_payload_json(payload_json: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Resolved {
+        id: String,
+    }
+
+    let resolved: Resolved = serde_json::from_str(payload_json).ok()?;
+    Some(resolved.id)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use console_domain::EventType;
+    use console_domain::{ConsoleEvent, EventType};
 
     use super::{
         AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest,
-        AdapterResult, AdmissionPolicy, CompletenessFinding, DispatcherJournalEntry,
-        DispatcherJournalKind, FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot,
-        GithubPullRequestState, Lane, LaneReason, LivespecNextAction, LivespecNextSnapshot,
-        NormalizedSourceEvent, NotObservedFinding, ObservedSource, ObservedSourceAdapter,
-        ParsedObservation, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
-        SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
-        SourceProbeOutcome, WorkItemSnapshot, normalize_dispatcher_journal_entry,
+        AdapterResult, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
+        AttentionSourceRef, CompletenessFinding, DispatcherJournalEntry, DispatcherJournalKind,
+        FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane,
+        LaneReason, LivespecNextAction, LivespecNextSnapshot, NeedsAttentionReadOutcome,
+        NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, ObservedSource,
+        ObservedSourceAdapter, ParsedObservation, ProbeNeedsAttentionPort, PullSourcePort,
+        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
+        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+        attention_item_snapshot_from_payload_json, diff_needs_attention,
+        materialize_attention_items, normalize_dispatcher_journal_entry,
         normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
         normalize_livespec_next_snapshot, normalize_work_item_snapshot,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
-        work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
+        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[test]
@@ -3131,5 +3624,232 @@ mod tests {
         assert_eq!(super::first_json_u64("{\"n\" 42}", "n"), None);
         assert_eq!(super::first_json_u64("{\"n\": x}", "n"), None);
         assert!(super::stable_version(&["a"]) != 0);
+    }
+
+    fn needs_attention_json(id: &str) -> String {
+        format!(
+            r#"{{"attention":[{{"id":"{id}","kind":"human-valve","urgency":"high","summary":"Pending approval","source_ref":{{"repo":"console","work_item":"{id}"}},"handoff":{{"kind":"approve","action_id":"approve","command":"approve:{id}"}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn parse_needs_attention_snapshot_reads_the_attention_array() -> Result<(), String> {
+        let items = parse_needs_attention_snapshot(&needs_attention_json("wi-1"))?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id(), "wi-1");
+        assert_eq!(items[0].kind(), "human-valve");
+        assert_eq!(items[0].urgency(), "high");
+        assert_eq!(items[0].summary(), "Pending approval");
+        assert_eq!(items[0].source_ref().repo(), "console");
+        assert_eq!(items[0].source_ref().work_item(), Some("wi-1"));
+        assert_eq!(items[0].source_ref().path(), None);
+        assert_eq!(items[0].handoff().kind(), "approve");
+        assert_eq!(items[0].handoff().action_id(), Some("approve"));
+        assert_eq!(items[0].handoff().command(), "approve:wi-1");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_needs_attention_snapshot_accepts_an_empty_inbox() -> Result<(), String> {
+        assert!(parse_needs_attention_snapshot(r#"{"attention":[]}"#)?.is_empty());
+        // A missing `attention` key defaults to an empty inbox.
+        assert!(parse_needs_attention_snapshot("{}")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_needs_attention_snapshot_rejects_malformed_and_id_less_payloads() {
+        assert_eq!(
+            parse_needs_attention_snapshot("not json"),
+            Err("needs-attention output is not a JSON object with an attention array".to_owned())
+        );
+        let id_less = r#"{"attention":[{"id":"  ","kind":"human-valve","urgency":"high","summary":"x","source_ref":{"repo":"console"},"handoff":{"kind":"approve","command":"approve"}}]}"#;
+        assert_eq!(
+            parse_needs_attention_snapshot(id_less),
+            Err("needs-attention item is missing a stable id".to_owned())
+        );
+    }
+
+    #[test]
+    fn probe_needs_attention_port_observes_parses_and_degrades() {
+        let ok_probe = StubProbe::command(SourceProbeOutcome::observed(
+            &needs_attention_json("wi-1"),
+            true,
+        ));
+        let port = ProbeNeedsAttentionPort::new(&ok_probe, "needs-attention", &["--json"]);
+        assert!(matches!(
+            port.read_snapshot(),
+            NeedsAttentionReadOutcome::Observed(items)
+                if items.first().map(AttentionItemSnapshot::id) == Some("wi-1")
+        ));
+
+        // Observed but unparseable → Unavailable with the parse reason.
+        let bad_probe = StubProbe::command(SourceProbeOutcome::observed("not json", true));
+        let bad_port = ProbeNeedsAttentionPort::new(&bad_probe, "needs-attention", &["--json"]);
+        assert!(matches!(
+            bad_port.read_snapshot(),
+            NeedsAttentionReadOutcome::Unavailable(_reason)
+        ));
+
+        // Non-zero exit → Unavailable.
+        let failing_probe = StubProbe::command(SourceProbeOutcome::observed("", false));
+        let failing_port =
+            ProbeNeedsAttentionPort::new(&failing_probe, "needs-attention", &["--json"]);
+        assert_eq!(
+            failing_port.read_snapshot(),
+            NeedsAttentionReadOutcome::Unavailable(
+                "needs-attention command exited non-zero".to_owned()
+            )
+        );
+
+        // Unreachable binary → Unavailable carrying the probe's reason.
+        let missing_probe =
+            StubProbe::command(SourceProbeOutcome::unavailable("needs-attention: missing"));
+        let missing_port =
+            ProbeNeedsAttentionPort::new(&missing_probe, "needs-attention", &["--json"]);
+        assert_eq!(
+            missing_port.read_snapshot(),
+            NeedsAttentionReadOutcome::Unavailable("needs-attention: missing".to_owned())
+        );
+    }
+
+    fn attention_snapshot(id: &str, summary: &str) -> AttentionItemSnapshot {
+        AttentionItemSnapshot::new(
+            id,
+            "human-valve",
+            "high",
+            summary,
+            AttentionSourceRef::new("console", Some(id), None),
+            AttentionHandoff::new("approve", Some("approve"), &format!("approve:{id}")),
+        )
+    }
+
+    #[test]
+    fn diff_needs_attention_emits_appeared_changed_resolved_keyed_by_id() {
+        let prior = [
+            attention_snapshot("wi-a", "old"),
+            attention_snapshot("wi-b", "b"),
+        ];
+        let next = [
+            attention_snapshot("wi-a", "new"),
+            attention_snapshot("wi-c", "c"),
+        ];
+
+        let events = diff_needs_attention("console", &prior, &next);
+
+        // wi-a changed, wi-c appeared (id order over next), then wi-b resolved.
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[0].event().event_type(),
+            &EventType::AttentionItemChanged
+        );
+        assert!(matches!(
+            events[0].payload(),
+            SourcePayload::AttentionItemChanged(item) if item.id() == "wi-a" && item.summary() == "new"
+        ));
+        assert_eq!(events[0].event().source(), "needs-attention");
+        assert_eq!(events[0].event().stream_id(), "attention_item:console:wi-a");
+        assert_eq!(
+            events[1].event().event_type(),
+            &EventType::AttentionItemAppeared
+        );
+        assert!(matches!(
+            events[1].payload(),
+            SourcePayload::AttentionItemAppeared(item) if item.id() == "wi-c"
+        ));
+        assert_eq!(
+            events[2].event().event_type(),
+            &EventType::AttentionItemResolved
+        );
+        assert!(matches!(
+            events[2].payload(),
+            SourcePayload::AttentionItemResolved(id) if id == "wi-b"
+        ));
+    }
+
+    #[test]
+    fn diff_needs_attention_is_idempotent_for_unchanged_items() {
+        let snapshot = [attention_snapshot("wi-a", "same")];
+
+        assert!(diff_needs_attention("console", &snapshot, &snapshot).is_empty());
+    }
+
+    #[test]
+    fn materialize_attention_items_folds_the_stream() {
+        // Build the persisted events exactly as the store re-attaches them on
+        // read: an `attention_item.*` envelope carrying its canonical payload.
+        let events = [
+            attention_stream_event(
+                "e1",
+                EventType::AttentionItemAppeared,
+                &attention_snapshot("wi-a", "a"),
+            ),
+            attention_stream_event(
+                "e2",
+                EventType::AttentionItemAppeared,
+                &attention_snapshot("wi-b", "b"),
+            ),
+            attention_resolved_stream_event("e3", "wi-b"),
+        ];
+
+        let materialized = materialize_attention_items(&events);
+
+        assert_eq!(materialized.len(), 1);
+        assert_eq!(materialized[0].id(), "wi-a");
+    }
+
+    fn attention_stream_event(
+        event_id: &str,
+        event_type: EventType,
+        item: &AttentionItemSnapshot,
+    ) -> ConsoleEvent {
+        ConsoleEvent::fixture(event_id, event_type, "needs-attention")
+            .with_payload_json(super::attention_item_payload_json(item))
+    }
+
+    fn attention_resolved_stream_event(event_id: &str, id: &str) -> ConsoleEvent {
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::AttentionItemResolved,
+            "needs-attention",
+        )
+        .with_payload_json(super::attention_resolved_payload_json(id))
+    }
+
+    #[test]
+    fn attention_payload_round_trips_and_rejects_foreign_payloads() {
+        let item = attention_snapshot("wi-a", "summary");
+        let json = super::attention_item_payload_json(&item);
+
+        assert_eq!(attention_item_snapshot_from_payload_json(&json), Some(item));
+        assert_eq!(attention_item_snapshot_from_payload_json("{}"), None);
+        assert_eq!(
+            super::attention_resolved_id_from_payload_json(
+                &super::attention_resolved_payload_json("wi-a")
+            ),
+            Some("wi-a".to_owned())
+        );
+        assert_eq!(super::attention_resolved_id_from_payload_json("{}"), None);
+    }
+
+    #[test]
+    fn needs_attention_source_name_is_stable() {
+        assert_eq!(
+            SourceAdapterKind::NeedsAttention.source_name(),
+            "needs-attention"
+        );
+    }
+
+    #[test]
+    fn attention_source_ref_and_handoff_expose_optional_fields() {
+        let source_ref = AttentionSourceRef::new("console", None, Some("path/x.md"));
+        assert_eq!(source_ref.repo(), "console");
+        assert_eq!(source_ref.work_item(), None);
+        assert_eq!(source_ref.path(), Some("path/x.md"));
+        let handoff = AttentionHandoff::new("spec", None, "revise");
+        assert_eq!(handoff.kind(), "spec");
+        assert_eq!(handoff.action_id(), None);
+        assert_eq!(handoff.command(), "revise");
     }
 }

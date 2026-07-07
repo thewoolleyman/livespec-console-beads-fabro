@@ -16,12 +16,14 @@ use console_application::{
     ApplicationError, FactoryDrainPolicy, FactoryDrainPort, build_tui_model,
     handle_factory_drain_command, project_attention,
     source_adapters::{
-        AdapterError, AdapterIngestionSummary, NormalizeObservation, NormalizedSourceEvent,
+        AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
+        NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
         ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
         SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
-        work_item_snapshot_payload_json,
+        attention_item_payload_json, attention_resolved_payload_json, diff_needs_attention,
+        materialize_attention_items, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
+        run_adapter_poll, work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -69,14 +71,15 @@ pub fn run_with_store(
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
+    needs_attention: &NeedsAttentionIngest<'_>,
 ) -> RunOutput {
     match command_name(args) {
         Some("serve") => run_runtime_result(
-            serve_report(store, observed_at, sources, factory_port),
+            serve_report(store, observed_at, sources, factory_port, needs_attention),
             "serve",
         ),
         Some("backfill") => run_runtime_result(
-            backfill_source_report(store, observed_at, sources),
+            backfill_source_report(store, observed_at, sources, needs_attention),
             "backfill",
         ),
         Some("events") => run_events_with_store(args, store),
@@ -251,6 +254,7 @@ pub fn run_store_backed_tui_session(
     runner: &mut dyn TuiSessionRunner,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
+    needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
     let existing_events = store.list_console_events()?;
     let ingestion = if existing_events.is_empty() {
@@ -258,6 +262,7 @@ pub fn run_store_backed_tui_session(
     } else {
         Vec::new()
     };
+    let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     let presented_events = store.list_console_events()?;
     let effects = runner.run_tui(&presented_events, requested_by)?;
     let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
@@ -300,12 +305,17 @@ pub fn backfill_source_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
+    needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
     let summaries = backfill_source_adapters(store, observed_at, sources)?;
     let event_count: usize = summaries
         .iter()
         .map(AdapterIngestionSummary::appended_event_count)
         .sum();
+    // The needs-attention snapshot is diffed at ingest into the durable
+    // `attention_item.*` stream; those events land in the store but are not part
+    // of this report's pull-adapter tally (they carry no per-poll checkpoint).
+    let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     Ok(format!(
         "backfill source adapters: adapters {}, events {event_count}",
         summaries.len()
@@ -397,6 +407,56 @@ pub fn live_source_adapters<'a>(
             Ok((format!("{prefix}:{repo}"), adapter))
         })
         .collect()
+}
+
+/// The needs-attention snapshot-source port paired with the console repo.
+///
+/// The repo names the stream the diffed `attention_item.*` events are keyed
+/// under; the diff-at-ingest adapter ([`ingest_needs_attention`]) consumes this
+/// bundle.
+pub struct NeedsAttentionIngest<'a> {
+    port: &'a dyn NeedsAttentionSnapshotPort,
+    repo: String,
+}
+
+impl<'a> NeedsAttentionIngest<'a> {
+    #[must_use]
+    pub fn new(port: &'a dyn NeedsAttentionSnapshotPort, repo: &str) -> Self {
+        Self {
+            port,
+            repo: repo.to_owned(),
+        }
+    }
+}
+
+/// Diff-at-ingest for the product needs-attention snapshot.
+///
+/// Rebuilds the prior ingested snapshot from the console's own
+/// `attention_item.*` stream, reads the current snapshot through the port, diffs
+/// them by stable id, and appends the resulting `attention_item.appeared` /
+/// `.changed` / `.resolved` events. An unavailable read appends nothing — a
+/// failed read must NOT resolve the whole inbox. Returns the count of
+/// newly-inserted attention events.
+pub fn ingest_needs_attention(
+    store: &mut dyn FactoryCommandStore,
+    needs_attention: &NeedsAttentionIngest<'_>,
+    observed_at: &str,
+) -> ConsoleRuntimeResult<usize> {
+    let existing = store.list_console_events()?;
+    let prior = materialize_attention_items(&existing);
+    let next = match needs_attention.port.read_snapshot() {
+        NeedsAttentionReadOutcome::Observed(items) => items,
+        NeedsAttentionReadOutcome::Unavailable(_reason) => return Ok(0),
+    };
+    let events = diff_needs_attention(&needs_attention.repo, &prior, &next);
+    let mut inserted = 0;
+    for event in &events {
+        let append = event_append_from_normalized_source_event(event, observed_at);
+        if store.append_event(&append)?.status() == AppendStatus::Inserted {
+            inserted += 1;
+        }
+    }
+    Ok(inserted)
 }
 
 #[cfg(test)]
@@ -524,6 +584,7 @@ pub fn serve_report(
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
+    needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
     let events = store.list_console_events()?;
     let ingestion = if events.is_empty() {
@@ -531,6 +592,7 @@ pub fn serve_report(
     } else {
         Vec::new()
     };
+    let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
@@ -825,6 +887,10 @@ fn event_append_from_normalized_source_event(
 fn normalized_payload_json(payload: &SourcePayload) -> String {
     match payload {
         SourcePayload::WorkItemSnapshot(snapshot) => work_item_snapshot_payload_json(snapshot),
+        SourcePayload::AttentionItemAppeared(item) | SourcePayload::AttentionItemChanged(item) => {
+            attention_item_payload_json(item)
+        }
+        SourcePayload::AttentionItemResolved(id) => attention_resolved_payload_json(id),
         SourcePayload::CompletenessFinding(_)
         | SourcePayload::DispatcherJournalEntry(_)
         | SourcePayload::FabroRunSnapshot(_)
@@ -1011,11 +1077,13 @@ fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use console_application::{
-        ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        LaneColumn, build_tui_model, project_lane_board,
+        ApplicationError, AttentionItem, FactoryDrainPort, FactoryDrainPortOutcome,
+        FactoryDrainRequest, LaneColumn, build_tui_model, project_attention, project_lane_board,
         source_adapters::{
-            AcceptancePolicy, AdapterError, AdmissionPolicy, Lane, LaneReason, PullSourcePort,
-            SourceProbe, SourceProbeOutcome, WorkItemSnapshot, normalize_work_item_snapshot,
+            AcceptancePolicy, AdapterError, AdmissionPolicy, AttentionHandoff,
+            AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason, NeedsAttentionReadOutcome,
+            NeedsAttentionSnapshotPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
+            WorkItemSnapshot, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1028,15 +1096,62 @@ mod tests {
 
     use super::{
         CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
-        FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed, ScriptedSource,
-        SourceAdapterRef, TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
-        backfill_demo_report, backfill_source_adapters, backfill_source_report,
-        command_status_update_runtime_result, demo_events, doctor_report, events_tail_report,
-        factory_command_from_stored, handle_pending_factory_commands, initial_source_seed,
+        FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed,
+        NeedsAttentionIngest, ScriptedSource, SourceAdapterRef, TuiSessionOutcome,
+        TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
+        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
+        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
+        handle_pending_factory_commands, ingest_needs_attention, initial_source_seed,
         live_source_adapters, load_tui_events_from_store, persist_tui_runtime_effects,
         render_tui_preview, run, run_store_backed_tui_session, run_with_store, serve_report,
         snapshot_report, source_polls_from_seed,
     };
+
+    /// Scriptable needs-attention snapshot-source port double: returns a canned
+    /// read outcome so ingestion tests can drive the diff-at-ingest with a real
+    /// snapshot without a live orchestrator CLI.
+    struct ScriptedNeedsAttentionPort {
+        outcome: NeedsAttentionReadOutcome,
+    }
+
+    impl ScriptedNeedsAttentionPort {
+        fn observing(items: Vec<AttentionItemSnapshot>) -> Self {
+            Self {
+                outcome: NeedsAttentionReadOutcome::Observed(items),
+            }
+        }
+
+        fn unavailable(reason: &str) -> Self {
+            Self {
+                outcome: NeedsAttentionReadOutcome::Unavailable(reason.to_owned()),
+            }
+        }
+    }
+
+    impl NeedsAttentionSnapshotPort for ScriptedNeedsAttentionPort {
+        fn read_snapshot(&self) -> NeedsAttentionReadOutcome {
+            self.outcome.clone()
+        }
+    }
+
+    /// A needs-attention port observing an empty snapshot — nothing to ingest —
+    /// for the many store-backed tests that exercise the pull adapters and
+    /// factory commands but not the needs-attention stream.
+    fn empty_needs_attention_port() -> ScriptedNeedsAttentionPort {
+        ScriptedNeedsAttentionPort::observing(Vec::new())
+    }
+
+    /// A single well-shaped attention item for building snapshot fixtures.
+    fn attention_item_fixture(id: &str, summary: &str) -> AttentionItemSnapshot {
+        AttentionItemSnapshot::new(
+            id,
+            "human-valve",
+            "high",
+            summary,
+            AttentionSourceRef::new("livespec-console-beads-fabro", Some(id), None),
+            AttentionHandoff::new("approve", Some("approve"), &format!("approve:{id}")),
+        )
+    }
 
     fn scripted_source_list() -> Vec<(String, ScriptedSource)> {
         source_polls_from_seed(&initial_source_seed())
@@ -1085,7 +1200,16 @@ mod tests {
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
-        run_with_store(args, store, observed_at, &sources, &mut port)
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        run_with_store(
+            args,
+            store,
+            observed_at,
+            &sources,
+            &mut port,
+            &needs_attention,
+        )
     }
 
     struct UnavailableProbe;
@@ -1232,8 +1356,10 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
-        let result = backfill_source_report(&mut store, "", &sources);
+        let result = backfill_source_report(&mut store, "", &sources, &needs_attention);
 
         assert!(matches!(
             result,
@@ -1328,7 +1454,7 @@ mod tests {
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 6\nevents: 6\nattention: 1\ncommands: 0\npending: 0\nfactory commands handled: 0"
+            "serve: store ready\nbackfill events: 6\nevents: 6\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0"
         );
         assert_eq!(store.list_console_events()?.len(), 6);
         assert_eq!(
@@ -1355,18 +1481,21 @@ mod tests {
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         let output = run_with_store(
             &command_args(&["bin", "serve"]),
             &mut store,
             "2026-06-23T00:00:02Z",
             &sources,
             &mut port,
+            &needs_attention,
         );
 
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 8\nevents: 11\nattention: 1\ncommands: 1\npending: 0\nfactory commands handled: 1"
+            "serve: store ready\nbackfill events: 8\nevents: 11\nattention: 0\ncommands: 1\npending: 0\nfactory commands handled: 1"
         );
         assert_eq!(store.list_commands()?[0].status(), "completed");
         Ok(())
@@ -1379,12 +1508,20 @@ mod tests {
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
-        let report = serve_report(&mut store, "2026-06-23T00:00:01Z", &sources, &mut port)?;
+        let report = serve_report(
+            &mut store,
+            "2026-06-23T00:00:01Z",
+            &sources,
+            &mut port,
+            &needs_attention,
+        );
 
         assert_eq!(
-            report,
-            "serve: store ready\nbackfill events: 0\nevents: 2\nattention: 2\ncommands: 0\npending: 0\nfactory commands handled: 0"
+            report?,
+            "serve: store ready\nbackfill events: 0\nevents: 2\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0"
         );
         Ok(())
     }
@@ -1471,7 +1608,7 @@ mod tests {
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "snapshot: events 2, attention 2, commands 1, pending 1"
+            "snapshot: events 2, attention 0, commands 1, pending 1"
         );
         Ok(())
     }
@@ -1487,7 +1624,7 @@ mod tests {
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "doctor: no findings\nstore events: 2\ncommands: 0\nattention: 2"
+            "doctor: no findings\nstore events: 2\ncommands: 0\nattention: 0"
         );
         Ok(())
     }
@@ -1497,19 +1634,27 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
-        assert_eq!(
-            backfill_source_report(&mut store, "2026-06-23T00:00:00Z", &sources)?,
-            "backfill source adapters: adapters 5, events 6"
+        let backfill = backfill_source_report(
+            &mut store,
+            "2026-06-23T00:00:00Z",
+            &sources,
+            &needs_attention,
         );
+        assert_eq!(backfill?, "backfill source adapters: adapters 5, events 6");
         assert!(events_tail_report(&store, 1)?.contains("pr.snapshot_observed"));
+        // Attention is now sourced from the `attention_item.*` stream; a store of
+        // work-item snapshots alone carries no attention items until the
+        // needs-attention snapshot is ingested (Scenario 12).
         assert_eq!(
             snapshot_report(&store)?,
-            "snapshot: events 6, attention 1, commands 0, pending 0"
+            "snapshot: events 6, attention 0, commands 0, pending 0"
         );
         assert_eq!(
             doctor_report(&store)?,
-            "doctor: no findings\nstore events: 6\ncommands: 0\nattention: 1"
+            "doctor: no findings\nstore events: 6\ncommands: 0\nattention: 0"
         );
         Ok(())
     }
@@ -1607,6 +1752,8 @@ mod tests {
         let mut factory_port = SimulatedFactoryDrainPort;
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -1615,12 +1762,13 @@ mod tests {
             &mut runner,
             &sources,
             &mut factory_port,
+            &needs_attention,
         );
         let commands = store.list_commands()?;
 
         assert!(matches!(
             outcome,
-            Ok(ref value) if value == &TuiSessionOutcome::new(8, 8, 1, 1, 11, 1)
+            Ok(ref value) if value == &TuiSessionOutcome::new(8, 8, 1, 1, 11, 0)
         ));
         assert!(matches!(
             outcome
@@ -1652,7 +1800,7 @@ mod tests {
         ));
         assert!(matches!(
             outcome.as_ref().map(TuiSessionOutcome::attention_count),
-            Ok(1)
+            Ok(0)
         ));
         assert_eq!(runner.observed_event_count(), 8);
         assert_eq!(runner.observed_requested_by(), "operator");
@@ -1669,6 +1817,8 @@ mod tests {
         let mut factory_port = SimulatedFactoryDrainPort;
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -1677,11 +1827,12 @@ mod tests {
             &mut runner,
             &sources,
             &mut factory_port,
+            &needs_attention,
         );
 
         assert!(matches!(
             outcome,
-            Ok(ref value) if value == &TuiSessionOutcome::new(0, 2, 0, 0, 2, 2)
+            Ok(ref value) if value == &TuiSessionOutcome::new(0, 2, 0, 0, 2, 0)
         ));
         assert_eq!(runner.observed_event_count(), 2);
         assert_eq!(store.list_console_events()?.len(), 2);
@@ -1695,6 +1846,8 @@ mod tests {
         let mut factory_port = SimulatedFactoryDrainPort;
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -1703,6 +1856,7 @@ mod tests {
             &mut runner,
             &sources,
             &mut factory_port,
+            &needs_attention,
         );
 
         assert!(matches!(
@@ -1711,6 +1865,101 @@ mod tests {
         ));
         assert_eq!(store.list_console_events()?.len(), 6);
         Ok(())
+    }
+
+    #[test]
+    fn ingest_needs_attention_diffs_snapshot_into_stream_and_projects_inbox()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        // First ingest against an empty prior: both items appear.
+        let first_port = ScriptedNeedsAttentionPort::observing(vec![
+            attention_item_fixture("wi-approve", "Pending approval"),
+            attention_item_fixture("wi-accept", "Acceptance review"),
+        ]);
+        let first = NeedsAttentionIngest::new(&first_port, "livespec-console-beads-fabro");
+        let appeared = ingest_needs_attention(&mut store, &first, "2026-07-07T00:00:00Z")?;
+        assert_eq!(appeared, 2);
+        assert_eq!(
+            attention_event_count(
+                &store.list_console_events()?,
+                EventType::AttentionItemAppeared
+            ),
+            2
+        );
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
+
+        // Re-ingest the identical snapshot: idempotent, emits nothing.
+        let unchanged = ingest_needs_attention(&mut store, &first, "2026-07-07T00:01:00Z")?;
+        assert_eq!(unchanged, 0);
+        assert_eq!(store.list_console_events()?.len(), 2);
+
+        // Second ingest: wi-approve changes, wi-accept resolves, wi-blocked appears.
+        let second_port = ScriptedNeedsAttentionPort::observing(vec![
+            attention_item_fixture("wi-approve", "Pending approval (urgent)"),
+            attention_item_fixture("wi-blocked", "Blocked: needs-human"),
+        ]);
+        let second = NeedsAttentionIngest::new(&second_port, "livespec-console-beads-fabro");
+        let ingested = ingest_needs_attention(&mut store, &second, "2026-07-07T00:02:00Z")?;
+        assert_eq!(ingested, 3);
+
+        let events = store.list_console_events()?;
+        assert_eq!(
+            attention_event_count(&events, EventType::AttentionItemChanged),
+            1
+        );
+        assert_eq!(
+            attention_event_count(&events, EventType::AttentionItemResolved),
+            1
+        );
+        assert_eq!(
+            attention_event_count(&events, EventType::AttentionItemAppeared),
+            3
+        );
+
+        let inbox = project_attention(&events);
+        let ids: Vec<&str> = inbox.iter().map(AttentionItem::id).collect();
+        assert_eq!(ids, ["wi-approve", "wi-blocked"]);
+        let approve = &inbox[0];
+        assert_eq!(approve.title(), "Pending approval (urgent)");
+        assert_eq!(approve.source(), "human-valve");
+        assert_eq!(
+            approve.source_reference(),
+            "livespec-console-beads-fabro:wi-approve"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ingest_needs_attention_preserves_inbox_when_source_unavailable()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let present = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let ingest = NeedsAttentionIngest::new(&present, "livespec-console-beads-fabro");
+        assert_eq!(
+            ingest_needs_attention(&mut store, &ingest, "2026-07-07T00:00:00Z")?,
+            1
+        );
+
+        // An unavailable read must NOT resolve the inbox from a failed poll.
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest_down = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+        assert_eq!(
+            ingest_needs_attention(&mut store, &ingest_down, "2026-07-07T00:01:00Z")?,
+            0
+        );
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+        Ok(())
+    }
+
+    fn attention_event_count(events: &[ConsoleEvent], event_type: EventType) -> usize {
+        events
+            .iter()
+            .filter(|event| event.event_type() == &event_type)
+            .count()
     }
 
     #[test]

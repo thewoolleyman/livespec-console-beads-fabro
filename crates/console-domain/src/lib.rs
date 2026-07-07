@@ -122,6 +122,9 @@ pub enum EventType {
     LivespecReviseRequired,
     SourceCompletenessFindingObserved,
     SourceNotObservedFindingObserved,
+    AttentionItemAppeared,
+    AttentionItemChanged,
+    AttentionItemResolved,
 }
 
 impl EventType {
@@ -143,6 +146,9 @@ impl EventType {
             Self::LivespecReviseRequired => "spec.revise_required",
             Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
             Self::SourceNotObservedFindingObserved => "source.not_observed_finding_observed",
+            Self::AttentionItemAppeared => "attention_item.appeared",
+            Self::AttentionItemChanged => "attention_item.changed",
+            Self::AttentionItemResolved => "attention_item.resolved",
         }
     }
 
@@ -164,6 +170,9 @@ impl EventType {
             "spec.revise_required" => Some(Self::LivespecReviseRequired),
             "source.completeness_finding_observed" => Some(Self::SourceCompletenessFindingObserved),
             "source.not_observed_finding_observed" => Some(Self::SourceNotObservedFindingObserved),
+            "attention_item.appeared" => Some(Self::AttentionItemAppeared),
+            "attention_item.changed" => Some(Self::AttentionItemChanged),
+            "attention_item.resolved" => Some(Self::AttentionItemResolved),
             _unknown => None,
         }
     }
@@ -362,6 +371,18 @@ mod tests {
             EventType::SourceNotObservedFindingObserved.contract_name(),
             "source.not_observed_finding_observed"
         );
+        assert_eq!(
+            EventType::AttentionItemAppeared.contract_name(),
+            "attention_item.appeared"
+        );
+        assert_eq!(
+            EventType::AttentionItemChanged.contract_name(),
+            "attention_item.changed"
+        );
+        assert_eq!(
+            EventType::AttentionItemResolved.contract_name(),
+            "attention_item.resolved"
+        );
     }
 
     #[test]
@@ -382,6 +403,9 @@ mod tests {
             EventType::LivespecReviseRequired,
             EventType::SourceCompletenessFindingObserved,
             EventType::SourceNotObservedFindingObserved,
+            EventType::AttentionItemAppeared,
+            EventType::AttentionItemChanged,
+            EventType::AttentionItemResolved,
         ] {
             assert_eq!(
                 EventType::from_contract_name(event_type.contract_name()),
