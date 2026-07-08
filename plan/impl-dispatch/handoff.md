@@ -1,109 +1,92 @@
 # Console impl-dispatch — thread handoff
 
-**Status:** PARKED — grooming complete; factory dispatch **BLOCKED** on the
-GitHub-App-auth / dispatch-env credential model, now owned by
-`plan/github-app-auth/` (core epic `livespec-2ef0`; resume via
-`/livespec-orchestrator-beads-fabro:plan github-app-auth`).
+**Status:** ACTIVE — the former factory-dispatch blocker is obsolete for this
+thread. The two dependency-root slices have landed and the ready lane is empty;
+the next action is to move the downstream backlog chain forward.
 
-**Parked:** 2026-07-02.
+**Refreshed:** 2026-07-08.
+
+## Read first
+
+Open only this file, then derive live status from the Beads ledger with:
+
+```bash
+/data/projects/1password-env-wrapper/with-livespec-env.sh -- codex exec livespec-orchestrator-beads-fabro:list-work-items --json
+/data/projects/1password-env-wrapper/with-livespec-env.sh -- codex exec livespec-orchestrator-beads-fabro:next --json
+```
+
+Do not trust stored checklist state in this handoff; the ledger is authoritative.
 
 ## What this thread is
 
-Groom and dispatch the console's behavioral-coverage impl work (the NFR
-clause→scenario→test backfill and its prerequisite scenario realizations) to
-the Beads+Fabro factory, following the v012 spec revise that authored the NFR
-contributor scenarios.
+Groom and dispatch the console's behavioral-coverage implementation chain: the
+Scenario 6 / Scenario 7 prerequisite realizations, the operator-facing and
+NFR contributor-facing clause-to-scenario backfills, and the final
+`console-spec-check` fail-mode flip.
 
-## Accomplished (done + verified)
+## Ledger-derived state at refresh
 
-1. **Spec v012 landed** — PR #76 merged (rebased onto master). `/livespec:revise`
-   accepted proposed change `nfr-contributor-scenarios`: authored 9
-   contributor-facing Gherkin theme H2s (Contributor Scenario A–I) in
-   `SPECIFICATION/non-functional-requirements.md` §Scenarios, covering all 52
-   NFR contributor-facing normative clauses. Also reworded 4 pre-existing
-   `§"heading"` source citations to file-level (satisfying
-   `doctor-no-spec-section-citation-in-code`). doctor-static: 0 fail.
-2. **Ledger status conformance** (done fleet-wide by the coordinator) — the
-   console tenant's 10 legacy bd-native `open` items were remediated to
-   `backlog`. They predated the 7-state lifecycle redesign and were never
-   migrated; `next` correctly returned 0 because it ranks only the `ready`
-   lane, not `backlog`.
-3. **Grooming** (done this thread, verified) — the two dependency-root leaves
-   promoted `backlog → ready` with `admission:auto` + `acceptance:ai-then-human`:
-   - `livespec-console-beads-fabro-qvrwag` — Realize Scenario 6 (policy-rejected
-     factory drain emits `command.rejected`, no side effect).
-   - `livespec-console-beads-fabro-idgql3` — Realize Scenario 7 (command
-     crash-gap reconciliation reconstructs a missing outcome).
-   Promotion used the impl plugin's own store seams (`update_work_item_status`
-   + `client.update_issue(add_labels=[...])`) because no CLI exists for a
-   `backlog → ready` promotion with policy-setting (the intake
-   Definition-of-Ready checklist is applied at capture time, not
-   retroactively).
+The 2026-07-08 ledger read showed:
 
-## Dependency chain (why these two first)
+- `livespec-console-beads-fabro-idgql3` — done; Scenario 7 realized.
+- `livespec-console-beads-fabro-qvrwag` — done; Scenario 6 realized.
+- `livespec-console-beads-fabro-cvqcnx` — backlog; operator-facing
+  clause-to-scenario backfill.
+- `livespec-console-beads-fabro-cc3nlr` — backlog; NFR contributor
+  clause-to-scenario backfill.
+- `livespec-console-beads-fabro-77t6mk` — backlog; flip behavioral-coverage
+  checker to fail mode.
+- `livespec-console-beads-fabro-rrr4i4` — backlog; keystone epic that closes
+  after the fail-mode flip.
 
-```
-qvrwag (Scenario 6) ┐
-idgql3 (Scenario 7) ┴─► cvqcnx (operator backfill, 30 clauses) ─► cc3nlr (NFR backfill / B-nfr, 52 clauses) ─► 77t6mk (flip console-spec-check to fail; closes keystone rrr4i4)
+`next --json` returned an empty `candidates[]` envelope, because no downstream
+item has been promoted to `ready` after the root slices completed.
+
+## Dependency chain
+
+```text
+idgql3 (Scenario 7) ┐
+qvrwag (Scenario 6) ┴─► cvqcnx (operator backfill, 30 clauses) ─► cc3nlr (NFR backfill, 52 clauses) ─► 77t6mk (fail-mode flip; closes rrr4i4)
 ```
 
-`cvqcnx`, `cc3nlr`, `77t6mk` remain `backlog` and blocked until the two roots
-complete. Keystone epic `rrr4i4` ("Port the Rust behavioral-coverage checker")
-stays open: its checker code (`crates/console-spec-check`) already exists in
-`warn` mode, but the epic's "done" is the full **fail-mode** gate (the part-(b)
-clause backfill + the `77t6mk` flip), so it is NOT closeable now.
+## Correction from the parked handoff
 
-## BLOCKED: factory dispatch
+The previous handoff parked this thread behind a GitHub-App-auth plan thread and
+said to retry a canary dispatch of `idgql3`. That reference is stale:
 
-Dispatching `idgql3` (canary) to the factory failed twice — both **cleanly
-PRE-launch** (no Fabro run, no PR, no merge; **master untouched**) — due to the
-dispatch environment under `/usr/local/bin/with-livespec-env.sh`:
+- No tracked blocking plan thread exists in this repo.
+- `idgql3` and `qvrwag` are already `done`.
+- The ready lane is empty, so dispatching cannot proceed until the next backlog
+  item is promoted.
 
-1. **`GH_TOKEN` absent.** The wrapper's 1Password Environment projects the
-   GitHub **App** credentials (`GITHUB_APP_ID` / `GITHUB_CLIENT_ID` /
-   `GITHUB_CLIENT_SECRET` / `GITHUB_PRIVATE_KEY`) plus `CLAUDE_CODE_OAUTH_TOKEN`
-   and `BEADS_DOLT_PASSWORD` — but **no bearer `GH_TOKEN`**, which the Dispatcher
-   requires to project into the Fabro sandbox. (An App installation token can be
-   minted from the App creds — installation `131208965`, verified grants
-   `contents:write` + `pull_requests:write` on this repo — but the credential
-   MODEL is being redesigned in `plan/github-app-auth`, so do NOT mint ad-hoc
-   tokens here.)
-2. **`fabro` / toolchain PATH scrubbed.** The wrapper's `env -i` sets a minimal
-   `PATH` that drops `/home/ubuntu/.local/bin` (where `fabro` lives) and the
-   mise/cargo/just toolchain the post-merge janitor needs.
+Do not recreate the old GitHub-App-auth blocker here and do not mint ad-hoc
+tokens. This thread's current work is the behavioral-coverage chain above.
 
-Both are exactly the credential + dispatch-env problems now owned by
-`plan/github-app-auth/` (core epic `livespec-2ef0`). Do NOT reconstruct the
-dispatch env or mint ad-hoc tokens in this thread — that work belongs there.
+## Resume / next action
 
-## Resume / next action (single path)
+Open this handoff only:
 
-Once `plan/github-app-auth` lands the credential + dispatch-env model:
+```bash
+sed -n '1,220p' plan/impl-dispatch/handoff.md
+```
 
-1. Confirm `idgql3` + `qvrwag` are still `ready` / `admission:auto` /
-   `acceptance:ai-then-human` (`list-work-items --json` via the wrapper).
-2. Re-attempt the **canary dispatch of `idgql3` only** (single-item
-   `dispatcher.py dispatch --item <id>`, NOT the autonomous `loop`) through the
-   now-correct dispatch harness.
-3. **Acceptance semantics to expect:** `acceptance:ai-then-human` **auto-merges**
-   the run's PR to master on green (CI + janitor hard gate are the pre-merge
-   gates), then parks `idgql3` at `acceptance` for a human accept/revert — it
-   does NOT hold before merge. Validate the full `active → self-merge →
-   acceptance` cycle end-to-end, then release `qvrwag` the same way.
-4. Chain then progresses: `cvqcnx` → `cc3nlr` → `77t6mk` (closes keystone
-   `rrr4i4`).
+Then:
 
-## Key pointers
+1. Re-run the two read-first ledger commands above.
+2. If `cvqcnx` is still `backlog` and its dependencies are still `done`,
+   promote `cvqcnx` as the next factory-safe slice with `admission:auto` and
+   `acceptance:ai-then-human`. If the fresh read shows it is too large or
+   non-convergent, run the orchestrator `groom` operation against
+   `livespec-console-beads-fabro-cvqcnx` instead and get maintainer approval
+   before filing replacement slices.
+3. After `cvqcnx` is `ready`, dispatch it through the factory path; do not use
+   autonomous drain until the single-item dispatch succeeds.
+4. Continue the chain in order: `cc3nlr`, then `77t6mk`, then close `rrr4i4`
+   only after fail mode is green in CI.
 
-- **Impl plugin** (dispatcher / next / list / groom): `livespec-orchestrator-beads-fabro`
-  (cache `.../e0d801ebac24`). Dispatch = `dispatcher.py dispatch --repo <path>
-  --item <id>` (single) or `loop --mode autonomous --budget <n>` (drain the
-  ready+admission:auto set).
-- **Beads tenant:** `livespec-console-beads-fabro` (server-mode Dolt @
-  127.0.0.1:3307). All reads/writes go through `/usr/local/bin/with-livespec-env.sh`
-  (supplies `BEADS_DOLT_PASSWORD`); the thin skills shell `bd` directly with no
-  wrapper, so run them wrapped.
-- **Blocking thread:** `plan/github-app-auth/` — core epic `livespec-2ef0` —
-  resume `/livespec-orchestrator-beads-fabro:plan github-app-auth`.
-- **Repo state at park:** console checkout clean on `master`; no worktrees or
-  branches left from this thread.
+## Pointers
+
+- Beads tenant: `livespec-console-beads-fabro` on Dolt TCP `127.0.0.1:3307`.
+- Always run Beads/orchestrator ledger commands under
+  `/data/projects/1password-env-wrapper/with-livespec-env.sh`.
+- Repo changes still use the required worktree -> PR -> merge -> cleanup path.
