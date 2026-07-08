@@ -1,3 +1,5 @@
+//! SQLite-backed append-only event store for the console, persisting `ConsoleEvent`s and command envelopes and reading them back for projections.
+
 #![forbid(unsafe_code)]
 
 use std::num::TryFromIntError;
