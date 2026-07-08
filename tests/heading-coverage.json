@@ -365,5 +365,285 @@
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/scenario_12_needs_attention_diff.rs::scenario_12_needs_attention_snapshot_diffed_at_ingest_into_attention_item_events",
     "clauses": []
+  },
+  {
+    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid contributor acceptance test should exercise the spec placement boundary by validating that operator-observable content routes to the functional files while contributor-only constraints route to non-functional-requirements.md. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-cwfojsth",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-4xyiregs",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-cijpvz66",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-pzx3lvle",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-wtugehag",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-gdql5nhp",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-cioe4cvs",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid hook/check acceptance test should cover accepted Red-Green-Replay evidence, rejected malformed product commits, and the non-product exemption once the Rust replay checker lands. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-7y6ca6tv",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      },
+      {
+        "gap_id": "gap-w25h6336",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      },
+      {
+        "gap_id": "gap-xxzju2s6",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      },
+      {
+        "gap_id": "gap-2dsuvu6i",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid quality-gate acceptance test should assert the local check aggregate, merge-only fuzz/mutation split, and nightly chore-opening behavior. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-mupmnlf6",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-u4vkamqx",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-qqsjj3l7",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-b2oe2inf",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-u4epjyph",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-2nkpajjx",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-iiur4vzu",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-q2iltoar",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-a4adwzr6",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-s3gue5iu",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-f3babxhd",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-zfztfa2j",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-ay7wmdyj",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "crates/console-spec-check/src/tests.rs::evaluate_flags_unlinked_and_resolves_links",
+    "reason": "Top-of-pyramid checker coverage for resolving a clause link only when it points to a live scenario in the correct audience partition; paired checker tests cover untested scenarios and fail/warn mode.",
+    "clauses": [
+      {
+        "gap_id": "gap-66uwzzdf",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-4stkidvc",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-eufggjsj",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-cpsezy5s",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-li66ewiy",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-b6nbeggx",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-ozcrjep2",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid CI/work-items access acceptance test should verify the single bare BEADS_DOLT_PASSWORD convention without echoing or committing secrets. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-je2rqb7t",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      },
+      {
+        "gap_id": "gap-mvwyxgwc",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      },
+      {
+        "gap_id": "gap-mmtvkkpz",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify product crates are Rust crates and declare #![forbid(unsafe_code)] unless a future spec revision grants an exception. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-asgj526f",
+        "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban"
+      },
+      {
+        "gap_id": "gap-eum4ifwi",
+        "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario G -- Railway-oriented error handling",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify typed Result rails, panic/unwrap/expect exclusions, rejection-versus-infrastructure error separation, and pipeline-shaped use cases. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-elbrtgyb",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      },
+      {
+        "gap_id": "gap-whxrlx4j",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      },
+      {
+        "gap_id": "gap-rr3aphtn",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      },
+      {
+        "gap_id": "gap-wnwiqkqd",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify bounded-context ownership, domain infrastructure isolation, source-adapter isolation, UI source isolation, and the zero-Beads-knowledge read path. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-h4eusndl",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-dkp7nwnq",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-nfjgjdq4",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-a67yfq57",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-udwkfq42",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture-check acceptance test should verify the compiled check enforces the Domain-Driven Design rule set from structured crate metadata and Rust AST inspection. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-sbflemi5",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-y3zougam",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-6rbisibd",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-j2ofxpcn",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-hh6ugogd",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-a5fi6ahj",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-tcpowvre",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      }
+    ]
   }
 ]
