@@ -1,5 +1,34 @@
-#![forbid(unsafe_code)]
+//! Core domain contracts for the operator console.
+//!
+//! This crate owns the behavior-facing event and command vocabulary shared by
+//! the application, event store, TUI, and CLI crates. It deliberately carries no
+//! persistence or presentation concerns: callers construct canonical
+//! [`ConsoleEvent`] envelopes, map event / command variants to their contract
+//! names, and validate identifiers before outer layers persist or project them.
+//!
+//! ```rust,ignore
+//! use console_domain::{ConsoleEvent, EventType};
+//!
+//! let event = ConsoleEvent::new(
+//!     "evt_1".to_owned(),
+//!     1,
+//!     "factory".to_owned(),
+//!     EventType::WorkItemSnapshotObserved,
+//!     "orchestrator".to_owned(),
+//!     "factory:livespec-console-beads-fabro".to_owned(),
+//!     1,
+//! );
+//! assert_eq!(event.event_type().contract_name(), "work_item.snapshot_observed");
+//! ```
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+/// Canonical event envelope emitted by source adapters and command handlers.
+///
+/// The envelope carries the stable event identity, bounded context, typed
+/// contract name, stream position, source, and optional persisted JSON payload
+/// that projections can later replay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleEvent {
     event_id: String,
@@ -18,6 +47,10 @@ pub struct ConsoleEvent {
 }
 
 impl ConsoleEvent {
+    /// Build an event envelope from its required identity and stream fields.
+    ///
+    /// The returned event has no payload until [`Self::with_payload_json`] is
+    /// used by the event store or an adapter.
     #[must_use]
     pub const fn new(
         event_id: String,
@@ -49,6 +82,10 @@ impl ConsoleEvent {
         self
     }
 
+    /// Build a deterministic fixture event for tests and demos.
+    ///
+    /// The fixture uses schema version `1`, the `factory` context, the console
+    /// factory stream, and stream sequence `1`.
     #[must_use]
     pub fn fixture(event_id: &str, event_type: EventType, source: &str) -> Self {
         Self::new(
@@ -62,36 +99,43 @@ impl ConsoleEvent {
         )
     }
 
+    /// Stable event id, unique in the event store.
     #[must_use]
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
 
+    /// Event schema version carried with the envelope.
     #[must_use]
     pub const fn schema_version(&self) -> u16 {
         self.schema_version
     }
 
+    /// Bounded context that owns the event contract.
     #[must_use]
     pub fn context(&self) -> &str {
         &self.context
     }
 
+    /// Typed event contract variant.
     #[must_use]
     pub const fn event_type(&self) -> &EventType {
         &self.event_type
     }
 
+    /// Source system or adapter that observed the event.
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
     }
 
+    /// Stream id used to order related events.
     #[must_use]
     pub fn stream_id(&self) -> &str {
         &self.stream_id
     }
 
+    /// Sequence number within the stream.
     #[must_use]
     pub const fn stream_seq(&self) -> u64 {
         self.stream_seq
@@ -105,29 +149,49 @@ impl ConsoleEvent {
     }
 }
 
+/// Canonical event contracts the console persists and projects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
+    /// Work-item lane snapshot observed from the orchestrator.
     WorkItemSnapshotObserved,
+    /// Command accepted into the command log.
     CommandAccepted,
+    /// Command rejected by application policy.
     CommandRejected,
+    /// Dispatcher backlog bounce observed.
     DispatcherBacklogBounceObserved,
+    /// Fabro run reached a human gate.
     FabroHumanGateObserved,
+    /// Factory drain completed successfully.
     FactoryDrainCompleted,
+    /// Factory drain failed.
     FactoryDrainFailed,
+    /// Factory drain command could not reach a wired Dispatcher.
     FactoryDrainNotWired,
+    /// Operator requested a factory drain.
     FactoryDrainRequested,
+    /// Factory drain started.
     FactoryDrainStarted,
+    /// GitHub pull request snapshot observed.
     GithubPullRequestSnapshotObserved,
+    /// `LiveSpec` `next` snapshot observed.
     LivespecNextSnapshotObserved,
+    /// `LiveSpec` revise action is required.
     LivespecReviseRequired,
+    /// Source completeness finding observed.
     SourceCompletenessFindingObserved,
+    /// Source could not be observed honestly.
     SourceNotObservedFindingObserved,
+    /// Attention item appeared in the product inbox.
     AttentionItemAppeared,
+    /// Attention item changed in the product inbox.
     AttentionItemChanged,
+    /// Attention item resolved from the product inbox.
     AttentionItemResolved,
 }
 
 impl EventType {
+    /// Contract string persisted in the event store.
     #[must_use]
     pub const fn contract_name(&self) -> &'static str {
         match self {
@@ -152,6 +216,9 @@ impl EventType {
         }
     }
 
+    /// Parse a persisted contract string into an event variant.
+    ///
+    /// Returns `None` when `value` is not part of the console event vocabulary.
     #[must_use]
     pub fn from_contract_name(value: &str) -> Option<Self> {
         match value {
@@ -178,6 +245,7 @@ impl EventType {
     }
 }
 
+/// Canonical command envelope accepted from operator actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandEnvelope {
     command_id: String,
@@ -188,6 +256,7 @@ pub struct CommandEnvelope {
 }
 
 impl CommandEnvelope {
+    /// Build a command envelope from its required routing and idempotency data.
     #[must_use]
     pub const fn new(
         command_id: String,
@@ -205,38 +274,46 @@ impl CommandEnvelope {
         }
     }
 
+    /// Stable command id.
     #[must_use]
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
 
+    /// Typed command contract.
     #[must_use]
     pub const fn command_type(&self) -> &CommandType {
         &self.command_type
     }
 
+    /// Aggregate id the command targets.
     #[must_use]
     pub fn aggregate_id(&self) -> &str {
         &self.aggregate_id
     }
 
+    /// Idempotency key used to deduplicate command appends.
     #[must_use]
     pub fn idempotency_key(&self) -> &str {
         &self.idempotency_key
     }
 
+    /// Operator or system principal that requested the command.
     #[must_use]
     pub fn requested_by(&self) -> &str {
         &self.requested_by
     }
 }
 
+/// Canonical command contracts the console accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandType {
+    /// Request to drain ready factory work through the Dispatcher.
     FactoryDrainRequested,
 }
 
 impl CommandType {
+    /// Contract string persisted in the command log.
     #[must_use]
     pub const fn contract_name(&self) -> &'static str {
         match self {
@@ -244,6 +321,7 @@ impl CommandType {
         }
     }
 
+    /// Bounded context that owns the command.
     #[must_use]
     pub const fn context(&self) -> &'static str {
         match self {
@@ -252,14 +330,24 @@ impl CommandType {
     }
 }
 
+/// Domain validation failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainError {
+    /// Required identifier text was empty or whitespace.
     EmptyIdentifier,
+    /// Sequence value could not be represented in the expected range.
     InvalidSequence,
 }
 
+/// Result alias for domain validation operations.
 pub type DomainResult<T> = Result<T, DomainError>;
 
+/// Validate that an identifier contains non-whitespace text.
+///
+/// Returns the trimmed identifier on success.
+///
+/// # Errors
+/// Returns [`DomainError::EmptyIdentifier`] when `value` is empty after trimming.
 pub fn validate_non_empty_identifier(value: &str) -> DomainResult<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

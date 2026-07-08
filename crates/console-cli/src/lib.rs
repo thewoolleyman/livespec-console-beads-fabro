@@ -1,3 +1,17 @@
+//! CLI orchestration for the operator console.
+//!
+//! This crate parses command arguments, wires store-backed runtime flows, ingests
+//! live source adapters, persists TUI effects, and handles pending factory drain
+//! commands. The binary supplies host probes and filesystem paths; this library
+//! keeps the command behavior testable.
+//!
+//! ```rust,ignore
+//! use livespec_console_beads_fabro::run;
+//!
+//! let output = run(["livespec-console-beads-fabro", "doctor"]);
+//! assert_eq!(output.code(), 0);
+//! ```
+
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
@@ -34,6 +48,7 @@ use console_eventstore::{
 use console_tui::TuiRuntimeEffect;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents run output data used by the console.
 pub struct RunOutput {
     code: i32,
     message: String,
@@ -41,21 +56,25 @@ pub struct RunOutput {
 
 impl RunOutput {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(code: i32, message: String) -> Self {
         Self { code, message }
     }
 
     #[must_use]
+    /// Return the process-style exit code.
     pub const fn code(&self) -> i32 {
         self.code
     }
 
     #[must_use]
+    /// Return the message value.
     pub fn message(&self) -> &str {
         &self.message
     }
 }
 
+/// Return the run value.
 pub fn run<I>(args: I) -> RunOutput
 where
     I: IntoIterator,
@@ -65,6 +84,7 @@ where
     run_static(&values)
 }
 
+/// Run with store and return its outcome.
 pub fn run_with_store(
     args: &[String],
     store: &mut SqliteEventStore,
@@ -127,7 +147,9 @@ fn run_runtime_result(result: ConsoleRuntimeResult<String>, command: &str) -> Ru
     }
 }
 
+/// Port interface for command append store behavior supplied by an outer layer.
 pub trait CommandAppendStore {
+    /// Append a command envelope and return whether it was inserted or deduplicated.
     fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome>;
 }
 
@@ -137,6 +159,7 @@ impl CommandAppendStore for SqliteEventStore {
     }
 }
 
+/// Return the persist tui runtime effects value.
 pub fn persist_tui_runtime_effects(
     store: &mut dyn CommandAppendStore,
     effects: &[TuiRuntimeEffect],
@@ -152,7 +175,10 @@ pub fn persist_tui_runtime_effects(
     Ok(outcomes)
 }
 
+/// Port interface for event append store behavior supplied by an outer layer.
 pub trait EventAppendStore {
+    /// Append an event envelope and return whether it was inserted or deduplicated.
+    /// Append a command-handling event and return the append outcome.
     fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome>;
 }
 
@@ -162,6 +188,7 @@ impl EventAppendStore for SqliteEventStore {
     }
 }
 
+/// Append demo events to store to the backing store.
 pub fn append_demo_events_to_store(
     store: &mut dyn EventAppendStore,
     observed_at: &str,
@@ -174,11 +201,17 @@ pub fn append_demo_events_to_store(
     Ok(outcomes)
 }
 
+/// Load tui events from store from the backing store.
 pub fn load_tui_events_from_store(store: &SqliteEventStore) -> EventStoreResult<Vec<ConsoleEvent>> {
     store.list_console_events()
 }
 
+/// Port interface for tui session runner behavior supplied by an outer layer.
 pub trait TuiSessionRunner {
+    /// Run an interactive TUI session over the supplied events for `requested_by`.
+    ///
+    /// # Errors
+    /// Returns a runtime error when the session backend fails.
     fn run_tui(
         &mut self,
         events: &[ConsoleEvent],
@@ -187,6 +220,7 @@ pub trait TuiSessionRunner {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents tui session outcome data used by the console.
 pub struct TuiSessionOutcome {
     backfilled_events: usize,
     presented_events: usize,
@@ -198,6 +232,7 @@ pub struct TuiSessionOutcome {
 
 impl TuiSessionOutcome {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         backfilled_event_count: usize,
         presented_event_count: usize,
@@ -217,36 +252,43 @@ impl TuiSessionOutcome {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn backfilled_event_count(&self) -> usize {
         self.backfilled_events
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn presented_event_count(&self) -> usize {
         self.presented_events
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn persisted_command_count(&self) -> usize {
         self.persisted_commands
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn handled_command_count(&self) -> usize {
         self.handled_commands
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn final_event_count(&self) -> usize {
         self.final_events
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn attention_count(&self) -> usize {
         self.attention_items
     }
 }
 
+/// Run store backed tui session and return its outcome.
 pub fn run_store_backed_tui_session(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -283,6 +325,7 @@ pub fn run_store_backed_tui_session(
     ))
 }
 
+/// Return the backfill demo report value.
 pub fn backfill_demo_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -301,6 +344,7 @@ pub fn backfill_demo_report(
     ))
 }
 
+/// Return the backfill source report value.
 pub fn backfill_source_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -421,6 +465,7 @@ pub struct NeedsAttentionIngest<'a> {
 
 impl<'a> NeedsAttentionIngest<'a> {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(port: &'a dyn NeedsAttentionSnapshotPort, repo: &str) -> Self {
         Self {
             port,
@@ -534,6 +579,7 @@ const fn initial_source_seed() -> InitialSourceSeed<'static> {
     }
 }
 
+/// Return the events tail report value.
 pub fn events_tail_report(store: &SqliteEventStore, limit: usize) -> EventStoreResult<String> {
     let events = store.list_console_events()?;
     if events.is_empty() {
@@ -553,6 +599,7 @@ pub fn events_tail_report(store: &SqliteEventStore, limit: usize) -> EventStoreR
     Ok(lines.join("\n"))
 }
 
+/// Return the snapshot report value.
 pub fn snapshot_report(store: &SqliteEventStore) -> EventStoreResult<String> {
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
@@ -567,6 +614,7 @@ pub fn snapshot_report(store: &SqliteEventStore) -> EventStoreResult<String> {
     ))
 }
 
+/// Return the doctor report value.
 pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
@@ -579,6 +627,7 @@ pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
     ))
 }
 
+/// Return the serve report value.
 pub fn serve_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -618,11 +667,17 @@ fn count_commands_with_status(commands: &[StoredCommand], status: &str) -> usize
 }
 
 #[derive(Debug)]
+/// Variants for console runtime error state or outcome values.
 pub enum ConsoleRuntimeError {
+    /// Adapter variant.
     Adapter(AdapterError),
+    /// Application variant.
     Application(ApplicationError),
+    /// Event store variant.
     EventStore(EventStoreError),
+    /// Missing command aggregate variant.
     MissingCommandAggregate(String),
+    /// Tui runtime failed variant.
     TuiRuntimeFailed,
 }
 
@@ -644,9 +699,11 @@ impl From<EventStoreError> for ConsoleRuntimeError {
     }
 }
 
+/// Type alias for console runtime result values.
 pub type ConsoleRuntimeResult<T> = Result<T, ConsoleRuntimeError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents factory command handling outcome data used by the console.
 pub struct FactoryCommandHandlingOutcome {
     command_id: String,
     command_status: String,
@@ -655,6 +712,7 @@ pub struct FactoryCommandHandlingOutcome {
 
 impl FactoryCommandHandlingOutcome {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         command_id: String,
         command_status: String,
@@ -668,28 +726,39 @@ impl FactoryCommandHandlingOutcome {
     }
 
     #[must_use]
+    /// Return the command id value.
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
 
     #[must_use]
+    /// Return the command status value.
     pub fn command_status(&self) -> &str {
         &self.command_status
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn appended_event_count(&self) -> usize {
         self.appended_event_count
     }
 }
 
+/// Port interface for factory command store behavior supplied by an outer layer.
 pub trait FactoryCommandStore {
+    /// List stored commands in command-log order.
     fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>>;
 
+    /// List canonical console events in event-store order.
     fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>>;
 
+    /// Append a command-handling event and return the append outcome.
     fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome>;
 
+    /// Update a command status and optional result/error payloads.
+    ///
+    /// # Errors
+    /// Returns an event-store error when the command cannot be found or persisted.
     fn update_command_status(
         &mut self,
         command_id: &str,
@@ -732,6 +801,7 @@ impl FactoryCommandStore for SqliteEventStore {
     }
 }
 
+/// Handle pending factory commands.
 pub fn handle_pending_factory_commands(
     store: &mut dyn FactoryCommandStore,
     handled_at: &str,
@@ -1024,6 +1094,7 @@ fn tui_preview() -> String {
 }
 
 #[must_use]
+/// Return the demo events value.
 pub fn demo_events() -> [ConsoleEvent; 2] {
     [
         ConsoleEvent::fixture(

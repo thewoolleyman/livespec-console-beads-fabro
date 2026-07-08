@@ -1,3 +1,19 @@
+//! Terminal UI rendering and interaction runtime for the operator console.
+//!
+//! This crate maps keyboard input to application interactions, steps the TUI
+//! runtime, renders [`console_application::TuiScreenModel`] values with ratatui,
+//! and exposes a text renderer for tests and CLI previews.
+//!
+//! ```rust,ignore
+//! use console_application::build_tui_model;
+//! use console_tui::render_to_text;
+//!
+//! let model = build_tui_model(&[], 0);
+//! let rendered = render_to_text(&model, 80, 24)?;
+//! assert!(rendered.contains("Attention"));
+//! # Ok::<(), console_tui::TuiRenderError>(())
+//! ```
+
 #![forbid(unsafe_code)]
 
 use console_application::source_adapters::Lane;
@@ -34,13 +50,17 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for tui render error state or outcome values.
 pub enum TuiRenderError {
+    /// Empty area variant.
     EmptyArea,
 }
 
+/// Type alias for tui render result values.
 pub type TuiRenderResult<T> = Result<T, TuiRenderError>;
 
 #[cfg(all(not(test), not(coverage)))]
+/// Run interactive tui and return its outcome.
 pub fn run_interactive_tui(
     events: &[ConsoleEvent],
     requested_by: &str,
@@ -105,23 +125,35 @@ fn run_terminal_loop(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for tui terminal input state or outcome values.
 pub enum TuiTerminalInput {
+    /// Interaction variant.
     Interaction(TuiInteraction),
+    /// Confirm variant.
     Confirm,
+    /// Quit variant.
     Quit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for tui runtime effect state or outcome values.
 pub enum TuiRuntimeEffect {
+    /// Render variant.
     Render,
+    /// Persist command variant.
     PersistCommand(CommandEnvelope),
+    /// Open attach command variant.
     OpenAttachCommand(String),
+    /// Copy attach command variant.
     CopyAttachCommand(String),
+    /// Quit variant.
     Quit,
+    /// Application error variant.
     ApplicationError(ApplicationError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents tui runtime step data used by the console.
 pub struct TuiRuntimeStep {
     state: TuiInteractionState,
     effect: TuiRuntimeEffect,
@@ -129,22 +161,26 @@ pub struct TuiRuntimeStep {
 
 impl TuiRuntimeStep {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(state: TuiInteractionState, effect: TuiRuntimeEffect) -> Self {
         Self { state, effect }
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn state(&self) -> &TuiInteractionState {
         &self.state
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn effect(&self) -> &TuiRuntimeEffect {
         &self.effect
     }
 }
 
 #[must_use]
+/// Return the step tui runtime value.
 pub fn step_tui_runtime(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
@@ -196,6 +232,7 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
 }
 
 #[must_use]
+/// Return the key event to terminal input value.
 pub fn key_event_to_terminal_input(
     event: KeyEvent,
     model: &TuiScreenModel,
@@ -323,6 +360,7 @@ const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInpu
     None
 }
 
+/// Return the render to text value.
 pub fn render_to_text(model: &TuiScreenModel, width: u16, height: u16) -> TuiRenderResult<String> {
     if width == 0 || height == 0 {
         return Err(TuiRenderError::EmptyArea);
@@ -333,6 +371,7 @@ pub fn render_to_text(model: &TuiScreenModel, width: u16, height: u16) -> TuiRen
     Ok(buffer_to_text(&buffer, area))
 }
 
+/// Return the render model value.
 pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     if area.is_empty() {
         return;

@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! `console-spec-check` — behavioral-coverage primitives (clause -> scenario
 //! -> test), per the Behavioral Coverage section of
 //! `SPECIFICATION/non-functional-requirements.md`.
@@ -18,6 +16,16 @@
 //!
 //! All functions are pure (no I/O, no process exit); the binary shim
 //! (`main.rs`) supplies the file reads, the severity lever, and the exit code.
+
+//!
+//! ```rust,ignore
+//! use console_spec_check::{derive_gap_id, extract_rules};
+//!
+//! let id = derive_gap_id("spec.md", "Root", "The console MUST render lanes.");
+//! let rules = extract_rules("spec.md", "# Root\nThe console MUST render lanes.");
+//! assert_eq!(rules[0].gap_id, id);
+//! ```
+#![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,9 +54,13 @@ const GAP_ID_LEN: usize = 8;
 /// spec file, with its derived gap-id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleMatch {
+    /// Spec file field.
     pub spec_file: String,
+    /// Heading path field.
     pub heading_path: String,
+    /// Line text field.
     pub line_text: String,
+    /// Gap id field.
     pub gap_id: String,
 }
 
@@ -206,7 +218,9 @@ fn is_word_char(character: char) -> bool {
 /// One clause -> scenario link inside a registry entry's `clauses[]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClauseLink {
+    /// Gap id field.
     pub gap_id: String,
+    /// Scenario field.
     pub scenario: String,
 }
 
@@ -214,9 +228,13 @@ pub struct ClauseLink {
 /// top-of-pyramid `test`, and the clauses linked to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageEntry {
+    /// Scenario field.
     pub scenario: String,
+    /// Scenario file field.
     pub scenario_file: String,
+    /// Test field.
     pub test: String,
+    /// Clauses field.
     pub clauses: Vec<ClauseLink>,
 }
 
@@ -336,24 +354,33 @@ pub enum Audience {
 /// target set.
 #[derive(Debug, Clone, Copy)]
 pub struct SpecSource<'a> {
+    /// Spec file field.
     pub spec_file: &'a str,
+    /// Content field.
     pub content: &'a str,
+    /// Audience field.
     pub audience: Audience,
 }
 
 /// A normative clause with no resolving scenario link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnlinkedClause {
+    /// Spec file field.
     pub spec_file: String,
+    /// Heading path field.
     pub heading_path: String,
+    /// Gap id field.
     pub gap_id: String,
+    /// Clause field.
     pub clause: String,
 }
 
 /// A live scenario H2 with no registered test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UntestedScenario {
+    /// Scenario file field.
     pub scenario_file: String,
+    /// Scenario field.
     pub scenario: String,
 }
 
@@ -361,7 +388,9 @@ pub struct UntestedScenario {
 /// scenarios lacking a test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageReport {
+    /// Unlinked clauses field.
     pub unlinked_clauses: Vec<UnlinkedClause>,
+    /// Untested scenarios field.
     pub untested_scenarios: Vec<UntestedScenario>,
 }
 
@@ -376,7 +405,9 @@ impl CoverageReport {
 /// The gate severity: report-only or enforcing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
+    /// Warn variant.
     Warn,
+    /// Fail variant.
     Fail,
 }
 

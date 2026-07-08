@@ -1,9 +1,26 @@
+//! Application services and projections for the operator console.
+//!
+//! This crate folds canonical [`console_domain::ConsoleEvent`] values into the
+//! TUI screen model, source-ingestion projections, operator action outcomes,
+//! and factory-drain command handling policy. It is the use-case layer: it owns
+//! console decisions while persistence, terminal I/O, and host command execution
+//! stay behind ports.
+//!
+//! ```rust,ignore
+//! use console_application::{build_tui_model, TuiView};
+//!
+//! let events = Vec::new();
+//! let model = build_tui_model(&events, 0);
+//! assert_eq!(model.active_view(), TuiView::Attention);
+//! ```
+
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
+/// Module containing source-adapters support.
 pub mod source_adapters;
 
 use source_adapters::{
@@ -13,6 +30,7 @@ use source_adapters::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents attention item data used by the console.
 pub struct AttentionItem {
     id: String,
     title: String,
@@ -23,6 +41,7 @@ pub struct AttentionItem {
 
 impl AttentionItem {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         id: String,
         title: String,
@@ -40,42 +59,54 @@ impl AttentionItem {
     }
 
     #[must_use]
+    /// Return the id value.
     pub fn id(&self) -> &str {
         &self.id
     }
 
     #[must_use]
+    /// Return the title value.
     pub fn title(&self) -> &str {
         &self.title
     }
 
     #[must_use]
+    /// Return the source value.
     pub fn source(&self) -> &str {
         &self.source
     }
 
     #[must_use]
+    /// Return the source reference value.
     pub fn source_reference(&self) -> &str {
         &self.source_reference
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn next_action(&self) -> Option<OperatorAction> {
         self.next_action
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for tui view state or outcome values.
 pub enum TuiView {
+    /// Attention variant.
     Attention,
+    /// Spec variant.
     Spec,
+    /// Lanes variant.
     Lanes,
+    /// Events variant.
     Events,
+    /// Repos variant.
     Repos,
 }
 
 impl TuiView {
     #[must_use]
+    /// Return the canonical ordered set of values.
     pub const fn all() -> &'static [Self] {
         &[
             Self::Attention,
@@ -87,6 +118,7 @@ impl TuiView {
     }
 
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Attention => "Attention",
@@ -102,18 +134,24 @@ impl TuiView {
 /// home, or a single lane drilled into for its full rank-ordered list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneFocus {
+    /// Overview variant.
     Overview,
+    /// Lane variant.
     Lane(Lane),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for operator action state or outcome values.
 pub enum OperatorAction {
+    /// Open fabro attach variant.
     OpenFabroAttach,
+    /// Copy fabro attach variant.
     CopyFabroAttach,
 }
 
 impl OperatorAction {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::OpenFabroAttach => "Open Fabro attach",
@@ -123,20 +161,27 @@ impl OperatorAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for tui overlay state or outcome values.
 pub enum TuiOverlay {
+    /// None variant.
     None,
+    /// Search variant.
     Search { query: String },
+    /// Command palette variant.
     CommandPalette { query: String },
+    /// Command modal variant.
     CommandModal { selected_action_index: usize },
 }
 
 impl TuiOverlay {
     #[must_use]
+    /// Return whether an overlay is currently open.
     pub const fn is_open(&self) -> bool {
         !matches!(self, Self::None)
     }
 
     #[must_use]
+    /// Return the query value.
     pub fn query(&self) -> Option<&str> {
         match self {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
@@ -145,6 +190,7 @@ impl TuiOverlay {
     }
 
     #[must_use]
+    /// Return the selected action index when the overlay is a command modal.
     pub const fn selected_action_index(&self) -> Option<usize> {
         match self {
             Self::CommandModal {
@@ -156,24 +202,40 @@ impl TuiOverlay {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for tui interaction state or outcome values.
 pub enum TuiInteraction {
+    /// Select next variant.
     SelectNext,
+    /// Select previous variant.
     SelectPrevious,
+    /// Open search variant.
     OpenSearch,
+    /// Open command palette variant.
     OpenCommandPalette,
+    /// Open command modal variant.
     OpenCommandModal,
+    /// Close overlay variant.
     CloseOverlay,
+    /// Select next view variant.
     SelectNextView,
+    /// Select previous view variant.
     SelectPreviousView,
+    /// Type char variant.
     TypeChar(char),
+    /// Backspace variant.
     Backspace,
+    /// Select next action variant.
     SelectNextAction,
+    /// Select previous action variant.
     SelectPreviousAction,
+    /// Drill into lane variant.
     DrillIntoLane,
+    /// Return to lane overview variant.
     ReturnToLaneOverview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents tui interaction state data used by the console.
 pub struct TuiInteractionState {
     active_view: TuiView,
     selected_attention_index: usize,
@@ -184,6 +246,7 @@ pub struct TuiInteractionState {
 
 impl TuiInteractionState {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(selected_attention_index: usize, overlay: TuiOverlay) -> Self {
         Self {
             active_view: TuiView::Attention,
@@ -195,6 +258,7 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn for_view(
         active_view: TuiView,
         selected_attention_index: usize,
@@ -218,56 +282,66 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn with_selected_attention_index(mut self, selected_attention_index: usize) -> Self {
         self.selected_attention_index = selected_attention_index;
         self
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn with_lane_focus(mut self, lane_focus: LaneFocus) -> Self {
         self.lane_focus = lane_focus;
         self
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn with_selected_lane_index(mut self, selected_lane_index: usize) -> Self {
         self.selected_lane_index = selected_lane_index;
         self
     }
 
     #[must_use]
+    /// Return this value with its overlay replaced.
     pub fn with_overlay(mut self, overlay: TuiOverlay) -> Self {
         self.overlay = overlay;
         self
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn active_view(&self) -> TuiView {
         self.active_view
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn selected_attention_index(&self) -> usize {
         self.selected_attention_index
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn lane_focus(&self) -> LaneFocus {
         self.lane_focus
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn selected_lane_index(&self) -> usize {
         self.selected_lane_index
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn overlay(&self) -> &TuiOverlay {
         &self.overlay
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents timeline entry data used by the console.
 pub struct TimelineEntry {
     event_id: String,
     label: String,
@@ -276,6 +350,7 @@ pub struct TimelineEntry {
 
 impl TimelineEntry {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(event_id: String, label: String, source: String) -> Self {
         Self {
             event_id,
@@ -285,22 +360,26 @@ impl TimelineEntry {
     }
 
     #[must_use]
+    /// Return the event id value.
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
 
     #[must_use]
+    /// Return the label value.
     pub fn label(&self) -> &str {
         &self.label
     }
 
     #[must_use]
+    /// Return the source value.
     pub fn source(&self) -> &str {
         &self.source
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents attention detail data used by the console.
 pub struct AttentionDetail {
     repo: String,
     work_item: String,
@@ -312,6 +391,7 @@ pub struct AttentionDetail {
 
 impl AttentionDetail {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         repo: String,
         work_item: String,
@@ -331,37 +411,44 @@ impl AttentionDetail {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the work item value.
     pub fn work_item(&self) -> &str {
         &self.work_item
     }
 
     #[must_use]
+    /// Return the fabro run value.
     pub fn fabro_run(&self) -> &str {
         &self.fabro_run
     }
 
     #[must_use]
+    /// Return the attach command value.
     pub fn attach_command(&self) -> &str {
         &self.attach_command
     }
 
     #[must_use]
+    /// Return the timeline value.
     pub fn timeline(&self) -> &[TimelineEntry] {
         &self.timeline
     }
 
     #[must_use]
+    /// Return the actions value.
     pub fn actions(&self) -> &[OperatorAction] {
         &self.actions
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents tui screen model data used by the console.
 pub struct TuiScreenModel {
     active_view: TuiView,
     navigation: Vec<TuiView>,
@@ -379,31 +466,37 @@ pub struct TuiScreenModel {
 
 impl TuiScreenModel {
     #[must_use]
+    /// Return the stored value.
     pub const fn active_view(&self) -> TuiView {
         self.active_view
     }
 
     #[must_use]
+    /// Return the navigation value.
     pub fn navigation(&self) -> &[TuiView] {
         &self.navigation
     }
 
     #[must_use]
+    /// Return the attention items value.
     pub fn attention_items(&self) -> &[AttentionItem] {
         &self.attention_items
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn selected_attention_index(&self) -> Option<usize> {
         self.selected_attention_index
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn detail(&self) -> Option<&AttentionDetail> {
         self.detail.as_ref()
     }
 
     #[must_use]
+    /// Return the view items value.
     pub fn view_items(&self) -> &[ViewSummaryItem] {
         &self.view_items
     }
@@ -430,28 +523,33 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn overlay(&self) -> &TuiOverlay {
         &self.overlay
     }
 
     #[must_use]
+    /// Return the selected operator action.
     pub fn selected_operator_action(&self) -> Option<OperatorAction> {
         let action_index = self.overlay.selected_action_index()?;
         self.detail()?.actions().get(action_index).copied()
     }
 
     #[must_use]
+    /// Return the header value.
     pub fn header(&self) -> &str {
         &self.header
     }
 
     #[must_use]
+    /// Return the footer value.
     pub fn footer(&self) -> &str {
         &self.footer
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents view summary item data used by the console.
 pub struct ViewSummaryItem {
     title: String,
     detail: String,
@@ -459,41 +557,56 @@ pub struct ViewSummaryItem {
 
 impl ViewSummaryItem {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(title: String, detail: String) -> Self {
         Self { title, detail }
     }
 
     #[must_use]
+    /// Return the title value.
     pub fn title(&self) -> &str {
         &self.title
     }
 
     #[must_use]
+    /// Return the detail value.
     pub fn detail(&self) -> &str {
         &self.detail
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for application error state or outcome values.
 pub enum ApplicationError {
+    /// Empty operator action variant.
     EmptyOperatorAction,
+    /// Factory drain port failed variant.
     FactoryDrainPortFailed,
+    /// No selected attention item variant.
     NoSelectedAttentionItem,
+    /// No selected operator action variant.
     NoSelectedOperatorAction,
+    /// Unknown command palette action variant.
     UnknownCommandPaletteAction,
 }
 
+/// Type alias for application result values.
 pub type ApplicationResult<T> = Result<T, ApplicationError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for operator action outcome state or outcome values.
 pub enum OperatorActionOutcome {
+    /// Persist command variant.
     PersistCommand(CommandEnvelope),
+    /// Open attach command variant.
     OpenAttachCommand(String),
+    /// Copy attach command variant.
     CopyAttachCommand(String),
 }
 
 impl OperatorActionOutcome {
     #[must_use]
+    /// Return the wrapped command envelope.
     pub const fn command(&self) -> Option<&CommandEnvelope> {
         match self {
             Self::PersistCommand(command) => Some(command),
@@ -502,6 +615,7 @@ impl OperatorActionOutcome {
     }
 
     #[must_use]
+    /// Return the attach command value.
     pub fn attach_command(&self) -> Option<&str> {
         match self {
             Self::OpenAttachCommand(command) | Self::CopyAttachCommand(command) => Some(command),
@@ -511,6 +625,7 @@ impl OperatorActionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents factory drain request data used by the console.
 pub struct FactoryDrainRequest {
     aggregate_id: String,
     budget: u16,
@@ -519,6 +634,7 @@ pub struct FactoryDrainRequest {
 
 impl FactoryDrainRequest {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(aggregate_id: String, budget: u16, parallel: u16) -> Self {
         Self {
             aggregate_id,
@@ -528,26 +644,30 @@ impl FactoryDrainRequest {
     }
 
     #[must_use]
+    /// Return the aggregate id value.
     pub fn aggregate_id(&self) -> &str {
         &self.aggregate_id
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn budget(&self) -> u16 {
         self.budget
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn parallel(&self) -> u16 {
         self.parallel
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for factory drain port outcome state or outcome values.
 pub enum FactoryDrainPortOutcome {
-    Completed {
-        dispatched_items: u16,
-    },
+    /// Completed variant.
+    Completed { dispatched_items: u16 },
+    /// Failed variant.
     Failed,
     /// The drain was requested but no real Dispatcher port is wired, so no
     /// drain was attempted. Reported honestly instead of fabricating success.
@@ -556,22 +676,30 @@ pub enum FactoryDrainPortOutcome {
 
 impl FactoryDrainPortOutcome {
     #[must_use]
+    /// Return the stored value.
     pub const fn completed(dispatched_items: u16) -> Self {
         Self::Completed { dispatched_items }
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn failed() -> Self {
         Self::Failed
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn not_wired() -> Self {
         Self::NotWired
     }
 }
 
+/// Port interface for factory drain port behavior supplied by an outer layer.
 pub trait FactoryDrainPort {
+    /// Drain ready work from the factory through the concrete Dispatcher port.
+    ///
+    /// # Errors
+    /// Returns an application error when the port cannot produce a trustworthy outcome.
     fn drain_ready_queue(
         &mut self,
         request: &FactoryDrainRequest,
@@ -579,12 +707,14 @@ pub trait FactoryDrainPort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Represents factory drain policy data used by the console.
 pub struct FactoryDrainPolicy {
     ready_work_item_count: usize,
 }
 
 impl FactoryDrainPolicy {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(ready_work_item_count: usize) -> Self {
         Self {
             ready_work_item_count,
@@ -592,6 +722,7 @@ impl FactoryDrainPolicy {
     }
 
     #[must_use]
+    /// Build this value from events input.
     pub fn from_events(events: &[ConsoleEvent]) -> Self {
         let ready_work_item_count = project_lane_board(events)
             .column(Lane::Ready)
@@ -600,6 +731,7 @@ impl FactoryDrainPolicy {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn rejection_reason(&self) -> Option<&'static str> {
         if self.ready_work_item_count == 0 {
             Some("no ready implementation work")
@@ -624,6 +756,7 @@ pub struct DispatcherFactoryDrainPort<'a> {
 
 impl<'a> DispatcherFactoryDrainPort<'a> {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
         Self {
             probe,
@@ -664,6 +797,7 @@ fn dispatched_item_count(stdout: &str) -> u16 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents factory command outcome data used by the console.
 pub struct FactoryCommandOutcome {
     command_status: String,
     events: Vec<ConsoleEvent>,
@@ -671,6 +805,7 @@ pub struct FactoryCommandOutcome {
 
 impl FactoryCommandOutcome {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(command_status: String, events: Vec<ConsoleEvent>) -> Self {
         Self {
             command_status,
@@ -679,11 +814,13 @@ impl FactoryCommandOutcome {
     }
 
     #[must_use]
+    /// Return the command status value.
     pub fn command_status(&self) -> &str {
         &self.command_status
     }
 
     #[must_use]
+    /// Return the events value.
     pub fn events(&self) -> &[ConsoleEvent] {
         &self.events
     }
@@ -755,31 +892,37 @@ impl LaneWorkItem {
     }
 
     #[must_use]
+    /// Return the work item id value.
     pub fn work_item_id(&self) -> &str {
         &self.work_item_id
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn lane(&self) -> Lane {
         self.lane
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn lane_reason(&self) -> Option<LaneReason> {
         self.lane_reason
     }
 
     #[must_use]
+    /// Return the rank value.
     pub fn rank(&self) -> &str {
         &self.rank
     }
 
     #[must_use]
+    /// Return the status value.
     pub fn status(&self) -> &str {
         &self.status
     }
@@ -794,16 +937,19 @@ pub struct LaneColumn {
 
 impl LaneColumn {
     #[must_use]
+    /// Return the stored value.
     pub const fn lane(&self) -> Lane {
         self.lane
     }
 
     #[must_use]
+    /// Return the items value.
     pub fn items(&self) -> &[LaneWorkItem] {
         &self.items
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn count(&self) -> usize {
         self.items.len()
     }
@@ -820,6 +966,7 @@ pub struct LaneBoard {
 
 impl LaneBoard {
     #[must_use]
+    /// Return the columns value.
     pub fn columns(&self) -> &[LaneColumn] {
         &self.columns
     }
@@ -879,12 +1026,14 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
 }
 
 #[must_use]
+/// Build tui model from the supplied inputs.
 pub fn build_tui_model(events: &[ConsoleEvent], requested_selection: usize) -> TuiScreenModel {
     let state = TuiInteractionState::new(requested_selection, TuiOverlay::None);
     build_tui_model_for_state(events, &state)
 }
 
 #[must_use]
+/// Build tui model for state from the supplied inputs.
 pub fn build_tui_model_for_state(
     events: &[ConsoleEvent],
     state: &TuiInteractionState,
@@ -928,6 +1077,7 @@ pub fn build_tui_model_for_state(
 }
 
 #[must_use]
+/// Return the reduce tui interaction value.
 pub fn reduce_tui_interaction(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
@@ -1016,6 +1166,7 @@ fn drill_into_lane(state: &TuiInteractionState) -> TuiInteractionState {
     state.clone().with_lane_focus(LaneFocus::Lane(lane))
 }
 
+/// Validate operator action.
 pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
     let trimmed = action.trim();
     if trimmed.is_empty() {
@@ -1024,6 +1175,7 @@ pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
     Ok(trimmed)
 }
 
+/// Resolve selected operator action.
 pub fn resolve_selected_operator_action(
     model: &TuiScreenModel,
     requested_by: &str,
@@ -1045,6 +1197,7 @@ pub fn resolve_selected_operator_action(
     })
 }
 
+/// Resolve command palette action.
 pub fn resolve_command_palette_action(
     model: &TuiScreenModel,
     requested_by: &str,
@@ -1076,6 +1229,7 @@ fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
     )
 }
 
+/// Handle factory drain command.
 pub fn handle_factory_drain_command(
     command: &CommandEnvelope,
     policy: &FactoryDrainPolicy,
