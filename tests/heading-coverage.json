@@ -14,8 +14,8 @@
   {
     "scenario": "Scenario 2 -- Factory drain command",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should drive factory.drain_requested through command persistence, handler acceptance, the Dispatcher port, outcome events, and projection update. Registered now for behavioral-coverage backfill; replace TODO with the concrete test path when the factory drain acceptance slice lands.",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_2_factory_drain_command_dispatches_and_projects_outcome",
+    "reason": "Top-of-pyramid integration coverage for command persistence, handler acceptance, Dispatcher-port invocation, outcome events, and completed command projection.",
     "clauses": [
       {
         "gap_id": "gap-d3m5voif",
@@ -30,8 +30,8 @@
   {
     "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should exercise cold-start or bounded adapter backfill, replay of the reconciliation window, idempotent append, and checkpoint advancement only after durable append. Registered now for behavioral-coverage backfill; replace TODO with the concrete test path when the adapter backfill acceptance slice lands.",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_3_pull_adapter_backfill_replays_window_and_advances_checkpoint_after_append",
+    "reason": "Top-of-pyramid integration coverage for a cold-start adapter backfill, bounded reconciliation-window request, durable append, and checkpoint advancement.",
     "clauses": [
       {
         "gap_id": "gap-g5wswzt5",
@@ -86,8 +86,8 @@
   {
     "scenario": "Scenario 4 -- Source cannot prove full transition history",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should ingest a work-items current-state snapshot with unprovable transition history and assert both snapshot events and a completeness finding. Registered now for behavioral-coverage backfill; replace TODO with the concrete test path when the source-completeness acceptance slice lands.",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_4_snapshot_only_source_emits_completeness_finding",
+    "reason": "Top-of-pyramid integration coverage for ingesting a snapshot-only source and surfacing the source-completeness finding.",
     "clauses": [
       {
         "gap_id": "gap-6nlsbguz",
@@ -106,8 +106,8 @@
   {
     "scenario": "Scenario 5 -- TUI-first operator workflow",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should render the TUI default workflow from projections, support arrow-driven selection, and show the selected needs-attention detail without offering local dismiss. Registered now for behavioral-coverage backfill; replace TODO with the concrete test path when the TUI workflow acceptance slice lands.",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_command",
+    "reason": "Top-of-pyramid integration coverage for the store-backed TUI loop: source backfill, presentation to the runner, command persistence, and dispatch handling.",
     "clauses": [
       {
         "gap_id": "gap-lqcxsqk5",
@@ -171,8 +171,8 @@
   {
     "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should corrupt a projection snapshot, recover by dropping it, replay the append-only event log, and assert the rebuilt projection matches durable truth. Registered now for behavioral-coverage backfill; replace TODO with the concrete test path when the projection-rebuild acceptance slice lands.",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_8_corrupted_projection_rebuilds_by_replaying_event_log",
+    "reason": "Top-of-pyramid integration coverage for dropping derived projection state, replaying the append-only event log, and rebuilding an equivalent projection.",
     "clauses": [
       {
         "gap_id": "gap-ib4zdcqj",
