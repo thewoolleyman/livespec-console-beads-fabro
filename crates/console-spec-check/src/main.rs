@@ -1,17 +1,17 @@
-#![forbid(unsafe_code)]
-
 //! `console-spec-check` — the behavioral-coverage gate (clause -> scenario ->
 //! test), per the Behavioral Coverage section of
 //! `SPECIFICATION/non-functional-requirements.md`.
 //!
-//! Thin I/O shim around the `console_spec_check` library: it reads the
-//! SPECIFICATION sources and the `tests/heading-coverage.json` link registry
-//! from the current working directory (the repo root, where `just` runs it),
-//! evaluates the clause -> scenario -> test chain, prints diagnostics to
-//! stderr, and exits per the severity lever (`LIVESPEC_BEHAVIOR_SCENARIO_LINK`,
-//! default `warn`: report but never block; `fail`: exit 1 on any violation).
-//! The lever lands the gate during backfill without deadlocking the merge gate;
-//! the keystone's final slice flips the default to `fail`.
+//! The binary reads the SPECIFICATION sources and `tests/heading-coverage.json`
+//! from the repository root, evaluates the clause -> scenario -> test chain,
+//! reports diagnostics, and exits according to `LIVESPEC_BEHAVIOR_SCENARIO_LINK`.
+//!
+//! ```rust,ignore
+//! // Run from the repository root so SPECIFICATION/ and tests/ are visible.
+//! std::process::Command::new("console-spec-check").status()?;
+//! # Ok::<(), std::io::Error>(())
+//! ```
+#![forbid(unsafe_code)]
 
 use std::path::Path;
 use std::process::ExitCode;

@@ -1,18 +1,16 @@
-#![forbid(unsafe_code)]
-
 //! `console-arch-check` — architecture conformance checks for the
 //! livespec-console-beads-fabro workspace.
 //!
-//! Crate-graph layering rules are enforced from a structured
-//! `cargo metadata` source (not a manifest text scan); source-level
-//! rules — the `unwrap`/`expect` ban, event/command-type placement, and
-//! adapter-module isolation — are enforced at the Rust AST level via
-//! `syn`, so they distinguish real calls and items from substrings in
-//! comments, string literals, and identifiers such as `unwrap_or`.
+//! Crate-graph layering rules are enforced from a structured `cargo metadata`
+//! source, and source-level rules are enforced at the Rust AST level via `syn`
+//! so comments, strings, and similar identifiers do not produce false matches.
 //!
-//! Each rule is falsifiable: a reviewer can name an input that makes it
-//! fail (see the test fixtures), satisfying the Architecture Tests
-//! obligation in `SPECIFICATION/non-functional-requirements.md`.
+//! ```rust,ignore
+//! // Run from the repository root after dependencies are available.
+//! std::process::Command::new("console-arch-check").status()?;
+//! # Ok::<(), std::io::Error>(())
+//! ```
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
 use std::fs;

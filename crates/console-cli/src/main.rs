@@ -1,3 +1,16 @@
+//! CLI binary composition root for the operator console.
+//!
+//! It opens the configured `SQLite` store, wires the live source probes, and
+//! delegates command behavior to the `livespec_console_beads_fabro` library.
+//!
+//! ```rust,ignore
+//! std::process::Command::new("livespec-console-beads-fabro")
+//!     .arg("events")
+//!     .arg("tail")
+//!     .status()?;
+//! # Ok::<(), std::io::Error>(())
+//! ```
+
 #![forbid(unsafe_code)]
 
 #[cfg(all(not(test), not(coverage)))]

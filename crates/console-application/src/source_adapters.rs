@@ -3,17 +3,25 @@ use std::collections::BTreeMap;
 use console_domain::{ConsoleEvent, EventType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for source adapter kind state or outcome values.
 pub enum SourceAdapterKind {
+    /// Orchestrator variant.
     Orchestrator,
+    /// Dispatcher variant.
     Dispatcher,
+    /// Fabro variant.
     Fabro,
+    /// Git hub variant.
     GitHub,
+    /// Live spec variant.
     LiveSpec,
+    /// Needs attention variant.
     NeedsAttention,
 }
 
 impl SourceAdapterKind {
     #[must_use]
+    /// Return the stable source name used in event envelopes.
     pub const fn source_name(&self) -> &'static str {
         match self {
             Self::Orchestrator => "orchestrator",
@@ -27,33 +35,66 @@ impl SourceAdapterKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for adapter error state or outcome values.
 pub enum AdapterError {
+    /// Append failed variant.
     AppendFailed,
+    /// Checkpoint load failed variant.
     CheckpointLoadFailed,
+    /// Checkpoint save failed variant.
     CheckpointSaveFailed,
+    /// Empty adapter id variant.
     EmptyAdapterId,
+    /// Empty checkpoint variant.
     EmptyCheckpoint,
+    /// Empty dispatch id variant.
     EmptyDispatchId,
+    /// Empty observed at variant.
     EmptyObservedAt,
+    /// Empty repo variant.
     EmptyRepo,
+    /// Empty run id variant.
     EmptyRunId,
+    /// Empty work item id variant.
     EmptyWorkItemId,
+    /// Invalid pull request number variant.
     InvalidPullRequestNumber,
+    /// Invalid source version variant.
     InvalidSourceVersion,
 }
 
+/// Type alias for adapter result values.
 pub type AdapterResult<T> = Result<T, AdapterError>;
 
+/// Port interface for pull source port behavior supplied by an outer layer.
 pub trait PullSourcePort {
+    /// Poll the source using the supplied checkpoint request.
+    ///
+    /// # Errors
+    /// Returns an adapter error when the source cannot be polled or normalized.
     fn poll(&self, request: &AdapterPollRequest) -> AdapterResult<AdapterPoll>;
 }
 
+/// Port interface for source checkpoint port behavior supplied by an outer layer.
 pub trait SourceCheckpointPort {
+    /// Load the last checkpoint for `adapter_id`.
+    ///
+    /// # Errors
+    /// Returns an adapter error when the checkpoint backend cannot be read.
     fn load_checkpoint(&self, adapter_id: &str) -> AdapterResult<Option<String>>;
+    /// Save the new checkpoint for `adapter_id`.
+    ///
+    /// # Errors
+    /// Returns an adapter error when the checkpoint backend cannot be written.
     fn save_checkpoint(&self, adapter_id: &str, checkpoint: &str) -> AdapterResult<()>;
 }
 
+/// Port interface for source event append port behavior supplied by an outer layer.
 pub trait SourceEventAppendPort {
+    /// Append one normalized source event observed at `observed_at`.
+    ///
+    /// # Errors
+    /// Returns an adapter error when the event log append fails.
     fn append_normalized_event(
         &mut self,
         event: &NormalizedSourceEvent,
@@ -62,6 +103,7 @@ pub trait SourceEventAppendPort {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents adapter ingestion summary data used by the console.
 pub struct AdapterIngestionSummary {
     adapter_id: String,
     previous_checkpoint: Option<String>,
@@ -71,6 +113,7 @@ pub struct AdapterIngestionSummary {
 
 impl AdapterIngestionSummary {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         adapter_id: String,
         previous_checkpoint: Option<String>,
@@ -86,26 +129,31 @@ impl AdapterIngestionSummary {
     }
 
     #[must_use]
+    /// Return the adapter id value.
     pub fn adapter_id(&self) -> &str {
         &self.adapter_id
     }
 
     #[must_use]
+    /// Return the previous checkpoint value.
     pub fn previous_checkpoint(&self) -> Option<&str> {
         self.previous_checkpoint.as_deref()
     }
 
     #[must_use]
+    /// Return the checkpoint value.
     pub fn checkpoint(&self) -> &str {
         &self.checkpoint
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn appended_event_count(&self) -> usize {
         self.appended_event_count
     }
 }
 
+/// Run adapter poll and return its outcome.
 pub fn run_adapter_poll(
     adapter_id: &str,
     safety_window: u64,
@@ -133,6 +181,7 @@ pub fn run_adapter_poll(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents adapter poll request data used by the console.
 pub struct AdapterPollRequest {
     adapter_id: String,
     checkpoint: Option<String>,
@@ -140,6 +189,7 @@ pub struct AdapterPollRequest {
 }
 
 impl AdapterPollRequest {
+    /// Construct a new value from its required fields.
     pub fn new(
         adapter_id: &str,
         checkpoint: Option<&str>,
@@ -153,28 +203,33 @@ impl AdapterPollRequest {
     }
 
     #[must_use]
+    /// Return the adapter id value.
     pub fn adapter_id(&self) -> &str {
         &self.adapter_id
     }
 
     #[must_use]
+    /// Return the checkpoint value.
     pub fn checkpoint(&self) -> Option<&str> {
         self.checkpoint.as_deref()
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn safety_window(&self) -> u64 {
         self.safety_window
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents adapter poll data used by the console.
 pub struct AdapterPoll {
     checkpoint: String,
     events: Vec<NormalizedSourceEvent>,
 }
 
 impl AdapterPoll {
+    /// Construct a new value from its required fields.
     pub fn new(checkpoint: &str, events: Vec<NormalizedSourceEvent>) -> AdapterResult<Self> {
         Ok(Self {
             checkpoint: required_text(checkpoint, AdapterError::EmptyCheckpoint)?,
@@ -183,11 +238,13 @@ impl AdapterPoll {
     }
 
     #[must_use]
+    /// Return the checkpoint value.
     pub fn checkpoint(&self) -> &str {
         &self.checkpoint
     }
 
     #[must_use]
+    /// Return the events value.
     pub fn events(&self) -> &[NormalizedSourceEvent] {
         &self.events
     }
@@ -195,13 +252,21 @@ impl AdapterPoll {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Variants for lane state or outcome values.
 pub enum Lane {
+    /// Backlog variant.
     Backlog,
+    /// Pending approval variant.
     PendingApproval,
+    /// Ready variant.
     Ready,
+    /// Active variant.
     Active,
+    /// Acceptance variant.
     Acceptance,
+    /// Blocked variant.
     Blocked,
+    /// Done variant.
     Done,
 }
 
@@ -222,6 +287,7 @@ impl Lane {
     }
 
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Backlog => "backlog",
@@ -237,14 +303,19 @@ impl Lane {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Variants for lane reason state or outcome values.
 pub enum LaneReason {
+    /// Needs human variant.
     NeedsHuman,
+    /// Infra external variant.
     InfraExternal,
+    /// Dependency variant.
     Dependency,
 }
 
 impl LaneReason {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::NeedsHuman => "needs-human",
@@ -256,14 +327,18 @@ impl LaneReason {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Variants for admission policy state or outcome values.
 pub enum AdmissionPolicy {
     #[default]
+    /// Manual variant.
     Manual,
+    /// Auto variant.
     Auto,
 }
 
 impl AdmissionPolicy {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Manual => "manual",
@@ -274,13 +349,16 @@ impl AdmissionPolicy {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Variants for acceptance policy state or outcome values.
 pub enum AcceptancePolicy {
     #[default]
+    /// Ai then human variant.
     AiThenHuman,
 }
 
 impl AcceptancePolicy {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::AiThenHuman => "ai-then-human",
@@ -289,6 +367,7 @@ impl AcceptancePolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents work item snapshot data used by the console.
 pub struct WorkItemSnapshot {
     repo: String,
     work_item_id: String,
@@ -303,6 +382,7 @@ pub struct WorkItemSnapshot {
 
 impl WorkItemSnapshot {
     #[allow(clippy::too_many_arguments)]
+    /// Construct a new value from its required fields.
     pub fn new(
         repo: &str,
         work_item_id: &str,
@@ -331,21 +411,25 @@ impl WorkItemSnapshot {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the work item id value.
     pub fn work_item_id(&self) -> &str {
         &self.work_item_id
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn lane(&self) -> Lane {
         self.lane
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn lane_reason(&self) -> Option<LaneReason> {
         self.lane_reason
     }
@@ -366,16 +450,19 @@ impl WorkItemSnapshot {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn admission_policy(&self) -> AdmissionPolicy {
         self.admission_policy
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn acceptance_policy(&self) -> AcceptancePolicy {
         self.acceptance_policy
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
@@ -470,14 +557,19 @@ pub fn work_item_snapshot_from_payload_json(payload_json: &str) -> Option<WorkIt
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for livespec next action state or outcome values.
 pub enum LivespecNextAction {
+    /// None variant.
     None,
+    /// Critique variant.
     Critique,
+    /// Revise variant.
     Revise,
 }
 
 impl LivespecNextAction {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::None => "none",
@@ -488,6 +580,7 @@ impl LivespecNextAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents livespec next snapshot data used by the console.
 pub struct LivespecNextSnapshot {
     repo: String,
     action: LivespecNextAction,
@@ -495,6 +588,7 @@ pub struct LivespecNextSnapshot {
 }
 
 impl LivespecNextSnapshot {
+    /// Construct a new value from its required fields.
     pub fn new(repo: &str, action: LivespecNextAction, source_version: u64) -> AdapterResult<Self> {
         if source_version == 0 {
             return Err(AdapterError::InvalidSourceVersion);
@@ -507,28 +601,34 @@ impl LivespecNextSnapshot {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn action(&self) -> LivespecNextAction {
         self.action
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for dispatcher journal kind state or outcome values.
 pub enum DispatcherJournalKind {
+    /// Backlog bounce variant.
     BacklogBounce,
 }
 
 impl DispatcherJournalKind {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::BacklogBounce => "backlog-bounce",
@@ -537,6 +637,7 @@ impl DispatcherJournalKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents dispatcher journal entry data used by the console.
 pub struct DispatcherJournalEntry {
     repo: String,
     work_item_id: String,
@@ -546,6 +647,7 @@ pub struct DispatcherJournalEntry {
 }
 
 impl DispatcherJournalEntry {
+    /// Construct a new value from its required fields.
     pub fn new(
         repo: &str,
         work_item_id: &str,
@@ -566,38 +668,46 @@ impl DispatcherJournalEntry {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the work item id value.
     pub fn work_item_id(&self) -> &str {
         &self.work_item_id
     }
 
     #[must_use]
+    /// Return the dispatch id value.
     pub fn dispatch_id(&self) -> &str {
         &self.dispatch_id
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn kind(&self) -> DispatcherJournalKind {
         self.kind
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for fabro run state state or outcome values.
 pub enum FabroRunState {
+    /// Human gate variant.
     HumanGate,
 }
 
 impl FabroRunState {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::HumanGate => "human-gate",
@@ -606,6 +716,7 @@ impl FabroRunState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents fabro run snapshot data used by the console.
 pub struct FabroRunSnapshot {
     repo: String,
     work_item_id: String,
@@ -615,6 +726,7 @@ pub struct FabroRunSnapshot {
 }
 
 impl FabroRunSnapshot {
+    /// Construct a new value from its required fields.
     pub fn new(
         repo: &str,
         work_item_id: &str,
@@ -635,41 +747,52 @@ impl FabroRunSnapshot {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the work item id value.
     pub fn work_item_id(&self) -> &str {
         &self.work_item_id
     }
 
     #[must_use]
+    /// Run id and return its outcome.
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn state(&self) -> FabroRunState {
         self.state
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for github pull request state state or outcome values.
 pub enum GithubPullRequestState {
+    /// Open variant.
     Open,
+    /// Checks passing variant.
     ChecksPassing,
+    /// Checks failing variant.
     ChecksFailing,
+    /// Merged variant.
     Merged,
 }
 
 impl GithubPullRequestState {
     #[must_use]
+    /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -681,6 +804,7 @@ impl GithubPullRequestState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents github pull request snapshot data used by the console.
 pub struct GithubPullRequestSnapshot {
     repo: String,
     pr_number: u64,
@@ -689,6 +813,7 @@ pub struct GithubPullRequestSnapshot {
 }
 
 impl GithubPullRequestSnapshot {
+    /// Construct a new value from its required fields.
     pub fn new(
         repo: &str,
         pr_number: u64,
@@ -710,27 +835,32 @@ impl GithubPullRequestSnapshot {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn pr_number(&self) -> u64 {
         self.pr_number
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn state(&self) -> GithubPullRequestState {
         self.state
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents completeness finding data used by the console.
 pub struct CompletenessFinding {
     repo: String,
     source: SourceAdapterKind,
@@ -738,6 +868,7 @@ pub struct CompletenessFinding {
 }
 
 impl CompletenessFinding {
+    /// Construct a new value from its required fields.
     pub fn new(repo: &str, source: SourceAdapterKind, message: &str) -> AdapterResult<Self> {
         Ok(Self {
             repo: required_text(repo, AdapterError::EmptyRepo)?,
@@ -747,36 +878,51 @@ impl CompletenessFinding {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source(&self) -> SourceAdapterKind {
         self.source
     }
 
     #[must_use]
+    /// Return the message value.
     pub fn message(&self) -> &str {
         &self.message
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for source payload state or outcome values.
 pub enum SourcePayload {
+    /// Work item snapshot variant.
     WorkItemSnapshot(WorkItemSnapshot),
+    /// Completeness finding variant.
     CompletenessFinding(CompletenessFinding),
+    /// Dispatcher journal entry variant.
     DispatcherJournalEntry(DispatcherJournalEntry),
+    /// Fabro run snapshot variant.
     FabroRunSnapshot(FabroRunSnapshot),
+    /// Github pull request snapshot variant.
     GithubPullRequestSnapshot(GithubPullRequestSnapshot),
+    /// Livespec next snapshot variant.
     LivespecNextSnapshot(LivespecNextSnapshot),
+    /// Not observed finding variant.
     NotObservedFinding(NotObservedFinding),
+    /// Attention item appeared variant.
     AttentionItemAppeared(AttentionItemSnapshot),
+    /// Attention item changed variant.
     AttentionItemChanged(AttentionItemSnapshot),
+    /// Attention item resolved variant.
     AttentionItemResolved(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents normalized source event data used by the console.
 pub struct NormalizedSourceEvent {
     event: ConsoleEvent,
     source_event_id: String,
@@ -785,6 +931,7 @@ pub struct NormalizedSourceEvent {
 
 impl NormalizedSourceEvent {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(event: ConsoleEvent, source_event_id: String, payload: SourcePayload) -> Self {
         Self {
             event,
@@ -794,22 +941,26 @@ impl NormalizedSourceEvent {
     }
 
     #[must_use]
+    /// Return the wrapped console event.
     pub const fn event(&self) -> &ConsoleEvent {
         &self.event
     }
 
     #[must_use]
+    /// Return the source event id value.
     pub fn source_event_id(&self) -> &str {
         &self.source_event_id
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn payload(&self) -> &SourcePayload {
         &self.payload
     }
 }
 
 #[must_use]
+/// Normalize work item snapshot into canonical source events.
 pub fn normalize_work_item_snapshot(snapshot: &WorkItemSnapshot) -> AdapterPoll {
     let snapshot_event = work_item_snapshot_event(snapshot);
     let finding_event = work_item_completeness_finding_event(snapshot);
@@ -820,6 +971,7 @@ pub fn normalize_work_item_snapshot(snapshot: &WorkItemSnapshot) -> AdapterPoll 
 }
 
 #[must_use]
+/// Normalize livespec next snapshot into canonical source events.
 pub fn normalize_livespec_next_snapshot(snapshot: LivespecNextSnapshot) -> AdapterPoll {
     let source_version = snapshot.source_version();
     let event = livespec_next_event(snapshot);
@@ -827,6 +979,7 @@ pub fn normalize_livespec_next_snapshot(snapshot: LivespecNextSnapshot) -> Adapt
 }
 
 #[must_use]
+/// Normalize dispatcher journal entry into canonical source events.
 pub fn normalize_dispatcher_journal_entry(entry: DispatcherJournalEntry) -> AdapterPoll {
     let source_version = entry.source_version();
     let event = dispatcher_journal_event(entry);
@@ -834,6 +987,7 @@ pub fn normalize_dispatcher_journal_entry(entry: DispatcherJournalEntry) -> Adap
 }
 
 #[must_use]
+/// Normalize fabro run snapshot into canonical source events.
 pub fn normalize_fabro_run_snapshot(snapshot: FabroRunSnapshot) -> AdapterPoll {
     let source_version = snapshot.source_version();
     let event = fabro_run_event(snapshot);
@@ -841,6 +995,7 @@ pub fn normalize_fabro_run_snapshot(snapshot: FabroRunSnapshot) -> AdapterPoll {
 }
 
 #[must_use]
+/// Normalize github pull request snapshot into canonical source events.
 pub fn normalize_github_pull_request_snapshot(snapshot: GithubPullRequestSnapshot) -> AdapterPoll {
     let source_version = snapshot.source_version();
     let event = github_pull_request_event(snapshot);
@@ -1052,12 +1207,15 @@ const NOT_OBSERVED_CHECKPOINT: &str = "not_observed";
 /// could not be reached (binary missing, spawn error, file absent).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceProbeOutcome {
+    /// Observed variant.
     Observed { stdout: String, success: bool },
+    /// Unavailable variant.
     Unavailable { reason: String },
 }
 
 impl SourceProbeOutcome {
     #[must_use]
+    /// Return the observed value.
     pub fn observed(stdout: &str, success: bool) -> Self {
         Self::Observed {
             stdout: stdout.to_owned(),
@@ -1066,6 +1224,7 @@ impl SourceProbeOutcome {
     }
 
     #[must_use]
+    /// Return the unavailable value.
     pub fn unavailable(reason: &str) -> Self {
         Self::Unavailable {
             reason: reason.to_owned(),
@@ -1080,19 +1239,24 @@ impl SourceProbeOutcome {
 /// host-backed implementation lives in the binary (`console-cli` `main.rs`),
 /// outside the covered library surface.
 pub trait SourceProbe {
+    /// Run a host command and return its observed stdout/success outcome.
     fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome;
+    /// Read a host file and return its observed contents or unavailable reason.
     fn read_file(&self, path: &str) -> SourceProbeOutcome;
 }
 
 /// How a given adapter observes its source instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceObservationPlan {
+    /// Command variant.
     Command { program: String, args: Vec<String> },
+    /// File variant.
     File { path: String },
 }
 
 impl SourceObservationPlan {
     #[must_use]
+    /// Return the command value.
     pub fn command(program: &str, args: &[&str]) -> Self {
         Self::Command {
             program: program.to_owned(),
@@ -1101,6 +1265,7 @@ impl SourceObservationPlan {
     }
 
     #[must_use]
+    /// Return the file value.
     pub fn file(path: &str) -> Self {
         Self::File {
             path: path.to_owned(),
@@ -1118,6 +1283,7 @@ pub struct ObservedSource {
 
 impl ObservedSource {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(source: SourceAdapterKind, repo: &str, stdout: &str) -> Self {
         Self {
             source,
@@ -1127,16 +1293,19 @@ impl ObservedSource {
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source(&self) -> SourceAdapterKind {
         self.source
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the stdout value.
     pub fn stdout(&self) -> &str {
         &self.stdout
     }
@@ -1152,6 +1321,7 @@ pub struct ParsedObservation {
 
 impl ParsedObservation {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(checkpoint: &str, events: Vec<NormalizedSourceEvent>) -> Self {
         Self {
             checkpoint: checkpoint.to_owned(),
@@ -1183,6 +1353,7 @@ pub struct ObservedSourceAdapter<'a> {
 }
 
 impl<'a> ObservedSourceAdapter<'a> {
+    /// Construct a new value from its required fields.
     pub fn new(
         probe: &'a dyn SourceProbe,
         source: SourceAdapterKind,
@@ -1258,6 +1429,7 @@ pub struct NotObservedFinding {
 
 impl NotObservedFinding {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(repo: &str, source: SourceAdapterKind, reason: &str) -> Self {
         Self {
             repo: repo.to_owned(),
@@ -1267,16 +1439,19 @@ impl NotObservedFinding {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source(&self) -> SourceAdapterKind {
         self.source
     }
 
     #[must_use]
+    /// Return the reason value.
     pub fn reason(&self) -> &str {
         &self.reason
     }
@@ -1534,6 +1709,7 @@ pub struct AttentionSourceRef {
 
 impl AttentionSourceRef {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(repo: &str, work_item: Option<&str>, path: Option<&str>) -> Self {
         Self {
             repo: repo.to_owned(),
@@ -1543,16 +1719,19 @@ impl AttentionSourceRef {
     }
 
     #[must_use]
+    /// Return the repo value.
     pub fn repo(&self) -> &str {
         &self.repo
     }
 
     #[must_use]
+    /// Return the work item value.
     pub fn work_item(&self) -> Option<&str> {
         self.work_item.as_deref()
     }
 
     #[must_use]
+    /// Return the path value.
     pub fn path(&self) -> Option<&str> {
         self.path.as_deref()
     }
@@ -1572,6 +1751,7 @@ pub struct AttentionHandoff {
 
 impl AttentionHandoff {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(kind: &str, action_id: Option<&str>, command: &str) -> Self {
         Self {
             kind: kind.to_owned(),
@@ -1581,16 +1761,19 @@ impl AttentionHandoff {
     }
 
     #[must_use]
+    /// Return the kind value.
     pub fn kind(&self) -> &str {
         &self.kind
     }
 
     #[must_use]
+    /// Return the action id value.
     pub fn action_id(&self) -> Option<&str> {
         self.action_id.as_deref()
     }
 
     #[must_use]
+    /// Return the command value.
     pub fn command(&self) -> &str {
         &self.command
     }
@@ -1613,6 +1796,7 @@ pub struct AttentionItemSnapshot {
 
 impl AttentionItemSnapshot {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(
         id: &str,
         kind: &str,
@@ -1639,26 +1823,31 @@ impl AttentionItemSnapshot {
     }
 
     #[must_use]
+    /// Return the kind value.
     pub fn kind(&self) -> &str {
         &self.kind
     }
 
     #[must_use]
+    /// Return the urgency value.
     pub fn urgency(&self) -> &str {
         &self.urgency
     }
 
     #[must_use]
+    /// Return the summary value.
     pub fn summary(&self) -> &str {
         &self.summary
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn source_ref(&self) -> &AttentionSourceRef {
         &self.source_ref
     }
 
     #[must_use]
+    /// Return the stored value.
     pub const fn handoff(&self) -> &AttentionHandoff {
         &self.handoff
     }
@@ -1671,6 +1860,7 @@ impl AttentionItemSnapshot {
 /// orchestrator plugin, not the console; the console reads it ONLY through this
 /// port and never reaches around it to recompute the inbox.
 pub trait NeedsAttentionSnapshotPort {
+    /// Read the current product needs-attention snapshot.
     fn read_snapshot(&self) -> NeedsAttentionReadOutcome;
 }
 
@@ -1680,7 +1870,9 @@ pub trait NeedsAttentionSnapshotPort {
 /// this poll.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NeedsAttentionReadOutcome {
+    /// Observed variant.
     Observed(Vec<AttentionItemSnapshot>),
+    /// Unavailable variant.
     Unavailable(String),
 }
 
@@ -1698,6 +1890,7 @@ pub struct ProbeNeedsAttentionPort<'a> {
 
 impl<'a> ProbeNeedsAttentionPort<'a> {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
         Self {
             probe,

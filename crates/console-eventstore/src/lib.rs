@@ -1,4 +1,18 @@
-//! SQLite-backed append-only event store for the console, persisting `ConsoleEvent`s and command envelopes and reading them back for projections.
+//! SQLite-backed append-only event store for the operator console.
+//!
+//! This crate owns the durable schema for canonical console events, operator
+//! command envelopes, command status updates, and source adapter checkpoints. It
+//! deduplicates events by event id or source-event id and reconstructs domain
+//! envelopes for projections.
+//!
+//! ```rust,ignore
+//! use console_eventstore::SqliteEventStore;
+//!
+//! let mut store = SqliteEventStore::open_in_memory()?;
+//! let events = store.list_console_events()?;
+//! assert!(events.is_empty());
+//! # Ok::<(), console_eventstore::EventStoreError>(())
+//! ```
 
 #![forbid(unsafe_code)]
 
@@ -57,10 +71,15 @@ create table if not exists checkpoints (
 ";
 
 #[derive(Debug)]
+/// Variants for event store error state or outcome values.
 pub enum EventStoreError {
+    /// Command not found variant.
     CommandNotFound(String),
+    /// Invalid sequence variant.
     InvalidSequence,
+    /// Sqlite variant.
     Sqlite(rusqlite::Error),
+    /// Unknown event type variant.
     UnknownEventType(String),
 }
 
@@ -76,9 +95,11 @@ impl From<TryFromIntError> for EventStoreError {
     }
 }
 
+/// Type alias for event store result values.
 pub type EventStoreResult<T> = Result<T, EventStoreError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents command append data used by the console.
 pub struct CommandAppend {
     command: CommandEnvelope,
     requested_at: String,
@@ -89,6 +110,7 @@ pub struct CommandAppend {
 
 impl CommandAppend {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         command: CommandEnvelope,
         requested_at: String,
@@ -106,17 +128,20 @@ impl CommandAppend {
     }
 
     #[must_use]
+    /// Return the wrapped command envelope.
     pub const fn command(&self) -> &CommandEnvelope {
         &self.command
     }
 
     #[must_use]
+    /// Return the causation event id value.
     pub fn causation_event_id(&self) -> Option<&str> {
         self.causation_event_id.as_deref()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents event append data used by the console.
 pub struct EventAppend {
     event: ConsoleEvent,
     aggregate_id: String,
@@ -132,6 +157,7 @@ pub struct EventAppend {
 impl EventAppend {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         event: ConsoleEvent,
         aggregate_id: String,
@@ -157,23 +183,29 @@ impl EventAppend {
     }
 
     #[must_use]
+    /// Return the wrapped console event.
     pub const fn event(&self) -> &ConsoleEvent {
         &self.event
     }
 
     #[must_use]
+    /// Return the source event id value.
     pub fn source_event_id(&self) -> Option<&str> {
         self.source_event_id.as_deref()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for append status state or outcome values.
 pub enum AppendStatus {
+    /// Inserted variant.
     Inserted,
+    /// Duplicate variant.
     Duplicate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Represents append outcome data used by the console.
 pub struct AppendOutcome {
     global_seq: u64,
     status: AppendStatus,
@@ -181,22 +213,26 @@ pub struct AppendOutcome {
 
 impl AppendOutcome {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(global_seq: u64, status: AppendStatus) -> Self {
         Self { global_seq, status }
     }
 
     #[must_use]
+    /// Return the global event-store sequence.
     pub const fn global_seq(&self) -> u64 {
         self.global_seq
     }
 
     #[must_use]
+    /// Return the outcome status.
     pub const fn status(&self) -> AppendStatus {
         self.status
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents stored event data used by the console.
 pub struct StoredEvent {
     global_seq: u64,
     event_id: String,
@@ -206,6 +242,7 @@ pub struct StoredEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents stored command data used by the console.
 pub struct StoredCommand {
     command_id: String,
     context: String,
@@ -218,6 +255,7 @@ pub struct StoredCommand {
 
 impl StoredCommand {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         command_id: String,
         context: String,
@@ -239,48 +277,59 @@ impl StoredCommand {
     }
 
     #[must_use]
+    /// Return the command id value.
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
 
     #[must_use]
+    /// Return the context value.
     pub fn context(&self) -> &str {
         &self.context
     }
 
     #[must_use]
+    /// Return the command type value.
     pub fn command_type(&self) -> &str {
         &self.command_type
     }
 
     #[must_use]
+    /// Return the aggregate id value.
     pub fn aggregate_id(&self) -> Option<&str> {
         self.aggregate_id.as_deref()
     }
 
     #[must_use]
+    /// Return the idempotency key value.
     pub fn idempotency_key(&self) -> &str {
         &self.idempotency_key
     }
 
     #[must_use]
+    /// Return the requested by value.
     pub fn requested_by(&self) -> &str {
         &self.requested_by
     }
 
     #[must_use]
+    /// Return the status value.
     pub fn status(&self) -> &str {
         &self.status
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variants for command append status state or outcome values.
 pub enum CommandAppendStatus {
+    /// Inserted variant.
     Inserted,
+    /// Duplicate variant.
     Duplicate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents command append outcome data used by the console.
 pub struct CommandAppendOutcome {
     command_id: String,
     status: CommandAppendStatus,
@@ -288,22 +337,26 @@ pub struct CommandAppendOutcome {
 
 impl CommandAppendOutcome {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(command_id: String, status: CommandAppendStatus) -> Self {
         Self { command_id, status }
     }
 
     #[must_use]
+    /// Return the command id value.
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
 
     #[must_use]
+    /// Return the outcome status.
     pub const fn status(&self) -> CommandAppendStatus {
         self.status
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents command status update outcome data used by the console.
 pub struct CommandStatusUpdateOutcome {
     command_id: String,
     status: String,
@@ -311,16 +364,19 @@ pub struct CommandStatusUpdateOutcome {
 
 impl CommandStatusUpdateOutcome {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(command_id: String, status: String) -> Self {
         Self { command_id, status }
     }
 
     #[must_use]
+    /// Return the command id value.
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
 
     #[must_use]
+    /// Return the status value.
     pub fn status(&self) -> &str {
         &self.status
     }
@@ -328,6 +384,7 @@ impl CommandStatusUpdateOutcome {
 
 impl StoredEvent {
     #[must_use]
+    /// Construct a new value from its required fields.
     pub const fn new(
         global_seq: u64,
         event_id: String,
@@ -345,48 +402,57 @@ impl StoredEvent {
     }
 
     #[must_use]
+    /// Return the global event-store sequence.
     pub const fn global_seq(&self) -> u64 {
         self.global_seq
     }
 
     #[must_use]
+    /// Return the event id value.
     pub fn event_id(&self) -> &str {
         &self.event_id
     }
 
     #[must_use]
+    /// Return the event type value.
     pub fn event_type(&self) -> &str {
         &self.event_type
     }
 
     #[must_use]
+    /// Return the source value.
     pub fn source(&self) -> &str {
         &self.source
     }
 
     #[must_use]
+    /// Return the source event id value.
     pub fn source_event_id(&self) -> Option<&str> {
         self.source_event_id.as_deref()
     }
 }
 
+/// Represents sqlite event store data used by the console.
 pub struct SqliteEventStore {
     connection: Connection,
 }
 
 impl SqliteEventStore {
+    /// Return the open value.
     pub fn open(path: &Path) -> EventStoreResult<Self> {
         let connection = Connection::open(path)?;
         initialize_connection(&connection)?;
         Ok(Self { connection })
     }
 
+    /// Return the open in memory value.
     pub fn open_in_memory() -> EventStoreResult<Self> {
         let connection = Connection::open_in_memory()?;
         initialize_connection(&connection)?;
         Ok(Self { connection })
     }
 
+    /// Append event to the backing store.
     pub fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
         let transaction = self.connection.transaction()?;
         let inserted = transaction.execute(
@@ -442,6 +508,7 @@ impl SqliteEventStore {
         Ok(outcome)
     }
 
+    /// Append command to the backing store.
     pub fn append_command(
         &mut self,
         append: &CommandAppend,
@@ -492,6 +559,7 @@ impl SqliteEventStore {
         Ok(outcome)
     }
 
+    /// List events from the backing store.
     pub fn list_events(&self) -> EventStoreResult<Vec<StoredEvent>> {
         let sql = "select global_seq, event_id, type, source, source_event_id from events order by global_seq";
         let mut statement = self.connection.prepare(sql)?;
@@ -509,6 +577,7 @@ impl SqliteEventStore {
         Ok(events)
     }
 
+    /// List console events from the backing store.
     pub fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
         let sql = r"
             select event_id, schema_version, context, type, source, stream_id, stream_seq,
@@ -540,6 +609,7 @@ impl SqliteEventStore {
         Ok(events)
     }
 
+    /// List commands from the backing store.
     pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         let sql = r"
             select command_id, context, type, aggregate_id, idempotency_key, requested_by, status
@@ -563,6 +633,7 @@ impl SqliteEventStore {
         Ok(commands)
     }
 
+    /// Return the update command status value.
     pub fn update_command_status(
         &mut self,
         command_id: &str,
@@ -591,6 +662,7 @@ impl SqliteEventStore {
         ))
     }
 
+    /// Load checkpoint from the backing store.
     pub fn load_checkpoint(&self, adapter_id: &str) -> EventStoreResult<Option<String>> {
         let checkpoint = self
             .connection
@@ -603,6 +675,7 @@ impl SqliteEventStore {
         Ok(checkpoint)
     }
 
+    /// Save checkpoint to the backing store.
     pub fn save_checkpoint(
         &mut self,
         adapter_id: &str,
