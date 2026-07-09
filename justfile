@@ -147,10 +147,9 @@ check-arch:
 # §"Behavioral Coverage". Ports livespec's spec_clauses gap-id primitive and
 # behavior_scenario_link guardrail and adds scenario -> test enforcement over
 # the tests/heading-coverage.json link registry. The severity lever
-# LIVESPEC_BEHAVIOR_SCENARIO_LINK defaults to `warn`: it reports the
-# unlinked-clause and untested-scenario counts without blocking, so the gate
-# lands during backfill without deadlocking the merge gate; the keystone's
-# final slice flips the default to `fail`.
+# LIVESPEC_BEHAVIOR_SCENARIO_LINK defaults to `fail` so `just check` and CI block
+# on coverage regressions; set it to `warn` only for deliberate local
+# report-only runs.
 check-behavior-coverage:
     cargo run --quiet --package console-spec-check
 

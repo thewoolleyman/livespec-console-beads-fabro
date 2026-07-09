@@ -498,10 +498,11 @@ fn coverage_report_is_clean_only_when_empty() {
 }
 
 #[test]
-fn resolve_mode_defaults_to_warn() {
-    assert_eq!(resolve_mode(None), Mode::Warn);
+fn resolve_mode_defaults_to_fail() {
+    assert_eq!(resolve_mode(None), Mode::Fail);
     assert_eq!(resolve_mode(Some("fail")), Mode::Fail);
     assert_eq!(resolve_mode(Some("  FAIL  ")), Mode::Fail);
     assert_eq!(resolve_mode(Some("warn")), Mode::Warn);
-    assert_eq!(resolve_mode(Some("whatever")), Mode::Warn);
+    assert_eq!(resolve_mode(Some("  WARN  ")), Mode::Warn);
+    assert_eq!(resolve_mode(Some("whatever")), Mode::Fail);
 }

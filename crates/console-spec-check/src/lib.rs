@@ -37,8 +37,8 @@ use sha2::{Digest, Sha256};
 /// `## Scenarios` section, not to `scenarios.md`).
 pub const NFR_FILE: &str = "non-functional-requirements.md";
 
-/// The environment lever selecting the gate severity (`warn` default, `fail`
-/// to enforce). Mirrors livespec's `LIVESPEC_BEHAVIOR_SCENARIO_LINK`.
+/// The environment lever selecting the gate severity (`fail` default, `warn`
+/// to report only). Mirrors livespec's `LIVESPEC_BEHAVIOR_SCENARIO_LINK`.
 pub const SEVERITY_ENV: &str = "LIVESPEC_BEHAVIOR_SCENARIO_LINK";
 
 /// The operator-facing clause-bearing spec files (their clauses bind to
@@ -421,13 +421,13 @@ pub enum Mode {
 }
 
 /// Resolve the severity lever from its raw environment value; unset or
-/// unrecognized defaults to [`Mode::Warn`] (only `fail`, case-insensitively,
-/// selects [`Mode::Fail`]).
+/// unrecognized defaults to [`Mode::Fail`] (only `warn`, case-insensitively,
+/// selects [`Mode::Warn`]).
 #[must_use]
 pub fn resolve_mode(raw: Option<&str>) -> Mode {
     match raw {
-        Some(value) if value.trim().eq_ignore_ascii_case("fail") => Mode::Fail,
-        _ => Mode::Warn,
+        Some(value) if value.trim().eq_ignore_ascii_case("warn") => Mode::Warn,
+        _ => Mode::Fail,
     }
 }
 
