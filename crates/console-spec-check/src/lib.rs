@@ -12,7 +12,8 @@
 //!   is linked when `tests/heading-coverage.json` binds its gap-id to a live
 //!   scenario H2 in the audience-appropriate target;
 //! - plus the scenario -> test enforcement dimension — every live scenario H2
-//!   must carry a registry entry with a non-empty test.
+//!   must carry either a concrete test registration or an explicitly reasoned
+//!   pending top-of-pyramid test entry.
 //!
 //! All functions are pure (no I/O, no process exit); the binary shim
 //! (`main.rs`) supplies the file reads, the severity lever, and the exit code.
@@ -225,7 +226,7 @@ pub struct ClauseLink {
 }
 
 /// One registry entry: a scenario H2 (`scenario` in `scenario_file`), its
-/// top-of-pyramid `test`, and the clauses linked to it.
+/// top-of-pyramid `test` or pending-test reason, and the clauses linked to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageEntry {
     /// Scenario field.
@@ -234,6 +235,8 @@ pub struct CoverageEntry {
     pub scenario_file: String,
     /// Test field.
     pub test: String,
+    /// Reason field, required when `test` is the pending sentinel `TODO`.
+    pub reason: String,
     /// Clauses field.
     pub clauses: Vec<ClauseLink>,
 }
@@ -263,11 +266,17 @@ fn parse_entry(item: &Value) -> Option<CoverageEntry> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let reason = object
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let clauses = object.get("clauses").map(parse_clauses).unwrap_or_default();
     Some(CoverageEntry {
         scenario,
         scenario_file,
         test,
+        reason,
         clauses,
     })
 }
@@ -428,7 +437,9 @@ pub fn resolve_mode(raw: Option<&str>) -> Mode {
 /// A clause is linked when the registry binds its gap-id to a scenario that
 /// resolves to a live H2 in the set its [`Audience`] selects. A live scenario
 /// is tested when the registry carries an entry for it (matched by file and
-/// name) with a non-empty test.
+/// name) with either a concrete non-empty test or a `TODO` sentinel whose
+/// reason explicitly acknowledges the scenario's top-of-pyramid/integration
+/// test tier.
 #[must_use]
 pub fn evaluate(
     sources: &[SpecSource],
@@ -494,7 +505,7 @@ fn missing_tests(
 ) -> Vec<UntestedScenario> {
     let tested: HashSet<String> = registry
         .iter()
-        .filter(|entry| entry.scenario_file == scenario_file && !entry.test.trim().is_empty())
+        .filter(|entry| entry.scenario_file == scenario_file && has_registered_test(entry))
         .map(|entry| normalize_scenario(&entry.scenario))
         .collect();
     live.iter()
@@ -505,6 +516,25 @@ fn missing_tests(
             scenario: name,
         })
         .collect()
+}
+
+fn has_registered_test(entry: &CoverageEntry) -> bool {
+    let test = entry.test.trim();
+    if test.is_empty() {
+        return false;
+    }
+    if test != "TODO" {
+        return true;
+    }
+    let reason = entry.reason.trim();
+    !reason.is_empty() && acknowledges_top_of_pyramid_tier(reason)
+}
+
+fn acknowledges_top_of_pyramid_tier(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("top-of-pyramid")
+        || lower.contains("integration")
+        || lower.contains("acceptance")
 }
 
 #[cfg(test)]

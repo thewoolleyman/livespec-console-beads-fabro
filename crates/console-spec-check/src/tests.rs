@@ -185,11 +185,14 @@ fn nfr_scenarios_collects_h2s_after_the_marker() {
 fn parse_registry_reads_entries_and_defaults_clauses() -> Result<(), String> {
     let json = r#"[
       {"scenario":"S1","scenario_file":"scenarios.md","test":"t::a",
+       "reason":"covered by a top-of-pyramid test",
        "clauses":[{"gap_id":"gap-1","scenario":"S1"}]},
       {"scenario":"S2","scenario_file":"scenarios.md","test":"t::b"}
     ]"#;
     let entries = parse_registry(json)?;
     assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].reason, "covered by a top-of-pyramid test");
+    assert_eq!(entries[1].reason, "", "missing reason defaults to empty");
     assert_eq!(
         entries[0].clauses,
         vec![ClauseLink {
@@ -234,6 +237,10 @@ fn parse_registry_skips_malformed_entries() -> Result<(), String> {
     assert_eq!(entries[1].scenario, "NoTestField");
     assert_eq!(entries[1].test, "", "missing test field defaults to empty");
     assert_eq!(
+        entries[1].reason, "",
+        "missing reason field defaults to empty"
+    );
+    assert_eq!(
         entries[1].clauses,
         Vec::new(),
         "non-array clauses default to empty"
@@ -263,6 +270,7 @@ fn evaluate_flags_unlinked_and_resolves_links() {
         scenario: "Scenario 1 -- A".to_string(),
         scenario_file: "scenarios.md".to_string(),
         test: "t::a".to_string(),
+        reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap.clone(),
             scenario: "Scenario 1 -- A".to_string(),
@@ -282,6 +290,7 @@ fn evaluate_flags_unlinked_and_resolves_links() {
         scenario: "Ghost".to_string(),
         scenario_file: "scenarios.md".to_string(),
         test: "t".to_string(),
+        reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap,
             scenario: "Ghost".to_string(),
@@ -316,6 +325,7 @@ fn evaluate_partitions_clause_audiences() {
         scenario: "Op Scenario".to_string(),
         scenario_file: "scenarios.md".to_string(),
         test: "t".to_string(),
+        reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap.clone(),
             scenario: "Op Scenario".to_string(),
@@ -333,6 +343,7 @@ fn evaluate_partitions_clause_audiences() {
         scenario: "Nfr Theme".to_string(),
         scenario_file: NFR_FILE.to_string(),
         test: "t".to_string(),
+        reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap,
             scenario: "Nfr Theme".to_string(),
@@ -356,12 +367,14 @@ fn evaluate_flags_untested_scenarios() {
             scenario: "Op A".to_string(),
             scenario_file: "scenarios.md".to_string(),
             test: "t::opa".to_string(),
+            reason: String::new(),
             clauses: Vec::new(),
         },
         CoverageEntry {
             scenario: "Op B".to_string(),
             scenario_file: "scenarios.md".to_string(),
             test: "   ".to_string(),
+            reason: "ignored for blank tests".to_string(),
             clauses: Vec::new(),
         },
     ];
@@ -375,6 +388,83 @@ fn evaluate_flags_untested_scenarios() {
         untested,
         vec![("scenarios.md", "Op B"), (NFR_FILE, "Nfr A")],
         "whitespace test counts as untested; missing entry counts as untested",
+    );
+}
+
+#[test]
+fn evaluate_accepts_reasoned_pending_todo_scenarios() {
+    let sources: [SpecSource; 0] = [];
+    let operator = vec!["Pending Op".to_string()];
+    let nfr = vec!["Pending Nfr".to_string()];
+    let registry = vec![
+        CoverageEntry {
+            scenario: "Pending Op".to_string(),
+            scenario_file: "scenarios.md".to_string(),
+            test: "TODO".to_string(),
+            reason: "Test tier: a top-of-pyramid acceptance test will cover this scenario."
+                .to_string(),
+            clauses: Vec::new(),
+        },
+        CoverageEntry {
+            scenario: "Pending Nfr".to_string(),
+            scenario_file: NFR_FILE.to_string(),
+            test: "TODO".to_string(),
+            reason: "Test tier: integration coverage will land with the implementation slice."
+                .to_string(),
+            clauses: Vec::new(),
+        },
+    ];
+
+    let report = evaluate(&sources, &registry, &operator, &nfr);
+    assert!(
+        report.untested_scenarios.is_empty(),
+        "reasoned TODO entries are valid pending registrations"
+    );
+}
+
+#[test]
+fn evaluate_rejects_unreasoned_pending_todo_scenarios() {
+    let sources: [SpecSource; 0] = [];
+    let operator = vec![
+        "No Reason".to_string(),
+        "No Tier".to_string(),
+        "Concrete".to_string(),
+    ];
+    let nfr: Vec<String> = Vec::new();
+    let registry = vec![
+        CoverageEntry {
+            scenario: "No Reason".to_string(),
+            scenario_file: "scenarios.md".to_string(),
+            test: "TODO".to_string(),
+            reason: "   ".to_string(),
+            clauses: Vec::new(),
+        },
+        CoverageEntry {
+            scenario: "No Tier".to_string(),
+            scenario_file: "scenarios.md".to_string(),
+            test: "TODO".to_string(),
+            reason: "Pending until the implementation slice lands.".to_string(),
+            clauses: Vec::new(),
+        },
+        CoverageEntry {
+            scenario: "Concrete".to_string(),
+            scenario_file: "scenarios.md".to_string(),
+            test: "crates/console-cli/tests/concrete.rs::scenario".to_string(),
+            reason: String::new(),
+            clauses: Vec::new(),
+        },
+    ];
+
+    let report = evaluate(&sources, &registry, &operator, &nfr);
+    let untested: Vec<(&str, &str)> = report
+        .untested_scenarios
+        .iter()
+        .map(|u| (u.scenario_file.as_str(), u.scenario.as_str()))
+        .collect();
+    assert_eq!(
+        untested,
+        vec![("scenarios.md", "No Reason"), ("scenarios.md", "No Tier")],
+        "TODO entries need both a reason and a scenario-level test-tier acknowledgement",
     );
 }
 
