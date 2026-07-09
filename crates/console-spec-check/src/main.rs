@@ -115,7 +115,7 @@ fn emit(report: &CoverageReport, mode: Mode) {
     } else {
         eprintln!(
             "{label}: behavioral-coverage: {unlinked} unlinked clause(s), {untested} untested \
-             scenario(s) (lever {SEVERITY_ENV}; default `warn`, set to `fail` to enforce)"
+             scenario(s) (lever {SEVERITY_ENV}; default `fail`, set to `warn` to report only)"
         );
     }
 }
