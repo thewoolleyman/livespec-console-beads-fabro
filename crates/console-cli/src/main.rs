@@ -19,11 +19,11 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 #[cfg(all(not(test), not(coverage)))]
-use console_application::DispatcherFactoryDrainPort;
-#[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
+#[cfg(all(not(test), not(coverage)))]
+use console_application::{DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort};
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
@@ -102,12 +102,16 @@ fn run_store_backed_command(
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let drain_program = drain_program();
     let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
+    let drive_program = drive_program();
+    let mut drive =
+        DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
     Ok(livespec_console_beads_fabro::run_with_store(
         args,
         &mut store,
         &observed_at,
         &sources,
         &mut drain,
+        &mut drive,
         &needs_attention,
     ))
 }
@@ -128,6 +132,9 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let drain_program = drain_program();
     let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
+    let drive_program = drive_program();
+    let mut drive =
+        DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
     let mut runner = InteractiveTuiRunner;
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
@@ -136,6 +143,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &mut runner,
         &sources,
         &mut drain,
+        &mut drive,
         &needs_attention,
     )
     .map_err(|error| format!("{error:?}"))?;
@@ -187,6 +195,12 @@ fn console_repo() -> String {
 fn drain_program() -> String {
     std::env::var("LIVESPEC_CONSOLE_DRAIN_PROGRAM")
         .unwrap_or_else(|_error| "livespec-dispatcher-drain".to_owned())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn drive_program() -> String {
+    std::env::var("LIVESPEC_CONSOLE_DRIVE_PROGRAM")
+        .unwrap_or_else(|_error| "livespec-orchestrator-drive".to_owned())
 }
 
 #[cfg(all(not(test), not(coverage)))]
