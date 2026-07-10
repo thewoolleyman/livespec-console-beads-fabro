@@ -1,25 +1,5 @@
-//! Core domain contracts for the operator console.
-//!
-//! This crate owns the behavior-facing event and command vocabulary shared by
-//! the application, event store, TUI, and CLI crates. It deliberately carries no
-//! persistence or presentation concerns: callers construct canonical
-//! [`ConsoleEvent`] envelopes, map event / command variants to their contract
-//! names, and validate identifiers before outer layers persist or project them.
-//!
-//! ```rust,ignore
-//! use console_domain::{ConsoleEvent, EventType};
-//!
-//! let event = ConsoleEvent::new(
-//!     "evt_1".to_owned(),
-//!     1,
-//!     "factory".to_owned(),
-//!     EventType::WorkItemSnapshotObserved,
-//!     "orchestrator".to_owned(),
-//!     "factory:livespec-console-beads-fabro".to_owned(),
-//!     1,
-//! );
-//! assert_eq!(event.event_type().contract_name(), "work_item.snapshot_observed");
-//! ```
+//! Console domain model for canonical [`ConsoleEvent`] envelopes, command
+//! envelopes, and event types shared by the operator console crates.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
