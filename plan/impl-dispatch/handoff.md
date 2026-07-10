@@ -2,7 +2,7 @@
 
 **Status:** ACTIVE.
 
-**Refreshed:** 2026-07-10.
+**Refreshed:** 2026-07-10 (post-49a rustdoc sweep).
 
 ## Scope
 
@@ -50,14 +50,44 @@ Final evidence for that subchain:
 
 ## Current Next Work
 
-At this refresh, live `next --json` returned:
+At this refresh, live `next --json` returns **zero ready candidates** — the
+dispatch queue holds no ready work. Every remaining item is gated on a
+maintainer decision, so autonomous dispatch is paused pending maintainer input.
 
-- `livespec-console-beads-fabro-49a` — comprehensive rustdoc sweep across all
-  console crates.
+Most recently closed:
 
-There are also active/queued items in the ledger that may need cleanup,
-acceptance, regrooming, or separate plan threads. Do not infer completion from
-the behavioral-coverage chain being closed.
+- `livespec-console-beads-fabro-49a` — comprehensive rustdoc sweep. CLOSED via
+  PR #130 (merge `0438f4ad7d2fd2669d17896973d9ffac88cfb2f8`). Enabled
+  `#![warn(missing_docs)]` across every crate that lacked it (a permanent,
+  workspace-wide coverage gate, since `warnings = "deny"`) and documented the
+  10 remaining public field gaps in `console-application`. Every console crate
+  already carried crate-level `//!` docs and `///` docs on its public API; the
+  gate now keeps it that way.
+
+Remaining ledger items and why each is NOT ready:
+
+- `livespec-console-beads-fabro-6tn` — "Add a crate-level doc comment to
+  console-eventstore" (status `active`, assignee fabro). Almost certainly
+  ALREADY SATISFIED: `console-eventstore/src/lib.rs` already carries a
+  crate-level `//!` doc (confirmed during the 49a sweep). Candidate for
+  admin closure (`resolved-out-of-band` / `no-longer-applicable`) — maintainer
+  call.
+- `livespec-console-beads-fabro-6sf` — deliberate LONG-RUN TTL exercise
+  (>60-min delay to validate publish-node token re-mint). `active`, assignee
+  fabro; run only when intentionally exercising that path.
+- `livespec-console-beads-fabro-mb64bv` — needs-regroom→backlog-bounce rename;
+  `active` but BLOCKED by ratification gate `iblkzp` (depends_on edge).
+- `livespec-console-beads-fabro-txtzn5`, `-mvu22t`, `-pke3y3` — quality-gate CI
+  jobs, red-green-replay checker, 7 unimplemented commands: `backlog`, several
+  labelled `needs-regroom` (need regrooming before dispatch).
+- `livespec-console-beads-fabro-nxsfih` / `rt4` / `fpo` / `ipi` — console-cruft
+  cleanup epic, full-autonomous-mode feature, latent u64→SQLite overflow bug,
+  TUI attention-stream migration: `backlog`, awaiting admission / regroom /
+  ratification.
+
+Do not infer completion from the behavioral-coverage chain or the rustdoc sweep
+being closed. The console implementation track remains open; it is simply
+maintainer-gated at this refresh.
 
 ## Guardrails
 
