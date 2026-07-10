@@ -30,6 +30,7 @@ jobs:
           # installer step below must install the canonical hook BEFORE the
           # verifier runs (mirroring livespec-dev-tooling's own CI).
           - check-baseline
+          - check-plugin-resolution
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,3 +117,21 @@ jobs:
         env:
           LIVESPEC_CORE_PLUGIN_ROOT: ${{ github.workspace }}/.livespec-core/.claude-plugin
         run: just check-doctor-static
+
+  # Single all-green gate job (livespec epic livespec-cf4bcu,
+  # fleet-ci-aggregate-coverage). This is the SOLE branch-protection
+  # required context: it `needs:` every check-bearing job, so requiring
+  # only `ci-green` blocks merges on the entire matrix + dedicated check
+  # jobs via one stable context-name that never churns as checks are
+  # added. Pure GitHub-expression gate (no external action, no direct
+  # tool invocation): `always()` runs it even when a dependency failed,
+  # and the step fails the job iff any dependency failed or was cancelled.
+  ci-green:
+    name: ci-green
+    needs: [check, check-doctor-static]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required checks passed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
