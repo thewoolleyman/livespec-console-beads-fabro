@@ -30,7 +30,9 @@ zero pending proposals:
   surface; the engine that makes the orchestrator's own decisions is owned by the
   orchestrator plane — the console only enables, observes, reflects.
 - `SPECIFICATION/contracts.md` §"Command Handling" — the five `work_item.*` commands
-  map 1:1 onto the orchestrator `orchestrate run` action ids: `approve:<id>`,
+  map 1:1 onto the orchestrator's published action ids (the contract's
+  "`orchestrate run`" name is STALE — the surface is now `drive`; C1 fixes the
+  citation): `approve:<id>`,
   `accept:<id>`, `reject:<id>:{rework,regroom}`, `set-admission:<id>:{auto,manual}`,
   `set-acceptance:<id>:{ai-only,human-only,ai-then-human}` — issued ONLY through that
   surface, never writing the ledger directly.
@@ -95,23 +97,51 @@ Lanes view and valve commands sit on this.
 ## 4. Steps
 
 ### C1 — spec currency + seam reconciliation
-The spec is complete, so this step is validation-and-reconcile, not authoring.
-- **Diff the borrowed vocabulary against current core/orchestrator** (the "livespec
-  moved forward" concern): (a) the seven lane names + the `blocked:dependency`
-  overlay; (b) the acceptance-policy enum `{ai-only, human-only, ai-then-human}` and
-  reject modes `{rework, regroom}`; (c) the `attention_item.*` schema (item `ipi` /
-  Scenario 12) versus core's current `needs-attention` schema. The console cites the
-  orchestrator contract by reference (correct), but confirm no drift.
-- **Resolve the persistence-model seam** (overall plan §6.1): the console persists
-  `autonomous_mode.enabled` (intent); define how that intent reaches the orchestrator,
-  which does not persist autonomous mode. This must agree with the orchestrator's O1
-  arming contract.
+The spec is complete, so this step is reconcile-and-ratify, not authoring. Step 0
+(the independent Fable validation, 2026-07-10, NO-BLOCKERS — full verdict at
+`livespec/plan/autonomous-mode/research/step0-fable-verdict.md`) already ran the
+vocabulary diff and the seam analysis; C1 executes the resulting spec changes.
+- **Fix the two CONFIRMED vocabulary-drift instances** (Step-0 verified): (d) the
+  contract cites "the orchestrator's published `orchestrate run` action-id
+  surface" — the orchestrator renamed that surface to **`drive`**
+  (`bin/drive.py`; "orchestrate run" appears nowhere in its live contracts);
+  (e) the contract says "the lane vocabulary is owned by livespec core" — core
+  defines NO lane vocabulary; it is owned by `livespec-orchestrator-beads-fabro`
+  (contracts §"Work-item state semantics"). Both are citation fixes in
+  contracts.md §"Command Handling" / §"TUI Contract". The rest of the borrowed
+  vocabulary verified DRIFT-FREE: the seven lane names match the orchestrator's
+  states exactly; the blocked-for-dependency overlay flows as lane `blocked` +
+  `lane_reason` (no compound token needed); the acceptance/reject enums match
+  the `drive` action ids exactly; and the `attention_item.*` fields (`id`,
+  `kind`, `urgency`, `summary`, `source_ref`, `handoff`) match core's SHIPPED
+  runtime schema (`livespec/.claude-plugin/scripts/_vendor/livespec_runtime/attention_item.py`
+  — note: core's SPECIFICATION/ defines no such schema; the shipped runtime is
+  the diff target). C1 re-confirms only if the upstream specs moved since
+  2026-07-10.
+- **Resolve the persistence-model seam** (overall plan §6.1) — AFTER the
+  orchestrator's O1 arming contract freezes (I1): do NOT ratify a console-side
+  persistence resolution before I1. Step 0 sharpened the seam: the orchestrator
+  ALSO persists a permission key
+  (`livespec-orchestrator-beads-fabro.dispatcher.autonomous_mode` in the same
+  `.livespec.jsonc`), so two persistent booleans would coexist. Recommended
+  (mirrors the orchestrator plan's O1): the console's
+  `factory.autonomous_mode_enable/disable_requested` commands set the
+  ORCHESTRATOR's key, and the console's own namespaced `autonomous_mode` block
+  is dropped or redefined as derived — whichever O1's frozen contract says,
+  amend contracts.md §"Autonomous Mode" to match.
 - **Resolve the division-of-resolution question** (overall plan §6.2): pin which
   decisions the console's own LLM-stand-in resolves versus which it delegates
   wholesale to the orchestrator engine. Recommended MVP reading: the orchestrator
   engine owns all gate resolution; the console's autonomous responsibility is
   enable + observe + reflect + surface-unresolvable, keeping the console's LLM layer
-  thin or deferred.
+  thin or deferred. Step-0 finding: this reading REQUIRES a spec revision —
+  Scenario 10's first Gherkin case has the CONSOLE record the auto-decision as a
+  command, which is unsatisfiable for orchestrator-owned gates when the engine
+  resolves them upstream (the audit then lives in the orchestrator journal);
+  re-scope Scenario 10 (and the §"Full Autonomous Mode" blanket resolve-MUST) to
+  the delegation model. If a console-side resolver is instead kept, it races the
+  engine on items resting between engine runs (double-resolution) — the revision
+  must kill that hazard explicitly either way.
 - **Resolve the `config.autonomous_mode_set` naming** consistency versus the factory
   `autonomous_mode_enable/disable_requested` pair (the `_set` command verb is correct
   at the command layer; the inconsistency is single-`_set` vs split enable/disable —
@@ -119,14 +149,25 @@ The spec is complete, so this step is validation-and-reconcile, not authoring.
 - Refresh item `rt4`'s stale version pointer (cites v013; spec is v016).
 - **Route:** any real change via `/livespec:propose-change` → independent Fable
   review → `/livespec:revise`, co-editing `tests/heading-coverage.json` for any H2
-  change. **Gate:** overall Step 0. **Done:** ratified revision or a documented
-  "no change needed" with the seams pinned.
+  change. **Gate:** overall Step 0 (passed) — the persistence-seam portion
+  additionally gates on I1. **Done:** a RATIFIED revision (Step 0 confirmed
+  "no change needed" is not available: the two citation fixes and the
+  Scenario-10 re-scope are real changes) with the seams pinned.
 
 ### C2 — console command foundation (manual valves)
 - Add the five `work_item.*` `CommandType` variants + handlers + a port that issues
-  them through the orchestrator's existing published `orchestrate run` surface. Fold
-  item `pke3y3` (regroom it against the current valve model first — it predates the
-  lifecycle redesign). Land the Scenario-11 test.
+  them through the orchestrator's existing published **`drive`** action surface
+  (`bin/drive.py --repo <path> --action <action-id>`; the spec's "orchestrate
+  run" citation is stale — C1 fixes it). Fold item `pke3y3` (regroom it against
+  the current valve model first — it predates the lifecycle redesign; it is an
+  EPIC, and its regroom must SPLIT OUT, not silently drop, the four
+  still-contract commands C2/C3 do not cover: `factory.dispatch_item_requested`,
+  `factory.pause_requested`, `factory.resume_requested`,
+  `spec.doctor_requested`). Land the Scenario-11 test. Implementation note
+  (Step-0): the read-side `AcceptancePolicy` enum in
+  `crates/console-application/src/source_adapters.rs` currently has ONLY
+  `AiThenHuman` — extend it to `ai-only`/`human-only` alongside the
+  `set-acceptance` command.
 - TDD Red-Green-Replay per the repo's Rust ritual; worktree → PR → merge.
 - **Gate:** C1. **Done:** merged PR; the TUI can issue each valve manually against a
   real tenant (live evidence, not just tests).
@@ -151,17 +192,31 @@ owned by the Orchestrator Plane and tracked by orchestrator item `bd-ib-82a`
 (`livespec-orchestrator-beads-fabro/plan/autonomous-mode/`). The console ENABLES it
 via a published command and REFLECTS its audited outcomes; the console MUST NOT
 reach around the plane to fabricate a gate decision. Truly-unresolvable decisions —
-including the core-spec irreducible human touchpoints (drift acceptance,
-spec-change slices, regroom) — surface as in-TUI needs-attention, never guessed.
+including the irreducible human touchpoints (drift acceptance — normative core
+law; spec-change slices and regroom — core non-normative guidance promoted by
+maintainer declaration 2026-07-10, being codified in the orchestrator spec via
+its O1 propose-change) — surface as in-TUI needs-attention, never guessed.
 
 ## 6. Items to fold / supersede
 - `rt4` (feature, backlog) — THE console operator-surface item; folded into C3.
-- `pke3y3` (task, backlog) — the "7 unimplemented commands" item; regroom to the five
-  current valve/policy commands and fold into C2.
+- `pke3y3` (EPIC, backlog) — the "7 unimplemented commands" item; its command
+  list is stale (predates v014's cruft-cleanup: snooze/acknowledge killed,
+  `grooming.regroom_requested` retired). Regroom it to the five current
+  valve/policy commands and fold into C2, SPLITTING the four remaining
+  still-contract commands (`factory.dispatch_item_requested`,
+  `factory.pause_requested`, `factory.resume_requested`,
+  `spec.doctor_requested`) into their own tracked item — never narrowing them
+  away.
 - `ipi` (task, backlog) — attention-stream TUI migration (Scenario 12); fold into C1
   (spec confirm) + C3 (the reflect surface consumes `attention_item.*`).
-- `mb64bv` (task, active) — `needs-regroom` → `backlog-bounce` vocab rename; a small
-  independent cleanup that can land ahead of C2 (removes stale vocab the valves touch).
+- `mb64bv` (task, active; its ratification gate `iblkzp` is CLOSED, so it is
+  genuinely unblocked) — `needs-regroom` → `backlog-bounce` vocab rename; a small
+  independent cleanup that can land ahead of C2 (removes stale vocab the valves
+  touch). Step-0 caution: "backlog-bounce" appears nowhere in the orchestrator's
+  spec or code — its journal field is `bounced_to_regroom` and its concept is
+  "the `backlog` bounce disposition"; the rename is console-local labeling, and
+  the journal adapter MUST keep matching what the orchestrator journal actually
+  emits.
 - `plan/impl-dispatch/` (behavioral-coverage chain) — COMPLETE and unrelated;
   recommend archiving separately, not a dependency here.
 
