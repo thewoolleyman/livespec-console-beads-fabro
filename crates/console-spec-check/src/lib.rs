@@ -27,6 +27,7 @@
 //! assert_eq!(rules[0].gap_id, id);
 //! ```
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::collections::{HashMap, HashSet};
 

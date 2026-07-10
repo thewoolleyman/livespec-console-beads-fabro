@@ -11,6 +11,7 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::collections::BTreeSet;
 use std::fs;

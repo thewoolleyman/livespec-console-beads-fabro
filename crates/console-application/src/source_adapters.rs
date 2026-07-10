@@ -1208,9 +1208,17 @@ const NOT_OBSERVED_CHECKPOINT: &str = "not_observed";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceProbeOutcome {
     /// Observed variant.
-    Observed { stdout: String, success: bool },
+    Observed {
+        /// Raw payload captured from the source (CLI stdout or file contents).
+        stdout: String,
+        /// Whether the probe reported the source observation as successful.
+        success: bool,
+    },
     /// Unavailable variant.
-    Unavailable { reason: String },
+    Unavailable {
+        /// Honest reason the source could not be reached.
+        reason: String,
+    },
 }
 
 impl SourceProbeOutcome {
@@ -1249,9 +1257,17 @@ pub trait SourceProbe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceObservationPlan {
     /// Command variant.
-    Command { program: String, args: Vec<String> },
+    Command {
+        /// Host program to run for the observation.
+        program: String,
+        /// Arguments passed to the host program.
+        args: Vec<String>,
+    },
     /// File variant.
-    File { path: String },
+    File {
+        /// Host filesystem path to read for the observation.
+        path: String,
+    },
 }
 
 impl SourceObservationPlan {
