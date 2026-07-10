@@ -1,10 +1,12 @@
 # Autonomous-mode MVP — console plan handoff
 
-**Status:** Step 0 PASSED (2026-07-10, independent Fable validation, NO-BLOCKERS)
-and this plan REVISED per its findings (full verdict:
-`livespec/plan/autonomous-mode/research/step0-fable-verdict.md`). C1 may start
-once the overall plan's Fable certification is recorded. First-drafted
-2026-07-10 from a repo survey.
+**Status:** round 1 of the overall plan's fable-review LOOP is done (2026-07-10:
+Step-0 validation NO-BLOCKERS, then this plan REVISED per its findings — full
+verdict: `livespec/plan/autonomous-mode/research/step0-fable-verdict.md`). The
+loop is still OPEN: C1 MUST NOT start until the overall plan's Step-0 gate is
+met — a FRESH Fable session review finds nothing blocking AND the MAINTAINER
+certifies (loop state: `livespec/plan/autonomous-mode/handoff.md`).
+First-drafted 2026-07-10 from a repo survey.
 
 **Repo:** `thewoolleyman/livespec-console-beads-fabro` · **Role:** the Control-Plane
 operator TUI surface for autonomous mode (GUI out of scope). Driven from the
@@ -53,11 +55,12 @@ human touchpoints).
 early). `plan/impl-dispatch/` is complete/unrelated — archive separately.
 
 ## Next action
-Step 0 passed NO-BLOCKERS and this plan carries its findings. Once the overall
-plan's Fable certification is recorded
-(`livespec/plan/autonomous-mode/handoff.md` names it), start C1: file the
-citation fixes + Scenario-10 re-scope as one proposed change (persistence-seam
-amendment following I1), independent Fable review, then revise.
+WAIT for the overall plan's fable-review loop to exit — a FRESH Fable session
+finds nothing blocking AND the maintainer certifies
+(`livespec/plan/autonomous-mode/handoff.md` records the loop state). Only
+then start C1: file the citation fixes + Scenario-10 re-scope as one proposed
+change (persistence-seam amendment following I1), independent Fable review,
+then revise.
 
 ## Pointers
 - Ledger read: `bd list --json` from inside this repo (its `.beads/config.yaml` →
