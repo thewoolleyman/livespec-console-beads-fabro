@@ -1,11 +1,12 @@
 # Autonomous-mode MVP — console plan handoff
 
-**Status:** round 1 of the overall plan's fable-review LOOP is done (2026-07-10:
-Step-0 validation NO-BLOCKERS, then this plan REVISED per its findings — full
-verdict: `livespec/plan/autonomous-mode/research/step0-fable-verdict.md`). The
-loop is still OPEN: C1 MUST NOT start until the overall plan's Step-0 gate is
-met — a FRESH Fable session review finds nothing blocking AND the MAINTAINER
-certifies (loop state: `livespec/plan/autonomous-mode/handoff.md`).
+**Status:** the overall plan's fable-review LOOP is OPEN — C1 MUST NOT start
+until the loop exits: a FRESH Fable session review finds nothing blocking AND
+the MAINTAINER certifies. The AUTHORITATIVE loop state (rounds run, fixes
+landed, certification) lives in `livespec/plan/autonomous-mode/handoff.md`;
+per-round records accumulate there under `research/` (round 1, 2026-07-10:
+Step-0 validation NO-BLOCKERS, then this plan REVISED per its findings —
+`research/step0-fable-verdict.md`).
 First-drafted 2026-07-10 from a repo survey.
 
 **Repo:** `thewoolleyman/livespec-console-beads-fabro` · **Role:** the Control-Plane
@@ -42,7 +43,10 @@ lane/valve foundation (archived `work-item-lifecycle-redesign`) is done.
   persistence + audit events + `factory.autonomous_mode_*_requested` + TUI
   toggle/confirm-modal/dangerous-label/header indicator + Scenario-10 loop; fold `rt4`.
 
-Gates: C1 → C2 → C3; C3 also needs the orchestrator arming contract frozen (overall I1).
+Gates: C1 → C2 → C3 — where C2 needs only C1's MAIN ratification (the
+citation-drift + Scenario-10 + naming revision); the I1-gated persistence-seam
+amendment gates C3, not C2, so C2 runs concurrently with orchestrator O1→O2.
+C3 also needs the orchestrator arming contract frozen (overall I1).
 
 ## NOT this repo's work
 The LLM gate-resolution engine is orchestrator item `bd-ib-82a`. The console only
