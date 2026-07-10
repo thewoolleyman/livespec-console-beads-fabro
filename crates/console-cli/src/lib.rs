@@ -28,8 +28,9 @@ use console_application::source_adapters::{
     normalize_work_item_snapshot,
 };
 use console_application::{
-    ApplicationError, FactoryDrainPolicy, FactoryDrainPort, build_tui_model,
-    handle_factory_drain_command, project_attention,
+    ApplicationError, FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
+    build_tui_model, handle_factory_drain_command, handle_work_item_approve_command,
+    project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
@@ -92,11 +93,19 @@ pub fn run_with_store(
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> RunOutput {
     match command_name(args) {
         Some("serve") => run_runtime_result(
-            serve_report(store, observed_at, sources, factory_port, needs_attention),
+            serve_report(
+                store,
+                observed_at,
+                sources,
+                factory_port,
+                work_item_port,
+                needs_attention,
+            ),
             "serve",
         ),
         Some("backfill") => run_runtime_result(
@@ -290,6 +299,7 @@ impl TuiSessionOutcome {
 }
 
 /// Run store backed tui session and return its outcome.
+#[allow(clippy::too_many_arguments)]
 pub fn run_store_backed_tui_session(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -297,6 +307,7 @@ pub fn run_store_backed_tui_session(
     runner: &mut dyn TuiSessionRunner,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
     let existing_events = store.list_console_events()?;
@@ -310,6 +321,7 @@ pub fn run_store_backed_tui_session(
     let effects = runner.run_tui(&presented_events, requested_by)?;
     let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
+    let _work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let final_events = store.list_console_events()?;
     let attention_count = project_attention(&final_events).len();
     let backfilled_event_count = ingestion
@@ -634,6 +646,7 @@ pub fn serve_report(
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
     let events = store.list_console_events()?;
@@ -644,6 +657,7 @@ pub fn serve_report(
     };
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
+    let work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
     let attention_count = project_attention(&events).len();
@@ -653,10 +667,11 @@ pub fn serve_report(
         .map(AdapterIngestionSummary::appended_event_count)
         .sum();
     Ok(format!(
-        "serve: store ready\nbackfill events: {backfill_event_count}\nevents: {}\nattention: {attention_count}\ncommands: {}\npending: {pending_count}\nfactory commands handled: {}",
+        "serve: store ready\nbackfill events: {backfill_event_count}\nevents: {}\nattention: {attention_count}\ncommands: {}\npending: {pending_count}\nfactory commands handled: {}\nwork-item commands handled: {}",
         events.len(),
         commands.len(),
-        handled.len()
+        handled.len(),
+        work_item_handled.len()
     ))
 }
 
@@ -704,14 +719,18 @@ impl From<EventStoreError> for ConsoleRuntimeError {
 pub type ConsoleRuntimeResult<T> = Result<T, ConsoleRuntimeError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Represents factory command handling outcome data used by the console.
-pub struct FactoryCommandHandlingOutcome {
+/// The store-side outcome of handling one pending command.
+///
+/// Carries the command id, the resolved status, and how many outcome events
+/// were appended. Shared by the factory-drain and work-item pending-command
+/// handlers.
+pub struct PendingCommandOutcome {
     command_id: String,
     command_status: String,
     appended_event_count: usize,
 }
 
-impl FactoryCommandHandlingOutcome {
+impl PendingCommandOutcome {
     #[must_use]
     /// Construct a new value from its required fields.
     pub const fn new(
@@ -807,7 +826,7 @@ pub fn handle_pending_factory_commands(
     store: &mut dyn FactoryCommandStore,
     handled_at: &str,
     port: &mut dyn FactoryDrainPort,
-) -> ConsoleRuntimeResult<Vec<FactoryCommandHandlingOutcome>> {
+) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
     let policy_events = store.list_console_events()?;
     let policy = FactoryDrainPolicy::from_events(&policy_events);
     let mut outcomes = Vec::new();
@@ -819,34 +838,88 @@ pub fn handle_pending_factory_commands(
             continue;
         };
         let command_outcome = handle_factory_drain_command(&command, &policy, port)?;
-        let mut inserted_event_count = 0;
-        for event in command_outcome.events() {
-            let append = event_append_from_command_event(event, &command, handled_at);
-            if store.append_event(&append)?.status() == AppendStatus::Inserted {
-                inserted_event_count += 1;
-            }
-        }
-        let result_json = format!(r#"{{"event_count":{inserted_event_count}}}"#);
-        let error_json = if matches!(command_outcome.command_status(), "failed" | "rejected") {
-            Some("{}")
-        } else {
-            None
-        };
-        let status_update = store.update_command_status(
-            command.command_id(),
+        outcomes.push(finalize_pending_command(
+            store,
+            &command,
+            command_outcome.events(),
             command_outcome.command_status(),
             handled_at,
-            Some(&result_json),
-            error_json,
-        );
-        let status_outcome = command_status_update_runtime_result(status_update)?;
-        outcomes.push(FactoryCommandHandlingOutcome::new(
-            status_outcome.command_id().to_owned(),
-            status_outcome.status().to_owned(),
-            inserted_event_count,
-        ));
+        )?);
     }
     Ok(outcomes)
+}
+
+/// Handle pending `work_item.*` commands through the shared orchestrator port.
+///
+/// The approve valve is the first rider; later slices add accept, reject, and the
+/// policy edits by extending [`work_item_command_from_stored`] and the action-id
+/// derivation in the application handlers.
+///
+/// # Errors
+/// Returns a console runtime error when a command is malformed or the store
+/// cannot persist the outcome events.
+pub fn handle_pending_work_item_commands(
+    store: &mut dyn FactoryCommandStore,
+    handled_at: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let mut outcomes = Vec::new();
+    for stored_command in store.list_commands()? {
+        if stored_command.status() != "pending" {
+            continue;
+        }
+        let Some(command) = work_item_command_from_stored(&stored_command)? else {
+            continue;
+        };
+        let command_outcome = handle_work_item_approve_command(&command, port)?;
+        outcomes.push(finalize_pending_command(
+            store,
+            &command,
+            command_outcome.events(),
+            command_outcome.command_status(),
+            handled_at,
+        )?);
+    }
+    Ok(outcomes)
+}
+
+/// Persist one handled command's outcome events and update its command status.
+///
+/// Shared by the factory and work-item pending handlers so both persist
+/// identically.
+fn finalize_pending_command(
+    store: &mut dyn FactoryCommandStore,
+    command: &CommandEnvelope,
+    events: &[ConsoleEvent],
+    command_status: &str,
+    handled_at: &str,
+) -> ConsoleRuntimeResult<PendingCommandOutcome> {
+    let mut inserted_event_count = 0;
+    for event in events {
+        let append = event_append_from_command_event(event, command, handled_at);
+        if store.append_event(&append)?.status() == AppendStatus::Inserted {
+            inserted_event_count += 1;
+        }
+    }
+    let result_json = format!(r#"{{"event_count":{inserted_event_count}}}"#);
+    let error_json = if matches!(command_status, "failed" | "rejected") {
+        Some("{}")
+    } else {
+        None
+    };
+    let status_update = store.update_command_status(
+        command.command_id(),
+        command_status,
+        handled_at,
+        Some(&result_json),
+        error_json,
+    );
+    let status_outcome = command_status_update_runtime_result(status_update)?;
+    Ok(PendingCommandOutcome::new(
+        status_outcome.command_id().to_owned(),
+        status_outcome.status().to_owned(),
+        inserted_event_count,
+    ))
 }
 
 fn command_status_update_runtime_result(
@@ -896,6 +969,29 @@ fn factory_command_from_stored(
     Ok(Some(CommandEnvelope::new(
         stored_command.command_id().to_owned(),
         CommandType::FactoryDrainRequested,
+        aggregate_id.to_owned(),
+        stored_command.idempotency_key().to_owned(),
+        stored_command.requested_by().to_owned(),
+    )))
+}
+
+/// Rebuild a `work_item.approve_requested` command envelope from a stored
+/// command, or `None` when the stored command is a different type. Later slices
+/// extend this to the accept, reject, and policy-edit `work_item.*` commands.
+fn work_item_command_from_stored(
+    stored_command: &StoredCommand,
+) -> ConsoleRuntimeResult<Option<CommandEnvelope>> {
+    if stored_command.command_type() != CommandType::WorkItemApproveRequested.contract_name() {
+        return Ok(None);
+    }
+    let Some(aggregate_id) = stored_command.aggregate_id() else {
+        return Err(ConsoleRuntimeError::MissingCommandAggregate(
+            stored_command.command_id().to_owned(),
+        ));
+    };
+    Ok(Some(CommandEnvelope::new(
+        stored_command.command_id().to_owned(),
+        CommandType::WorkItemApproveRequested,
         aggregate_id.to_owned(),
         stored_command.idempotency_key().to_owned(),
         stored_command.requested_by().to_owned(),
@@ -1150,7 +1246,8 @@ fn help_text() -> String {
 mod tests {
     use console_application::{
         ApplicationError, AttentionItem, FactoryDrainPort, FactoryDrainPortOutcome,
-        FactoryDrainRequest, LaneColumn, build_tui_model, project_attention, project_lane_board,
+        FactoryDrainRequest, LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, build_tui_model, project_attention, project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdmissionPolicy, AttentionHandoff,
             AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason, NeedsAttentionReadOutcome,
@@ -1168,15 +1265,15 @@ mod tests {
 
     use super::{
         CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
-        FactoryCommandHandlingOutcome, FactoryCommandStore, InitialSourceSeed,
-        NeedsAttentionIngest, ScriptedSource, SourceAdapterRef, TuiSessionOutcome,
-        TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
-        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
-        handle_pending_factory_commands, ingest_needs_attention, initial_source_seed,
+        FactoryCommandStore, InitialSourceSeed, NeedsAttentionIngest, PendingCommandOutcome,
+        ScriptedSource, SourceAdapterRef, TuiSessionOutcome, TuiSessionRunner,
+        append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
+        backfill_source_report, command_status_update_runtime_result, demo_events, doctor_report,
+        events_tail_report, factory_command_from_stored, handle_pending_factory_commands,
+        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
         live_source_adapters, load_tui_events_from_store, persist_tui_runtime_effects,
         render_tui_preview, run, run_store_backed_tui_session, run_with_store, serve_report,
-        snapshot_report, source_polls_from_seed,
+        snapshot_report, source_polls_from_seed, work_item_command_from_stored,
     };
 
     /// Scriptable needs-attention snapshot-source port double: returns a canned
@@ -1272,6 +1369,7 @@ mod tests {
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         run_with_store(
@@ -1280,6 +1378,7 @@ mod tests {
             observed_at,
             &sources,
             &mut port,
+            &mut work_item_port,
             &needs_attention,
         )
     }
@@ -1526,7 +1625,7 @@ mod tests {
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 6\nevents: 6\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0"
+            "serve: store ready\nbackfill events: 6\nevents: 6\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"
         );
         assert_eq!(store.list_console_events()?.len(), 6);
         assert_eq!(
@@ -1553,6 +1652,7 @@ mod tests {
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         let output = run_with_store(
@@ -1561,13 +1661,14 @@ mod tests {
             "2026-06-23T00:00:02Z",
             &sources,
             &mut port,
+            &mut work_item_port,
             &needs_attention,
         );
 
         assert_eq!(output.code(), 0);
         assert_eq!(
             output.message(),
-            "serve: store ready\nbackfill events: 8\nevents: 11\nattention: 0\ncommands: 1\npending: 0\nfactory commands handled: 1"
+            "serve: store ready\nbackfill events: 8\nevents: 11\nattention: 0\ncommands: 1\npending: 0\nfactory commands handled: 1\nwork-item commands handled: 0"
         );
         assert_eq!(store.list_commands()?[0].status(), "completed");
         Ok(())
@@ -1580,6 +1681,7 @@ mod tests {
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
@@ -1588,12 +1690,13 @@ mod tests {
             "2026-06-23T00:00:01Z",
             &sources,
             &mut port,
+            &mut work_item_port,
             &needs_attention,
         );
 
         assert_eq!(
             report?,
-            "serve: store ready\nbackfill events: 0\nevents: 2\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0"
+            "serve: store ready\nbackfill events: 0\nevents: 2\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"
         );
         Ok(())
     }
@@ -1822,6 +1925,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -1834,6 +1938,7 @@ mod tests {
             &mut runner,
             &sources,
             &mut factory_port,
+            &mut work_item_port,
             &needs_attention,
         );
         let commands = store.list_commands()?;
@@ -1887,6 +1992,7 @@ mod tests {
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
         let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
         let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -1899,6 +2005,7 @@ mod tests {
             &mut runner,
             &sources,
             &mut factory_port,
+            &mut work_item_port,
             &needs_attention,
         );
 
@@ -1916,6 +2023,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory()?;
         let mut runner = ErroringTuiSessionRunner;
         let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -1928,6 +2036,7 @@ mod tests {
             &mut runner,
             &sources,
             &mut factory_port,
+            &mut work_item_port,
             &needs_attention,
         );
 
@@ -2084,7 +2193,7 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert_eq!(
             outcomes[0],
-            super::FactoryCommandHandlingOutcome::new(
+            super::PendingCommandOutcome::new(
                 "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
                 "completed".to_owned(),
                 3,
@@ -2226,7 +2335,7 @@ mod tests {
 
         assert_eq!(
             outcomes,
-            vec![FactoryCommandHandlingOutcome::new(
+            vec![PendingCommandOutcome::new(
                 "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
                 "completed".to_owned(),
                 3,
@@ -2315,6 +2424,156 @@ mod tests {
         assert!(matches!(
             result,
             Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_1"
+        ));
+    }
+
+    #[test]
+    fn work_item_command_reconstruction_ignores_non_work_item_commands() {
+        let stored_command = StoredCommand::new(
+            "cmd_factory".to_owned(),
+            "factory".to_owned(),
+            "factory.drain_requested".to_owned(),
+            Some("fleet:livespec".to_owned()),
+            "idem_factory".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+
+        assert!(matches!(
+            work_item_command_from_stored(&stored_command),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn work_item_command_reconstruction_requires_aggregate() {
+        let stored_command = StoredCommand::new(
+            "cmd_approve".to_owned(),
+            "work_item".to_owned(),
+            "work_item.approve_requested".to_owned(),
+            None,
+            "idem_approve".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+
+        let result = work_item_command_from_stored(&stored_command);
+
+        assert!(matches!(
+            result,
+            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_approve"
+        ));
+    }
+
+    fn approve_command_append() -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_approve".to_owned(),
+                CommandType::WorkItemApproveRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.approve_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_approve".to_owned(),
+            "{}".to_owned(),
+        )
+    }
+
+    #[test]
+    fn pending_work_item_approve_dispatches_through_port_and_skips_others()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&approve_command_append())?;
+        // A pending factory command must be skipped by the work-item handler.
+        store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_drain".to_owned(),
+                CommandType::FactoryDrainRequested,
+                "fleet:livespec".to_owned(),
+                "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("fleet:livespec".to_owned()),
+            "corr_cmd_drain".to_owned(),
+            "{}".to_owned(),
+        ))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        assert_eq!(outcomes[0].appended_event_count(), 3);
+        assert_eq!(port.observed_action_ids, ["approve:wi-1"]);
+        // The skipped factory command produces no events, so the store carries
+        // exactly the shared work_item outcome family for the approve.
+        let events = store.list_console_events()?;
+        assert_eq!(
+            events
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            [
+                &EventType::CommandAccepted,
+                &EventType::WorkItemActionStarted,
+                &EventType::WorkItemActionCompleted,
+            ]
+        );
+
+        // Second pass: the approve command is now non-pending and skipped, and
+        // the factory command is still not a work-item command, so nothing runs.
+        let second =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:02Z", &mut port)?;
+        assert!(second.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_approve_records_not_wired_without_fabricating_start()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&approve_command_append())?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::not_wired());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes[0].command_status(), "not_wired");
+        assert_eq!(store.list_commands()?[0].status(), "not_wired");
+        assert_eq!(
+            store
+                .list_console_events()?
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            [
+                &EventType::CommandAccepted,
+                &EventType::WorkItemActionNotWired
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_commands_propagate_store_errors() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemAppendFails);
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:03Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::EventStore(
+                EventStoreError::InvalidSequence
+            ))
         ));
     }
 
@@ -2528,6 +2787,39 @@ mod tests {
         }
     }
 
+    /// Test double standing in for the real orchestrator-action port. It
+    /// records the action-ids it was asked to run and returns a configurable
+    /// outcome so the work-item command machinery can be exercised without a
+    /// live `drive` binary.
+    #[derive(Default)]
+    struct SimulatedWorkItemActionPort {
+        outcome: Option<OrchestratorActionOutcome>,
+        observed_action_ids: Vec<String>,
+    }
+
+    impl SimulatedWorkItemActionPort {
+        fn returning(outcome: OrchestratorActionOutcome) -> Self {
+            Self {
+                outcome: Some(outcome),
+                observed_action_ids: Vec::new(),
+            }
+        }
+    }
+
+    impl OrchestratorActionPort for SimulatedWorkItemActionPort {
+        fn run_action(
+            &mut self,
+            request: &OrchestratorActionRequest,
+        ) -> Result<OrchestratorActionOutcome, ApplicationError> {
+            self.observed_action_ids
+                .push(request.action_id().to_owned());
+            Ok(self
+                .outcome
+                .clone()
+                .unwrap_or(OrchestratorActionOutcome::Completed))
+        }
+    }
+
     struct FailedFactoryDrainPort;
 
     impl FactoryDrainPort for FailedFactoryDrainPort {
@@ -2625,6 +2917,7 @@ mod tests {
         MissingAggregate,
         NonFactoryPending,
         StatusUpdateFails,
+        WorkItemAppendFails,
     }
 
     struct ScriptedFactoryCommandStore {
@@ -2673,6 +2966,17 @@ mod tests {
                     "pending".to_owned(),
                 )];
             }
+            if self.mode == ScriptedStoreMode::WorkItemAppendFails {
+                return vec![StoredCommand::new(
+                    "cmd_approve".to_owned(),
+                    "work_item".to_owned(),
+                    "work_item.approve_requested".to_owned(),
+                    Some("wi-1".to_owned()),
+                    "wi-1:work_item.approve_requested".to_owned(),
+                    "operator".to_owned(),
+                    "pending".to_owned(),
+                )];
+            }
             vec![self.command.clone()]
         }
     }
@@ -2702,7 +3006,10 @@ mod tests {
         }
 
         fn append_event(&mut self, _append: &EventAppend) -> EventStoreResult<AppendOutcome> {
-            if self.mode == ScriptedStoreMode::AppendFails {
+            if matches!(
+                self.mode,
+                ScriptedStoreMode::AppendFails | ScriptedStoreMode::WorkItemAppendFails
+            ) {
                 return Err(EventStoreError::InvalidSequence);
             }
             self.appended_event_count += 1;

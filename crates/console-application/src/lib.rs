@@ -590,6 +590,9 @@ impl ViewSummaryItem {
 pub enum ApplicationError {
     /// Empty operator action variant.
     EmptyOperatorAction,
+    /// Empty work-item id variant -- the work-item a `work_item.*` command
+    /// targets carried no non-whitespace id.
+    EmptyWorkItemId,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -798,6 +801,128 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One request to run a single orchestrator `drive` action through the port.
+///
+/// Carries the resolved action-id the console derived from a `work_item.*`
+/// command (for example `approve:<work-item-id>`); the shared port is
+/// action-id-keyed so every valve/policy command rides the same surface.
+pub struct OrchestratorActionRequest {
+    action_id: String,
+}
+
+impl OrchestratorActionRequest {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(action_id: String) -> Self {
+        Self { action_id }
+    }
+
+    #[must_use]
+    /// Return the action id value.
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for orchestrator action outcome state or outcome values.
+pub enum OrchestratorActionOutcome {
+    /// The orchestrator action completed successfully.
+    Completed,
+    /// The orchestrator action failed.
+    Failed,
+    /// The action was requested but no real orchestrator action surface is
+    /// wired, so nothing was attempted. Reported honestly instead of
+    /// fabricating success.
+    NotWired,
+}
+
+impl OrchestratorActionOutcome {
+    #[must_use]
+    /// Return the stored value.
+    pub const fn completed() -> Self {
+        Self::Completed
+    }
+
+    #[must_use]
+    /// Return the stored value.
+    pub const fn failed() -> Self {
+        Self::Failed
+    }
+
+    #[must_use]
+    /// Return the stored value.
+    pub const fn not_wired() -> Self {
+        Self::NotWired
+    }
+}
+
+/// Port interface for the orchestrator's published `drive` action surface,
+/// supplied by an outer layer.
+///
+/// The single surface every `work_item.*` valve/policy command rides: the
+/// console issues an action-id through it and never writes the ledger directly.
+pub trait OrchestratorActionPort {
+    /// Run one orchestrator action-id and return its honest outcome.
+    ///
+    /// # Errors
+    /// Returns an application error when the port cannot produce a trustworthy outcome.
+    fn run_action(
+        &mut self,
+        request: &OrchestratorActionRequest,
+    ) -> ApplicationResult<OrchestratorActionOutcome>;
+}
+
+/// Real orchestrator-action port that invokes the orchestrator's published
+/// `drive` entry point through a [`SourceProbe`].
+///
+/// It shells `drive --repo <path> --action <action-id>` and reflects the
+/// actual outcome rather than fabricating success: a successful run completes,
+/// a non-zero run fails, and an unavailable `drive` binary yields a not-wired
+/// outcome. The host-backed probe is supplied by the binary, so the live valve
+/// never claims an action that did not happen.
+pub struct DispatcherOrchestratorActionPort<'a> {
+    probe: &'a dyn SourceProbe,
+    program: String,
+    base_args: Vec<String>,
+}
+
+impl<'a> DispatcherOrchestratorActionPort<'a> {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    ///
+    /// `base_args` are the leading arguments (for example `--repo <path>`); the
+    /// port appends `--action <action-id>` for each request.
+    pub fn new(probe: &'a dyn SourceProbe, program: &str, base_args: &[&str]) -> Self {
+        Self {
+            probe,
+            program: program.to_owned(),
+            base_args: base_args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+}
+
+impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
+    fn run_action(
+        &mut self,
+        request: &OrchestratorActionRequest,
+    ) -> ApplicationResult<OrchestratorActionOutcome> {
+        let mut args: Vec<&str> = self.base_args.iter().map(String::as_str).collect();
+        args.push("--action");
+        args.push(request.action_id());
+        Ok(match self.probe.run_command(&self.program, &args) {
+            SourceProbeOutcome::Observed { success: true, .. } => {
+                OrchestratorActionOutcome::completed()
+            }
+            SourceProbeOutcome::Observed { success: false, .. } => {
+                OrchestratorActionOutcome::failed()
+            }
+            SourceProbeOutcome::Unavailable { .. } => OrchestratorActionOutcome::not_wired(),
+        })
+    }
+}
+
 /// First run of digits in the Dispatcher's drain output, as the dispatched-item
 /// count. A report without a count is honestly treated as zero dispatched.
 fn dispatched_item_count(stdout: &str) -> u16 {
@@ -817,6 +942,37 @@ pub struct FactoryCommandOutcome {
 }
 
 impl FactoryCommandOutcome {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(command_status: String, events: Vec<ConsoleEvent>) -> Self {
+        Self {
+            command_status,
+            events,
+        }
+    }
+
+    #[must_use]
+    /// Return the command status value.
+    pub fn command_status(&self) -> &str {
+        &self.command_status
+    }
+
+    #[must_use]
+    /// Return the events value.
+    pub fn events(&self) -> &[ConsoleEvent] {
+        &self.events
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents a work-item command-handling outcome: the resolved command status
+/// and the shared `work_item` outcome events it appended.
+pub struct WorkItemCommandOutcome {
+    command_status: String,
+    events: Vec<ConsoleEvent>,
+}
+
+impl WorkItemCommandOutcome {
     #[must_use]
     /// Construct a new value from its required fields.
     pub const fn new(command_status: String, events: Vec<ConsoleEvent>) -> Self {
@@ -1332,7 +1488,7 @@ fn factory_command_event(
     ConsoleEvent::new(
         format!("evt_{}_{}", command.command_id(), suffix),
         1,
-        factory_command_event_context(event_type).to_owned(),
+        command_event_context(event_type).to_owned(),
         event_type,
         "console:factory-command-handler".to_owned(),
         command.aggregate_id().to_owned(),
@@ -1340,7 +1496,7 @@ fn factory_command_event(
     )
 }
 
-const fn factory_command_event_context(event_type: EventType) -> &'static str {
+const fn command_event_context(event_type: EventType) -> &'static str {
     match event_type {
         EventType::CommandAccepted | EventType::CommandRejected => "command",
         EventType::FactoryDrainCompleted
@@ -1348,6 +1504,10 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         | EventType::FactoryDrainNotWired
         | EventType::FactoryDrainRequested
         | EventType::FactoryDrainStarted => "factory",
+        EventType::WorkItemActionStarted
+        | EventType::WorkItemActionCompleted
+        | EventType::WorkItemActionFailed
+        | EventType::WorkItemActionNotWired => "work_item",
         EventType::WorkItemSnapshotObserved
         | EventType::DispatcherBacklogBounceObserved
         | EventType::FabroHumanGateObserved
@@ -1360,6 +1520,138 @@ const fn factory_command_event_context(event_type: EventType) -> &'static str {
         | EventType::AttentionItemChanged
         | EventType::AttentionItemResolved => "source",
     }
+}
+
+/// Validate the work-item id a `work_item.*` command targets.
+///
+/// Thin console-side validation: the id must carry non-whitespace text. The
+/// orchestrator's `drive` surface is the authority on state-legality, so the
+/// console does not pre-check the item's lane -- it issues the command and
+/// observes the lane change on a subsequent poll.
+fn validate_work_item_id(value: &str) -> ApplicationResult<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ApplicationError::EmptyWorkItemId);
+    }
+    Ok(trimmed)
+}
+
+/// Handle a `work_item.approve_requested` command.
+///
+/// Approve is the human approval act (`pending-approval -> ready`). The handler
+/// validates the work-item id, derives the `approve:<work-item-id>` action-id,
+/// runs it through the shared orchestrator-action port, and appends the shared
+/// `work_item` outcome events. It never writes the ledger directly and never
+/// fabricates the lane transition -- the orchestrator owns that.
+///
+/// # Errors
+/// Returns an application error when the work-item id is empty or the port
+/// cannot produce a trustworthy outcome.
+pub fn handle_work_item_approve_command(
+    command: &CommandEnvelope,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let action_id = format!("approve:{work_item_id}");
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Run one resolved work-item action-id through the port and emit the shared
+/// `work_item` outcome events keyed by that action-id. Shared by every
+/// `work_item.*` command handler.
+fn run_work_item_action(
+    command: &CommandEnvelope,
+    action_id: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let request = OrchestratorActionRequest::new(action_id.to_owned());
+    let port_outcome = port.run_action(&request)?;
+    let mut events = vec![work_item_command_event(
+        command,
+        EventType::CommandAccepted,
+        "accepted",
+        action_id,
+        1,
+    )];
+    let command_status = match port_outcome {
+        OrchestratorActionOutcome::Completed => {
+            events.push(work_item_command_event(
+                command,
+                EventType::WorkItemActionStarted,
+                "started",
+                action_id,
+                2,
+            ));
+            events.push(work_item_command_event(
+                command,
+                EventType::WorkItemActionCompleted,
+                "completed",
+                action_id,
+                3,
+            ));
+            "completed"
+        }
+        OrchestratorActionOutcome::Failed => {
+            events.push(work_item_command_event(
+                command,
+                EventType::WorkItemActionStarted,
+                "started",
+                action_id,
+                2,
+            ));
+            events.push(work_item_command_event(
+                command,
+                EventType::WorkItemActionFailed,
+                "failed",
+                action_id,
+                3,
+            ));
+            "failed"
+        }
+        OrchestratorActionOutcome::NotWired => {
+            // No real action surface is wired, so the action never started.
+            // Emit an honest not-wired outcome rather than a fabricated one.
+            events.push(work_item_command_event(
+                command,
+                EventType::WorkItemActionNotWired,
+                "not_wired",
+                action_id,
+                2,
+            ));
+            "not_wired"
+        }
+    };
+    Ok(WorkItemCommandOutcome::new(
+        command_status.to_owned(),
+        events,
+    ))
+}
+
+/// Build one shared `work_item` outcome event, carrying the `action_id` in its
+/// payload so the family is keyed by action-id across every `work_item.*`
+/// command.
+fn work_item_command_event(
+    command: &CommandEnvelope,
+    event_type: EventType,
+    suffix: &str,
+    action_id: &str,
+    stream_seq: u64,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        format!("evt_{}_{}", command.command_id(), suffix),
+        1,
+        command_event_context(event_type).to_owned(),
+        event_type,
+        "console:work-item-command-handler".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+    .with_payload_json(
+        serde_json::json!({
+            "action_id": action_id,
+        })
+        .to_string(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1742,6 +2034,10 @@ impl AttentionEvent for EventType {
             Self::DispatcherBacklogBounceObserved => "Dispatcher backlog bounce",
             Self::FactoryDrainRequested => "Factory drain requested",
             Self::FactoryDrainStarted => "Factory drain started",
+            Self::WorkItemActionStarted => "Work-item action started",
+            Self::WorkItemActionCompleted => "Work-item action completed",
+            Self::WorkItemActionFailed => "Work-item action failed",
+            Self::WorkItemActionNotWired => "Work-item action not wired",
             Self::SourceCompletenessFindingObserved => "Source completeness finding",
             Self::SourceNotObservedFindingObserved => "Source not-observed finding",
             Self::AttentionItemAppeared => "Attention item appeared",
@@ -1763,12 +2059,14 @@ mod tests {
     };
     use super::{
         ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
-        DispatcherFactoryDrainPort, FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome,
-        FactoryDrainRequest, LaneFocus, OperatorAction, OperatorActionOutcome, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, handle_factory_drain_command, project_attention,
-        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_selected_operator_action, validate_operator_action,
+        DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, FactoryDrainPolicy,
+        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, build_tui_model, build_tui_model_for_state, handle_factory_drain_command,
+        handle_work_item_approve_command, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
+        validate_operator_action,
     };
 
     #[test]
@@ -2805,10 +3103,30 @@ mod tests {
     }
 
     #[test]
-    fn factory_command_event_context_falls_back_to_source_context() {
+    fn command_event_context_falls_back_to_source_context() {
         assert_eq!(
-            super::factory_command_event_context(EventType::SourceCompletenessFindingObserved),
+            super::command_event_context(EventType::SourceCompletenessFindingObserved),
             "source"
+        );
+    }
+
+    #[test]
+    fn command_event_context_maps_work_item_action_events_to_work_item() {
+        assert_eq!(
+            super::command_event_context(EventType::WorkItemActionStarted),
+            "work_item"
+        );
+        assert_eq!(
+            super::command_event_context(EventType::WorkItemActionCompleted),
+            "work_item"
+        );
+        assert_eq!(
+            super::command_event_context(EventType::WorkItemActionFailed),
+            "work_item"
+        );
+        assert_eq!(
+            super::command_event_context(EventType::WorkItemActionNotWired),
+            "work_item"
         );
     }
 
@@ -3303,6 +3621,22 @@ mod tests {
             "Factory drain started"
         );
         assert_eq!(
+            EventType::WorkItemActionStarted.label(),
+            "Work-item action started"
+        );
+        assert_eq!(
+            EventType::WorkItemActionCompleted.label(),
+            "Work-item action completed"
+        );
+        assert_eq!(
+            EventType::WorkItemActionFailed.label(),
+            "Work-item action failed"
+        );
+        assert_eq!(
+            EventType::WorkItemActionNotWired.label(),
+            "Work-item action not wired"
+        );
+        assert_eq!(
             EventType::GithubPullRequestSnapshotObserved.label(),
             "GitHub pull request snapshot"
         );
@@ -3497,5 +3831,209 @@ mod tests {
             probe.read_file("/unused"),
             SourceProbeOutcome::unavailable("no source")
         );
+    }
+
+    fn approve_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_approve".to_owned(),
+            CommandType::WorkItemApproveRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.approve_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    struct RecordingActionPort {
+        outcome: OrchestratorActionOutcome,
+        observed_action_ids: Vec<String>,
+    }
+
+    impl RecordingActionPort {
+        fn returning(outcome: OrchestratorActionOutcome) -> Self {
+            Self {
+                outcome,
+                observed_action_ids: Vec::new(),
+            }
+        }
+    }
+
+    impl OrchestratorActionPort for RecordingActionPort {
+        fn run_action(
+            &mut self,
+            request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<OrchestratorActionOutcome> {
+            self.observed_action_ids
+                .push(request.action_id().to_owned());
+            Ok(self.outcome.clone())
+        }
+    }
+
+    struct ArgRecordingProbe {
+        outcome: SourceProbeOutcome,
+        observed_args: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl SourceProbe for ArgRecordingProbe {
+        fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome {
+            let mut recorded = vec![program.to_owned()];
+            recorded.extend(args.iter().map(|arg| (*arg).to_owned()));
+            *self.observed_args.borrow_mut() = recorded;
+            self.outcome.clone()
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            self.outcome.clone()
+        }
+    }
+
+    #[test]
+    fn approve_handler_derives_action_id_and_appends_shared_work_item_events()
+    -> super::ApplicationResult<()> {
+        let command = approve_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+
+        // The console routes only through the port with `approve:<work-item-id>`.
+        assert_eq!(port.observed_action_ids, ["approve:wi-1"]);
+        assert_eq!(outcome.command_status(), "completed");
+        assert_eq!(
+            outcome
+                .events()
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            [
+                &EventType::CommandAccepted,
+                &EventType::WorkItemActionStarted,
+                &EventType::WorkItemActionCompleted,
+            ]
+        );
+        // Every outcome event is keyed by the action-id in its payload and
+        // sourced by the work-item command handler.
+        for (position, event) in outcome.events().iter().enumerate() {
+            assert_eq!(event.payload_json(), r#"{"action_id":"approve:wi-1"}"#);
+            assert_eq!(event.source(), "console:work-item-command-handler");
+            assert_eq!(event.stream_seq(), position as u64 + 1);
+        }
+        assert_eq!(outcome.events()[0].context(), "command");
+        assert_eq!(outcome.events()[2].context(), "work_item");
+        Ok(())
+    }
+
+    #[test]
+    fn approve_handler_records_failed_outcome_with_start() -> super::ApplicationResult<()> {
+        let command = approve_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::failed());
+
+        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+
+        assert_eq!(outcome.command_status(), "failed");
+        assert_eq!(
+            outcome
+                .events()
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            [
+                &EventType::CommandAccepted,
+                &EventType::WorkItemActionStarted,
+                &EventType::WorkItemActionFailed,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approve_handler_records_not_wired_without_fabricating_start() -> super::ApplicationResult<()>
+    {
+        let command = approve_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::not_wired());
+
+        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+
+        // An honest not-wired action never started, so no start event.
+        assert_eq!(outcome.command_status(), "not_wired");
+        assert_eq!(
+            outcome
+                .events()
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            [
+                &EventType::CommandAccepted,
+                &EventType::WorkItemActionNotWired
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approve_handler_rejects_empty_work_item_id_without_invoking_port() {
+        let command = CommandEnvelope::new(
+            "cmd_approve".to_owned(),
+            CommandType::WorkItemApproveRequested,
+            "   ".to_owned(),
+            "blank:work_item.approve_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_approve_command(&command, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn dispatcher_action_port_shells_drive_with_action_and_completes() {
+        let probe = ArgRecordingProbe {
+            outcome: SourceProbeOutcome::observed("approved", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut port = DispatcherOrchestratorActionPort::new(&probe, "drive", &["--repo", "/repo"]);
+
+        let outcome = port.run_action(&OrchestratorActionRequest::new("approve:wi-1".to_owned()));
+
+        assert_eq!(outcome, Ok(OrchestratorActionOutcome::completed()));
+        assert_eq!(
+            probe
+                .observed_args
+                .borrow()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["drive", "--repo", "/repo", "--action", "approve:wi-1"]
+        );
+        // The action port never reads files; the probe's file capability still
+        // honours the honest-observation contract.
+        assert_eq!(
+            probe.read_file("/unused"),
+            SourceProbeOutcome::observed("approved", true)
+        );
+    }
+
+    #[test]
+    fn dispatcher_action_port_fails_on_non_zero_run() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("approve error", false),
+        };
+        let mut port = DispatcherOrchestratorActionPort::new(&probe, "drive", &["--repo", "/repo"]);
+
+        let outcome = port.run_action(&OrchestratorActionRequest::new("approve:wi-1".to_owned()));
+
+        assert_eq!(outcome, Ok(OrchestratorActionOutcome::failed()));
+    }
+
+    #[test]
+    fn dispatcher_action_port_is_not_wired_when_unavailable() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::unavailable("drive binary not found"),
+        };
+        let mut port = DispatcherOrchestratorActionPort::new(&probe, "drive", &["--repo", "/repo"]);
+
+        let outcome = port.run_action(&OrchestratorActionRequest::new("approve:wi-1".to_owned()));
+
+        assert_eq!(outcome, Ok(OrchestratorActionOutcome::not_wired()));
     }
 }

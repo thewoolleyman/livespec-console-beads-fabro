@@ -152,6 +152,18 @@ pub enum EventType {
     FactoryDrainRequested,
     /// Factory drain started.
     FactoryDrainStarted,
+    /// A work-item orchestrator action started. Shared across every
+    /// `work_item.*` command; the specific action is keyed by the `action_id`
+    /// in the event payload (for example `approve:<work-item-id>`).
+    WorkItemActionStarted,
+    /// A work-item orchestrator action completed, keyed by `action_id`.
+    WorkItemActionCompleted,
+    /// A work-item orchestrator action failed, keyed by `action_id`.
+    WorkItemActionFailed,
+    /// A work-item orchestrator action could not reach a wired action surface,
+    /// keyed by `action_id`. The honest outcome a simulated or unimplemented
+    /// port emits instead of fabricating success.
+    WorkItemActionNotWired,
     /// GitHub pull request snapshot observed.
     GithubPullRequestSnapshotObserved,
     /// `LiveSpec` `next` snapshot observed.
@@ -185,6 +197,10 @@ impl EventType {
             Self::FactoryDrainNotWired => "factory.drain.not_wired",
             Self::FactoryDrainRequested => "factory.drain_requested",
             Self::FactoryDrainStarted => "factory.drain.started",
+            Self::WorkItemActionStarted => "work_item.action.started",
+            Self::WorkItemActionCompleted => "work_item.action.completed",
+            Self::WorkItemActionFailed => "work_item.action.failed",
+            Self::WorkItemActionNotWired => "work_item.action.not_wired",
             Self::GithubPullRequestSnapshotObserved => "pr.snapshot_observed",
             Self::LivespecNextSnapshotObserved => "spec.next_snapshot_observed",
             Self::LivespecReviseRequired => "spec.revise_required",
@@ -212,6 +228,10 @@ impl EventType {
             "factory.drain.not_wired" => Some(Self::FactoryDrainNotWired),
             "factory.drain_requested" => Some(Self::FactoryDrainRequested),
             "factory.drain.started" => Some(Self::FactoryDrainStarted),
+            "work_item.action.started" => Some(Self::WorkItemActionStarted),
+            "work_item.action.completed" => Some(Self::WorkItemActionCompleted),
+            "work_item.action.failed" => Some(Self::WorkItemActionFailed),
+            "work_item.action.not_wired" => Some(Self::WorkItemActionNotWired),
             "pr.snapshot_observed" => Some(Self::GithubPullRequestSnapshotObserved),
             "spec.next_snapshot_observed" => Some(Self::LivespecNextSnapshotObserved),
             "spec.revise_required" => Some(Self::LivespecReviseRequired),
@@ -290,6 +310,9 @@ impl CommandEnvelope {
 pub enum CommandType {
     /// Request to drain ready factory work through the Dispatcher.
     FactoryDrainRequested,
+    /// Request to approve a `pending-approval` work-item -- the human approval
+    /// act that maps onto the orchestrator's `approve:<work-item-id>` action.
+    WorkItemApproveRequested,
 }
 
 impl CommandType {
@@ -298,6 +321,7 @@ impl CommandType {
     pub const fn contract_name(&self) -> &'static str {
         match self {
             Self::FactoryDrainRequested => "factory.drain_requested",
+            Self::WorkItemApproveRequested => "work_item.approve_requested",
         }
     }
 
@@ -306,6 +330,7 @@ impl CommandType {
     pub const fn context(&self) -> &'static str {
         match self {
             Self::FactoryDrainRequested => "factory",
+            Self::WorkItemApproveRequested => "work_item",
         }
     }
 }
@@ -420,6 +445,22 @@ mod tests {
             "factory.drain.started"
         );
         assert_eq!(
+            EventType::WorkItemActionStarted.contract_name(),
+            "work_item.action.started"
+        );
+        assert_eq!(
+            EventType::WorkItemActionCompleted.contract_name(),
+            "work_item.action.completed"
+        );
+        assert_eq!(
+            EventType::WorkItemActionFailed.contract_name(),
+            "work_item.action.failed"
+        );
+        assert_eq!(
+            EventType::WorkItemActionNotWired.contract_name(),
+            "work_item.action.not_wired"
+        );
+        assert_eq!(
             EventType::GithubPullRequestSnapshotObserved.contract_name(),
             "pr.snapshot_observed"
         );
@@ -466,6 +507,10 @@ mod tests {
             EventType::FactoryDrainNotWired,
             EventType::FactoryDrainRequested,
             EventType::FactoryDrainStarted,
+            EventType::WorkItemActionStarted,
+            EventType::WorkItemActionCompleted,
+            EventType::WorkItemActionFailed,
+            EventType::WorkItemActionNotWired,
             EventType::GithubPullRequestSnapshotObserved,
             EventType::LivespecNextSnapshotObserved,
             EventType::LivespecReviseRequired,
@@ -506,11 +551,16 @@ mod tests {
             CommandType::FactoryDrainRequested.contract_name(),
             "factory.drain_requested"
         );
+        assert_eq!(
+            CommandType::WorkItemApproveRequested.contract_name(),
+            "work_item.approve_requested"
+        );
     }
 
     #[test]
     fn command_type_contexts_are_bounded_context_names() {
         assert_eq!(CommandType::FactoryDrainRequested.context(), "factory");
+        assert_eq!(CommandType::WorkItemApproveRequested.context(), "work_item");
     }
 
     #[test]

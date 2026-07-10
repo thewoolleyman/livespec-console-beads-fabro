@@ -1,6 +1,6 @@
 use console_application::{
     ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-    build_tui_model,
+    OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, build_tui_model,
     source_adapters::{
         AcceptancePolicy, AdapterPoll, AdapterPollRequest, AdmissionPolicy, Lane, LaneReason,
         NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, PullSourcePort, WorkItemSnapshot,
@@ -120,6 +120,7 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
     let needs_attention = NeedsAttentionIngest::new(&empty_attention, "fleet");
     let mut runner = CommandingTuiRunner::default();
     let mut port = CompletingDrainPort::default();
+    let mut work_item_port = NoWorkItemActionPort;
 
     let outcome = run_store_backed_tui_session(
         &mut store,
@@ -128,6 +129,7 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
         &mut runner,
         &sources,
         &mut port,
+        &mut work_item_port,
         &needs_attention,
     )?;
 
@@ -163,6 +165,20 @@ fn scenario_8_corrupted_projection_rebuilds_by_replaying_event_log()
     );
     assert_eq!(rebuilt_model.detail(), original_model.detail());
     Ok(())
+}
+
+// Scenario 5 exercises the factory-drain path; no work-item command is pending,
+// so the work-item port is never invoked. It still must be supplied because the
+// session handles both command families.
+struct NoWorkItemActionPort;
+
+impl OrchestratorActionPort for NoWorkItemActionPort {
+    fn run_action(
+        &mut self,
+        _request: &OrchestratorActionRequest,
+    ) -> Result<OrchestratorActionOutcome, ApplicationError> {
+        Ok(OrchestratorActionOutcome::not_wired())
+    }
 }
 
 #[derive(Default)]
