@@ -1,7 +1,10 @@
 # Autonomous-mode MVP — console plan handoff
 
-**Status:** DRAFT — awaiting the overall Step-0 multi-model (Fable) validation pass
-before implementation. First-drafted 2026-07-10 from a repo survey.
+**Status:** Step 0 PASSED (2026-07-10, independent Fable validation, NO-BLOCKERS)
+and this plan REVISED per its findings (full verdict:
+`livespec/plan/autonomous-mode/research/step0-fable-verdict.md`). C1 may start
+once the overall plan's Fable certification is recorded. First-drafted
+2026-07-10 from a repo survey.
 
 **Repo:** `thewoolleyman/livespec-console-beads-fabro` · **Role:** the Control-Plane
 operator TUI surface for autonomous mode (GUI out of scope). Driven from the
@@ -21,11 +24,18 @@ Spec (v016) fully defines the MVP; implementation has almost none of it
 lane/valve foundation (archived `work-item-lifecycle-redesign`) is done.
 
 ## Steps (design.md §4)
-- **C1** spec currency + reconcile the three seams (persistence model, division of
-  resolution, vocab drift) + the `_set` naming + refresh `rt4`'s version pointer.
-  Route real changes via propose-change → Fable review → revise.
+- **C1** execute the Step-0 spec fixes and ratify ONE revision (design.md §4 has
+  full text): fix the two confirmed citation drifts ("`orchestrate run`" →
+  `drive`; lane vocabulary is orchestrator-owned, not core-owned); re-scope
+  Scenario 10 + the blanket resolve-MUST to the delegation model (the engine
+  owns gate resolution; the console enables/observes/reflects); resolve the
+  `_set` naming; refresh `rt4`'s pointer. The persistence-seam amendment
+  additionally waits for the orchestrator's frozen arming contract (I1). Route
+  via propose-change → independent Fable review → revise.
 - **C2** command foundation: five `work_item.*` valve/policy commands + handlers +
-  orchestrator `orchestrate run` port; fold `pke3y3`; Scenario-11 test.
+  a port onto the orchestrator's published `drive` action surface; fold `pke3y3`
+  (split the four non-valve commands into their own item); extend the read-side
+  `AcceptancePolicy` enum; Scenario-11 test.
 - **C3** autonomous feature: `config.autonomous_mode_set` + `.livespec.jsonc`
   persistence + audit events + `factory.autonomous_mode_*_requested` + TUI
   toggle/confirm-modal/dangerous-label/header indicator + Scenario-10 loop; fold `rt4`.
@@ -43,9 +53,11 @@ human touchpoints).
 early). `plan/impl-dispatch/` is complete/unrelated — archive separately.
 
 ## Next action
-After overall Step 0 passes NO-BLOCKERS, start C1: diff the borrowed vocab vs
-current core/orchestrator and reconcile the seams; file any spec change via
-propose-change with an independent Fable review before revise.
+Step 0 passed NO-BLOCKERS and this plan carries its findings. Once the overall
+plan's Fable certification is recorded
+(`livespec/plan/autonomous-mode/handoff.md` names it), start C1: file the
+citation fixes + Scenario-10 re-scope as one proposed change (persistence-seam
+amendment following I1), independent Fable review, then revise.
 
 ## Pointers
 - Ledger read: `bd list --json` from inside this repo (its `.beads/config.yaml` →
