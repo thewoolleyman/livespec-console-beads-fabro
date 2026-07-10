@@ -169,7 +169,10 @@ vocabulary diff and the seam analysis; C1 executes the resulting spec changes.
   `AiThenHuman` — extend it to `ai-only`/`human-only` alongside the
   `set-acceptance` command.
 - TDD Red-Green-Replay per the repo's Rust ritual; worktree → PR → merge.
-- **Gate:** C1. **Done:** merged PR; the TUI can issue each valve manually against a
+- **Gate:** C1's MAIN ratification (the citation-drift + Scenario-10 + naming
+  revision) — NOT the I1-gated persistence-seam amendment, which gates C3 only;
+  this is what keeps C2 concurrent with orchestrator O1→O2.
+  **Done:** merged PR; the TUI can issue each valve manually against a
   real tenant (live evidence, not just tests).
 
 ### C3 — console autonomous-mode feature
@@ -209,7 +212,7 @@ its O1 propose-change) — surface as in-TUI needs-attention, never guessed.
   away.
 - `ipi` (task, backlog) — attention-stream TUI migration (Scenario 12); fold into C1
   (spec confirm) + C3 (the reflect surface consumes `attention_item.*`).
-- `mb64bv` (task, active; its ratification gate `iblkzp` is CLOSED, so it is
+- `mb64bv` (chore, active; its ratification gate `iblkzp` is CLOSED, so it is
   genuinely unblocked) — `needs-regroom` → `backlog-bounce` vocab rename; a small
   independent cleanup that can land ahead of C2 (removes stale vocab the valves
   touch). Step-0 caution: "backlog-bounce" appears nowhere in the orchestrator's
