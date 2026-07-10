@@ -15,6 +15,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use console_application::source_adapters::Lane;
 use console_application::{

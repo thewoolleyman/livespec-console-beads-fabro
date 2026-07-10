@@ -15,6 +15,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::num::TryFromIntError;
 use std::path::Path;

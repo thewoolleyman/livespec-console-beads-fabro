@@ -13,6 +13,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -15,6 +15,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::collections::BTreeMap;
 
@@ -166,11 +167,20 @@ pub enum TuiOverlay {
     /// None variant.
     None,
     /// Search variant.
-    Search { query: String },
+    Search {
+        /// Current search query text entered by the operator.
+        query: String,
+    },
     /// Command palette variant.
-    CommandPalette { query: String },
+    CommandPalette {
+        /// Current command-palette filter text entered by the operator.
+        query: String,
+    },
     /// Command modal variant.
-    CommandModal { selected_action_index: usize },
+    CommandModal {
+        /// Index of the currently selected action within the modal's action list.
+        selected_action_index: usize,
+    },
 }
 
 impl TuiOverlay {
@@ -666,7 +676,10 @@ impl FactoryDrainRequest {
 /// Variants for factory drain port outcome state or outcome values.
 pub enum FactoryDrainPortOutcome {
     /// Completed variant.
-    Completed { dispatched_items: u16 },
+    Completed {
+        /// Number of work-items the drain dispatched.
+        dispatched_items: u16,
+    },
     /// Failed variant.
     Failed,
     /// The drain was requested but no real Dispatcher port is wired, so no
