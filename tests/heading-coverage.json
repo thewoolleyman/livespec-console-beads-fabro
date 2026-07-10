@@ -203,10 +203,6 @@
         "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
       },
       {
-        "gap_id": "gap-a6gtad4i",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
         "gap_id": "gap-2xtsubhp",
         "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
       },
@@ -287,27 +283,11 @@
     "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should run autonomous mode against resolvable and unresolvable decisions, asserting recorded command/outcome events for the former and retained needs-attention items for the latter. Registered now because Scenario 10 is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
     "clauses": [
       {
-        "gap_id": "gap-rg7rne65",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
         "gap_id": "gap-uomftic2",
         "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
       },
       {
         "gap_id": "gap-4mp2cfxh",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-dmfgxeoi",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-batvamdb",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-3db2znwi",
         "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
       },
       {
@@ -327,19 +307,47 @@
         "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
       },
       {
-        "gap_id": "gap-nlnqdno4",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-7bcdlmwd",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
         "gap_id": "gap-jxolwtgq",
         "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
       },
       {
         "gap_id": "gap-sar2uwky",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-4vx27yji",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-5imrwdor",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-77j5vo6p",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-7iest4cl",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-cfqioc2l",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-ngjgkw65",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-44ixef7d",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-kumeoomv",
+        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
+      },
+      {
+        "gap_id": "gap-m6d25ku4",
         "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
       }
     ]

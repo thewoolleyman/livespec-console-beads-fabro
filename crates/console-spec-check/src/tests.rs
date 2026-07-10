@@ -64,17 +64,18 @@ fn derive_gap_id_matches_python_known_vectors() {
 #[test]
 fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::error::Error>> {
     // Ground truth measured via the family `spec_clauses.py` over the console
-    // SPECIFICATION. Updated for the v016 CN1 revision (needs-attention
-    // snapshot port + diff adapter + attention_item.* events), which added one
-    // normative clause to contracts.md -- the needs-attention adapter's
-    // `MUST NOT reach around this port to recompute the inbox`: 121 normative
-    // clauses, 14/37/18/52. (The earlier v014 console-cruft-cleanup revision
-    // added four normative clauses to contracts.md.)
+    // SPECIFICATION. Updated for the v017 C1 revision (autonomous-mode citation
+    // currency + resolution-delegation re-scope), which net-added one normative
+    // clause to spec.md and one to constraints.md as the Full Autonomous Mode
+    // and Autonomous-Mode Safety sections were re-scoped to the delegation
+    // model: 123 normative clauses, 15/37/19/52. (The v016 CN1 revision added
+    // one normative clause to contracts.md; the earlier v014 console-cruft-
+    // cleanup revision added four.)
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
-        ("spec.md", 14_usize),
+        ("spec.md", 15_usize),
         ("contracts.md", 37),
-        ("constraints.md", 18),
+        ("constraints.md", 19),
         ("non-functional-requirements.md", 52),
     ];
     let mut total = 0;
@@ -85,7 +86,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 121,
+        total, 123,
         "total normative clauses across the console spec"
     );
     Ok(())
