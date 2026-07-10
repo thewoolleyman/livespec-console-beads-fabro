@@ -5,6 +5,8 @@
 //! deduplicates events by event id or source-event id and reconstructs domain
 //! envelopes for projections.
 //!
+//! The store persists to a `SQLite` database file, or to an in-memory database for tests, through a single owned connection.
+//!
 //! ```rust,ignore
 //! use console_eventstore::SqliteEventStore;
 //!
