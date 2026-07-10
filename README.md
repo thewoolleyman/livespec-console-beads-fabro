@@ -72,3 +72,4 @@ server-side tenant still has to exist before `bd list` and the
 Beads/Fabro Dispatcher can operate. Run Beads commands through the
 family environment wrapper so the bare `BEADS_DOLT_PASSWORD` is present;
 never print the secret value.
+<!-- part-3 credential-refresh A/B probe -->
