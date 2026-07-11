@@ -23,7 +23,9 @@ use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
 #[cfg(all(not(test), not(coverage)))]
-use console_application::{DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort};
+use console_application::{
+    DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, LivespecJsoncArmingPort,
+};
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
@@ -105,6 +107,8 @@ fn run_store_backed_command(
     let drive_program = drive_program();
     let mut drive =
         DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
+    let livespec_jsonc_path = livespec_jsonc_path();
+    let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
     Ok(livespec_console_beads_fabro::run_with_store(
         args,
         &mut store,
@@ -112,6 +116,7 @@ fn run_store_backed_command(
         &sources,
         &mut drain,
         &mut drive,
+        &mut arming,
         &needs_attention,
     ))
 }
@@ -135,6 +140,8 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let drive_program = drive_program();
     let mut drive =
         DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
+    let livespec_jsonc_path = livespec_jsonc_path();
+    let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
     let mut runner = InteractiveTuiRunner;
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
@@ -144,6 +151,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &sources,
         &mut drain,
         &mut drive,
+        &mut arming,
         &needs_attention,
     )
     .map_err(|error| format!("{error:?}"))?;
@@ -183,6 +191,13 @@ impl SourceProbe for SystemSourceProbe {
             Err(error) => SourceProbeOutcome::unavailable(&format!("{path}: {error}")),
         }
     }
+
+    fn write_file(&self, path: &str, contents: &str) -> SourceProbeOutcome {
+        match std::fs::write(path, contents) {
+            Ok(()) => SourceProbeOutcome::observed("", true),
+            Err(error) => SourceProbeOutcome::unavailable(&format!("{path}: {error}")),
+        }
+    }
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -207,6 +222,12 @@ fn drive_program() -> String {
 fn needs_attention_program() -> String {
     std::env::var("LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM")
         .unwrap_or_else(|_error| "needs-attention".to_owned())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn livespec_jsonc_path() -> String {
+    std::env::var("LIVESPEC_CONSOLE_LIVESPEC_JSONC_PATH")
+        .unwrap_or_else(|_error| ".livespec.jsonc".to_owned())
 }
 
 #[cfg(all(not(test), not(coverage)))]

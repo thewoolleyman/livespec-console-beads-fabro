@@ -180,6 +180,25 @@ pub enum EventType {
     AttentionItemChanged,
     /// Attention item resolved from the product inbox.
     AttentionItemResolved,
+    /// Full autonomous mode was enabled for a repo -- the durable Configuration
+    /// audit fact, carrying `{ repo, actor, occurred_at }`, appended only when
+    /// the orchestrator permission key was actually written.
+    ConfigAutonomousModeEnabled,
+    /// Full autonomous mode was disabled for a repo -- the durable Configuration
+    /// audit fact, carrying `{ repo, actor, occurred_at }`.
+    ConfigAutonomousModeDisabled,
+    /// The console issued the orchestrator's `autonomous_mode` enable command
+    /// through the plane's published arming surface, and the permission key was
+    /// written.
+    FactoryAutonomousModeEnableRequested,
+    /// The console issued the orchestrator's `autonomous_mode` disable command
+    /// through the plane's published arming surface, and the permission key was
+    /// written.
+    FactoryAutonomousModeDisableRequested,
+    /// The autonomous-mode arming command was issued but no real orchestrator
+    /// arming surface is wired, so the permission key was not written. The
+    /// honest not-observed outcome, never a fabricated success.
+    FactoryAutonomousModeNotWired,
 }
 
 impl EventType {
@@ -209,6 +228,15 @@ impl EventType {
             Self::AttentionItemAppeared => "attention_item.appeared",
             Self::AttentionItemChanged => "attention_item.changed",
             Self::AttentionItemResolved => "attention_item.resolved",
+            Self::ConfigAutonomousModeEnabled => "config.autonomous_mode.enabled",
+            Self::ConfigAutonomousModeDisabled => "config.autonomous_mode.disabled",
+            Self::FactoryAutonomousModeEnableRequested => {
+                "factory.autonomous_mode_enable_requested"
+            }
+            Self::FactoryAutonomousModeDisableRequested => {
+                "factory.autonomous_mode_disable_requested"
+            }
+            Self::FactoryAutonomousModeNotWired => "factory.autonomous_mode.not_wired",
         }
     }
 
@@ -240,6 +268,15 @@ impl EventType {
             "attention_item.appeared" => Some(Self::AttentionItemAppeared),
             "attention_item.changed" => Some(Self::AttentionItemChanged),
             "attention_item.resolved" => Some(Self::AttentionItemResolved),
+            "config.autonomous_mode.enabled" => Some(Self::ConfigAutonomousModeEnabled),
+            "config.autonomous_mode.disabled" => Some(Self::ConfigAutonomousModeDisabled),
+            "factory.autonomous_mode_enable_requested" => {
+                Some(Self::FactoryAutonomousModeEnableRequested)
+            }
+            "factory.autonomous_mode_disable_requested" => {
+                Some(Self::FactoryAutonomousModeDisableRequested)
+            }
+            "factory.autonomous_mode.not_wired" => Some(Self::FactoryAutonomousModeNotWired),
             _unknown => None,
         }
     }
@@ -330,6 +367,16 @@ pub enum CommandType {
     /// command payload carries `policy` in {ai-only, human-only, ai-then-human}.
     /// A policy edit never moves the item between lifecycle states.
     WorkItemSetAcceptanceRequested,
+    /// Request to set a repo's full-autonomous-mode preference -- the
+    /// Configuration context's arming command, whose payload carries
+    /// `{ repo, enabled, confirmed }`. Enabling requires `confirmed` true.
+    ConfigAutonomousModeSet,
+    /// The command the console issues to the orchestrator plane to turn its own
+    /// autonomous mode on, through that plane's published arming surface.
+    FactoryAutonomousModeEnableRequested,
+    /// The command the console issues to the orchestrator plane to turn its own
+    /// autonomous mode off, through that plane's published arming surface.
+    FactoryAutonomousModeDisableRequested,
 }
 
 impl CommandType {
@@ -343,6 +390,13 @@ impl CommandType {
             Self::WorkItemRejectRequested => "work_item.reject_requested",
             Self::WorkItemSetAdmissionRequested => "work_item.set_admission_requested",
             Self::WorkItemSetAcceptanceRequested => "work_item.set_acceptance_requested",
+            Self::ConfigAutonomousModeSet => "config.autonomous_mode_set",
+            Self::FactoryAutonomousModeEnableRequested => {
+                "factory.autonomous_mode_enable_requested"
+            }
+            Self::FactoryAutonomousModeDisableRequested => {
+                "factory.autonomous_mode_disable_requested"
+            }
         }
     }
 
@@ -350,12 +404,15 @@ impl CommandType {
     #[must_use]
     pub const fn context(&self) -> &'static str {
         match self {
-            Self::FactoryDrainRequested => "factory",
+            Self::FactoryDrainRequested
+            | Self::FactoryAutonomousModeEnableRequested
+            | Self::FactoryAutonomousModeDisableRequested => "factory",
             Self::WorkItemApproveRequested
             | Self::WorkItemAcceptRequested
             | Self::WorkItemRejectRequested
             | Self::WorkItemSetAdmissionRequested
             | Self::WorkItemSetAcceptanceRequested => "work_item",
+            Self::ConfigAutonomousModeSet => "configuration",
         }
     }
 }
@@ -520,6 +577,30 @@ mod tests {
     }
 
     #[test]
+    fn autonomous_mode_event_contract_names_are_stable() {
+        assert_eq!(
+            EventType::ConfigAutonomousModeEnabled.contract_name(),
+            "config.autonomous_mode.enabled"
+        );
+        assert_eq!(
+            EventType::ConfigAutonomousModeDisabled.contract_name(),
+            "config.autonomous_mode.disabled"
+        );
+        assert_eq!(
+            EventType::FactoryAutonomousModeEnableRequested.contract_name(),
+            "factory.autonomous_mode_enable_requested"
+        );
+        assert_eq!(
+            EventType::FactoryAutonomousModeDisableRequested.contract_name(),
+            "factory.autonomous_mode_disable_requested"
+        );
+        assert_eq!(
+            EventType::FactoryAutonomousModeNotWired.contract_name(),
+            "factory.autonomous_mode.not_wired"
+        );
+    }
+
+    #[test]
     fn event_type_contract_names_round_trip() {
         for event_type in [
             EventType::WorkItemSnapshotObserved,
@@ -544,6 +625,11 @@ mod tests {
             EventType::AttentionItemAppeared,
             EventType::AttentionItemChanged,
             EventType::AttentionItemResolved,
+            EventType::ConfigAutonomousModeEnabled,
+            EventType::ConfigAutonomousModeDisabled,
+            EventType::FactoryAutonomousModeEnableRequested,
+            EventType::FactoryAutonomousModeDisableRequested,
+            EventType::FactoryAutonomousModeNotWired,
         ] {
             assert_eq!(
                 EventType::from_contract_name(event_type.contract_name()),
@@ -596,6 +682,18 @@ mod tests {
             CommandType::WorkItemSetAcceptanceRequested.contract_name(),
             "work_item.set_acceptance_requested"
         );
+        assert_eq!(
+            CommandType::ConfigAutonomousModeSet.contract_name(),
+            "config.autonomous_mode_set"
+        );
+        assert_eq!(
+            CommandType::FactoryAutonomousModeEnableRequested.contract_name(),
+            "factory.autonomous_mode_enable_requested"
+        );
+        assert_eq!(
+            CommandType::FactoryAutonomousModeDisableRequested.contract_name(),
+            "factory.autonomous_mode_disable_requested"
+        );
     }
 
     #[test]
@@ -611,6 +709,18 @@ mod tests {
         assert_eq!(
             CommandType::WorkItemSetAcceptanceRequested.context(),
             "work_item"
+        );
+        assert_eq!(
+            CommandType::ConfigAutonomousModeSet.context(),
+            "configuration"
+        );
+        assert_eq!(
+            CommandType::FactoryAutonomousModeEnableRequested.context(),
+            "factory"
+        );
+        assert_eq!(
+            CommandType::FactoryAutonomousModeDisableRequested.context(),
+            "factory"
         );
     }
 

@@ -28,8 +28,9 @@ use console_application::source_adapters::{
     normalize_work_item_snapshot,
 };
 use console_application::{
-    ApplicationError, FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
-    build_tui_model, handle_factory_drain_command, handle_work_item_accept_command,
+    ApplicationError, AutonomousModeArmingPort, FactoryDrainPolicy, FactoryDrainPort,
+    OrchestratorActionPort, build_tui_model, handle_config_autonomous_mode_set_command,
+    handle_factory_drain_command, handle_work_item_accept_command,
     handle_work_item_approve_command, handle_work_item_reject_command,
     handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
     project_attention,
@@ -89,6 +90,7 @@ where
 }
 
 /// Run with store and return its outcome.
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_store(
     args: &[String],
     store: &mut SqliteEventStore,
@@ -96,6 +98,7 @@ pub fn run_with_store(
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
+    config_port: &mut dyn AutonomousModeArmingPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> RunOutput {
     match command_name(args) {
@@ -106,6 +109,7 @@ pub fn run_with_store(
                 sources,
                 factory_port,
                 work_item_port,
+                config_port,
                 needs_attention,
             ),
             "serve",
@@ -310,6 +314,7 @@ pub fn run_store_backed_tui_session(
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
+    config_port: &mut dyn AutonomousModeArmingPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
     let existing_events = store.list_console_events()?;
@@ -324,6 +329,7 @@ pub fn run_store_backed_tui_session(
     let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let _work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
+    let _config_handled = handle_pending_config_commands(store, observed_at, config_port)?;
     let final_events = store.list_console_events()?;
     let attention_count = project_attention(&final_events).len();
     let backfilled_event_count = ingestion
@@ -643,12 +649,14 @@ pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
 }
 
 /// Return the serve report value.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_report(
     store: &mut SqliteEventStore,
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
+    config_port: &mut dyn AutonomousModeArmingPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
     let events = store.list_console_events()?;
@@ -660,6 +668,7 @@ pub fn serve_report(
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
+    let _config_handled = handle_pending_config_commands(store, observed_at, config_port)?;
     let events = store.list_console_events()?;
     let commands = store.list_commands()?;
     let attention_count = project_attention(&events).len();
@@ -903,6 +912,66 @@ pub fn handle_pending_work_item_commands(
         )?);
     }
     Ok(outcomes)
+}
+
+/// Handle pending `config.autonomous_mode_set` commands through the arming port.
+///
+/// Each pending command is dispatched to the Configuration context handler,
+/// which guards a dangerous enable, issues the orchestrator arming command
+/// through the port, and appends the audit event. `handled_at` is the audit
+/// event's `occurred_at`.
+///
+/// # Errors
+/// Returns a console runtime error when a command is malformed or the store
+/// cannot persist the outcome events.
+pub fn handle_pending_config_commands(
+    store: &mut dyn FactoryCommandStore,
+    handled_at: &str,
+    port: &mut dyn AutonomousModeArmingPort,
+) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let mut outcomes = Vec::new();
+    for stored_command in store.list_commands()? {
+        if stored_command.status() != "pending" {
+            continue;
+        }
+        let Some((command, payload_json)) = config_command_from_stored(&stored_command)? else {
+            continue;
+        };
+        let command_outcome =
+            handle_config_autonomous_mode_set_command(&command, &payload_json, handled_at, port)?;
+        outcomes.push(finalize_pending_command(
+            store,
+            &command,
+            command_outcome.events(),
+            command_outcome.command_status(),
+            handled_at,
+        )?);
+    }
+    Ok(outcomes)
+}
+
+/// Rebuild a `config.autonomous_mode_set` command and its stored `payload_json`
+/// (the `{ repo, enabled, confirmed }` object) from a stored command, or `None`
+/// when the stored command is not a configuration command.
+fn config_command_from_stored(
+    stored_command: &StoredCommand,
+) -> ConsoleRuntimeResult<Option<(CommandEnvelope, String)>> {
+    if stored_command.command_type() != CommandType::ConfigAutonomousModeSet.contract_name() {
+        return Ok(None);
+    }
+    let Some(aggregate_id) = stored_command.aggregate_id() else {
+        return Err(ConsoleRuntimeError::MissingCommandAggregate(
+            stored_command.command_id().to_owned(),
+        ));
+    };
+    let command = CommandEnvelope::new(
+        stored_command.command_id().to_owned(),
+        CommandType::ConfigAutonomousModeSet,
+        aggregate_id.to_owned(),
+        stored_command.idempotency_key().to_owned(),
+        stored_command.requested_by().to_owned(),
+    );
+    Ok(Some((command, stored_command.payload_json().to_owned())))
 }
 
 /// Persist one handled command's outcome events and update its command status.
@@ -1357,7 +1426,8 @@ fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use console_application::{
-        ApplicationError, AttentionItem, FactoryDrainPort, FactoryDrainPortOutcome,
+        ApplicationError, AttentionItem, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
+        AutonomousModeArmingRequest, FactoryDrainPort, FactoryDrainPortOutcome,
         FactoryDrainRequest, LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, build_tui_model, project_attention, project_lane_board,
         source_adapters::{
@@ -1380,8 +1450,9 @@ mod tests {
         FactoryCommandStore, InitialSourceSeed, NeedsAttentionIngest, PendingCommandOutcome,
         ScriptedSource, SourceAdapterRef, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
-        backfill_source_report, command_status_update_runtime_result, demo_events, doctor_report,
-        events_tail_report, factory_command_from_stored, handle_pending_factory_commands,
+        backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
+        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
+        handle_pending_config_commands, handle_pending_factory_commands,
         handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
         live_source_adapters, load_tui_events_from_store, persist_tui_runtime_effects,
         render_tui_preview, run, run_store_backed_tui_session, run_with_store, serve_report,
@@ -1482,6 +1553,7 @@ mod tests {
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         run_with_store(
@@ -1491,6 +1563,7 @@ mod tests {
             &sources,
             &mut port,
             &mut work_item_port,
+            &mut config_port,
             &needs_attention,
         )
     }
@@ -1765,6 +1838,7 @@ mod tests {
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         let output = run_with_store(
@@ -1774,6 +1848,7 @@ mod tests {
             &sources,
             &mut port,
             &mut work_item_port,
+            &mut config_port,
             &needs_attention,
         );
 
@@ -1794,6 +1869,7 @@ mod tests {
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
@@ -1803,6 +1879,7 @@ mod tests {
             &sources,
             &mut port,
             &mut work_item_port,
+            &mut config_port,
             &needs_attention,
         );
 
@@ -2038,6 +2115,7 @@ mod tests {
         let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -2051,6 +2129,7 @@ mod tests {
             &sources,
             &mut factory_port,
             &mut work_item_port,
+            &mut config_port,
             &needs_attention,
         );
         let commands = store.list_commands()?;
@@ -2105,6 +2184,7 @@ mod tests {
         let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -2118,6 +2198,7 @@ mod tests {
             &sources,
             &mut factory_port,
             &mut work_item_port,
+            &mut config_port,
             &needs_attention,
         );
 
@@ -2136,6 +2217,7 @@ mod tests {
         let mut runner = ErroringTuiSessionRunner;
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -2149,6 +2231,7 @@ mod tests {
             &sources,
             &mut factory_port,
             &mut work_item_port,
+            &mut config_port,
             &needs_attention,
         );
 
@@ -2574,6 +2657,105 @@ mod tests {
         assert!(matches!(
             result,
             Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_approve"
+        ));
+    }
+
+    fn config_command_append(payload_json: &str) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_autonomous".to_owned(),
+                CommandType::ConfigAutonomousModeSet,
+                "livespec-console-beads-fabro".to_owned(),
+                "livespec-console-beads-fabro:config.autonomous_mode_set".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-11T00:00:00Z".to_owned(),
+            Some("livespec-console-beads-fabro".to_owned()),
+            "corr_cmd_autonomous".to_owned(),
+            payload_json.to_owned(),
+        )
+    }
+
+    #[test]
+    fn pending_config_autonomous_mode_set_arms_through_port_and_is_idempotent()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&config_command_append(
+            r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#,
+        ))?;
+        let mut port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
+
+        let outcomes =
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        assert_eq!(port.observed_repos, ["livespec-console-beads-fabro"]);
+        let commands = store.list_commands()?;
+        assert_eq!(commands[0].command_type(), "config.autonomous_mode_set");
+        assert_eq!(commands[0].status(), "completed");
+        // The audit event was persisted.
+        let events = store.list_console_events()?;
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type() == &EventType::ConfigAutonomousModeEnabled)
+        );
+
+        // A second pass skips the already-completed command: no re-arming.
+        let repeat = handle_pending_config_commands(&mut store, "2026-07-11T00:00:02Z", &mut port)?;
+        assert!(repeat.is_empty());
+        assert_eq!(port.observed_repos, ["livespec-console-beads-fabro"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_config_commands_ignore_non_config_commands() -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&approve_command_append())?;
+        let mut port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
+
+        let outcomes =
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+
+        // The non-config command is skipped; the arming port is never called.
+        assert!(outcomes.is_empty());
+        assert!(port.observed_repos.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn config_command_reconstruction_requires_aggregate() {
+        let stored_command = StoredCommand::new(
+            "cmd_autonomous".to_owned(),
+            "configuration".to_owned(),
+            "config.autonomous_mode_set".to_owned(),
+            None,
+            "idem_autonomous".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+
+        let result = config_command_from_stored(&stored_command);
+
+        assert!(matches!(
+            result,
+            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_autonomous"
+        ));
+    }
+
+    #[test]
+    fn pending_config_commands_propagate_store_append_errors() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigAppendFails);
+        let mut port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
+
+        let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:03Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::EventStore(
+                EventStoreError::InvalidSequence
+            ))
         ));
     }
 
@@ -3129,6 +3311,34 @@ mod tests {
         }
     }
 
+    /// Test double standing in for the real autonomous-mode arming port. It
+    /// records the repos it was asked to arm and returns a configurable outcome,
+    /// so the config-command machinery can be exercised without touching a real
+    /// `.livespec.jsonc`.
+    struct SimulatedArmingPort {
+        outcome: AutonomousModeArmingOutcome,
+        observed_repos: Vec<String>,
+    }
+
+    impl SimulatedArmingPort {
+        fn returning(outcome: AutonomousModeArmingOutcome) -> Self {
+            Self {
+                outcome,
+                observed_repos: Vec::new(),
+            }
+        }
+    }
+
+    impl AutonomousModeArmingPort for SimulatedArmingPort {
+        fn arm(
+            &mut self,
+            request: &AutonomousModeArmingRequest,
+        ) -> Result<AutonomousModeArmingOutcome, ApplicationError> {
+            self.observed_repos.push(request.repo().to_owned());
+            Ok(self.outcome.clone())
+        }
+    }
+
     struct FailedFactoryDrainPort;
 
     impl FactoryDrainPort for FailedFactoryDrainPort {
@@ -3222,6 +3432,7 @@ mod tests {
     enum ScriptedStoreMode {
         AppendFails,
         Completes,
+        ConfigAppendFails,
         ListFails,
         MissingAggregate,
         NonFactoryPending,
@@ -3286,6 +3497,21 @@ mod tests {
                     "pending".to_owned(),
                 )];
             }
+            if self.mode == ScriptedStoreMode::ConfigAppendFails {
+                return vec![StoredCommand::new(
+                    "cmd_autonomous".to_owned(),
+                    "configuration".to_owned(),
+                    "config.autonomous_mode_set".to_owned(),
+                    Some("livespec-console-beads-fabro".to_owned()),
+                    "livespec-console-beads-fabro:config.autonomous_mode_set".to_owned(),
+                    "operator".to_owned(),
+                    "pending".to_owned(),
+                )
+                .with_payload_json(
+                    r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#
+                        .to_owned(),
+                )];
+            }
             vec![self.command.clone()]
         }
     }
@@ -3317,7 +3543,9 @@ mod tests {
         fn append_event(&mut self, _append: &EventAppend) -> EventStoreResult<AppendOutcome> {
             if matches!(
                 self.mode,
-                ScriptedStoreMode::AppendFails | ScriptedStoreMode::WorkItemAppendFails
+                ScriptedStoreMode::AppendFails
+                    | ScriptedStoreMode::WorkItemAppendFails
+                    | ScriptedStoreMode::ConfigAppendFails
             ) {
                 return Err(EventStoreError::InvalidSequence);
             }
