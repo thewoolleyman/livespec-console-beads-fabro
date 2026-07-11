@@ -605,6 +605,10 @@ pub enum ApplicationError {
     /// `work_item.set_acceptance_requested` command carried a payload whose
     /// `policy` was absent or not one of {ai-only, human-only, ai-then-human}.
     InvalidAcceptancePolicy,
+    /// Invalid autonomous-mode payload variant -- a `config.autonomous_mode_set`
+    /// command carried a payload that was malformed, missing a required
+    /// `repo` / `enabled` / `confirmed` field, or carried an empty `repo`.
+    InvalidAutonomousModePayload,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -1515,11 +1519,17 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::FactoryDrainFailed
         | EventType::FactoryDrainNotWired
         | EventType::FactoryDrainRequested
-        | EventType::FactoryDrainStarted => "factory",
+        | EventType::FactoryDrainStarted
+        | EventType::FactoryAutonomousModeEnableRequested
+        | EventType::FactoryAutonomousModeDisableRequested
+        | EventType::FactoryAutonomousModeNotWired => "factory",
         EventType::WorkItemActionStarted
         | EventType::WorkItemActionCompleted
         | EventType::WorkItemActionFailed
         | EventType::WorkItemActionNotWired => "work_item",
+        EventType::ConfigAutonomousModeEnabled | EventType::ConfigAutonomousModeDisabled => {
+            "configuration"
+        }
         EventType::WorkItemSnapshotObserved
         | EventType::DispatcherBacklogBounceObserved
         | EventType::FabroHumanGateObserved
@@ -1848,6 +1858,614 @@ fn work_item_command_event(
         })
         .to_string(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Configuration context — full autonomous mode arming.
+// ---------------------------------------------------------------------------
+
+/// The nested key path of the orchestrator's autonomous-mode permission inside a
+/// consumer project's `.livespec.jsonc`:
+/// `livespec-orchestrator-beads-fabro.dispatcher.autonomous_mode`.
+const ORCHESTRATOR_CONFIG_KEY: &str = "livespec-orchestrator-beads-fabro";
+const DISPATCHER_CONFIG_KEY: &str = "dispatcher";
+const AUTONOMOUS_MODE_CONFIG_KEY: &str = "autonomous_mode";
+
+/// The parsed `{ repo, enabled, confirmed }` payload of a
+/// `config.autonomous_mode_set` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousModeSetRequest {
+    repo: String,
+    enabled: bool,
+    confirmed: bool,
+}
+
+impl AutonomousModeSetRequest {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(repo: String, enabled: bool, confirmed: bool) -> Self {
+        Self {
+            repo,
+            enabled,
+            confirmed,
+        }
+    }
+
+    #[must_use]
+    /// Return the target repo id.
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    /// Whether the command requests autonomous mode enabled.
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    /// Whether the operator explicitly confirmed the change.
+    pub const fn confirmed(&self) -> bool {
+        self.confirmed
+    }
+
+    /// Parse the `{ repo, enabled, confirmed }` payload from a command's
+    /// persisted `payload_json`.
+    ///
+    /// # Errors
+    /// Returns [`ApplicationError::InvalidAutonomousModePayload`] when the JSON
+    /// is malformed, a required field is absent or the wrong type, or `repo` is
+    /// empty.
+    pub fn from_payload_json(payload_json: &str) -> ApplicationResult<Self> {
+        let value: serde_json::Value = serde_json::from_str(payload_json)
+            .map_err(|_error| ApplicationError::InvalidAutonomousModePayload)?;
+        let repo = value
+            .get("repo")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ApplicationError::InvalidAutonomousModePayload)?;
+        if repo.trim().is_empty() {
+            return Err(ApplicationError::InvalidAutonomousModePayload);
+        }
+        let enabled = value
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or(ApplicationError::InvalidAutonomousModePayload)?;
+        let confirmed = value
+            .get("confirmed")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or(ApplicationError::InvalidAutonomousModePayload)?;
+        Ok(Self::new(repo.to_owned(), enabled, confirmed))
+    }
+}
+
+/// One request to arm/disarm the orchestrator's autonomous-mode permission for a
+/// repo, passed to the arming port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousModeArmingRequest {
+    repo: String,
+    enabled: bool,
+}
+
+impl AutonomousModeArmingRequest {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(repo: String, enabled: bool) -> Self {
+        Self { repo, enabled }
+    }
+
+    #[must_use]
+    /// Return the target repo id.
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    #[must_use]
+    /// Whether the permission should be armed (`true`) or disarmed (`false`).
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// The honest outcome of arming the orchestrator's autonomous-mode permission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutonomousModeArmingOutcome {
+    /// The permission key was actually written in the consumer's config.
+    Armed,
+    /// No real arming surface is wired (or the config could not be read or
+    /// written), so the key was not written. Reported honestly instead of
+    /// fabricating success.
+    NotWired,
+}
+
+impl AutonomousModeArmingOutcome {
+    #[must_use]
+    /// Return the armed value.
+    pub const fn armed() -> Self {
+        Self::Armed
+    }
+
+    #[must_use]
+    /// Return the not-wired value.
+    pub const fn not_wired() -> Self {
+        Self::NotWired
+    }
+}
+
+/// Port interface for arming the orchestrator's autonomous-mode permission,
+/// supplied by an outer layer.
+///
+/// The console sets the orchestrator plane's single persistent permission --
+/// the `livespec-orchestrator-beads-fabro.dispatcher.autonomous_mode` key in
+/// the consumer's `.livespec.jsonc` -- through this port, and reflects the
+/// honest outcome rather than fabricating success.
+pub trait AutonomousModeArmingPort {
+    /// Arm or disarm the permission and return the honest outcome.
+    ///
+    /// # Errors
+    /// Returns an application error when the port cannot produce a trustworthy
+    /// outcome.
+    fn arm(
+        &mut self,
+        request: &AutonomousModeArmingRequest,
+    ) -> ApplicationResult<AutonomousModeArmingOutcome>;
+}
+
+/// Real arming port that writes the orchestrator permission key directly into a
+/// consumer project's `.livespec.jsonc`, through a [`SourceProbe`].
+///
+/// It reads the config, edits the single boolean key in place (preserving the
+/// file's comments and layout), and writes it back, reflecting the actual
+/// outcome: a genuine write yields [`AutonomousModeArmingOutcome::Armed`], while
+/// an unreadable/unwritable/simulated config yields
+/// [`AutonomousModeArmingOutcome::NotWired`]. The host-backed probe is supplied
+/// by the binary, so the live arming never claims a write that did not happen.
+pub struct LivespecJsoncArmingPort<'a> {
+    probe: &'a dyn SourceProbe,
+    livespec_jsonc_path: String,
+}
+
+impl<'a> LivespecJsoncArmingPort<'a> {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    ///
+    /// `livespec_jsonc_path` is the path to the consumer project's
+    /// `.livespec.jsonc` this port arms.
+    pub fn new(probe: &'a dyn SourceProbe, livespec_jsonc_path: &str) -> Self {
+        Self {
+            probe,
+            livespec_jsonc_path: livespec_jsonc_path.to_owned(),
+        }
+    }
+}
+
+impl AutonomousModeArmingPort for LivespecJsoncArmingPort<'_> {
+    fn arm(
+        &mut self,
+        request: &AutonomousModeArmingRequest,
+    ) -> ApplicationResult<AutonomousModeArmingOutcome> {
+        let SourceProbeOutcome::Observed {
+            stdout: original,
+            success: true,
+        } = self.probe.read_file(&self.livespec_jsonc_path)
+        else {
+            return Ok(AutonomousModeArmingOutcome::not_wired());
+        };
+        let Some(updated) = set_autonomous_mode_in_jsonc(&original, request.enabled()) else {
+            return Ok(AutonomousModeArmingOutcome::not_wired());
+        };
+        Ok(
+            match self.probe.write_file(&self.livespec_jsonc_path, &updated) {
+                SourceProbeOutcome::Observed { success: true, .. } => {
+                    AutonomousModeArmingOutcome::armed()
+                }
+                SourceProbeOutcome::Observed { success: false, .. }
+                | SourceProbeOutcome::Unavailable { .. } => {
+                    AutonomousModeArmingOutcome::not_wired()
+                }
+            },
+        )
+    }
+}
+
+/// Derive the current per-repo autonomous mode from a `.livespec.jsonc`.
+///
+/// Reads the orchestrator permission key out of the document. An absent key --
+/// or an unparseable document -- is treated as disabled (fail-soft), per the
+/// autonomous-mode default-disabled contract.
+#[must_use]
+pub fn read_autonomous_mode_from_jsonc(text: &str) -> bool {
+    let stripped = strip_jsonc_comments(text);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) else {
+        return false;
+    };
+    value
+        .get(ORCHESTRATOR_CONFIG_KEY)
+        .and_then(|orchestrator| orchestrator.get(DISPATCHER_CONFIG_KEY))
+        .and_then(|dispatcher| dispatcher.get(AUTONOMOUS_MODE_CONFIG_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Set the orchestrator autonomous-mode permission key to `enabled` in a
+/// `.livespec.jsonc` document, preserving the rest of the file (comments and
+/// layout) by editing only the single key in place.
+///
+/// Returns `None` when the document is not a JSON object (so the key cannot be
+/// located or inserted); the arming port maps that to a not-wired outcome rather
+/// than crashing. Handles four shapes: the key already present (value replaced),
+/// the `dispatcher` object present without the key, the orchestrator object
+/// present without a `dispatcher`, and no orchestrator object at all.
+#[must_use]
+pub fn set_autonomous_mode_in_jsonc(text: &str, enabled: bool) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let literal = if enabled { "true" } else { "false" };
+    if find_member_object_brace(&chars, DISPATCHER_CONFIG_KEY).is_some()
+        && find_member_value_start(&chars, AUTONOMOUS_MODE_CONFIG_KEY).is_some()
+    {
+        return replace_member_value(&chars, AUTONOMOUS_MODE_CONFIG_KEY, literal);
+    }
+    if let Some(brace) = find_member_object_brace(&chars, DISPATCHER_CONFIG_KEY) {
+        let member = format!("\"{AUTONOMOUS_MODE_CONFIG_KEY}\": {literal}");
+        return Some(insert_member_after_brace(&chars, brace, &member));
+    }
+    if let Some(brace) = find_member_object_brace(&chars, ORCHESTRATOR_CONFIG_KEY) {
+        let member = format!(
+            "\"{DISPATCHER_CONFIG_KEY}\": {{ \"{AUTONOMOUS_MODE_CONFIG_KEY}\": {literal} }}"
+        );
+        return Some(insert_member_after_brace(&chars, brace, &member));
+    }
+    let top = find_top_level_brace(&chars)?;
+    let member = format!(
+        "\"{ORCHESTRATOR_CONFIG_KEY}\": {{ \"{DISPATCHER_CONFIG_KEY}\": {{ \"{AUTONOMOUS_MODE_CONFIG_KEY}\": {literal} }} }}"
+    );
+    Some(insert_member_after_brace(&chars, top, &member))
+}
+
+/// Strip `//` line and `/* */` block comments from a JSONC document, leaving
+/// string literals (including any comment-like sequences inside them) intact, so
+/// the result parses as strict JSON.
+fn strip_jsonc_comments(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let length = chars.len();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < length {
+        let current = chars[index];
+        if current == '"' {
+            out.push(current);
+            index += 1;
+            while index < length {
+                let inner = chars[index];
+                out.push(inner);
+                index += 1;
+                if inner == '\\' {
+                    if index < length {
+                        out.push(chars[index]);
+                        index += 1;
+                    }
+                } else if inner == '"' {
+                    break;
+                }
+            }
+        } else if current == '/' && index + 1 < length && chars[index + 1] == '/' {
+            index += 2;
+            while index < length && chars[index] != '\n' {
+                index += 1;
+            }
+        } else if current == '/' && index + 1 < length && chars[index + 1] == '*' {
+            index += 2;
+            while index + 1 < length && !(chars[index] == '*' && chars[index + 1] == '/') {
+                index += 1;
+            }
+            index = if index + 1 < length {
+                index + 2
+            } else {
+                length
+            };
+        } else {
+            out.push(current);
+            index += 1;
+        }
+    }
+    out
+}
+
+/// The char index just past the closing quote of a string literal whose opening
+/// quote is at `start`.
+fn skip_string(chars: &[char], start: usize) -> usize {
+    let length = chars.len();
+    let mut index = start + 1;
+    while index < length {
+        let current = chars[index];
+        index += 1;
+        if current == '\\' {
+            index += 1;
+        } else if current == '"' {
+            break;
+        }
+    }
+    index
+}
+
+/// The char index of the next character that is neither whitespace nor part of a
+/// `//` or `/* */` comment, starting at `start`.
+fn skip_ws_and_comments(chars: &[char], start: usize) -> usize {
+    let length = chars.len();
+    let mut index = start;
+    while index < length {
+        let current = chars[index];
+        if current.is_whitespace() {
+            index += 1;
+        } else if current == '/' && index + 1 < length && chars[index + 1] == '/' {
+            index += 2;
+            while index < length && chars[index] != '\n' {
+                index += 1;
+            }
+        } else if current == '/' && index + 1 < length && chars[index + 1] == '*' {
+            index += 2;
+            while index + 1 < length && !(chars[index] == '*' && chars[index + 1] == '/') {
+                index += 1;
+            }
+            index = if index + 1 < length {
+                index + 2
+            } else {
+                length
+            };
+        } else {
+            break;
+        }
+    }
+    index
+}
+
+/// The char index just past the `:` that follows a member key `"key"` (a quoted
+/// string equal to `key` followed, after whitespace and comments, by a `:`),
+/// scanning `chars` while skipping strings and comments. `None` when no such
+/// member key is present.
+fn find_member_colon_end(chars: &[char], key: &str) -> Option<usize> {
+    let length = chars.len();
+    let mut index = 0;
+    while index < length {
+        let current = chars[index];
+        if current == '"' {
+            let end = skip_string(chars, index);
+            let content: String = chars
+                .get(index + 1..end.saturating_sub(1))?
+                .iter()
+                .collect();
+            let after = skip_ws_and_comments(chars, end);
+            if content == key && chars.get(after) == Some(&':') {
+                return Some(after + 1);
+            }
+            index = end;
+        } else if current == '/'
+            && index + 1 < length
+            && (chars[index + 1] == '/' || chars[index + 1] == '*')
+        {
+            index = skip_ws_and_comments(chars, index);
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+/// The char index just past the `{` that opens the object value of member `key`.
+/// `None` when `key` is absent or its value is not an object.
+fn find_member_object_brace(chars: &[char], key: &str) -> Option<usize> {
+    let after_colon = find_member_colon_end(chars, key)?;
+    let brace = skip_ws_and_comments(chars, after_colon);
+    if chars.get(brace) != Some(&'{') {
+        return None;
+    }
+    Some(brace + 1)
+}
+
+/// The char index of the first character of member `key`'s scalar-or-string
+/// value. `None` when `key` is absent.
+fn find_member_value_start(chars: &[char], key: &str) -> Option<usize> {
+    let after_colon = find_member_colon_end(chars, key)?;
+    Some(skip_ws_and_comments(chars, after_colon))
+}
+
+/// The char index just past the first top-level `{`, skipping any leading
+/// whitespace and comments. `None` when the document does not open an object.
+fn find_top_level_brace(chars: &[char]) -> Option<usize> {
+    let brace = skip_ws_and_comments(chars, 0);
+    if chars.get(brace) != Some(&'{') {
+        return None;
+    }
+    Some(brace + 1)
+}
+
+/// Replace member `key`'s scalar-or-string value with `literal`, preserving the
+/// rest of `chars`. `None` when `key`'s value cannot be located.
+fn replace_member_value(chars: &[char], key: &str, literal: &str) -> Option<String> {
+    let value_start = find_member_value_start(chars, key)?;
+    let value_end = if chars.get(value_start) == Some(&'"') {
+        skip_string(chars, value_start)
+    } else {
+        let mut index = value_start;
+        while index < chars.len()
+            && (chars[index].is_alphanumeric() || chars[index] == '-' || chars[index] == '.')
+        {
+            index += 1;
+        }
+        index
+    };
+    let mut out: String = chars.get(..value_start)?.iter().collect();
+    out.push_str(literal);
+    out.extend(chars.get(value_end..)?.iter());
+    Some(out)
+}
+
+/// Insert `member` as the first member of the object whose opening `{` is
+/// immediately before `after_brace`, adding a separating comma when the object
+/// already has members.
+fn insert_member_after_brace(chars: &[char], after_brace: usize, member: &str) -> String {
+    let next = skip_ws_and_comments(chars, after_brace);
+    let object_is_empty = chars.get(next) == Some(&'}');
+    let mut out: String = chars.iter().take(after_brace).collect();
+    out.push_str("\n    ");
+    out.push_str(member);
+    if !object_is_empty {
+        out.push(',');
+    }
+    out.extend(chars.iter().skip(after_brace));
+    out
+}
+
+/// Represents a configuration command-handling outcome.
+///
+/// Carries the resolved command status and the events it appended (`command`
+/// acceptance/rejection, the `factory` arming outcome, and the `configuration`
+/// audit fact).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigCommandOutcome {
+    command_status: String,
+    events: Vec<ConsoleEvent>,
+}
+
+impl ConfigCommandOutcome {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(command_status: String, events: Vec<ConsoleEvent>) -> Self {
+        Self {
+            command_status,
+            events,
+        }
+    }
+
+    #[must_use]
+    /// Return the command status value.
+    pub fn command_status(&self) -> &str {
+        &self.command_status
+    }
+
+    #[must_use]
+    /// Return the events value.
+    pub fn events(&self) -> &[ConsoleEvent] {
+        &self.events
+    }
+}
+
+/// Handle a `config.autonomous_mode_set` command.
+///
+/// The Configuration context's arming command. It parses the
+/// `{ repo, enabled, confirmed }` payload and guards a dangerous enable: an
+/// enable without `confirmed` true is REJECTED with no effect -- no arming port
+/// call, no key write, and no audit event, only a `command.rejected` event. On
+/// acceptance it issues the orchestrator's arming command through the arming
+/// port (the plane's published command surface) and, when the key is actually
+/// written, appends the matching `config.autonomous_mode.enabled` /
+/// `config.autonomous_mode.disabled` audit event carrying
+/// `{ repo, actor, occurred_at }`. A not-wired arming surface surfaces
+/// `factory.autonomous_mode.not_wired` and no audit event, never a fabricated
+/// success.
+///
+/// # Errors
+/// Returns [`ApplicationError::InvalidAutonomousModePayload`] when the payload
+/// is malformed, and surfaces a port error when the port cannot produce a
+/// trustworthy outcome.
+pub fn handle_config_autonomous_mode_set_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    occurred_at: &str,
+    port: &mut dyn AutonomousModeArmingPort,
+) -> ApplicationResult<ConfigCommandOutcome> {
+    let request = AutonomousModeSetRequest::from_payload_json(payload_json)?;
+    if request.enabled() && !request.confirmed() {
+        // Dangerous-enable guard: reject with no effect (no port call, no key
+        // write, no audit event) -- only the rejection is recorded.
+        let reason = "autonomous mode enable requires explicit confirmation";
+        return Ok(ConfigCommandOutcome::new(
+            "rejected".to_owned(),
+            vec![config_command_event(
+                command,
+                EventType::CommandRejected,
+                "rejected",
+                1,
+                &serde_json::json!({ "reason": reason, "repo": request.repo() }).to_string(),
+            )],
+        ));
+    }
+    let mut events = vec![config_command_event(
+        command,
+        EventType::CommandAccepted,
+        "accepted",
+        1,
+        "{}",
+    )];
+    let arming = AutonomousModeArmingRequest::new(request.repo().to_owned(), request.enabled());
+    let command_status = match port.arm(&arming)? {
+        AutonomousModeArmingOutcome::Armed => {
+            let (factory_event, audit_event) = if request.enabled() {
+                (
+                    EventType::FactoryAutonomousModeEnableRequested,
+                    EventType::ConfigAutonomousModeEnabled,
+                )
+            } else {
+                (
+                    EventType::FactoryAutonomousModeDisableRequested,
+                    EventType::ConfigAutonomousModeDisabled,
+                )
+            };
+            events.push(config_command_event(
+                command,
+                factory_event,
+                "arming_requested",
+                2,
+                &serde_json::json!({ "repo": request.repo() }).to_string(),
+            ));
+            events.push(config_command_event(
+                command,
+                audit_event,
+                "audited",
+                3,
+                &serde_json::json!({
+                    "repo": request.repo(),
+                    "actor": command.requested_by(),
+                    "occurred_at": occurred_at,
+                })
+                .to_string(),
+            ));
+            "completed"
+        }
+        AutonomousModeArmingOutcome::NotWired => {
+            // The arming surface is not wired, so the key was not written. Emit
+            // the honest not-wired outcome and NO audit event.
+            events.push(config_command_event(
+                command,
+                EventType::FactoryAutonomousModeNotWired,
+                "not_wired",
+                2,
+                &serde_json::json!({ "repo": request.repo() }).to_string(),
+            ));
+            "not_wired"
+        }
+    };
+    Ok(ConfigCommandOutcome::new(command_status.to_owned(), events))
+}
+
+/// Build one Configuration-context command event, carrying `payload_json`, from
+/// the command and its resolved event type.
+fn config_command_event(
+    command: &CommandEnvelope,
+    event_type: EventType,
+    suffix: &str,
+    stream_seq: u64,
+    payload_json: &str,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        format!("evt_{}_{}", command.command_id(), suffix),
+        1,
+        command_event_context(event_type).to_owned(),
+        event_type,
+        "console:config-command-handler".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+    .with_payload_json(payload_json.to_owned())
 }
 
 #[derive(Debug, Clone)]
@@ -2239,12 +2857,19 @@ impl AttentionEvent for EventType {
             Self::AttentionItemAppeared => "Attention item appeared",
             Self::AttentionItemChanged => "Attention item changed",
             Self::AttentionItemResolved => "Attention item resolved",
+            Self::ConfigAutonomousModeEnabled => "Autonomous mode enabled",
+            Self::ConfigAutonomousModeDisabled => "Autonomous mode disabled",
+            Self::FactoryAutonomousModeEnableRequested => "Autonomous mode enable requested",
+            Self::FactoryAutonomousModeDisableRequested => "Autonomous mode disable requested",
+            Self::FactoryAutonomousModeNotWired => "Autonomous mode arming not wired",
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
@@ -2255,18 +2880,20 @@ mod tests {
     };
     use super::{
         ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
-        DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, FactoryDrainPolicy,
-        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction,
-        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        AutonomousModeArmingOutcome, AutonomousModeArmingPort, AutonomousModeArmingRequest,
+        AutonomousModeSetRequest, ConfigCommandOutcome, DispatcherFactoryDrainPort,
+        DispatcherOrchestratorActionPort, FactoryDrainPolicy, FactoryDrainPort,
+        FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, LivespecJsoncArmingPort,
+        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
         TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
-        handle_factory_drain_command, handle_work_item_accept_command,
-        handle_work_item_approve_command, handle_work_item_reject_command,
-        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-        project_attention, project_lane_board, reduce_tui_interaction,
-        resolve_command_palette_action, resolve_selected_operator_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload,
-        validate_operator_action,
+        handle_config_autonomous_mode_set_command, handle_factory_drain_command,
+        handle_work_item_accept_command, handle_work_item_approve_command,
+        handle_work_item_reject_command, handle_work_item_set_acceptance_command,
+        handle_work_item_set_admission_command, project_attention, project_lane_board,
+        read_autonomous_mode_from_jsonc, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_selected_operator_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, set_autonomous_mode_in_jsonc, validate_operator_action,
     };
 
     #[test]
@@ -4629,5 +5256,591 @@ mod tests {
         let outcome = port.run_action(&OrchestratorActionRequest::new("approve:wi-1".to_owned()));
 
         assert_eq!(outcome, Ok(OrchestratorActionOutcome::not_wired()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Configuration context — full autonomous mode arming.
+    // -----------------------------------------------------------------------
+
+    /// A `.livespec.jsonc` fixture with the orchestrator object present but no
+    /// `dispatcher` block, mirroring the console's own committed config.
+    const CONFIG_WITHOUT_DISPATCHER: &str = r#"{
+  "template": "livespec-with-diagrams",
+  // a comment mentioning // and /* not a real comment */ inside prose
+  "livespec-orchestrator-beads-fabro": {
+    "format": "beads",
+    "connection": { "tenant": "livespec-console-beads-fabro" }
+  }
+}"#;
+
+    fn autonomous_mode_set_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_autonomous".to_owned(),
+            CommandType::ConfigAutonomousModeSet,
+            "livespec-console-beads-fabro".to_owned(),
+            "livespec-console-beads-fabro:config.autonomous_mode_set".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    /// Arming port double recording the requests it receives and returning a
+    /// scripted outcome, so handler tests are decoupled from file I/O.
+    struct RecordingArmingPort {
+        outcome: AutonomousModeArmingOutcome,
+        requests: Vec<AutonomousModeArmingRequest>,
+    }
+
+    impl RecordingArmingPort {
+        fn new(outcome: AutonomousModeArmingOutcome) -> Self {
+            Self {
+                outcome,
+                requests: Vec::new(),
+            }
+        }
+    }
+
+    impl AutonomousModeArmingPort for RecordingArmingPort {
+        fn arm(
+            &mut self,
+            request: &AutonomousModeArmingRequest,
+        ) -> super::ApplicationResult<AutonomousModeArmingOutcome> {
+            self.requests.push(request.clone());
+            Ok(self.outcome.clone())
+        }
+    }
+
+    /// `SourceProbe` double for the real arming port: it returns scripted
+    /// read/write outcomes and records the bytes handed to `write_file`.
+    struct ConfigFileProbe {
+        read_outcome: SourceProbeOutcome,
+        write_outcome: SourceProbeOutcome,
+        writes: RefCell<Vec<(String, String)>>,
+    }
+
+    impl SourceProbe for ConfigFileProbe {
+        fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable("run_command unused by arming port")
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            self.read_outcome.clone()
+        }
+
+        fn write_file(&self, path: &str, contents: &str) -> SourceProbeOutcome {
+            self.writes
+                .borrow_mut()
+                .push((path.to_owned(), contents.to_owned()));
+            self.write_outcome.clone()
+        }
+    }
+
+    /// Read-only `SourceProbe` double inheriting the trait's default
+    /// `write_file` (an honest not-wired outcome), exercising that default body.
+    struct ReadOnlyConfigProbe {
+        read_outcome: SourceProbeOutcome,
+    }
+
+    impl SourceProbe for ReadOnlyConfigProbe {
+        fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable("run_command unused by arming port")
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            self.read_outcome.clone()
+        }
+    }
+
+    fn event_types(outcome: &ConfigCommandOutcome) -> Vec<EventType> {
+        outcome
+            .events()
+            .iter()
+            .map(|event| *event.event_type())
+            .collect()
+    }
+
+    #[test]
+    fn autonomous_mode_event_labels_are_present() {
+        assert_eq!(
+            EventType::ConfigAutonomousModeEnabled.label(),
+            "Autonomous mode enabled"
+        );
+        assert_eq!(
+            EventType::ConfigAutonomousModeDisabled.label(),
+            "Autonomous mode disabled"
+        );
+        assert_eq!(
+            EventType::FactoryAutonomousModeEnableRequested.label(),
+            "Autonomous mode enable requested"
+        );
+        assert_eq!(
+            EventType::FactoryAutonomousModeDisableRequested.label(),
+            "Autonomous mode disable requested"
+        );
+        assert_eq!(
+            EventType::FactoryAutonomousModeNotWired.label(),
+            "Autonomous mode arming not wired"
+        );
+    }
+
+    #[test]
+    fn autonomous_mode_set_request_exposes_its_fields() {
+        let request = AutonomousModeSetRequest::new("repo-a".to_owned(), true, false);
+        assert_eq!(request.repo(), "repo-a");
+        assert!(request.enabled());
+        assert!(!request.confirmed());
+    }
+
+    #[test]
+    fn autonomous_mode_set_request_parses_a_valid_payload() {
+        assert_eq!(
+            AutonomousModeSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","enabled":true,"confirmed":true}"#
+            ),
+            Ok(AutonomousModeSetRequest::new(
+                "repo-a".to_owned(),
+                true,
+                true
+            ))
+        );
+    }
+
+    #[test]
+    fn autonomous_mode_set_request_rejects_malformed_or_incomplete_payloads() {
+        for payload in [
+            "not json",
+            r#"{"enabled":true,"confirmed":true}"#,
+            r#"{"repo":"  ","enabled":true,"confirmed":true}"#,
+            r#"{"repo":"repo-a","confirmed":true}"#,
+            r#"{"repo":"repo-a","enabled":true}"#,
+            r#"{"repo":"repo-a","enabled":"yes","confirmed":true}"#,
+        ] {
+            assert_eq!(
+                AutonomousModeSetRequest::from_payload_json(payload),
+                Err(ApplicationError::InvalidAutonomousModePayload)
+            );
+        }
+    }
+
+    #[test]
+    fn read_autonomous_mode_defaults_to_disabled_when_key_is_absent() {
+        assert!(!read_autonomous_mode_from_jsonc(CONFIG_WITHOUT_DISPATCHER));
+        assert!(!read_autonomous_mode_from_jsonc("{}"));
+        assert!(!read_autonomous_mode_from_jsonc(
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{}}}"#
+        ));
+        // A non-boolean value is treated as disabled.
+        assert!(!read_autonomous_mode_from_jsonc(
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":"yes"}}}"#
+        ));
+        // An unparseable document is fail-soft to disabled.
+        assert!(!read_autonomous_mode_from_jsonc("{ not json"));
+    }
+
+    #[test]
+    fn read_autonomous_mode_reads_the_written_key() {
+        assert!(read_autonomous_mode_from_jsonc(
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":true}}}"#
+        ));
+        assert!(!read_autonomous_mode_from_jsonc(
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":false}}}"#
+        ));
+    }
+
+    /// Whether `set_autonomous_mode_in_jsonc` produced an edit that reads back as
+    /// `enabled`.
+    fn set_then_read(text: &str, enabled: bool) -> Option<bool> {
+        set_autonomous_mode_in_jsonc(text, enabled)
+            .as_deref()
+            .map(read_autonomous_mode_from_jsonc)
+    }
+
+    #[test]
+    fn set_autonomous_mode_inserts_dispatcher_into_the_orchestrator_object() {
+        let updated = set_autonomous_mode_in_jsonc(CONFIG_WITHOUT_DISPATCHER, true);
+        // The comment and the other members survive; the new key reads back true.
+        assert!(
+            updated
+                .as_deref()
+                .is_some_and(|u| u.contains("not a real comment"))
+        );
+        assert!(
+            updated
+                .as_deref()
+                .is_some_and(|u| u.contains("\"format\": \"beads\""))
+        );
+        assert_eq!(
+            updated.as_deref().map(read_autonomous_mode_from_jsonc),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn set_autonomous_mode_replaces_an_existing_boolean_value() {
+        let original =
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":false}}}"#;
+        assert_eq!(set_then_read(original, true), Some(true));
+        let enabled =
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":true}}}"#;
+        assert_eq!(set_then_read(enabled, false), Some(false));
+    }
+
+    #[test]
+    fn set_autonomous_mode_replaces_a_string_shaped_value() {
+        // A non-boolean value token is still replaced wholesale by the literal.
+        let original =
+            r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":"off"}}}"#;
+        assert_eq!(set_then_read(original, true), Some(true));
+    }
+
+    #[test]
+    fn set_autonomous_mode_inserts_the_key_into_an_existing_dispatcher() {
+        let original = r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"wip_cap":3}}}"#;
+        let updated = set_autonomous_mode_in_jsonc(original, true);
+        assert!(
+            updated
+                .as_deref()
+                .is_some_and(|u| u.contains("\"wip_cap\":3"))
+        );
+        assert_eq!(
+            updated.as_deref().map(read_autonomous_mode_from_jsonc),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn set_autonomous_mode_inserts_into_an_empty_dispatcher_without_a_trailing_comma() {
+        let original = r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{}}}"#;
+        assert_eq!(set_then_read(original, true), Some(true));
+    }
+
+    #[test]
+    fn set_autonomous_mode_creates_the_whole_block_when_orchestrator_is_absent() {
+        let original = r#"{"template": "livespec-with-diagrams"}"#;
+        let updated = set_autonomous_mode_in_jsonc(original, true);
+        assert!(
+            updated
+                .as_deref()
+                .is_some_and(|u| u.contains("\"template\": \"livespec-with-diagrams\""))
+        );
+        assert_eq!(
+            updated.as_deref().map(read_autonomous_mode_from_jsonc),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn set_autonomous_mode_creates_the_block_in_an_empty_object() {
+        assert_eq!(set_then_read("{}", true), Some(true));
+    }
+
+    #[test]
+    fn set_autonomous_mode_returns_none_for_a_non_object_document() {
+        assert_eq!(set_autonomous_mode_in_jsonc("[1, 2, 3]", true), None);
+        assert_eq!(set_autonomous_mode_in_jsonc("   \"a string\"", true), None);
+    }
+
+    #[test]
+    fn read_autonomous_mode_handles_block_comments_and_escaped_strings() {
+        let config = r#"{
+  /* a block comment with "quotes" and // slashes and a * star */
+  "note": "value with \"escaped\" quotes and a \\ backslash and // not a comment",
+  "livespec-orchestrator-beads-fabro": { "dispatcher": { "autonomous_mode": true } }
+}"#;
+        assert!(read_autonomous_mode_from_jsonc(config));
+    }
+
+    #[test]
+    fn set_autonomous_mode_scans_past_block_comments_and_escaped_strings() {
+        let config = r#"{
+  /* block comment before the target */
+  "note": "a \"tricky\" value",
+  "livespec-orchestrator-beads-fabro": {
+    "dispatcher": { "autonomous_mode": false }
+  }
+}"#;
+        assert_eq!(set_then_read(config, true), Some(true));
+    }
+
+    #[test]
+    fn jsonc_helpers_consume_unterminated_block_comments_to_end_of_input() {
+        // strip_jsonc_comments consumes an unterminated block comment to EOF, so
+        // the document fails to parse and reads as disabled.
+        assert!(!read_autonomous_mode_from_jsonc("/* unterminated"));
+        // The scanner's skip likewise consumes an unterminated block comment to
+        // EOF and finds no object to edit.
+        assert_eq!(set_autonomous_mode_in_jsonc("/* unterminated", true), None);
+    }
+
+    #[test]
+    fn set_autonomous_mode_falls_through_when_a_member_is_not_an_object() {
+        // A `dispatcher` whose value is not an object cannot be opened; the edit
+        // still produces output via a higher-level fallback.
+        let dispatcher_scalar = r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":5}}"#;
+        assert!(set_autonomous_mode_in_jsonc(dispatcher_scalar, true).is_some());
+        // An orchestrator key whose value is not an object falls through to the
+        // top-level block insertion.
+        let orchestrator_scalar = r#"{"livespec-orchestrator-beads-fabro":5}"#;
+        assert!(set_autonomous_mode_in_jsonc(orchestrator_scalar, true).is_some());
+    }
+
+    #[test]
+    fn arming_port_arms_when_config_is_readable_and_writable() {
+        let probe = ConfigFileProbe {
+            read_outcome: SourceProbeOutcome::observed(CONFIG_WITHOUT_DISPATCHER, true),
+            write_outcome: SourceProbeOutcome::observed("", true),
+            writes: RefCell::new(Vec::new()),
+        };
+        let mut port = LivespecJsoncArmingPort::new(&probe, "/repo/.livespec.jsonc");
+
+        let outcome = port.arm(&AutonomousModeArmingRequest::new("repo-a".to_owned(), true));
+
+        assert_eq!(outcome, Ok(AutonomousModeArmingOutcome::armed()));
+        let writes = probe.writes.borrow();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, "/repo/.livespec.jsonc");
+        // The port wrote the EDITED content, so the key reads back enabled.
+        assert!(read_autonomous_mode_from_jsonc(&writes[0].1));
+        // The arming port never runs commands.
+        assert!(matches!(
+            probe.run_command("unused", &[]),
+            SourceProbeOutcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn arming_port_is_not_wired_when_the_config_cannot_be_read() {
+        let probe = ConfigFileProbe {
+            read_outcome: SourceProbeOutcome::unavailable("no such file"),
+            write_outcome: SourceProbeOutcome::observed("", true),
+            writes: RefCell::new(Vec::new()),
+        };
+        let mut port = LivespecJsoncArmingPort::new(&probe, "/missing/.livespec.jsonc");
+
+        let outcome = port.arm(&AutonomousModeArmingRequest::new("repo-a".to_owned(), true));
+
+        assert_eq!(outcome, Ok(AutonomousModeArmingOutcome::not_wired()));
+        assert!(probe.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn arming_port_is_not_wired_when_the_read_reports_failure() {
+        let probe = ConfigFileProbe {
+            read_outcome: SourceProbeOutcome::observed("partial", false),
+            write_outcome: SourceProbeOutcome::observed("", true),
+            writes: RefCell::new(Vec::new()),
+        };
+        let mut port = LivespecJsoncArmingPort::new(&probe, "/repo/.livespec.jsonc");
+
+        let outcome = port.arm(&AutonomousModeArmingRequest::new(
+            "repo-a".to_owned(),
+            false,
+        ));
+
+        assert_eq!(outcome, Ok(AutonomousModeArmingOutcome::not_wired()));
+    }
+
+    #[test]
+    fn arming_port_is_not_wired_when_the_config_is_malformed() {
+        let probe = ConfigFileProbe {
+            read_outcome: SourceProbeOutcome::observed("[not an object]", true),
+            write_outcome: SourceProbeOutcome::observed("", true),
+            writes: RefCell::new(Vec::new()),
+        };
+        let mut port = LivespecJsoncArmingPort::new(&probe, "/repo/.livespec.jsonc");
+
+        let outcome = port.arm(&AutonomousModeArmingRequest::new("repo-a".to_owned(), true));
+
+        assert_eq!(outcome, Ok(AutonomousModeArmingOutcome::not_wired()));
+        assert!(probe.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn arming_port_is_not_wired_when_the_write_fails() {
+        let probe = ConfigFileProbe {
+            read_outcome: SourceProbeOutcome::observed(CONFIG_WITHOUT_DISPATCHER, true),
+            write_outcome: SourceProbeOutcome::observed("disk error", false),
+            writes: RefCell::new(Vec::new()),
+        };
+        let mut port = LivespecJsoncArmingPort::new(&probe, "/repo/.livespec.jsonc");
+
+        let outcome = port.arm(&AutonomousModeArmingRequest::new("repo-a".to_owned(), true));
+
+        assert_eq!(outcome, Ok(AutonomousModeArmingOutcome::not_wired()));
+    }
+
+    #[test]
+    fn arming_port_is_not_wired_when_no_write_capability_is_present() {
+        // The read-only probe inherits the trait's default write_file (an honest
+        // not-wired outcome), so the arming surface is not wired.
+        let probe = ReadOnlyConfigProbe {
+            read_outcome: SourceProbeOutcome::observed(CONFIG_WITHOUT_DISPATCHER, true),
+        };
+        // The read-only double never runs commands either.
+        assert!(matches!(
+            probe.run_command("unused", &[]),
+            SourceProbeOutcome::Unavailable { .. }
+        ));
+        let mut port = LivespecJsoncArmingPort::new(&probe, "/repo/.livespec.jsonc");
+
+        let outcome = port.arm(&AutonomousModeArmingRequest::new("repo-a".to_owned(), true));
+
+        assert_eq!(outcome, Ok(AutonomousModeArmingOutcome::not_wired()));
+    }
+
+    /// The event contexts of a handled config outcome, for assertion without
+    /// extracting the outcome out of its `Result`.
+    fn event_contexts(outcome: &super::ApplicationResult<ConfigCommandOutcome>) -> Vec<String> {
+        outcome
+            .as_ref()
+            .map(|handled| {
+                handled
+                    .events()
+                    .iter()
+                    .map(|event| event.context().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The parsed payload of the config outcome's audit event (index 2), or
+    /// `Null` when absent.
+    fn audit_payload(
+        outcome: &super::ApplicationResult<ConfigCommandOutcome>,
+    ) -> serde_json::Value {
+        outcome
+            .as_ref()
+            .ok()
+            .and_then(|handled| handled.events().get(2))
+            .map(|event| serde_json::from_str(event.payload_json()).unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn config_handler_rejects_an_unconfirmed_enable_with_no_effect() {
+        let mut port = RecordingArmingPort::new(AutonomousModeArmingOutcome::armed());
+        let outcome = handle_config_autonomous_mode_set_command(
+            &autonomous_mode_set_command(),
+            r#"{"repo":"repo-a","enabled":true,"confirmed":false}"#,
+            "2026-07-11T00:00:00Z",
+            &mut port,
+        );
+
+        assert_eq!(
+            outcome.as_ref().map(ConfigCommandOutcome::command_status),
+            Ok("rejected")
+        );
+        // Only the rejection is recorded -- no factory arming and no audit.
+        assert_eq!(
+            outcome.as_ref().map(event_types),
+            Ok(vec![EventType::CommandRejected])
+        );
+        assert_eq!(event_contexts(&outcome), ["command"]);
+        // The arming port was NEVER called: no key write.
+        assert!(port.requests.is_empty());
+    }
+
+    #[test]
+    fn config_handler_arms_and_audits_a_confirmed_enable() {
+        let mut port = RecordingArmingPort::new(AutonomousModeArmingOutcome::armed());
+        let outcome = handle_config_autonomous_mode_set_command(
+            &autonomous_mode_set_command(),
+            r#"{"repo":"repo-a","enabled":true,"confirmed":true}"#,
+            "2026-07-11T00:00:00Z",
+            &mut port,
+        );
+
+        assert_eq!(
+            outcome.as_ref().map(ConfigCommandOutcome::command_status),
+            Ok("completed")
+        );
+        assert_eq!(
+            outcome.as_ref().map(event_types),
+            Ok(vec![
+                EventType::CommandAccepted,
+                EventType::FactoryAutonomousModeEnableRequested,
+                EventType::ConfigAutonomousModeEnabled,
+            ])
+        );
+        // The factory arming command was issued through the port, enabled.
+        assert_eq!(port.requests.len(), 1);
+        assert_eq!(port.requests[0].repo(), "repo-a");
+        assert!(port.requests[0].enabled());
+        // The factory event is in the factory context; the audit event is in
+        // the configuration context.
+        assert_eq!(
+            event_contexts(&outcome),
+            ["command", "factory", "configuration"]
+        );
+        // The audit event carries { repo, actor, occurred_at }.
+        let payload = audit_payload(&outcome);
+        assert_eq!(payload["repo"], "repo-a");
+        assert_eq!(payload["actor"], "operator");
+        assert_eq!(payload["occurred_at"], "2026-07-11T00:00:00Z");
+    }
+
+    #[test]
+    fn config_handler_arms_and_audits_a_disable_without_requiring_confirmation() {
+        let mut port = RecordingArmingPort::new(AutonomousModeArmingOutcome::armed());
+        let outcome = handle_config_autonomous_mode_set_command(
+            &autonomous_mode_set_command(),
+            r#"{"repo":"repo-a","enabled":false,"confirmed":false}"#,
+            "2026-07-11T00:00:01Z",
+            &mut port,
+        );
+
+        assert_eq!(
+            outcome.as_ref().map(ConfigCommandOutcome::command_status),
+            Ok("completed")
+        );
+        assert_eq!(
+            outcome.as_ref().map(event_types),
+            Ok(vec![
+                EventType::CommandAccepted,
+                EventType::FactoryAutonomousModeDisableRequested,
+                EventType::ConfigAutonomousModeDisabled,
+            ])
+        );
+        assert_eq!(audit_payload(&outcome)["repo"], "repo-a");
+        assert_eq!(port.requests.len(), 1);
+        assert!(!port.requests[0].enabled());
+    }
+
+    #[test]
+    fn config_handler_surfaces_not_wired_without_an_audit_event() {
+        let mut port = RecordingArmingPort::new(AutonomousModeArmingOutcome::not_wired());
+        let outcome = handle_config_autonomous_mode_set_command(
+            &autonomous_mode_set_command(),
+            r#"{"repo":"repo-a","enabled":true,"confirmed":true}"#,
+            "2026-07-11T00:00:02Z",
+            &mut port,
+        );
+
+        assert_eq!(
+            outcome.as_ref().map(ConfigCommandOutcome::command_status),
+            Ok("not_wired")
+        );
+        // The honest not-wired outcome, and NO audit event.
+        assert_eq!(
+            outcome.as_ref().map(event_types),
+            Ok(vec![
+                EventType::CommandAccepted,
+                EventType::FactoryAutonomousModeNotWired,
+            ])
+        );
+        assert_eq!(event_contexts(&outcome), ["command", "factory"]);
+    }
+
+    #[test]
+    fn config_handler_rejects_a_malformed_payload() {
+        let mut port = RecordingArmingPort::new(AutonomousModeArmingOutcome::armed());
+        let outcome = handle_config_autonomous_mode_set_command(
+            &autonomous_mode_set_command(),
+            "not json",
+            "2026-07-11T00:00:03Z",
+            &mut port,
+        );
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidAutonomousModePayload));
+        assert!(port.requests.is_empty());
     }
 }

@@ -195,8 +195,8 @@
   {
     "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should cover the guarded autonomous-mode enable path, type-to-confirm behavior, armed orchestrator permission key, audit event, and no-effect rejection for unconfirmed enables. Registered now because Scenario 9 is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "test": "crates/console-cli/tests/scenario_9_autonomous_mode.rs::scenario_9_enabling_autonomous_mode_is_confirmed_armed_and_audited",
+    "reason": "",
     "clauses": [
       {
         "gap_id": "gap-la7dkro2",
