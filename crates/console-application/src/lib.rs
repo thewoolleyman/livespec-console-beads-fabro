@@ -181,6 +181,14 @@ pub enum TuiOverlay {
         /// Index of the currently selected action within the modal's action list.
         selected_action_index: usize,
     },
+    /// Autonomous-mode type-to-confirm variant: the dangerous enable modal that
+    /// gates a `config.autonomous_mode_set` submit until the operator types the
+    /// confirmation phrase (the selected repo's id). Enabling full autonomous
+    /// mode is dangerous, so it is never submitted straight from the toggle.
+    AutonomousModeConfirm {
+        /// The confirmation text the operator has typed so far.
+        typed: String,
+    },
 }
 
 impl TuiOverlay {
@@ -195,7 +203,7 @@ impl TuiOverlay {
     pub fn query(&self) -> Option<&str> {
         match self {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
-            Self::None | Self::CommandModal { .. } => None,
+            Self::None | Self::CommandModal { .. } | Self::AutonomousModeConfirm { .. } => None,
         }
     }
 
@@ -206,7 +214,23 @@ impl TuiOverlay {
             Self::CommandModal {
                 selected_action_index,
             } => Some(*selected_action_index),
-            Self::None | Self::Search { .. } | Self::CommandPalette { .. } => None,
+            Self::None
+            | Self::Search { .. }
+            | Self::CommandPalette { .. }
+            | Self::AutonomousModeConfirm { .. } => None,
+        }
+    }
+
+    #[must_use]
+    /// Return the confirmation text typed into the autonomous-mode confirm modal,
+    /// or `None` for any other overlay.
+    pub fn autonomous_confirm_typed(&self) -> Option<&str> {
+        match self {
+            Self::AutonomousModeConfirm { typed } => Some(typed),
+            Self::None
+            | Self::Search { .. }
+            | Self::CommandPalette { .. }
+            | Self::CommandModal { .. } => None,
         }
     }
 }
@@ -242,6 +266,9 @@ pub enum TuiInteraction {
     DrillIntoLane,
     /// Return to lane overview variant.
     ReturnToLaneOverview,
+    /// Open the autonomous-mode type-to-confirm modal (the dangerous enable
+    /// path for the selected repo).
+    OpenAutonomousModeConfirm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +279,8 @@ pub struct TuiInteractionState {
     lane_focus: LaneFocus,
     selected_lane_index: usize,
     overlay: TuiOverlay,
+    selected_repo: String,
+    autonomous_mode_enabled: bool,
 }
 
 impl TuiInteractionState {
@@ -264,6 +293,8 @@ impl TuiInteractionState {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             overlay,
+            selected_repo: String::new(),
+            autonomous_mode_enabled: false,
         }
     }
 
@@ -280,6 +311,8 @@ impl TuiInteractionState {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             overlay,
+            selected_repo: String::new(),
+            autonomous_mode_enabled: false,
         }
     }
 
@@ -320,6 +353,24 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the selected repo replaced. The composition root
+    /// sets the repo whose autonomous-mode toggle and header indicator the TUI
+    /// presents.
+    pub fn with_selected_repo(mut self, selected_repo: String) -> Self {
+        self.selected_repo = selected_repo;
+        self
+    }
+
+    #[must_use]
+    /// Return this value with the selected repo's derived autonomous-mode flag
+    /// replaced. The composition root derives it from the repo's `.livespec.jsonc`
+    /// (an absent key is disabled) and the TUI only reflects it.
+    pub const fn with_autonomous_mode_enabled(mut self, autonomous_mode_enabled: bool) -> Self {
+        self.autonomous_mode_enabled = autonomous_mode_enabled;
+        self
+    }
+
+    #[must_use]
     /// Return the stored value.
     pub const fn active_view(&self) -> TuiView {
         self.active_view
@@ -347,6 +398,19 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn overlay(&self) -> &TuiOverlay {
         &self.overlay
+    }
+
+    #[must_use]
+    /// Return the selected repo whose autonomous-mode toggle and header
+    /// indicator the TUI presents.
+    pub fn selected_repo(&self) -> &str {
+        &self.selected_repo
+    }
+
+    #[must_use]
+    /// Return the selected repo's derived autonomous-mode flag.
+    pub const fn autonomous_mode_enabled(&self) -> bool {
+        self.autonomous_mode_enabled
     }
 }
 
@@ -470,6 +534,8 @@ pub struct TuiScreenModel {
     lane_focus: LaneFocus,
     selected_lane_index: Option<usize>,
     overlay: TuiOverlay,
+    selected_repo: String,
+    autonomous_mode_enabled: bool,
     header: String,
     footer: String,
 }
@@ -546,6 +612,20 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Return the selected repo whose autonomous-mode toggle and header
+    /// indicator this model presents.
+    pub fn selected_repo(&self) -> &str {
+        &self.selected_repo
+    }
+
+    #[must_use]
+    /// Return whether autonomous mode is active for the selected repo, derived
+    /// from that repo's `.livespec.jsonc` (an absent key is disabled).
+    pub const fn autonomous_mode_enabled(&self) -> bool {
+        self.autonomous_mode_enabled
+    }
+
+    #[must_use]
     /// Return the header value.
     pub fn header(&self) -> &str {
         &self.header
@@ -609,6 +689,10 @@ pub enum ApplicationError {
     /// command carried a payload that was malformed, missing a required
     /// `repo` / `enabled` / `confirmed` field, or carried an empty `repo`.
     InvalidAutonomousModePayload,
+    /// Autonomous-mode confirmation mismatch variant -- the operator confirmed
+    /// the dangerous enable modal without typing the required confirmation
+    /// phrase (the selected repo's id), so the enable is not submitted.
+    AutonomousModeConfirmationMismatch,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -627,6 +711,17 @@ pub type ApplicationResult<T> = Result<T, ApplicationError>;
 pub enum OperatorActionOutcome {
     /// Persist command variant.
     PersistCommand(CommandEnvelope),
+    /// Persist a command carrying an operator-supplied JSON payload. Used by the
+    /// autonomous-mode arming command, whose `{ repo, enabled, confirmed }`
+    /// payload the Configuration context reads back (the payload-less
+    /// `PersistCommand` path persists an empty `{}` object, which that handler
+    /// would reject).
+    PersistCommandWithPayload {
+        /// The command envelope to persist.
+        command: CommandEnvelope,
+        /// The command's `{ ... }` payload JSON.
+        payload_json: String,
+    },
     /// Open attach command variant.
     OpenAttachCommand(String),
     /// Copy attach command variant.
@@ -638,7 +733,9 @@ impl OperatorActionOutcome {
     /// Return the wrapped command envelope.
     pub const fn command(&self) -> Option<&CommandEnvelope> {
         match self {
-            Self::PersistCommand(command) => Some(command),
+            Self::PersistCommand(command) | Self::PersistCommandWithPayload { command, .. } => {
+                Some(command)
+            }
             Self::OpenAttachCommand(_) | Self::CopyAttachCommand(_) => None,
         }
     }
@@ -648,7 +745,7 @@ impl OperatorActionOutcome {
     pub fn attach_command(&self) -> Option<&str> {
         match self {
             Self::OpenAttachCommand(command) | Self::CopyAttachCommand(command) => Some(command),
-            Self::PersistCommand(_) => None,
+            Self::PersistCommand(_) | Self::PersistCommandWithPayload { .. } => None,
         }
     }
 }
@@ -1293,14 +1390,35 @@ pub fn build_tui_model_for_state(
         lane_focus,
         selected_lane_index,
         overlay,
+        selected_repo: state.selected_repo().to_owned(),
+        autonomous_mode_enabled: state.autonomous_mode_enabled(),
         header: format!(
-            "fleet: livespec | mode: tui | view: {} | attention: {}",
+            "fleet: livespec | mode: tui | repo: {} | autonomous: {} | view: {} | attention: {}",
+            header_repo_label(state.selected_repo()),
+            autonomous_mode_header_label(state.autonomous_mode_enabled()),
             active_view.label(),
             attention_snapshots.len()
         ),
-        footer: "shortcuts: up/down select | left/right views | enter details | / search | : command palette"
+        footer: "shortcuts: up/down select | left/right views | enter details | / search | : command palette | a autonomous-mode (dangerous / use with caution)"
             .to_owned(),
     }
+}
+
+/// The header's repo segment: the selected repo id, or a `-` placeholder when
+/// no repo is selected (for example a preview model built with the default
+/// interaction state).
+fn header_repo_label(selected_repo: &str) -> &str {
+    if selected_repo.trim().is_empty() {
+        "-"
+    } else {
+        selected_repo
+    }
+}
+
+/// The header's autonomous-mode segment: `on` when autonomous mode is active for
+/// the selected repo, else `off`.
+const fn autonomous_mode_header_label(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
 }
 
 #[must_use]
@@ -1346,6 +1464,13 @@ pub fn reduce_tui_interaction(
         }
         TuiInteraction::DrillIntoLane => drill_into_lane(state),
         TuiInteraction::ReturnToLaneOverview => state.clone().with_lane_focus(LaneFocus::Overview),
+        TuiInteraction::OpenAutonomousModeConfirm => {
+            state
+                .clone()
+                .with_overlay(TuiOverlay::AutonomousModeConfirm {
+                    typed: String::new(),
+                })
+        }
     }
 }
 
@@ -1422,6 +1547,98 @@ pub fn resolve_selected_operator_action(
             OperatorActionOutcome::CopyAttachCommand(detail.attach_command().to_owned())
         }
     })
+}
+
+/// Whether the operator's typed confirmation phrase matches the required phrase.
+///
+/// The required phrase to enable autonomous mode for `repo` is the repo's own
+/// id, so the operator must type the exact repo they are arming. An empty repo
+/// can never match.
+#[must_use]
+pub fn autonomous_mode_confirmation_matches(typed: &str, repo: &str) -> bool {
+    !repo.trim().is_empty() && typed.trim() == repo.trim()
+}
+
+/// Resolve the autonomous-mode ENABLE submit from the type-to-confirm modal.
+///
+/// Enabling full autonomous mode is dangerous, so the submit is gated: it is
+/// produced only when the overlay is the autonomous-mode confirm modal AND the
+/// operator typed the confirmation phrase (the selected repo's id). The
+/// resulting command carries `{ repo, enabled: true, confirmed: true }`.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
+/// blank, [`ApplicationError::NoSelectedOperatorAction`] when the overlay is not
+/// the confirm modal, and [`ApplicationError::AutonomousModeConfirmationMismatch`]
+/// when the typed phrase does not match -- in which case the enable is not
+/// submitted.
+pub fn resolve_autonomous_mode_enable(
+    model: &TuiScreenModel,
+    requested_by: &str,
+) -> ApplicationResult<OperatorActionOutcome> {
+    validate_operator_action(requested_by)?;
+    let typed = model
+        .overlay()
+        .autonomous_confirm_typed()
+        .ok_or(ApplicationError::NoSelectedOperatorAction)?;
+    let repo = model.selected_repo();
+    if !autonomous_mode_confirmation_matches(typed, repo) {
+        return Err(ApplicationError::AutonomousModeConfirmationMismatch);
+    }
+    Ok(autonomous_mode_set_outcome(repo, true, true, requested_by))
+}
+
+/// Resolve the autonomous-mode DISABLE submit for the selected repo.
+///
+/// Disabling requires no confirmation, so it is produced directly (no modal).
+/// The resulting command carries `{ repo, enabled: false, confirmed: false }`.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
+/// blank and [`ApplicationError::InvalidAutonomousModePayload`] when no repo is
+/// selected.
+pub fn resolve_autonomous_mode_disable(
+    model: &TuiScreenModel,
+    requested_by: &str,
+) -> ApplicationResult<OperatorActionOutcome> {
+    validate_operator_action(requested_by)?;
+    let repo = model.selected_repo();
+    if repo.trim().is_empty() {
+        return Err(ApplicationError::InvalidAutonomousModePayload);
+    }
+    Ok(autonomous_mode_set_outcome(
+        repo,
+        false,
+        false,
+        requested_by,
+    ))
+}
+
+/// Build the `config.autonomous_mode_set` persist outcome for `repo`, carrying
+/// the `{ repo, enabled, confirmed }` payload the Configuration context reads.
+fn autonomous_mode_set_outcome(
+    repo: &str,
+    enabled: bool,
+    confirmed: bool,
+    requested_by: &str,
+) -> OperatorActionOutcome {
+    let command = CommandEnvelope::new(
+        format!("cmd_autonomous_mode_set_{repo}_{enabled}"),
+        CommandType::ConfigAutonomousModeSet,
+        repo.to_owned(),
+        format!("{repo}:config.autonomous_mode_set:enabled={enabled}"),
+        requested_by.to_owned(),
+    );
+    let payload_json = serde_json::json!({
+        "repo": repo,
+        "enabled": enabled,
+        "confirmed": confirmed,
+    })
+    .to_string();
+    OperatorActionOutcome::PersistCommandWithPayload {
+        command,
+        payload_json,
+    }
 }
 
 /// Resolve command palette action.
@@ -2889,9 +3106,10 @@ fn attention_title(snapshot: &WorkItemSnapshot) -> String {
 fn search_query(overlay: &TuiOverlay) -> Option<&str> {
     match overlay {
         TuiOverlay::Search { query } => Some(query),
-        TuiOverlay::None | TuiOverlay::CommandPalette { .. } | TuiOverlay::CommandModal { .. } => {
-            None
-        }
+        TuiOverlay::None
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. } => None,
     }
 }
 
@@ -2902,9 +3120,10 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         } => TuiOverlay::CommandModal {
             selected_action_index: clamp_action_index(detail, *selected_action_index),
         },
-        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
-            overlay.clone()
-        }
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. } => overlay.clone(),
     }
 }
 
@@ -2950,6 +3169,9 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
             query: format!("{query}{value}"),
         },
+        TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
+            typed: format!("{typed}{value}"),
+        },
         TuiOverlay::None | TuiOverlay::CommandModal { .. } => overlay.clone(),
     }
 }
@@ -2957,19 +3179,24 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
 fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
     match overlay {
         TuiOverlay::Search { query } => TuiOverlay::Search {
-            query: query
-                .char_indices()
-                .next_back()
-                .map_or_else(String::new, |(index, _value)| query[..index].to_owned()),
+            query: drop_last_char(query),
         },
         TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
-            query: query
-                .char_indices()
-                .next_back()
-                .map_or_else(String::new, |(index, _value)| query[..index].to_owned()),
+            query: drop_last_char(query),
+        },
+        TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
+            typed: drop_last_char(typed),
         },
         TuiOverlay::None | TuiOverlay::CommandModal { .. } => overlay.clone(),
     }
+}
+
+/// Return `text` with its final character removed, or an empty string when it is
+/// already empty. Shared by the overlays whose text the operator edits.
+fn drop_last_char(text: &str) -> String {
+    text.char_indices()
+        .next_back()
+        .map_or_else(String::new, |(index, _value)| text[..index].to_owned())
 }
 
 fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> TuiOverlay {
@@ -2979,9 +3206,10 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         } => TuiOverlay::CommandModal {
             selected_action_index: clamp_action_index(detail, selected_action_index + 1),
         },
-        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
-            overlay.clone()
-        }
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. } => overlay.clone(),
     }
 }
 
@@ -2992,9 +3220,10 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         } => TuiOverlay::CommandModal {
             selected_action_index: selected_action_index.saturating_sub(1),
         },
-        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
-            overlay.clone()
-        }
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. } => overlay.clone(),
     }
 }
 
@@ -3183,14 +3412,16 @@ mod tests {
         JournalAutonomousDecisionsPort, LaneFocus, LivespecJsoncArmingPort, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
-        handle_config_autonomous_mode_set_command, handle_factory_drain_command,
-        handle_work_item_accept_command, handle_work_item_approve_command,
-        handle_work_item_reject_command, handle_work_item_set_acceptance_command,
-        handle_work_item_set_admission_command, project_attention, project_lane_board,
-        read_autonomous_mode_from_jsonc, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_selected_operator_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, set_autonomous_mode_in_jsonc, validate_operator_action,
+        TuiScreenModel, TuiView, autonomous_mode_confirmation_matches, build_tui_model,
+        build_tui_model_for_state, handle_config_autonomous_mode_set_command,
+        handle_factory_drain_command, handle_work_item_accept_command,
+        handle_work_item_approve_command, handle_work_item_reject_command,
+        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+        project_attention, project_lane_board, read_autonomous_mode_from_jsonc,
+        reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
+        resolve_command_palette_action, resolve_selected_operator_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload,
+        set_autonomous_mode_in_jsonc, validate_operator_action,
     };
 
     #[test]
@@ -3690,11 +3921,11 @@ mod tests {
         assert_eq!(model.selected_operator_action(), None);
         assert_eq!(
             model.header(),
-            "fleet: livespec | mode: tui | view: Attention | attention: 0"
+            "fleet: livespec | mode: tui | repo: - | autonomous: off | view: Attention | attention: 0"
         );
         assert_eq!(
             model.footer(),
-            "shortcuts: up/down select | left/right views | enter details | / search | : command palette"
+            "shortcuts: up/down select | left/right views | enter details | / search | : command palette | a autonomous-mode (dangerous / use with caution)"
         );
     }
 
@@ -4144,6 +4375,8 @@ mod tests {
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
+            selected_repo: String::new(),
+            autonomous_mode_enabled: false,
             header: "LiveSpec Console".to_owned(),
             footer: String::new(),
         };
@@ -4389,6 +4622,8 @@ mod tests {
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
+            selected_repo: String::new(),
+            autonomous_mode_enabled: false,
             header: String::new(),
             footer: String::new(),
         };
@@ -6360,5 +6595,230 @@ mod tests {
 
         assert_eq!(outcome, Err(ApplicationError::InvalidAutonomousModePayload));
         assert!(port.requests.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // TUI autonomous-mode surface (C3 slice 2): toggle, type-to-confirm modal,
+    // dangerous label, and header indicator for the selected repo.
+    // -----------------------------------------------------------------------
+
+    const CONFIRM_REPO: &str = "livespec-console-beads-fabro";
+
+    /// A model over the given overlay whose selected repo carries the given
+    /// derived autonomous mode, built with no events (no attention items).
+    fn autonomous_model(
+        overlay: TuiOverlay,
+        selected_repo: &str,
+        autonomous_mode_enabled: bool,
+    ) -> TuiScreenModel {
+        let state = TuiInteractionState::new(0, overlay)
+            .with_selected_repo(selected_repo.to_owned())
+            .with_autonomous_mode_enabled(autonomous_mode_enabled);
+        build_tui_model_for_state(&[], &state)
+    }
+
+    #[test]
+    fn header_reflects_the_selected_repo_and_its_autonomous_mode() {
+        let on = autonomous_model(TuiOverlay::None, CONFIRM_REPO, true);
+        assert_eq!(on.selected_repo(), CONFIRM_REPO);
+        assert!(on.autonomous_mode_enabled());
+        assert!(on.header().contains(&format!("repo: {CONFIRM_REPO}")));
+        assert!(on.header().contains("autonomous: on"));
+
+        let off = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
+        assert!(!off.autonomous_mode_enabled());
+        assert!(off.header().contains("autonomous: off"));
+    }
+
+    #[test]
+    fn footer_presents_the_dangerous_autonomous_toggle_shortcut() {
+        let model = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
+        assert!(
+            model
+                .footer()
+                .contains("a autonomous-mode (dangerous / use with caution)")
+        );
+    }
+
+    #[test]
+    fn interaction_state_carries_selected_repo_and_mode_through_the_reducer() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_autonomous_mode_enabled(true);
+        assert_eq!(state.selected_repo(), CONFIRM_REPO);
+        assert!(state.autonomous_mode_enabled());
+
+        // A view-navigation interaction must preserve the ambient repo + mode.
+        let next = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextView);
+        assert_eq!(next.selected_repo(), CONFIRM_REPO);
+        assert!(next.autonomous_mode_enabled());
+    }
+
+    #[test]
+    fn autonomous_confirm_overlay_exposes_only_its_typed_text() {
+        let confirm = TuiOverlay::AutonomousModeConfirm {
+            typed: "abc".to_owned(),
+        };
+        assert_eq!(confirm.autonomous_confirm_typed(), Some("abc"));
+        assert_eq!(confirm.query(), None);
+        assert_eq!(confirm.selected_action_index(), None);
+        assert!(confirm.is_open());
+        // Other overlays carry no confirm text.
+        assert_eq!(TuiOverlay::None.autonomous_confirm_typed(), None);
+    }
+
+    #[test]
+    fn reducer_opens_the_autonomous_mode_confirm_modal_empty() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let opened = reduce_tui_interaction(&state, &[], TuiInteraction::OpenAutonomousModeConfirm);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::AutonomousModeConfirm {
+                typed: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn autonomous_confirm_modal_accepts_typed_characters_and_backspace() {
+        let empty = TuiInteractionState::new(
+            0,
+            TuiOverlay::AutonomousModeConfirm {
+                typed: String::new(),
+            },
+        );
+        let typed_a = reduce_tui_interaction(&empty, &[], TuiInteraction::TypeChar('a'));
+        assert_eq!(
+            typed_a.overlay(),
+            &TuiOverlay::AutonomousModeConfirm {
+                typed: "a".to_owned(),
+            }
+        );
+        let typed_ab = reduce_tui_interaction(&typed_a, &[], TuiInteraction::TypeChar('b'));
+        let backspaced = reduce_tui_interaction(&typed_ab, &[], TuiInteraction::Backspace);
+        assert_eq!(
+            backspaced.overlay(),
+            &TuiOverlay::AutonomousModeConfirm {
+                typed: "a".to_owned(),
+            }
+        );
+        // Backspacing an already-empty confirm buffer stays empty.
+        let still_empty = reduce_tui_interaction(&empty, &[], TuiInteraction::Backspace);
+        assert_eq!(
+            still_empty.overlay(),
+            &TuiOverlay::AutonomousModeConfirm {
+                typed: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn autonomous_confirm_overlay_is_inert_for_action_and_search_helpers() {
+        // The confirm modal is normalized/searched/action-navigated as a no-op:
+        // build a model over it (search_query + normalize arms) and move the
+        // action selection up/down (move_action arms) -- the overlay is
+        // preserved unchanged.
+        let confirm = TuiOverlay::AutonomousModeConfirm {
+            typed: "x".to_owned(),
+        };
+        let model = autonomous_model(confirm.clone(), CONFIRM_REPO, false);
+        assert_eq!(model.overlay(), &confirm);
+
+        let state = TuiInteractionState::new(0, confirm.clone());
+        let down = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextAction);
+        assert_eq!(down.overlay(), &confirm);
+        let up = reduce_tui_interaction(&state, &[], TuiInteraction::SelectPreviousAction);
+        assert_eq!(up.overlay(), &confirm);
+    }
+
+    #[test]
+    fn autonomous_mode_confirmation_matches_requires_the_exact_repo() {
+        assert!(autonomous_mode_confirmation_matches(
+            CONFIRM_REPO,
+            CONFIRM_REPO
+        ));
+        assert!(autonomous_mode_confirmation_matches(
+            &format!("  {CONFIRM_REPO}  "),
+            CONFIRM_REPO
+        ));
+        assert!(!autonomous_mode_confirmation_matches("nope", CONFIRM_REPO));
+        assert!(!autonomous_mode_confirmation_matches("", ""));
+    }
+
+    #[test]
+    fn enabling_submits_a_confirmed_command_only_when_the_typed_phrase_matches() {
+        let overlay = TuiOverlay::AutonomousModeConfirm {
+            typed: CONFIRM_REPO.to_owned(),
+        };
+        let model = autonomous_model(overlay, CONFIRM_REPO, false);
+        let outcome = resolve_autonomous_mode_enable(&model, "operator");
+        assert!(matches!(
+            &outcome,
+            Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.command_type() == &CommandType::ConfigAutonomousModeSet
+                    && command.aggregate_id() == CONFIRM_REPO
+                    && payload_json.contains(r#""repo":"livespec-console-beads-fabro""#)
+                    && payload_json.contains(r#""enabled":true"#)
+                    && payload_json.contains(r#""confirmed":true"#)
+        ));
+    }
+
+    #[test]
+    fn enabling_rejects_a_mismatched_confirmation_without_submitting() {
+        let overlay = TuiOverlay::AutonomousModeConfirm {
+            typed: "wrong-repo".to_owned(),
+        };
+        let model = autonomous_model(overlay, CONFIRM_REPO, false);
+        assert_eq!(
+            resolve_autonomous_mode_enable(&model, "operator"),
+            Err(ApplicationError::AutonomousModeConfirmationMismatch)
+        );
+    }
+
+    #[test]
+    fn enabling_requires_the_confirm_overlay_to_be_open() {
+        let model = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
+        assert_eq!(
+            resolve_autonomous_mode_enable(&model, "operator"),
+            Err(ApplicationError::NoSelectedOperatorAction)
+        );
+    }
+
+    #[test]
+    fn disabling_submits_an_unconfirmed_command_with_no_modal() {
+        let model = autonomous_model(TuiOverlay::None, CONFIRM_REPO, true);
+        let outcome = resolve_autonomous_mode_disable(&model, "operator");
+        assert!(matches!(
+            &outcome,
+            Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.aggregate_id() == CONFIRM_REPO
+                    && payload_json.contains(r#""enabled":false"#)
+                    && payload_json.contains(r#""confirmed":false"#)
+        ));
+    }
+
+    #[test]
+    fn disabling_requires_a_selected_repo() {
+        let model = autonomous_model(TuiOverlay::None, "", true);
+        assert_eq!(
+            resolve_autonomous_mode_disable(&model, "operator"),
+            Err(ApplicationError::InvalidAutonomousModePayload)
+        );
+    }
+
+    #[test]
+    fn persist_with_payload_outcome_exposes_command_and_no_attach() {
+        let outcome = OperatorActionOutcome::PersistCommandWithPayload {
+            command: CommandEnvelope::new(
+                "cmd".to_owned(),
+                CommandType::ConfigAutonomousModeSet,
+                CONFIRM_REPO.to_owned(),
+                "key".to_owned(),
+                "operator".to_owned(),
+            ),
+            payload_json: "{}".to_owned(),
+        };
+        assert!(outcome.command().is_some());
+        assert_eq!(outcome.attach_command(), None);
     }
 }
