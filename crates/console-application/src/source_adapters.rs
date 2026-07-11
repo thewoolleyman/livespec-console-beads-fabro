@@ -354,6 +354,10 @@ pub enum AcceptancePolicy {
     #[default]
     /// Ai then human variant.
     AiThenHuman,
+    /// Ai only variant.
+    AiOnly,
+    /// Human only variant.
+    HumanOnly,
 }
 
 impl AcceptancePolicy {
@@ -362,6 +366,8 @@ impl AcceptancePolicy {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::AiThenHuman => "ai-then-human",
+            Self::AiOnly => "ai-only",
+            Self::HumanOnly => "human-only",
         }
     }
 }
@@ -2721,6 +2727,8 @@ mod tests {
         assert_eq!(AdmissionPolicy::Manual.label(), "manual");
         assert_eq!(AdmissionPolicy::Auto.label(), "auto");
         assert_eq!(AcceptancePolicy::AiThenHuman.label(), "ai-then-human");
+        assert_eq!(AcceptancePolicy::AiOnly.label(), "ai-only");
+        assert_eq!(AcceptancePolicy::HumanOnly.label(), "human-only");
     }
 
     #[test]
