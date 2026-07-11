@@ -320,6 +320,11 @@ pub enum CommandType {
     /// the orchestrator's `reject:<work-item-id>:<mode>` action, where the
     /// command payload carries `mode` in {rework, regroom}.
     WorkItemRejectRequested,
+    /// Request to set a work-item's admission policy dial -- maps onto the
+    /// orchestrator's `set-admission:<work-item-id>:<policy>` action, where the
+    /// command payload carries `policy` in {auto, manual}. A policy edit never
+    /// moves the item between lifecycle states.
+    WorkItemSetAdmissionRequested,
 }
 
 impl CommandType {
@@ -331,6 +336,7 @@ impl CommandType {
             Self::WorkItemApproveRequested => "work_item.approve_requested",
             Self::WorkItemAcceptRequested => "work_item.accept_requested",
             Self::WorkItemRejectRequested => "work_item.reject_requested",
+            Self::WorkItemSetAdmissionRequested => "work_item.set_admission_requested",
         }
     }
 
@@ -341,7 +347,8 @@ impl CommandType {
             Self::FactoryDrainRequested => "factory",
             Self::WorkItemApproveRequested
             | Self::WorkItemAcceptRequested
-            | Self::WorkItemRejectRequested => "work_item",
+            | Self::WorkItemRejectRequested
+            | Self::WorkItemSetAdmissionRequested => "work_item",
         }
     }
 }
@@ -574,6 +581,10 @@ mod tests {
             CommandType::WorkItemRejectRequested.contract_name(),
             "work_item.reject_requested"
         );
+        assert_eq!(
+            CommandType::WorkItemSetAdmissionRequested.contract_name(),
+            "work_item.set_admission_requested"
+        );
     }
 
     #[test]
@@ -582,6 +593,10 @@ mod tests {
         assert_eq!(CommandType::WorkItemApproveRequested.context(), "work_item");
         assert_eq!(CommandType::WorkItemAcceptRequested.context(), "work_item");
         assert_eq!(CommandType::WorkItemRejectRequested.context(), "work_item");
+        assert_eq!(
+            CommandType::WorkItemSetAdmissionRequested.context(),
+            "work_item"
+        );
     }
 
     #[test]

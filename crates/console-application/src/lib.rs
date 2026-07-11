@@ -597,6 +597,10 @@ pub enum ApplicationError {
     /// carried a payload whose `mode` was absent or not one of {rework,
     /// regroom}.
     InvalidRejectMode,
+    /// Invalid admission policy variant -- a `work_item.set_admission_requested`
+    /// command carried a payload whose `policy` was absent or not one of {auto,
+    /// manual}.
+    InvalidAdmissionPolicy,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -1653,6 +1657,51 @@ fn reject_mode_from_payload(payload_json: &str) -> ApplicationResult<RejectMode>
     RejectMode::parse(mode)
 }
 
+/// Handle a `work_item.set_admission_requested` command.
+///
+/// Set-admission is the admission policy dial: `payload_json` is
+/// `{"policy": "auto" | "manual"}`. The handler validates the work-item id,
+/// parses and validates the policy enum, derives the
+/// `set-admission:<work-item-id>:<policy>` action-id, and rides the shared
+/// orchestrator-action port and `work_item` outcome family exactly like the
+/// reject command. A policy edit never moves the item between lifecycle states:
+/// the console only issues the command and emits the `work_item.action.*`
+/// events, observing any effect on a subsequent poll. Thin console-side
+/// validation only -- the orchestrator's `drive` surface owns state-legality --
+/// and it never writes the ledger directly.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidAdmissionPolicy`] when the payload's `policy` is
+/// absent or invalid; also surfaces a port error when the port cannot produce a
+/// trustworthy outcome.
+pub fn handle_work_item_set_admission_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let policy = set_admission_policy_from_payload(payload_json)?;
+    let action_id = format!("set-admission:{work_item_id}:{}", policy.label());
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Extract the admission `policy` from a command's persisted `payload_json`.
+///
+/// The payload is the JSON object `{"policy": "auto" | "manual"}`; the value is
+/// deserialized through the read-side [`AdmissionPolicy`] enum (kebab-case), so
+/// the command dial and the snapshot dial share one source of truth. Any other
+/// shape is an [`ApplicationError::InvalidAdmissionPolicy`].
+fn set_admission_policy_from_payload(payload_json: &str) -> ApplicationResult<AdmissionPolicy> {
+    let value: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|_error| ApplicationError::InvalidAdmissionPolicy)?;
+    let policy = value
+        .get("policy")
+        .ok_or(ApplicationError::InvalidAdmissionPolicy)?;
+    serde_json::from_value(policy.clone())
+        .map_err(|_error| ApplicationError::InvalidAdmissionPolicy)
+}
+
 /// Run one resolved work-item action-id through the port and emit the shared
 /// `work_item` outcome events keyed by that action-id. Shared by every
 /// `work_item.*` command handler.
@@ -2162,9 +2211,10 @@ mod tests {
         OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
         TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
         handle_factory_drain_command, handle_work_item_accept_command,
-        handle_work_item_approve_command, handle_work_item_reject_command, project_attention,
-        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_selected_operator_action, validate_operator_action,
+        handle_work_item_approve_command, handle_work_item_reject_command,
+        handle_work_item_set_admission_command, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
+        set_admission_policy_from_payload, validate_operator_action,
     };
 
     #[test]
@@ -4233,6 +4283,116 @@ mod tests {
         assert_eq!(
             RejectMode::parse("nonsense"),
             Err(ApplicationError::InvalidRejectMode)
+        );
+    }
+
+    fn set_admission_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_set_admission".to_owned(),
+            CommandType::WorkItemSetAdmissionRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_admission_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn set_admission_handler_maps_auto_payload_onto_the_action_id() -> super::ApplicationResult<()>
+    {
+        let command = set_admission_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_set_admission_command(&command, r#"{"policy":"auto"}"#, &mut port)?;
+
+        // The policy from the payload lands in the third action-id segment.
+        assert_eq!(port.observed_action_ids, ["set-admission:wi-1:auto"]);
+        assert_eq!(outcome.command_status(), "completed");
+        for event in outcome.events() {
+            assert_eq!(
+                event.payload_json(),
+                r#"{"action_id":"set-admission:wi-1:auto"}"#
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn set_admission_handler_maps_manual_payload_onto_the_action_id() -> super::ApplicationResult<()>
+    {
+        let command = set_admission_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_set_admission_command(&command, r#"{"policy":"manual"}"#, &mut port)?;
+
+        assert_eq!(port.observed_action_ids, ["set-admission:wi-1:manual"]);
+        assert_eq!(outcome.command_status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn set_admission_handler_rejects_invalid_policy_without_invoking_port() {
+        let command = set_admission_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_set_admission_command(&command, r#"{"policy":"bogus"}"#, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidAdmissionPolicy));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn set_admission_handler_rejects_missing_policy_without_invoking_port() {
+        let command = set_admission_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_set_admission_command(&command, "{}", &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidAdmissionPolicy));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn set_admission_handler_rejects_empty_work_item_id_without_invoking_port() {
+        let command = CommandEnvelope::new(
+            "cmd_set_admission".to_owned(),
+            CommandType::WorkItemSetAdmissionRequested,
+            "   ".to_owned(),
+            "blank:work_item.set_admission_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_set_admission_command(&command, r#"{"policy":"auto"}"#, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn set_admission_policy_from_payload_parses_valid_values_and_rejects_others() {
+        assert_eq!(
+            set_admission_policy_from_payload(r#"{"policy":"auto"}"#),
+            Ok(AdmissionPolicy::Auto)
+        );
+        assert_eq!(
+            set_admission_policy_from_payload(r#"{"policy":"manual"}"#),
+            Ok(AdmissionPolicy::Manual)
+        );
+        assert_eq!(
+            set_admission_policy_from_payload(r#"{"policy":"bogus"}"#),
+            Err(ApplicationError::InvalidAdmissionPolicy)
+        );
+        assert_eq!(
+            set_admission_policy_from_payload("{}"),
+            Err(ApplicationError::InvalidAdmissionPolicy)
+        );
+        assert_eq!(
+            set_admission_policy_from_payload("not json"),
+            Err(ApplicationError::InvalidAdmissionPolicy)
         );
     }
 
