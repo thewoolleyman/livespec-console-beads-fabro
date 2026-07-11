@@ -12,6 +12,7 @@ console-application = { path = "../console-application", version = "0.1.0" }
 console-domain = { path = "../console-domain", version = "0.1.0" }
 console-eventstore = { path = "../console-eventstore", version = "0.1.0" }
 console-tui = { path = "../console-tui", version = "0.1.0" }
+serde_json = "1"
 time = { version = "0.3.37", default-features = false, features = [
   "formatting",
   "std",

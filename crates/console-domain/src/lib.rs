@@ -377,6 +377,12 @@ pub enum CommandType {
     /// The command the console issues to the orchestrator plane to turn its own
     /// autonomous mode off, through that plane's published arming surface.
     FactoryAutonomousModeDisableRequested,
+    /// The command the console records to reflect one auto-resolution the
+    /// orchestrator plane's engine made under full autonomous mode, observed
+    /// from that plane's published per-decision audit. Its outcome resolves the
+    /// reflected work-item's needs-attention item so it leaves the inbox; the
+    /// payload carries `{ work_item_id, gate, decision }`.
+    FactoryAutonomousDecisionReflected,
 }
 
 impl CommandType {
@@ -397,6 +403,7 @@ impl CommandType {
             Self::FactoryAutonomousModeDisableRequested => {
                 "factory.autonomous_mode_disable_requested"
             }
+            Self::FactoryAutonomousDecisionReflected => "factory.autonomous_decision_reflected",
         }
     }
 
@@ -406,7 +413,8 @@ impl CommandType {
         match self {
             Self::FactoryDrainRequested
             | Self::FactoryAutonomousModeEnableRequested
-            | Self::FactoryAutonomousModeDisableRequested => "factory",
+            | Self::FactoryAutonomousModeDisableRequested
+            | Self::FactoryAutonomousDecisionReflected => "factory",
             Self::WorkItemApproveRequested
             | Self::WorkItemAcceptRequested
             | Self::WorkItemRejectRequested
@@ -694,6 +702,10 @@ mod tests {
             CommandType::FactoryAutonomousModeDisableRequested.contract_name(),
             "factory.autonomous_mode_disable_requested"
         );
+        assert_eq!(
+            CommandType::FactoryAutonomousDecisionReflected.contract_name(),
+            "factory.autonomous_decision_reflected"
+        );
     }
 
     #[test]
@@ -720,6 +732,10 @@ mod tests {
         );
         assert_eq!(
             CommandType::FactoryAutonomousModeDisableRequested.context(),
+            "factory"
+        );
+        assert_eq!(
+            CommandType::FactoryAutonomousDecisionReflected.context(),
             "factory"
         );
     }

@@ -275,8 +275,8 @@
   {
     "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ should run autonomous mode against resolvable and unresolvable decisions, asserting recorded command/outcome events for the former and retained needs-attention items for the latter. Registered now because Scenario 10 is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "test": "crates/console-cli/tests/scenario_10_autonomous_run.rs::scenario_10_autonomous_run_reflects_the_decidable_and_escalates_the_rest",
+    "reason": "",
     "clauses": [
       {
         "gap_id": "gap-uomftic2",

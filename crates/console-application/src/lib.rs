@@ -780,20 +780,56 @@ impl FactoryDrainPolicy {
 /// non-zero run fails, and an unavailable Dispatcher binary yields a not-wired
 /// outcome. The host-backed probe is supplied by the binary, so the live drain
 /// never claims an action that did not happen.
+///
+/// This is the console's autonomous-mode LAUNCHER: on each drain it reads the
+/// orchestrator's single persistent permission key from the consumer's
+/// `.livespec.jsonc` ([`read_autonomous_mode_from_jsonc`]) and, WHILE that key
+/// is enabled, passes `--mode autonomous` to the Dispatcher `loop` subcommand
+/// for that run. The armed mode is never inferred and never persists in the
+/// port -- it is re-derived from the key each run, so revoking the permission
+/// immediately stops arming subsequent runs.
 pub struct DispatcherFactoryDrainPort<'a> {
     probe: &'a dyn SourceProbe,
     program: String,
     args: Vec<String>,
+    livespec_jsonc_path: String,
 }
 
 impl<'a> DispatcherFactoryDrainPort<'a> {
     #[must_use]
     /// Construct a new value from its required fields.
-    pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
+    ///
+    /// `livespec_jsonc_path` is the consumer project's `.livespec.jsonc`; the
+    /// port reads the orchestrator autonomous-mode permission key from it each
+    /// run to decide whether to arm the drain with `--mode autonomous`.
+    pub fn new(
+        probe: &'a dyn SourceProbe,
+        program: &str,
+        args: &[&str],
+        livespec_jsonc_path: &str,
+    ) -> Self {
         Self {
             probe,
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            livespec_jsonc_path: livespec_jsonc_path.to_owned(),
+        }
+    }
+
+    /// Whether the orchestrator autonomous-mode permission key is enabled in the
+    /// consumer's `.livespec.jsonc` right now.
+    ///
+    /// Re-read each drain (the armed mode is per-run and never persisted in the
+    /// port). An unreadable or absent config fails soft to disabled, matching
+    /// the autonomous-mode default-disabled contract.
+    fn autonomous_mode_enabled(&self) -> bool {
+        match self.probe.read_file(&self.livespec_jsonc_path) {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => read_autonomous_mode_from_jsonc(&stdout),
+            SourceProbeOutcome::Observed { success: false, .. }
+            | SourceProbeOutcome::Unavailable { .. } => false,
         }
     }
 }
@@ -803,7 +839,13 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
         &mut self,
         _request: &FactoryDrainRequest,
     ) -> ApplicationResult<FactoryDrainPortOutcome> {
-        let arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        let mut arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        // The armed mode rides the Dispatcher `loop` per run only while the
+        // permission key is enabled; it is never inferred and never persisted.
+        if self.autonomous_mode_enabled() {
+            arg_refs.push("--mode");
+            arg_refs.push("autonomous");
+        }
         Ok(match self.probe.run_command(&self.program, &arg_refs) {
             SourceProbeOutcome::Observed {
                 stdout,
@@ -2349,6 +2391,244 @@ impl ConfigCommandOutcome {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Full autonomous mode — observing the orchestrator plane's auto-resolutions.
+// ---------------------------------------------------------------------------
+
+/// The journal `stage` marker the orchestrator plane writes for one per-decision
+/// autonomous-mode audit record; the console reads only records carrying it and
+/// ignores every other journal stage (arming, calibration, dispatch).
+const AUTONOMOUS_DECISION_STAGE: &str = "autonomous-decision";
+
+/// The `auto-resolved` disposition: the plane's engine resolved the decision.
+const AUTONOMOUS_DISPOSITION_AUTO_RESOLVED: &str = "auto-resolved";
+/// The `escalated` disposition: the plane left the decision truly-unresolvable.
+const AUTONOMOUS_DISPOSITION_ESCALATED: &str = "escalated";
+
+/// The three collapsible gates a decision can carry, exactly as the plane's
+/// published record contract enumerates them.
+const AUTONOMOUS_GATE_APPROVE: &str = "approve";
+const AUTONOMOUS_GATE_ACCEPTANCE: &str = "acceptance";
+const AUTONOMOUS_GATE_NEEDS_HUMAN: &str = "needs-human";
+
+/// One per-decision autonomous-mode audit entry read back off the orchestrator
+/// plane's published Dispatcher journal.
+///
+/// `work_item_id` names the disposed item; `gate` is the collapsed gate
+/// (`approve` / `acceptance` / `needs-human`); `decision` is what the plane's
+/// engine decided; `disposition` is `auto-resolved` or `escalated`. The console
+/// consumes this record verbatim -- it never re-derives a plane's decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousDecision {
+    work_item_id: String,
+    gate: String,
+    decision: String,
+    disposition: String,
+}
+
+impl AutonomousDecision {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub fn new(work_item_id: &str, gate: &str, decision: &str, disposition: &str) -> Self {
+        Self {
+            work_item_id: work_item_id.to_owned(),
+            gate: gate.to_owned(),
+            decision: decision.to_owned(),
+            disposition: disposition.to_owned(),
+        }
+    }
+
+    #[must_use]
+    /// Return the work item id value.
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    /// Return the gate value.
+    pub fn gate(&self) -> &str {
+        &self.gate
+    }
+
+    #[must_use]
+    /// Return the decision value.
+    pub fn decision(&self) -> &str {
+        &self.decision
+    }
+
+    #[must_use]
+    /// Return the disposition value.
+    pub fn disposition(&self) -> &str {
+        &self.disposition
+    }
+}
+
+/// The published read view of the autonomous per-decision journal the console
+/// observes.
+///
+/// Every auto-resolution and every truly-unresolvable escalation the run
+/// journaled, split by disposition and preserving journal order within each
+/// bucket. Mirrors the orchestrator plane's published read surface.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AutonomousAudit {
+    auto_resolutions: Vec<AutonomousDecision>,
+    escalations: Vec<AutonomousDecision>,
+}
+
+impl AutonomousAudit {
+    #[must_use]
+    /// Construct a new value from its two disposition buckets.
+    pub const fn new(
+        auto_resolutions: Vec<AutonomousDecision>,
+        escalations: Vec<AutonomousDecision>,
+    ) -> Self {
+        Self {
+            auto_resolutions,
+            escalations,
+        }
+    }
+
+    #[must_use]
+    /// The decisions the plane's engine auto-resolved.
+    pub fn auto_resolutions(&self) -> &[AutonomousDecision] {
+        &self.auto_resolutions
+    }
+
+    #[must_use]
+    /// The decisions the plane escalated as truly-unresolvable.
+    pub fn escalations(&self) -> &[AutonomousDecision] {
+        &self.escalations
+    }
+}
+
+/// Read the published autonomous per-decision audit view from a Dispatcher
+/// journal document (its JSONL text).
+///
+/// Fail-open, mirroring the orchestrator plane's published `read_autonomous_decisions`
+/// reader: a malformed line -- bad JSON, a non-object, a record missing a
+/// required field, or an out-of-range gate/disposition -- is skipped rather than
+/// raising, and only `autonomous-decision` stage records are considered. Records
+/// split into auto-resolutions and escalations by disposition, preserving
+/// journal order within each bucket.
+#[must_use]
+pub fn read_autonomous_decisions_from_journal(journal_text: &str) -> AutonomousAudit {
+    let mut auto_resolutions = Vec::new();
+    let mut escalations = Vec::new();
+    for line in journal_text.lines() {
+        let Some(decision) = autonomous_decision_from_line(line) else {
+            continue;
+        };
+        if decision.disposition() == AUTONOMOUS_DISPOSITION_ESCALATED {
+            escalations.push(decision);
+        } else {
+            auto_resolutions.push(decision);
+        }
+    }
+    AutonomousAudit::new(auto_resolutions, escalations)
+}
+
+/// Parse one journal line into an [`AutonomousDecision`], or `None` when it is
+/// not a valid `autonomous-decision` record (malformed JSON, a non-object, a
+/// different stage, or an absent/out-of-range required field).
+fn autonomous_decision_from_line(line: &str) -> Option<AutonomousDecision> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let object = value.as_object()?;
+    if object.get("stage").and_then(serde_json::Value::as_str)? != AUTONOMOUS_DECISION_STAGE {
+        return None;
+    }
+    let work_item_id = object
+        .get("work_item_id")
+        .and_then(serde_json::Value::as_str)?;
+    let gate = object.get("gate").and_then(serde_json::Value::as_str)?;
+    let decision = object.get("decision").and_then(serde_json::Value::as_str)?;
+    let disposition = object
+        .get("disposition")
+        .and_then(serde_json::Value::as_str)?;
+    let gate_known = gate == AUTONOMOUS_GATE_APPROVE
+        || gate == AUTONOMOUS_GATE_ACCEPTANCE
+        || gate == AUTONOMOUS_GATE_NEEDS_HUMAN;
+    let disposition_known = disposition == AUTONOMOUS_DISPOSITION_AUTO_RESOLVED
+        || disposition == AUTONOMOUS_DISPOSITION_ESCALATED;
+    if !gate_known || !disposition_known {
+        return None;
+    }
+    Some(AutonomousDecision::new(
+        work_item_id,
+        gate,
+        decision,
+        disposition,
+    ))
+}
+
+/// The needs-attention item id the console resolves to reflect an auto-resolution
+/// of `work_item_id` on `gate`.
+///
+/// The orchestrator plane keys a work-item's human-gate needs-attention item as
+/// `valve:<verb>:<work-item-id>`; the reflection resolves that same id so the
+/// item leaves the inbox. The gate-to-verb map is the console's consumer half of
+/// that contract: `approve` -> `approve`, `acceptance` -> `accept`, `needs-human`
+/// -> `set-admission`. An unknown gate yields `None` (no item to reflect).
+#[must_use]
+pub fn autonomous_reflection_attention_id(work_item_id: &str, gate: &str) -> Option<String> {
+    let verb = match gate {
+        AUTONOMOUS_GATE_APPROVE => "approve",
+        AUTONOMOUS_GATE_ACCEPTANCE => "accept",
+        AUTONOMOUS_GATE_NEEDS_HUMAN => "set-admission",
+        _other => return None,
+    };
+    Some(format!("valve:{verb}:{work_item_id}"))
+}
+
+/// Port interface for reading the orchestrator plane's published per-decision
+/// autonomous-mode audit, supplied by an outer layer.
+///
+/// The console observes each auto-resolution and each truly-unresolvable
+/// escalation through this port and reflects them; it never re-derives a plane's
+/// decision. Reads are fail-open: an unavailable audit surface yields an empty
+/// audit rather than an error.
+pub trait AutonomousDecisionsPort {
+    /// Read the current published autonomous per-decision audit view.
+    fn read_autonomous_decisions(&self) -> AutonomousAudit;
+}
+
+/// Real autonomous-decisions port that reads the orchestrator plane's published
+/// Dispatcher journal file through a [`SourceProbe`].
+///
+/// The journal is the plane's PUBLISHED per-decision audit surface; the console
+/// reads the `autonomous-decision` stage records from it fail-open. An unreadable
+/// or absent journal yields an empty audit, never a fabricated decision.
+pub struct JournalAutonomousDecisionsPort<'a> {
+    probe: &'a dyn SourceProbe,
+    journal_path: String,
+}
+
+impl<'a> JournalAutonomousDecisionsPort<'a> {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    ///
+    /// `journal_path` is the Dispatcher journal the orchestrator plane appends
+    /// its per-decision audit records to.
+    pub fn new(probe: &'a dyn SourceProbe, journal_path: &str) -> Self {
+        Self {
+            probe,
+            journal_path: journal_path.to_owned(),
+        }
+    }
+}
+
+impl AutonomousDecisionsPort for JournalAutonomousDecisionsPort<'_> {
+    fn read_autonomous_decisions(&self) -> AutonomousAudit {
+        match self.probe.read_file(&self.journal_path) {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => read_autonomous_decisions_from_journal(&stdout),
+            SourceProbeOutcome::Observed { success: false, .. }
+            | SourceProbeOutcome::Unavailable { .. } => AutonomousAudit::default(),
+        }
+    }
+}
+
 /// Handle a `config.autonomous_mode_set` command.
 ///
 /// The Configuration context's arming command. It parses the
@@ -2566,6 +2846,17 @@ const fn requires_attention(snapshot: &WorkItemSnapshot) -> bool {
     )
 }
 
+/// Whether a work-item lane snapshot rests on a human step and so must surface
+/// in the attention list. The lane and its policy dials are emitted by the
+/// orchestrator and consumed verbatim (the console never re-derives a lane).
+///
+/// A `manual`-admission `pending-approval` item awaits a human approval; a
+/// `blocked`/`needs-human` item awaits a human unblock; and an `acceptance`-lane
+/// item awaits a human acceptance whenever its policy carries a human leg --
+/// `ai-then-human` (human confirms after the AI pass) or `human-only` (a human
+/// must accept). `ai-only` acceptance carries no human step and stays unflagged
+/// (and by the orchestrator's lane authority an `ai-only` item auto-completes to
+/// `done` rather than resting in `acceptance`).
 #[must_use]
 const fn requires_attention_from_lane(
     lane: Lane,
@@ -2576,7 +2867,12 @@ const fn requires_attention_from_lane(
     matches!(
         (lane, lane_reason, admission_policy, acceptance_policy),
         (Lane::PendingApproval, _, AdmissionPolicy::Manual, _)
-            | (Lane::Acceptance, _, _, AcceptancePolicy::AiThenHuman)
+            | (
+                Lane::Acceptance,
+                _,
+                _,
+                AcceptancePolicy::AiThenHuman | AcceptancePolicy::HumanOnly
+            )
             | (Lane::Blocked, Some(LaneReason::NeedsHuman), _, _)
     )
 }
@@ -2879,12 +3175,13 @@ mod tests {
         attention_item_payload_json, attention_resolved_payload_json,
     };
     use super::{
-        ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
-        AutonomousModeArmingOutcome, AutonomousModeArmingPort, AutonomousModeArmingRequest,
-        AutonomousModeSetRequest, ConfigCommandOutcome, DispatcherFactoryDrainPort,
-        DispatcherOrchestratorActionPort, FactoryDrainPolicy, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, LivespecJsoncArmingPort,
-        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        ApplicationError, AttentionDetail, AttentionEvent, AttentionItem, AutonomousAudit,
+        AutonomousDecisionsPort, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
+        AutonomousModeArmingRequest, AutonomousModeSetRequest, ConfigCommandOutcome,
+        DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, FactoryDrainPolicy,
+        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+        JournalAutonomousDecisionsPort, LaneFocus, LivespecJsoncArmingPort, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
         TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
         handle_config_autonomous_mode_set_command, handle_factory_drain_command,
@@ -3085,6 +3382,24 @@ mod tests {
                 AdmissionPolicy::Auto,
                 AcceptancePolicy::AiThenHuman,
                 true,
+            ),
+            // A `human-only` acceptance item -- the case that most needs a human
+            // -- rests in the acceptance lane (the orchestrator's lane authority
+            // parks status `acceptance` verbatim) and MUST surface (fold of d6o).
+            (
+                Lane::Acceptance,
+                None,
+                AdmissionPolicy::Auto,
+                AcceptancePolicy::HumanOnly,
+                true,
+            ),
+            // An `ai-only` acceptance item has no human step and stays unflagged.
+            (
+                Lane::Acceptance,
+                None,
+                AdmissionPolicy::Auto,
+                AcceptancePolicy::AiOnly,
+                false,
             ),
             (
                 Lane::Blocked,
@@ -4605,7 +4920,12 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain: dispatched 3 items", true),
         };
-        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain", "--json"]);
+        let mut port = DispatcherFactoryDrainPort::new(
+            &probe,
+            "dispatcher",
+            &["drain", "--json"],
+            "cfg.jsonc",
+        );
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -4617,7 +4937,8 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain: ready queue empty", true),
         };
-        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"]);
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -4629,7 +4950,8 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain error", false),
         };
-        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"]);
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -4641,7 +4963,8 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::unavailable("dispatcher binary not found"),
         };
-        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"]);
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -4657,6 +4980,201 @@ mod tests {
         assert_eq!(
             probe.read_file("/unused"),
             SourceProbeOutcome::unavailable("no source")
+        );
+    }
+
+    /// Probe for the autonomous-mode launcher tests: `read_file` returns the
+    /// configured `.livespec.jsonc` text; `run_command` records the drain args
+    /// it was invoked with so a test can assert `--mode autonomous` rides (or
+    /// does not ride) the drain.
+    struct LauncherDrainProbe {
+        config: SourceProbeOutcome,
+        drain: SourceProbeOutcome,
+        observed_args: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl SourceProbe for LauncherDrainProbe {
+        fn run_command(&self, _program: &str, args: &[&str]) -> SourceProbeOutcome {
+            *self.observed_args.borrow_mut() = args.iter().map(|arg| (*arg).to_owned()).collect();
+            self.drain.clone()
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            self.config.clone()
+        }
+    }
+
+    const AUTONOMOUS_ENABLED_CONFIG: &str =
+        r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":true}}}"#;
+    const AUTONOMOUS_DISABLED_CONFIG: &str =
+        r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":false}}}"#;
+
+    #[test]
+    fn dispatcher_drain_port_arms_autonomous_when_permission_enabled() {
+        let probe = LauncherDrainProbe {
+            config: SourceProbeOutcome::observed(AUTONOMOUS_ENABLED_CONFIG, true),
+            drain: SourceProbeOutcome::observed("drain: dispatched 2 items", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        // The armed mode rides the `loop`/drain for this run.
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(2)));
+        assert_eq!(
+            *probe.observed_args.borrow(),
+            ["drain", "--mode", "autonomous"]
+        );
+    }
+
+    #[test]
+    fn dispatcher_drain_port_does_not_arm_when_permission_disabled() {
+        let probe = LauncherDrainProbe {
+            config: SourceProbeOutcome::observed(AUTONOMOUS_DISABLED_CONFIG, true),
+            drain: SourceProbeOutcome::observed("drain: dispatched 1 items", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        // A disabled permission never arms the drain.
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(1)));
+        assert_eq!(*probe.observed_args.borrow(), ["drain"]);
+    }
+
+    #[test]
+    fn dispatcher_drain_port_does_not_arm_when_config_unreadable() {
+        let probe = LauncherDrainProbe {
+            config: SourceProbeOutcome::unavailable("no .livespec.jsonc"),
+            drain: SourceProbeOutcome::observed("drain: dispatched 0 items", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        // An unreadable config fails soft to disabled -- no arming.
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(0)));
+        assert_eq!(*probe.observed_args.borrow(), ["drain"]);
+    }
+
+    // A journal line for one auto-resolved / escalated decision, in the exact
+    // wire shape the orchestrator plane's published record contract emits.
+    fn autonomous_journal_line(
+        work_item_id: &str,
+        gate: &str,
+        decision: &str,
+        disposition: &str,
+    ) -> String {
+        format!(
+            r#"{{"stage":"autonomous-decision","work_item_id":"{work_item_id}","gate":"{gate}","decision":"{decision}","disposition":"{disposition}"}}"#
+        )
+    }
+
+    #[test]
+    fn read_autonomous_decisions_splits_buckets_and_preserves_order() {
+        let journal = [
+            autonomous_journal_line("wi-1", "approve", "auto-approve", "auto-resolved"),
+            autonomous_journal_line("wi-2", "acceptance", "ai-accept", "auto-resolved"),
+            autonomous_journal_line("wi-3", "needs-human", "escalate", "escalated"),
+        ]
+        .join("\n");
+
+        let audit = super::read_autonomous_decisions_from_journal(&journal);
+
+        assert_eq!(audit.auto_resolutions().len(), 2);
+        assert_eq!(audit.auto_resolutions()[0].work_item_id(), "wi-1");
+        assert_eq!(audit.auto_resolutions()[0].gate(), "approve");
+        assert_eq!(audit.auto_resolutions()[0].decision(), "auto-approve");
+        assert_eq!(audit.auto_resolutions()[0].disposition(), "auto-resolved");
+        assert_eq!(audit.auto_resolutions()[1].work_item_id(), "wi-2");
+        assert_eq!(audit.escalations().len(), 1);
+        assert_eq!(audit.escalations()[0].work_item_id(), "wi-3");
+        assert_eq!(audit.escalations()[0].disposition(), "escalated");
+    }
+
+    #[test]
+    fn read_autonomous_decisions_skips_malformed_and_foreign_records() {
+        let journal = [
+            "not json".to_owned(),
+            "[1,2,3]".to_owned(),
+            r#"{"stage":"calibration","work_item_id":"wi-x"}"#.to_owned(),
+            r#"{"stage":"autonomous-decision","work_item_id":"wi-y","gate":"bogus","decision":"d","disposition":"auto-resolved"}"#.to_owned(),
+            r#"{"stage":"autonomous-decision","work_item_id":"wi-z","gate":"approve","decision":"d","disposition":"unknown"}"#.to_owned(),
+            r#"{"stage":"autonomous-decision","gate":"approve","decision":"d","disposition":"auto-resolved"}"#.to_owned(),
+            autonomous_journal_line("wi-ok", "approve", "auto-approve", "auto-resolved"),
+        ]
+        .join("\n");
+
+        let audit = super::read_autonomous_decisions_from_journal(&journal);
+
+        // Only the single well-formed record survives; every malformed or
+        // foreign-stage line is skipped fail-open.
+        assert_eq!(audit.auto_resolutions().len(), 1);
+        assert_eq!(audit.auto_resolutions()[0].work_item_id(), "wi-ok");
+        assert!(audit.escalations().is_empty());
+    }
+
+    #[test]
+    fn read_autonomous_decisions_empty_journal_is_empty_audit() {
+        let audit = super::read_autonomous_decisions_from_journal("");
+
+        assert_eq!(audit, super::AutonomousAudit::default());
+    }
+
+    #[test]
+    fn autonomous_reflection_attention_id_maps_each_gate_to_its_valve() {
+        assert_eq!(
+            super::autonomous_reflection_attention_id("wi-1", "approve").as_deref(),
+            Some("valve:approve:wi-1")
+        );
+        assert_eq!(
+            super::autonomous_reflection_attention_id("wi-1", "acceptance").as_deref(),
+            Some("valve:accept:wi-1")
+        );
+        assert_eq!(
+            super::autonomous_reflection_attention_id("wi-1", "needs-human").as_deref(),
+            Some("valve:set-admission:wi-1")
+        );
+        // An unknown gate has no reflectable needs-attention item.
+        assert_eq!(
+            super::autonomous_reflection_attention_id("wi-1", "mystery"),
+            None
+        );
+    }
+
+    #[test]
+    fn journal_autonomous_decisions_port_reads_and_fails_open() {
+        let observed = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed(
+                &autonomous_journal_line("wi-1", "approve", "auto-approve", "auto-resolved"),
+                true,
+            ),
+        };
+        let port = JournalAutonomousDecisionsPort::new(&observed, "journal.jsonl");
+        assert_eq!(port.read_autonomous_decisions().auto_resolutions().len(), 1);
+
+        // A non-zero read and an unavailable journal both fail open to empty.
+        let failed = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("partial", false),
+        };
+        assert_eq!(
+            JournalAutonomousDecisionsPort::new(&failed, "journal.jsonl")
+                .read_autonomous_decisions(),
+            AutonomousAudit::default()
+        );
+        let missing = StubDrainProbe {
+            outcome: SourceProbeOutcome::unavailable("no journal"),
+        };
+        assert_eq!(
+            JournalAutonomousDecisionsPort::new(&missing, "journal.jsonl")
+                .read_autonomous_decisions(),
+            AutonomousAudit::default()
         );
     }
 
