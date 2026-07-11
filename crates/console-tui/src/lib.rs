@@ -19,11 +19,12 @@
 
 use console_application::source_adapters::Lane;
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, LaneColumn, LaneFocus, LaneWorkItem,
-    OperatorAction, OperatorActionOutcome, TimelineEntry, TuiInteraction, TuiInteractionState,
-    TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, build_tui_model_for_state,
-    reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
-    resolve_command_palette_action, resolve_selected_operator_action,
+    ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneColumn, LaneFocus,
+    LaneWorkItem, OperatorAction, OperatorActionOutcome, TimelineEntry, TuiInteraction,
+    TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
+    build_tui_model_for_state, reduce_tui_interaction, resolve_autonomous_mode_disable,
+    resolve_autonomous_mode_enable, resolve_command_palette_action,
+    resolve_selected_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -236,9 +237,10 @@ fn confirm_operator_action(
         TuiOverlay::AutonomousModeConfirm { .. } => {
             resolve_autonomous_mode_enable(&model, requested_by)
         }
-        TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandModal { .. } => {
-            resolve_selected_operator_action(&model, requested_by)
-        }
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::Help => resolve_selected_operator_action(&model, requested_by),
     };
     let effect = match outcome {
         Ok(outcome) => action_outcome_effect(outcome),
@@ -303,22 +305,19 @@ pub fn key_event_to_terminal_input(
         return Some(TuiTerminalInput::Quit);
     }
     match event.code {
-        KeyCode::Up => Some(TuiTerminalInput::Interaction(up_interaction(overlay))),
-        KeyCode::Down => Some(TuiTerminalInput::Interaction(down_interaction(overlay))),
+        KeyCode::Up => Some(TuiTerminalInput::Interaction(up_interaction(model))),
+        KeyCode::Down => Some(TuiTerminalInput::Interaction(down_interaction(model))),
         KeyCode::Esc => Some(TuiTerminalInput::Interaction(esc_interaction(model))),
         KeyCode::Enter => enter_input(model),
         KeyCode::Backspace => Some(TuiTerminalInput::Interaction(TuiInteraction::Backspace)),
         KeyCode::Char('/') => slash_input(overlay),
         KeyCode::Char(':') => colon_input(overlay),
+        KeyCode::Char('?') => question_input(overlay),
         KeyCode::Char('q') => q_input(overlay),
         KeyCode::Char('a') => autonomous_toggle_input(overlay),
         KeyCode::Char(value) => text_input(value, overlay),
-        KeyCode::Left => Some(TuiTerminalInput::Interaction(
-            TuiInteraction::SelectPreviousView,
-        )),
-        KeyCode::Right => Some(TuiTerminalInput::Interaction(
-            TuiInteraction::SelectNextView,
-        )),
+        KeyCode::Left => left_input(model),
+        KeyCode::Right => right_input(model),
         KeyCode::Home
         | KeyCode::End
         | KeyCode::PageUp
@@ -341,53 +340,121 @@ pub fn key_event_to_terminal_input(
     }
 }
 
-const fn up_interaction(overlay: &TuiOverlay) -> TuiInteraction {
-    if matches!(overlay, TuiOverlay::CommandModal { .. }) {
-        return TuiInteraction::SelectPreviousAction;
+/// Up: in a command modal, move the action selection; with no overlay open,
+/// move within the focused pane (the Views nav when focus is on the nav, else
+/// the content list); behind any other overlay it is the harmless content move.
+const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
+    match model.overlay() {
+        TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
+        TuiOverlay::None => match model.focus() {
+            FocusPane::Nav => TuiInteraction::SelectPreviousView,
+            FocusPane::Content => TuiInteraction::SelectPrevious,
+        },
+        TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::Help => TuiInteraction::SelectPrevious,
     }
-    TuiInteraction::SelectPrevious
 }
 
-const fn down_interaction(overlay: &TuiOverlay) -> TuiInteraction {
-    if matches!(overlay, TuiOverlay::CommandModal { .. }) {
-        return TuiInteraction::SelectNextAction;
+/// Down: the mirror of [`up_interaction`].
+const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
+    match model.overlay() {
+        TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
+        TuiOverlay::None => match model.focus() {
+            FocusPane::Nav => TuiInteraction::SelectNextView,
+            FocusPane::Content => TuiInteraction::SelectNext,
+        },
+        TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::Help => TuiInteraction::SelectNext,
     }
-    TuiInteraction::SelectNext
 }
 
-/// Enter: confirm a command modal; in the lane overview, drill into the
-/// selected lane; in a drilled-in lane, Enter is inert (no per-item action yet);
-/// otherwise open the command modal on the selected attention item.
+/// Enter: confirm a command modal / autonomous-confirm modal; behind a
+/// text/help overlay it is inert; with no overlay open it dives into the
+/// focused pane (see [`enter_content_input`]).
 fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
-    if matches!(
-        model.overlay(),
-        TuiOverlay::CommandModal { .. } | TuiOverlay::AutonomousModeConfirm { .. }
-    ) {
-        return Some(TuiTerminalInput::Confirm);
+    match model.overlay() {
+        TuiOverlay::CommandModal { .. } | TuiOverlay::AutonomousModeConfirm { .. } => {
+            Some(TuiTerminalInput::Confirm)
+        }
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => None,
+        TuiOverlay::None => enter_content_input(model),
     }
-    if model.active_view() == TuiView::Lanes {
-        return match model.lane_focus() {
-            LaneFocus::Overview => {
-                Some(TuiTerminalInput::Interaction(TuiInteraction::DrillIntoLane))
-            }
-            LaneFocus::Lane(_lane) => None,
-        };
-    }
-    Some(TuiTerminalInput::Interaction(
-        TuiInteraction::OpenCommandModal,
-    ))
 }
 
-/// Esc: close an open overlay first; otherwise, in a drilled-in lane, return to
-/// the lane overview; otherwise it is the (inert) close-overlay no-op.
+/// Enter with no overlay open: from the Views nav it dives focus into the
+/// Content pane; in the Content pane it drills into the selected lane (lane
+/// overview), is inert in a drilled-in lane, or opens the command modal on the
+/// selected attention item for any other view.
+fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    match model.focus() {
+        FocusPane::Nav => Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent)),
+        FocusPane::Content => {
+            if model.active_view() == TuiView::Lanes {
+                return match model.lane_focus() {
+                    LaneFocus::Overview => {
+                        Some(TuiTerminalInput::Interaction(TuiInteraction::DrillIntoLane))
+                    }
+                    LaneFocus::Lane(_lane) => None,
+                };
+            }
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenCommandModal,
+            ))
+        }
+    }
+}
+
+/// Esc: close an open overlay first; with no overlay open and focus on the
+/// Content pane, step back (return a drilled-in lane to its overview, else
+/// return focus to the Views nav); on the nav it is the inert close-overlay.
 fn esc_interaction(model: &TuiScreenModel) -> TuiInteraction {
-    if !model.overlay().is_open()
-        && model.active_view() == TuiView::Lanes
-        && matches!(model.lane_focus(), LaneFocus::Lane(_lane))
+    if model.overlay().is_open() {
+        return TuiInteraction::CloseOverlay;
+    }
+    match model.focus() {
+        FocusPane::Content => content_back_interaction(model),
+        FocusPane::Nav => TuiInteraction::CloseOverlay,
+    }
+}
+
+/// The Content-pane "step back" interaction shared by Esc and Left: a drilled-in
+/// lane returns to its overview first, otherwise focus returns to the Views nav.
+fn content_back_interaction(model: &TuiScreenModel) -> TuiInteraction {
+    if model.active_view() == TuiView::Lanes && matches!(model.lane_focus(), LaneFocus::Lane(_lane))
     {
         return TuiInteraction::ReturnToLaneOverview;
     }
-    TuiInteraction::CloseOverlay
+    TuiInteraction::FocusNav
+}
+
+/// Left: behind an overlay it is inert; on the Views nav it switches to the
+/// previous view (the global bonus switcher); in the Content pane it steps back
+/// (see [`content_back_interaction`]).
+fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    if model.overlay().is_open() {
+        return None;
+    }
+    Some(TuiTerminalInput::Interaction(match model.focus() {
+        FocusPane::Nav => TuiInteraction::SelectPreviousView,
+        FocusPane::Content => content_back_interaction(model),
+    }))
+}
+
+/// Right: behind an overlay it is inert; on the Views nav it dives focus into
+/// the Content pane; in the Content pane it switches to the next view (the
+/// global bonus switcher).
+const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    if model.overlay().is_open() {
+        return None;
+    }
+    Some(TuiTerminalInput::Interaction(match model.focus() {
+        FocusPane::Nav => TuiInteraction::FocusContent,
+        FocusPane::Content => TuiInteraction::SelectNextView,
+    }))
 }
 
 const fn slash_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -404,6 +471,20 @@ const fn colon_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
         ));
     }
     text_input(':', overlay)
+}
+
+/// `?`: with no overlay open, open the Help overlay; with Help open, close it
+/// (so `?` toggles); otherwise it is a literal character typed into the open
+/// text overlay.
+const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+    match overlay {
+        TuiOverlay::None => Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp)),
+        TuiOverlay::Help => Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay)),
+        TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. } => text_input('?', overlay),
+    }
 }
 
 const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -534,8 +615,9 @@ fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer)
             lines.push(Line::from(lane_item_summary(item)));
         }
     }
+    let title = focus_title("Lanes", content_focused(model));
     Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title("Lanes"))
+        .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
 }
 
@@ -551,12 +633,9 @@ fn render_lane_drilldown(model: &TuiScreenModel, lane: Lane, area: Rect, buffer:
     } else {
         items.iter().map(lane_item_detail).collect::<Vec<_>>()
     };
+    let title = focus_title(&format!("Lane: {}", lane.label()), content_focused(model));
     Paragraph::new(lines)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title(format!("Lane: {}", lane.label())),
-        )
+        .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
 }
 
@@ -623,7 +702,35 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
+        TuiOverlay::Help => render_help_overlay(overlay_rect(area), buffer),
     }
+}
+
+/// Render the read-only Help overlay: a one-line "how to use" note plus every
+/// keybinding with a short description. The text MUST stay in lock-step with the
+/// key handler and the footer hint.
+fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
+    Clear.render(area, buffer);
+    let lines = vec![
+        Line::from("Navigate the Views menu with up/down; Enter drills in, Esc goes back."),
+        Line::from("Toggle autonomous mode with a; drain via :; quit with q."),
+        Line::from(""),
+        Line::from("up / down    move within the focused pane (Views nav or Content list)"),
+        Line::from("enter        dive from the nav into content, or open the selected item"),
+        Line::from("esc          step back (content -> nav; drilled lane -> overview)"),
+        Line::from("left / right  previous / next view, or step out / in of the content pane"),
+        Line::from("/            open search"),
+        Line::from(":            open the command palette (drain)"),
+        Line::from("a            toggle autonomous mode (dangerous / type-to-confirm)"),
+        Line::from("q / ctrl-c   quit"),
+        Line::from("?            toggle this help"),
+        Line::from(""),
+        Line::from("Esc or ? closes this help."),
+    ];
+    Paragraph::new(lines)
+        .block(Block::new().borders(Borders::ALL).title("Help"))
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
 }
 
 /// Render the dangerous autonomous-mode type-to-confirm modal: the enable is
@@ -701,6 +808,23 @@ fn overlay_rect(area: Rect) -> Rect {
     )
 }
 
+/// A focusable pane's block title: the base title plus a `[focus]` tag when the
+/// arrow keys are currently driving that pane, so the operator can see which
+/// pane `up`/`down` control.
+fn focus_title(base: &str, focused: bool) -> String {
+    if focused {
+        format!("{base} [focus]")
+    } else {
+        base.to_owned()
+    }
+}
+
+/// Whether the content pane currently holds focus (so its title carries the
+/// `[focus]` tag while the Views nav's does not, and vice versa).
+fn content_focused(model: &TuiScreenModel) -> bool {
+    model.focus() == FocusPane::Content
+}
+
 fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     let items = model.navigation().iter().map(|view| {
         let label = if *view == model.active_view() {
@@ -710,8 +834,9 @@ fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         };
         ListItem::new(label)
     });
+    let title = focus_title("Views", model.focus() == FocusPane::Nav);
     List::new(items)
-        .block(Block::new().borders(Borders::ALL).title("Views"))
+        .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
 }
 
@@ -722,8 +847,9 @@ fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .enumerate()
         .map(|(index, item)| attention_item_line(model, index, item))
         .collect::<Vec<_>>();
+    let title = focus_title("Attention", content_focused(model));
     List::new(items)
-        .block(Block::new().borders(Borders::ALL).title("Attention"))
+        .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
 }
 
@@ -732,12 +858,9 @@ fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .view_items()
         .iter()
         .map(|item| ListItem::new(format!("  {}", item.title())));
+    let title = focus_title(model.active_view().label(), content_focused(model));
     List::new(items)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title(model.active_view().label()),
-        )
+        .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
 }
 
@@ -845,7 +968,7 @@ mod tests {
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::{
-        ApplicationError, AttentionDetail, AttentionItem, LaneFocus, OperatorAction,
+        ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneFocus, OperatorAction,
         OperatorActionOutcome, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
         TuiView, build_tui_model, build_tui_model_for_state,
     };
@@ -862,8 +985,49 @@ mod tests {
     };
 
     #[test]
-    fn keymap_maps_base_navigation_and_modal_opening() {
+    fn keymap_maps_views_nav_focus_navigation_and_dive_in() {
+        // Default focus is the Views nav: up/down walk the vertical Views menu,
+        // Enter and Right dive focus into the Content pane, Left is the global
+        // previous-view switcher, and Esc is the inert close-overlay no-op.
         let model = attention_model(TuiOverlay::None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectNextView
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectPreviousView
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Right), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectPreviousView
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+    }
+
+    #[test]
+    fn keymap_maps_content_focus_navigation_and_modal_opening() {
+        // In the Content pane: up/down move the content selection, Enter opens
+        // the command modal on the selected attention item, Right is the global
+        // next-view switcher, and Left/Esc step focus back to the Views nav.
+        let model = attention_model_in(TuiOverlay::None, FocusPane::Content);
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::SelectNext))
@@ -888,27 +1052,157 @@ mod tests {
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
+        );
+    }
+
+    #[test]
+    fn keymap_toggles_the_help_overlay_with_question_mark() {
+        // `?` with no overlay open opens Help; `?` again (Help open) closes it;
+        // `?` typed into a text overlay is a literal char; `?` behind the
+        // command modal is inert.
+        let none = attention_model(TuiOverlay::None);
+        let help = attention_model(TuiOverlay::Help);
+        let search = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        let modal = attention_model(TuiOverlay::CommandModal {
+            selected_action_index: 0,
+        });
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('?')), &none),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('?')), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('?')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('?')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('?')), &modal),
+            None
+        );
+
+        // Behind the Help overlay, up/down are the harmless content moves, Enter
+        // is inert, and Esc closes the overlay.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &help),
             Some(TuiTerminalInput::Interaction(
-                TuiInteraction::SelectPreviousView
+                TuiInteraction::SelectPrevious
             ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::SelectNext))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &help),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+    }
+
+    #[test]
+    fn keymap_left_right_and_enter_are_inert_behind_a_text_overlay() {
+        let search = attention_model(TuiOverlay::Search {
+            query: "x".to_owned(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &search),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Right), &search),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &search),
+            None
+        );
+    }
+
+    #[test]
+    fn render_to_text_draws_the_help_overlay() {
+        let state = TuiInteractionState::new(0, TuiOverlay::Help);
+        let model = build_tui_model_for_state(&demo_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(output.as_ref().map(|r| r.contains("Help")), Ok(true));
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("Navigate the Views menu")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_marks_the_focused_pane() {
+        // Default focus is the Views nav: its title carries the focus tag.
+        let nav = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(0, TuiOverlay::None),
+        );
+        let nav_output = render_to_text(&nav, 96, 24);
+        assert_eq!(
+            nav_output.as_ref().map(|r| r.contains("Views [focus]")),
+            Ok(true)
+        );
+
+        // Content focus: the Attention content list carries the focus tag while
+        // the Views title does not.
+        let content = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Content),
+        );
+        let content_output = render_to_text(&content, 96, 24);
+        assert_eq!(
+            content_output
+                .as_ref()
+                .map(|r| r.contains("Attention [focus]")),
+            Ok(true)
+        );
+        assert_eq!(
+            content_output.as_ref().map(|r| r.contains("Views [focus]")),
+            Ok(false)
         );
     }
 
     #[test]
     fn keymap_routes_enter_and_esc_through_the_lane_sub_view() {
-        let overview = lanes_model(LaneFocus::Overview, TuiOverlay::None);
-        // Enter drills into the selected lane from the overview.
+        // From the Views nav, Enter dives focus into the Content pane; the
+        // overview -> drill -> overview flow itself lives in Content focus.
+        let nav_overview = lanes_model(LaneFocus::Overview, TuiOverlay::None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &nav_overview),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
+        );
+
+        let overview = lanes_model_content(LaneFocus::Overview, TuiOverlay::None);
+        // Enter drills into the selected lane from the content overview.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &overview),
             Some(TuiTerminalInput::Interaction(TuiInteraction::DrillIntoLane))
         );
-        // Esc in the overview (no overlay open) is the inert close-overlay.
+        // Esc on the content overview (no overlay open) steps focus back to nav.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Esc), &overview),
-            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
         );
 
-        let drilled = lanes_model(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
+        let drilled = lanes_model_content(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
         // Enter is inert while a lane is drilled in (no per-item action yet).
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &drilled),
@@ -921,9 +1215,16 @@ mod tests {
                 TuiInteraction::ReturnToLaneOverview
             ))
         );
+        // Left mirrors Esc: it also returns the drilled-in lane to its overview.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &drilled),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::ReturnToLaneOverview
+            ))
+        );
 
         // With an overlay open, Esc closes it first even while drilled in.
-        let drilled_with_overlay = lanes_model(
+        let drilled_with_overlay = lanes_model_content(
             LaneFocus::Lane(Lane::Ready),
             TuiOverlay::Search {
                 query: "x".to_owned(),
@@ -1572,15 +1873,34 @@ mod tests {
     }
 
     /// An Attention-view model carrying the given overlay, for keymap tests
-    /// that exercise overlay-driven behavior in the default view.
+    /// that exercise overlay-driven behavior in the default (Views nav) focus.
     fn attention_model(overlay: TuiOverlay) -> TuiScreenModel {
         build_tui_model_for_state(&demo_events(), &TuiInteractionState::new(0, overlay))
     }
 
-    /// A Lanes-view model in the given lane focus + overlay, over a small board.
+    /// An Attention-view model carrying the given overlay + focus pane, for
+    /// keymap tests that exercise the Content-pane focus.
+    fn attention_model_in(overlay: TuiOverlay, focus: FocusPane) -> TuiScreenModel {
+        build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(0, overlay).with_focus(focus),
+        )
+    }
+
+    /// A Lanes-view model in the given lane focus + overlay, in the default
+    /// (Views nav) focus, over a small board.
     fn lanes_model(lane_focus: LaneFocus, overlay: TuiOverlay) -> TuiScreenModel {
         let state =
             TuiInteractionState::for_view(TuiView::Lanes, 0, overlay).with_lane_focus(lane_focus);
+        build_tui_model_for_state(&lane_render_events(), &state)
+    }
+
+    /// A Lanes-view model in the given lane focus + overlay with the Content
+    /// pane focused, where the overview/drill flow lives.
+    fn lanes_model_content(lane_focus: LaneFocus, overlay: TuiOverlay) -> TuiScreenModel {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, overlay)
+            .with_lane_focus(lane_focus)
+            .with_focus(FocusPane::Content);
         build_tui_model_for_state(&lane_render_events(), &state)
     }
 

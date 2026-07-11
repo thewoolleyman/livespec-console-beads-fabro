@@ -42,17 +42,29 @@ repository's Releases page and put it on your `PATH` as
 
 ### Launch
 
-`livespec-console-beads-fabro serve` (equivalently `tui`) starts the
-interactive full-screen TUI when standard output is a terminal:
+From a source checkout the primary launch command is:
 
 ```bash
-livespec-console-beads-fabro serve
+just tui
 ```
 
-`serve --preview` (or any run whose stdout is not a terminal) prints a
-one-shot text summary instead of taking over the screen. The console also
-exposes non-interactive, store-backed sub-commands: `serve`, `backfill`,
-`events tail`, `snapshot`, and `doctor`.
+which builds the release binary and runs it under the family credential
+wrapper (so the bare `BEADS_DOLT_PASSWORD` is injected). `just serve` is an
+alias for the same recipe, and extra arguments pass through — for example
+`just tui --preview` prints the one-shot text summary described below. The
+equivalent raw invocation (prefer `just tui`, which avoids the hyphenated
+binary name splitting on copy-paste) is:
+
+```bash
+/usr/local/bin/with-livespec-env.sh -- ./target/release/livespec-console-beads-fabro serve
+```
+
+`livespec-console-beads-fabro serve` (equivalently `tui`) starts the
+interactive full-screen TUI when standard output is a terminal. `serve
+--preview` (or any run whose stdout is not a terminal) prints a one-shot text
+summary instead of taking over the screen. The console also exposes
+non-interactive, store-backed sub-commands: `serve`, `backfill`, `events
+tail`, `snapshot`, and `doctor`.
 
 ### Prerequisites
 
@@ -92,26 +104,35 @@ A single screen laid out in three rows:
   the mode, it does not own it. An unreadable config reads as `off`.
 - **Body** — a left **Views** navigation list plus a middle list and a
   **Detail** pane. There are five views: **Attention, Spec, Lanes, Events,
-  Repos**. The **Lanes** view shows a lane overview (each lane with its count
-  and a few preview items); `Enter` drills into a single lane.
+  Repos**. Focus starts on the **Views** menu (the focused pane's title carries
+  a `[focus]` tag): `↑`/`↓` walk the menu, and `Enter`/`→` move focus into the
+  content pane. The **Lanes** view shows a lane overview (each lane with its
+  count and a few preview items); in the content pane `Enter` drills into a
+  single lane.
 - **Footer** (`Status`) — the shortcut hint line.
 
 ### Keys
 
+Focus lives in one of two panes — the left **Views** menu or the **Content**
+pane — and `↑`/`↓` drive whichever holds focus. `Enter` dives in; `Esc` steps
+back. The focused pane's title carries a `[focus]` tag.
+
 | Key | Action |
 |---|---|
-| `←` / `→` | previous / next view |
-| `↑` / `↓` | move selection (a list, lane rows, or actions in a modal) |
-| `Enter` | open details / confirm a modal / drill into the selected lane |
-| `Esc` | close an open overlay, or leave a drilled-in lane |
+| `↑` / `↓` | **Views** focus: move the highlighted view up/down the menu. **Content** focus: move the list / lane / modal-action selection |
+| `Enter` | dive from the Views menu into the content pane; in content, open the selected item's details, drill into the selected lane, or confirm a modal |
+| `Esc` | step back (content → Views menu; a drilled-in lane → its overview first); closes an open overlay first |
+| `←` / `→` | `←` previous view (Views focus) or step out to the menu (content focus); `→` dive into content (Views focus) or next view (content focus) |
 | `/` | open search |
 | `:` | open the command palette |
 | `a` | toggle autonomous mode (see below) |
+| `?` | toggle the help overlay |
 | `q` | quit (only when no overlay is open) |
 | `Ctrl-C` | quit (any time) |
 
-There is no help screen — the footer line is the affordance list. `Tab` does
-**not** switch views; use `←` / `→`.
+Press `?` for a help overlay that lists every keybinding; the footer line is
+the always-visible affordance summary. `Tab` does **not** switch views — walk
+the **Views** menu with `↑` / `↓` (or use `←` / `→`).
 
 ### Enabling autonomous mode (the dangerous switch)
 
