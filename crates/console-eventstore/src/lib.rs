@@ -254,11 +254,18 @@ pub struct StoredCommand {
     idempotency_key: String,
     requested_by: String,
     status: String,
+    /// The persisted `payload_json` column. `None` until re-attached by
+    /// [`Self::with_payload_json`] when a command is loaded, so a handler can
+    /// read a command's payload (for example a reject command's `mode`).
+    payload_json: Option<String>,
 }
 
 impl StoredCommand {
     #[must_use]
     /// Construct a new value from its required fields.
+    ///
+    /// The returned command has no payload until [`Self::with_payload_json`]
+    /// re-attaches the persisted `payload_json`.
     pub const fn new(
         command_id: String,
         context: String,
@@ -276,7 +283,16 @@ impl StoredCommand {
             idempotency_key,
             requested_by,
             status,
+            payload_json: None,
         }
+    }
+
+    #[must_use]
+    /// Re-attach the persisted `payload_json` to a stored command, used by the
+    /// loader so a handler can read a command's payload.
+    pub fn with_payload_json(mut self, payload_json: String) -> Self {
+        self.payload_json = Some(payload_json);
+        self
     }
 
     #[must_use]
@@ -319,6 +335,13 @@ impl StoredCommand {
     /// Return the status value.
     pub fn status(&self) -> &str {
         &self.status
+    }
+
+    #[must_use]
+    /// Return the persisted command payload, defaulting to the empty object
+    /// `{}` when no payload was attached.
+    pub fn payload_json(&self) -> &str {
+        self.payload_json.as_deref().unwrap_or("{}")
     }
 }
 
@@ -615,7 +638,8 @@ impl SqliteEventStore {
     /// List commands from the backing store.
     pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         let sql = r"
-            select command_id, context, type, aggregate_id, idempotency_key, requested_by, status
+            select command_id, context, type, aggregate_id, idempotency_key, requested_by, status,
+                   payload_json
             from commands
             order by requested_at, command_id
         ";
@@ -623,15 +647,18 @@ impl SqliteEventStore {
         let mut rows = statement.query([])?;
         let mut commands = Vec::new();
         while let Some(row) = rows.next()? {
-            commands.push(StoredCommand::new(
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ));
+            commands.push(
+                StoredCommand::new(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                )
+                .with_payload_json(row.get::<_, String>(7)?),
+            );
         }
         Ok(commands)
     }
@@ -1261,6 +1288,35 @@ mod tests {
         assert_eq!(command.idempotency_key(), "idem_1");
         assert_eq!(command.requested_by(), "operator");
         assert_eq!(command.status(), "pending");
+        // A command loaded without a re-attached payload defaults to `{}`.
+        assert_eq!(command.payload_json(), "{}");
+    }
+
+    #[test]
+    fn list_commands_surfaces_the_persisted_command_payload() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        // A reject command carries its `mode` beyond the aggregate id, so the
+        // loader must surface the persisted `payload_json` for the handler.
+        store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_reject".to_owned(),
+                CommandType::WorkItemRejectRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.reject_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_reject".to_owned(),
+            r#"{"mode":"regroom"}"#.to_owned(),
+        ))?;
+
+        let commands = store.list_commands()?;
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command_type(), "work_item.reject_requested");
+        assert_eq!(commands[0].payload_json(), r#"{"mode":"regroom"}"#);
+        Ok(())
     }
 
     #[test]
