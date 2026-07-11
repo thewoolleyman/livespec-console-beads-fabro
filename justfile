@@ -18,6 +18,18 @@ import? 'dev-tooling/branch-protection.just'
 default:
     @just --list
 
+# Prefer this over typing the raw hyphenated binary path (which splits on
+# copy-paste). It builds the release binary and launches the interactive TUI
+# under the family credential wrapper (injecting the bare BEADS_DOLT_PASSWORD).
+# Extra args pass through after `serve` (e.g. `just tui --preview` prints the
+# one-shot text summary); `just serve` is an alias for the same recipe.
+# Build + launch the interactive operator TUI (the primary launch path).
+tui *ARGS:
+    cargo build --release --package livespec-console-beads-fabro
+    /usr/local/bin/with-livespec-env.sh -- "{{justfile_directory()}}/target/release/livespec-console-beads-fabro" serve {{ARGS}}
+
+alias serve := tui
+
 # First-touch setup — a THIN delegator to the shipped LOCAL first-touch
 # reconcile verb (`livespec_dev_tooling.fleet.local_reconcile`), the
 # generalized successor to this recipe's former inline steps (livespec-zs22.8

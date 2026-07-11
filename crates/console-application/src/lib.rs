@@ -141,6 +141,20 @@ pub enum LaneFocus {
     Lane(Lane),
 }
 
+/// Which pane the arrow keys drive.
+///
+/// Either the left **Views** navigation menu or the **Content** pane (the
+/// active view's list). Focus starts on the Views nav so `up`/`down` walk the
+/// vertical Views menu intuitively; `Enter`/`right` dive into the Content pane,
+/// and `Esc`/`left` return to the nav.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPane {
+    /// The left Views navigation menu (the default focus).
+    Nav,
+    /// The active view's content pane (its list of items or lanes).
+    Content,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Variants for operator action state or outcome values.
 pub enum OperatorAction {
@@ -189,6 +203,9 @@ pub enum TuiOverlay {
         /// The confirmation text the operator has typed so far.
         typed: String,
     },
+    /// Help variant: a read-only keybinding reference opened with `?` and
+    /// dismissed with `Esc` or `?`. It carries no state and submits nothing.
+    Help,
 }
 
 impl TuiOverlay {
@@ -203,7 +220,10 @@ impl TuiOverlay {
     pub fn query(&self) -> Option<&str> {
         match self {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
-            Self::None | Self::CommandModal { .. } | Self::AutonomousModeConfirm { .. } => None,
+            Self::None
+            | Self::CommandModal { .. }
+            | Self::AutonomousModeConfirm { .. }
+            | Self::Help => None,
         }
     }
 
@@ -217,7 +237,8 @@ impl TuiOverlay {
             Self::None
             | Self::Search { .. }
             | Self::CommandPalette { .. }
-            | Self::AutonomousModeConfirm { .. } => None,
+            | Self::AutonomousModeConfirm { .. }
+            | Self::Help => None,
         }
     }
 
@@ -230,7 +251,8 @@ impl TuiOverlay {
             Self::None
             | Self::Search { .. }
             | Self::CommandPalette { .. }
-            | Self::CommandModal { .. } => None,
+            | Self::CommandModal { .. }
+            | Self::Help => None,
         }
     }
 }
@@ -269,6 +291,14 @@ pub enum TuiInteraction {
     /// Open the autonomous-mode type-to-confirm modal (the dangerous enable
     /// path for the selected repo).
     OpenAutonomousModeConfirm,
+    /// Move focus from the Views nav to the Content pane (the `Enter`/`right`
+    /// dive-in from the nav).
+    FocusContent,
+    /// Move focus from the Content pane back to the Views nav (the `Esc`/`left`
+    /// step-out from the content list).
+    FocusNav,
+    /// Open the read-only Help overlay (the `?` keybinding reference).
+    OpenHelp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +308,7 @@ pub struct TuiInteractionState {
     selected_attention_index: usize,
     lane_focus: LaneFocus,
     selected_lane_index: usize,
+    focus: FocusPane,
     overlay: TuiOverlay,
     selected_repo: String,
     autonomous_mode_enabled: bool,
@@ -292,6 +323,7 @@ impl TuiInteractionState {
             selected_attention_index,
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
+            focus: FocusPane::Nav,
             overlay,
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
@@ -310,6 +342,7 @@ impl TuiInteractionState {
             selected_attention_index,
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
+            focus: FocusPane::Nav,
             overlay,
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
@@ -321,6 +354,13 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn with_active_view(mut self, active_view: TuiView) -> Self {
         self.active_view = active_view;
+        self
+    }
+
+    /// Replace which pane the arrow keys drive, preserving every other field.
+    #[must_use]
+    pub const fn with_focus(mut self, focus: FocusPane) -> Self {
+        self.focus = focus;
         self
     }
 
@@ -374,6 +414,12 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn active_view(&self) -> TuiView {
         self.active_view
+    }
+
+    #[must_use]
+    /// Return which pane the arrow keys currently drive.
+    pub const fn focus(&self) -> FocusPane {
+        self.focus
     }
 
     #[must_use]
@@ -533,6 +579,7 @@ pub struct TuiScreenModel {
     lane_board: LaneBoard,
     lane_focus: LaneFocus,
     selected_lane_index: Option<usize>,
+    focus: FocusPane,
     overlay: TuiOverlay,
     selected_repo: String,
     autonomous_mode_enabled: bool,
@@ -596,6 +643,13 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_lane_index(&self) -> Option<usize> {
         self.selected_lane_index
+    }
+
+    /// Which pane the arrow keys currently drive (the Views nav or the Content
+    /// pane). Renderers use it to mark the focused pane.
+    #[must_use]
+    pub const fn focus(&self) -> FocusPane {
+        self.focus
     }
 
     #[must_use]
@@ -1389,6 +1443,7 @@ pub fn build_tui_model_for_state(
         lane_board,
         lane_focus,
         selected_lane_index,
+        focus: state.focus(),
         overlay,
         selected_repo: state.selected_repo().to_owned(),
         autonomous_mode_enabled: state.autonomous_mode_enabled(),
@@ -1399,7 +1454,7 @@ pub fn build_tui_model_for_state(
             active_view.label(),
             attention_snapshots.len()
         ),
-        footer: "shortcuts: up/down select | left/right views | enter details | / search | : command palette | a autonomous-mode (dangerous / use with caution)"
+        footer: "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | ? help | q quit"
             .to_owned(),
     }
 }
@@ -1471,6 +1526,9 @@ pub fn reduce_tui_interaction(
                     typed: String::new(),
                 })
         }
+        TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
+        TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
+        TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help),
     }
 }
 
@@ -3109,7 +3167,8 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         TuiOverlay::None
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. } => None,
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::Help => None,
     }
 }
 
@@ -3123,7 +3182,8 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. } => overlay.clone(),
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3172,7 +3232,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
             typed: format!("{typed}{value}"),
         },
-        TuiOverlay::None | TuiOverlay::CommandModal { .. } => overlay.clone(),
+        TuiOverlay::None | TuiOverlay::CommandModal { .. } | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3187,7 +3247,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
             typed: drop_last_char(typed),
         },
-        TuiOverlay::None | TuiOverlay::CommandModal { .. } => overlay.clone(),
+        TuiOverlay::None | TuiOverlay::CommandModal { .. } | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3209,7 +3269,8 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. } => overlay.clone(),
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3223,7 +3284,8 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. } => overlay.clone(),
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3408,7 +3470,7 @@ mod tests {
         AutonomousDecisionsPort, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
         AutonomousModeArmingRequest, AutonomousModeSetRequest, ConfigCommandOutcome,
         DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, FactoryDrainPolicy,
-        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         JournalAutonomousDecisionsPort, LaneFocus, LivespecJsoncArmingPort, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
@@ -3917,6 +3979,8 @@ mod tests {
         assert_eq!(model.lane_board().columns().len(), Lane::all().len());
         assert_eq!(model.lane_focus(), super::LaneFocus::Overview);
         assert_eq!(model.selected_lane_index(), None);
+        // Focus starts on the Views nav so up/down walk the vertical Views menu.
+        assert_eq!(model.focus(), FocusPane::Nav);
         assert_eq!(model.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
         assert_eq!(
@@ -3925,7 +3989,7 @@ mod tests {
         );
         assert_eq!(
             model.footer(),
-            "shortcuts: up/down select | left/right views | enter details | / search | : command palette | a autonomous-mode (dangerous / use with caution)"
+            "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | ? help | q quit"
         );
     }
 
@@ -3985,6 +4049,37 @@ mod tests {
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextView);
 
         assert_eq!(state.active_view(), TuiView::Repos);
+    }
+
+    #[test]
+    fn tui_interaction_moves_focus_between_the_nav_and_content_panes() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        // Focus starts on the Views nav.
+        assert_eq!(state.focus(), FocusPane::Nav);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::FocusContent);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(state.focus(), FocusPane::Content);
+        assert_eq!(model.focus(), FocusPane::Content);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::FocusNav);
+        assert_eq!(state.focus(), FocusPane::Nav);
+    }
+
+    #[test]
+    fn tui_interaction_opens_and_closes_the_help_overlay() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenHelp);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(state.overlay(), &TuiOverlay::Help);
+        assert_eq!(model.overlay(), &TuiOverlay::Help);
+        assert!(model.overlay().is_open());
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::CloseOverlay);
+        assert_eq!(state.overlay(), &TuiOverlay::None);
     }
 
     #[test]
@@ -4372,6 +4467,7 @@ mod tests {
             lane_board: project_lane_board(&[]),
             lane_focus: super::LaneFocus::Overview,
             selected_lane_index: None,
+            focus: FocusPane::Nav,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
@@ -4619,6 +4715,7 @@ mod tests {
             lane_board: project_lane_board(&[]),
             lane_focus: LaneFocus::Overview,
             selected_lane_index: Some(0),
+            focus: FocusPane::Nav,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
