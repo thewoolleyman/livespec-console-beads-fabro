@@ -593,6 +593,10 @@ pub enum ApplicationError {
     /// Empty work-item id variant -- the work-item a `work_item.*` command
     /// targets carried no non-whitespace id.
     EmptyWorkItemId,
+    /// Invalid reject mode variant -- a `work_item.reject_requested` command
+    /// carried a payload whose `mode` was absent or not one of {rework,
+    /// regroom}.
+    InvalidRejectMode,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -1536,6 +1540,40 @@ fn validate_work_item_id(value: &str) -> ApplicationResult<&str> {
     Ok(trimmed)
 }
 
+/// The mode a `work_item.reject_requested` command carries in its payload,
+/// selecting where the orchestrator routes the rejected item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectMode {
+    /// Send the item back for rework.
+    Rework,
+    /// Send the item back to be regroomed.
+    Regroom,
+}
+
+impl RejectMode {
+    #[must_use]
+    /// The action-id segment for this mode (`rework` or `regroom`).
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rework => "rework",
+            Self::Regroom => "regroom",
+        }
+    }
+
+    /// Parse a mode string, rejecting any value outside {rework, regroom}.
+    ///
+    /// # Errors
+    /// Returns [`ApplicationError::InvalidRejectMode`] when `value` is not one
+    /// of the two valid modes.
+    pub fn parse(value: &str) -> ApplicationResult<Self> {
+        match value {
+            "rework" => Ok(Self::Rework),
+            "regroom" => Ok(Self::Regroom),
+            _other => Err(ApplicationError::InvalidRejectMode),
+        }
+    }
+}
+
 /// Handle a `work_item.approve_requested` command.
 ///
 /// Approve is the human approval act (`pending-approval -> ready`). The handler
@@ -1554,6 +1592,65 @@ pub fn handle_work_item_approve_command(
     let work_item_id = validate_work_item_id(command.aggregate_id())?;
     let action_id = format!("approve:{work_item_id}");
     run_work_item_action(command, &action_id, port)
+}
+
+/// Handle a `work_item.accept_requested` command.
+///
+/// Accept is the human acceptance act. The handler validates the work-item id,
+/// derives the `accept:<work-item-id>` action-id (no payload), and rides the
+/// same shared orchestrator-action port and `work_item` outcome family as
+/// approve. It never writes the ledger directly.
+///
+/// # Errors
+/// Returns an application error when the work-item id is empty or the port
+/// cannot produce a trustworthy outcome.
+pub fn handle_work_item_accept_command(
+    command: &CommandEnvelope,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let action_id = format!("accept:{work_item_id}");
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Handle a `work_item.reject_requested` command.
+///
+/// Reject is the first work-item command carrying a payload beyond the
+/// aggregate id: `payload_json` is `{"mode": "rework" | "regroom"}`. The handler
+/// validates the work-item id, parses and validates the mode enum, derives the
+/// `reject:<work-item-id>:<mode>` action-id, and rides the shared
+/// orchestrator-action port and `work_item` outcome family. Thin console-side
+/// validation only -- the orchestrator's `drive` surface owns state-legality --
+/// and it never writes the ledger directly.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidRejectMode`] when the payload's `mode` is absent
+/// or invalid; also surfaces a port error when the port cannot produce a
+/// trustworthy outcome.
+pub fn handle_work_item_reject_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let mode = reject_mode_from_payload(payload_json)?;
+    let action_id = format!("reject:{work_item_id}:{}", mode.as_str());
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Extract the reject `mode` from a command's persisted `payload_json`.
+///
+/// The payload is the JSON object `{"mode": "rework" | "regroom"}`; any other
+/// shape is an [`ApplicationError::InvalidRejectMode`].
+fn reject_mode_from_payload(payload_json: &str) -> ApplicationResult<RejectMode> {
+    let value: serde_json::Value =
+        serde_json::from_str(payload_json).map_err(|_error| ApplicationError::InvalidRejectMode)?;
+    let mode = value
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ApplicationError::InvalidRejectMode)?;
+    RejectMode::parse(mode)
 }
 
 /// Run one resolved work-item action-id through the port and emit the shared
@@ -2062,11 +2159,12 @@ mod tests {
         DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, FactoryDrainPolicy,
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, LaneFocus, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, build_tui_model, build_tui_model_for_state, handle_factory_drain_command,
-        handle_work_item_approve_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
-        validate_operator_action,
+        OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
+        TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
+        handle_factory_drain_command, handle_work_item_accept_command,
+        handle_work_item_approve_command, handle_work_item_reject_command, project_attention,
+        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_selected_operator_action, validate_operator_action,
     };
 
     #[test]
@@ -3983,6 +4081,159 @@ mod tests {
 
         assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
         assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    fn accept_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_accept".to_owned(),
+            CommandType::WorkItemAcceptRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.accept_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    fn reject_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_reject".to_owned(),
+            CommandType::WorkItemRejectRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.reject_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn accept_handler_derives_action_id_and_routes_through_the_shared_port()
+    -> super::ApplicationResult<()> {
+        let command = accept_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_accept_command(&command, &mut port)?;
+
+        // Accept carries no payload -- the action-id is just `accept:<id>`, and
+        // it rides the shared `work_item` outcome family exactly like approve.
+        assert_eq!(port.observed_action_ids, ["accept:wi-1"]);
+        assert_eq!(outcome.command_status(), "completed");
+        assert_eq!(
+            outcome
+                .events()
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            [
+                &EventType::CommandAccepted,
+                &EventType::WorkItemActionStarted,
+                &EventType::WorkItemActionCompleted,
+            ]
+        );
+        for event in outcome.events() {
+            assert_eq!(event.payload_json(), r#"{"action_id":"accept:wi-1"}"#);
+            assert_eq!(event.source(), "console:work-item-command-handler");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accept_handler_rejects_empty_work_item_id_without_invoking_port() {
+        let command = CommandEnvelope::new(
+            "cmd_accept".to_owned(),
+            CommandType::WorkItemAcceptRequested,
+            "   ".to_owned(),
+            "blank:work_item.accept_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_accept_command(&command, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn reject_handler_maps_regroom_payload_onto_the_reject_action_id()
+    -> super::ApplicationResult<()> {
+        let command = reject_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_reject_command(&command, r#"{"mode":"regroom"}"#, &mut port)?;
+
+        // The mode from the payload lands in the third action-id segment.
+        assert_eq!(port.observed_action_ids, ["reject:wi-1:regroom"]);
+        assert_eq!(outcome.command_status(), "completed");
+        for event in outcome.events() {
+            assert_eq!(
+                event.payload_json(),
+                r#"{"action_id":"reject:wi-1:regroom"}"#
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reject_handler_maps_rework_payload_onto_the_reject_action_id() -> super::ApplicationResult<()>
+    {
+        let command = reject_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_reject_command(&command, r#"{"mode":"rework"}"#, &mut port)?;
+
+        assert_eq!(port.observed_action_ids, ["reject:wi-1:rework"]);
+        assert_eq!(outcome.command_status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn reject_handler_rejects_invalid_mode_without_invoking_port() {
+        let command = reject_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_reject_command(&command, r#"{"mode":"bogus"}"#, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidRejectMode));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn reject_handler_rejects_missing_mode_without_invoking_port() {
+        let command = reject_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_reject_command(&command, "{}", &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidRejectMode));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn reject_handler_rejects_empty_work_item_id_without_invoking_port() {
+        let command = CommandEnvelope::new(
+            "cmd_reject".to_owned(),
+            CommandType::WorkItemRejectRequested,
+            "   ".to_owned(),
+            "blank:work_item.reject_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_reject_command(&command, r#"{"mode":"regroom"}"#, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn reject_mode_parses_valid_values_and_rejects_others() {
+        assert_eq!(RejectMode::parse("rework"), Ok(RejectMode::Rework));
+        assert_eq!(RejectMode::parse("regroom"), Ok(RejectMode::Regroom));
+        assert_eq!(RejectMode::Rework.as_str(), "rework");
+        assert_eq!(RejectMode::Regroom.as_str(), "regroom");
+        assert_eq!(
+            RejectMode::parse("nonsense"),
+            Err(ApplicationError::InvalidRejectMode)
+        );
     }
 
     #[test]

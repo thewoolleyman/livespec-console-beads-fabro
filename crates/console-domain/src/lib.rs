@@ -313,6 +313,13 @@ pub enum CommandType {
     /// Request to approve a `pending-approval` work-item -- the human approval
     /// act that maps onto the orchestrator's `approve:<work-item-id>` action.
     WorkItemApproveRequested,
+    /// Request to accept an `acceptance` work-item -- the human acceptance act
+    /// that maps onto the orchestrator's `accept:<work-item-id>` action.
+    WorkItemAcceptRequested,
+    /// Request to reject a work-item back for rework or regrooming -- maps onto
+    /// the orchestrator's `reject:<work-item-id>:<mode>` action, where the
+    /// command payload carries `mode` in {rework, regroom}.
+    WorkItemRejectRequested,
 }
 
 impl CommandType {
@@ -322,6 +329,8 @@ impl CommandType {
         match self {
             Self::FactoryDrainRequested => "factory.drain_requested",
             Self::WorkItemApproveRequested => "work_item.approve_requested",
+            Self::WorkItemAcceptRequested => "work_item.accept_requested",
+            Self::WorkItemRejectRequested => "work_item.reject_requested",
         }
     }
 
@@ -330,7 +339,9 @@ impl CommandType {
     pub const fn context(&self) -> &'static str {
         match self {
             Self::FactoryDrainRequested => "factory",
-            Self::WorkItemApproveRequested => "work_item",
+            Self::WorkItemApproveRequested
+            | Self::WorkItemAcceptRequested
+            | Self::WorkItemRejectRequested => "work_item",
         }
     }
 }
@@ -555,12 +566,22 @@ mod tests {
             CommandType::WorkItemApproveRequested.contract_name(),
             "work_item.approve_requested"
         );
+        assert_eq!(
+            CommandType::WorkItemAcceptRequested.contract_name(),
+            "work_item.accept_requested"
+        );
+        assert_eq!(
+            CommandType::WorkItemRejectRequested.contract_name(),
+            "work_item.reject_requested"
+        );
     }
 
     #[test]
     fn command_type_contexts_are_bounded_context_names() {
         assert_eq!(CommandType::FactoryDrainRequested.context(), "factory");
         assert_eq!(CommandType::WorkItemApproveRequested.context(), "work_item");
+        assert_eq!(CommandType::WorkItemAcceptRequested.context(), "work_item");
+        assert_eq!(CommandType::WorkItemRejectRequested.context(), "work_item");
     }
 
     #[test]

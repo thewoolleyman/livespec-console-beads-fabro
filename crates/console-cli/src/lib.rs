@@ -29,8 +29,8 @@ use console_application::source_adapters::{
 };
 use console_application::{
     ApplicationError, FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
-    build_tui_model, handle_factory_drain_command, handle_work_item_approve_command,
-    project_attention,
+    build_tui_model, handle_factory_drain_command, handle_work_item_accept_command,
+    handle_work_item_approve_command, handle_work_item_reject_command, project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
@@ -851,9 +851,11 @@ pub fn handle_pending_factory_commands(
 
 /// Handle pending `work_item.*` commands through the shared orchestrator port.
 ///
-/// The approve valve is the first rider; later slices add accept, reject, and the
-/// policy edits by extending [`work_item_command_from_stored`] and the action-id
-/// derivation in the application handlers.
+/// Approve, accept, and reject all ride the shared port; each is dispatched to
+/// its application handler, which derives the action-id (approve/accept carry
+/// none; reject carries `mode` in its payload). The policy-edit commands land in
+/// a later slice by extending [`work_item_command_from_stored`] and adding their
+/// handlers.
 ///
 /// # Errors
 /// Returns a console runtime error when a command is malformed or the store
@@ -868,13 +870,24 @@ pub fn handle_pending_work_item_commands(
         if stored_command.status() != "pending" {
             continue;
         }
-        let Some(command) = work_item_command_from_stored(&stored_command)? else {
+        let Some(pending) = work_item_command_from_stored(&stored_command)? else {
             continue;
         };
-        let command_outcome = handle_work_item_approve_command(&command, port)?;
+        let command_outcome = match &pending {
+            PendingWorkItemCommand::Approve(command) => {
+                handle_work_item_approve_command(command, port)?
+            }
+            PendingWorkItemCommand::Accept(command) => {
+                handle_work_item_accept_command(command, port)?
+            }
+            PendingWorkItemCommand::Reject {
+                command,
+                payload_json,
+            } => handle_work_item_reject_command(command, payload_json, port)?,
+        };
         outcomes.push(finalize_pending_command(
             store,
-            &command,
+            pending.command(),
             command_outcome.events(),
             command_outcome.command_status(),
             handled_at,
@@ -975,13 +988,48 @@ fn factory_command_from_stored(
     )))
 }
 
-/// Rebuild a `work_item.approve_requested` command envelope from a stored
-/// command, or `None` when the stored command is a different type. Later slices
-/// extend this to the accept, reject, and policy-edit `work_item.*` commands.
+/// A pending `work_item.*` command rebuilt from its stored form, tagged with the
+/// handler it dispatches to. Reject carries the raw persisted `payload_json`
+/// (the `{"mode": ...}` object) so the application handler can parse and
+/// validate the mode; approve and accept carry no payload.
+enum PendingWorkItemCommand {
+    /// A rebuilt `work_item.approve_requested` command.
+    Approve(CommandEnvelope),
+    /// A rebuilt `work_item.accept_requested` command.
+    Accept(CommandEnvelope),
+    /// A rebuilt `work_item.reject_requested` command plus its stored payload.
+    Reject {
+        /// The rebuilt command envelope.
+        command: CommandEnvelope,
+        /// The persisted `payload_json` carrying `{"mode": ...}`.
+        payload_json: String,
+    },
+}
+
+impl PendingWorkItemCommand {
+    /// The wrapped command envelope, shared by every dispatch outcome.
+    const fn command(&self) -> &CommandEnvelope {
+        match self {
+            Self::Approve(command) | Self::Accept(command) | Self::Reject { command, .. } => {
+                command
+            }
+        }
+    }
+}
+
+/// Rebuild a `work_item.*` command from a stored command, tagged for dispatch,
+/// or `None` when the stored command is not a work-item command. Recognizes the
+/// approve, accept, and reject commands; the reject variant also surfaces the
+/// stored `payload_json` (the payload-parsing path this slice introduces).
+/// Later slices extend this to the policy-edit `work_item.*` commands.
 fn work_item_command_from_stored(
     stored_command: &StoredCommand,
-) -> ConsoleRuntimeResult<Option<CommandEnvelope>> {
-    if stored_command.command_type() != CommandType::WorkItemApproveRequested.contract_name() {
+) -> ConsoleRuntimeResult<Option<PendingWorkItemCommand>> {
+    let contract_name = stored_command.command_type();
+    let is_approve = contract_name == CommandType::WorkItemApproveRequested.contract_name();
+    let is_accept = contract_name == CommandType::WorkItemAcceptRequested.contract_name();
+    let is_reject = contract_name == CommandType::WorkItemRejectRequested.contract_name();
+    if !(is_approve || is_accept || is_reject) {
         return Ok(None);
     }
     let Some(aggregate_id) = stored_command.aggregate_id() else {
@@ -989,13 +1037,29 @@ fn work_item_command_from_stored(
             stored_command.command_id().to_owned(),
         ));
     };
-    Ok(Some(CommandEnvelope::new(
-        stored_command.command_id().to_owned(),
-        CommandType::WorkItemApproveRequested,
-        aggregate_id.to_owned(),
-        stored_command.idempotency_key().to_owned(),
-        stored_command.requested_by().to_owned(),
-    )))
+    let rebuild = |command_type| {
+        CommandEnvelope::new(
+            stored_command.command_id().to_owned(),
+            command_type,
+            aggregate_id.to_owned(),
+            stored_command.idempotency_key().to_owned(),
+            stored_command.requested_by().to_owned(),
+        )
+    };
+    let pending = if is_approve {
+        PendingWorkItemCommand::Approve(rebuild(CommandType::WorkItemApproveRequested))
+    } else if is_accept {
+        PendingWorkItemCommand::Accept(rebuild(CommandType::WorkItemAcceptRequested))
+    } else {
+        // Reject is the only remaining work-item command, and the only one
+        // carrying a payload: it surfaces the stored `payload_json` (the
+        // `{"mode": ...}` object) for the application handler to parse.
+        PendingWorkItemCommand::Reject {
+            command: rebuild(CommandType::WorkItemRejectRequested),
+            payload_json: stored_command.payload_json().to_owned(),
+        }
+    };
+    Ok(Some(pending))
 }
 
 fn event_append_from_command_event(
@@ -2479,6 +2543,93 @@ mod tests {
             "corr_cmd_approve".to_owned(),
             "{}".to_owned(),
         )
+    }
+
+    fn accept_command_append() -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_accept".to_owned(),
+                CommandType::WorkItemAcceptRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.accept_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_accept".to_owned(),
+            "{}".to_owned(),
+        )
+    }
+
+    fn reject_command_append(payload_json: &str) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_reject".to_owned(),
+                CommandType::WorkItemRejectRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.reject_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_reject".to_owned(),
+            payload_json.to_owned(),
+        )
+    }
+
+    #[test]
+    fn pending_work_item_accept_dispatches_through_port() -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&accept_command_append())?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        assert_eq!(port.observed_action_ids, ["accept:wi-1"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_reject_routes_mode_from_payload_through_port()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&reject_command_append(r#"{"mode":"regroom"}"#))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        // The mode extracted from the stored payload lands in the action-id.
+        assert_eq!(port.observed_action_ids, ["reject:wi-1:regroom"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_reject_surfaces_invalid_mode_as_application_error()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&reject_command_append(r#"{"mode":"bogus"}"#))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::InvalidRejectMode
+            ))
+        ));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        Ok(())
     }
 
     #[test]

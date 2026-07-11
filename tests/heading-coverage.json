@@ -356,7 +356,7 @@
     "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
     "scenario_file": "scenarios.md",
     "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ (the Scenario 7 precedent). Not yet built because the five work_item.* CommandType variants, their handlers, and the orchestrator port are unbuilt; the test lands with the valve/policy-command implementation slice recorded in the console-cruft-cleanup proposal-3 impl-impact note. TODO is an explicit pending-test registration here: console-spec-check accepts it only with a non-empty reason that acknowledges the scenario-level test tier. Replace TODO with the real test path when the slice lands.",
+    "reason": "Test tier: a top-of-pyramid acceptance/integration test under crates/console-cli/tests/ (the Scenario 7 precedent). Two of the scenario's three scenes are built: the Approve scene lands crates/console-cli/tests/scenario_11_approve_valve.rs (con-S1) and the Reject scene lands crates/console-cli/tests/scenario_11_reject_valve.rs (con-S2), both riding the shared orchestrator-action port and work_item outcome family. The third scene -- the set-admission/set-acceptance policy edit -- is still unbuilt (con-S3), so this registration remains an explicit pending-test TODO rather than a single bound test path: console-spec-check accepts a TODO only with a non-empty reason that acknowledges the scenario-level test tier. Replace TODO with the bound test path when the policy-edit scene lands and the scenario is fully covered.",
     "clauses": [
       {
         "gap_id": "gap-zs4i5kyr",
