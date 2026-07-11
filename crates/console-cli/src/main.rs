@@ -24,7 +24,8 @@ use console_application::source_adapters::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_application::{
-    DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, LivespecJsoncArmingPort,
+    DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, JournalAutonomousDecisionsPort,
+    LivespecJsoncArmingPort,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
@@ -102,13 +103,18 @@ fn run_store_backed_command(
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, &needs_attention_program(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    let livespec_jsonc_path = livespec_jsonc_path();
     let drain_program = drain_program();
-    let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
+    let mut drain =
+        DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"], &livespec_jsonc_path);
     let drive_program = drive_program();
     let mut drive =
         DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
-    let livespec_jsonc_path = livespec_jsonc_path();
     let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
+    let decisions = JournalAutonomousDecisionsPort::new(
+        &probe,
+        livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
+    );
     Ok(livespec_console_beads_fabro::run_with_store(
         args,
         &mut store,
@@ -117,6 +123,7 @@ fn run_store_backed_command(
         &mut drain,
         &mut drive,
         &mut arming,
+        &decisions,
         &needs_attention,
     ))
 }
@@ -135,13 +142,18 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, &needs_attention_program(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    let livespec_jsonc_path = livespec_jsonc_path();
     let drain_program = drain_program();
-    let mut drain = DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"]);
+    let mut drain =
+        DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"], &livespec_jsonc_path);
     let drive_program = drive_program();
     let mut drive =
         DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
-    let livespec_jsonc_path = livespec_jsonc_path();
     let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
+    let decisions = JournalAutonomousDecisionsPort::new(
+        &probe,
+        livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
+    );
     let mut runner = InteractiveTuiRunner;
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
@@ -152,6 +164,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &mut drain,
         &mut drive,
         &mut arming,
+        &decisions,
         &needs_attention,
     )
     .map_err(|error| format!("{error:?}"))?;

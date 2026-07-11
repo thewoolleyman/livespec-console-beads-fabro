@@ -1,7 +1,8 @@
 use console_application::{
-    ApplicationError, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
-    AutonomousModeArmingRequest, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-    OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, build_tui_model,
+    ApplicationError, AutonomousAudit, AutonomousDecisionsPort, AutonomousModeArmingOutcome,
+    AutonomousModeArmingPort, AutonomousModeArmingRequest, FactoryDrainPort,
+    FactoryDrainPortOutcome, FactoryDrainRequest, OrchestratorActionOutcome,
+    OrchestratorActionPort, OrchestratorActionRequest, build_tui_model,
     source_adapters::{
         AcceptancePolicy, AdapterPoll, AdapterPollRequest, AdmissionPolicy, Lane, LaneReason,
         NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, PullSourcePort, WorkItemSnapshot,
@@ -123,6 +124,7 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
     let mut port = CompletingDrainPort::default();
     let mut work_item_port = NoWorkItemActionPort;
     let mut config_port = NoArmingPort;
+    let decisions_port = NoDecisionsPort;
 
     let outcome = run_store_backed_tui_session(
         &mut store,
@@ -133,6 +135,7 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
         &mut port,
         &mut work_item_port,
         &mut config_port,
+        &decisions_port,
         &needs_attention,
     )?;
 
@@ -192,6 +195,14 @@ impl AutonomousModeArmingPort for NoArmingPort {
         _request: &AutonomousModeArmingRequest,
     ) -> Result<AutonomousModeArmingOutcome, ApplicationError> {
         Ok(AutonomousModeArmingOutcome::not_wired())
+    }
+}
+
+struct NoDecisionsPort;
+
+impl AutonomousDecisionsPort for NoDecisionsPort {
+    fn read_autonomous_decisions(&self) -> AutonomousAudit {
+        AutonomousAudit::default()
     }
 }
 

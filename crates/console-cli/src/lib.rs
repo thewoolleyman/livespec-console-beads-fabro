@@ -28,8 +28,9 @@ use console_application::source_adapters::{
     normalize_work_item_snapshot,
 };
 use console_application::{
-    ApplicationError, AutonomousModeArmingPort, FactoryDrainPolicy, FactoryDrainPort,
-    OrchestratorActionPort, build_tui_model, handle_config_autonomous_mode_set_command,
+    ApplicationError, AutonomousDecision, AutonomousDecisionsPort, AutonomousModeArmingPort,
+    FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
+    autonomous_reflection_attention_id, build_tui_model, handle_config_autonomous_mode_set_command,
     handle_factory_drain_command, handle_work_item_accept_command,
     handle_work_item_approve_command, handle_work_item_reject_command,
     handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
@@ -47,8 +48,9 @@ use console_application::{
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{
-    AppendOutcome, AppendStatus, CommandAppend, CommandAppendOutcome, CommandStatusUpdateOutcome,
-    EventAppend, EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand,
+    AppendOutcome, AppendStatus, CommandAppend, CommandAppendOutcome, CommandAppendStatus,
+    CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult, SqliteEventStore,
+    StoredCommand,
 };
 use console_tui::TuiRuntimeEffect;
 
@@ -99,6 +101,7 @@ pub fn run_with_store(
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
     config_port: &mut dyn AutonomousModeArmingPort,
+    decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> RunOutput {
     match command_name(args) {
@@ -110,6 +113,7 @@ pub fn run_with_store(
                 factory_port,
                 work_item_port,
                 config_port,
+                decisions_port,
                 needs_attention,
             ),
             "serve",
@@ -315,6 +319,7 @@ pub fn run_store_backed_tui_session(
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
     config_port: &mut dyn AutonomousModeArmingPort,
+    decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
     let existing_events = store.list_console_events()?;
@@ -324,6 +329,9 @@ pub fn run_store_backed_tui_session(
         Vec::new()
     };
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
+    // Reflect the plane's auto-resolutions AFTER ingest so a reflection wins over
+    // a lagging needs-attention surface still showing a resolved item.
+    let _reflected = observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
     let presented_events = store.list_console_events()?;
     let effects = runner.run_tui(&presented_events, requested_by)?;
     let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
@@ -409,7 +417,11 @@ fn backfill_source_adapters(
     Ok(summaries)
 }
 
-const DISPATCHER_JOURNAL_PATH: &str = "tmp/dispatcher-journal.jsonl";
+/// The orchestrator plane's Dispatcher journal file the console reads.
+///
+/// Both the dispatch source adapter and the autonomous per-decision audit
+/// surface ([`observe_and_reflect_autonomous_decisions`]) ride this one journal.
+pub const DISPATCHER_JOURNAL_PATH: &str = "tmp/dispatcher-journal.jsonl";
 
 /// A live source adapter paired with its adapter id, as references.
 pub type SourceAdapterRef<'a> = (&'a str, &'a dyn PullSourcePort);
@@ -657,6 +669,7 @@ pub fn serve_report(
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
     config_port: &mut dyn AutonomousModeArmingPort,
+    decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
     let events = store.list_console_events()?;
@@ -666,6 +679,9 @@ pub fn serve_report(
         Vec::new()
     };
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
+    // Reflect the plane's auto-resolutions AFTER ingest so a reflection wins over
+    // a lagging needs-attention surface still showing a resolved item.
+    let _reflected = observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let _config_handled = handle_pending_config_commands(store, observed_at, config_port)?;
@@ -972,6 +988,145 @@ fn config_command_from_stored(
         stored_command.requested_by().to_owned(),
     );
     Ok(Some((command, stored_command.payload_json().to_owned())))
+}
+
+/// Observe the plane's published per-decision autonomous audit and reflect each
+/// auto-resolution so a resolved item leaves the needs-attention inbox.
+///
+/// The reflection rides the console's own command-plus-outcome-event path. For
+/// every auto-resolution the plane's engine made, the console records a
+/// `factory.autonomous_decision_reflected` command (carrying the disposed
+/// work-item, gate, and decision) and its outcome events -- a `CommandAccepted`
+/// plus an `attention_item.resolved` for that item's human-gate needs-attention
+/// id -- so the item leaves the inbox and the audit trail is complete. Every
+/// truly-unresolvable escalation is LEFT untouched: the console neither drops
+/// nor fabricates it, so it stays surfaced by the normal inbox. The console
+/// resolves NO gate itself; it only reflects the engine's already-journaled
+/// decisions, and never races the engine. Reflection is idempotent across runs
+/// -- each decision's command id is content-stable, so a re-observed decision is
+/// a duplicate no-op. Returns the count of NEW reflections recorded this run.
+///
+/// # Errors
+/// Returns a console runtime error when the store cannot persist the reflection
+/// command or its outcome events.
+pub fn observe_and_reflect_autonomous_decisions(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    decisions_port: &dyn AutonomousDecisionsPort,
+) -> ConsoleRuntimeResult<usize> {
+    let audit = decisions_port.read_autonomous_decisions();
+    let mut reflected = 0;
+    // Only auto-resolutions are reflected; escalations are truly-unresolvable and
+    // are LEFT as needs-attention items (not dropped, not fabricated).
+    for decision in audit.auto_resolutions() {
+        if reflect_autonomous_decision(store, observed_at, decision)? {
+            reflected += 1;
+        }
+    }
+    Ok(reflected)
+}
+
+/// Reflect one auto-resolution: append its reflection command (skipping a
+/// decision already reflected on a prior run) and finalize it with the
+/// `CommandAccepted` + `attention_item.resolved` outcome. Returns whether a NEW
+/// reflection was recorded -- false when the decision was already reflected, or
+/// when its gate maps to no needs-attention item.
+fn reflect_autonomous_decision(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    decision: &AutonomousDecision,
+) -> ConsoleRuntimeResult<bool> {
+    let Some(attention_id) =
+        autonomous_reflection_attention_id(decision.work_item_id(), decision.gate())
+    else {
+        return Ok(false);
+    };
+    let command = autonomous_reflection_command(decision);
+    let append = CommandAppend::new(
+        command.clone(),
+        observed_at.to_owned(),
+        Some(command.aggregate_id().to_owned()),
+        command_correlation_id(&command),
+        autonomous_reflection_payload_json(decision),
+    );
+    if store.append_command(&append)?.status() == CommandAppendStatus::Duplicate {
+        // Already reflected on a prior run -- an idempotent no-op.
+        return Ok(false);
+    }
+    let events = [
+        autonomous_reflection_event(
+            &command,
+            EventType::CommandAccepted,
+            "command",
+            "accepted",
+            1,
+            "{}",
+        ),
+        autonomous_reflection_event(
+            &command,
+            EventType::AttentionItemResolved,
+            "source",
+            "resolved",
+            2,
+            &attention_resolved_payload_json(&attention_id),
+        ),
+    ];
+    let _outcome = finalize_pending_command(store, &command, &events, "completed", observed_at)?;
+    Ok(true)
+}
+
+/// The content-stable reflection command for one auto-resolution. Keyed by gate
+/// and work-item so a re-observed decision re-appends as a duplicate no-op
+/// (idempotent across the append-only journal's re-reads).
+fn autonomous_reflection_command(decision: &AutonomousDecision) -> CommandEnvelope {
+    CommandEnvelope::new(
+        format!(
+            "cmd_autonomous_reflect_{}_{}",
+            decision.gate(),
+            decision.work_item_id()
+        ),
+        CommandType::FactoryAutonomousDecisionReflected,
+        decision.work_item_id().to_owned(),
+        format!(
+            "{}:factory.autonomous_decision_reflected:{}",
+            decision.work_item_id(),
+            decision.gate()
+        ),
+        "console:autonomous-reflect".to_owned(),
+    )
+}
+
+/// The reflection command's persisted payload: the disposed work-item, the
+/// collapsed gate, and what the plane's engine decided.
+fn autonomous_reflection_payload_json(decision: &AutonomousDecision) -> String {
+    serde_json::json!({
+        "work_item_id": decision.work_item_id(),
+        "gate": decision.gate(),
+        "decision": decision.decision(),
+    })
+    .to_string()
+}
+
+/// One reflection outcome event, carrying its `payload_json`, keyed to the
+/// reflection command's aggregate so the projection folds it deterministically.
+fn autonomous_reflection_event(
+    command: &CommandEnvelope,
+    event_type: EventType,
+    context: &str,
+    suffix: &str,
+    stream_seq: u64,
+    payload_json: &str,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        format!("evt_{}_{}", command.command_id(), suffix),
+        1,
+        context.to_owned(),
+        event_type,
+        "console:autonomous-reflect".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+    .with_payload_json(payload_json.to_owned())
 }
 
 /// Persist one handled command's outcome events and update its command status.
@@ -1426,7 +1581,8 @@ fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use console_application::{
-        ApplicationError, AttentionItem, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
+        ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
+        AutonomousDecisionsPort, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
         AutonomousModeArmingRequest, FactoryDrainPort, FactoryDrainPortOutcome,
         FactoryDrainRequest, LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, build_tui_model, project_attention, project_lane_board,
@@ -1454,9 +1610,10 @@ mod tests {
         demo_events, doctor_report, events_tail_report, factory_command_from_stored,
         handle_pending_config_commands, handle_pending_factory_commands,
         handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
-        live_source_adapters, load_tui_events_from_store, persist_tui_runtime_effects,
-        render_tui_preview, run, run_store_backed_tui_session, run_with_store, serve_report,
-        snapshot_report, source_polls_from_seed, work_item_command_from_stored,
+        live_source_adapters, load_tui_events_from_store, observe_and_reflect_autonomous_decisions,
+        persist_tui_runtime_effects, render_tui_preview, run, run_store_backed_tui_session,
+        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
+        work_item_command_from_stored,
     };
 
     /// Scriptable needs-attention snapshot-source port double: returns a canned
@@ -1564,6 +1721,7 @@ mod tests {
             &mut port,
             &mut work_item_port,
             &mut config_port,
+            &empty_decisions_port(),
             &needs_attention,
         )
     }
@@ -1849,6 +2007,7 @@ mod tests {
             &mut port,
             &mut work_item_port,
             &mut config_port,
+            &empty_decisions_port(),
             &needs_attention,
         );
 
@@ -1880,6 +2039,7 @@ mod tests {
             &mut port,
             &mut work_item_port,
             &mut config_port,
+            &empty_decisions_port(),
             &needs_attention,
         );
 
@@ -2130,6 +2290,7 @@ mod tests {
             &mut factory_port,
             &mut work_item_port,
             &mut config_port,
+            &empty_decisions_port(),
             &needs_attention,
         );
         let commands = store.list_commands()?;
@@ -2199,6 +2360,7 @@ mod tests {
             &mut factory_port,
             &mut work_item_port,
             &mut config_port,
+            &empty_decisions_port(),
             &needs_attention,
         );
 
@@ -2232,6 +2394,7 @@ mod tests {
             &mut factory_port,
             &mut work_item_port,
             &mut config_port,
+            &empty_decisions_port(),
             &needs_attention,
         );
 
@@ -3337,6 +3500,123 @@ mod tests {
             self.observed_repos.push(request.repo().to_owned());
             Ok(self.outcome.clone())
         }
+    }
+
+    /// Scriptable autonomous-decisions port double: returns a canned audit so the
+    /// observe/reflect path can be driven without a live Dispatcher journal.
+    struct SimulatedDecisionsPort {
+        audit: AutonomousAudit,
+    }
+
+    impl SimulatedDecisionsPort {
+        fn returning(audit: AutonomousAudit) -> Self {
+            Self { audit }
+        }
+    }
+
+    impl AutonomousDecisionsPort for SimulatedDecisionsPort {
+        fn read_autonomous_decisions(&self) -> AutonomousAudit {
+            self.audit.clone()
+        }
+    }
+
+    /// A decisions port observing an empty audit -- nothing to reflect -- for the
+    /// many store-backed tests that exercise other flows.
+    fn empty_decisions_port() -> SimulatedDecisionsPort {
+        SimulatedDecisionsPort::returning(AutonomousAudit::default())
+    }
+
+    #[test]
+    fn observe_and_reflect_resolves_auto_resolutions_and_leaves_escalations()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        // Seed the inbox with two human-gate valve items -- one the plane will
+        // auto-resolve, one it will escalate -- keyed exactly as the orchestrator
+        // plane keys them (`valve:<verb>:<work-item-id>`).
+        let approve_item = attention_item_fixture("valve:approve:wi-1", "Approve wi-1");
+        let accept_item = attention_item_fixture("valve:accept:wi-2", "Accept wi-2");
+        let port = ScriptedNeedsAttentionPort::observing(vec![approve_item, accept_item]);
+        let needs_attention = NeedsAttentionIngest::new(&port, "fleet");
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:00Z")?;
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
+
+        // The plane's engine auto-resolved wi-1's approve gate and escalated wi-2.
+        let audit = AutonomousAudit::new(
+            vec![AutonomousDecision::new(
+                "wi-1",
+                "approve",
+                "auto-approve",
+                "auto-resolved",
+            )],
+            vec![AutonomousDecision::new(
+                "wi-2",
+                "acceptance",
+                "escalate",
+                "escalated",
+            )],
+        );
+        let decisions = SimulatedDecisionsPort::returning(audit);
+
+        let now = "2026-07-11T00:00:01Z";
+        let reflected = observe_and_reflect_autonomous_decisions(&mut store, now, &decisions)?;
+
+        // The auto-resolved item left the inbox; the escalated one stays.
+        assert_eq!(reflected, 1);
+        let remaining: Vec<String> = project_attention(&store.list_console_events()?)
+            .iter()
+            .map(|item| item.id().to_owned())
+            .collect();
+        assert_eq!(remaining, ["valve:accept:wi-2"]);
+
+        // The reflection rode a command-plus-outcome-event path: a completed
+        // `factory.autonomous_decision_reflected` command plus the resolved event.
+        let commands = store.list_commands()?;
+        assert!(commands.iter().any(|command| {
+            command.command_type() == "factory.autonomous_decision_reflected"
+                && command.status() == "completed"
+        }));
+        assert!(
+            store
+                .list_console_events()?
+                .iter()
+                .any(
+                    |event| *event.event_type() == EventType::AttentionItemResolved
+                        && event.source() == "console:autonomous-reflect"
+                )
+        );
+
+        // A second run re-observing the same audit reflects nothing new (the
+        // append-only journal is idempotent under content-stable command ids).
+        let later = "2026-07-11T00:00:02Z";
+        let again = observe_and_reflect_autonomous_decisions(&mut store, later, &decisions)?;
+        assert_eq!(again, 0);
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn observe_and_reflect_skips_a_decision_with_no_reflectable_item()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        // A decision whose gate maps to no needs-attention valve id is skipped --
+        // no command is recorded and nothing is fabricated.
+        let audit = AutonomousAudit::new(
+            vec![AutonomousDecision::new(
+                "wi-1",
+                "mystery-gate",
+                "d",
+                "auto-resolved",
+            )],
+            Vec::new(),
+        );
+        let decisions = SimulatedDecisionsPort::returning(audit);
+
+        let now = "2026-07-11T00:00:00Z";
+        let reflected = observe_and_reflect_autonomous_decisions(&mut store, now, &decisions)?;
+
+        assert_eq!(reflected, 0);
+        assert!(store.list_commands()?.is_empty());
+        Ok(())
     }
 
     struct FailedFactoryDrainPort;
