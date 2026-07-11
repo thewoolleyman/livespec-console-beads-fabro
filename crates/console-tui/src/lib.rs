@@ -22,7 +22,8 @@ use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, LaneColumn, LaneFocus, LaneWorkItem,
     OperatorAction, OperatorActionOutcome, TimelineEntry, TuiInteraction, TuiInteractionState,
     TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, build_tui_model_for_state,
-    reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
+    reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
+    resolve_command_palette_action, resolve_selected_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -65,6 +66,8 @@ pub type TuiRenderResult<T> = Result<T, TuiRenderError>;
 pub fn run_interactive_tui(
     events: &[ConsoleEvent],
     requested_by: &str,
+    selected_repo: &str,
+    autonomous_mode_enabled: bool,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -80,7 +83,13 @@ pub fn run_interactive_tui(
             return Err(error);
         }
     };
-    let result = run_terminal_loop(&mut terminal, events, requested_by);
+    let result = run_terminal_loop(
+        &mut terminal,
+        events,
+        requested_by,
+        selected_repo,
+        autonomous_mode_enabled,
+    );
     let raw_mode_result = disable_raw_mode();
     let alternate_screen_result = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let cursor_result = terminal.show_cursor();
@@ -95,8 +104,12 @@ fn run_terminal_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     events: &[ConsoleEvent],
     requested_by: &str,
+    selected_repo: &str,
+    autonomous_mode_enabled: bool,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
-    let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+    let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+        .with_selected_repo(selected_repo.to_owned())
+        .with_autonomous_mode_enabled(autonomous_mode_enabled);
     let mut effects = Vec::new();
     loop {
         let model = build_tui_model_for_state(events, &state);
@@ -132,6 +145,9 @@ pub enum TuiTerminalInput {
     Interaction(TuiInteraction),
     /// Confirm variant.
     Confirm,
+    /// Toggle the selected repo's autonomous mode: enabling opens the dangerous
+    /// type-to-confirm modal, disabling submits directly with no confirmation.
+    ToggleAutonomousMode,
     /// Quit variant.
     Quit,
 }
@@ -143,6 +159,14 @@ pub enum TuiRuntimeEffect {
     Render,
     /// Persist command variant.
     PersistCommand(CommandEnvelope),
+    /// Persist a command carrying an operator-supplied JSON payload (the
+    /// autonomous-mode arming command's `{ repo, enabled, confirmed }`).
+    PersistCommandWithPayload {
+        /// The command envelope to persist.
+        command: CommandEnvelope,
+        /// The command's `{ ... }` payload JSON.
+        payload_json: String,
+    },
     /// Open attach command variant.
     OpenAttachCommand(String),
     /// Copy attach command variant.
@@ -194,6 +218,9 @@ pub fn step_tui_runtime(
             TuiRuntimeEffect::Render,
         ),
         TuiTerminalInput::Confirm => confirm_operator_action(state, events, requested_by),
+        TuiTerminalInput::ToggleAutonomousMode => {
+            toggle_autonomous_mode(state, events, requested_by)
+        }
         TuiTerminalInput::Quit => TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
     }
 }
@@ -206,6 +233,9 @@ fn confirm_operator_action(
     let model = build_tui_model_for_state(events, state);
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
+        TuiOverlay::AutonomousModeConfirm { .. } => {
+            resolve_autonomous_mode_enable(&model, requested_by)
+        }
         TuiOverlay::None | TuiOverlay::Search { .. } | TuiOverlay::CommandModal { .. } => {
             resolve_selected_operator_action(&model, requested_by)
         }
@@ -220,9 +250,39 @@ fn confirm_operator_action(
     )
 }
 
+/// Toggle the selected repo's autonomous mode. Enabling is dangerous, so it
+/// opens the type-to-confirm modal (no submit yet); disabling requires no
+/// confirmation, so it submits the disarm command directly with the overlay
+/// unchanged.
+fn toggle_autonomous_mode(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    requested_by: &str,
+) -> TuiRuntimeStep {
+    let model = build_tui_model_for_state(events, state);
+    if model.autonomous_mode_enabled() {
+        let effect = match resolve_autonomous_mode_disable(&model, requested_by) {
+            Ok(outcome) => action_outcome_effect(outcome),
+            Err(error) => TuiRuntimeEffect::ApplicationError(error),
+        };
+        return TuiRuntimeStep::new(state.clone(), effect);
+    }
+    TuiRuntimeStep::new(
+        reduce_tui_interaction(state, events, TuiInteraction::OpenAutonomousModeConfirm),
+        TuiRuntimeEffect::Render,
+    )
+}
+
 fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
     match outcome {
         OperatorActionOutcome::PersistCommand(command) => TuiRuntimeEffect::PersistCommand(command),
+        OperatorActionOutcome::PersistCommandWithPayload {
+            command,
+            payload_json,
+        } => TuiRuntimeEffect::PersistCommandWithPayload {
+            command,
+            payload_json,
+        },
         OperatorActionOutcome::OpenAttachCommand(command) => {
             TuiRuntimeEffect::OpenAttachCommand(command)
         }
@@ -251,6 +311,7 @@ pub fn key_event_to_terminal_input(
         KeyCode::Char('/') => slash_input(overlay),
         KeyCode::Char(':') => colon_input(overlay),
         KeyCode::Char('q') => q_input(overlay),
+        KeyCode::Char('a') => autonomous_toggle_input(overlay),
         KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => Some(TuiTerminalInput::Interaction(
             TuiInteraction::SelectPreviousView,
@@ -298,7 +359,10 @@ const fn down_interaction(overlay: &TuiOverlay) -> TuiInteraction {
 /// selected lane; in a drilled-in lane, Enter is inert (no per-item action yet);
 /// otherwise open the command modal on the selected attention item.
 fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
-    if matches!(model.overlay(), TuiOverlay::CommandModal { .. }) {
+    if matches!(
+        model.overlay(),
+        TuiOverlay::CommandModal { .. } | TuiOverlay::AutonomousModeConfirm { .. }
+    ) {
         return Some(TuiTerminalInput::Confirm);
     }
     if model.active_view() == TuiView::Lanes {
@@ -349,10 +413,21 @@ const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     text_input('q', overlay)
 }
 
+/// `a`: with no overlay open, toggle the selected repo's autonomous mode;
+/// otherwise it is a literal character typed into the open text overlay.
+const fn autonomous_toggle_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+    if matches!(overlay, TuiOverlay::None) {
+        return Some(TuiTerminalInput::ToggleAutonomousMode);
+    }
+    text_input('a', overlay)
+}
+
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     if matches!(
         overlay,
-        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. }
+        TuiOverlay::Search { .. }
+            | TuiOverlay::CommandPalette { .. }
+            | TuiOverlay::AutonomousModeConfirm { .. }
     ) {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(
             value,
@@ -540,7 +615,36 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
+        TuiOverlay::AutonomousModeConfirm { typed } => {
+            render_autonomous_mode_confirm(
+                model.selected_repo(),
+                typed,
+                overlay_rect(area),
+                buffer,
+            );
+        }
     }
+}
+
+/// Render the dangerous autonomous-mode type-to-confirm modal: the enable is
+/// labelled "dangerous / use with caution" and gated until the operator types
+/// the repo name.
+fn render_autonomous_mode_confirm(repo: &str, typed: &str, area: Rect, buffer: &mut Buffer) {
+    Clear.render(area, buffer);
+    let lines = vec![
+        Line::from("Enable full autonomous mode"),
+        Line::from("dangerous / use with caution").style(Style::new().add_modifier(Modifier::BOLD)),
+        Line::from(format!("Type the repo name to confirm: {repo}")),
+        Line::from(format!("> {typed}")),
+        Line::from("Enter to confirm | Esc to cancel"),
+    ];
+    Paragraph::new(lines)
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title("Autonomous Mode (dangerous)"),
+        )
+        .render(area, buffer);
 }
 
 fn render_prompt_overlay(title: &'static str, value: String, area: Rect, buffer: &mut Buffer) {
@@ -741,9 +845,9 @@ mod tests {
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::{
-        AttentionDetail, AttentionItem, LaneFocus, OperatorAction, OperatorActionOutcome,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state,
+        ApplicationError, AttentionDetail, AttentionItem, LaneFocus, OperatorAction,
+        OperatorActionOutcome, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, build_tui_model, build_tui_model_for_state,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1400,8 +1504,22 @@ mod tests {
 
     fn persisted_command(effect: &TuiRuntimeEffect) -> Option<&console_domain::CommandEnvelope> {
         match effect {
-            TuiRuntimeEffect::PersistCommand(command) => Some(command),
+            TuiRuntimeEffect::PersistCommand(command)
+            | TuiRuntimeEffect::PersistCommandWithPayload { command, .. } => Some(command),
             TuiRuntimeEffect::Render
+            | TuiRuntimeEffect::OpenAttachCommand(_)
+            | TuiRuntimeEffect::CopyAttachCommand(_)
+            | TuiRuntimeEffect::Quit
+            | TuiRuntimeEffect::ApplicationError(_) => None,
+        }
+    }
+
+    /// The `{ ... }` payload JSON carried by a payload-bearing persist effect.
+    fn persisted_payload(effect: &TuiRuntimeEffect) -> Option<&str> {
+        match effect {
+            TuiRuntimeEffect::PersistCommandWithPayload { payload_json, .. } => Some(payload_json),
+            TuiRuntimeEffect::PersistCommand(_)
+            | TuiRuntimeEffect::Render
             | TuiRuntimeEffect::OpenAttachCommand(_)
             | TuiRuntimeEffect::CopyAttachCommand(_)
             | TuiRuntimeEffect::Quit
@@ -1520,5 +1638,210 @@ mod tests {
             "orchestrator",
         )
         .with_payload_json(payload)
+    }
+
+    // -----------------------------------------------------------------------
+    // Autonomous-mode toggle / type-to-confirm modal (C3 slice 2), covering the
+    // Scenario 9 enable path at the TUI runtime level.
+    // -----------------------------------------------------------------------
+
+    const CONFIRM_REPO: &str = "livespec-console-beads-fabro";
+
+    /// An interaction state over the given overlay whose selected repo carries
+    /// the given derived autonomous mode.
+    fn autonomous_state(overlay: TuiOverlay, autonomous_mode_enabled: bool) -> TuiInteractionState {
+        TuiInteractionState::new(0, overlay)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_autonomous_mode_enabled(autonomous_mode_enabled)
+    }
+
+    /// A model over the given overlay whose selected repo carries the given mode.
+    fn autonomous_model(overlay: TuiOverlay, autonomous_mode_enabled: bool) -> TuiScreenModel {
+        build_tui_model_for_state(&[], &autonomous_state(overlay, autonomous_mode_enabled))
+    }
+
+    #[test]
+    fn keymap_toggles_autonomous_mode_and_types_into_the_confirm_modal() {
+        // `a` with no overlay open toggles autonomous mode.
+        let none = autonomous_model(TuiOverlay::None, false);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('a')), &none),
+            Some(TuiTerminalInput::ToggleAutonomousMode)
+        );
+
+        // With the confirm modal open, `a` and any char are literal input, and
+        // Enter confirms.
+        let confirm = autonomous_model(
+            TuiOverlay::AutonomousModeConfirm {
+                typed: String::new(),
+            },
+            false,
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('a')), &confirm),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('a')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('x')), &confirm),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('x')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &confirm),
+            Some(TuiTerminalInput::Confirm)
+        );
+    }
+
+    #[test]
+    fn toggling_a_disabled_repo_opens_the_confirm_modal_without_submitting() {
+        let state = autonomous_state(TuiOverlay::None, false);
+        let step = step_tui_runtime(
+            &state,
+            &[],
+            TuiTerminalInput::ToggleAutonomousMode,
+            "operator",
+        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+        assert_eq!(
+            step.state().overlay(),
+            &TuiOverlay::AutonomousModeConfirm {
+                typed: String::new(),
+            }
+        );
+        assert_eq!(persisted_command(step.effect()), None);
+    }
+
+    #[test]
+    fn confirming_the_typed_modal_submits_a_confirmed_enable_command() {
+        let state = autonomous_state(
+            TuiOverlay::AutonomousModeConfirm {
+                typed: CONFIRM_REPO.to_owned(),
+            },
+            false,
+        );
+        let step = step_tui_runtime(&state, &[], TuiTerminalInput::Confirm, "operator");
+
+        let command = persisted_command(step.effect());
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::ConfigAutonomousModeSet)
+        );
+        let payload = persisted_payload(step.effect());
+        assert_eq!(
+            payload.map(|value| value.contains(r#""enabled":true"#)),
+            Some(true)
+        );
+        assert_eq!(
+            payload.map(|value| value.contains(r#""confirmed":true"#)),
+            Some(true)
+        );
+        assert_eq!(
+            payload.map(|value| value.contains(r#""repo":"livespec-console-beads-fabro""#)),
+            Some(true)
+        );
+        // The modal closes after the submit.
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn confirming_a_mismatched_modal_does_not_submit() {
+        let state = autonomous_state(
+            TuiOverlay::AutonomousModeConfirm {
+                typed: "wrong".to_owned(),
+            },
+            false,
+        );
+        let step = step_tui_runtime(&state, &[], TuiTerminalInput::Confirm, "operator");
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                ApplicationError::AutonomousModeConfirmationMismatch
+            )
+        );
+        assert_eq!(persisted_command(step.effect()), None);
+        assert_eq!(persisted_payload(step.effect()), None);
+    }
+
+    #[test]
+    fn toggling_an_enabled_repo_submits_a_disable_without_confirmation() {
+        let state = autonomous_state(TuiOverlay::None, true);
+        let step = step_tui_runtime(
+            &state,
+            &[],
+            TuiTerminalInput::ToggleAutonomousMode,
+            "operator",
+        );
+
+        let payload = persisted_payload(step.effect());
+        assert_eq!(
+            payload.map(|value| value.contains(r#""enabled":false"#)),
+            Some(true)
+        );
+        assert_eq!(
+            payload.map(|value| value.contains(r#""confirmed":false"#)),
+            Some(true)
+        );
+        // No confirmation modal is opened for a disable.
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn toggling_an_enabled_repo_without_a_selected_repo_surfaces_an_error() {
+        let state =
+            TuiInteractionState::new(0, TuiOverlay::None).with_autonomous_mode_enabled(true);
+        let step = step_tui_runtime(
+            &state,
+            &[],
+            TuiTerminalInput::ToggleAutonomousMode,
+            "operator",
+        );
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(ApplicationError::InvalidAutonomousModePayload)
+        );
+    }
+
+    #[test]
+    fn renders_the_dangerous_label_in_the_confirm_modal() {
+        let model = autonomous_model(
+            TuiOverlay::AutonomousModeConfirm {
+                typed: String::new(),
+            },
+            false,
+        );
+        let rendered = render_to_text(&model, 96, 24);
+        assert_eq!(
+            rendered
+                .as_ref()
+                .map(|value| value.contains("dangerous / use with caution")),
+            Ok(true)
+        );
+        assert_eq!(
+            rendered
+                .as_ref()
+                .map(|value| value.contains("Type the repo name to confirm")),
+            Ok(true)
+        );
+        assert_eq!(
+            rendered.as_ref().map(|value| value.contains(CONFIRM_REPO)),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn action_outcome_effect_maps_the_payload_bearing_persist_outcome() {
+        let effect = action_outcome_effect(OperatorActionOutcome::PersistCommandWithPayload {
+            command: console_domain::CommandEnvelope::new(
+                "cmd".to_owned(),
+                CommandType::ConfigAutonomousModeSet,
+                CONFIRM_REPO.to_owned(),
+                "key".to_owned(),
+                "operator".to_owned(),
+            ),
+            payload_json: r#"{"repo":"r","enabled":true,"confirmed":true}"#.to_owned(),
+        });
+        assert_eq!(
+            persisted_payload(&effect),
+            Some(r#"{"repo":"r","enabled":true,"confirmed":true}"#)
+        );
     }
 }

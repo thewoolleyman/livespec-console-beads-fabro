@@ -25,7 +25,7 @@ use console_application::source_adapters::{
 #[cfg(all(not(test), not(coverage)))]
 use console_application::{
     DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, JournalAutonomousDecisionsPort,
-    LivespecJsoncArmingPort,
+    LivespecJsoncArmingPort, read_autonomous_mode_from_jsonc,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
@@ -149,12 +149,16 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let drive_program = drive_program();
     let mut drive =
         DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
+    let autonomous_mode_enabled = derive_autonomous_mode(&probe, &livespec_jsonc_path);
     let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
     let decisions = JournalAutonomousDecisionsPort::new(
         &probe,
         livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
     );
-    let mut runner = InteractiveTuiRunner;
+    let mut runner = InteractiveTuiRunner {
+        selected_repo: repo.clone(),
+        autonomous_mode_enabled,
+    };
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
         &observed_at,
@@ -243,8 +247,26 @@ fn livespec_jsonc_path() -> String {
         .unwrap_or_else(|_error| ".livespec.jsonc".to_owned())
 }
 
+/// Derive the selected repo's autonomous mode from its `.livespec.jsonc`, so the
+/// live TUI header and toggle reflect the orchestrator permission key. An
+/// unreadable config is treated as disabled (the default-off contract).
 #[cfg(all(not(test), not(coverage)))]
-struct InteractiveTuiRunner;
+fn derive_autonomous_mode(probe: &SystemSourceProbe, livespec_jsonc_path: &str) -> bool {
+    match probe.read_file(livespec_jsonc_path) {
+        SourceProbeOutcome::Observed {
+            stdout,
+            success: true,
+        } => read_autonomous_mode_from_jsonc(&stdout),
+        SourceProbeOutcome::Observed { success: false, .. }
+        | SourceProbeOutcome::Unavailable { .. } => false,
+    }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+struct InteractiveTuiRunner {
+    selected_repo: String,
+    autonomous_mode_enabled: bool,
+}
 
 #[cfg(all(not(test), not(coverage)))]
 impl TuiSessionRunner for InteractiveTuiRunner {
@@ -253,8 +275,13 @@ impl TuiSessionRunner for InteractiveTuiRunner {
         events: &[console_domain::ConsoleEvent],
         requested_by: &str,
     ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
-        console_tui::run_interactive_tui(events, requested_by)
-            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+        console_tui::run_interactive_tui(
+            events,
+            requested_by,
+            &self.selected_repo,
+            self.autonomous_mode_enabled,
+        )
+        .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
     }
 }
 

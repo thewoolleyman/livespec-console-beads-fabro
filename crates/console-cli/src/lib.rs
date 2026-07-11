@@ -1189,6 +1189,16 @@ fn command_append_from_tui_effect(
             command_correlation_id(command),
             "{}".to_owned(),
         )),
+        TuiRuntimeEffect::PersistCommandWithPayload {
+            command,
+            payload_json,
+        } => Some(CommandAppend::new(
+            command.clone(),
+            requested_at.to_owned(),
+            Some(command.aggregate_id().to_owned()),
+            command_correlation_id(command),
+            payload_json.clone(),
+        )),
         TuiRuntimeEffect::Render
         | TuiRuntimeEffect::OpenAttachCommand(_)
         | TuiRuntimeEffect::CopyAttachCommand(_)
@@ -2338,6 +2348,57 @@ mod tests {
     }
 
     #[test]
+    fn store_backed_tui_session_persists_and_arms_a_payload_bearing_autonomous_command()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut runner = ScriptedTuiSessionRunner::new(vec![autonomous_enable_effect()]);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-07-11T00:00:02Z",
+            "operator",
+            &mut runner,
+            &sources,
+            &mut factory_port,
+            &mut work_item_port,
+            &mut config_port,
+            &empty_decisions_port(),
+            &needs_attention,
+        );
+        assert!(outcome.is_ok());
+
+        // The payload-bearing effect is persisted with its { repo, enabled,
+        // confirmed } payload intact, so the Configuration handler parses it and
+        // completes the command (an empty `{}` payload would be rejected).
+        let commands = store.list_commands()?;
+        let autonomous = commands.iter().find(|command| {
+            command.command_type() == CommandType::ConfigAutonomousModeSet.contract_name()
+        });
+        assert_eq!(autonomous.map(StoredCommand::status), Some("completed"));
+        assert_eq!(
+            autonomous.map(|command| command.payload_json().contains(r#""confirmed":true"#)),
+            Some(true)
+        );
+
+        // The arming request and audit event are recorded through the same path.
+        assert_eq!(config_port.observed_repos, ["livespec-console-beads-fabro"]);
+        let events = store.list_console_events()?;
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type() == &EventType::ConfigAutonomousModeEnabled)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn store_backed_tui_session_uses_existing_events_without_backfill()
     -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
@@ -3414,6 +3475,25 @@ mod tests {
             "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
             "operator".to_owned(),
         ))
+    }
+
+    /// A payload-bearing autonomous-mode enable effect, as the TUI's
+    /// type-to-confirm modal produces it: a `config.autonomous_mode_set` command
+    /// carrying the `{ repo, enabled, confirmed }` payload the Configuration
+    /// handler reads.
+    fn autonomous_enable_effect() -> TuiRuntimeEffect {
+        TuiRuntimeEffect::PersistCommandWithPayload {
+            command: CommandEnvelope::new(
+                "cmd_autonomous_mode_set_livespec-console-beads-fabro_true".to_owned(),
+                CommandType::ConfigAutonomousModeSet,
+                "livespec-console-beads-fabro".to_owned(),
+                "livespec-console-beads-fabro:config.autonomous_mode_set:enabled=true".to_owned(),
+                "operator".to_owned(),
+            ),
+            payload_json:
+                r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#
+                    .to_owned(),
+        }
     }
 
     fn command_args(values: &[&str]) -> Vec<String> {
