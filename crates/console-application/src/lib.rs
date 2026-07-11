@@ -601,6 +601,10 @@ pub enum ApplicationError {
     /// command carried a payload whose `policy` was absent or not one of {auto,
     /// manual}.
     InvalidAdmissionPolicy,
+    /// Invalid acceptance policy variant -- a
+    /// `work_item.set_acceptance_requested` command carried a payload whose
+    /// `policy` was absent or not one of {ai-only, human-only, ai-then-human}.
+    InvalidAcceptancePolicy,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -1702,6 +1706,52 @@ fn set_admission_policy_from_payload(payload_json: &str) -> ApplicationResult<Ad
         .map_err(|_error| ApplicationError::InvalidAdmissionPolicy)
 }
 
+/// Handle a `work_item.set_acceptance_requested` command.
+///
+/// Set-acceptance is the acceptance policy dial: `payload_json` is
+/// `{"policy": "ai-only" | "human-only" | "ai-then-human"}`. The handler
+/// validates the work-item id, parses and validates the policy enum, derives the
+/// `set-acceptance:<work-item-id>:<policy>` action-id, and rides the shared
+/// orchestrator-action port and `work_item` outcome family exactly like the
+/// set-admission command. A policy edit never moves the item between lifecycle
+/// states: the console only issues the command and emits the `work_item.action.*`
+/// events, observing any effect on a subsequent poll. Thin console-side
+/// validation only -- the orchestrator's `drive` surface owns state-legality --
+/// and it never writes the ledger directly.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidAcceptancePolicy`] when the payload's `policy` is
+/// absent or invalid; also surfaces a port error when the port cannot produce a
+/// trustworthy outcome.
+pub fn handle_work_item_set_acceptance_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let policy = set_acceptance_policy_from_payload(payload_json)?;
+    let action_id = format!("set-acceptance:{work_item_id}:{}", policy.label());
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Extract the acceptance `policy` from a command's persisted `payload_json`.
+///
+/// The payload is the JSON object
+/// `{"policy": "ai-only" | "human-only" | "ai-then-human"}`; the value is
+/// deserialized through the read-side [`AcceptancePolicy`] enum (kebab-case), so
+/// the command dial and the snapshot dial share one source of truth. Any other
+/// shape is an [`ApplicationError::InvalidAcceptancePolicy`].
+fn set_acceptance_policy_from_payload(payload_json: &str) -> ApplicationResult<AcceptancePolicy> {
+    let value: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|_error| ApplicationError::InvalidAcceptancePolicy)?;
+    let policy = value
+        .get("policy")
+        .ok_or(ApplicationError::InvalidAcceptancePolicy)?;
+    serde_json::from_value(policy.clone())
+        .map_err(|_error| ApplicationError::InvalidAcceptancePolicy)
+}
+
 /// Run one resolved work-item action-id through the port and emit the shared
 /// `work_item` outcome events keyed by that action-id. Shared by every
 /// `work_item.*` command handler.
@@ -2212,9 +2262,11 @@ mod tests {
         TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
         handle_factory_drain_command, handle_work_item_accept_command,
         handle_work_item_approve_command, handle_work_item_reject_command,
-        handle_work_item_set_admission_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_selected_operator_action,
-        set_admission_policy_from_payload, validate_operator_action,
+        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+        project_attention, project_lane_board, reduce_tui_interaction,
+        resolve_command_palette_action, resolve_selected_operator_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload,
+        validate_operator_action,
     };
 
     #[test]
@@ -4393,6 +4445,137 @@ mod tests {
         assert_eq!(
             set_admission_policy_from_payload("not json"),
             Err(ApplicationError::InvalidAdmissionPolicy)
+        );
+    }
+
+    fn set_acceptance_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_set_acceptance".to_owned(),
+            CommandType::WorkItemSetAcceptanceRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_acceptance_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn set_acceptance_handler_maps_ai_only_payload_onto_the_action_id()
+    -> super::ApplicationResult<()> {
+        let command = set_acceptance_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let payload = r#"{"policy":"ai-only"}"#;
+
+        let outcome = handle_work_item_set_acceptance_command(&command, payload, &mut port)?;
+
+        // The policy from the payload lands in the third action-id segment.
+        assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:ai-only"]);
+        assert_eq!(outcome.command_status(), "completed");
+        for event in outcome.events() {
+            assert_eq!(
+                event.payload_json(),
+                r#"{"action_id":"set-acceptance:wi-1:ai-only"}"#
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn set_acceptance_handler_maps_human_only_payload_onto_the_action_id()
+    -> super::ApplicationResult<()> {
+        let command = set_acceptance_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let payload = r#"{"policy":"human-only"}"#;
+
+        let outcome = handle_work_item_set_acceptance_command(&command, payload, &mut port)?;
+
+        assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:human-only"]);
+        assert_eq!(outcome.command_status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn set_acceptance_handler_maps_ai_then_human_payload_onto_the_action_id()
+    -> super::ApplicationResult<()> {
+        let command = set_acceptance_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let payload = r#"{"policy":"ai-then-human"}"#;
+
+        let outcome = handle_work_item_set_acceptance_command(&command, payload, &mut port)?;
+
+        assert_eq!(
+            port.observed_action_ids,
+            ["set-acceptance:wi-1:ai-then-human"]
+        );
+        assert_eq!(outcome.command_status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn set_acceptance_handler_rejects_invalid_policy_without_invoking_port() {
+        let command = set_acceptance_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_set_acceptance_command(&command, r#"{"policy":"bogus"}"#, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidAcceptancePolicy));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn set_acceptance_handler_rejects_missing_policy_without_invoking_port() {
+        let command = set_acceptance_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_set_acceptance_command(&command, "{}", &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::InvalidAcceptancePolicy));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn set_acceptance_handler_rejects_empty_work_item_id_without_invoking_port() {
+        let command = CommandEnvelope::new(
+            "cmd_set_acceptance".to_owned(),
+            CommandType::WorkItemSetAcceptanceRequested,
+            "   ".to_owned(),
+            "blank:work_item.set_acceptance_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_work_item_set_acceptance_command(&command, r#"{"policy":"ai-only"}"#, &mut port);
+
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn set_acceptance_policy_from_payload_parses_valid_values_and_rejects_others() {
+        assert_eq!(
+            set_acceptance_policy_from_payload(r#"{"policy":"ai-only"}"#),
+            Ok(AcceptancePolicy::AiOnly)
+        );
+        assert_eq!(
+            set_acceptance_policy_from_payload(r#"{"policy":"human-only"}"#),
+            Ok(AcceptancePolicy::HumanOnly)
+        );
+        assert_eq!(
+            set_acceptance_policy_from_payload(r#"{"policy":"ai-then-human"}"#),
+            Ok(AcceptancePolicy::AiThenHuman)
+        );
+        assert_eq!(
+            set_acceptance_policy_from_payload(r#"{"policy":"bogus"}"#),
+            Err(ApplicationError::InvalidAcceptancePolicy)
+        );
+        assert_eq!(
+            set_acceptance_policy_from_payload("{}"),
+            Err(ApplicationError::InvalidAcceptancePolicy)
+        );
+        assert_eq!(
+            set_acceptance_policy_from_payload("not json"),
+            Err(ApplicationError::InvalidAcceptancePolicy)
         );
     }
 

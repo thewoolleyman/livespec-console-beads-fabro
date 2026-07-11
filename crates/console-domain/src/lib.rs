@@ -325,6 +325,11 @@ pub enum CommandType {
     /// command payload carries `policy` in {auto, manual}. A policy edit never
     /// moves the item between lifecycle states.
     WorkItemSetAdmissionRequested,
+    /// Request to set a work-item's acceptance policy dial -- maps onto the
+    /// orchestrator's `set-acceptance:<work-item-id>:<policy>` action, where the
+    /// command payload carries `policy` in {ai-only, human-only, ai-then-human}.
+    /// A policy edit never moves the item between lifecycle states.
+    WorkItemSetAcceptanceRequested,
 }
 
 impl CommandType {
@@ -337,6 +342,7 @@ impl CommandType {
             Self::WorkItemAcceptRequested => "work_item.accept_requested",
             Self::WorkItemRejectRequested => "work_item.reject_requested",
             Self::WorkItemSetAdmissionRequested => "work_item.set_admission_requested",
+            Self::WorkItemSetAcceptanceRequested => "work_item.set_acceptance_requested",
         }
     }
 
@@ -348,7 +354,8 @@ impl CommandType {
             Self::WorkItemApproveRequested
             | Self::WorkItemAcceptRequested
             | Self::WorkItemRejectRequested
-            | Self::WorkItemSetAdmissionRequested => "work_item",
+            | Self::WorkItemSetAdmissionRequested
+            | Self::WorkItemSetAcceptanceRequested => "work_item",
         }
     }
 }
@@ -585,6 +592,10 @@ mod tests {
             CommandType::WorkItemSetAdmissionRequested.contract_name(),
             "work_item.set_admission_requested"
         );
+        assert_eq!(
+            CommandType::WorkItemSetAcceptanceRequested.contract_name(),
+            "work_item.set_acceptance_requested"
+        );
     }
 
     #[test]
@@ -595,6 +606,10 @@ mod tests {
         assert_eq!(CommandType::WorkItemRejectRequested.context(), "work_item");
         assert_eq!(
             CommandType::WorkItemSetAdmissionRequested.context(),
+            "work_item"
+        );
+        assert_eq!(
+            CommandType::WorkItemSetAcceptanceRequested.context(),
             "work_item"
         );
     }

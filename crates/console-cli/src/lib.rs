@@ -31,7 +31,8 @@ use console_application::{
     ApplicationError, FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
     build_tui_model, handle_factory_drain_command, handle_work_item_accept_command,
     handle_work_item_approve_command, handle_work_item_reject_command,
-    handle_work_item_set_admission_command, project_attention,
+    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+    project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
@@ -852,12 +853,10 @@ pub fn handle_pending_factory_commands(
 
 /// Handle pending `work_item.*` commands through the shared orchestrator port.
 ///
-/// Approve, accept, reject, and set-admission all ride the shared port; each is
-/// dispatched to its application handler, which derives the action-id
-/// (approve/accept carry no payload; reject carries `mode` and set-admission
-/// carries `policy` in their payloads). The set-acceptance policy dial lands in
-/// a later slice by extending [`work_item_command_from_stored`] and adding its
-/// handler.
+/// Approve, accept, reject, set-admission, and set-acceptance all ride the
+/// shared port; each is dispatched to its application handler, which derives the
+/// action-id (approve/accept carry no payload; reject carries `mode`, and
+/// set-admission and set-acceptance each carry `policy` in their payloads).
 ///
 /// # Errors
 /// Returns a console runtime error when a command is malformed or the store
@@ -890,6 +889,10 @@ pub fn handle_pending_work_item_commands(
                 command,
                 payload_json,
             } => handle_work_item_set_admission_command(command, payload_json, port)?,
+            PendingWorkItemCommand::SetAcceptance {
+                command,
+                payload_json,
+            } => handle_work_item_set_acceptance_command(command, payload_json, port)?,
         };
         outcomes.push(finalize_pending_command(
             store,
@@ -1019,6 +1022,14 @@ enum PendingWorkItemCommand {
         /// The persisted `payload_json` carrying `{"policy": ...}`.
         payload_json: String,
     },
+    /// A rebuilt `work_item.set_acceptance_requested` command plus its stored
+    /// payload.
+    SetAcceptance {
+        /// The rebuilt command envelope.
+        command: CommandEnvelope,
+        /// The persisted `payload_json` carrying `{"policy": ...}`.
+        payload_json: String,
+    },
 }
 
 impl PendingWorkItemCommand {
@@ -1028,17 +1039,18 @@ impl PendingWorkItemCommand {
             Self::Approve(command)
             | Self::Accept(command)
             | Self::Reject { command, .. }
-            | Self::SetAdmission { command, .. } => command,
+            | Self::SetAdmission { command, .. }
+            | Self::SetAcceptance { command, .. } => command,
         }
     }
 }
 
 /// Rebuild a `work_item.*` command from a stored command, tagged for dispatch,
 /// or `None` when the stored command is not a work-item command. Recognizes the
-/// approve, accept, reject, and set-admission commands; the reject and
-/// set-admission variants also surface the stored `payload_json` (the
-/// payload-parsing path the reject slice introduced), carrying `{"mode": ...}`
-/// and `{"policy": ...}` respectively.
+/// approve, accept, reject, set-admission, and set-acceptance commands; the
+/// reject, set-admission, and set-acceptance variants also surface the stored
+/// `payload_json` (the payload-parsing path the reject slice introduced),
+/// carrying `{"mode": ...}` and `{"policy": ...}` respectively.
 fn work_item_command_from_stored(
     stored_command: &StoredCommand,
 ) -> ConsoleRuntimeResult<Option<PendingWorkItemCommand>> {
@@ -1048,7 +1060,9 @@ fn work_item_command_from_stored(
     let is_reject = contract_name == CommandType::WorkItemRejectRequested.contract_name();
     let is_set_admission =
         contract_name == CommandType::WorkItemSetAdmissionRequested.contract_name();
-    if !(is_approve || is_accept || is_reject || is_set_admission) {
+    let is_set_acceptance =
+        contract_name == CommandType::WorkItemSetAcceptanceRequested.contract_name();
+    if !(is_approve || is_accept || is_reject || is_set_admission || is_set_acceptance) {
         return Ok(None);
     }
     let Some(aggregate_id) = stored_command.aggregate_id() else {
@@ -1076,11 +1090,20 @@ fn work_item_command_from_stored(
             command: rebuild(CommandType::WorkItemRejectRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
-    } else {
-        // Set-admission is the policy dial: it surfaces the stored `payload_json`
-        // (the `{"policy": ...}` object) for the application handler to parse.
+    } else if is_set_admission {
+        // Set-admission is the admission policy dial: it surfaces the stored
+        // `payload_json` (the `{"policy": ...}` object) for the application
+        // handler to parse.
         PendingWorkItemCommand::SetAdmission {
             command: rebuild(CommandType::WorkItemSetAdmissionRequested),
+            payload_json: stored_command.payload_json().to_owned(),
+        }
+    } else {
+        // Set-acceptance is the acceptance policy dial: it surfaces the stored
+        // `payload_json` (the `{"policy": ...}` object) for the application
+        // handler to parse.
+        PendingWorkItemCommand::SetAcceptance {
+            command: rebuild(CommandType::WorkItemSetAcceptanceRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
     };
@@ -2618,6 +2641,22 @@ mod tests {
         )
     }
 
+    fn set_acceptance_command_append(payload_json: &str) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_set_acceptance".to_owned(),
+                CommandType::WorkItemSetAcceptanceRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.set_acceptance_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_set_acceptance".to_owned(),
+            payload_json.to_owned(),
+        )
+    }
+
     #[test]
     fn pending_work_item_accept_dispatches_through_port() -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
@@ -2706,6 +2745,45 @@ mod tests {
             outcome,
             Err(ConsoleRuntimeError::Application(
                 ApplicationError::InvalidAdmissionPolicy
+            ))
+        ));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_set_acceptance_routes_policy_from_payload_through_port()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&set_acceptance_command_append(r#"{"policy":"ai-only"}"#))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        // The policy extracted from the stored payload lands in the action-id.
+        assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:ai-only"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_set_acceptance_surfaces_invalid_policy_as_application_error()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&set_acceptance_command_append(r#"{"policy":"bogus"}"#))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::InvalidAcceptancePolicy
             ))
         ));
         assert_eq!(port.observed_action_ids, [] as [String; 0]);
