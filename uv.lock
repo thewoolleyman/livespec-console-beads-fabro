@@ -17,14 +17,14 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "livespec-dev-tooling", git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v0.40.0" },
+    { name = "livespec-dev-tooling", git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v0.40.1" },
     { name = "typing-extensions", specifier = "==4.15.0" },
 ]
 
 [[package]]
 name = "livespec-dev-tooling"
-version = "0.40.0"
-source = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v0.40.0#024971a721179bd693028ba7377c8ddd9307a0c0" }
+version = "0.40.1"
+source = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v0.40.1#0772d7f432c2fd7365c70e4590cd0dc249d4649b" }
 
 [[package]]
 name = "typing-extensions"
