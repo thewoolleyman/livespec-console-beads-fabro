@@ -322,6 +322,13 @@ Adapters MUST call existing stable CLIs/APIs through ports. UI code MUST NOT
 call Fabro, Beads, LiveSpec, Dispatcher, or GitHub directly. Work-item state
 enters the console ONLY through the orchestrator-CLI port: no console code --
 adapter, application, or UI -- invokes `bd` or reads the Beads tenant directly.
+When a console run needs orchestrator-owned backing CLIs, it MUST resolve and
+validate the orchestrator plugin entry points before invoking them: explicit
+per-program overrides win, then an explicit plugin-root override, then the
+selected repo checkout's `.claude-plugin/scripts/bin/`, then the installed
+Claude plugin cache; a malformed selected plugin root fails loudly, while an
+absent plugin degrades through named not-observed findings rather than
+fabricating source state.
 
 ```mermaid
 flowchart TB

@@ -54,6 +54,13 @@ use console_eventstore::{
 };
 use console_tui::TuiRuntimeEffect;
 
+mod backing_cli;
+
+pub use backing_cli::{
+    BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
+    ResolveInputs,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents run output data used by the console.
 pub struct RunOutput {
@@ -451,6 +458,22 @@ pub fn live_source_adapters<'a>(
     probe: &'a dyn SourceProbe,
     repo: &str,
 ) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
+    let resolution = BackingCliResolution::from_environment()?;
+    live_source_adapters_with_programs(probe, repo, resolution.programs())
+}
+
+/// Build real source adapters with an explicit backing CLI resolution.
+pub fn live_source_adapters_with_programs<'a>(
+    probe: &'a dyn SourceProbe,
+    repo: &str,
+    programs: &BackingCliPrograms,
+) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
+    let livespec_args = programs
+        .livespec()
+        .args()
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     let specs: [(
         &str,
         SourceAdapterKind,
@@ -460,7 +483,7 @@ pub fn live_source_adapters<'a>(
         (
             "orchestrator",
             SourceAdapterKind::Orchestrator,
-            SourceObservationPlan::command("list-work-items", &["--json"]),
+            SourceObservationPlan::command(programs.list_work_items(), &["--json"]),
             parse_orchestrator_observation,
         ),
         (
@@ -472,13 +495,13 @@ pub fn live_source_adapters<'a>(
         (
             "fabro",
             SourceAdapterKind::Fabro,
-            SourceObservationPlan::command("fabro", &["ps", "--json"]),
+            SourceObservationPlan::command(programs.fabro(), &["ps", "--json"]),
             parse_fabro_observation,
         ),
         (
             "livespec",
             SourceAdapterKind::LiveSpec,
-            SourceObservationPlan::command("livespec", &["next", "--json"]),
+            SourceObservationPlan::command(programs.livespec().program(), &livespec_args),
             parse_livespec_observation,
         ),
         (
@@ -730,6 +753,8 @@ pub enum ConsoleRuntimeError {
     Adapter(AdapterError),
     /// Application variant.
     Application(ApplicationError),
+    /// Backing CLI resolution variant.
+    BackingCliResolution(String),
     /// Event store variant.
     EventStore(EventStoreError),
     /// Missing command aggregate variant.
@@ -747,6 +772,12 @@ impl From<AdapterError> for ConsoleRuntimeError {
 impl From<ApplicationError> for ConsoleRuntimeError {
     fn from(error: ApplicationError) -> Self {
         Self::Application(error)
+    }
+}
+
+impl From<BackingCliResolutionError> for ConsoleRuntimeError {
+    fn from(error: BackingCliResolutionError) -> Self {
+        Self::BackingCliResolution(error.to_string())
     }
 }
 
@@ -1604,6 +1635,12 @@ fn help_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::error::Error;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use console_application::{
         ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
         AutonomousDecisionsPort, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
@@ -1627,10 +1664,11 @@ mod tests {
     use console_tui::TuiRuntimeEffect;
 
     use super::{
-        CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
-        FactoryCommandStore, InitialSourceSeed, NeedsAttentionIngest, PendingCommandOutcome,
-        ScriptedSource, SharedSqliteStore, SourceAdapterRef, SqliteSourceEventLog,
-        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
+        BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
+        ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
+        NeedsAttentionIngest, PendingCommandOutcome, ResolveInputs, ScriptedSource,
+        SharedSqliteStore, SourceAdapterRef, SqliteSourceEventLog, TuiSessionOutcome,
+        TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
         backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
         config_command_from_stored, demo_events, doctor_report, events_tail_report,
         factory_command_from_stored, handle_pending_config_commands,
@@ -1749,6 +1787,49 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
         )
+    }
+
+    fn resolver_empty_env() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    fn resolver_temp_root(name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-backing-cli-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ignored = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    fn resolver_plugin_root(base: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let root = base.join(name);
+        let bin = root.join(".claude-plugin/scripts/bin");
+        fs::create_dir_all(&bin)?;
+        for script in [
+            "needs_attention.py",
+            "list_work_items.py",
+            "drive.py",
+            "dispatcher.py",
+            "next.py",
+        ] {
+            fs::write(bin.join(script), "#!/usr/bin/env python3\n")?;
+        }
+        Ok(root)
+    }
+
+    fn resolver_inputs(
+        env: BTreeMap<String, String>,
+        current_dir: PathBuf,
+        home_dir: Option<PathBuf>,
+    ) -> ResolveInputs {
+        ResolveInputs {
+            env,
+            current_dir,
+            home_dir,
+        }
     }
 
     struct UnavailableProbe;
@@ -2226,6 +2307,19 @@ mod tests {
         assert_eq!(
             output.message(),
             "serve error: Application(FactoryDrainPortFailed)"
+        );
+
+        let output = super::run_runtime_result(
+            Err(ConsoleRuntimeError::from(BackingCliResolutionError::new(
+                "missing script".to_owned(),
+            ))),
+            "serve",
+        );
+
+        assert_eq!(output.code(), 1);
+        assert_eq!(
+            output.message(),
+            "serve error: BackingCliResolution(\"missing script\")"
         );
     }
 
@@ -3410,6 +3504,323 @@ mod tests {
         let outcome = port.drain_ready_queue(&request);
 
         assert_eq!(outcome, Err(ApplicationError::FactoryDrainPortFailed));
+    }
+
+    #[test]
+    fn backing_cli_resolution_uses_explicit_root_and_program_overrides()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("explicit")?;
+        let explicit = resolver_plugin_root(&temp, "explicit-plugin")?;
+        let repo = resolver_plugin_root(&temp, "repo-plugin")?;
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT".to_owned(),
+            explicit.display().to_string(),
+        );
+        env.insert(
+            "LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM".to_owned(),
+            "/custom/list".to_owned(),
+        );
+        env.insert(
+            "LIVESPEC_CONSOLE_LIVESPEC_PROGRAM".to_owned(),
+            "/custom/livespec".to_owned(),
+        );
+        env.insert(
+            "LIVESPEC_CONSOLE_FABRO_PROGRAM".to_owned(),
+            "/custom/fabro".to_owned(),
+        );
+        env.insert(
+            "LIVESPEC_CONSOLE_DRAIN_PROGRAM".to_owned(),
+            "/custom/dispatcher".to_owned(),
+        );
+        env.insert(
+            "LIVESPEC_CONSOLE_DRIVE_PROGRAM".to_owned(),
+            "/custom/drive".to_owned(),
+        );
+        env.insert(
+            "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM".to_owned(),
+            "/custom/needs".to_owned(),
+        );
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, None))?;
+
+        assert_eq!(resolution.programs().list_work_items(), "/custom/list");
+        assert_eq!(
+            resolution.programs().livespec().program(),
+            "/custom/livespec"
+        );
+        assert_eq!(
+            resolution.programs().livespec().args(),
+            &["next".to_owned(), "--json".to_owned()]
+        );
+        assert_eq!(resolution.programs().fabro(), "/custom/fabro");
+        assert_eq!(resolution.programs().dispatcher(), "/custom/dispatcher");
+        assert_eq!(resolution.programs().drive(), "/custom/drive");
+        assert_eq!(resolution.programs().needs_attention(), "/custom/needs");
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_uses_selected_repo_checkout() -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("repo")?;
+        let repo = resolver_plugin_root(&temp, "repo-plugin")?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            None,
+        ))?;
+
+        let bin = repo.join(".claude-plugin/scripts/bin");
+        assert_eq!(resolution.selected_repo_path(), repo.as_path());
+        assert_eq!(
+            resolution.programs().list_work_items(),
+            bin.join("list_work_items.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().livespec().program(),
+            bin.join("next.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().livespec().args(),
+            &["--json".to_owned()]
+        );
+        assert_eq!(
+            resolution.programs().drive(),
+            bin.join("drive.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().dispatcher(),
+            bin.join("dispatcher.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().needs_attention(),
+            bin.join("needs_attention.py").display().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_uses_installed_plugin_cache() -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("cache")?;
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo)?;
+        let home = temp.join("home");
+        let cached = resolver_plugin_root(&temp, "cached-plugin")?;
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        let cache = serde_json::json!({
+            "plugins": {
+                "some-other-plugin@github": [
+                    {"installPath": temp.join("other").display().to_string()}
+                ],
+                "livespec-orchestrator-beads-fabro@github": [
+                    {"installPath": cached.display().to_string()}
+                ]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(home),
+        ))?;
+
+        let bin = cached.join(".claude-plugin/scripts/bin");
+        assert_eq!(
+            resolution.programs().list_work_items(),
+            bin.join("list_work_items.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().needs_attention(),
+            bin.join("needs_attention.py").display().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_degrades_to_defaults_when_plugin_absent() -> Result<(), Box<dyn Error>>
+    {
+        let temp = resolver_temp_root("absent")?;
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&cache_dir)?;
+        fs::write(cache_dir.join("installed_plugins.json"), "{}")?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            Some(home),
+        ))?;
+
+        assert_eq!(resolution.selected_repo_path(), repo.as_path());
+        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
+        assert_eq!(resolution.programs().needs_attention(), "needs-attention");
+        assert_eq!(
+            resolution.programs().dispatcher(),
+            "livespec-dispatcher-drain"
+        );
+        assert_eq!(resolution.programs().drive(), "livespec-orchestrator-drive");
+        assert_eq!(resolution.programs().fabro(), "fabro");
+        assert_eq!(resolution.programs().livespec().program(), "livespec");
+        assert_eq!(
+            resolution.programs().livespec().args(),
+            &["next".to_owned(), "--json".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_ignores_cache_without_orchestrator_plugin()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("other-cache-only")?;
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&cache_dir)?;
+        let cache = serde_json::json!({
+            "plugins": {
+                "some-other-plugin@github": [
+                    {"installPath": temp.join("other").display().to_string()}
+                ]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(home),
+        ))?;
+
+        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_returns_selected_repo_path_override() -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("repo-path-env")?;
+        let current_dir = temp.join("current");
+        let selected = temp.join("selected");
+        fs::create_dir_all(&current_dir)?;
+        fs::create_dir_all(&selected)?;
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_REPO_PATH".to_owned(),
+            selected.display().to_string(),
+        );
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, current_dir, None))?;
+
+        assert_eq!(resolution.selected_repo_path(), selected.as_path());
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_fails_loudly_for_malformed_roots_and_cache()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("malformed")?;
+        let explicit_root = temp.join("explicit-plugin");
+        fs::create_dir_all(explicit_root.join(".claude-plugin/scripts/bin"))?;
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT".to_owned(),
+            explicit_root.display().to_string(),
+        );
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(env, temp.clone(), None)),
+            Err(error) if error.to_string().contains("orchestrator plugin root")
+        ));
+
+        let repo_root = temp.join("repo-plugin");
+        fs::create_dir_all(repo_root.join(".claude-plugin/scripts/bin"))?;
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo_root, None)),
+            Err(error) if error.to_string().contains("orchestrator plugin root")
+        ));
+
+        let home = temp.join("home-invalid-json");
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        fs::write(cache_dir.join("installed_plugins.json"), "not json")?;
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(
+                resolver_empty_env(),
+                temp.join("repo-without-plugin"),
+                Some(home),
+            )),
+            Err(error) if error.to_string().contains("invalid Claude plugin cache")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_fails_loudly_for_cached_install_without_path_or_scripts()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("cache-invalid")?;
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo)?;
+        let home = temp.join("home-missing-install-path");
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        let missing_install_path = serde_json::json!({
+            "plugins": {
+                "livespec-orchestrator-beads-fabro@github": [{}]
+            }
+        });
+        assert!(
+            fs::write(
+                cache_dir.join("installed_plugins.json"),
+                missing_install_path.to_string(),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(
+                resolver_empty_env(),
+                repo.clone(),
+                Some(home),
+            )),
+            Err(error) if error.to_string().contains("has no installPath")
+        ));
+
+        let home = temp.join("home-missing-scripts");
+        let cached = temp.join("cached-plugin");
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(cached.join(".claude-plugin/scripts/bin"))?;
+        fs::create_dir_all(&cache_dir)?;
+        let missing_scripts = serde_json::json!({
+            "plugins": {
+                "livespec-orchestrator-beads-fabro@github": [
+                    {"installPath": cached.display().to_string()}
+                ]
+            }
+        });
+        assert!(
+            fs::write(
+                cache_dir.join("installed_plugins.json"),
+                missing_scripts.to_string(),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home))),
+            Err(error) if error.to_string().contains("orchestrator plugin root")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_from_process_environment_is_callable() -> Result<(), Box<dyn Error>> {
+        let resolution = BackingCliResolution::from_environment()?;
+
+        assert!(!resolution.selected_repo_path().as_os_str().is_empty());
+        assert!(!resolution.programs().list_work_items().is_empty());
+        Ok(())
     }
 
     #[test]
