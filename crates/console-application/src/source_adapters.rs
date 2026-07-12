@@ -38,7 +38,7 @@ impl SourceAdapterKind {
 /// Variants for adapter error state or outcome values.
 pub enum AdapterError {
     /// Append failed variant.
-    AppendFailed,
+    AppendFailed(String),
     /// Checkpoint load failed variant.
     CheckpointLoadFailed,
     /// Checkpoint save failed variant.
@@ -109,6 +109,7 @@ pub struct AdapterIngestionSummary {
     previous_checkpoint: Option<String>,
     checkpoint: String,
     appended_event_count: usize,
+    skipped_source_event_ids: Vec<String>,
 }
 
 impl AdapterIngestionSummary {
@@ -119,12 +120,14 @@ impl AdapterIngestionSummary {
         previous_checkpoint: Option<String>,
         checkpoint: String,
         appended_event_count: usize,
+        skipped_source_event_ids: Vec<String>,
     ) -> Self {
         Self {
             adapter_id,
             previous_checkpoint,
             checkpoint,
             appended_event_count,
+            skipped_source_event_ids,
         }
     }
 
@@ -151,6 +154,12 @@ impl AdapterIngestionSummary {
     pub const fn appended_event_count(&self) -> usize {
         self.appended_event_count
     }
+
+    #[must_use]
+    /// Return source event ids skipped after append failures.
+    pub fn skipped_source_event_ids(&self) -> &[String] {
+        &self.skipped_source_event_ids
+    }
 }
 
 /// Run adapter poll and return its outcome.
@@ -168,15 +177,21 @@ pub fn run_adapter_poll(
     let request =
         AdapterPollRequest::new(&adapter_id, previous_checkpoint.as_deref(), safety_window)?;
     let poll = source.poll(&request)?;
+    let mut appended_event_count = 0;
+    let mut skipped_source_event_ids = Vec::new();
     for event in poll.events() {
-        event_log.append_normalized_event(event, &observed_at)?;
+        match event_log.append_normalized_event(event, &observed_at) {
+            Ok(()) => appended_event_count += 1,
+            Err(_error) => skipped_source_event_ids.push(event.event().event_id().to_owned()),
+        }
     }
     checkpoints.save_checkpoint(&adapter_id, poll.checkpoint())?;
     Ok(AdapterIngestionSummary::new(
         adapter_id,
         previous_checkpoint,
         poll.checkpoint().to_owned(),
-        poll.events().len(),
+        appended_event_count,
+        skipped_source_event_ids,
     ))
 }
 
@@ -1591,7 +1606,7 @@ pub fn parse_orchestrator_observation(
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
         // observation the lane/attention projections can pick up.
-        let version = stable_version(&[
+        let version = source_stream_seq(&[
             observed.repo(),
             &item.id,
             item.lane.label(),
@@ -1631,7 +1646,7 @@ pub fn parse_github_observation(observed: &ObservedSource) -> Result<ParsedObser
         "CLOSED" => GithubPullRequestState::ChecksFailing,
         _other => GithubPullRequestState::Open,
     };
-    let version = stable_version(&[observed.repo(), &number.to_string(), state.label()]);
+    let version = source_stream_seq(&[observed.repo(), &number.to_string(), state.label()]);
     let snapshot = GithubPullRequestSnapshot::new(observed.repo(), number, state, version)
         .map_err(|_error| "invalid pull request".to_owned())?;
     let poll = normalize_github_pull_request_snapshot(snapshot);
@@ -1655,7 +1670,7 @@ pub fn parse_dispatcher_observation(
         .ok_or_else(|| "no work-item in journal entry".to_owned())?;
     let dispatch_id = first_json_string(line, "dispatch_id")
         .ok_or_else(|| "no dispatch id in journal entry".to_owned())?;
-    let version = stable_version(&[&work_item_id, &dispatch_id]);
+    let version = source_stream_seq(&[&work_item_id, &dispatch_id]);
     let entry = DispatcherJournalEntry::new(
         observed.repo(),
         &work_item_id,
@@ -1678,7 +1693,7 @@ pub fn parse_fabro_observation(observed: &ObservedSource) -> Result<ParsedObserv
         .ok_or_else(|| "no fabro run observed".to_owned())?;
     let work_item_id =
         first_json_string(observed.stdout(), "work_item_id").unwrap_or_else(|| run_id.clone());
-    let version = stable_version(&[&run_id, &work_item_id]);
+    let version = source_stream_seq(&[&run_id, &work_item_id]);
     let snapshot = FabroRunSnapshot::new(
         observed.repo(),
         &work_item_id,
@@ -1704,7 +1719,7 @@ pub fn parse_livespec_observation(observed: &ObservedSource) -> Result<ParsedObs
         "critique" => LivespecNextAction::Critique,
         _other => LivespecNextAction::None,
     };
-    let version = stable_version(&[observed.repo(), action.label()]);
+    let version = source_stream_seq(&[observed.repo(), action.label()]);
     let snapshot = LivespecNextSnapshot::new(observed.repo(), action, version)
         .map_err(|_error| "invalid livespec snapshot".to_owned())?;
     let poll = normalize_livespec_next_snapshot(snapshot);
@@ -2130,8 +2145,12 @@ fn attention_item_version(repo: &str, item: &AttentionItemSnapshot) -> u64 {
 
 /// A stable content hash masked to 63 bits so it fits the event store's signed
 /// `stream_seq` column (still non-zero: `stable_version` forces the low bit).
-fn attention_stream_seq(parts: &[&str]) -> u64 {
+fn source_stream_seq(parts: &[&str]) -> u64 {
     stable_version(parts) & 0x7fff_ffff_ffff_ffff
+}
+
+fn attention_stream_seq(parts: &[&str]) -> u64 {
+    source_stream_seq(parts)
 }
 
 fn attention_item_stream(repo: &str, id: &str) -> String {
@@ -2633,7 +2652,7 @@ mod tests {
     }
 
     #[test]
-    fn adapter_ingestion_does_not_advance_checkpoint_after_append_failure() {
+    fn adapter_ingestion_skips_failed_record_and_advances_checkpoint() {
         let trace = Trace::new();
         let source = ScriptedSource::new(
             trace.clone(),
@@ -2651,7 +2670,22 @@ mod tests {
             &mut event_log,
         );
 
-        assert_eq!(summary, Err(AdapterError::InvalidSourceVersion));
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::appended_event_count),
+            Ok(0)
+        );
+        let expected_skipped = vec![
+            "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                .to_owned(),
+        ];
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::skipped_source_event_ids),
+            Ok(expected_skipped.as_slice())
+        );
         assert_eq!(
             trace.entries(),
             vec![
@@ -2659,9 +2693,64 @@ mod tests {
                 "poll:orchestrator:repo:7:3".to_owned(),
                 "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
                     .to_owned(),
+                "save:orchestrator:repo:8".to_owned(),
             ]
         );
-        assert_eq!(checkpoints.saved(), Vec::<String>::new());
+        assert_eq!(checkpoints.saved(), vec!["orchestrator:repo:8".to_owned()]);
+    }
+
+    #[test]
+    fn adapter_ingestion_skips_named_failed_record_and_continues() {
+        let trace = Trace::new();
+        let failed = work_item_snapshot_event_fixture();
+        let sibling = NormalizedSourceEvent::new(
+            ConsoleEvent::new(
+                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-sibling:9:snapshot"
+                    .to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                9,
+            ),
+            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-sibling:9:snapshot"
+                .to_owned(),
+            SourcePayload::WorkItemSnapshot(work_item_snapshot_fixture()),
+        );
+        let source =
+            ScriptedSource::new(trace.clone(), AdapterPoll::new("8", vec![failed, sibling]));
+        let mut checkpoints = MemoryCheckpoints::new(trace.clone(), Some("7"));
+        let mut event_log = MemoryEventLog::new(trace.clone(), Some(0));
+
+        let summary = run_adapter_poll(
+            "orchestrator:repo",
+            3,
+            "2026-06-24T00:00:00Z",
+            &source,
+            &mut checkpoints,
+            &mut event_log,
+        );
+
+        assert_eq!(
+            summary
+                .as_ref()
+                .map(AdapterIngestionSummary::appended_event_count),
+            Ok(1)
+        );
+        assert_eq!(
+            trace.entries(),
+            vec![
+                "load:orchestrator:repo".to_owned(),
+                "poll:orchestrator:repo:7:3".to_owned(),
+                "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                    .to_owned(),
+                "append:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-sibling:9:snapshot:2026-06-24T00:00:00Z"
+                    .to_owned(),
+                "save:orchestrator:repo:8".to_owned(),
+            ]
+        );
+        assert_eq!(checkpoints.saved(), vec!["orchestrator:repo:8".to_owned()]);
     }
 
     #[test]
@@ -3381,6 +3470,7 @@ mod tests {
     struct MemoryEventLog {
         trace: Trace,
         fail_after: Option<usize>,
+        failed_once: bool,
         appended: Vec<String>,
     }
 
@@ -3389,6 +3479,7 @@ mod tests {
             Self {
                 trace,
                 fail_after,
+                failed_once: false,
                 appended: Vec::new(),
             }
         }
@@ -3400,7 +3491,8 @@ mod tests {
             event: &NormalizedSourceEvent,
             observed_at: &str,
         ) -> AdapterResult<()> {
-            if self.fail_after == Some(self.appended.len()) {
+            if self.fail_after == Some(self.appended.len()) && !self.failed_once {
+                self.failed_once = true;
                 self.trace
                     .push(format!("append-failed:{}", event.event().event_id()));
                 return Err(AdapterError::InvalidSourceVersion);
@@ -3625,7 +3717,7 @@ mod tests {
                 "console",
                 &stdout,
             ))?;
-            let version = super::stable_version(&["console", "24", expected.label()]);
+            let version = super::source_stream_seq(&["console", "24", expected.label()]);
 
             assert_eq!(
                 first_payload(&parsed),
@@ -3664,7 +3756,7 @@ mod tests {
             "console",
             stdout,
         ))?;
-        let version = super::stable_version(&["console-1", "dispatch_9"]);
+        let version = super::source_stream_seq(&["console-1", "dispatch_9"]);
 
         assert_eq!(
             first_payload(&parsed),
@@ -3672,6 +3764,30 @@ mod tests {
                 repo: "console".to_owned(),
                 work_item_id: "console-1".to_owned(),
                 dispatch_id: "dispatch_9".to_owned(),
+                kind: DispatcherJournalKind::BacklogBounce,
+                source_version: version,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dispatcher_masks_top_bit_hash_versions() -> Result<(), String> {
+        let stdout = r#"{"work_item_id": "console-1", "dispatch_id": "dispatch-high"}"#;
+        let parsed = parse_dispatcher_observation(&observed_for(
+            SourceAdapterKind::Dispatcher,
+            "console",
+            stdout,
+        ))?;
+        let version = super::source_stream_seq(&["console-1", "dispatch-high"]);
+
+        assert!(i64::try_from(version).is_ok());
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: "dispatch-high".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
                 source_version: version,
             })
@@ -3722,7 +3838,7 @@ mod tests {
             "console",
             "{\"run_id\": \"run_7\", \"work_item_id\": \"console-1\"}",
         ))?;
-        let version = super::stable_version(&["run_7", "console-1"]);
+        let version = super::source_stream_seq(&["run_7", "console-1"]);
         assert_eq!(
             first_payload(&with_run),
             &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
@@ -3740,7 +3856,7 @@ mod tests {
             "console",
             "{\"id\": \"run_8\"}",
         ))?;
-        let fallback_version = super::stable_version(&["run_8", "run_8"]);
+        let fallback_version = super::source_stream_seq(&["run_8", "run_8"]);
         assert_eq!(
             first_payload(&fallback),
             &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
@@ -3787,7 +3903,7 @@ mod tests {
                 "console",
                 &stdout,
             ))?;
-            let version = super::stable_version(&["console", expected.label()]);
+            let version = super::source_stream_seq(&["console", expected.label()]);
 
             assert_eq!(
                 first_payload(&parsed),
@@ -3813,7 +3929,7 @@ mod tests {
             &SourcePayload::LivespecNextSnapshot(LivespecNextSnapshot {
                 repo: "console".to_owned(),
                 action: LivespecNextAction::Revise,
-                source_version: super::stable_version(&["console", "revise"]),
+                source_version: super::source_stream_seq(&["console", "revise"]),
             })
         );
         assert_eq!(
