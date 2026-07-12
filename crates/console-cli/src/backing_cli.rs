@@ -153,6 +153,15 @@ impl BackingCliResolution {
     }
 
     #[must_use]
+    /// Return the `--repo` argument for the orchestrator drive/drain ports: the
+    /// resolved repo filesystem PATH (NOT the repo id), so the orchestrator's
+    /// path-expecting `--repo` handling resolves the selected repo checkout
+    /// instead of erroring `--repo does not exist: <id>`.
+    pub fn drive_repo_arg(&self) -> String {
+        self.selected_repo_path.display().to_string()
+    }
+
+    #[must_use]
     /// Return resolved backing CLI programs.
     pub const fn programs(&self) -> &BackingCliPrograms {
         &self.programs
