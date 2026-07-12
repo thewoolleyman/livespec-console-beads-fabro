@@ -17,7 +17,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
@@ -583,6 +583,7 @@ pub struct TuiScreenModel {
     overlay: TuiOverlay,
     selected_repo: String,
     autonomous_mode_enabled: bool,
+    unavailable_sources: Vec<String>,
     header: String,
     footer: String,
 }
@@ -677,6 +678,16 @@ impl TuiScreenModel {
     /// from that repo's `.livespec.jsonc` (an absent key is disabled).
     pub const fn autonomous_mode_enabled(&self) -> bool {
         self.autonomous_mode_enabled
+    }
+
+    #[must_use]
+    /// The backing sources that degraded to a not-observed finding this cycle,
+    /// as distinct source names sorted for a stable order. These are counted and
+    /// named in the header so a cockpit-blind screen (sources unreachable) is
+    /// distinguishable from an idle factory (nothing actionable); empty when
+    /// every source was observed.
+    pub fn unavailable_sources(&self) -> &[String] {
+        &self.unavailable_sources
     }
 
     #[must_use]
@@ -1417,6 +1428,7 @@ pub fn build_tui_model_for_state(
     state: &TuiInteractionState,
 ) -> TuiScreenModel {
     let search_query = search_query(state.overlay());
+    let unavailable_sources = unavailable_sources(events);
     let attention_snapshots = attention_snapshots_matching(events, search_query);
     let attention_items = project_attention_from_snapshots(attention_snapshots.clone());
     let selected_attention_index =
@@ -1448,12 +1460,14 @@ pub fn build_tui_model_for_state(
         selected_repo: state.selected_repo().to_owned(),
         autonomous_mode_enabled: state.autonomous_mode_enabled(),
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | autonomous: {} | view: {} | attention: {}",
+            "fleet: livespec | mode: tui{} | repo: {} | autonomous: {} | view: {} | attention: {}",
+            source_health_header_segment(&unavailable_sources),
             header_repo_label(state.selected_repo()),
             autonomous_mode_header_label(state.autonomous_mode_enabled()),
             active_view.label(),
             attention_snapshots.len()
         ),
+        unavailable_sources,
         footer: "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | ? help | q quit"
             .to_owned(),
     }
@@ -1474,6 +1488,38 @@ fn header_repo_label(selected_repo: &str) -> &str {
 /// the selected repo, else `off`.
 const fn autonomous_mode_header_label(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
+}
+
+/// The distinct backing-source names that degraded to a not-observed finding in
+/// the current event set, sorted for a stable header order. A source appears
+/// here when its adapter emitted a [`EventType::SourceNotObservedFindingObserved`]
+/// event this cycle instead of an observed snapshot, so the operator can see how
+/// many and which sources are unreachable rather than mistaking a cockpit-blind
+/// screen for an idle factory.
+fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for event in events {
+        if *event.event_type() == EventType::SourceNotObservedFindingObserved {
+            names.insert(event.source().to_owned());
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// The header's source-health segment: an empty string when every source was
+/// observed (no phantom count on a true-empty screen), else ` | sources: N
+/// unavailable (name, ...)` counting and attributing the degraded sources so a
+/// false-empty is never indistinguishable from a true-empty.
+fn source_health_header_segment(unavailable_sources: &[String]) -> String {
+    if unavailable_sources.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " | sources: {} unavailable ({})",
+            unavailable_sources.len(),
+            unavailable_sources.join(", ")
+        )
+    }
 }
 
 #[must_use]
@@ -4473,6 +4519,7 @@ mod tests {
             },
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
+            unavailable_sources: Vec::new(),
             header: "LiveSpec Console".to_owned(),
             footer: String::new(),
         };
@@ -4721,6 +4768,7 @@ mod tests {
             },
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
+            unavailable_sources: Vec::new(),
             header: String::new(),
             footer: String::new(),
         };
@@ -6725,6 +6773,45 @@ mod tests {
         let off = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
         assert!(!off.autonomous_mode_enabled());
         assert!(off.header().contains("autonomous: off"));
+    }
+
+    #[test]
+    fn header_counts_and_names_sources_that_degraded_to_not_observed() {
+        // Cockpit-blind: two sources emitted a not-observed finding this cycle.
+        // The model counts and names them (sorted) so the header can surface a
+        // source-unavailability indicator instead of a silently-empty view.
+        let blind_events = [
+            ConsoleEvent::fixture(
+                "evt_orchestrator_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "orchestrator",
+            ),
+            ConsoleEvent::fixture(
+                "evt_github_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "github",
+            ),
+        ];
+        let blind = build_tui_model(&blind_events, 0);
+        assert_eq!(
+            blind.unavailable_sources(),
+            ["github".to_owned(), "orchestrator".to_owned()]
+        );
+        assert!(
+            blind
+                .header()
+                .contains("sources: 2 unavailable (github, orchestrator)")
+        );
+    }
+
+    #[test]
+    fn header_shows_no_unavailability_count_when_every_source_is_observed() {
+        // Factory-idle: no not-observed finding, so no phantom count and no
+        // false alarm -- a true-empty screen stays clean.
+        let idle = build_tui_model(&[], 0);
+        assert!(idle.unavailable_sources().is_empty());
+        assert!(!idle.header().contains("unavailable"));
+        assert!(!idle.header().contains("sources:"));
     }
 
     #[test]
