@@ -1589,20 +1589,38 @@ pub fn parse_orchestrator_observation(
         rank: String,
         #[serde(default)]
         status: String,
+        // `Option<_>` (not a bare `#[serde(default)]` enum) so a present JSON
+        // `null` resolves to `None` — the orchestrator `list-work-items --json`
+        // CLI emits `admission_policy: null` / `acceptance_policy: null` on most
+        // records, and a bare `#[serde(default)]` only rescues a MISSING key, not
+        // a present `null`. `None` collapses to the default policy below, so a
+        // `null`, an absent key, and an omitted field all observe identically.
         #[serde(default)]
-        admission_policy: AdmissionPolicy,
+        admission_policy: Option<AdmissionPolicy>,
         #[serde(default)]
-        acceptance_policy: AcceptancePolicy,
+        acceptance_policy: Option<AcceptancePolicy>,
     }
 
-    let items: Vec<WorkItemRecord> = serde_json::from_str(observed.stdout())
+    let values: Vec<serde_json::Value> = serde_json::from_str(observed.stdout())
         .map_err(|_error| "orchestrator list-work-items output is not a JSON array".to_owned())?;
-    if items.is_empty() {
+    if values.is_empty() {
         return Err("no work-items observed".to_owned());
     }
     let mut events = Vec::new();
     let mut versions = Vec::new();
-    for item in items {
+    for value in values {
+        // Fail soft: a single record the console cannot interpret (e.g. an
+        // unknown `lane` value the orchestrator emits for a status-anchor row)
+        // is skipped so one bad record does not sink the whole-array
+        // observation and degrade the adapter to not-observed. The surrounding
+        // interpretable work-items are still observed.
+        let Ok(item) = serde_json::from_value::<WorkItemRecord>(value) else {
+            continue;
+        };
+        // A `null` or absent policy collapses to its enum default (manual
+        // admission / ai-then-human acceptance).
+        let admission_policy = item.admission_policy.unwrap_or_default();
+        let acceptance_policy = item.acceptance_policy.unwrap_or_default();
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
         // observation the lane/attention projections can pick up.
@@ -1613,8 +1631,8 @@ pub fn parse_orchestrator_observation(
             item.lane_reason.map_or("", |reason| reason.label()),
             &item.rank,
             &item.status,
-            item.admission_policy.label(),
-            item.acceptance_policy.label(),
+            admission_policy.label(),
+            acceptance_policy.label(),
         ]);
         let snapshot = WorkItemSnapshot::new(
             observed.repo(),
@@ -1623,8 +1641,8 @@ pub fn parse_orchestrator_observation(
             item.lane_reason,
             &item.rank,
             &item.status,
-            item.admission_policy,
-            item.acceptance_policy,
+            admission_policy,
+            acceptance_policy,
             version,
         )
         .map_err(|_error| "invalid work-item".to_owned())?;
@@ -3652,6 +3670,71 @@ mod tests {
             snapshots[1].acceptance_policy(),
             AcceptancePolicy::AiThenHuman
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_orchestrator_tolerates_null_policies() -> Result<(), String> {
+        // The orchestrator `list-work-items --json` CLI emits an explicit
+        // `null` for the policy fields on most records (not a missing key). A
+        // present `null` must resolve to the same default a missing key
+        // produces, so the whole-array deserialize does not fail and the real
+        // work-items are observed rather than degrading to a not-observed
+        // finding.
+        let stdout = r#"[{"id":"console-1","lane":"ready","admission_policy":null,"acceptance_policy":null}]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            stdout,
+        ))?;
+        let snapshots: Vec<&WorkItemSnapshot> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot),
+                _other => None,
+            })
+            .collect();
+
+        // The record is observed (one snapshot), and each `null` policy field
+        // defaults exactly as an absent key does.
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].work_item_id(), "console-1");
+        assert_eq!(snapshots[0].admission_policy(), AdmissionPolicy::Manual);
+        assert_eq!(
+            snapshots[0].acceptance_policy(),
+            AcceptancePolicy::AiThenHuman
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_orchestrator_skips_records_it_cannot_interpret() -> Result<(), String> {
+        // The orchestrator emits a `lane` value the console's lifecycle enum
+        // does not know (e.g. the raw `open` status on a plan status-anchor
+        // row). One such record must NOT sink the whole-array observation:
+        // it is skipped (fail-soft) and the surrounding real work-items are
+        // still observed.
+        let stdout = r#"[{"id":"console-1","lane":"ready"},
+                         {"id":"console-anchor","lane":"open"},
+                         {"id":"console-2","lane":"blocked","lane_reason":"needs-human"}]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            stdout,
+        ))?;
+        let ids: Vec<&str> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot.work_item_id()),
+                _other => None,
+            })
+            .collect();
+
+        // The two interpretable records are observed; the unknown-lane record
+        // is dropped rather than failing the batch.
+        assert_eq!(ids, ["console-1", "console-2"]);
         Ok(())
     }
 
