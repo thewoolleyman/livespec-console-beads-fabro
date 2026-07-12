@@ -3674,6 +3674,26 @@ mod tests {
     }
 
     #[test]
+    fn backing_cli_resolution_degrades_to_defaults_when_cache_file_absent()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("absent-cache-file")?;
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(home.join(".claude/plugins"))?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            Some(home),
+        ))?;
+
+        assert_eq!(resolution.selected_repo_path(), repo.as_path());
+        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
+        Ok(())
+    }
+
+    #[test]
     fn backing_cli_resolution_ignores_cache_without_orchestrator_plugin()
     -> Result<(), Box<dyn Error>> {
         let temp = resolver_temp_root("other-cache-only")?;
