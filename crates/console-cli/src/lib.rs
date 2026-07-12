@@ -3721,6 +3721,32 @@ mod tests {
     }
 
     #[test]
+    fn backing_cli_resolution_drive_repo_arg_is_resolved_path_not_id() -> Result<(), Box<dyn Error>>
+    {
+        let temp = resolver_temp_root("drive-repo-arg")?;
+        let selected = temp.join("selected-repo");
+        fs::create_dir_all(&selected)?;
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_REPO_PATH".to_owned(),
+            selected.display().to_string(),
+        );
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, temp, None))?;
+
+        // The `drive --repo` argument the console hands the orchestrator MUST be
+        // the resolved repo filesystem PATH, not the repo id: the orchestrator's
+        // drive.py does `Path(repo_arg)` and errors `--repo does not exist: <id>`
+        // when handed the id. So it must equal the resolved path, must not equal
+        // the repo id, and must name an existing directory.
+        let drive_repo_arg = resolution.drive_repo_arg();
+        assert_eq!(drive_repo_arg, selected.display().to_string());
+        assert_ne!(drive_repo_arg, "livespec-console-beads-fabro");
+        assert!(std::path::Path::new(&drive_repo_arg).is_dir());
+        Ok(())
+    }
+
+    #[test]
     fn backing_cli_resolution_fails_loudly_for_malformed_roots_and_cache()
     -> Result<(), Box<dyn Error>> {
         let temp = resolver_temp_root("malformed")?;

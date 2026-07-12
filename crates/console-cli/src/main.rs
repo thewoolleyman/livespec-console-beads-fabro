@@ -116,7 +116,7 @@ fn run_store_backed_command(
         &["drain"],
         &livespec_jsonc_path,
     );
-    let repo_path = resolution.selected_repo_path().display().to_string();
+    let repo_path = resolution.drive_repo_arg();
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
@@ -166,7 +166,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &["drain"],
         &livespec_jsonc_path,
     );
-    let repo_path = resolution.selected_repo_path().display().to_string();
+    let repo_path = resolution.drive_repo_arg();
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
