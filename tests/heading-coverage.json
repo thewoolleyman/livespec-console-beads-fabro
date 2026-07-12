@@ -80,6 +80,10 @@
       {
         "gap_id": "gap-q5yo3v6p",
         "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-sistdza5",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
       }
     ]
   },

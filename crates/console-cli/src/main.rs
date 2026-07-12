@@ -31,7 +31,8 @@ use console_application::{
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
-    ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef, TuiSessionRunner,
+    BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef,
+    TuiSessionRunner,
 };
 #[cfg(all(not(test), not(coverage)))]
 use time::OffsetDateTime;
@@ -97,19 +98,30 @@ fn run_store_backed_command(
     let observed_at = current_requested_at()?;
     let probe = SystemSourceProbe;
     let repo = console_repo();
-    let adapters = livespec_console_beads_fabro::live_source_adapters(&probe, &repo)
-        .map_err(|error| format!("{error:?}"))?;
+    let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
+    let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
+        &probe,
+        &repo,
+        resolution.programs(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
     let needs_attention_port =
-        ProbeNeedsAttentionPort::new(&probe, &needs_attention_program(), &["--json"]);
+        ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let livespec_jsonc_path = livespec_jsonc_path();
-    let drain_program = drain_program();
-    let mut drain =
-        DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"], &livespec_jsonc_path);
-    let drive_program = drive_program();
-    let mut drive =
-        DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
+    let mut drain = DispatcherFactoryDrainPort::new(
+        &probe,
+        resolution.programs().dispatcher(),
+        &["drain"],
+        &livespec_jsonc_path,
+    );
+    let repo_path = resolution.selected_repo_path().display().to_string();
+    let mut drive = DispatcherOrchestratorActionPort::new(
+        &probe,
+        resolution.programs().drive(),
+        &["--repo", repo_path.as_str()],
+    );
     let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
     let decisions = JournalAutonomousDecisionsPort::new(
         &probe,
@@ -136,19 +148,30 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let observed_at = current_requested_at()?;
     let probe = SystemSourceProbe;
     let repo = console_repo();
-    let adapters = livespec_console_beads_fabro::live_source_adapters(&probe, &repo)
-        .map_err(|error| format!("{error:?}"))?;
+    let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
+    let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
+        &probe,
+        &repo,
+        resolution.programs(),
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
     let needs_attention_port =
-        ProbeNeedsAttentionPort::new(&probe, &needs_attention_program(), &["--json"]);
+        ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let livespec_jsonc_path = livespec_jsonc_path();
-    let drain_program = drain_program();
-    let mut drain =
-        DispatcherFactoryDrainPort::new(&probe, &drain_program, &["drain"], &livespec_jsonc_path);
-    let drive_program = drive_program();
-    let mut drive =
-        DispatcherOrchestratorActionPort::new(&probe, &drive_program, &["--repo", repo.as_str()]);
+    let mut drain = DispatcherFactoryDrainPort::new(
+        &probe,
+        resolution.programs().dispatcher(),
+        &["drain"],
+        &livespec_jsonc_path,
+    );
+    let repo_path = resolution.selected_repo_path().display().to_string();
+    let mut drive = DispatcherOrchestratorActionPort::new(
+        &probe,
+        resolution.programs().drive(),
+        &["--repo", repo_path.as_str()],
+    );
     let autonomous_mode_enabled = derive_autonomous_mode(&probe, &livespec_jsonc_path);
     let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
     let decisions = JournalAutonomousDecisionsPort::new(
@@ -221,24 +244,6 @@ impl SourceProbe for SystemSourceProbe {
 fn console_repo() -> String {
     std::env::var("LIVESPEC_CONSOLE_REPO")
         .unwrap_or_else(|_error| "livespec-console-beads-fabro".to_owned())
-}
-
-#[cfg(all(not(test), not(coverage)))]
-fn drain_program() -> String {
-    std::env::var("LIVESPEC_CONSOLE_DRAIN_PROGRAM")
-        .unwrap_or_else(|_error| "livespec-dispatcher-drain".to_owned())
-}
-
-#[cfg(all(not(test), not(coverage)))]
-fn drive_program() -> String {
-    std::env::var("LIVESPEC_CONSOLE_DRIVE_PROGRAM")
-        .unwrap_or_else(|_error| "livespec-orchestrator-drive".to_owned())
-}
-
-#[cfg(all(not(test), not(coverage)))]
-fn needs_attention_program() -> String {
-    std::env::var("LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM")
-        .unwrap_or_else(|_error| "needs-attention".to_owned())
 }
 
 #[cfg(all(not(test), not(coverage)))]
