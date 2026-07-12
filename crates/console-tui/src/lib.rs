@@ -1495,6 +1495,58 @@ mod tests {
     }
 
     #[test]
+    fn render_to_text_distinguishes_cockpit_blind_from_factory_idle_in_the_header() {
+        // Cockpit-blind: three backing sources degraded to a not-observed
+        // finding this cycle. The header MUST show how many and which sources
+        // are unavailable, so this is never mistaken for an idle factory.
+        let blind_events = [
+            ConsoleEvent::fixture(
+                "evt_orchestrator_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "orchestrator",
+            ),
+            ConsoleEvent::fixture(
+                "evt_github_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "github",
+            ),
+            ConsoleEvent::fixture(
+                "evt_fabro_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "fabro",
+            ),
+        ];
+        // The header counts the unavailable sources and names which ones, so a
+        // cockpit-blind screen surfaces its blindness instead of a bare count.
+        let blind = build_tui_model(&blind_events, 0);
+        let blind_output = render_to_text(&blind, 96, 24);
+        assert_eq!(
+            blind_output
+                .as_ref()
+                .map(|rendered| rendered.contains("sources: 3 unavailable")),
+            Ok(true)
+        );
+        assert_eq!(
+            blind_output
+                .as_ref()
+                .map(|rendered| rendered.contains("fabro, github, orchestrator")),
+            Ok(true)
+        );
+
+        // Factory-idle: every source was observed, there is simply nothing
+        // actionable. The header carries no phantom unavailability count, so a
+        // true-empty screen is never dressed as a false alarm.
+        let idle = build_tui_model(&demo_events(), 0);
+        let idle_output = render_to_text(&idle, 96, 24);
+        assert_eq!(
+            idle_output
+                .as_ref()
+                .map(|rendered| rendered.contains("unavailable")),
+            Ok(false)
+        );
+    }
+
+    #[test]
     fn render_to_text_draws_non_attention_view_summary() {
         let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
         let model = build_tui_model_for_state(&factory_events(), &state);

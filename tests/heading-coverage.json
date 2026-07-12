@@ -653,5 +653,17 @@
         "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
       }
     ]
+  },
+  {
+    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-tui/src/lib.rs::tests::render_to_text_distinguishes_cockpit_blind_from_factory_idle_in_the_header",
+    "reason": "Top-of-pyramid render-level test asserting the idle-vs-blind header distinction: unavailable sources are counted and named in the header, and a healthy cycle shows no phantom unavailability count.",
+    "clauses": [
+      {
+        "gap_id": "gap-hmxhswp7",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      }
+    ]
   }
 ]
