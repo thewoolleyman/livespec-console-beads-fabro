@@ -389,10 +389,24 @@ pub fn backfill_source_report(
     // `attention_item.*` stream; those events land in the store but are not part
     // of this report's pull-adapter tally (they carry no per-poll checkpoint).
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
+    let skipped = skipped_source_event_ids(&summaries);
+    let suffix = if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(", skipped {}", skipped.join(","))
+    };
     Ok(format!(
-        "backfill source adapters: adapters {}, events {event_count}",
+        "backfill source adapters: adapters {}, events {event_count}{suffix}",
         summaries.len()
     ))
+}
+
+fn skipped_source_event_ids(summaries: &[AdapterIngestionSummary]) -> Vec<String> {
+    summaries
+        .iter()
+        .flat_map(AdapterIngestionSummary::skipped_source_event_ids)
+        .cloned()
+        .collect()
 }
 
 fn backfill_source_adapters(
@@ -1487,7 +1501,7 @@ impl SourceEventAppendPort for SqliteSourceEventLog<'_> {
             .borrow_mut()
             .append_event(&append)
             .map(|_outcome| ())
-            .map_err(|_error| AdapterError::AppendFailed)
+            .map_err(|error| AdapterError::AppendFailed(format!("{error:?}")))
     }
 }
 
@@ -1599,8 +1613,9 @@ mod tests {
         source_adapters::{
             AcceptancePolicy, AdapterError, AdmissionPolicy, AttentionHandoff,
             AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason, NeedsAttentionReadOutcome,
-            NeedsAttentionSnapshotPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
-            WorkItemSnapshot, normalize_work_item_snapshot,
+            NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, PullSourcePort,
+            SourceAdapterKind, SourceEventAppendPort, SourcePayload, SourceProbe,
+            SourceProbeOutcome, WorkItemSnapshot, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1614,16 +1629,16 @@ mod tests {
     use super::{
         CommandAppendStore, ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore,
         FactoryCommandStore, InitialSourceSeed, NeedsAttentionIngest, PendingCommandOutcome,
-        ScriptedSource, SourceAdapterRef, TuiSessionOutcome, TuiSessionRunner,
-        append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
-        backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
-        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
-        handle_pending_config_commands, handle_pending_factory_commands,
-        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
-        live_source_adapters, load_tui_events_from_store, observe_and_reflect_autonomous_decisions,
-        persist_tui_runtime_effects, render_tui_preview, run, run_store_backed_tui_session,
-        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
-        work_item_command_from_stored,
+        ScriptedSource, SharedSqliteStore, SourceAdapterRef, SqliteSourceEventLog,
+        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
+        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
+        config_command_from_stored, demo_events, doctor_report, events_tail_report,
+        factory_command_from_stored, handle_pending_config_commands,
+        handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
+        initial_source_seed, live_source_adapters, load_tui_events_from_store,
+        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects, render_tui_preview,
+        run, run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
+        source_polls_from_seed, work_item_command_from_stored,
     };
 
     /// Scriptable needs-attention snapshot-source port double: returns a canned
@@ -1746,6 +1761,47 @@ mod tests {
         fn read_file(&self, _path: &str) -> SourceProbeOutcome {
             SourceProbeOutcome::unavailable("test probe: no file sources")
         }
+    }
+
+    fn dispatcher_source_event(event_id: &str, stream_seq: u64) -> NormalizedSourceEvent {
+        NormalizedSourceEvent::new(
+            ConsoleEvent::new(
+                event_id.to_owned(),
+                1,
+                "factory".to_owned(),
+                EventType::DispatcherBacklogBounceObserved,
+                "dispatcher".to_owned(),
+                "dispatcher:console".to_owned(),
+                stream_seq,
+            ),
+            event_id.to_owned(),
+            SourcePayload::NotObservedFinding(NotObservedFinding::new(
+                "console",
+                SourceAdapterKind::Dispatcher,
+                "test fixture",
+            )),
+        )
+    }
+
+    fn source_backfill_report_for_dispatcher_events(
+        checkpoint: &str,
+        observed_at: &str,
+    ) -> ConsoleRuntimeResult<String> {
+        let skipped = dispatcher_source_event(
+            "evt:dispatcher:console:console-1:dispatch-too-large:18446744073709551615",
+            u64::MAX,
+        );
+        let sibling = dispatcher_source_event("evt:dispatcher:console:console-2:dispatch-ok:2", 2);
+        let source = ScriptedSource::new(console_application::source_adapters::AdapterPoll::new(
+            checkpoint,
+            vec![skipped, sibling],
+        )?);
+        let sources: [SourceAdapterRef<'_>; 1] = [("dispatcher:console", &source)];
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "console");
+
+        backfill_source_report(&mut store, observed_at, &sources, &needs_attention)
     }
 
     #[test]
@@ -1872,6 +1928,54 @@ mod tests {
             store.load_checkpoint("github:livespec-console-beads-fabro")?,
             Some("5".to_owned())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn source_backfill_report_names_skipped_source_record() -> ConsoleRuntimeResult<()> {
+        let report = source_backfill_report_for_dispatcher_events("ck", "2026-06-24T00:00:00Z")?;
+
+        assert_eq!(
+            report,
+            "backfill source adapters: adapters 1, events 1, skipped evt:dispatcher:console:console-1:dispatch-too-large:18446744073709551615"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_backfill_report_helper_covers_checkpoint_error() {
+        assert!(matches!(
+            source_backfill_report_for_dispatcher_events(" ", "2026-06-24T00:00:00Z"),
+            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyCheckpoint))
+        ));
+    }
+
+    #[test]
+    fn source_backfill_report_helper_covers_observed_at_error() {
+        assert!(matches!(
+            source_backfill_report_for_dispatcher_events("ck", " "),
+            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyObservedAt))
+        ));
+    }
+
+    #[test]
+    fn sqlite_source_event_log_appends_top_bit_dispatcher_hash() -> Result<(), EventStoreError> {
+        let high_hash = 10_161_696_490_713_690_059_u64;
+        let event = dispatcher_source_event(
+            "evt:dispatcher:console:console-1:dispatch-high:10161696490713690059",
+            high_hash & 0x7fff_ffff_ffff_ffff,
+        );
+        assert!(i64::try_from(event.event().stream_seq()).is_ok());
+
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let shared = SharedSqliteStore::new(&mut store);
+        let mut event_log = SqliteSourceEventLog::new(shared);
+        assert_eq!(
+            event_log.append_normalized_event(&event, "2026-06-24T00:00:00Z"),
+            Ok(())
+        );
+
+        assert_eq!(store.list_events()?.len(), 1);
         Ok(())
     }
 
