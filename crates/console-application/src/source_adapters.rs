@@ -353,6 +353,12 @@ pub enum AdmissionPolicy {
 
 impl AdmissionPolicy {
     #[must_use]
+    /// The canonical ordered set of admission policies (manual, then auto).
+    pub const fn all() -> &'static [Self] {
+        &[Self::Manual, Self::Auto]
+    }
+
+    #[must_use]
     /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {
         match self {
@@ -376,6 +382,12 @@ pub enum AcceptancePolicy {
 }
 
 impl AcceptancePolicy {
+    #[must_use]
+    /// The canonical ordered set of acceptance policies.
+    pub const fn all() -> &'static [Self] {
+        &[Self::AiThenHuman, Self::AiOnly, Self::HumanOnly]
+    }
+
     #[must_use]
     /// Return the stable display label for this value.
     pub const fn label(&self) -> &'static str {

@@ -17,14 +17,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use console_application::source_adapters::Lane;
+use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneColumn, LaneFocus,
-    LaneWorkItem, OperatorAction, OperatorActionOutcome, TimelineEntry, TuiInteraction,
-    TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
+    LaneWorkItem, OperatorAction, OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry,
+    TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
     build_tui_model_for_state, reduce_tui_interaction, resolve_autonomous_mode_disable,
     resolve_autonomous_mode_enable, resolve_command_palette_action,
-    resolve_selected_operator_action,
+    resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -237,6 +237,7 @@ fn confirm_operator_action(
         TuiOverlay::AutonomousModeConfirm { .. } => {
             resolve_autonomous_mode_enable(&model, requested_by)
         }
+        TuiOverlay::ValveConfirm { .. } => resolve_valve_action(&model, requested_by),
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
@@ -315,6 +316,21 @@ pub fn key_event_to_terminal_input(
         KeyCode::Char('?') => question_input(overlay),
         KeyCode::Char('q') => q_input(overlay),
         KeyCode::Char('a') => autonomous_toggle_input(overlay),
+        KeyCode::Char('p') => valve_open_input(model, PendingValve::Approve, 'p'),
+        KeyCode::Char('c') => valve_open_input(model, PendingValve::Accept, 'c'),
+        KeyCode::Char('r') => {
+            valve_open_input(model, PendingValve::Reject(RejectMode::Rework), 'r')
+        }
+        KeyCode::Char('m') => valve_open_input(
+            model,
+            PendingValve::SetAdmission(AdmissionPolicy::Manual),
+            'm',
+        ),
+        KeyCode::Char('n') => valve_open_input(
+            model,
+            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+            'n',
+        ),
         KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
@@ -346,6 +362,7 @@ pub fn key_event_to_terminal_input(
 const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
     match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
+        TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
@@ -361,6 +378,7 @@ const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
 const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
     match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
+        TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
@@ -377,9 +395,9 @@ const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
 /// focused pane (see [`enter_content_input`]).
 fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.overlay() {
-        TuiOverlay::CommandModal { .. } | TuiOverlay::AutonomousModeConfirm { .. } => {
-            Some(TuiTerminalInput::Confirm)
-        }
+        TuiOverlay::CommandModal { .. }
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::ValveConfirm { .. } => Some(TuiTerminalInput::Confirm),
         TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => None,
         TuiOverlay::None => enter_content_input(model),
     }
@@ -483,7 +501,8 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. } => text_input('?', overlay),
+        | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::ValveConfirm { .. } => text_input('?', overlay),
     }
 }
 
@@ -501,6 +520,27 @@ const fn autonomous_toggle_input(overlay: &TuiOverlay) -> Option<TuiTerminalInpu
         return Some(TuiTerminalInput::ToggleAutonomousMode);
     }
     text_input('a', overlay)
+}
+
+/// A valve key (`p`/`c`/`r`/`m`/`n`): with no overlay open and a selected
+/// work-item in the Attention view, open the valve-confirm modal staging the
+/// given valve; on any other view or with nothing selected it is inert; behind
+/// an open text overlay it is a literal character.
+fn valve_open_input(
+    model: &TuiScreenModel,
+    valve: PendingValve,
+    character: char,
+) -> Option<TuiTerminalInput> {
+    let overlay = model.overlay();
+    if matches!(overlay, TuiOverlay::None) {
+        if model.active_view() == TuiView::Attention && model.detail().is_some() {
+            return Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenValveConfirm(valve),
+            ));
+        }
+        return None;
+    }
+    text_input(character, overlay)
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -702,8 +742,43 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
+        TuiOverlay::ValveConfirm { valve } => {
+            render_valve_confirm(
+                *valve,
+                model.detail().map_or("", AttentionDetail::work_item),
+                overlay_rect(area),
+                buffer,
+            );
+        }
         TuiOverlay::Help => render_help_overlay(overlay_rect(area), buffer),
     }
+}
+
+/// Render the valve-confirm modal: the staged valve, its target work-item, the
+/// dialed-in mode/policy for a payload valve (cycled with up/down), and a
+/// "dangerous / use with caution" caution before a destructive reject. `Enter`
+/// submits; `Esc` cancels.
+fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer: &mut Buffer) {
+    Clear.render(area, buffer);
+    let mut lines = vec![
+        Line::from(format!("{} work-item", valve.valve_label())),
+        Line::from(format!("Target: {work_item}")),
+    ];
+    if let Some(option) = valve.option_label() {
+        lines.push(Line::from(format!(
+            "Policy/mode: {option}  (up/down to change)"
+        )));
+    }
+    if valve.is_destructive() {
+        lines.push(
+            Line::from("dangerous / use with caution")
+                .style(Style::new().add_modifier(Modifier::BOLD)),
+        );
+    }
+    lines.push(Line::from("Enter to confirm | Esc to cancel"));
+    Paragraph::new(lines)
+        .block(Block::new().borders(Borders::ALL).title("Valve"))
+        .render(area, buffer);
 }
 
 /// Render the read-only Help overlay: a one-line "how to use" note plus every
@@ -722,6 +797,9 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
         Line::from("/            open search"),
         Line::from(":            open the command palette (drain)"),
         Line::from("a            toggle autonomous mode (dangerous / type-to-confirm)"),
+        Line::from("p / c / r    approve / accept / reject the selected work-item (confirm modal)"),
+        Line::from("m / n        set-admission / set-acceptance policy for the selected work-item"),
+        Line::from("             (in a valve modal: up/down change mode/policy, Enter confirms)"),
         Line::from("q / ctrl-c   quit"),
         Line::from("?            toggle this help"),
         Line::from(""),
@@ -964,13 +1042,13 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use console_application::source_adapters::Lane;
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
+    use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
     use console_application::{
         ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneFocus, OperatorAction,
-        OperatorActionOutcome, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, build_tui_model, build_tui_model_for_state,
+        OperatorActionOutcome, PendingValve, RejectMode, TuiInteraction, TuiInteractionState,
+        TuiOverlay, TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2214,6 +2292,210 @@ mod tests {
         assert_eq!(
             persisted_payload(&effect),
             Some(r#"{"repo":"r","enabled":true,"confirmed":true}"#)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Operator valve keys (S4b): p/c/r/m/n bind the five human-valve/policy
+    // commands to the valve-confirm modal against the selected work-item; each
+    // rides the shared orchestrator action port. Reject is confirmed as
+    // dangerous. Scenario 11 at the TUI runtime level.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn keymap_binds_the_five_valve_keys_on_a_selected_attention_item() {
+        // Attention view with a selected item: each valve key opens the
+        // valve-confirm modal staging that valve at its default option.
+        let model = attention_model(TuiOverlay::None);
+        for (code, valve) in [
+            ('p', PendingValve::Approve),
+            ('c', PendingValve::Accept),
+            ('r', PendingValve::Reject(RejectMode::Rework)),
+            ('m', PendingValve::SetAdmission(AdmissionPolicy::Manual)),
+            (
+                'n',
+                PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+            ),
+        ] {
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char(code)), &model),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::OpenValveConfirm(valve)
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn keymap_valve_keys_are_inert_off_the_attention_view_and_literal_in_a_text_overlay() {
+        // A non-Attention view has no selected work-item target, so a valve key
+        // is inert.
+        let events = demo_events();
+        let non_attention = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('p')), &non_attention),
+            None
+        );
+
+        // Behind a text overlay a valve key is a literal character.
+        let search = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('r')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('r')))
+        );
+    }
+
+    #[test]
+    fn keymap_valve_confirm_modal_cycles_the_option_and_confirms() {
+        let model = attention_model(TuiOverlay::ValveConfirm {
+            valve: PendingValve::Reject(RejectMode::Rework),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::CycleValveOption(true)
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::CycleValveOption(false)
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            Some(TuiTerminalInput::Confirm)
+        );
+    }
+
+    #[test]
+    fn confirming_a_valve_modal_persists_its_work_item_command_and_closes() {
+        // Payloadless approve persists a plain work_item.approve_requested command
+        // for the selected work-item and closes the modal.
+        let approve_state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+            },
+        );
+        let approve = step_tui_runtime(
+            &approve_state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            persisted_command(approve.effect()).map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::WorkItemApproveRequested)
+        );
+        assert_eq!(persisted_payload(approve.effect()), None);
+        assert_eq!(approve.state().overlay(), &TuiOverlay::None);
+
+        // A payload valve persists the mode/policy payload.
+        let reject_state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Reject(RejectMode::Regroom),
+            },
+        );
+        let reject = step_tui_runtime(
+            &reject_state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            persisted_command(reject.effect()).map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::WorkItemRejectRequested)
+        );
+        assert_eq!(
+            persisted_payload(reject.effect()),
+            Some(r#"{"mode":"regroom"}"#)
+        );
+        assert_eq!(reject.state().overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn render_to_text_draws_the_valve_confirm_modal_with_option_and_danger() {
+        // A destructive reject shows the target, the cycled mode, and the danger
+        // caution.
+        let reject = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::Reject(RejectMode::Regroom),
+                },
+            ),
+        );
+        let output = render_to_text(&reject, 96, 24);
+        assert_eq!(output.as_ref().map(|r| r.contains("Valve")), Ok(true));
+        assert_eq!(
+            output.as_ref().map(|r| r.contains("Reject work-item")),
+            Ok(true)
+        );
+        assert_eq!(
+            output.as_ref().map(|r| r.contains("Policy/mode: regroom")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("dangerous / use with caution")),
+            Ok(true)
+        );
+
+        // A payload-free, non-destructive approve shows neither a policy line nor
+        // the danger caution.
+        let approve = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::Approve,
+                },
+            ),
+        );
+        let output = render_to_text(&approve, 96, 24);
+        assert_eq!(
+            output.as_ref().map(|r| r.contains("Approve work-item")),
+            Ok(true)
+        );
+        assert_eq!(
+            output.as_ref().map(|r| r.contains("Policy/mode:")),
+            Ok(false)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("dangerous / use with caution")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn help_overlay_lists_the_valve_keys() {
+        let state = TuiInteractionState::new(0, TuiOverlay::Help);
+        let model = build_tui_model_for_state(&demo_events(), &state);
+        // A tall area so the full help body (including the valve keys near the
+        // bottom) renders inside the centered modal rather than being clipped.
+        let output = render_to_text(&model, 120, 72);
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("approve / accept / reject")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("set-admission / set-acceptance")),
+            Ok(true)
         );
     }
 }

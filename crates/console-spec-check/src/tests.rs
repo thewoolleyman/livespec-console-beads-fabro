@@ -72,7 +72,11 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // backing CLI resolution: 123 normative clauses, 15/37/19/52. The S2
     // source-unavailability indicator added one contracts.md TUI-Contract clause
     // requiring the header/status line to surface backing-source unavailability:
-    // 124 normative clauses, 15/38/19/52. (The v017 C1 revision net-added one
+    // 124 normative clauses, 15/38/19/52. The S4b valve-keys slice added one
+    // contracts.md TUI-Contract clause requiring the operator to drive all five
+    // human-valve/policy-edit commands from the TUI through the shared
+    // orchestrator action port, with a confirmed destructive reject:
+    // 125 normative clauses, 15/39/19/52. (The v017 C1 revision net-added one
     // normative clause each to spec.md and constraints.md as the Full Autonomous
     // Mode and Autonomous-Mode Safety sections were re-scoped to the delegation
     // model; the v016 CN1 revision added one normative clause to contracts.md;
@@ -80,7 +84,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 38),
+        ("contracts.md", 39),
         ("constraints.md", 19),
         ("non-functional-requirements.md", 52),
     ];
@@ -92,7 +96,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 124,
+        total, 125,
         "total normative clauses across the console spec"
     );
     Ok(())
