@@ -175,6 +175,93 @@ impl OperatorAction {
     }
 }
 
+/// One operator human-valve or policy-edit intent staged in the valve-confirm
+/// modal.
+///
+/// The payload valves carry the mode/policy the operator has dialed in against
+/// the selected work-item; approve and accept carry no payload. The valve is
+/// submitted through the shared orchestrator action port when the operator
+/// confirms; a destructive reject is warned before submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingValve {
+    /// The approve human valve (`pending-approval -> ready`).
+    Approve,
+    /// The accept human valve (the human acceptance act).
+    Accept,
+    /// The reject valve with its routing mode (destructive).
+    Reject(RejectMode),
+    /// The set-admission policy dial with its dialed-in policy.
+    SetAdmission(AdmissionPolicy),
+    /// The set-acceptance policy dial with its dialed-in policy.
+    SetAcceptance(AcceptancePolicy),
+}
+
+impl PendingValve {
+    #[must_use]
+    /// The stable display label for this valve.
+    pub const fn valve_label(&self) -> &'static str {
+        match self {
+            Self::Approve => "Approve",
+            Self::Accept => "Accept",
+            Self::Reject(_mode) => "Reject",
+            Self::SetAdmission(_policy) => "Set admission",
+            Self::SetAcceptance(_policy) => "Set acceptance",
+        }
+    }
+
+    #[must_use]
+    /// The dialed-in mode/policy label for a payload valve, or `None` for the
+    /// payload-free approve/accept valves.
+    pub const fn option_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Approve | Self::Accept => None,
+            Self::Reject(mode) => Some(mode.as_str()),
+            Self::SetAdmission(policy) => Some(policy.label()),
+            Self::SetAcceptance(policy) => Some(policy.label()),
+        }
+    }
+
+    #[must_use]
+    /// Whether this valve is destructive, so the confirm modal warns before it
+    /// is submitted. Only reject is destructive.
+    pub const fn is_destructive(&self) -> bool {
+        matches!(self, Self::Reject(_mode))
+    }
+
+    #[must_use]
+    /// This valve with its mode/policy rotated one step (forward or backward).
+    /// The payload-free approve/accept valves are returned unchanged.
+    pub fn cycled(self, forward: bool) -> Self {
+        match self {
+            Self::Approve | Self::Accept => self,
+            Self::Reject(mode) => Self::Reject(rotate(RejectMode::all(), mode, forward)),
+            Self::SetAdmission(policy) => {
+                Self::SetAdmission(rotate(AdmissionPolicy::all(), policy, forward))
+            }
+            Self::SetAcceptance(policy) => {
+                Self::SetAcceptance(rotate(AcceptancePolicy::all(), policy, forward))
+            }
+        }
+    }
+}
+
+/// Rotate one step through `options` from `current` (forward or backward),
+/// wrapping at the ends. `current` is always one of `options`, so the fallback
+/// index is never taken.
+fn rotate<T: Copy + PartialEq>(options: &[T], current: T, forward: bool) -> T {
+    let index = options
+        .iter()
+        .position(|option| *option == current)
+        .unwrap_or(0);
+    let len = options.len();
+    let next = if forward {
+        (index + 1) % len
+    } else {
+        (index + len - 1) % len
+    };
+    options[next]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Variants for tui overlay state or outcome values.
 pub enum TuiOverlay {
@@ -206,6 +293,15 @@ pub enum TuiOverlay {
     /// Help variant: a read-only keybinding reference opened with `?` and
     /// dismissed with `Esc` or `?`. It carries no state and submits nothing.
     Help,
+    /// Valve-confirm variant: the confirm modal that stages one operator
+    /// human-valve/policy-edit intent against the selected work-item. `Enter`
+    /// submits the valve through the shared orchestrator action port; `up`/`down`
+    /// cycle a payload valve's mode/policy; `Esc` cancels. Reject is warned as
+    /// dangerous before submission.
+    ValveConfirm {
+        /// The staged valve intent (with its dialed-in mode/policy).
+        valve: PendingValve,
+    },
 }
 
 impl TuiOverlay {
@@ -223,6 +319,7 @@ impl TuiOverlay {
             Self::None
             | Self::CommandModal { .. }
             | Self::AutonomousModeConfirm { .. }
+            | Self::ValveConfirm { .. }
             | Self::Help => None,
         }
     }
@@ -238,6 +335,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::AutonomousModeConfirm { .. }
+            | Self::ValveConfirm { .. }
             | Self::Help => None,
         }
     }
@@ -252,6 +350,22 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::ValveConfirm { .. }
+            | Self::Help => None,
+        }
+    }
+
+    #[must_use]
+    /// Return the staged valve when the overlay is the valve-confirm modal, or
+    /// `None` for any other overlay.
+    pub const fn valve_confirm(&self) -> Option<PendingValve> {
+        match self {
+            Self::ValveConfirm { valve } => Some(*valve),
+            Self::None
+            | Self::Search { .. }
+            | Self::CommandPalette { .. }
+            | Self::CommandModal { .. }
+            | Self::AutonomousModeConfirm { .. }
             | Self::Help => None,
         }
     }
@@ -299,6 +413,12 @@ pub enum TuiInteraction {
     FocusNav,
     /// Open the read-only Help overlay (the `?` keybinding reference).
     OpenHelp,
+    /// Open the valve-confirm modal staging the given human-valve/policy-edit
+    /// intent against the selected work-item.
+    OpenValveConfirm(PendingValve),
+    /// Cycle the valve-confirm modal's payload valve to its next (`true`) or
+    /// previous (`false`) mode/policy. Inert for a payload-free valve.
+    CycleValveOption(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1468,7 +1588,7 @@ pub fn build_tui_model_for_state(
             attention_snapshots.len()
         ),
         unavailable_sources,
-        footer: "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | ? help | q quit"
+        footer: "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
             .to_owned(),
     }
 }
@@ -1575,7 +1695,24 @@ pub fn reduce_tui_interaction(
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
         TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help),
+        TuiInteraction::OpenValveConfirm(valve) => state
+            .clone()
+            .with_overlay(TuiOverlay::ValveConfirm { valve }),
+        TuiInteraction::CycleValveOption(forward) => state
+            .clone()
+            .with_overlay(cycle_valve_option(state.overlay(), forward)),
     }
+}
+
+/// Rotate the valve-confirm modal's payload valve one step (forward or
+/// backward), leaving any non-valve overlay unchanged.
+fn cycle_valve_option(overlay: &TuiOverlay, forward: bool) -> TuiOverlay {
+    overlay.valve_confirm().map_or_else(
+        || overlay.clone(),
+        |valve| TuiOverlay::ValveConfirm {
+            valve: valve.cycled(forward),
+        },
+    )
 }
 
 /// Whether the `Lanes` view is showing its cross-lane overview home, where
@@ -1762,6 +1899,129 @@ pub fn resolve_command_palette_action(
     Err(ApplicationError::UnknownCommandPaletteAction)
 }
 
+/// Resolve the valve submit from the valve-confirm modal.
+///
+/// The modal stages one human-valve/policy-edit intent ([`PendingValve`])
+/// against the selected work-item; this reads the staged valve and the selected
+/// attention item's work-item id, and produces the persist outcome for the
+/// matching `work_item.*` command. Approve and accept persist a payload-less
+/// command; reject, set-admission, and set-acceptance persist the `{"mode": ...}`
+/// / `{"policy": ...}` payload their handlers parse. The console never writes the
+/// ledger directly -- the persisted command rides the shared
+/// [`OrchestratorActionPort`] `drive` surface.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
+/// blank, [`ApplicationError::NoSelectedOperatorAction`] when the overlay is not
+/// the valve-confirm modal, and [`ApplicationError::NoSelectedAttentionItem`]
+/// when nothing is selected. The selected item's work-item id is carried
+/// verbatim as the command aggregate; the orchestrator's `drive` surface (and
+/// the downstream `work_item.*` handler) is the authority on its legality.
+pub fn resolve_valve_action(
+    model: &TuiScreenModel,
+    requested_by: &str,
+) -> ApplicationResult<OperatorActionOutcome> {
+    let requested_by = validate_operator_action(requested_by)?;
+    let valve = model
+        .overlay()
+        .valve_confirm()
+        .ok_or(ApplicationError::NoSelectedOperatorAction)?;
+    let detail = model
+        .detail()
+        .ok_or(ApplicationError::NoSelectedAttentionItem)?;
+    Ok(valve_outcome(valve, detail.work_item(), requested_by))
+}
+
+/// Build the persist outcome for one staged valve against `work_item_id`.
+fn valve_outcome(
+    valve: PendingValve,
+    work_item_id: &str,
+    requested_by: &str,
+) -> OperatorActionOutcome {
+    match valve {
+        PendingValve::Approve => OperatorActionOutcome::PersistCommand(work_item_command(
+            "approve",
+            CommandType::WorkItemApproveRequested,
+            work_item_id,
+            requested_by,
+        )),
+        PendingValve::Accept => OperatorActionOutcome::PersistCommand(work_item_command(
+            "accept",
+            CommandType::WorkItemAcceptRequested,
+            work_item_id,
+            requested_by,
+        )),
+        PendingValve::Reject(mode) => work_item_payload_outcome(
+            "reject",
+            CommandType::WorkItemRejectRequested,
+            work_item_id,
+            "mode",
+            mode.as_str(),
+            requested_by,
+        ),
+        PendingValve::SetAdmission(policy) => work_item_payload_outcome(
+            "set_admission",
+            CommandType::WorkItemSetAdmissionRequested,
+            work_item_id,
+            "policy",
+            policy.label(),
+            requested_by,
+        ),
+        PendingValve::SetAcceptance(policy) => work_item_payload_outcome(
+            "set_acceptance",
+            CommandType::WorkItemSetAcceptanceRequested,
+            work_item_id,
+            "policy",
+            policy.label(),
+            requested_by,
+        ),
+    }
+}
+
+/// Build a payload-less `work_item.<action>_requested` command envelope keyed by
+/// the target work-item id (the aggregate the orchestrator's `drive` surface
+/// acts on).
+fn work_item_command(
+    action: &str,
+    command_type: CommandType,
+    work_item_id: &str,
+    requested_by: &str,
+) -> CommandEnvelope {
+    CommandEnvelope::new(
+        format!("cmd_work_item_{action}_requested_{work_item_id}"),
+        command_type,
+        work_item_id.to_owned(),
+        format!("{work_item_id}:work_item.{action}_requested"),
+        requested_by.to_owned(),
+    )
+}
+
+/// Build the persist-with-payload outcome for a payload-bearing valve: the
+/// `work_item.<action>_requested` command plus its single-key `{ "<key>":
+/// "<value>" }` payload (the `mode` / `policy` the handler parses).
+fn work_item_payload_outcome(
+    action: &str,
+    command_type: CommandType,
+    work_item_id: &str,
+    key: &str,
+    value: &str,
+    requested_by: &str,
+) -> OperatorActionOutcome {
+    let command = CommandEnvelope::new(
+        format!("cmd_work_item_{action}_requested_{work_item_id}_{value}"),
+        command_type,
+        work_item_id.to_owned(),
+        format!("{work_item_id}:work_item.{action}_requested:{key}={value}"),
+        requested_by.to_owned(),
+    );
+    let mut payload = serde_json::Map::new();
+    payload.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
+    OperatorActionOutcome::PersistCommandWithPayload {
+        command,
+        payload_json: serde_json::Value::Object(payload).to_string(),
+    }
+}
+
 fn command_palette_query_matches_drain(query: &str) -> bool {
     let normalized = query.trim().to_lowercase();
     normalized == "drain" || normalized == "drain ready queue"
@@ -1932,6 +2192,12 @@ pub enum RejectMode {
 }
 
 impl RejectMode {
+    #[must_use]
+    /// The canonical ordered set of reject modes (rework, then regroom).
+    pub const fn all() -> &'static [Self] {
+        &[Self::Rework, Self::Regroom]
+    }
+
     #[must_use]
     /// The action-id segment for this mode (`rework` or `regroom`).
     pub const fn as_str(&self) -> &'static str {
@@ -3214,6 +3480,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => None,
     }
 }
@@ -3229,6 +3496,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => overlay.clone(),
     }
 }
@@ -3278,7 +3546,10 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
             typed: format!("{typed}{value}"),
         },
-        TuiOverlay::None | TuiOverlay::CommandModal { .. } | TuiOverlay::Help => overlay.clone(),
+        TuiOverlay::None
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3293,7 +3564,10 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
             typed: drop_last_char(typed),
         },
-        TuiOverlay::None | TuiOverlay::CommandModal { .. } | TuiOverlay::Help => overlay.clone(),
+        TuiOverlay::None
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::Help => overlay.clone(),
     }
 }
 
@@ -3316,6 +3590,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => overlay.clone(),
     }
 }
@@ -3331,6 +3606,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::AutonomousModeConfirm { .. }
+        | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => overlay.clone(),
     }
 }
@@ -3519,15 +3795,15 @@ mod tests {
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         JournalAutonomousDecisionsPort, LaneFocus, LivespecJsoncArmingPort, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiScreenModel, TuiView, autonomous_mode_confirmation_matches, build_tui_model,
+        OrchestratorActionRequest, PendingValve, RejectMode, TuiInteraction, TuiInteractionState,
+        TuiOverlay, TuiScreenModel, TuiView, autonomous_mode_confirmation_matches, build_tui_model,
         build_tui_model_for_state, handle_config_autonomous_mode_set_command,
         handle_factory_drain_command, handle_work_item_accept_command,
         handle_work_item_approve_command, handle_work_item_reject_command,
         handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
         project_attention, project_lane_board, read_autonomous_mode_from_jsonc,
         reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
-        resolve_command_palette_action, resolve_selected_operator_action,
+        resolve_command_palette_action, resolve_selected_operator_action, resolve_valve_action,
         set_acceptance_policy_from_payload, set_admission_policy_from_payload,
         set_autonomous_mode_in_jsonc, validate_operator_action,
     };
@@ -4035,7 +4311,7 @@ mod tests {
         );
         assert_eq!(
             model.footer(),
-            "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | ? help | q quit"
+            "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
         );
     }
 
@@ -7004,5 +7280,262 @@ mod tests {
         };
         assert!(outcome.command().is_some());
         assert_eq!(outcome.attach_command(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Operator valve keys (S4b): the five human-valve/policy-edit commands
+    // staged in the valve-confirm modal against the selected work-item, each
+    // riding the shared orchestrator action port (Scenario 11).
+    // -----------------------------------------------------------------------
+
+    /// A model over the fabro-gate events with the given valve staged in the
+    /// valve-confirm modal against the selected (index 0 -> `console-pending`)
+    /// work-item.
+    fn valve_model(valve: PendingValve) -> TuiScreenModel {
+        build_tui_model_for_state(
+            &fabro_gate_events(),
+            &TuiInteractionState::new(0, TuiOverlay::ValveConfirm { valve }),
+        )
+    }
+
+    #[test]
+    fn pending_valve_labels_options_and_destructiveness() {
+        assert_eq!(PendingValve::Approve.valve_label(), "Approve");
+        assert_eq!(PendingValve::Accept.valve_label(), "Accept");
+        assert_eq!(
+            PendingValve::Reject(RejectMode::Rework).valve_label(),
+            "Reject"
+        );
+        assert_eq!(
+            PendingValve::SetAdmission(AdmissionPolicy::Manual).valve_label(),
+            "Set admission"
+        );
+        assert_eq!(
+            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman).valve_label(),
+            "Set acceptance"
+        );
+
+        assert_eq!(PendingValve::Approve.option_label(), None);
+        assert_eq!(PendingValve::Accept.option_label(), None);
+        assert_eq!(
+            PendingValve::Reject(RejectMode::Regroom).option_label(),
+            Some("regroom")
+        );
+        assert_eq!(
+            PendingValve::SetAdmission(AdmissionPolicy::Auto).option_label(),
+            Some("auto")
+        );
+        assert_eq!(
+            PendingValve::SetAcceptance(AcceptancePolicy::HumanOnly).option_label(),
+            Some("human-only")
+        );
+
+        assert!(PendingValve::Reject(RejectMode::Rework).is_destructive());
+        assert!(!PendingValve::Approve.is_destructive());
+        assert!(!PendingValve::SetAdmission(AdmissionPolicy::Auto).is_destructive());
+    }
+
+    #[test]
+    fn pending_valve_cycles_payload_options_and_leaves_payloadless_valves() {
+        // Approve/accept carry no payload, so cycling is a no-op both ways.
+        assert_eq!(PendingValve::Approve.cycled(true), PendingValve::Approve);
+        assert_eq!(PendingValve::Accept.cycled(false), PendingValve::Accept);
+
+        // Reject wraps rework <-> regroom (two states, so either direction flips).
+        assert_eq!(
+            PendingValve::Reject(RejectMode::Rework).cycled(true),
+            PendingValve::Reject(RejectMode::Regroom)
+        );
+        assert_eq!(
+            PendingValve::Reject(RejectMode::Regroom).cycled(false),
+            PendingValve::Reject(RejectMode::Rework)
+        );
+
+        // Admission wraps manual <-> auto.
+        assert_eq!(
+            PendingValve::SetAdmission(AdmissionPolicy::Manual).cycled(true),
+            PendingValve::SetAdmission(AdmissionPolicy::Auto)
+        );
+        assert_eq!(
+            PendingValve::SetAdmission(AdmissionPolicy::Auto).cycled(false),
+            PendingValve::SetAdmission(AdmissionPolicy::Manual)
+        );
+
+        // Acceptance has three states; forward and backward wrap differently.
+        assert_eq!(
+            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman).cycled(true),
+            PendingValve::SetAcceptance(AcceptancePolicy::AiOnly)
+        );
+        assert_eq!(
+            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman).cycled(false),
+            PendingValve::SetAcceptance(AcceptancePolicy::HumanOnly)
+        );
+    }
+
+    #[test]
+    fn valve_confirm_accessor_returns_the_staged_valve_or_none() {
+        assert_eq!(
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+            }
+            .valve_confirm(),
+            Some(PendingValve::Approve)
+        );
+        assert_eq!(TuiOverlay::None.valve_confirm(), None);
+    }
+
+    #[test]
+    fn reduce_opens_and_cycles_the_valve_confirm_overlay() {
+        let events = fabro_gate_events();
+        let opened = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenValveConfirm(PendingValve::SetAcceptance(
+                AcceptancePolicy::AiThenHuman,
+            )),
+        );
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+            }
+        );
+
+        let cycled =
+            reduce_tui_interaction(&opened, &events, TuiInteraction::CycleValveOption(true));
+        assert_eq!(
+            cycled.overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetAcceptance(AcceptancePolicy::AiOnly),
+            }
+        );
+
+        // Cycling with no valve-confirm overlay open leaves the overlay unchanged.
+        let noop = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::CycleValveOption(true),
+        );
+        assert_eq!(noop.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn resolve_valve_action_persists_payloadless_approve_and_accept() {
+        for (valve, command_type, action) in [
+            (
+                PendingValve::Approve,
+                CommandType::WorkItemApproveRequested,
+                "approve",
+            ),
+            (
+                PendingValve::Accept,
+                CommandType::WorkItemAcceptRequested,
+                "accept",
+            ),
+        ] {
+            let model = valve_model(valve);
+            let outcome = resolve_valve_action(&model, "operator");
+            let command = outcome
+                .as_ref()
+                .ok()
+                .and_then(OperatorActionOutcome::command);
+            assert_eq!(
+                command.map(CommandEnvelope::command_type),
+                Some(&command_type)
+            );
+            assert_eq!(
+                command.map(CommandEnvelope::aggregate_id),
+                Some("console-pending")
+            );
+            assert_eq!(
+                command.map(CommandEnvelope::idempotency_key),
+                Some(format!("console-pending:work_item.{action}_requested").as_str())
+            );
+            assert_eq!(command.map(CommandEnvelope::requested_by), Some("operator"));
+            // Payloadless: a plain PersistCommand, never PersistCommandWithPayload.
+            assert!(matches!(
+                outcome,
+                Ok(OperatorActionOutcome::PersistCommand(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn resolve_valve_action_reject_persists_the_mode_payload() {
+        let outcome = resolve_valve_action(
+            &valve_model(PendingValve::Reject(RejectMode::Regroom)),
+            "operator",
+        );
+        assert!(matches!(
+            &outcome,
+            Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.command_type() == &CommandType::WorkItemRejectRequested
+                    && command.aggregate_id() == "console-pending"
+                    && command.idempotency_key()
+                        == "console-pending:work_item.reject_requested:mode=regroom"
+                    && payload_json == r#"{"mode":"regroom"}"#
+        ));
+    }
+
+    #[test]
+    fn resolve_valve_action_set_admission_persists_the_policy_payload() {
+        let outcome = resolve_valve_action(
+            &valve_model(PendingValve::SetAdmission(AdmissionPolicy::Auto)),
+            "operator",
+        );
+        assert!(matches!(
+            &outcome,
+            Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.command_type() == &CommandType::WorkItemSetAdmissionRequested
+                    && command.aggregate_id() == "console-pending"
+                    && command.idempotency_key()
+                        == "console-pending:work_item.set_admission_requested:policy=auto"
+                    && payload_json == r#"{"policy":"auto"}"#
+        ));
+    }
+
+    #[test]
+    fn resolve_valve_action_set_acceptance_persists_the_policy_payload() {
+        let outcome = resolve_valve_action(
+            &valve_model(PendingValve::SetAcceptance(AcceptancePolicy::HumanOnly)),
+            "operator",
+        );
+        assert!(matches!(
+            &outcome,
+            Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.command_type() == &CommandType::WorkItemSetAcceptanceRequested
+                    && command.aggregate_id() == "console-pending"
+                    && command.idempotency_key()
+                        == "console-pending:work_item.set_acceptance_requested:policy=human-only"
+                    && payload_json == r#"{"policy":"human-only"}"#
+        ));
+    }
+
+    #[test]
+    fn resolve_valve_action_surfaces_its_error_paths() {
+        // Blank requester.
+        assert_eq!(
+            resolve_valve_action(&valve_model(PendingValve::Approve), " "),
+            Err(ApplicationError::EmptyOperatorAction)
+        );
+        // The overlay is not the valve-confirm modal.
+        assert_eq!(
+            resolve_valve_action(&build_tui_model(&fabro_gate_events(), 0), "operator"),
+            Err(ApplicationError::NoSelectedOperatorAction)
+        );
+        // No attention item is selected (empty inbox).
+        let empty = build_tui_model_for_state(
+            &[],
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::Approve,
+                },
+            ),
+        );
+        assert_eq!(
+            resolve_valve_action(&empty, "operator"),
+            Err(ApplicationError::NoSelectedAttentionItem)
+        );
     }
 }

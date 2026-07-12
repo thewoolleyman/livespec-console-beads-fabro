@@ -365,6 +365,10 @@
       {
         "gap_id": "gap-7hcn45eu",
         "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
+      },
+      {
+        "gap_id": "gap-k4foxdbq",
+        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
       }
     ]
   },
