@@ -143,16 +143,22 @@ pub enum LaneFocus {
 
 /// Which pane the arrow keys drive.
 ///
-/// Either the left **Views** navigation menu or the **Content** pane (the
-/// active view's list). Focus starts on the Views nav so `up`/`down` walk the
-/// vertical Views menu intuitively; `Enter`/`right` dive into the Content pane,
-/// and `Esc`/`left` return to the nav.
+/// The cockpit body is three side-by-side panes: the left **Views** navigation
+/// menu, the middle **Content** pane (the active view's list), and the right
+/// **Detail** pane (the selected item's details). `left`/`right` walk focus
+/// between the panes, clamped at the ends (`right` stops on Detail, `left` stops
+/// on Nav); `up`/`down` act WITHIN the focused pane — moving the Views selection,
+/// the Content selection, or scrolling the Detail pane. Focus starts on the Views
+/// nav so `up`/`down` walk the vertical Views menu intuitively. The `Lanes` view
+/// has no Detail pane, so `right` clamps at Content there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
     /// The left Views navigation menu (the default focus).
     Nav,
     /// The active view's content pane (its list of items or lanes).
     Content,
+    /// The right Detail pane (the selected item's details; scrollable).
+    Detail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,6 +417,15 @@ pub enum TuiInteraction {
     /// Move focus from the Content pane back to the Views nav (the `Esc`/`left`
     /// step-out from the content list).
     FocusNav,
+    /// Move focus from the Content pane to the right Detail pane (the `right`
+    /// step-in from the content list, on a view that has a Detail pane).
+    FocusDetail,
+    /// Scroll the focused Detail pane's content down one line (the `down` key
+    /// while the Detail pane holds focus), revealing content clipped below.
+    ScrollDetailDown,
+    /// Scroll the focused Detail pane's content up one line (the `up` key while
+    /// the Detail pane holds focus).
+    ScrollDetailUp,
     /// Open the read-only Help overlay (the `?` keybinding reference).
     OpenHelp,
     /// Open the valve-confirm modal staging the given human-valve/policy-edit
@@ -429,6 +444,7 @@ pub struct TuiInteractionState {
     lane_focus: LaneFocus,
     selected_lane_index: usize,
     focus: FocusPane,
+    detail_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
     autonomous_mode_enabled: bool,
@@ -444,6 +460,7 @@ impl TuiInteractionState {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             focus: FocusPane::Nav,
+            detail_scroll: 0,
             overlay,
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
@@ -463,6 +480,7 @@ impl TuiInteractionState {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             focus: FocusPane::Nav,
+            detail_scroll: 0,
             overlay,
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
@@ -481,6 +499,15 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn with_focus(mut self, focus: FocusPane) -> Self {
         self.focus = focus;
+        self
+    }
+
+    /// Replace the Detail pane's scroll offset (the topmost visible detail line),
+    /// preserving every other field. Reset to `0` whenever the selection or view
+    /// changes so a scroll never carries onto a different item's details.
+    #[must_use]
+    pub const fn with_detail_scroll(mut self, detail_scroll: usize) -> Self {
+        self.detail_scroll = detail_scroll;
         self
     }
 
@@ -540,6 +567,12 @@ impl TuiInteractionState {
     /// Return which pane the arrow keys currently drive.
     pub const fn focus(&self) -> FocusPane {
         self.focus
+    }
+
+    #[must_use]
+    /// Return the Detail pane's scroll offset (the topmost visible detail line).
+    pub const fn detail_scroll(&self) -> usize {
+        self.detail_scroll
     }
 
     #[must_use]
@@ -685,6 +718,17 @@ impl AttentionDetail {
     pub fn actions(&self) -> &[OperatorAction] {
         &self.actions
     }
+
+    #[must_use]
+    /// The number of logical lines the Detail pane renders for this item: the
+    /// four fixed fields (repo, work item, fabro run, attach), an optional
+    /// actions line, the `Timeline:` header, and one line per timeline entry.
+    /// The TUI renderer is held to this count by a drift-guard test so the
+    /// scroll clamp stays in lock-step with what is drawn.
+    pub fn rendered_line_count(&self) -> usize {
+        let actions_line = usize::from(!self.actions.is_empty());
+        4 + actions_line + 1 + self.timeline.len()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -700,6 +744,7 @@ pub struct TuiScreenModel {
     lane_focus: LaneFocus,
     selected_lane_index: Option<usize>,
     focus: FocusPane,
+    detail_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
     autonomous_mode_enabled: bool,
@@ -766,11 +811,37 @@ impl TuiScreenModel {
         self.selected_lane_index
     }
 
-    /// Which pane the arrow keys currently drive (the Views nav or the Content
-    /// pane). Renderers use it to mark the focused pane.
+    /// Which pane the arrow keys currently drive (the Views nav, the Content
+    /// pane, or the Detail pane). Renderers use it to mark the focused pane.
     #[must_use]
     pub const fn focus(&self) -> FocusPane {
         self.focus
+    }
+
+    /// The Detail pane's scroll offset (the topmost visible detail line). The
+    /// renderer clamps it to what actually fits so an overscroll from a shrunk
+    /// detail is harmless.
+    #[must_use]
+    pub const fn detail_scroll(&self) -> usize {
+        self.detail_scroll
+    }
+
+    /// The number of logical lines the current view's Detail pane renders, used
+    /// to clamp the scroll offset so `down` cannot run off the end. The Attention
+    /// view derives it from the selected item's detail (or the single "no item"
+    /// line); the summary views (Spec / Events / Repos) render two lines per
+    /// projection row (each such view always projects at least one row); the
+    /// Lanes view has no Detail pane, so its count is zero.
+    #[must_use]
+    pub fn detail_content_len(&self) -> usize {
+        match self.active_view {
+            TuiView::Lanes => 0,
+            TuiView::Attention => self
+                .detail
+                .as_ref()
+                .map_or(1, AttentionDetail::rendered_line_count),
+            TuiView::Spec | TuiView::Events | TuiView::Repos => self.view_items.len() * 2,
+        }
     }
 
     #[must_use]
@@ -1602,6 +1673,7 @@ pub fn build_tui_model_for_state(
         lane_focus,
         selected_lane_index,
         focus: state.focus(),
+        detail_scroll: state.detail_scroll(),
         overlay,
         selected_repo: state.selected_repo().to_owned(),
         autonomous_mode_enabled: state.autonomous_mode_enabled(),
@@ -1619,7 +1691,7 @@ pub fn build_tui_model_for_state(
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
-        footer: "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+        footer: "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
             .to_owned(),
     }
 }
@@ -1799,10 +1871,12 @@ pub fn reduce_tui_interaction(
         TuiInteraction::SelectPrevious => select_previous(state),
         TuiInteraction::SelectNextView => state
             .clone()
-            .with_active_view(move_view_down(state.active_view())),
+            .with_active_view(move_view_down(state.active_view()))
+            .with_detail_scroll(0),
         TuiInteraction::SelectPreviousView => state
             .clone()
-            .with_active_view(move_view_up(state.active_view())),
+            .with_active_view(move_view_up(state.active_view()))
+            .with_detail_scroll(0),
         TuiInteraction::OpenSearch => state.clone().with_overlay(TuiOverlay::Search {
             query: String::new(),
         }),
@@ -1838,6 +1912,16 @@ pub fn reduce_tui_interaction(
         }
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
+        TuiInteraction::FocusDetail => state.clone().with_focus(FocusPane::Detail),
+        TuiInteraction::ScrollDetailDown => {
+            let max_offset = model.detail_content_len().saturating_sub(1);
+            state
+                .clone()
+                .with_detail_scroll((state.detail_scroll() + 1).min(max_offset))
+        }
+        TuiInteraction::ScrollDetailUp => state
+            .clone()
+            .with_detail_scroll(state.detail_scroll().saturating_sub(1)),
         TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help),
         TuiInteraction::OpenValveConfirm(valve) => state
             .clone()
@@ -1880,6 +1964,10 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
                 model.attention_items().len(),
                 state.selected_attention_index(),
             ))
+            // A different item is now selected, so its Detail pane shows
+            // different content: reset the scroll so the previous item's offset
+            // never carries over.
+            .with_detail_scroll(0)
     }
 }
 
@@ -1894,6 +1982,8 @@ fn select_previous(state: &TuiInteractionState) -> TuiInteractionState {
         state
             .clone()
             .with_selected_attention_index(move_selection_up(state.selected_attention_index()))
+            // Reset the Detail scroll for the newly-selected item (see select_next).
+            .with_detail_scroll(0)
     }
 }
 
@@ -3939,17 +4029,17 @@ mod tests {
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         JournalAutonomousDecisionsPort, LaneFocus, LivespecJsoncArmingPort, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, PendingValve, RejectMode, TuiInteraction, TuiInteractionState,
-        TuiOverlay, TuiScreenModel, TuiView, autonomous_mode_confirmation_matches, build_tui_model,
-        build_tui_model_for_state, handle_config_autonomous_mode_set_command,
-        handle_factory_drain_command, handle_work_item_accept_command,
-        handle_work_item_approve_command, handle_work_item_reject_command,
-        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-        project_attention, project_lane_board, read_autonomous_mode_from_jsonc,
-        reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
-        resolve_command_palette_action, resolve_selected_operator_action, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload,
-        set_autonomous_mode_in_jsonc, validate_operator_action,
+        OrchestratorActionRequest, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
+        autonomous_mode_confirmation_matches, build_tui_model, build_tui_model_for_state,
+        handle_config_autonomous_mode_set_command, handle_factory_drain_command,
+        handle_work_item_accept_command, handle_work_item_approve_command,
+        handle_work_item_reject_command, handle_work_item_set_acceptance_command,
+        handle_work_item_set_admission_command, project_attention, project_lane_board,
+        read_autonomous_mode_from_jsonc, reduce_tui_interaction, resolve_autonomous_mode_disable,
+        resolve_autonomous_mode_enable, resolve_command_palette_action,
+        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, set_autonomous_mode_in_jsonc, validate_operator_action,
     };
 
     #[test]
@@ -4455,7 +4545,7 @@ mod tests {
         );
         assert_eq!(
             model.footer(),
-            "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+            "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
         );
     }
 
@@ -4531,6 +4621,146 @@ mod tests {
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::FocusNav);
         assert_eq!(state.focus(), FocusPane::Nav);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::FocusDetail);
+        assert_eq!(state.focus(), FocusPane::Detail);
+        assert_eq!(
+            build_tui_model_for_state(&events, &state).focus(),
+            FocusPane::Detail
+        );
+    }
+
+    #[test]
+    fn tui_interaction_scrolls_the_detail_pane_and_clamps() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail);
+        let model = build_tui_model_for_state(&events, &state);
+        // The selected item's detail has multiple lines, so there is headroom.
+        let max = model.detail_content_len().saturating_sub(1);
+        assert!(max > 0);
+
+        // Scrolling down past the end clamps the offset at the last line, and the
+        // model reflects the clamped offset.
+        let mut scrolled = state;
+        for _ in 0..(max + 3) {
+            scrolled = reduce_tui_interaction(&scrolled, &events, TuiInteraction::ScrollDetailDown);
+        }
+        assert_eq!(scrolled.detail_scroll(), max);
+        assert_eq!(
+            build_tui_model_for_state(&events, &scrolled).detail_scroll(),
+            max
+        );
+
+        // Scrolling up past the top saturates the offset at zero.
+        let mut unscrolled = scrolled;
+        for _ in 0..(max + 3) {
+            unscrolled =
+                reduce_tui_interaction(&unscrolled, &events, TuiInteraction::ScrollDetailUp);
+        }
+        assert_eq!(unscrolled.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn tui_interaction_resets_detail_scroll_when_selection_or_view_changes() {
+        let events = fabro_gate_events();
+
+        // Moving the content selection down resets the scroll to the top.
+        let next = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None).with_detail_scroll(2),
+            &events,
+            TuiInteraction::SelectNext,
+        );
+        assert_eq!(next.selected_attention_index(), 1);
+        assert_eq!(next.detail_scroll(), 0);
+
+        // Moving up resets it too.
+        let prev = reduce_tui_interaction(
+            &TuiInteractionState::new(1, TuiOverlay::None).with_detail_scroll(2),
+            &events,
+            TuiInteraction::SelectPrevious,
+        );
+        assert_eq!(prev.selected_attention_index(), 0);
+        assert_eq!(prev.detail_scroll(), 0);
+
+        // Switching the active view (next then previous) resets it.
+        let next_view = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None).with_detail_scroll(2),
+            &events,
+            TuiInteraction::SelectNextView,
+        );
+        assert_eq!(next_view.active_view(), TuiView::Spec);
+        assert_eq!(next_view.detail_scroll(), 0);
+
+        let prev_view = reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None)
+                .with_detail_scroll(2),
+            &events,
+            TuiInteraction::SelectPreviousView,
+        );
+        assert_eq!(prev_view.active_view(), TuiView::Attention);
+        assert_eq!(prev_view.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn detail_content_len_tracks_each_view_shape() {
+        let events = fabro_gate_events();
+
+        // Attention with a selected item: the item's rendered line count.
+        let attention =
+            build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None));
+        assert_eq!(
+            attention.detail().map(AttentionDetail::rendered_line_count),
+            Some(attention.detail_content_len())
+        );
+
+        // Attention with no items: a single placeholder line.
+        let empty = build_tui_model_for_state(&[], &TuiInteractionState::new(0, TuiOverlay::None));
+        assert_eq!(empty.detail(), None);
+        assert_eq!(empty.detail_content_len(), 1);
+
+        // A summary view: two lines per projection row.
+        let spec = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None),
+        );
+        assert_eq!(spec.detail_content_len(), spec.view_items().len() * 2);
+
+        // The Lanes view has no Detail pane.
+        let lanes = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+        );
+        assert_eq!(lanes.detail_content_len(), 0);
+    }
+
+    #[test]
+    fn attention_detail_rendered_line_count_counts_the_optional_actions_line() {
+        let timeline = vec![TimelineEntry::new(
+            "e0".to_owned(),
+            "l0".to_owned(),
+            "s".to_owned(),
+        )];
+        // Four fixed fields + the `Timeline:` header + one entry, no actions line.
+        let bare = AttentionDetail::new(
+            "repo".to_owned(),
+            "wi".to_owned(),
+            "run".to_owned(),
+            "attach".to_owned(),
+            timeline.clone(),
+            vec![],
+        );
+        assert_eq!(bare.rendered_line_count(), 4 + 1 + 1);
+
+        // An actions line adds exactly one.
+        let with_actions = AttentionDetail::new(
+            "repo".to_owned(),
+            "wi".to_owned(),
+            "run".to_owned(),
+            "attach".to_owned(),
+            timeline,
+            vec![OperatorAction::OpenFabroAttach],
+        );
+        assert_eq!(with_actions.rendered_line_count(), 4 + 1 + 1 + 1);
     }
 
     #[test]
@@ -4934,6 +5164,7 @@ mod tests {
             lane_focus: super::LaneFocus::Overview,
             selected_lane_index: None,
             focus: FocusPane::Nav,
+            detail_scroll: 0,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
@@ -5183,6 +5414,7 @@ mod tests {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: Some(0),
             focus: FocusPane::Nav,
+            detail_scroll: 0,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
