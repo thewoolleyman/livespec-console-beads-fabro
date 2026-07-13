@@ -117,7 +117,15 @@ fn run_terminal_loop(
     let mut effects = Vec::new();
     loop {
         let model = build_tui_model_for_state(events, &state);
-        terminal.draw(|frame| render_model(&model, frame.area(), frame.buffer_mut()))?;
+        // Measure the Detail pane's wrapped max scroll while drawing and feed it
+        // back into the state, so the next ScrollDetailDown clamps to the true
+        // wrapped bottom (the SAME count the scrollbar is sized from) rather than
+        // a width-agnostic logical line count (Finding G).
+        let mut detail_max_scroll = 0usize;
+        terminal.draw(|frame| {
+            detail_max_scroll = render_model(&model, frame.area(), frame.buffer_mut());
+        })?;
+        state = state.with_detail_max_scroll(detail_max_scroll);
         if !event::poll(Duration::from_millis(250))? {
             continue;
         }
@@ -600,10 +608,16 @@ pub fn render_to_text(model: &TuiScreenModel, width: u16, height: u16) -> TuiRen
     Ok(buffer_to_text(&buffer, area))
 }
 
-/// Return the render model value.
-pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+/// Render the whole screen.
+///
+/// Returns the Detail pane's maximum scroll offset — the wrapped-aware largest
+/// offset that keeps the pane's last row visible, or `0` for a view without a
+/// Detail pane — so the interactive loop can clamp the persisted scroll state to
+/// what actually fits, using the SAME wrapped line count the scrollbar is sized
+/// from.
+pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
     if area.is_empty() {
-        return;
+        return 0;
     }
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -614,9 +628,10 @@ pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         ])
         .split(area);
     render_header(model, vertical[0], buffer);
-    render_body(model, vertical[1], buffer);
+    let detail_max_scroll = render_body(model, vertical[1], buffer);
     render_footer(model, vertical[2], buffer);
     render_overlay(model, area, buffer);
+    detail_max_scroll
 }
 
 fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -629,7 +644,9 @@ fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+/// Render the body panes and return the Detail pane's maximum scroll offset
+/// (`0` for the Lanes view, which has no Detail pane).
+fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
     // The Lanes view spans the full body width beside the nav; the attention
     // and summary views keep the list/detail split.
     if model.active_view() == TuiView::Lanes {
@@ -639,7 +656,7 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
             .split(area);
         render_navigation(model, horizontal[0], buffer);
         render_lanes(model, horizontal[1], buffer);
-        return;
+        return 0;
     }
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
@@ -653,14 +670,13 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     let detail_focused = model.focus() == FocusPane::Detail;
     if model.active_view() == TuiView::Attention {
         render_attention(model, horizontal[1], buffer);
-        render_detail(
+        return render_detail(
             model.detail(),
             model.detail_scroll(),
             detail_focused,
             horizontal[2],
             buffer,
         );
-        return;
     }
     render_summary(model, horizontal[1], buffer);
     render_summary_detail(
@@ -669,7 +685,7 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         detail_focused,
         horizontal[2],
         buffer,
-    );
+    )
 }
 
 /// The number of top rank-ordered items the lane overview previews per lane.
@@ -1067,8 +1083,8 @@ fn render_summary_detail(
     focused: bool,
     area: Rect,
     buffer: &mut Buffer,
-) {
-    render_scrollable_detail(summary_detail_lines(items), scroll, focused, area, buffer);
+) -> usize {
+    render_scrollable_detail(summary_detail_lines(items), scroll, focused, area, buffer)
 }
 
 /// The Detail-pane lines for a summary view: a `title:` line plus its detail line
@@ -1095,12 +1111,12 @@ fn render_detail(
     focused: bool,
     area: Rect,
     buffer: &mut Buffer,
-) {
+) -> usize {
     let lines = detail.map_or_else(
         || vec![Line::from("No attention item selected")],
         detail_lines,
     );
-    render_scrollable_detail(lines, scroll, focused, area, buffer);
+    render_scrollable_detail(lines, scroll, focused, area, buffer)
 }
 
 /// Render the right Detail pane with vertical free-scroll: the given lines,
@@ -1109,13 +1125,19 @@ fn render_detail(
 /// pane. `scroll` is the topmost visible row. Wrapping is enabled, so the row
 /// count and clamp use the wrapped height at the pane's inner width, and the
 /// bottom of an overflowing detail becomes reachable by scrolling down.
+///
+/// Returns the pane's maximum scroll offset — the largest topmost-row offset at
+/// which the LAST wrapped row is still visible (`content_rows - viewport`) — so
+/// the caller can clamp the persisted scroll state to the SAME wrapped line
+/// count that sizes the scrollbar. This is what makes the scroll range and the
+/// scrollbar agree even when fields and timeline entries wrap.
 fn render_scrollable_detail(
     lines: Vec<Line<'static>>,
     scroll: usize,
     focused: bool,
     area: Rect,
     buffer: &mut Buffer,
-) {
+) -> usize {
     let title = focus_title("Detail", focused);
     let inner_width = area.width.saturating_sub(2);
     let viewport = usize::from(area.height.saturating_sub(2));
@@ -1124,12 +1146,14 @@ fn render_scrollable_detail(
     // measurement, so the count is pure content rows) to clamp the offset and
     // size the scrollbar exactly, even when a long line wraps.
     let content_rows = paragraph.line_count(inner_width);
-    let offset = scroll.min(content_rows.saturating_sub(viewport));
+    let max_scroll = content_rows.saturating_sub(viewport);
+    let offset = scroll.min(max_scroll);
     paragraph
         .block(Block::new().borders(Borders::ALL).title(title))
         .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
         .render(area, buffer);
     render_vertical_scrollbar(area, buffer, content_rows, offset);
+    max_scroll
 }
 
 fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
@@ -1187,7 +1211,7 @@ mod tests {
         ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneFocus, OperatorAction,
         OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
         TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state,
+        build_tui_model_for_state, reduce_tui_interaction,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1198,7 +1222,7 @@ mod tests {
         TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, action_outcome_effect,
         attention_item_line, buffer_to_text, detail_lines, key_event_to_terminal_input,
         render_command_modal, render_detail, render_model, render_summary_detail, render_to_text,
-        step_tui_runtime, summary_detail_lines,
+        step_tui_runtime,
     };
 
     #[test]
@@ -1372,7 +1396,8 @@ mod tests {
     #[test]
     fn right_clamps_at_content_on_the_lanes_view_without_a_detail_pane() {
         // The Lanes view spans the full body width with no Detail pane, so the
-        // rightmost focus step stops at Content, and detail_content_len is zero.
+        // rightmost focus step stops at Content (and render_body reports a zero
+        // detail max scroll).
         let events = lane_render_events();
         let content = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
             .with_focus(FocusPane::Content);
@@ -1451,15 +1476,95 @@ mod tests {
     }
 
     #[test]
-    fn detail_scroll_offset_clamps_at_the_last_line_and_saturates_at_the_top() {
-        let events = demo_events();
-        let state = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail);
-        let model = build_tui_model_for_state(&events, &state);
-        let max = model.detail_content_len().saturating_sub(1);
-        // The demo detail has multiple lines, so there is room to scroll.
-        assert!(max > 0);
+    fn detail_scroll_down_reaches_the_true_wrapped_bottom_and_the_scrollbar_agrees() {
+        // Finding G drift-guard: a detail whose fields and timeline entries WRAP
+        // at a narrow pane width renders far more rows than its logical line
+        // count. The scroll-down clamp must reach the true wrapped bottom — the
+        // SAME wrapped count the scrollbar is sized from — not the width-agnostic
+        // logical count, or the lower half of a long detail stays unreachable.
+        // This pins the render's measured max scroll and the reducer's reachable
+        // scroll to the ONE `Paragraph::line_count` measurement.
+        let timeline = (0..6)
+            .map(|index| {
+                TimelineEntry::new(
+                    format!(
+                        "evt:orchestrator:livespec-orchestrator-beads-fabro:bd-ib-ss7rkr:{index}:snapshot"
+                    ),
+                    format!("timeline entry {index} with a long wrapping description marker-{index}"),
+                    "orchestrator".to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let detail = AttentionDetail::new(
+            "livespec-orchestrator-beads-fabro".to_owned(),
+            "bd-ib-ss7rkr".to_owned(),
+            "fabro-run-5137117035853731187".to_owned(),
+            "fabro attach fabro-run-5137117035853731187".to_owned(),
+            timeline,
+            vec![],
+        );
+        // A ~49-col-inner Detail pane (51 wide) only 8 rows tall (viewport 6),
+        // mirroring the live 112x16 geometry where the bug reproduced. The
+        // wrapped rows far exceed the 11 logical lines (4 fields + `Timeline:` +
+        // 6 entries), so the logical clamp would strand the bottom.
+        let area = Rect::new(0, 0, 51, 8);
 
-        // Pressing down far past the end clamps the offset at the last line.
+        // Measure the wrapped max scroll the renderer clamps and sizes the
+        // scrollbar to; the interactive loop feeds this back into the state.
+        let mut probe = Buffer::empty(area);
+        let max_scroll = render_detail(Some(&detail), 0, true, area, &mut probe);
+        // The wrapped rows overflow well past the 11-line logical count (4 fields
+        // + `Timeline:` + 6 entries), so the old logical clamp would strand the
+        // bottom.
+        assert!(max_scroll > 10);
+
+        // Drive the reducer's ScrollDetailDown the way the loop does, with the
+        // render-measured max fed into the state.
+        let events: Vec<ConsoleEvent> = Vec::new();
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Detail)
+            .with_detail_max_scroll(max_scroll);
+        for _ in 0..(max_scroll + 5) {
+            state = reduce_tui_interaction(&state, &events, TuiInteraction::ScrollDetailDown);
+        }
+        // The scroll reaches EXACTLY the wrapped max — not a smaller logical count.
+        assert_eq!(state.detail_scroll(), max_scroll);
+
+        // The last wrapped line (the final timeline entry's tail) is below the
+        // fold at the top, and reachable once scrolled to the clamped bottom.
+        let mut top = Buffer::empty(area);
+        let _top_max = render_detail(Some(&detail), 0, true, area, &mut top);
+        assert!(!buffer_to_text(&top, area).contains("marker-5"));
+
+        let mut bottom = Buffer::empty(area);
+        let _bottom_max = render_detail(
+            Some(&detail),
+            state.detail_scroll(),
+            true,
+            area,
+            &mut bottom,
+        );
+        let bottom_text = buffer_to_text(&bottom, area);
+        // The last wrapped line (the final timeline entry's `marker-5` tail) is
+        // reachable at the clamped bottom.
+        assert!(bottom_text.contains("marker-5"));
+        // With the pane scrolled to its clamped max, the scrollbar thumb reaches
+        // the bottom of the track (an overflow thumb is drawn).
+        assert!(bottom_text.contains('\u{2588}'));
+    }
+
+    #[test]
+    fn detail_scroll_offset_clamps_at_the_render_measured_max_and_saturates_at_the_top() {
+        let events = demo_events();
+        // The renderer measures the Detail pane's wrapped max scroll and the loop
+        // feeds it into the state; a Down keypress on the focused Detail pane
+        // clamps to exactly that offset (not a width-agnostic logical count).
+        let max = 7;
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Detail)
+            .with_detail_max_scroll(max);
+
+        // Pressing down far past the end clamps the offset at the render-measured max.
         let mut scrolled = state;
         for _ in 0..(max + 5) {
             scrolled = press(&scrolled, &events, KeyCode::Down);
@@ -1498,50 +1603,6 @@ mod tests {
         );
         assert_eq!(up.selected_attention_index(), 0);
         assert_eq!(up.detail_scroll(), 0);
-    }
-
-    #[test]
-    fn detail_content_len_reflects_each_view_shape() {
-        // Attention with a selected item: the item's rendered line count, kept in
-        // lock-step with what the renderer draws.
-        let attention = build_tui_model_for_state(
-            &demo_events(),
-            &TuiInteractionState::new(0, TuiOverlay::None),
-        );
-        assert_eq!(
-            attention.detail().map(AttentionDetail::rendered_line_count),
-            Some(attention.detail_content_len())
-        );
-        assert_eq!(
-            attention.detail().map(|detail| detail_lines(detail).len()),
-            Some(attention.detail_content_len())
-        );
-
-        // Attention with no items: the single "no item selected" line.
-        let empty = build_tui_model_for_state(&[], &TuiInteractionState::new(0, TuiOverlay::None));
-        assert_eq!(empty.detail(), None);
-        assert_eq!(empty.detail_content_len(), 1);
-
-        // A summary view: two lines per projection row, matching the renderer.
-        let events_view = build_tui_model_for_state(
-            &factory_events(),
-            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
-        );
-        assert_eq!(
-            events_view.detail_content_len(),
-            events_view.view_items().len() * 2
-        );
-        assert_eq!(
-            summary_detail_lines(events_view.view_items()).len(),
-            events_view.detail_content_len()
-        );
-
-        // The Lanes view has no Detail pane.
-        let lanes = build_tui_model_for_state(
-            &lane_render_events(),
-            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
-        );
-        assert_eq!(lanes.detail_content_len(), 0);
     }
 
     #[test]
@@ -2385,9 +2446,10 @@ mod tests {
         );
 
         let lines = detail_lines(&detail);
-        // The rendered line count includes the actions line, matching the count
-        // the scroll clamp derives (guards drift between the two).
-        assert_eq!(lines.len(), detail.rendered_line_count());
+        // The detail lines carry the optional actions line between the fixed
+        // fields and the `Timeline:` header (the four fields + actions + header =
+        // six logical lines here, before any wrapping).
+        assert_eq!(lines.len(), 6);
         let rendered = lines
             .into_iter()
             .map(|line| line.to_string())
