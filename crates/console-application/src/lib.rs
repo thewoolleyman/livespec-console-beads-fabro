@@ -817,6 +817,32 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Compose the header to fit `width` display columns without ever truncating
+    /// mid-field.
+    ///
+    /// A pinned small terminal (the dogfood target is 112 columns) cannot hold
+    /// every header field at once, so this degrades gracefully rather than
+    /// letting a wide field clip the ones after it: it elides the source-health
+    /// segment's names (to `+N more`, then to a bare count) and drops the
+    /// low-value constant fields (`mode: tui`, then `fleet: livespec`), before it
+    /// ever drops a lower-value field (`view` — already shown highlighted in the
+    /// nav pane — then the `attention` count). The `repo` and `autonomous` fields
+    /// are never dropped, and — while any
+    /// source is unavailable — the source COUNT is never dropped, so the header
+    /// always keeps the cockpit-blind-vs-idle tell. At a width wide enough for
+    /// everything this returns the same content as [`header`](Self::header).
+    pub fn header_line(&self, width: usize) -> String {
+        fit_header_line(
+            header_repo_label(&self.selected_repo),
+            autonomous_mode_header_label(self.autonomous_mode_enabled),
+            self.active_view.label(),
+            self.attention_items.len(),
+            &self.unavailable_sources,
+            width,
+        )
+    }
+
+    #[must_use]
     /// Return the footer value.
     pub fn footer(&self) -> &str {
         &self.footer
@@ -1579,13 +1605,18 @@ pub fn build_tui_model_for_state(
         overlay,
         selected_repo: state.selected_repo().to_owned(),
         autonomous_mode_enabled: state.autonomous_mode_enabled(),
+        // The canonical, untruncated header. The source-health segment sits LAST
+        // (after attention) so that when a narrow terminal cannot hold every
+        // field, `header_line` degrades from the right — dropping the low-value
+        // constants and eliding source names — while the operationally-important
+        // repo / autonomous / view / attention fields survive. See `header_line`.
         header: format!(
-            "fleet: livespec | mode: tui{} | repo: {} | autonomous: {} | view: {} | attention: {}",
-            source_health_header_segment(&unavailable_sources),
+            "fleet: livespec | mode: tui | repo: {} | autonomous: {} | view: {} | attention: {}{}",
             header_repo_label(state.selected_repo()),
             autonomous_mode_header_label(state.autonomous_mode_enabled()),
             active_view.label(),
-            attention_snapshots.len()
+            attention_snapshots.len(),
+            source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
         footer: "shortcuts: up/down move focused pane (views | content) | enter dive in | esc back | left/right prev/next view | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
@@ -1640,6 +1671,119 @@ fn source_health_header_segment(unavailable_sources: &[String]) -> String {
             unavailable_sources.join(", ")
         )
     }
+}
+
+/// The source-health segment's degradation forms, widest first, for the header
+/// fitter: full names, then the first name plus a `+N more` overflow marker,
+/// then a bare count. Each is a whole, never-mid-truncated string carrying its
+/// own leading ` | `; empty when every source was observed. The bare-count form
+/// is always present while any source is unavailable, so the fitter can always
+/// keep the cockpit-blind-vs-idle tell (how many sources are down) even when the
+/// names cannot fit.
+fn source_health_segment_forms(unavailable_sources: &[String]) -> Vec<String> {
+    if unavailable_sources.is_empty() {
+        return Vec::new();
+    }
+    let count = unavailable_sources.len();
+    let mut forms = vec![format!(
+        " | sources: {count} unavailable ({})",
+        unavailable_sources.join(", ")
+    )];
+    // The `+N more` form only makes sense once at least one name is elided.
+    if count >= 2 {
+        forms.push(format!(
+            " | sources: {count} unavailable ({}, +{} more)",
+            unavailable_sources[0],
+            count - 1
+        ));
+    }
+    forms.push(format!(" | sources: {count} unavailable"));
+    forms
+}
+
+/// The display width of a header line in terminal columns. The header is ASCII
+/// (field labels, repo ids, source names), so a char count is its column width.
+fn header_display_width(line: &str) -> usize {
+    line.chars().count()
+}
+
+/// One shrink step for the header fitter: drop the field at the given index, or
+/// step the source-health segment down to its next-narrower form.
+enum Shrink {
+    DropField(usize),
+    DegradeSource,
+}
+
+/// Compose the width-fitted header. See [`TuiScreenModel::header_line`] for the
+/// degradation contract. This is the pure core: it composes the atomic fields in
+/// a fixed display order and, while the line is over `width`, applies the shrink
+/// plan one step at a time — eliding source names, then dropping the constant
+/// `mode`/`fleet` fields, then the lower-value `view`/`attention` fields —
+/// re-measuring after each step and stopping as soon as it fits. `repo` and
+/// `autonomous` are never dropped.
+fn fit_header_line(
+    repo: &str,
+    autonomous: &str,
+    view: &str,
+    attention: usize,
+    unavailable_sources: &[String],
+    width: usize,
+) -> String {
+    // Fixed display order; `Some` = present, `None` = dropped to make room. Each
+    // field is atomic — kept or dropped whole, never mid-truncated.
+    let mut fields: [Option<String>; 6] = [
+        Some("fleet: livespec".to_owned()),        // 0 — constant identity
+        Some("mode: tui".to_owned()),              // 1 — constant
+        Some(format!("repo: {repo}")),             // 2 — never dropped
+        Some(format!("autonomous: {autonomous}")), // 3 — never dropped
+        Some(format!("view: {view}")),             // 4
+        Some(format!("attention: {attention}")),   // 5
+    ];
+    let source_forms = source_health_segment_forms(unavailable_sources);
+    let mut source_idx = 0usize; // 0 = widest (full names)
+
+    let compose = |fields: &[Option<String>; 6], source_idx: usize| -> String {
+        let mut line = fields
+            .iter()
+            .filter_map(|field| field.as_deref())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        if let Some(source) = source_forms.get(source_idx) {
+            line.push_str(source);
+        }
+        line
+    };
+
+    // One shrink op per over-budget step, least valuable first. The constant
+    // fields are dropped before the source names are elided; the source COUNT
+    // outlives `view`/`attention` because those drops come last. `view` goes
+    // before `attention` because the active view is already shown, highlighted,
+    // in the nav pane, whereas the attention count appears nowhere else.
+    let plan = [
+        Shrink::DropField(1),  // mode: tui
+        Shrink::DropField(0),  // fleet: livespec
+        Shrink::DegradeSource, // full names -> +N more
+        Shrink::DegradeSource, // +N more -> count only
+        Shrink::DropField(4),  // view (already shown, highlighted, in the nav pane)
+        Shrink::DropField(5),  // attention count
+    ];
+
+    let mut line = compose(&fields, source_idx);
+    for op in &plan {
+        if header_display_width(&line) <= width {
+            break;
+        }
+        match *op {
+            Shrink::DropField(index) => fields[index] = None,
+            Shrink::DegradeSource => {
+                if source_idx + 1 < source_forms.len() {
+                    source_idx += 1;
+                }
+            }
+        }
+        line = compose(&fields, source_idx);
+    }
+    line
 }
 
 #[must_use]
@@ -7088,6 +7232,106 @@ mod tests {
         assert!(idle.unavailable_sources().is_empty());
         assert!(!idle.header().contains("unavailable"));
         assert!(!idle.header().contains("sources:"));
+    }
+
+    /// A model whose selected repo is `repo` and whose header reports each name
+    /// in `sources` as a not-observed (unavailable) backing source this cycle.
+    fn blind_model(repo: &str, sources: &[&str]) -> TuiScreenModel {
+        let events: Vec<ConsoleEvent> = sources
+            .iter()
+            .map(|&source| {
+                ConsoleEvent::fixture(
+                    &format!("evt_{source}_not_observed"),
+                    EventType::SourceNotObservedFindingObserved,
+                    source,
+                )
+            })
+            .collect();
+        let state =
+            TuiInteractionState::new(0, TuiOverlay::None).with_selected_repo(repo.to_owned());
+        build_tui_model_for_state(&events, &state)
+    }
+
+    #[test]
+    fn header_line_fits_the_pinned_width_and_preserves_the_priority_fields() {
+        // The dogfood target is a 112-column terminal (inner width 110 inside the
+        // header block's borders) with several sources down. The header MUST fit
+        // and keep the operationally-important fields plus the cockpit-blind tell
+        // (the source count), degrading only the constant fields and the names.
+        let model = blind_model(
+            CONFIRM_REPO,
+            &["dispatcher", "fabro", "github", "livespec", "orchestrator"],
+        );
+        let line = model.header_line(110);
+        assert!(line.chars().count() <= 110);
+        assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
+        assert!(line.contains("autonomous: off"));
+        assert!(line.contains("view: Attention"));
+        assert!(line.contains("attention: 0"));
+        // The count survives even when the names cannot: how-many is the tell.
+        assert!(line.contains("sources: 5 unavailable"));
+    }
+
+    #[test]
+    fn header_line_matches_the_canonical_header_when_wide() {
+        // Given room to spare, the fitted header is the full canonical header --
+        // every field and every source name, nothing dropped.
+        let model = blind_model("-", &["fabro", "github"]);
+        let line = model.header_line(300);
+        assert_eq!(line, model.header());
+        assert!(line.contains("sources: 2 unavailable (fabro, github)"));
+    }
+
+    #[test]
+    fn header_line_elides_source_names_before_dropping_priority_fields() {
+        // At an intermediate width the names abbreviate to a `+N more` marker
+        // while the priority fields stay whole -- never a mid-field truncation.
+        let model = blind_model(CONFIRM_REPO, &["alpha", "bravo", "charlie"]);
+        let line = model.header_line(130);
+        assert!(line.chars().count() <= 130);
+        assert!(line.contains("+2 more"));
+        assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
+        assert!(line.contains("attention: 0"));
+    }
+
+    #[test]
+    fn header_line_never_drops_the_source_count_repo_or_autonomous() {
+        // Even on an absurdly narrow terminal (below the target), the header keeps
+        // the source count (the blind-vs-idle tell) and the repo / autonomous
+        // fields; only lower-value fields and the source names are shed.
+        let model = blind_model(CONFIRM_REPO, &["fabro", "github", "orchestrator"]);
+        let line = model.header_line(60);
+        assert!(line.contains("sources: 3 unavailable"));
+        assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
+        assert!(line.contains("autonomous: off"));
+    }
+
+    #[test]
+    fn header_line_carries_no_source_segment_when_every_source_is_observed() {
+        // A healthy cycle never grows a phantom source segment, at any width.
+        let model = build_tui_model(&[], 0);
+        for width in [40_usize, 80, 110, 300] {
+            let line = model.header_line(width);
+            assert!(!line.contains("unavailable"));
+            assert!(!line.contains("sources:"));
+        }
+        assert!(model.header_line(300).contains("repo: -"));
+        assert!(model.header_line(300).contains("autonomous: off"));
+    }
+
+    #[test]
+    fn header_line_names_the_single_unavailable_source_without_a_more_marker() {
+        // A single unavailable source has no name to elide, so there is no
+        // `+N more` abbreviation tier: the header shows the one name, then only
+        // the bare count degrades under width pressure.
+        let model = blind_model("-", &["orchestrator"]);
+        let wide = model.header_line(300);
+        assert!(wide.contains("sources: 1 unavailable (orchestrator)"));
+        assert!(!wide.contains("more"));
+        // Under width pressure the lone-name form collapses straight to the count.
+        let narrow = model.header_line(40);
+        assert!(narrow.contains("sources: 1 unavailable"));
+        assert!(!narrow.contains("(orchestrator)"));
     }
 
     #[test]
