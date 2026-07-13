@@ -445,6 +445,7 @@ pub struct TuiInteractionState {
     selected_lane_index: usize,
     focus: FocusPane,
     detail_scroll: usize,
+    detail_max_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
     autonomous_mode_enabled: bool,
@@ -461,6 +462,7 @@ impl TuiInteractionState {
             selected_lane_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
+            detail_max_scroll: 0,
             overlay,
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
@@ -481,6 +483,7 @@ impl TuiInteractionState {
             selected_lane_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
+            detail_max_scroll: 0,
             overlay,
             selected_repo: String::new(),
             autonomous_mode_enabled: false,
@@ -508,6 +511,19 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn with_detail_scroll(mut self, detail_scroll: usize) -> Self {
         self.detail_scroll = detail_scroll;
+        self
+    }
+
+    /// Replace the Detail pane's maximum scroll offset — the largest topmost-row
+    /// offset at which the pane's LAST wrapped row is still visible — preserving
+    /// every other field. The renderer measures it from the wrapped line count at
+    /// the pane's inner width (`Paragraph::line_count`, the same count that sizes
+    /// the scrollbar) and the interactive loop feeds it back each frame, so the
+    /// scroll-down clamp reaches the true wrapped bottom rather than a
+    /// width-agnostic logical line count that under-counts wrapped rows.
+    #[must_use]
+    pub const fn with_detail_max_scroll(mut self, detail_max_scroll: usize) -> Self {
+        self.detail_max_scroll = detail_max_scroll;
         self
     }
 
@@ -573,6 +589,15 @@ impl TuiInteractionState {
     /// Return the Detail pane's scroll offset (the topmost visible detail line).
     pub const fn detail_scroll(&self) -> usize {
         self.detail_scroll
+    }
+
+    #[must_use]
+    /// Return the Detail pane's maximum scroll offset as measured by the last
+    /// render (see `with_detail_max_scroll`). The scroll-down reducer clamps to
+    /// this so the scroll range and the scrollbar are derived from the SAME
+    /// wrapped line count.
+    pub const fn detail_max_scroll(&self) -> usize {
+        self.detail_max_scroll
     }
 
     #[must_use]
@@ -718,17 +743,6 @@ impl AttentionDetail {
     pub fn actions(&self) -> &[OperatorAction] {
         &self.actions
     }
-
-    #[must_use]
-    /// The number of logical lines the Detail pane renders for this item: the
-    /// four fixed fields (repo, work item, fabro run, attach), an optional
-    /// actions line, the `Timeline:` header, and one line per timeline entry.
-    /// The TUI renderer is held to this count by a drift-guard test so the
-    /// scroll clamp stays in lock-step with what is drawn.
-    pub fn rendered_line_count(&self) -> usize {
-        let actions_line = usize::from(!self.actions.is_empty());
-        4 + actions_line + 1 + self.timeline.len()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,24 +838,6 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn detail_scroll(&self) -> usize {
         self.detail_scroll
-    }
-
-    /// The number of logical lines the current view's Detail pane renders, used
-    /// to clamp the scroll offset so `down` cannot run off the end. The Attention
-    /// view derives it from the selected item's detail (or the single "no item"
-    /// line); the summary views (Spec / Events / Repos) render two lines per
-    /// projection row (each such view always projects at least one row); the
-    /// Lanes view has no Detail pane, so its count is zero.
-    #[must_use]
-    pub fn detail_content_len(&self) -> usize {
-        match self.active_view {
-            TuiView::Lanes => 0,
-            TuiView::Attention => self
-                .detail
-                .as_ref()
-                .map_or(1, AttentionDetail::rendered_line_count),
-            TuiView::Spec | TuiView::Events | TuiView::Repos => self.view_items.len() * 2,
-        }
     }
 
     #[must_use]
@@ -1917,10 +1913,15 @@ pub fn reduce_tui_interaction(
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
         TuiInteraction::FocusDetail => state.clone().with_focus(FocusPane::Detail),
         TuiInteraction::ScrollDetailDown => {
-            let max_offset = model.detail_content_len().saturating_sub(1);
+            // Clamp to the render-measured wrapped max scroll (the largest offset
+            // that keeps the pane's last wrapped row visible), NOT a width-agnostic
+            // logical line count. The renderer measures it via `Paragraph::line_count`
+            // — the SAME count that sizes the scrollbar — and the interactive loop
+            // feeds it back into the state, so the scroll range and the scrollbar
+            // agree and the true bottom of a wrapping detail is reachable (Finding G).
             state
                 .clone()
-                .with_detail_scroll((state.detail_scroll() + 1).min(max_offset))
+                .with_detail_scroll((state.detail_scroll() + 1).min(state.detail_max_scroll()))
         }
         TuiInteraction::ScrollDetailUp => state
             .clone()
@@ -4179,17 +4180,17 @@ mod tests {
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         JournalAutonomousDecisionsPort, LaneFocus, LivespecJsoncArmingPort, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-        autonomous_mode_confirmation_matches, build_tui_model, build_tui_model_for_state,
-        handle_config_autonomous_mode_set_command, handle_factory_drain_command,
-        handle_work_item_accept_command, handle_work_item_approve_command,
-        handle_work_item_reject_command, handle_work_item_set_acceptance_command,
-        handle_work_item_set_admission_command, project_attention, project_lane_board,
-        read_autonomous_mode_from_jsonc, reduce_tui_interaction, resolve_autonomous_mode_disable,
-        resolve_autonomous_mode_enable, resolve_command_palette_action,
-        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, set_autonomous_mode_in_jsonc, validate_operator_action,
+        OrchestratorActionRequest, PendingValve, RejectMode, TuiInteraction, TuiInteractionState,
+        TuiOverlay, TuiScreenModel, TuiView, autonomous_mode_confirmation_matches, build_tui_model,
+        build_tui_model_for_state, handle_config_autonomous_mode_set_command,
+        handle_factory_drain_command, handle_work_item_accept_command,
+        handle_work_item_approve_command, handle_work_item_reject_command,
+        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+        project_attention, project_lane_board, read_autonomous_mode_from_jsonc,
+        reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
+        resolve_command_palette_action, resolve_selected_operator_action, resolve_valve_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload,
+        set_autonomous_mode_in_jsonc, validate_operator_action,
     };
 
     #[test]
@@ -5012,14 +5013,17 @@ mod tests {
     #[test]
     fn tui_interaction_scrolls_the_detail_pane_and_clamps() {
         let events = fabro_gate_events();
-        let state = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail);
-        let model = build_tui_model_for_state(&events, &state);
-        // The selected item's detail has multiple lines, so there is headroom.
-        let max = model.detail_content_len().saturating_sub(1);
-        assert!(max > 0);
+        // The renderer measures the Detail pane's wrapped max scroll and the loop
+        // feeds it into the state; ScrollDetailDown clamps to exactly that offset
+        // (the same wrapped count that sizes the scrollbar), so the true bottom of
+        // a wrapping detail is reachable.
+        let max = 5;
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Detail)
+            .with_detail_max_scroll(max);
 
-        // Scrolling down past the end clamps the offset at the last line, and the
-        // model reflects the clamped offset.
+        // Scrolling down past the end clamps the offset at the render-measured max,
+        // and the model reflects the clamped offset.
         let mut scrolled = state;
         for _ in 0..(max + 3) {
             scrolled = reduce_tui_interaction(&scrolled, &events, TuiInteraction::ScrollDetailDown);
@@ -5078,68 +5082,6 @@ mod tests {
         );
         assert_eq!(prev_view.active_view(), TuiView::Attention);
         assert_eq!(prev_view.detail_scroll(), 0);
-    }
-
-    #[test]
-    fn detail_content_len_tracks_each_view_shape() {
-        let events = fabro_gate_events();
-
-        // Attention with a selected item: the item's rendered line count.
-        let attention =
-            build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None));
-        assert_eq!(
-            attention.detail().map(AttentionDetail::rendered_line_count),
-            Some(attention.detail_content_len())
-        );
-
-        // Attention with no items: a single placeholder line.
-        let empty = build_tui_model_for_state(&[], &TuiInteractionState::new(0, TuiOverlay::None));
-        assert_eq!(empty.detail(), None);
-        assert_eq!(empty.detail_content_len(), 1);
-
-        // A summary view: two lines per projection row.
-        let spec = build_tui_model_for_state(
-            &events,
-            &TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None),
-        );
-        assert_eq!(spec.detail_content_len(), spec.view_items().len() * 2);
-
-        // The Lanes view has no Detail pane.
-        let lanes = build_tui_model_for_state(
-            &events,
-            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
-        );
-        assert_eq!(lanes.detail_content_len(), 0);
-    }
-
-    #[test]
-    fn attention_detail_rendered_line_count_counts_the_optional_actions_line() {
-        let timeline = vec![TimelineEntry::new(
-            "e0".to_owned(),
-            "l0".to_owned(),
-            "s".to_owned(),
-        )];
-        // Four fixed fields + the `Timeline:` header + one entry, no actions line.
-        let bare = AttentionDetail::new(
-            "repo".to_owned(),
-            "wi".to_owned(),
-            "run".to_owned(),
-            "attach".to_owned(),
-            timeline.clone(),
-            vec![],
-        );
-        assert_eq!(bare.rendered_line_count(), 4 + 1 + 1);
-
-        // An actions line adds exactly one.
-        let with_actions = AttentionDetail::new(
-            "repo".to_owned(),
-            "wi".to_owned(),
-            "run".to_owned(),
-            "attach".to_owned(),
-            timeline,
-            vec![OperatorAction::OpenFabroAttach],
-        );
-        assert_eq!(with_actions.rendered_line_count(), 4 + 1 + 1 + 1);
     }
 
     #[test]
