@@ -110,13 +110,13 @@ fn run_store_backed_command(
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let livespec_jsonc_path = livespec_jsonc_path();
+    let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
         resolution.programs().dispatcher(),
-        &["loop"],
+        &["loop", "--repo", repo_path.as_str()],
         &livespec_jsonc_path,
     );
-    let repo_path = resolution.drive_repo_arg();
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
@@ -160,13 +160,13 @@ fn run_interactive_store_tui() -> Result<(), String> {
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let livespec_jsonc_path = livespec_jsonc_path();
+    let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
         resolution.programs().dispatcher(),
-        &["loop"],
+        &["loop", "--repo", repo_path.as_str()],
         &livespec_jsonc_path,
     );
-    let repo_path = resolution.drive_repo_arg();
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
