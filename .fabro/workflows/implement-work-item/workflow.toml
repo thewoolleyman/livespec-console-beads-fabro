@@ -101,24 +101,23 @@ id = "livespec-ci"
 provider = "docker"
 
 [environments.livespec-ci.image]
-# GHCR-published family sandbox image (mise + uv + just + lefthook +
-# node/ACP adapter + gh; Dockerfile in livespec-dev-tooling). Published
-# by dev-tooling PR #111 (2026-06-12) to
-# ghcr.io/thewoolleyman/livespec-fabro-sandbox. Tag format:
-#   sha-<short>  — per master-build (mutable; tracks HEAD)
-#   v<X.Y.Z>     — per release tag (immutable)
+# GHCR-published family sandbox image (Dockerfile in livespec-dev-tooling).
+# Since the layered-image split this consumer pulls the `python-rust` layer
+# (base tools + uv + CPython + the Rust toolchain baked once — channel 1.92.0
+# + clippy + rustfmt, mirroring rust-toolchain.toml), so no per-run `rustup`
+# install is needed. Tag format:
+#   python-rust-sha-<short>  — per master-build (mutable; tracks HEAD)
+#   python-rust-v<X.Y.Z>     — per release tag (immutable)
 #
-# CURRENT PIN: sha-ea684ad (dev-tooling master as of 2026-06-12).
-# Bump to v0.13.0 once the dev-tooling v0.13.0 release tag publishes
-# (work-item livespec-impl-beads-873; dev-tooling p60 release pending).
-#
-# PIN SURFACE NOTE: this image reference is a manual pin. The v013
-# pin_autodiscovery formats (.livespec.jsonc compat.pinned,
-# pyproject.toml [tool.uv.sources], .vendor.jsonc, .copier-answers.yml,
-# .github/workflows uses: refs) do not cover workflow.toml docker images,
-# so bumps must be applied here manually. The producer-side lockstep gate
-# (livespec_dev_tooling.fabro_image_pin_lockstep) guards the Dockerfile
-# ARG pins in livespec-dev-tooling and does not run in consumer repos.
+# PIN SURFACE NOTE: this docker image tag is covered by the shared `bump-pin`
+# autodiscovery — livespec-dev-tooling (>= v0.40.0) ships a
+# `fabro_sandbox_docker_image` pin format, so the release fan-out rewrites the
+# `docker = "...:python-rust-vX.Y.Z"` tag below in lockstep with the
+# livespec-dev-tooling pin — preserving the `python-rust-` layer prefix and
+# rewriting only the `vX.Y.Z` version (livespec-dev-tooling #358). No repo-local
+# consistency check is needed; the producer-side lockstep gate
+# (livespec_dev_tooling.fabro_image_pin_lockstep) guards the Dockerfile ARG pins
+# in livespec-dev-tooling and does not run in consumer repos.
 #
 # HOST-LOCAL STEP: if ~/.fabro/environments/livespec-ci.toml exists on
 # a developer's machine (the pre-p60 local-image fallback), update its
@@ -127,7 +126,7 @@ provider = "docker"
 # only `provider = "docker"` + `[image] docker = "..."` — never an
 # `[env]` table (the Dispatcher's per-dispatch overlay owns that block;
 # TOML forbids duplicate table declarations).
-docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:v0.43.1"
+docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.43.1"
 
 [environments.livespec-ci.resources]
 cpu = 4
@@ -185,12 +184,6 @@ script = "git fetch --unshallow --quiet"
 
 [[run.prepare.steps]]
 script = "mise trust && mise install --quiet"
-
-[[run.prepare.steps]]
-# Console is a Rust workspace; rustup (rust-toolchain.toml pins 1.92.0 + clippy/rustfmt)
-# is not in the fleet uv/Python sandbox image. Provision it so `just check` and the
-# lefthook checkpoint hooks find cargo at ~/.cargo/bin (already on the mise PATH via .mise.toml _.path).
-script = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0 --profile minimal --component clippy,rustfmt"
 
 [[run.prepare.steps]]
 script = "uv sync --all-groups"
