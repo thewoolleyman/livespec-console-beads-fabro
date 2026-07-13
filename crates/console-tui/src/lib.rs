@@ -29,10 +29,13 @@ use console_application::{
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, StatefulWidget, Widget, Wrap,
+};
 
 #[cfg(all(not(test), not(coverage)))]
 use std::io;
@@ -588,7 +591,11 @@ pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
-    Paragraph::new(model.header())
+    // Fit the header to the space inside the block's left/right borders so a
+    // narrow terminal degrades the header gracefully (see `header_line`) rather
+    // than letting a long field clip the ones after it.
+    let inner_width = usize::from(area.width.saturating_sub(2));
+    Paragraph::new(model.header_line(inner_width))
         .block(Block::new().borders(Borders::ALL).title("LiveSpec Console"))
         .render(area, buffer);
 }
@@ -637,7 +644,11 @@ fn render_lanes(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
 /// rank-ordered items, the selected lane highlighted.
 fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     let selected = model.selected_lane_index();
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    // Build one list row per rendered line (a lane header, then its preview
+    // rows). Tracking the selected lane's header row lets a stateful list scroll
+    // it into view, so selecting a lane below the fold never leaves it invisible.
+    let mut items: Vec<ListItem<'static>> = Vec::new();
+    let mut selected_line: Option<usize> = None;
     for (index, column) in model.lane_board().columns().iter().enumerate() {
         let is_selected = Some(index) == selected;
         let marker = if is_selected { ">" } else { " " };
@@ -646,19 +657,25 @@ fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer)
             column.lane().label(),
             column.count()
         ));
-        lines.push(if is_selected {
-            header.style(Style::new().add_modifier(Modifier::BOLD))
+        if is_selected {
+            selected_line = Some(items.len());
+            items.push(ListItem::new(
+                header.style(Style::new().add_modifier(Modifier::BOLD)),
+            ));
         } else {
-            header
-        });
+            items.push(ListItem::new(header));
+        }
         for item in column.items().iter().take(LANE_OVERVIEW_PREVIEW) {
-            lines.push(Line::from(lane_item_summary(item)));
+            items.push(ListItem::new(Line::from(lane_item_summary(item))));
         }
     }
+    let count = items.len();
     let title = focus_title("Lanes", content_focused(model));
-    Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title(title))
-        .render(area, buffer);
+    let list = List::new(items).block(Block::new().borders(Borders::ALL).title(title));
+    let mut list_state = ListState::default();
+    list_state.select(selected_line);
+    StatefulWidget::render(list, area, buffer, &mut list_state);
+    render_vertical_scrollbar(area, buffer, count, list_state.offset());
 }
 
 /// A single drilled-in lane: its full rank-ordered item list, full width.
@@ -853,9 +870,11 @@ fn render_command_modal(
         .iter()
         .enumerate()
         .map(|(index, action)| action_item_line(index, *action, selected_action_index));
-    List::new(items)
-        .block(Block::new().borders(Borders::ALL).title("Command Modal"))
-        .render(area, buffer);
+    Widget::render(
+        List::new(items).block(Block::new().borders(Borders::ALL).title("Command Modal")),
+        area,
+        buffer,
+    );
 }
 
 fn action_item_line(
@@ -913,9 +932,11 @@ fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         ListItem::new(label)
     });
     let title = focus_title("Views", model.focus() == FocusPane::Nav);
-    List::new(items)
-        .block(Block::new().borders(Borders::ALL).title(title))
-        .render(area, buffer);
+    Widget::render(
+        List::new(items).block(Block::new().borders(Borders::ALL).title(title)),
+        area,
+        buffer,
+    );
 }
 
 fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -925,10 +946,41 @@ fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .enumerate()
         .map(|(index, item)| attention_item_line(model, index, item))
         .collect::<Vec<_>>();
+    let count = items.len();
     let title = focus_title("Attention", content_focused(model));
-    List::new(items)
-        .block(Block::new().borders(Borders::ALL).title(title))
-        .render(area, buffer);
+    let list = List::new(items).block(Block::new().borders(Borders::ALL).title(title));
+    // Render the list statefully so it scrolls to keep the selected row visible:
+    // without a stateful list an off-screen selection is invisible on a small
+    // terminal (the list would render from the top and never follow the cursor).
+    let mut list_state = ListState::default();
+    list_state.select(model.selected_attention_index());
+    StatefulWidget::render(list, area, buffer, &mut list_state);
+    render_vertical_scrollbar(area, buffer, count, list_state.offset());
+}
+
+/// Draw a vertical scrollbar on the right border of `area` when `content_len`
+/// exceeds the rows visible inside the block, so the operator can tell there is
+/// more content than fits and roughly where the viewport sits. `position` is the
+/// index of the topmost visible row. A no-op when everything fits, so panes that
+/// do not overflow render exactly as before (no stray scrollbar glyphs).
+fn render_vertical_scrollbar(area: Rect, buffer: &mut Buffer, content_len: usize, position: usize) {
+    let viewport = usize::from(area.height.saturating_sub(2));
+    if viewport == 0 || content_len <= viewport {
+        return;
+    }
+    let mut scrollbar_state = ScrollbarState::new(content_len).position(position);
+    let track = area.inner(Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
+    StatefulWidget::render(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None),
+        track,
+        buffer,
+        &mut scrollbar_state,
+    );
 }
 
 fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -937,9 +989,11 @@ fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .iter()
         .map(|item| ListItem::new(format!("  {}", item.title())));
     let title = focus_title(model.active_view().label(), content_focused(model));
-    List::new(items)
-        .block(Block::new().borders(Borders::ALL).title(title))
-        .render(area, buffer);
+    Widget::render(
+        List::new(items).block(Block::new().borders(Borders::ALL).title(title)),
+        area,
+        buffer,
+    );
 }
 
 fn attention_item_line(
@@ -1594,19 +1648,29 @@ mod tests {
                 "fabro",
             ),
         ];
-        // The header counts the unavailable sources and names which ones, so a
-        // cockpit-blind screen surfaces its blindness instead of a bare count.
         let blind = build_tui_model(&blind_events, 0);
-        let blind_output = render_to_text(&blind, 96, 24);
+
+        // Narrow (the pinned small terminal): the header degrades gracefully but
+        // the source COUNT — the cockpit-blind-vs-idle tell — always survives, so
+        // a blind screen is never mistaken for an idle factory even when the names
+        // cannot fit (see `header_line`).
+        let narrow = render_to_text(&blind, 96, 24);
         assert_eq!(
-            blind_output
+            narrow
                 .as_ref()
                 .map(|rendered| rendered.contains("sources: 3 unavailable")),
             Ok(true)
         );
+
+        // Wide: with room to spare the header names which sources are down.
+        let wide = render_to_text(&blind, 160, 24);
         assert_eq!(
-            blind_output
-                .as_ref()
+            wide.as_ref()
+                .map(|rendered| rendered.contains("sources: 3 unavailable")),
+            Ok(true)
+        );
+        assert_eq!(
+            wide.as_ref()
                 .map(|rendered| rendered.contains("fabro, github, orchestrator")),
             Ok(true)
         );
@@ -1620,6 +1684,96 @@ mod tests {
             idle_output
                 .as_ref()
                 .map(|rendered| rendered.contains("unavailable")),
+            Ok(false)
+        );
+    }
+
+    /// `count` blocked/needs-human work-items, each with a distinct id ranked in
+    /// order, so they project into `count` attention rows for the scroll tests.
+    fn blocked_attention_events(count: usize) -> Vec<ConsoleEvent> {
+        (0..count)
+            .map(|index| {
+                lane_event(
+                    &format!("evt_block_{index:03}"),
+                    &format!("console-block-{index:03}"),
+                    Lane::Blocked,
+                    Some(LaneReason::NeedsHuman),
+                    &format!("a{index:03}"),
+                    "blocked",
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_scrolls_the_attention_list_to_keep_an_off_screen_selection_visible() {
+        // A long attention list on the pinned small terminal (112x28): the
+        // selected row sits far below the fold. A stateless, top-anchored list
+        // would render only the first rows and never the selection, so its
+        // `>`-marked row would be absent; scroll-to-selection brings the selected
+        // row into view. The marker on a Blocked row appears nowhere else on the
+        // screen, so its presence proves the list scrolled to the selection.
+        let events = blocked_attention_events(40);
+        let last = events.len() - 1;
+        let state = TuiInteractionState::new(last, TuiOverlay::None).with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(model.attention_items().len(), 40);
+        assert_eq!(model.selected_attention_index(), Some(last));
+
+        // The selected row is visible only because the list scrolled to it: the
+        // `>` marker on a Blocked row appears nowhere else on the screen.
+        let output = render_to_text(&model, 112, 28);
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("> Blocked: needs-human")),
+            Ok(true)
+        );
+    }
+
+    /// Every lane filled with three work-items, so the lane overview's
+    /// `7 headers + 21 preview rows` overflow the pinned pane height and the
+    /// scroll behavior is exercised.
+    fn full_board_events() -> Vec<ConsoleEvent> {
+        let mut events = Vec::new();
+        for (lane_index, lane) in Lane::all().iter().enumerate() {
+            for item in 0..3 {
+                events.push(lane_event(
+                    &format!("evt_lane_{lane_index}_{item}"),
+                    &format!("wi-{lane_index}-{item}"),
+                    *lane,
+                    None,
+                    &format!("a{lane_index}{item}"),
+                    "queued",
+                ));
+            }
+        }
+        events
+    }
+
+    #[test]
+    fn render_scrolls_the_lane_overview_to_keep_the_selected_lane_visible() {
+        // The last lane (`done`) sits below the fold in an overflowing overview.
+        // A top-anchored render would never show it; scroll-to-selection brings
+        // its `>`-marked header into view and pushes the first lane off the top.
+        let last_lane = Lane::all().len() - 1;
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_lane_index(last_lane);
+        let model = build_tui_model_for_state(&full_board_events(), &state);
+
+        let output = render_to_text(&model, 112, 28);
+        // The selected bottom lane is scrolled into view...
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("> done (3)")),
+            Ok(true)
+        );
+        // ...and the first lane is pushed off the top.
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("backlog (3)")),
             Ok(false)
         );
     }
