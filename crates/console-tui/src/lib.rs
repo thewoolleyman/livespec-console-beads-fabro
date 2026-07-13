@@ -360,8 +360,9 @@ pub fn key_event_to_terminal_input(
 }
 
 /// Up: in a command modal, move the action selection; with no overlay open,
-/// move within the focused pane (the Views nav when focus is on the nav, else
-/// the content list); behind any other overlay it is the harmless content move.
+/// act within the focused pane (move the Views selection on the nav, the content
+/// selection in the content list, or scroll the Detail pane up); behind any
+/// other overlay it is the harmless content move.
 const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
     match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
@@ -369,6 +370,7 @@ const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
+            FocusPane::Detail => TuiInteraction::ScrollDetailUp,
         },
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
@@ -385,6 +387,7 @@ const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
+            FocusPane::Detail => TuiInteraction::ScrollDetailDown,
         },
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
@@ -409,7 +412,8 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 /// Enter with no overlay open: from the Views nav it dives focus into the
 /// Content pane; in the Content pane it drills into the selected lane (lane
 /// overview), is inert in a drilled-in lane, or opens the command modal on the
-/// selected attention item for any other view.
+/// selected attention item for any other view; on the Detail pane it is inert
+/// (the command modal is opened from the Content pane).
 fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.focus() {
         FocusPane::Nav => Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent)),
@@ -426,17 +430,20 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                 TuiInteraction::OpenCommandModal,
             ))
         }
+        FocusPane::Detail => None,
     }
 }
 
-/// Esc: close an open overlay first; with no overlay open and focus on the
-/// Content pane, step back (return a drilled-in lane to its overview, else
-/// return focus to the Views nav); on the nav it is the inert close-overlay.
+/// Esc: close an open overlay first; with no overlay open, step focus back one
+/// pane toward the nav — the Detail pane returns to Content, the Content pane
+/// returns a drilled-in lane to its overview (else focus to the Views nav); on
+/// the nav (leftmost) it is the inert close-overlay.
 fn esc_interaction(model: &TuiScreenModel) -> TuiInteraction {
     if model.overlay().is_open() {
         return TuiInteraction::CloseOverlay;
     }
     match model.focus() {
+        FocusPane::Detail => TuiInteraction::FocusContent,
         FocusPane::Content => content_back_interaction(model),
         FocusPane::Nav => TuiInteraction::CloseOverlay,
     }
@@ -452,30 +459,52 @@ fn content_back_interaction(model: &TuiScreenModel) -> TuiInteraction {
     TuiInteraction::FocusNav
 }
 
-/// Left: behind an overlay it is inert; on the Views nav it switches to the
-/// previous view (the global bonus switcher); in the Content pane it steps back
-/// (see [`content_back_interaction`]).
+/// Left: behind an overlay it is inert; otherwise it walks focus one pane toward
+/// the nav, clamped at the leftmost — the Detail pane returns to Content, the
+/// Content pane steps back (a drilled-in lane to its overview, else focus to the
+/// Views nav), and on the Views nav (leftmost) left is inert.
 fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     if model.overlay().is_open() {
         return None;
     }
-    Some(TuiTerminalInput::Interaction(match model.focus() {
-        FocusPane::Nav => TuiInteraction::SelectPreviousView,
+    let interaction = match model.focus() {
+        // Leftmost pane: left clamps here.
+        FocusPane::Nav => return None,
         FocusPane::Content => content_back_interaction(model),
-    }))
+        FocusPane::Detail => TuiInteraction::FocusContent,
+    };
+    Some(TuiTerminalInput::Interaction(interaction))
 }
 
-/// Right: behind an overlay it is inert; on the Views nav it dives focus into
-/// the Content pane; in the Content pane it switches to the next view (the
-/// global bonus switcher).
+/// Right: behind an overlay it is inert; otherwise it walks focus one pane toward
+/// the Detail pane, clamped at the rightmost — the Views nav dives into Content,
+/// Content dives into Detail (on a view that has a Detail pane), and on the
+/// Detail pane (rightmost) right is inert. The Lanes view has no Detail pane, so
+/// right clamps at Content there.
 const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     if model.overlay().is_open() {
         return None;
     }
-    Some(TuiTerminalInput::Interaction(match model.focus() {
+    let interaction = match model.focus() {
         FocusPane::Nav => TuiInteraction::FocusContent,
-        FocusPane::Content => TuiInteraction::SelectNextView,
-    }))
+        FocusPane::Content => {
+            if view_has_detail_pane(model) {
+                TuiInteraction::FocusDetail
+            } else {
+                return None;
+            }
+        }
+        // Rightmost reachable pane: right clamps here.
+        FocusPane::Detail => return None,
+    };
+    Some(TuiTerminalInput::Interaction(interaction))
+}
+
+/// Whether the active view renders a right-hand Detail pane (every view except
+/// `Lanes`, which spans the full body width beside the nav). Used to clamp the
+/// rightmost focus step at Content on the Lanes view.
+const fn view_has_detail_pane(model: &TuiScreenModel) -> bool {
+    !matches!(model.active_view(), TuiView::Lanes)
 }
 
 const fn slash_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -621,13 +650,26 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         ])
         .split(area);
     render_navigation(model, horizontal[0], buffer);
+    let detail_focused = model.focus() == FocusPane::Detail;
     if model.active_view() == TuiView::Attention {
         render_attention(model, horizontal[1], buffer);
-        render_detail(model.detail(), horizontal[2], buffer);
+        render_detail(
+            model.detail(),
+            model.detail_scroll(),
+            detail_focused,
+            horizontal[2],
+            buffer,
+        );
         return;
     }
     render_summary(model, horizontal[1], buffer);
-    render_summary_detail(model.view_items(), horizontal[2], buffer);
+    render_summary_detail(
+        model.view_items(),
+        model.detail_scroll(),
+        detail_focused,
+        horizontal[2],
+        buffer,
+    );
 }
 
 /// The number of top rank-ordered items the lane overview previews per lane.
@@ -807,10 +849,12 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
         Line::from("Navigate the Views menu with up/down; Enter drills in, Esc goes back."),
         Line::from("Toggle autonomous mode with a; drain via :; quit with q."),
         Line::from(""),
-        Line::from("up / down    move within the focused pane (Views nav or Content list)"),
+        Line::from("left / right  move focus across panes (Views -> Content -> Detail), clamped"),
+        Line::from("up / down    move the focused pane's selection, or scroll the Detail pane"),
         Line::from("enter        dive from the nav into content, or open the selected item"),
-        Line::from("esc          step back (content -> nav; drilled lane -> overview)"),
-        Line::from("left / right  previous / next view, or step out / in of the content pane"),
+        Line::from(
+            "esc          step focus back (Detail -> Content -> nav; drilled lane -> overview)",
+        ),
         Line::from("/            open search"),
         Line::from(":            open the command palette (drain)"),
         Line::from("a            toggle autonomous mode (dangerous / type-to-confirm)"),
@@ -1017,35 +1061,75 @@ fn attention_item_line(
     })
 }
 
-fn render_summary_detail(items: &[ViewSummaryItem], area: Rect, buffer: &mut Buffer) {
-    let lines = if items.is_empty() {
-        vec![Line::from("No projection rows")]
-    } else {
-        items
-            .iter()
-            .flat_map(|item| {
-                [
-                    Line::from(format!("{}:", item.title())),
-                    Line::from(item.detail().to_owned()),
-                ]
-            })
-            .collect::<Vec<_>>()
-    };
-    Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title("Detail"))
-        .wrap(Wrap { trim: true })
-        .render(area, buffer);
+fn render_summary_detail(
+    items: &[ViewSummaryItem],
+    scroll: usize,
+    focused: bool,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    render_scrollable_detail(summary_detail_lines(items), scroll, focused, area, buffer);
 }
 
-fn render_detail(detail: Option<&AttentionDetail>, area: Rect, buffer: &mut Buffer) {
+/// The Detail-pane lines for a summary view: a `title:` line plus its detail line
+/// per projection row, or a single placeholder when there are no rows. A
+/// standalone builder so the scroll behavior can be exercised over its length.
+fn summary_detail_lines(items: &[ViewSummaryItem]) -> Vec<Line<'static>> {
+    if items.is_empty() {
+        return vec![Line::from("No projection rows")];
+    }
+    items
+        .iter()
+        .flat_map(|item| {
+            [
+                Line::from(format!("{}:", item.title())),
+                Line::from(item.detail().to_owned()),
+            ]
+        })
+        .collect()
+}
+
+fn render_detail(
+    detail: Option<&AttentionDetail>,
+    scroll: usize,
+    focused: bool,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
     let lines = detail.map_or_else(
         || vec![Line::from("No attention item selected")],
         detail_lines,
     );
-    Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title("Detail"))
-        .wrap(Wrap { trim: true })
+    render_scrollable_detail(lines, scroll, focused, area, buffer);
+}
+
+/// Render the right Detail pane with vertical free-scroll: the given lines,
+/// clamped so `scroll` never runs past the last row, a `[focus]` tag when the
+/// pane holds focus, and a scrollbar affordance when the content overflows the
+/// pane. `scroll` is the topmost visible row. Wrapping is enabled, so the row
+/// count and clamp use the wrapped height at the pane's inner width, and the
+/// bottom of an overflowing detail becomes reachable by scrolling down.
+fn render_scrollable_detail(
+    lines: Vec<Line<'static>>,
+    scroll: usize,
+    focused: bool,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    let title = focus_title("Detail", focused);
+    let inner_width = area.width.saturating_sub(2);
+    let viewport = usize::from(area.height.saturating_sub(2));
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    // Count the wrapped rows at the pane's inner width (no block on this
+    // measurement, so the count is pure content rows) to clamp the offset and
+    // size the scrollbar exactly, even when a long line wraps.
+    let content_rows = paragraph.line_count(inner_width);
+    let offset = scroll.min(content_rows.saturating_sub(viewport));
+    paragraph
+        .block(Block::new().borders(Borders::ALL).title(title))
+        .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
         .render(area, buffer);
+    render_vertical_scrollbar(area, buffer, content_rows, offset);
 }
 
 fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
@@ -1101,8 +1185,9 @@ mod tests {
     use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
     use console_application::{
         ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneFocus, OperatorAction,
-        OperatorActionOutcome, PendingValve, RejectMode, TuiInteraction, TuiInteractionState,
-        TuiOverlay, TuiScreenModel, TuiView, build_tui_model, build_tui_model_for_state,
+        OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        build_tui_model_for_state,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1112,15 +1197,15 @@ mod tests {
     use super::{
         TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, action_outcome_effect,
         attention_item_line, buffer_to_text, detail_lines, key_event_to_terminal_input,
-        render_command_modal, render_model, render_summary_detail, render_to_text,
-        step_tui_runtime,
+        render_command_modal, render_detail, render_model, render_summary_detail, render_to_text,
+        step_tui_runtime, summary_detail_lines,
     };
 
     #[test]
     fn keymap_maps_views_nav_focus_navigation_and_dive_in() {
         // Default focus is the Views nav: up/down walk the vertical Views menu,
-        // Enter and Right dive focus into the Content pane, Left is the global
-        // previous-view switcher, and Esc is the inert close-overlay no-op.
+        // Enter and Right dive focus into the Content pane, Left clamps at the
+        // leftmost pane (inert), and Esc is the inert close-overlay no-op.
         let model = attention_model(TuiOverlay::None);
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &model),
@@ -1142,11 +1227,10 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Right), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
         );
+        // Left on the leftmost pane clamps: it produces no input.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
-            Some(TuiTerminalInput::Interaction(
-                TuiInteraction::SelectPreviousView
-            ))
+            None
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Esc), &model),
@@ -1157,8 +1241,8 @@ mod tests {
     #[test]
     fn keymap_maps_content_focus_navigation_and_modal_opening() {
         // In the Content pane: up/down move the content selection, Enter opens
-        // the command modal on the selected attention item, Right is the global
-        // next-view switcher, and Left/Esc step focus back to the Views nav.
+        // the command modal on the selected attention item, Right steps focus
+        // into the Detail pane, and Left/Esc step focus back to the Views nav.
         let model = attention_model_in(TuiOverlay::None, FocusPane::Content);
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &model),
@@ -1178,9 +1262,7 @@ mod tests {
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Right), &model),
-            Some(TuiTerminalInput::Interaction(
-                TuiInteraction::SelectNextView
-            ))
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusDetail))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
@@ -1190,6 +1272,276 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Esc), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
         );
+    }
+
+    #[test]
+    fn keymap_maps_detail_pane_scroll_step_back_and_inert_enter() {
+        // On the rightmost Detail pane: up/down scroll the detail, Esc and Left
+        // step focus back to Content, Right clamps (inert), and Enter is inert
+        // (the command modal is opened from the Content pane).
+        let model = attention_model_in(TuiOverlay::None, FocusPane::Detail);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::ScrollDetailDown
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::ScrollDetailUp
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Right), &model),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            None
+        );
+    }
+
+    /// Drive one key through the full input -> reduce -> state loop, returning the
+    /// resulting interaction state. A key that produces no input (a clamped or
+    /// inert key) leaves the state unchanged.
+    fn press(
+        state: &TuiInteractionState,
+        events: &[ConsoleEvent],
+        code: KeyCode,
+    ) -> TuiInteractionState {
+        let model = build_tui_model_for_state(events, state);
+        key_event_to_terminal_input(key(code), &model).map_or_else(
+            || state.clone(),
+            |input| {
+                step_tui_runtime(state, events, input, "operator")
+                    .state()
+                    .clone()
+            },
+        )
+    }
+
+    #[test]
+    fn right_walks_focus_nav_to_content_to_detail_and_clamps_at_detail() {
+        // Finding F: right must reach the rightmost Detail pane and STOP there,
+        // never wrapping around or switching the leftmost view.
+        let events = demo_events();
+        let nav = TuiInteractionState::new(0, TuiOverlay::None);
+        assert_eq!(nav.focus(), FocusPane::Nav);
+
+        let content = press(&nav, &events, KeyCode::Right);
+        assert_eq!(content.focus(), FocusPane::Content);
+
+        let detail = press(&content, &events, KeyCode::Right);
+        assert_eq!(detail.focus(), FocusPane::Detail);
+
+        // Third and fourth right presses stay clamped on Detail; the active view
+        // never changes.
+        let clamped = press(&detail, &events, KeyCode::Right);
+        assert_eq!(clamped.focus(), FocusPane::Detail);
+        let clamped_again = press(&clamped, &events, KeyCode::Right);
+        assert_eq!(clamped_again.focus(), FocusPane::Detail);
+        assert_eq!(clamped_again.active_view(), TuiView::Attention);
+    }
+
+    #[test]
+    fn left_walks_focus_detail_to_content_to_nav_and_clamps_at_nav() {
+        let events = demo_events();
+        let detail = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail);
+
+        let content = press(&detail, &events, KeyCode::Left);
+        assert_eq!(content.focus(), FocusPane::Content);
+
+        let nav = press(&content, &events, KeyCode::Left);
+        assert_eq!(nav.focus(), FocusPane::Nav);
+
+        // Left clamps at the leftmost pane; the active view never changes.
+        let clamped = press(&nav, &events, KeyCode::Left);
+        assert_eq!(clamped.focus(), FocusPane::Nav);
+        assert_eq!(clamped.active_view(), TuiView::Attention);
+    }
+
+    #[test]
+    fn right_clamps_at_content_on_the_lanes_view_without_a_detail_pane() {
+        // The Lanes view spans the full body width with no Detail pane, so the
+        // rightmost focus step stops at Content, and detail_content_len is zero.
+        let events = lane_render_events();
+        let content = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_focus(FocusPane::Content);
+        let clamped = press(&content, &events, KeyCode::Right);
+        assert_eq!(clamped.focus(), FocusPane::Content);
+        assert_eq!(clamped.active_view(), TuiView::Lanes);
+    }
+
+    #[test]
+    fn up_down_on_the_nav_pane_still_reaches_every_view() {
+        // With left/right repurposed to pane focus, view-switching lives on the
+        // Views nav's up/down. Walking down must reach every view, then up walks
+        // back and clamps at the first view.
+        let events = demo_events();
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        assert_eq!(state.focus(), FocusPane::Nav);
+        let mut seen = vec![state.active_view()];
+        for _ in 0..TuiView::all().len() {
+            state = press(&state, &events, KeyCode::Down);
+            seen.push(state.active_view());
+        }
+        // Every view must be reachable by walking the nav with up/down.
+        for view in TuiView::all() {
+            assert!(seen.contains(view));
+        }
+        for _ in 0..TuiView::all().len() {
+            state = press(&state, &events, KeyCode::Up);
+        }
+        assert_eq!(state.active_view(), TuiView::Attention);
+    }
+
+    #[test]
+    fn detail_pane_scrolls_clipped_lines_into_view_with_a_scrollbar() {
+        // Finding F: an Attention detail that overflows the pane. At the top the
+        // bottom timeline entries are clipped; scrolling down brings them into
+        // the rendered buffer and pushes the first field off the top. A scrollbar
+        // thumb marks the overflow.
+        let timeline = (0..20)
+            .map(|index| {
+                TimelineEntry::new(
+                    format!("evt_{index:02}"),
+                    format!("timeline entry {index:02}"),
+                    "src".to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            "fabro attach run".to_owned(),
+            timeline,
+            vec![],
+        );
+        // Inner height 8 rows (a 10-row pane minus its borders); the detail has
+        // 4 + 1 (Timeline:) + 20 = 25 logical lines, so it overflows.
+        let area = Rect::new(0, 0, 44, 10);
+
+        // At the top: the first field shows, the last timeline entry is clipped,
+        // the focused pane is tagged, and an overflow scrollbar thumb (█) draws.
+        let mut top = Buffer::empty(area);
+        render_detail(Some(&detail), 0, true, area, &mut top);
+        let top_text = buffer_to_text(&top, area);
+        assert!(top_text.contains("Repo: repo"));
+        assert!(!top_text.contains("evt_19"));
+        assert!(top_text.contains("Detail [focus]"));
+        assert!(top_text.contains('\u{2588}'));
+
+        // A large offset clamps to the bottom: the last entry is now visible and
+        // the first field has scrolled off the top.
+        let mut scrolled = Buffer::empty(area);
+        render_detail(Some(&detail), 100, true, area, &mut scrolled);
+        let scrolled_text = buffer_to_text(&scrolled, area);
+        assert!(scrolled_text.contains("evt_19"));
+        assert!(!scrolled_text.contains("Repo: repo"));
+    }
+
+    #[test]
+    fn detail_scroll_offset_clamps_at_the_last_line_and_saturates_at_the_top() {
+        let events = demo_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail);
+        let model = build_tui_model_for_state(&events, &state);
+        let max = model.detail_content_len().saturating_sub(1);
+        // The demo detail has multiple lines, so there is room to scroll.
+        assert!(max > 0);
+
+        // Pressing down far past the end clamps the offset at the last line.
+        let mut scrolled = state;
+        for _ in 0..(max + 5) {
+            scrolled = press(&scrolled, &events, KeyCode::Down);
+        }
+        assert_eq!(scrolled.detail_scroll(), max);
+
+        // Pressing up past the top saturates the offset at zero.
+        let mut unscrolled = scrolled;
+        for _ in 0..(max + 5) {
+            unscrolled = press(&unscrolled, &events, KeyCode::Up);
+        }
+        assert_eq!(unscrolled.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn detail_scroll_resets_when_the_content_selection_changes() {
+        // A scroll offset must not carry onto a different item's details, so
+        // moving the content selection resets it to the top.
+        let events = blocked_attention_events(4);
+        let down = press(
+            &TuiInteractionState::new(1, TuiOverlay::None)
+                .with_focus(FocusPane::Content)
+                .with_detail_scroll(3),
+            &events,
+            KeyCode::Down,
+        );
+        assert_eq!(down.selected_attention_index(), 2);
+        assert_eq!(down.detail_scroll(), 0);
+
+        let up = press(
+            &TuiInteractionState::new(1, TuiOverlay::None)
+                .with_focus(FocusPane::Content)
+                .with_detail_scroll(3),
+            &events,
+            KeyCode::Up,
+        );
+        assert_eq!(up.selected_attention_index(), 0);
+        assert_eq!(up.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn detail_content_len_reflects_each_view_shape() {
+        // Attention with a selected item: the item's rendered line count, kept in
+        // lock-step with what the renderer draws.
+        let attention = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(0, TuiOverlay::None),
+        );
+        assert_eq!(
+            attention.detail().map(AttentionDetail::rendered_line_count),
+            Some(attention.detail_content_len())
+        );
+        assert_eq!(
+            attention.detail().map(|detail| detail_lines(detail).len()),
+            Some(attention.detail_content_len())
+        );
+
+        // Attention with no items: the single "no item selected" line.
+        let empty = build_tui_model_for_state(&[], &TuiInteractionState::new(0, TuiOverlay::None));
+        assert_eq!(empty.detail(), None);
+        assert_eq!(empty.detail_content_len(), 1);
+
+        // A summary view: two lines per projection row, matching the renderer.
+        let events_view = build_tui_model_for_state(
+            &factory_events(),
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+        );
+        assert_eq!(
+            events_view.detail_content_len(),
+            events_view.view_items().len() * 2
+        );
+        assert_eq!(
+            summary_detail_lines(events_view.view_items()).len(),
+            events_view.detail_content_len()
+        );
+
+        // The Lanes view has no Detail pane.
+        let lanes = build_tui_model_for_state(
+            &lane_render_events(),
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+        );
+        assert_eq!(lanes.detail_content_len(), 0);
     }
 
     #[test]
@@ -1308,6 +1660,28 @@ mod tests {
         );
         assert_eq!(
             content_output.as_ref().map(|r| r.contains("Views [focus]")),
+            Ok(false)
+        );
+
+        // Detail focus: the right Detail pane carries the focus tag while neither
+        // the Views nav nor the Attention content list does.
+        let detail = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail),
+        );
+        let detail_output = render_to_text(&detail, 96, 24);
+        assert_eq!(
+            detail_output.as_ref().map(|r| r.contains("Detail [focus]")),
+            Ok(true)
+        );
+        assert_eq!(
+            detail_output
+                .as_ref()
+                .map(|r| r.contains("Attention [focus]")),
+            Ok(false)
+        );
+        assert_eq!(
+            detail_output.as_ref().map(|r| r.contains("Views [focus]")),
             Ok(false)
         );
     }
@@ -1882,7 +2256,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 5);
         let mut buffer = Buffer::empty(area);
 
-        render_summary_detail(&[], area, &mut buffer);
+        render_summary_detail(&[], 0, false, area, &mut buffer);
 
         assert!(buffer_to_text(&buffer, area).contains("No projection rows"));
     }
@@ -2010,7 +2384,11 @@ mod tests {
             ],
         );
 
-        let rendered = detail_lines(&detail)
+        let lines = detail_lines(&detail);
+        // The rendered line count includes the actions line, matching the count
+        // the scroll clamp derives (guards drift between the two).
+        assert_eq!(lines.len(), detail.rendered_line_count());
+        let rendered = lines
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
