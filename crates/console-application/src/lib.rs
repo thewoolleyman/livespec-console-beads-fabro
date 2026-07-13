@@ -26,8 +26,8 @@ pub mod source_adapters;
 
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
-    SourceProbe, SourceProbeOutcome, WorkItemSnapshot, materialize_attention_items,
-    work_item_snapshot_from_payload_json,
+    SourceProbe, SourceProbeOutcome, WorkItemSnapshot, attention_item_snapshot_from_payload_json,
+    materialize_attention_items, work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3933,11 +3933,51 @@ fn count_events(events: &[ConsoleEvent], event_type: EventType) -> usize {
         .count()
 }
 
+/// The repo each event belongs to, for the "Repos observed" projection.
+///
+/// The derivation is event-shape aware because two stream-key shapes coexist:
+///
+/// - A needs-attention `attention_item:{repo}:{id}` stream embeds a
+///   colon-bearing item id (`valve:set-admission:bd-ib-ss7rkr`,
+///   `spec:prune-history:SPECIFICATION`, `hygiene:stale-branch:refs/heads/...`),
+///   so the repo can NOT be recovered by splitting the stream key. For an
+///   `appeared` / `changed` event the true repo is read from the item's own
+///   `source_ref.repo` in the payload — correct for every persisted row
+///   regardless of the repo the stream was keyed under. A `resolved` event
+///   carries only the id, so it falls back to the stream key's middle segment.
+/// - Every other event streams under `{context}:{repo}` (`repo:{repo}`,
+///   `factory:{repo}`, ...); the repo is the segment AFTER the first colon.
 fn repo_id(event: &ConsoleEvent) -> String {
-    if let Some((_, repo)) = event.stream_id().rsplit_once(':') {
-        return repo.to_owned();
+    match event.event_type() {
+        EventType::AttentionItemAppeared | EventType::AttentionItemChanged => {
+            attention_item_snapshot_from_payload_json(event.payload_json()).map_or_else(
+                || attention_stream_repo(event.stream_id()),
+                |item| item.source_ref().repo().to_owned(),
+            )
+        }
+        EventType::AttentionItemResolved => attention_stream_repo(event.stream_id()),
+        _other => stream_prefix_repo(event.stream_id()),
     }
-    event.stream_id().to_owned()
+}
+
+/// The repo segment of a `{context}:{repo}` stream key: the text after the first
+/// colon, or the whole key when it carries no colon.
+fn stream_prefix_repo(stream_id: &str) -> String {
+    stream_id
+        .split_once(':')
+        .map_or_else(|| stream_id.to_owned(), |(_context, repo)| repo.to_owned())
+}
+
+/// The repo segment of an `attention_item:{repo}:{id}` stream key: its middle
+/// segment. Falls back to `-` when the key carries no middle segment (an
+/// attention stream key is always three-part, so this is a defensive default).
+fn attention_stream_repo(stream_id: &str) -> String {
+    let mut parts = stream_id.splitn(3, ':');
+    let _context = parts.next();
+    parts
+        .next()
+        .filter(|repo| !repo.is_empty())
+        .map_or_else(|| "-".to_owned(), ToOwned::to_owned)
 }
 
 fn fabro_run_id(event: &ConsoleEvent) -> String {
@@ -5693,6 +5733,123 @@ mod tests {
         );
         assert_eq!(super::fabro_run_id(&gate), "run_17");
         assert_eq!(super::fabro_run_id(&fallback), "evt_no_run");
+    }
+
+    #[test]
+    fn repo_id_reads_attention_item_repo_from_payload_not_stream_tail() {
+        // The persisted needs-attention stream key embeds a colon-bearing item id
+        // (`attention_item:{repo}:{id}` with `{id}` = `valve:set-admission:...`),
+        // so the repo cannot be recovered from the stream tail. `repo_id` MUST
+        // read the true repo from the item's own `source_ref.repo` in the
+        // payload, even when the stream was keyed under a different repo.
+        let item = AttentionItemSnapshot::new(
+            "valve:set-admission:bd-ib-ss7rkr",
+            "human-valve",
+            "high",
+            "Resolve human-needed block for work-item bd-ib-ss7rkr",
+            AttentionSourceRef::new(
+                "livespec-orchestrator-beads-fabro",
+                Some("bd-ib-ss7rkr"),
+                None,
+            ),
+            AttentionHandoff::new(
+                "drive",
+                Some("set-admission:bd-ib-ss7rkr:manual"),
+                "drive ...",
+            ),
+        );
+        let appeared = ConsoleEvent::new(
+            "evt_attn_appeared".to_owned(),
+            1,
+            "needs-attention".to_owned(),
+            EventType::AttentionItemAppeared,
+            "needs-attention".to_owned(),
+            "attention_item:livespec-console-beads-fabro:valve:set-admission:bd-ib-ss7rkr"
+                .to_owned(),
+            1,
+        )
+        .with_payload_json(attention_item_payload_json(&item));
+
+        assert_eq!(
+            super::repo_id(&appeared),
+            "livespec-orchestrator-beads-fabro"
+        );
+    }
+
+    #[test]
+    fn repo_id_falls_back_across_stream_shapes() {
+        // A `repo:{repo}` (or any `{context}:{repo}`) stream: the repo is the
+        // segment after the FIRST colon, not the last.
+        let pull = ConsoleEvent::new(
+            "evt_pull".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            "repo:livespec-orchestrator-beads-fabro".to_owned(),
+            1,
+        );
+        assert_eq!(super::repo_id(&pull), "livespec-orchestrator-beads-fabro");
+
+        // A stream key with no colon degrades to the whole key.
+        let plain = ConsoleEvent::new(
+            "evt_plain".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            "livespec-orchestrator-beads-fabro".to_owned(),
+            1,
+        );
+        assert_eq!(super::repo_id(&plain), "livespec-orchestrator-beads-fabro");
+
+        // A `resolved` event carries only an id in its payload, so its repo comes
+        // from the middle segment of the `attention_item:{repo}:{id}` stream key.
+        let resolved = ConsoleEvent::new(
+            "evt_resolved".to_owned(),
+            1,
+            "needs-attention".to_owned(),
+            EventType::AttentionItemResolved,
+            "needs-attention".to_owned(),
+            "attention_item:livespec-orchestrator-beads-fabro:plan:autonomous-mode".to_owned(),
+            1,
+        )
+        .with_payload_json(attention_resolved_payload_json("plan:autonomous-mode"));
+        assert_eq!(
+            super::repo_id(&resolved),
+            "livespec-orchestrator-beads-fabro"
+        );
+
+        // A malformed attention stream key (no middle segment) degrades to `-`.
+        let malformed = ConsoleEvent::new(
+            "evt_malformed".to_owned(),
+            1,
+            "needs-attention".to_owned(),
+            EventType::AttentionItemResolved,
+            "needs-attention".to_owned(),
+            "attention_item".to_owned(),
+            1,
+        )
+        .with_payload_json(attention_resolved_payload_json("x"));
+        assert_eq!(super::repo_id(&malformed), "-");
+
+        // An `appeared` event whose payload is not a complete item degrades to the
+        // stream key's middle segment.
+        let corrupt = ConsoleEvent::new(
+            "evt_corrupt".to_owned(),
+            1,
+            "needs-attention".to_owned(),
+            EventType::AttentionItemAppeared,
+            "needs-attention".to_owned(),
+            "attention_item:livespec-orchestrator-beads-fabro:spec:prune-history:SPECIFICATION"
+                .to_owned(),
+            1,
+        )
+        .with_payload_json("{}".to_owned());
+        assert_eq!(
+            super::repo_id(&corrupt),
+            "livespec-orchestrator-beads-fabro"
+        );
     }
 
     #[test]
