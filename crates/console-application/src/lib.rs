@@ -1646,12 +1646,15 @@ pub fn build_tui_model_for_state(
 ) -> TuiScreenModel {
     let search_query = search_query(state.overlay());
     let unavailable_sources = unavailable_sources(events);
-    let attention_snapshots = attention_snapshots_matching(events, search_query);
-    let attention_items = project_attention_from_snapshots(attention_snapshots.clone());
+    let attention_entries = unified_attention_entries(events, search_query);
+    let attention_items = attention_entries
+        .iter()
+        .map(AttentionEntry::to_attention_item)
+        .collect::<Vec<_>>();
+    let attention_count = attention_items.len();
     let selected_attention_index =
         selected_index(attention_items.len(), state.selected_attention_index());
-    let detail = selected_attention_index
-        .map(|index| build_attention_detail(&attention_snapshots[index], events));
+    let detail = selected_attention_index.map(|index| attention_entries[index].to_detail(events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
     let lane_board = project_lane_board(events);
@@ -1687,7 +1690,7 @@ pub fn build_tui_model_for_state(
             header_repo_label(state.selected_repo()),
             autonomous_mode_header_label(state.autonomous_mode_enabled()),
             active_view.label(),
-            attention_snapshots.len(),
+            attention_count,
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
@@ -3642,19 +3645,126 @@ fn attention_snapshot_matches(entry: &AttentionSnapshot, search_query: Option<&s
     })
 }
 
-fn project_attention_from_snapshots(snapshots: Vec<AttentionSnapshot>) -> Vec<AttentionItem> {
-    snapshots
-        .into_iter()
-        .map(|entry| {
-            AttentionItem::new(
+/// One entry in the unified Attention view.
+///
+/// Either a valve-actionable work-item lane snapshot (the console's own lane fold
+/// over `work_item.*` observations) or a product needs-attention item ingested
+/// from the orchestrator's `needs-attention` surface. Projecting BOTH into one
+/// list is the spec's needs-attention inbox (`scenarios.md` Scenario 1: "the
+/// needs-attention view lists all three items from the `attention_item` stream"):
+/// the operator sees every human-owned action -- the lane valves AND the spec /
+/// plan / hygiene / human-valve needs-attention items -- in one place, each
+/// attributed to its true `source_ref.repo`.
+#[derive(Debug, Clone)]
+enum AttentionEntry {
+    WorkItem(AttentionSnapshot),
+    NeedsAttention(AttentionItemSnapshot),
+}
+
+impl AttentionEntry {
+    /// The list-row projection: the entry rendered as an [`AttentionItem`].
+    fn to_attention_item(&self) -> AttentionItem {
+        match self {
+            Self::WorkItem(entry) => AttentionItem::new(
                 entry.snapshot.work_item_id().to_owned(),
                 attention_title(&entry.snapshot),
                 entry.event.source().to_owned(),
                 entry.snapshot.repo().to_owned(),
                 None,
-            )
-        })
-        .collect()
+            ),
+            Self::NeedsAttention(item) => attention_item_from_snapshot(item),
+        }
+    }
+
+    /// The detail-pane projection: the rich fabro / timeline / valve detail for a
+    /// work-item, or the composed repo + subject + operator-handoff detail for a
+    /// needs-attention item.
+    fn to_detail(&self, events: &[ConsoleEvent]) -> AttentionDetail {
+        match self {
+            Self::WorkItem(entry) => build_attention_detail(entry, events),
+            Self::NeedsAttention(item) => build_needs_attention_detail(item),
+        }
+    }
+}
+
+/// The unified Attention list: valve-actionable work-item lane snapshots first
+/// (rank-ordered), then the ingested needs-attention items (id-ordered),
+/// de-duplicated so a work-item that surfaces in BOTH the lane fold and the
+/// needs-attention surface (for example a `blocked` / `needs-human` item that is
+/// also a human-valve needs-attention item) appears once -- as its richer
+/// work-item entry, which preserves the existing fabro-attach / timeline / valve
+/// detail. Both kinds are filtered by the active search query.
+fn unified_attention_entries(
+    events: &[ConsoleEvent],
+    search_query: Option<&str>,
+) -> Vec<AttentionEntry> {
+    let work_items = attention_snapshots_matching(events, search_query);
+    let claimed_work_item_ids: BTreeSet<&str> = work_items
+        .iter()
+        .map(|entry| entry.snapshot.work_item_id())
+        .collect();
+    let mut entries: Vec<AttentionEntry> = work_items
+        .iter()
+        .cloned()
+        .map(AttentionEntry::WorkItem)
+        .collect();
+    for item in materialize_attention_items(events) {
+        if !attention_item_matches(&item, search_query) {
+            continue;
+        }
+        if item
+            .source_ref()
+            .work_item()
+            .is_some_and(|work_item| claimed_work_item_ids.contains(work_item))
+        {
+            continue;
+        }
+        entries.push(AttentionEntry::NeedsAttention(item));
+    }
+    entries
+}
+
+/// Whether a needs-attention item matches the active search query, mirroring the
+/// work-item matcher over the fields the item carries.
+fn attention_item_matches(item: &AttentionItemSnapshot, search_query: Option<&str>) -> bool {
+    search_query.is_none_or(|query| {
+        if query.is_empty() {
+            return true;
+        }
+        let needle = query.to_lowercase();
+        let source_ref = item.source_ref();
+        item.summary().to_lowercase().contains(&needle)
+            || item.id().to_lowercase().contains(&needle)
+            || item.kind().to_lowercase().contains(&needle)
+            || source_ref.repo().to_lowercase().contains(&needle)
+            || source_ref
+                .work_item()
+                .is_some_and(|value| value.to_lowercase().contains(&needle))
+            || source_ref
+                .path()
+                .is_some_and(|value| value.to_lowercase().contains(&needle))
+    })
+}
+
+/// The detail pane for an ingested needs-attention item: its true source repo,
+/// the subject it points at (its work-item, else its path, else its stable id),
+/// and the operator handoff command to run. It carries no fabro run and no lane
+/// valve actions -- those belong only to lane work-item entries -- so the
+/// fabro-run slot is a `-` placeholder and the actions / timeline are empty.
+fn build_needs_attention_detail(item: &AttentionItemSnapshot) -> AttentionDetail {
+    let source_ref = item.source_ref();
+    let subject = source_ref
+        .work_item()
+        .or_else(|| source_ref.path())
+        .unwrap_or_else(|| item.id());
+    AttentionDetail::new(
+        source_ref.repo().to_owned(),
+        subject.to_owned(),
+        "-".to_owned(),
+        item.handoff().command().to_owned(),
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 #[must_use]
@@ -4597,6 +4707,235 @@ mod tests {
         assert_eq!(model.attention_items().len(), 3);
         assert_lane_attention_detail(&model);
         assert_lane_attention_timeline(&model);
+    }
+
+    #[test]
+    fn unified_attention_view_merges_needs_attention_items_and_dedups() {
+        // A blocked / needs-human work-item the lane fold surfaces as a
+        // valve-actionable item, the SAME work-item ALSO carried as a human-valve
+        // needs-attention item, and two needs-attention-only items (a spec
+        // prune-history and a plan review) that carry the TRUE orchestrator repo.
+        let orchestrator = "livespec-orchestrator-beads-fabro";
+        let valve = AttentionItemSnapshot::new(
+            "valve:set-admission:bd-ib-ss7rkr",
+            "human-valve",
+            "high",
+            "Resolve human-needed block for work-item bd-ib-ss7rkr",
+            AttentionSourceRef::new(orchestrator, Some("bd-ib-ss7rkr"), None),
+            AttentionHandoff::new(
+                "drive",
+                Some("set-admission:bd-ib-ss7rkr:manual"),
+                "drive-cmd",
+            ),
+        );
+        let prune = AttentionItemSnapshot::new(
+            "spec:prune-history:SPECIFICATION",
+            "spec",
+            "low",
+            "33 unpruned history versions; consider pruning",
+            AttentionSourceRef::new(orchestrator, None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "codex exec livespec:prune-history"),
+        );
+        let plan = AttentionItemSnapshot::new(
+            "plan:autonomous-mode",
+            "plan",
+            "medium",
+            "Review plan thread autonomous-mode.",
+            AttentionSourceRef::new(orchestrator, None, Some("plan/autonomous-mode/")),
+            AttentionHandoff::new("plan", None, "codex exec plan autonomous-mode"),
+        );
+        let events = [
+            lane_event(
+                "evt_wi",
+                "bd-ib-ss7rkr",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            attention_appeared("evt_valve", &valve),
+            attention_appeared("evt_prune", &prune),
+            attention_appeared("evt_plan", &plan),
+        ];
+
+        let model = build_tui_model(&events, 0);
+
+        // The valve needs-attention item de-duplicates against the lane work-item
+        // (same id), so the unified list is: the richer work-item entry first, then
+        // the two needs-attention-only items (id-ordered).
+        let ids: Vec<&str> = model
+            .attention_items()
+            .iter()
+            .map(AttentionItem::id)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "bd-ib-ss7rkr",
+                "plan:autonomous-mode",
+                "spec:prune-history:SPECIFICATION",
+            ]
+        );
+        // The header attention count reflects the unified list.
+        assert!(model.header_line(300).contains("attention: 3"));
+
+        // The needs-attention items carry their TRUE orchestrator repo in the
+        // composed source reference, never the console's own name.
+        let plan_item = &model.attention_items()[1];
+        assert_eq!(plan_item.title(), "Review plan thread autonomous-mode.");
+        assert_eq!(
+            plan_item.source_reference(),
+            "livespec-orchestrator-beads-fabro:plan/autonomous-mode/"
+        );
+
+        // The work-item entry preserves its existing lane-derived detail.
+        assert_eq!(
+            model.detail().map(super::AttentionDetail::work_item),
+            Some("bd-ib-ss7rkr")
+        );
+
+        // Selecting a needs-attention item projects its composed detail (repo +
+        // path subject + operator command), not a lane detail.
+        let plan_model = build_tui_model(&events, 1);
+        assert_eq!(
+            plan_model.detail().map(super::AttentionDetail::repo),
+            Some("livespec-orchestrator-beads-fabro")
+        );
+        assert_eq!(
+            plan_model.detail().map(super::AttentionDetail::work_item),
+            Some("plan/autonomous-mode/")
+        );
+    }
+
+    #[test]
+    fn unified_attention_view_search_filters_both_kinds() {
+        let orchestrator = "livespec-orchestrator-beads-fabro";
+        let prune = AttentionItemSnapshot::new(
+            "spec:prune-history:SPECIFICATION",
+            "spec",
+            "low",
+            "33 unpruned history versions; consider pruning",
+            AttentionSourceRef::new(orchestrator, None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "codex exec livespec:prune-history"),
+        );
+        let plan = AttentionItemSnapshot::new(
+            "plan:autonomous-mode",
+            "plan",
+            "medium",
+            "Review plan thread autonomous-mode.",
+            AttentionSourceRef::new(orchestrator, None, Some("plan/autonomous-mode/")),
+            AttentionHandoff::new("plan", None, "codex exec plan autonomous-mode"),
+        );
+        let events = [
+            lane_event(
+                "evt_wi",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            attention_appeared("evt_prune", &prune),
+            attention_appeared("evt_plan", &plan),
+        ];
+
+        // "prune" matches only the spec item; the work-item and the plan item are
+        // filtered out of the unified list.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: "prune".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+        let ids: Vec<&str> = model
+            .attention_items()
+            .iter()
+            .map(AttentionItem::id)
+            .collect();
+        assert_eq!(ids, ["spec:prune-history:SPECIFICATION"]);
+    }
+
+    #[test]
+    fn build_needs_attention_detail_composes_subject_repo_and_command() {
+        let orchestrator = "livespec-orchestrator-beads-fabro";
+        // work_item present -> the subject is the work-item id.
+        let with_work_item = AttentionItemSnapshot::new(
+            "valve:set-admission:bd-ib-ss7rkr",
+            "human-valve",
+            "high",
+            "Resolve block",
+            AttentionSourceRef::new(orchestrator, Some("bd-ib-ss7rkr"), None),
+            AttentionHandoff::new(
+                "drive",
+                Some("set-admission:bd-ib-ss7rkr:manual"),
+                "drive-cmd",
+            ),
+        );
+        let detail = super::build_needs_attention_detail(&with_work_item);
+        assert_eq!(detail.repo(), orchestrator);
+        assert_eq!(detail.work_item(), "bd-ib-ss7rkr");
+        assert_eq!(detail.fabro_run(), "-");
+        assert_eq!(detail.attach_command(), "drive-cmd");
+        assert!(detail.timeline().is_empty());
+        assert!(detail.actions().is_empty());
+
+        // no work_item but a path -> the subject is the path.
+        let with_path = AttentionItemSnapshot::new(
+            "spec:prune-history:SPECIFICATION",
+            "spec",
+            "low",
+            "prune",
+            AttentionSourceRef::new(orchestrator, None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "prune-cmd"),
+        );
+        assert_eq!(
+            super::build_needs_attention_detail(&with_path).work_item(),
+            "SPECIFICATION"
+        );
+
+        // neither work_item nor path -> the subject falls back to the stable id.
+        let bare = AttentionItemSnapshot::new(
+            "hygiene:stale-branch:refs/heads/x",
+            "hygiene",
+            "low",
+            "bare",
+            AttentionSourceRef::new(orchestrator, None, None),
+            AttentionHandoff::new("shell", None, "shell-cmd"),
+        );
+        assert_eq!(
+            super::build_needs_attention_detail(&bare).work_item(),
+            "hygiene:stale-branch:refs/heads/x"
+        );
+    }
+
+    #[test]
+    fn attention_item_matches_covers_query_branches() {
+        let item = AttentionItemSnapshot::new(
+            "plan:autonomous-mode",
+            "plan",
+            "medium",
+            "Review plan thread autonomous-mode.",
+            AttentionSourceRef::new(
+                "livespec-orchestrator-beads-fabro",
+                Some("bd-ib-ss7rkr"),
+                Some("plan/autonomous-mode/"),
+            ),
+            AttentionHandoff::new("plan", None, "cmd"),
+        );
+
+        // No active search, and an empty query, both match.
+        assert!(super::attention_item_matches(&item, None));
+        assert!(super::attention_item_matches(&item, Some("")));
+        // Each carried field can decide a match.
+        assert!(super::attention_item_matches(
+            &item,
+            Some("review plan thread")
+        ));
+        assert!(super::attention_item_matches(&item, Some("bd-ib-ss7rkr")));
+        assert!(super::attention_item_matches(&item, Some("orchestrator")));
+        // No field contains the needle -> every arm is evaluated to false.
+        assert!(!super::attention_item_matches(&item, Some("zzz-nomatch")));
     }
 
     #[test]
