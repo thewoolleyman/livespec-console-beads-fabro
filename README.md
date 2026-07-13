@@ -30,13 +30,24 @@ need a Rust toolchain to use it.
 > **Status:** automated release publishing is **not yet in place**. There is
 > no release-please pipeline and no CI job that builds and attaches the binary
 > to a GitHub Release, so no release has been cut and there is nothing to
-> download yet. Standalone release binaries, published on the version schedule
-> via release-please, are a tracked deliverable (see the autonomous-mode plan
-> thread). Until then, build from source per [Developer build](#developer-build).
+> download yet. Standalone release binaries — published on the version schedule
+> via release-please — are a tracked deliverable (work-item
+> `livespec-console-beads-fabro-z62`), whose scope explicitly includes building
+> the linux x86_64 binary in CI **and** downloading-and-testing the published
+> release artifact before it is considered done.
+>
+> **Current install path (until then):** build from source per
+> [Developer build](#developer-build) — a one-line `cargo build --release`.
 
-Once releases are published, download the binary for your platform from the
-repository's Releases page and put it on your `PATH` as
-`livespec-console-beads-fabro`.
+Once the pipeline lands, downloading the latest release will be a one-liner:
+
+```bash
+gh release download --repo thewoolleyman/livespec-console-beads-fabro \
+  --pattern 'livespec-console-beads-fabro'
+# then put it on your PATH as `livespec-console-beads-fabro`
+```
+
+or fetch the binary for your platform from the repository's Releases page.
 
 ## Running the console (the TUI)
 
