@@ -58,7 +58,7 @@ mod backing_cli;
 
 pub use backing_cli::{
     BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
-    ResolveInputs,
+    ResolveInputs, python_normalized_invocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1674,9 +1674,10 @@ mod tests {
         factory_command_from_stored, handle_pending_config_commands,
         handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
         initial_source_seed, live_source_adapters, load_tui_events_from_store,
-        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects, render_tui_preview,
-        run, run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
-        source_polls_from_seed, work_item_command_from_stored,
+        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects,
+        python_normalized_invocation, render_tui_preview, run, run_store_backed_tui_session,
+        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
+        work_item_command_from_stored,
     };
 
     /// Scriptable needs-attention snapshot-source port double: returns a canned
@@ -3995,6 +3996,36 @@ mod tests {
         assert!(!resolution.selected_repo_path().as_os_str().is_empty());
         assert!(!resolution.programs().list_work_items().is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn python_normalized_invocation_wraps_py_script_through_interpreter() {
+        // A resolved `.py` backing CLI (as produced for the installed cache,
+        // e.g. `…/scripts/bin/needs_attention.py`) must be invoked as
+        // `python3 <script> <args…>` so the script's exec bit is irrelevant —
+        // the Finding E fix. The `.py` path becomes the FIRST argument, ahead of
+        // the caller's own arguments, and the resolved program is `python3`.
+        let script = "/home/user/.claude/plugins/cache/orch/scripts/bin/needs_attention.py";
+        let (program, args) = python_normalized_invocation(script, &["--json"]);
+
+        assert_eq!(program, "python3");
+        assert_eq!(args, vec![script, "--json"]);
+    }
+
+    #[test]
+    fn python_normalized_invocation_leaves_non_py_program_unchanged() {
+        // A non-`.py` program — a bare-name default like `needs-attention` or an
+        // env-var override pointing at another command — must run directly, so
+        // overrides and non-Python programs are never rewritten through python3.
+        let (bare_program, bare_args) =
+            python_normalized_invocation("needs-attention", &["--json"]);
+        assert_eq!(bare_program, "needs-attention");
+        assert_eq!(bare_args, vec!["--json"]);
+
+        let (override_program, override_args) =
+            python_normalized_invocation("/usr/local/bin/custom-drive", &["--action", "approve:x"]);
+        assert_eq!(override_program, "/usr/local/bin/custom-drive");
+        assert_eq!(override_args, vec!["--action", "approve:x"]);
     }
 
     #[test]
