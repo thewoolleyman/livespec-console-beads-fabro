@@ -249,10 +249,22 @@ impl SourceProbe for SystemSourceProbe {
     }
 }
 
+/// The observed tenant repo the cockpit is watching.
+///
+/// Derived from the process working directory's basename so it matches the
+/// `source_ref.repo` the orchestrator's `needs-attention` surface composes (which
+/// uses its own `project_root.name`); launched from the orchestrator cwd this
+/// resolves to the true observed tenant instead of the console's own name. The
+/// `LIVESPEC_CONSOLE_REPO` override still wins. See
+/// [`livespec_console_beads_fabro::resolve_console_repo`].
 #[cfg(all(not(test), not(coverage)))]
 fn console_repo() -> String {
-    std::env::var("LIVESPEC_CONSOLE_REPO")
-        .unwrap_or_else(|_error| "livespec-console-beads-fabro".to_owned())
+    let env_override = std::env::var("LIVESPEC_CONSOLE_REPO").ok();
+    let current_dir = std::env::current_dir().ok();
+    livespec_console_beads_fabro::resolve_console_repo(
+        env_override.as_deref(),
+        current_dir.as_deref(),
+    )
 }
 
 #[cfg(all(not(test), not(coverage)))]

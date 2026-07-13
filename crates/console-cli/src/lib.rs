@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 
 #[cfg(test)]
@@ -521,6 +522,43 @@ pub fn live_source_adapters_with_programs<'a>(
             Ok((format!("{prefix}:{repo}"), adapter))
         })
         .collect()
+}
+
+/// Derive the observed tenant repo the cockpit is watching.
+///
+/// The console stamps this repo on every observed work-item / PR / spec snapshot,
+/// keys the needs-attention `attention_item.*` streams under it, and fills the
+/// header `repo:` segment. It MUST agree with the `source_ref.repo` the
+/// orchestrator's `needs-attention` surface composes, so the "Repos observed"
+/// projection collapses to the single observed tenant rather than splitting into
+/// two names for the same repo.
+///
+/// That surface derives its repo from its own process `project_root.name` (the
+/// working-directory basename), so the console derives it the same way — the
+/// working-directory basename — NOT from the `.livespec.jsonc` / `.beads` tenant
+/// name. The tenant name is the ABBREVIATED Dolt identity
+/// (`livespec-orch-beads-fabro`, capped at 32 chars) and would mismatch the full
+/// repo name (`livespec-orchestrator-beads-fabro`) the upstream surface stamps.
+///
+/// A non-empty `LIVESPEC_CONSOLE_REPO` override wins; when the working directory
+/// yields no usable basename, fall back to the console's own package name.
+#[must_use]
+pub fn resolve_console_repo(env_override: Option<&str>, current_dir: Option<&Path>) -> String {
+    if let Some(trimmed) = env_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return trimmed.to_owned();
+    }
+    current_dir
+        .and_then(Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map_or_else(
+            || "livespec-console-beads-fabro".to_owned(),
+            ToOwned::to_owned,
+        )
 }
 
 /// The needs-attention snapshot-source port paired with the console repo.
@@ -1675,10 +1713,51 @@ mod tests {
         handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
         initial_source_seed, live_source_adapters, load_tui_events_from_store,
         observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects,
-        python_normalized_invocation, render_tui_preview, run, run_store_backed_tui_session,
-        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
-        work_item_command_from_stored,
+        python_normalized_invocation, render_tui_preview, resolve_console_repo, run,
+        run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
+        source_polls_from_seed, work_item_command_from_stored,
     };
+
+    #[test]
+    fn resolve_console_repo_prefers_non_empty_env_override() {
+        assert_eq!(
+            resolve_console_repo(
+                Some("  livespec-orchestrator-beads-fabro  "),
+                Some(Path::new("/data/projects/livespec-console-beads-fabro")),
+            ),
+            "livespec-orchestrator-beads-fabro"
+        );
+    }
+
+    #[test]
+    fn resolve_console_repo_uses_working_directory_basename() {
+        // Matches how the orchestrator's needs-attention surface derives
+        // `source_ref.repo` (its `project_root.name`), so the two agree and
+        // "Repos observed" collapses to the single observed tenant.
+        assert_eq!(
+            resolve_console_repo(
+                None,
+                Some(Path::new(
+                    "/data/projects/livespec-orchestrator-beads-fabro"
+                )),
+            ),
+            "livespec-orchestrator-beads-fabro"
+        );
+    }
+
+    #[test]
+    fn resolve_console_repo_falls_back_when_no_basename() {
+        // An empty / whitespace override does not win; a working directory with no
+        // usable basename falls back to the console's own package name.
+        assert_eq!(
+            resolve_console_repo(Some("   "), Some(Path::new("/"))),
+            "livespec-console-beads-fabro"
+        );
+        assert_eq!(
+            resolve_console_repo(None, None),
+            "livespec-console-beads-fabro"
+        );
+    }
 
     /// Scriptable needs-attention snapshot-source port double: returns a canned
     /// read outcome so ingestion tests can drive the diff-at-ingest with a real
