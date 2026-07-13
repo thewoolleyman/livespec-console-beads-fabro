@@ -4808,6 +4808,54 @@ mod tests {
     }
 
     #[test]
+    fn detail_scroll_bounds_track_a_selected_needs_attention_item() {
+        // Finding F's detail-scroll clamp derives its length from the SELECTED
+        // item's detail. After unifying the Attention view, a selected item can be
+        // a needs-attention item whose composed detail carries no actions and no
+        // timeline, so it renders 5 lines (Repo, Work item, Fabro run, Attach, the
+        // always-present Timeline: header) and detail_content_len() must equal that
+        // -- the Detail pane scrolls correctly over the merged item set.
+        let orchestrator = "livespec-orchestrator-beads-fabro";
+        let plan = AttentionItemSnapshot::new(
+            "plan:autonomous-mode",
+            "plan",
+            "medium",
+            "Review plan thread autonomous-mode.",
+            AttentionSourceRef::new(orchestrator, None, Some("plan/autonomous-mode/")),
+            AttentionHandoff::new("plan", None, "codex exec plan autonomous-mode"),
+        );
+        let events = [
+            lane_event(
+                "evt_wi",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            attention_appeared("evt_plan", &plan),
+        ];
+
+        // Select the needs-attention item (index 1) with the Detail pane focused.
+        let selected = TuiInteractionState::new(1, TuiOverlay::None).with_focus(FocusPane::Detail);
+        let model = build_tui_model_for_state(&events, &selected);
+        assert_eq!(
+            model
+                .detail()
+                .map(super::AttentionDetail::rendered_line_count),
+            Some(5)
+        );
+        assert_eq!(model.detail_content_len(), 5);
+
+        // Scrolling down past the end clamps at detail_content_len() - 1.
+        let mut scrolled = selected;
+        for _ in 0..10 {
+            scrolled = reduce_tui_interaction(&scrolled, &events, TuiInteraction::ScrollDetailDown);
+        }
+        assert_eq!(scrolled.detail_scroll(), 4);
+    }
+
+    #[test]
     fn unified_attention_view_search_filters_both_kinds() {
         let orchestrator = "livespec-orchestrator-beads-fabro";
         let prune = AttentionItemSnapshot::new(
