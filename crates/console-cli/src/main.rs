@@ -216,7 +216,16 @@ struct SystemSourceProbe;
 #[cfg(all(not(test), not(coverage)))]
 impl SourceProbe for SystemSourceProbe {
     fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome {
-        match std::process::Command::new(program).args(args).output() {
+        // Normalize `.py` backing CLIs through the Python interpreter so an
+        // exec-bit inconsistency in the installed marketplace cache (Finding E:
+        // needs_attention.py / drive.py ship non-executable) stops mattering.
+        // Non-`.py` programs (env overrides, bare-name defaults) run directly.
+        let (resolved_program, resolved_args) =
+            livespec_console_beads_fabro::python_normalized_invocation(program, args);
+        match std::process::Command::new(resolved_program)
+            .args(&resolved_args)
+            .output()
+        {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 SourceProbeOutcome::observed(&stdout, output.status.success())

@@ -327,6 +327,43 @@ fn programs_from_plugin_bin(bin: &Path) -> BackingCliPrograms {
     }
 }
 
+/// Normalize a resolved backing-CLI invocation so a `.py` script is run through
+/// the Python interpreter rather than exec'd directly.
+///
+/// Several backing CLIs resolve to `.py` script paths in the installed
+/// marketplace cache (for example `…/scripts/bin/needs_attention.py`). The
+/// Claude plugin installer does NOT uniformly mark those scripts executable —
+/// on a real host `needs_attention.py` and `drive.py` ship non-executable while
+/// their siblings ship `+x` — so exec-ing the path directly fails with
+/// "Permission denied" and the source silently degrades to unavailable
+/// (cockpit attention reads 0; the `drive` valves fail). Invoking through
+/// `python3` makes the script's exec bit irrelevant, matching the documented
+/// plugin convention (invoke plugin scripts as `python3 "<path>"`, never rely
+/// on the exec bit).
+///
+/// When `program` ends in `.py`, this returns `("python3", [program, …args])`.
+/// A non-`.py` program — a bare-name default (`needs-attention`), or an
+/// environment override pointing at another command — is returned unchanged so
+/// overrides and non-Python programs keep working. `python3` is resolved from
+/// PATH (the cockpit runs under the credential wrapper where it is present);
+/// no absolute interpreter path is hard-coded.
+#[must_use]
+pub fn python_normalized_invocation<'a>(
+    program: &'a str,
+    args: &[&'a str],
+) -> (&'a str, Vec<&'a str>) {
+    let is_python_script = Path::new(program)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
+    if is_python_script {
+        let mut invocation = Vec::with_capacity(args.len() + 1);
+        invocation.push(program);
+        invocation.extend_from_slice(args);
+        return ("python3", invocation);
+    }
+    (program, args.to_vec())
+}
+
 fn apply_program_overrides(env: &BTreeMap<String, String>, programs: &mut BackingCliPrograms) {
     if let Some(value) = env.get(LIST_WORK_ITEMS_PROGRAM_ENV) {
         programs.list_work_items.clone_from(value);
