@@ -1170,6 +1170,9 @@ pub struct DispatcherFactoryDrainPort<'a> {
     livespec_jsonc_path: String,
 }
 
+/// Ready-candidate consideration cap for one operator-initiated drain pass.
+const OPERATOR_DRAIN_BUDGET: u32 = 50;
+
 impl<'a> DispatcherFactoryDrainPort<'a> {
     #[must_use]
     /// Construct a new value from its required fields.
@@ -1215,6 +1218,9 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
         _request: &FactoryDrainRequest,
     ) -> ApplicationResult<FactoryDrainPortOutcome> {
         let mut arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        let budget = OPERATOR_DRAIN_BUDGET.to_string();
+        arg_refs.push("--budget");
+        arg_refs.push(budget.as_str());
         // The armed mode rides the Dispatcher `loop` per run only while the
         // permission key is enabled; it is never inferred and never persisted.
         if self.autonomous_mode_enabled() {
@@ -6491,7 +6497,7 @@ mod tests {
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(2)));
         assert_eq!(
             *probe.observed_args.borrow(),
-            ["loop", "--mode", "autonomous"]
+            ["loop", "--budget", "50", "--mode", "autonomous"]
         );
     }
 
@@ -6509,7 +6515,7 @@ mod tests {
 
         // A disabled permission never arms the drain.
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(1)));
-        assert_eq!(*probe.observed_args.borrow(), ["loop"]);
+        assert_eq!(*probe.observed_args.borrow(), ["loop", "--budget", "50"]);
     }
 
     #[test]
@@ -6526,7 +6532,7 @@ mod tests {
 
         // An unreadable config fails soft to disabled -- no arming.
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(0)));
-        assert_eq!(*probe.observed_args.borrow(), ["loop"]);
+        assert_eq!(*probe.observed_args.borrow(), ["loop", "--budget", "50"]);
     }
 
     // A journal line for one auto-resolved / escalated decision, in the exact
