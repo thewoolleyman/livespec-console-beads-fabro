@@ -127,7 +127,7 @@ provider = "docker"
 # only `provider = "docker"` + `[image] docker = "..."` — never an
 # `[env]` table (the Dispatcher's per-dispatch overlay owns that block;
 # TOML forbids duplicate table declarations).
-docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:v0.42.0"
+docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:v0.43.0"
 
 [environments.livespec-ci.resources]
 cpu = 4
