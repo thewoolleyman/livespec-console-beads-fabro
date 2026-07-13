@@ -1804,9 +1804,13 @@ mod tests {
         Ok(path)
     }
 
-    fn resolver_plugin_root(base: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    fn resolver_plugin_root_with_bin(
+        base: &Path,
+        name: &str,
+        bin_rel: &str,
+    ) -> Result<PathBuf, Box<dyn Error>> {
         let root = base.join(name);
-        let bin = root.join(".claude-plugin/scripts/bin");
+        let bin = root.join(bin_rel);
         fs::create_dir_all(&bin)?;
         for script in [
             "needs_attention.py",
@@ -1818,6 +1822,19 @@ mod tests {
             fs::write(bin.join(script), "#!/usr/bin/env python3\n")?;
         }
         Ok(root)
+    }
+
+    /// Build a plugin root in the SOURCE layout (`<root>/.claude-plugin/scripts/bin`),
+    /// the shape a governed spec checkout carries.
+    fn resolver_plugin_root(base: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        resolver_plugin_root_with_bin(base, name, ".claude-plugin/scripts/bin")
+    }
+
+    /// Build a plugin root in the FLATTENED installed-marketplace-cache layout
+    /// (`<root>/scripts/bin`), the shape the Claude plugin installer produces
+    /// after collapsing `.claude-plugin/scripts/` to `scripts/`.
+    fn resolver_flattened_plugin_root(base: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        resolver_plugin_root_with_bin(base, name, "scripts/bin")
     }
 
     fn resolver_inputs(
@@ -3601,6 +3618,111 @@ mod tests {
     }
 
     #[test]
+    fn backing_cli_resolution_accepts_flattened_governed_checkout() -> Result<(), Box<dyn Error>> {
+        // The Claude plugin installer FLATTENS `.claude-plugin/scripts/` to
+        // `scripts/`, so a resolved checkout may carry the bin scripts at
+        // `<root>/scripts/bin` rather than `<root>/.claude-plugin/scripts/bin`.
+        // The resolver MUST detect, validate, and build program paths against
+        // the flattened layout too — otherwise the cockpit launch dies here.
+        let temp = resolver_temp_root("repo-flattened")?;
+        let repo = resolver_flattened_plugin_root(&temp, "repo-plugin-flattened")?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            None,
+        ))?;
+
+        let bin = repo.join("scripts/bin");
+        assert_eq!(resolution.selected_repo_path(), repo.as_path());
+        assert_eq!(
+            resolution.programs().list_work_items(),
+            bin.join("list_work_items.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().livespec().program(),
+            bin.join("next.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().drive(),
+            bin.join("drive.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().dispatcher(),
+            bin.join("dispatcher.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().needs_attention(),
+            bin.join("needs_attention.py").display().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_accepts_flattened_installed_cache() -> Result<(), Box<dyn Error>> {
+        // The real installed orchestrator plugin cache carries the FLATTENED
+        // `scripts/bin` layout, so the installed-cache resolution rung must
+        // accept it exactly as a governed checkout would.
+        let temp = resolver_temp_root("cache-flattened")?;
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo)?;
+        let home = temp.join("home");
+        let cached = resolver_flattened_plugin_root(&temp, "cached-plugin-flattened")?;
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        let cache = serde_json::json!({
+            "plugins": {
+                "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": [
+                    {"installPath": cached.display().to_string()}
+                ]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(home),
+        ))?;
+
+        let bin = cached.join("scripts/bin");
+        assert_eq!(
+            resolution.programs().list_work_items(),
+            bin.join("list_work_items.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.programs().needs_attention(),
+            bin.join("needs_attention.py").display().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_fails_loudly_when_neither_layout_present()
+    -> Result<(), Box<dyn Error>> {
+        // A plugin root that carries NEITHER the source `.claude-plugin/scripts/bin`
+        // NOR the flattened `scripts/bin` directory is malformed; the resolver
+        // must fail loudly and name both accepted layouts rather than silently
+        // degrading to bare-name defaults.
+        let temp = resolver_temp_root("neither-layout")?;
+        let explicit_root = temp.join("explicit-plugin-no-bin");
+        fs::create_dir_all(&explicit_root)?;
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT".to_owned(),
+            explicit_root.display().to_string(),
+        );
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(env, temp, None)),
+            Err(error)
+                if error.to_string().contains(
+                    "neither .claude-plugin/scripts/bin nor scripts/bin"
+                )
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn backing_cli_resolution_uses_installed_plugin_cache() -> Result<(), Box<dyn Error>> {
         let temp = resolver_temp_root("cache")?;
         let repo = temp.join("repo-without-plugin");
@@ -3670,6 +3792,32 @@ mod tests {
             resolution.programs().livespec().args(),
             &["next".to_owned(), "--json".to_owned()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_degrades_to_defaults_when_cache_file_absent()
+    -> Result<(), Box<dyn Error>> {
+        // home_dir is present but `~/.claude/plugins/installed_plugins.json`
+        // does not exist. The resolver must read the unreadable-cache case as
+        // "no installed plugin" and degrade to bare-name program defaults,
+        // deterministically — independent of whether the host running the test
+        // happens to carry a real installed cache.
+        let temp = resolver_temp_root("cache-file-absent")?;
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home-without-cache-file");
+        fs::create_dir_all(&repo)?;
+        // Intentionally do NOT create home/.claude/plugins/installed_plugins.json.
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            Some(home),
+        ))?;
+
+        assert_eq!(resolution.selected_repo_path(), repo.as_path());
+        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
+        assert_eq!(resolution.programs().needs_attention(), "needs-attention");
         Ok(())
     }
 

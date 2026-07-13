@@ -137,7 +137,9 @@ impl BackingCliResolution {
         let plugin_root = resolve_plugin_root(inputs, &selected_repo_path)?;
         let mut programs = plugin_root
             .as_deref()
-            .map(programs_from_plugin_root)
+            .and_then(plugin_bin_dir)
+            .as_deref()
+            .map(programs_from_plugin_bin)
             .unwrap_or_default();
         apply_program_overrides(&inputs.env, &mut programs);
         Ok(Self {
@@ -215,10 +217,7 @@ fn resolve_plugin_root(
         return Ok(Some(root));
     }
 
-    if selected_repo_path
-        .join(".claude-plugin/scripts/bin")
-        .is_dir()
-    {
+    if plugin_bin_dir(selected_repo_path).is_some() {
         validate_plugin_root(selected_repo_path)?;
         return Ok(Some(selected_repo_path.to_path_buf()));
     }
@@ -268,8 +267,32 @@ fn installed_plugin_root(
     Ok(None)
 }
 
+/// Return the backing-CLI `bin` directory under a plugin root, accepting BOTH
+/// the SOURCE layout (`<root>/.claude-plugin/scripts/bin`, what a governed spec
+/// checkout carries) and the FLATTENED installed-marketplace-cache layout
+/// (`<root>/scripts/bin`). The Claude plugin installer collapses
+/// `.claude-plugin/scripts/` to `scripts/`, so a resolver that accepts only the
+/// source layout rejects every real installed cache. Source is tried first.
+fn plugin_bin_dir(root: &Path) -> Option<PathBuf> {
+    let source = root.join(".claude-plugin/scripts/bin");
+    if source.is_dir() {
+        return Some(source);
+    }
+    let flattened = root.join("scripts/bin");
+    if flattened.is_dir() {
+        return Some(flattened);
+    }
+    None
+}
+
 fn validate_plugin_root(root: &Path) -> Result<(), BackingCliResolutionError> {
-    let scripts = root.join(".claude-plugin/scripts/bin");
+    let Some(scripts) = plugin_bin_dir(root) else {
+        return Err(BackingCliResolutionError::new(format!(
+            "orchestrator plugin root {} is missing a scripts/bin directory \
+             (neither .claude-plugin/scripts/bin nor scripts/bin)",
+            root.display()
+        )));
+    };
     let expected = [
         "needs_attention.py",
         "list_work_items.py",
@@ -290,8 +313,7 @@ fn validate_plugin_root(root: &Path) -> Result<(), BackingCliResolutionError> {
     Ok(())
 }
 
-fn programs_from_plugin_root(root: &Path) -> BackingCliPrograms {
-    let bin = root.join(".claude-plugin/scripts/bin");
+fn programs_from_plugin_bin(bin: &Path) -> BackingCliPrograms {
     BackingCliPrograms {
         list_work_items: bin.join("list_work_items.py").display().to_string(),
         livespec: CommandShape {
