@@ -73,6 +73,25 @@ pub fn run_interactive_tui(
     selected_repo: &str,
     autonomous_mode_enabled: bool,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
+    let mut effect_sink = DeferredTuiRuntimeEffectSink;
+    run_interactive_tui_with_effect_sink(
+        events,
+        requested_by,
+        selected_repo,
+        autonomous_mode_enabled,
+        &mut effect_sink,
+    )
+}
+
+#[cfg(all(not(test), not(coverage)))]
+/// Run interactive tui with a per-effect sink and return deferred effects.
+pub fn run_interactive_tui_with_effect_sink(
+    events: &[ConsoleEvent],
+    requested_by: &str,
+    selected_repo: &str,
+    autonomous_mode_enabled: bool,
+    effect_sink: &mut dyn TuiRuntimeEffectSink,
+) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -93,6 +112,7 @@ pub fn run_interactive_tui(
         requested_by,
         selected_repo,
         autonomous_mode_enabled,
+        effect_sink,
     );
     let raw_mode_result = disable_raw_mode();
     let alternate_screen_result = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -110,6 +130,7 @@ fn run_terminal_loop(
     requested_by: &str,
     selected_repo: &str,
     autonomous_mode_enabled: bool,
+    effect_sink: &mut dyn TuiRuntimeEffectSink,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
         .with_selected_repo(selected_repo.to_owned())
@@ -143,7 +164,9 @@ fn run_terminal_loop(
         state = step.state().clone();
         let effect = step.effect().clone();
         let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
-        effects.push(effect);
+        if effect_sink.handle_runtime_effect(&effect)? == TuiRuntimeEffectSinkOutcome::Deferred {
+            effects.push(effect);
+        }
         if should_quit {
             return Ok(effects);
         }
@@ -187,6 +210,39 @@ pub enum TuiRuntimeEffect {
     Quit,
     /// Application error variant.
     ApplicationError(ApplicationError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Outcome from handling one TUI runtime effect.
+pub enum TuiRuntimeEffectSinkOutcome {
+    /// The sink applied the effect immediately; callers must not flush it again.
+    Applied,
+    /// The sink deferred the effect; callers should return it for later handling.
+    Deferred,
+}
+
+/// Sink for applying TUI runtime effects as the interactive loop produces them.
+pub trait TuiRuntimeEffectSink {
+    /// Handle one runtime effect.
+    ///
+    /// # Errors
+    /// Returns an IO error when the effect cannot be applied.
+    fn handle_runtime_effect(
+        &mut self,
+        effect: &TuiRuntimeEffect,
+    ) -> std::io::Result<TuiRuntimeEffectSinkOutcome>;
+}
+
+/// Effect sink that preserves the legacy end-of-session flush behavior.
+pub struct DeferredTuiRuntimeEffectSink;
+
+impl TuiRuntimeEffectSink for DeferredTuiRuntimeEffectSink {
+    fn handle_runtime_effect(
+        &mut self,
+        _effect: &TuiRuntimeEffect,
+    ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+        Ok(TuiRuntimeEffectSinkOutcome::Deferred)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,9 +466,10 @@ const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
 fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.overlay() {
         TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. } => Some(TuiTerminalInput::Confirm),
-        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => None,
+        TuiOverlay::Search { .. } | TuiOverlay::Help => None,
         TuiOverlay::None => enter_content_input(model),
     }
 }
@@ -1219,11 +1276,20 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::{
-        TuiRenderError, TuiRuntimeEffect, TuiTerminalInput, action_outcome_effect,
-        attention_item_line, buffer_to_text, detail_lines, key_event_to_terminal_input,
-        render_command_modal, render_detail, render_model, render_summary_detail, render_to_text,
-        step_tui_runtime,
+        DeferredTuiRuntimeEffectSink, TuiRenderError, TuiRuntimeEffect, TuiRuntimeEffectSink,
+        TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_outcome_effect, attention_item_line,
+        buffer_to_text, detail_lines, key_event_to_terminal_input, render_command_modal,
+        render_detail, render_model, render_summary_detail, render_to_text, step_tui_runtime,
     };
+
+    #[test]
+    fn deferred_runtime_effect_sink_defers_effects() {
+        let mut sink = DeferredTuiRuntimeEffectSink;
+
+        let outcome = sink.handle_runtime_effect(&TuiRuntimeEffect::Quit);
+
+        assert!(matches!(outcome, Ok(TuiRuntimeEffectSinkOutcome::Deferred)));
+    }
 
     #[test]
     fn keymap_maps_views_nav_focus_navigation_and_dive_in() {
@@ -1866,6 +1932,10 @@ mod tests {
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Char(':')), &palette),
             Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(':')))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &palette),
+            Some(TuiTerminalInput::Confirm)
         );
     }
 

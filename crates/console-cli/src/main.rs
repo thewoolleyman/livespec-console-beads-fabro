@@ -113,7 +113,7 @@ fn run_store_backed_command(
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
         resolution.programs().dispatcher(),
-        &["drain"],
+        &["loop"],
         &livespec_jsonc_path,
     );
     let repo_path = resolution.drive_repo_arg();
@@ -163,7 +163,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
         resolution.programs().dispatcher(),
-        &["drain"],
+        &["loop"],
         &livespec_jsonc_path,
     );
     let repo_path = resolution.drive_repo_arg();
@@ -300,12 +300,14 @@ impl TuiSessionRunner for InteractiveTuiRunner {
         &mut self,
         events: &[console_domain::ConsoleEvent],
         requested_by: &str,
+        effect_sink: &mut dyn console_tui::TuiRuntimeEffectSink,
     ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
-        console_tui::run_interactive_tui(
+        console_tui::run_interactive_tui_with_effect_sink(
             events,
             requested_by,
             &self.selected_repo,
             self.autonomous_mode_enabled,
+            effect_sink,
         )
         .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
     }

@@ -6390,12 +6390,8 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain: dispatched 3 items", true),
         };
-        let mut port = DispatcherFactoryDrainPort::new(
-            &probe,
-            "dispatcher",
-            &["drain", "--json"],
-            "cfg.jsonc",
-        );
+        let mut port =
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop", "--json"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6408,7 +6404,7 @@ mod tests {
             outcome: SourceProbeOutcome::observed("drain: ready queue empty", true),
         };
         let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6421,7 +6417,7 @@ mod tests {
             outcome: SourceProbeOutcome::observed("drain error", false),
         };
         let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6434,7 +6430,7 @@ mod tests {
             outcome: SourceProbeOutcome::unavailable("dispatcher binary not found"),
         };
         let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6487,15 +6483,15 @@ mod tests {
             observed_args: std::cell::RefCell::new(Vec::new()),
         };
         let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
-        // The armed mode rides the `loop`/drain for this run.
+        // The armed mode rides the `loop` for this run.
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(2)));
         assert_eq!(
             *probe.observed_args.borrow(),
-            ["drain", "--mode", "autonomous"]
+            ["loop", "--mode", "autonomous"]
         );
     }
 
@@ -6507,13 +6503,13 @@ mod tests {
             observed_args: std::cell::RefCell::new(Vec::new()),
         };
         let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
         // A disabled permission never arms the drain.
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(1)));
-        assert_eq!(*probe.observed_args.borrow(), ["drain"]);
+        assert_eq!(*probe.observed_args.borrow(), ["loop"]);
     }
 
     #[test]
@@ -6524,13 +6520,13 @@ mod tests {
             observed_args: std::cell::RefCell::new(Vec::new()),
         };
         let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["drain"], "cfg.jsonc");
+            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
 
         let outcome = port.drain_ready_queue(&drain_request());
 
         // An unreadable config fails soft to disabled -- no arming.
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(0)));
-        assert_eq!(*probe.observed_args.borrow(), ["drain"]);
+        assert_eq!(*probe.observed_args.borrow(), ["loop"]);
     }
 
     // A journal line for one auto-resolved / escalated decision, in the exact
