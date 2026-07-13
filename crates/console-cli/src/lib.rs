@@ -53,7 +53,7 @@ use console_eventstore::{
     CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult, SqliteEventStore,
     StoredCommand,
 };
-use console_tui::TuiRuntimeEffect;
+use console_tui::{TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome};
 
 mod backing_cli;
 
@@ -244,7 +244,73 @@ pub trait TuiSessionRunner {
         &mut self,
         events: &[ConsoleEvent],
         requested_by: &str,
+        effect_sink: &mut dyn TuiRuntimeEffectSink,
     ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>>;
+}
+
+struct StoreBackedTuiRuntimeEffectSink<'a> {
+    store: &'a mut SqliteEventStore,
+    observed_at: &'a str,
+    factory_port: &'a mut dyn FactoryDrainPort,
+    work_item_port: &'a mut dyn OrchestratorActionPort,
+    config_port: &'a mut dyn AutonomousModeArmingPort,
+    persisted_command_count: usize,
+    handled_command_count: usize,
+}
+
+impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
+    fn new(
+        store: &'a mut SqliteEventStore,
+        observed_at: &'a str,
+        factory_port: &'a mut dyn FactoryDrainPort,
+        work_item_port: &'a mut dyn OrchestratorActionPort,
+        config_port: &'a mut dyn AutonomousModeArmingPort,
+    ) -> Self {
+        Self {
+            store,
+            observed_at,
+            factory_port,
+            work_item_port,
+            config_port,
+            persisted_command_count: 0,
+            handled_command_count: 0,
+        }
+    }
+
+    const fn persisted_command_count(&self) -> usize {
+        self.persisted_command_count
+    }
+
+    const fn handled_command_count(&self) -> usize {
+        self.handled_command_count
+    }
+}
+
+impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
+    fn handle_runtime_effect(
+        &mut self,
+        effect: &TuiRuntimeEffect,
+    ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+        let persisted =
+            persist_tui_runtime_effects(self.store, std::slice::from_ref(effect), self.observed_at)
+                .map_err(effect_sink_io_error)?;
+        let factory_handled =
+            handle_pending_factory_commands(self.store, self.observed_at, self.factory_port)
+                .map_err(effect_sink_io_error)?;
+        let _work_item_handled =
+            handle_pending_work_item_commands(self.store, self.observed_at, self.work_item_port)
+                .map_err(effect_sink_io_error)?;
+        let _config_handled =
+            handle_pending_config_commands(self.store, self.observed_at, self.config_port)
+                .map_err(effect_sink_io_error)?;
+        self.persisted_command_count += persisted.len();
+        self.handled_command_count += factory_handled.len();
+        Ok(TuiRuntimeEffectSinkOutcome::Applied)
+    }
+}
+
+fn effect_sink_io_error(error: impl std::fmt::Debug) -> std::io::Error {
+    std::io::Error::other(format!("{error:?}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,7 +407,21 @@ pub fn run_store_backed_tui_session(
     // a lagging needs-attention surface still showing a resolved item.
     let _reflected = observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
     let presented_events = store.list_console_events()?;
-    let effects = runner.run_tui(&presented_events, requested_by)?;
+    let (effects, live_persisted_count, live_handled_count) = {
+        let mut effect_sink = StoreBackedTuiRuntimeEffectSink::new(
+            store,
+            observed_at,
+            factory_port,
+            work_item_port,
+            config_port,
+        );
+        let effects = runner.run_tui(&presented_events, requested_by, &mut effect_sink)?;
+        (
+            effects,
+            effect_sink.persisted_command_count(),
+            effect_sink.handled_command_count(),
+        )
+    };
     let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let _work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
@@ -352,11 +432,13 @@ pub fn run_store_backed_tui_session(
         .iter()
         .map(AdapterIngestionSummary::appended_event_count)
         .sum();
+    let persisted_command_count = live_persisted_count + persisted.len();
+    let handled_command_count = live_handled_count + handled.len();
     Ok(TuiSessionOutcome::new(
         backfilled_event_count,
         presented_events.len(),
-        persisted.len(),
-        handled.len(),
+        persisted_command_count,
+        handled_command_count,
         final_events.len(),
         attention_count,
     ))
@@ -1684,7 +1766,8 @@ mod tests {
         AutonomousDecisionsPort, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
         AutonomousModeArmingRequest, FactoryDrainPort, FactoryDrainPortOutcome,
         FactoryDrainRequest, LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, build_tui_model, project_attention, project_lane_board,
+        OrchestratorActionRequest, PendingValve, TuiInteractionState, TuiOverlay, build_tui_model,
+        project_attention, project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdmissionPolicy, AttentionHandoff,
             AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason, NeedsAttentionReadOutcome,
@@ -1699,7 +1782,7 @@ mod tests {
         CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult,
         SqliteEventStore, StoredCommand,
     };
-    use console_tui::TuiRuntimeEffect;
+    use console_tui::{TuiRuntimeEffect, TuiRuntimeEffectSink, TuiTerminalInput};
 
     use super::{
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
@@ -2690,6 +2773,86 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type() == &EventType::ConfigAutonomousModeEnabled)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_tui_session_applies_valve_effect_before_runner_returns()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut runner = ImmediateValveTuiSessionRunner;
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
+        let empty_sources: Vec<(String, ScriptedSource)> = Vec::new();
+        let sources = scripted_source_refs(&empty_sources);
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "console-pending",
+            "Set admission policy",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-07-13T00:00:00Z",
+            "operator",
+            &mut runner,
+            &sources,
+            &mut factory_port,
+            &mut work_item_port,
+            &mut config_port,
+            &empty_decisions_port(),
+            &needs_attention,
+        );
+
+        let commands = store.list_commands()?;
+        let command = commands.iter().find(|command| {
+            command.command_type() == CommandType::WorkItemSetAdmissionRequested.contract_name()
+        });
+        assert_eq!(command.map(StoredCommand::status), Some("completed"));
+        assert_eq!(
+            work_item_port.observed_action_ids,
+            ["set-admission:console-pending:auto"]
+        );
+        assert!(matches!(
+            outcome,
+            Ok(outcome) if outcome.persisted_command_count() == 1
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_tui_session_maps_live_effect_sink_errors() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut runner = ImmediateValveTuiSessionRunner;
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = ErroringWorkItemActionPort;
+        let mut config_port = SimulatedArmingPort::returning(AutonomousModeArmingOutcome::armed());
+        let empty_sources: Vec<(String, ScriptedSource)> = Vec::new();
+        let sources = scripted_source_refs(&empty_sources);
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "console-pending",
+            "Set admission policy",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-07-13T00:00:00Z",
+            "operator",
+            &mut runner,
+            &sources,
+            &mut factory_port,
+            &mut work_item_port,
+            &mut config_port,
+            &empty_decisions_port(),
+            &needs_attention,
+        );
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::TuiRuntimeFailed)
+        ));
         Ok(())
     }
 
@@ -4353,6 +4516,17 @@ mod tests {
         }
     }
 
+    struct ErroringWorkItemActionPort;
+
+    impl OrchestratorActionPort for ErroringWorkItemActionPort {
+        fn run_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> Result<OrchestratorActionOutcome, ApplicationError> {
+            Err(ApplicationError::FactoryDrainPortFailed)
+        }
+    }
+
     /// Test double standing in for the real autonomous-mode arming port. It
     /// records the repos it was asked to arm and returns a configurable outcome,
     /// so the config-command machinery can be exercised without touching a real
@@ -4549,10 +4723,39 @@ mod tests {
             &mut self,
             events: &[ConsoleEvent],
             requested_by: &str,
+            _effect_sink: &mut dyn TuiRuntimeEffectSink,
         ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
             self.observed_event_count = events.len();
             self.observed_requested_by = requested_by.to_owned();
             Ok(self.effects.clone())
+        }
+    }
+
+    struct ImmediateValveTuiSessionRunner;
+
+    impl TuiSessionRunner for ImmediateValveTuiSessionRunner {
+        fn run_tui(
+            &mut self,
+            events: &[ConsoleEvent],
+            requested_by: &str,
+            effect_sink: &mut dyn TuiRuntimeEffectSink,
+        ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
+            let state = TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::SetAdmission(AdmissionPolicy::Auto),
+                },
+            );
+            let step = console_tui::step_tui_runtime(
+                &state,
+                events,
+                TuiTerminalInput::Confirm,
+                requested_by,
+            );
+            effect_sink
+                .handle_runtime_effect(step.effect())
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+            Ok(Vec::new())
         }
     }
 
@@ -4563,6 +4766,7 @@ mod tests {
             &mut self,
             _events: &[ConsoleEvent],
             _requested_by: &str,
+            _effect_sink: &mut dyn TuiRuntimeEffectSink,
         ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
             Err(ConsoleRuntimeError::TuiRuntimeFailed)
         }
