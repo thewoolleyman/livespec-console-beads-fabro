@@ -115,7 +115,6 @@ fn run_store_backed_command(
         &probe,
         resolution.programs().dispatcher(),
         &["loop", "--repo", repo_path.as_str()],
-        &livespec_jsonc_path,
     );
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
@@ -165,7 +164,6 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &probe,
         resolution.programs().dispatcher(),
         &["loop", "--repo", repo_path.as_str()],
-        &livespec_jsonc_path,
     );
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
