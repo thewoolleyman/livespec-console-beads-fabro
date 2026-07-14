@@ -1156,18 +1156,15 @@ impl FactoryDrainPolicy {
 /// outcome. The host-backed probe is supplied by the binary, so the live drain
 /// never claims an action that did not happen.
 ///
-/// This is the console's autonomous-mode LAUNCHER: on each drain it reads the
-/// orchestrator's single persistent permission key from the consumer's
-/// `.livespec.jsonc` ([`read_autonomous_mode_from_jsonc`]) and, WHILE that key
-/// is enabled, passes `--mode autonomous` to the Dispatcher `loop` subcommand
-/// for that run. The armed mode is never inferred and never persists in the
-/// port -- it is re-derived from the key each run, so revoking the permission
-/// immediately stops arming subsequent runs.
+/// The drain NEVER passes a `--mode` flag to the Dispatcher `loop` subcommand:
+/// the Dispatcher owns its own mode, and the console's persistent
+/// autonomous-mode permission key is read by the orchestrator itself, not
+/// forwarded on the launcher argv. Every drain -- armed or not -- therefore
+/// builds the SAME argv.
 pub struct DispatcherFactoryDrainPort<'a> {
     probe: &'a dyn SourceProbe,
     program: String,
     args: Vec<String>,
-    livespec_jsonc_path: String,
 }
 
 /// Ready-candidate consideration cap for one operator-initiated drain pass.
@@ -1176,38 +1173,11 @@ const OPERATOR_DRAIN_BUDGET: u32 = 50;
 impl<'a> DispatcherFactoryDrainPort<'a> {
     #[must_use]
     /// Construct a new value from its required fields.
-    ///
-    /// `livespec_jsonc_path` is the consumer project's `.livespec.jsonc`; the
-    /// port reads the orchestrator autonomous-mode permission key from it each
-    /// run to decide whether to arm the drain with `--mode autonomous`.
-    pub fn new(
-        probe: &'a dyn SourceProbe,
-        program: &str,
-        args: &[&str],
-        livespec_jsonc_path: &str,
-    ) -> Self {
+    pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
         Self {
             probe,
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-            livespec_jsonc_path: livespec_jsonc_path.to_owned(),
-        }
-    }
-
-    /// Whether the orchestrator autonomous-mode permission key is enabled in the
-    /// consumer's `.livespec.jsonc` right now.
-    ///
-    /// Re-read each drain (the armed mode is per-run and never persisted in the
-    /// port). An unreadable or absent config fails soft to disabled, matching
-    /// the autonomous-mode default-disabled contract.
-    fn autonomous_mode_enabled(&self) -> bool {
-        match self.probe.read_file(&self.livespec_jsonc_path) {
-            SourceProbeOutcome::Observed {
-                stdout,
-                success: true,
-            } => read_autonomous_mode_from_jsonc(&stdout),
-            SourceProbeOutcome::Observed { success: false, .. }
-            | SourceProbeOutcome::Unavailable { .. } => false,
         }
     }
 }
@@ -1221,12 +1191,6 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
         let budget = OPERATOR_DRAIN_BUDGET.to_string();
         arg_refs.push("--budget");
         arg_refs.push(budget.as_str());
-        // The armed mode rides the Dispatcher `loop` per run only while the
-        // permission key is enabled; it is never inferred and never persisted.
-        if self.autonomous_mode_enabled() {
-            arg_refs.push("--mode");
-            arg_refs.push("autonomous");
-        }
         Ok(match self.probe.run_command(&self.program, &arg_refs) {
             SourceProbeOutcome::Observed {
                 stdout,
@@ -6396,8 +6360,7 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain: dispatched 3 items", true),
         };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop", "--json"], "cfg.jsonc");
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop", "--json"]);
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6409,8 +6372,7 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain: ready queue empty", true),
         };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6422,8 +6384,7 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::observed("drain error", false),
         };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6435,8 +6396,7 @@ mod tests {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::unavailable("dispatcher binary not found"),
         };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
 
         let outcome = port.drain_ready_queue(&drain_request());
 
@@ -6455,17 +6415,16 @@ mod tests {
         );
     }
 
-    /// Probe for the autonomous-mode launcher tests: `read_file` returns the
-    /// configured `.livespec.jsonc` text; `run_command` records the drain args
-    /// it was invoked with so a test can assert `--mode autonomous` rides (or
-    /// does not ride) the drain.
-    struct LauncherDrainProbe {
+    /// Probe for the drain-argv tests: `read_file` serves the configured
+    /// `.livespec.jsonc` text; `run_command` records the drain args it was
+    /// invoked with, so a test can assert exactly which flags ride the drain.
+    struct ArgsRecordingDrainProbe {
         config: SourceProbeOutcome,
         drain: SourceProbeOutcome,
         observed_args: std::cell::RefCell<Vec<String>>,
     }
 
-    impl SourceProbe for LauncherDrainProbe {
+    impl SourceProbe for ArgsRecordingDrainProbe {
         fn run_command(&self, _program: &str, args: &[&str]) -> SourceProbeOutcome {
             *self.observed_args.borrow_mut() = args.iter().map(|arg| (*arg).to_owned()).collect();
             self.drain.clone()
@@ -6478,60 +6437,27 @@ mod tests {
 
     const AUTONOMOUS_ENABLED_CONFIG: &str =
         r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":true}}}"#;
-    const AUTONOMOUS_DISABLED_CONFIG: &str =
-        r#"{"livespec-orchestrator-beads-fabro":{"dispatcher":{"autonomous_mode":false}}}"#;
 
     #[test]
-    fn dispatcher_drain_port_arms_autonomous_when_permission_enabled() {
-        let probe = LauncherDrainProbe {
+    fn dispatcher_drain_port_never_passes_a_mode_flag() {
+        let probe = ArgsRecordingDrainProbe {
+            // The strongest fixture for the invariant: the persistent
+            // autonomous-mode permission key is ENABLED.
             config: SourceProbeOutcome::observed(AUTONOMOUS_ENABLED_CONFIG, true),
             drain: SourceProbeOutcome::observed("drain: dispatched 2 items", true),
             observed_args: std::cell::RefCell::new(Vec::new()),
         };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
-
-        let outcome = port.drain_ready_queue(&drain_request());
-
-        // The armed mode rides the `loop` for this run.
-        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(2)));
         assert_eq!(
-            *probe.observed_args.borrow(),
-            ["loop", "--budget", "50", "--mode", "autonomous"]
+            probe.read_file("cfg.jsonc"),
+            SourceProbeOutcome::observed(AUTONOMOUS_ENABLED_CONFIG, true)
         );
-    }
-
-    #[test]
-    fn dispatcher_drain_port_does_not_arm_when_permission_disabled() {
-        let probe = LauncherDrainProbe {
-            config: SourceProbeOutcome::observed(AUTONOMOUS_DISABLED_CONFIG, true),
-            drain: SourceProbeOutcome::observed("drain: dispatched 1 items", true),
-            observed_args: std::cell::RefCell::new(Vec::new()),
-        };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
 
         let outcome = port.drain_ready_queue(&drain_request());
 
-        // A disabled permission never arms the drain.
-        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(1)));
-        assert_eq!(*probe.observed_args.borrow(), ["loop", "--budget", "50"]);
-    }
-
-    #[test]
-    fn dispatcher_drain_port_does_not_arm_when_config_unreadable() {
-        let probe = LauncherDrainProbe {
-            config: SourceProbeOutcome::unavailable("no .livespec.jsonc"),
-            drain: SourceProbeOutcome::observed("drain: dispatched 0 items", true),
-            observed_args: std::cell::RefCell::new(Vec::new()),
-        };
-        let mut port =
-            DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"], "cfg.jsonc");
-
-        let outcome = port.drain_ready_queue(&drain_request());
-
-        // An unreadable config fails soft to disabled -- no arming.
-        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(0)));
+        // Even with the permission armed, the drain passes NO `--mode` flag:
+        // the Dispatcher owns its own mode. Every drain builds the same argv.
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(2)));
         assert_eq!(*probe.observed_args.borrow(), ["loop", "--budget", "50"]);
     }
 
