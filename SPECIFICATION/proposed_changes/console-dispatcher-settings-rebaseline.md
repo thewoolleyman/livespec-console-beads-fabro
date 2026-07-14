@@ -173,6 +173,8 @@ WITH:
 
 **B.2 -- AMEND the "five `work_item.*` commands" paragraph to SIX.** After B.1 the list carries six `work_item.*` entries and B.3 assigns the new command to the SAME bounded context, so the vocabulary genuinely becomes six. Leaving the sentence at "five" would ratify a spec that contradicts itself six lines apart. The distinction it draws is still true and is preserved explicitly: exactly FIVE map 1:1 onto the orchestrator's published `drive` action-id surface; the sixth maps onto the per-setting override action instead.
 
+**The sixth command's mapping is a POSITIVE claim ONLY -- do not re-introduce a negative.** The sixth command's mapping is stated as a POSITIVE claim ONLY ("maps onto the orchestrator's published per-setting override action"). It deliberately does NOT assert what the action is *not* -- e.g. that it is not a `drive` action-id. The design record decides THAT a per-setting override action exists; it does not decide which grammar family the orchestrator puts it in, and the orchestrator's own trajectory suggests it may well ride the existing `drive --action` surface. A positive claim is satisfied wherever the action lands; a negative one would be FALSIFIED by the likeliest landing spot, and could then only be fixed by a whole new proposal -> review -> accept cycle. It would also have this console spec asserting what a SIBLING-owned grammar is not -- an ownership overstep in the same direction the No-Circular-Dependency Directive forbids. Deleting the negative costs no guardrail: the five/six distinction is fully carried by "FIVE of them ... map 1:1 onto ... `drive`" plus the sixth's positive mapping.
+
 REPLACE:
 
 ```text
@@ -214,10 +216,10 @@ item between states (the no-surprise-transitions rule); these semantics and the
 two policy-edit action ids are the orchestrator's ratified contract (repo
 `thewoolleyman/livespec-orchestrator-beads-fabro`, `SPECIFICATION/contracts.md`,
 its Work-item state semantics section and its `drive` action-id surface). The
-SIXTH command, `work_item.set_dispatcher_override_requested`, is not a `drive`
-action-id command: it maps onto the orchestrator's published per-setting
-override action (Dispatcher Policy Settings below), and the console MUST issue
-it ONLY through that surface, never writing the ledger label directly.
+SIXTH command, `work_item.set_dispatcher_override_requested`, maps onto the
+orchestrator's published per-setting override action (Dispatcher Policy
+Settings below), and the console MUST issue it ONLY through that surface,
+never writing the ledger label directly.
 ```
 
 **B.3 -- RETIRE the entire H2 section `## Autonomous Mode`** (from the heading through "...and MUST NOT fabricate success.") and REPLACE it with `## Dispatcher Policy Settings`, carrying two new H3s: `### Factory-drain launcher argv` and `### Settings-surface completeness`.
@@ -695,7 +697,41 @@ This registry is **scenario-keyed** in this repo (entries carry `scenario` / `sc
 - **ADD** `gap-ynlyhqcv` -- B.2's reworded five-map-1:1-onto-`drive` line. It stays on Scenario 11, which its three built tests still fully cover.
 - The reworded TUI clause (`gap-3htwrn56`) does **NOT** return to Scenario 11. It now names SIX commands, and the sixth (override) scene has no test, while Scenario 11's `reason` asserts it is *fully covered* by three built tests. Binding it there would fabricate coverage. It binds to Scenario 10 (E.3), whose `test: "TODO"` declares the pending tier honestly. Extend Scenario 11's `reason` to record this rebinding.
 
-**E.3 -- ADD 5 entries** (`scenario_file: scenarios.md`, `test: "TODO"` + a `reason` naming the pending top-of-pyramid / integration tier -- the gate accepts a `TODO` only when its `reason` acknowledges that tier), binding the remaining new gap-ids. Entry count goes **22 -> 25**.
+**E.3 -- ADD 5 entries** (`scenario_file: scenarios.md`, `test: "TODO"`), binding the remaining new gap-ids. Entry count goes **22 -> 25**.
+
+Each `reason` MUST do TWO things. (1) **Name the tier.** This repo's gate (`console-spec-check`'s `acknowledges_top_of_pyramid_tier`) accepts a `TODO` only when the reason contains `top-of-pyramid`, `integration`, or `acceptance`, case-insensitively. **That keyword set is THIS repo's** -- the sibling orchestrator's port of the same check matches a DIFFERENT set (`tier` / `integration` / `e2e` / `consumer` / `pyramid`), overlapping only on `integration`, and bare `pyramid` does NOT satisfy this repo. A reason copied from a sibling repo can silently fail here. (2) **Name the owner** -- the code child that owes the exercising test. A `TODO` that names its tier but not its owner is a coverage gap with no forcing function, so every reason below ends with a landing clause.
+
+The five `reason` strings, verbatim (each names its tier and its owner; all five pass this repo's keyword gate):
+
+`Scenario 9 -- Operator sets a dispatcher policy setting from the console`:
+
+```text
+Pending top-of-pyramid acceptance test for the dispatcher-settings write path: the Settings > Dispatcher settings row, the single-setting `config.dispatcher_setting_set` command, the ordinary recorded write with no arming ceremony, the orchestrator-owned setting state the console never duplicates, and the not-wired honesty outcome. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the W3 Settings-surface code child -- the same slice that deletes the now-non-conformant LivespecJsoncArmingPort.
+```
+
+`Scenario 10 -- A per-item override beats the global default, except `wip_cap``:
+
+```text
+Pending top-of-pyramid acceptance test for the per-item override valve: an override beating the global default, the `wip_cap` rejection (a per-repo concurrency ceiling admits none), the one-console-command-per-overridable-setting rule, and the TUI driving all six Work-item Lifecycle commands. The six-command TUI clause binds here rather than to Scenario 11 because Scenario 11 is fully covered by built tests while the sixth (override) scene is not yet built. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the W3 Settings-surface code child, which lands the per-item override control.
+```
+
+`Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys`:
+
+```text
+Pending top-of-pyramid integration test for the consumer-side API-to-Settings-to-docs completeness check: it reads the orchestrator's declared API-configurable-key surface and fails when a declared key is missing from the Settings rows or from `docs/settings.md`. Tier: top-of-pyramid integration. Owed by the completeness-check code child, which also creates docs/settings.md -- no docs/ directory exists in this repo yet.
+```
+
+`Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator`:
+
+```text
+Pending top-of-pyramid integration test for the journal-read leg: the console reflects each orchestrator auto-disposition through its own event path and surfaces each escalation as a needs-attention item, re-deriving neither. Tier: top-of-pyramid integration, under crates/console-cli/tests/. Owed by the Dispatcher-journal settings-attribution code child.
+```
+
+`Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument`:
+
+```text
+Pending top-of-pyramid acceptance test for the factory-drain launcher argv: the drain port invokes the Dispatcher with NO per-run policy-arming argument, leaving dispatch-time policy to the orchestrator-owned `dispatcher.*` settings the Dispatcher reads itself. A per-run flag writes no setting, so this is a distinct obligation from the settings-write scenarios and earns its own bound test. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the drain-launcher code child; W1 already fixed the shipped launcher, so this test pins that fix against regression rather than driving new behavior.
+```
 
 The exact gap-ids, harvested by running the real `console-spec-check` binary against the applied change (NOT hand-derived) -- **58** newly-bound clauses in total (57 across the five new entries plus `gap-ynlyhqcv` on Scenario 11):
 
@@ -712,7 +748,7 @@ gap-oustmuv6  gap-p52alykh  gap-5cjdnlb4  gap-yyevgtzl  gap-vmx3esw4  gap-vdunln
 `Scenario 10 -- A per-item override beats the global default, except \`wip_cap\`` -- **10** clauses:
 
 ```text
-gap-6i3hqmed  gap-43ukcnwy  gap-j4myhnt3  gap-xudwpvfd  gap-i77hwadv
+gap-6i3hqmed  gap-43ukcnwy  gap-vdhnpmnj  gap-xudwpvfd  gap-i77hwadv
 gap-lujqie6j  gap-3htwrn56  gap-cfmnxsdp  gap-6mqderrp  gap-xdltweos
 ```
 
@@ -747,7 +783,7 @@ REPLACE the pinned counts and the total WITH:
 
 | File | Before | After |
 |---|---|---|
-| `spec.md` | 15 | 15 (net unchanged: the retired section's clauses are replaced 1-for-1 plus the drain sentence) |
+| `spec.md` | 15 | 15 (net unchanged: the retired section's **12** clauses give way to **12** -- 11 re-expressed plus the new drain sentence) |
 | `contracts.md` | 39 | **57** |
 | `constraints.md` | 19 | **22** |
 | `non-functional-requirements.md` | 52 | 52 (unchanged) |
