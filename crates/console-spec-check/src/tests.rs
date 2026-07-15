@@ -76,16 +76,24 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // contracts.md TUI-Contract clause requiring the operator to drive all five
     // human-valve/policy-edit commands from the TUI through the shared
     // orchestrator action port, with a confirmed destructive reject:
-    // 125 normative clauses, 15/39/19/52. (The v017 C1 revision net-added one
-    // normative clause each to spec.md and constraints.md as the Full Autonomous
-    // Mode and Autonomous-Mode Safety sections were re-scoped to the delegation
-    // model; the v016 CN1 revision added one normative clause to contracts.md;
-    // the earlier v014 console-cruft-cleanup revision added four.)
+    // 125 normative clauses, 15/39/19/52. The W2 dispatcher-settings re-baseline
+    // retired the Full Autonomous Mode / Autonomous Mode / Autonomous-Mode Safety
+    // sections and replaced them with the six-setting Dispatcher Policy Settings
+    // surface, its per-item override valve, the factory-drain launcher argv (no
+    // per-run policy-arming argument), and the consumer-side completeness check;
+    // it also grew the Work-item Lifecycle vocabulary from five commands to six.
+    // spec.md nets unchanged at 15 (the retired section's 12 clauses give way to
+    // 12: 11 re-expressed plus the new drain sentence):
+    // 146 normative clauses, 15/57/22/52. (The v017 C1 revision net-added one
+    // normative clause each to spec.md and constraints.md as the autonomous
+    // sections were re-scoped to the delegation model; the v016 CN1 revision added
+    // one normative clause to contracts.md; the earlier v014 console-cruft-cleanup
+    // revision added four.)
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 39),
-        ("constraints.md", 19),
+        ("contracts.md", 57),
+        ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
     let mut total = 0;
@@ -96,7 +104,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 125,
+        total, 146,
         "total normative clauses across the console spec"
     );
     Ok(())
