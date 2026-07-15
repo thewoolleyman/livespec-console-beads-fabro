@@ -197,177 +197,17 @@
     ]
   },
   {
-    "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited",
-    "scenario_file": "scenarios.md",
-    "test": "crates/console-cli/tests/scenario_9_autonomous_mode.rs::scenario_9_enabling_autonomous_mode_is_confirmed_armed_and_audited",
-    "reason": "",
-    "clauses": [
-      {
-        "gap_id": "gap-la7dkro2",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-2xtsubhp",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-vhboqvzw",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-6rciutpi",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-dkeuago5",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-i2x4e2r2",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-dixkqk3i",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-limelxvu",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-q6abm6xu",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-2u4limdd",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-2mmay3h2",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-fytvjf4u",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-gm2btzyu",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-v64oc63n",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-qggxas4y",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-6arfmvw3",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-xdsl327f",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      },
-      {
-        "gap_id": "gap-ru5ppol2",
-        "scenario": "Scenario 9 -- Enabling full autonomous mode is guarded and audited"
-      }
-    ]
-  },
-  {
-    "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest",
-    "scenario_file": "scenarios.md",
-    "test": "crates/console-cli/tests/scenario_10_autonomous_run.rs::scenario_10_autonomous_run_reflects_the_decidable_and_escalates_the_rest",
-    "reason": "",
-    "clauses": [
-      {
-        "gap_id": "gap-uomftic2",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-4mp2cfxh",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-26vccxwq",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-uabo77di",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-xn2h6o22",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-m75anlh3",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-jxolwtgq",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-sar2uwky",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-4vx27yji",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-5imrwdor",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-77j5vo6p",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-7iest4cl",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-cfqioc2l",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-ngjgkw65",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-44ixef7d",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-kumeoomv",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      },
-      {
-        "gap_id": "gap-m6d25ku4",
-        "scenario": "Scenario 10 -- Autonomous mode resolves the decidable and escalates the rest"
-      }
-    ]
-  },
-  {
     "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/scenario_11_set_admission.rs::scenario_11_set_admission_never_moves_an_item_between_states",
-    "reason": "Top-of-pyramid acceptance/integration test tier under crates/console-cli/tests/ (the Scenario 7 precedent). All three of the scenario's scenes are now built and bound, each riding the shared orchestrator-action port and work_item outcome family: the Approve scene lands crates/console-cli/tests/scenario_11_approve_valve.rs (con-S1), the Reject scene lands crates/console-cli/tests/scenario_11_reject_valve.rs (con-S2), and the set-admission policy-edit scene lands crates/console-cli/tests/scenario_11_set_admission.rs (con-S3). The bound test path names the set-admission scene that completes coverage; the scenario is fully covered.",
+    "reason": "Top-of-pyramid acceptance/integration test tier under crates/console-cli/tests/ (the Scenario 7 precedent). All three of the scenario's scenes are now built and bound, each riding the shared orchestrator-action port and work_item outcome family: the Approve scene lands crates/console-cli/tests/scenario_11_approve_valve.rs (con-S1), the Reject scene lands crates/console-cli/tests/scenario_11_reject_valve.rs (con-S2), and the set-admission policy-edit scene lands crates/console-cli/tests/scenario_11_set_admission.rs (con-S3). The bound test path names the set-admission scene that completes coverage; the scenario is fully covered. The v035 dispatcher-settings re-baseline reworded two of this scenario's clause lines (the `drive` 1:1 mapping sentence and the TUI drive-the-valves clause), so their gap-ids were rebound; the TUI clause now names six commands and binds to Scenario 10, whose override scene is still pending a test.",
     "clauses": [
-      {
-        "gap_id": "gap-zs4i5kyr",
-        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-      },
       {
         "gap_id": "gap-7hcn45eu",
         "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
       },
       {
-        "gap_id": "gap-k4foxdbq",
+        "gap_id": "gap-ynlyhqcv",
         "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
       }
     ]
@@ -667,6 +507,274 @@
       {
         "gap_id": "gap-hmxhswp7",
         "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid acceptance test for the dispatcher-settings write path: the Settings > Dispatcher settings row, the single-setting `config.dispatcher_setting_set` command, the ordinary recorded write with no arming ceremony, the orchestrator-owned setting state the console never duplicates, and the not-wired honesty outcome. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the W3 Settings-surface code child -- the same slice that deletes the now-non-conformant LivespecJsoncArmingPort.",
+    "clauses": [
+      {
+        "gap_id": "gap-mrb6qt3j",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-zzj6x5wp",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xf6id2f2",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-i3ypmoz6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-rtoyduos",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-cyyevbtp",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-z6errbm6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-acibjyuw",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-ihvvtnr4",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-hz7dbvls",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-dayqffnt",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-ih7hpoyh",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xol76tyx",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xefflyiy",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-nekc3fo7",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-lrmpoqgc",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-gbxhbvh6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-miiy3rcc",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-r4n3sljc",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xwwcbmms",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-eoe6ihj2",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-3o7imlnk",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-bg7ur253",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-bs4rorjt",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-oustmuv6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-p52alykh",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-5cjdnlb4",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-yyevgtzl",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-vmx3esw4",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-vdunlnsq",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid acceptance test for the per-item override valve: an override beating the global default, the `wip_cap` rejection (a per-repo concurrency ceiling admits none), the one-console-command-per-overridable-setting rule, and the TUI driving all six Work-item Lifecycle commands. The six-command TUI clause binds here rather than to Scenario 11 because Scenario 11 is fully covered by built tests while the sixth (override) scene is not yet built. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the W3 Settings-surface code child, which lands the per-item override control.",
+    "clauses": [
+      {
+        "gap_id": "gap-6i3hqmed",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-43ukcnwy",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-vdhnpmnj",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-xudwpvfd",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-i77hwadv",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-lujqie6j",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-3htwrn56",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-cfmnxsdp",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-6mqderrp",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-xdltweos",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid integration test for the consumer-side API-to-Settings-to-docs completeness check: it reads the orchestrator's declared API-configurable-key surface and fails when a declared key is missing from the Settings rows or from `docs/settings.md`. Tier: top-of-pyramid integration. Owed by the completeness-check code child, which also creates docs/settings.md -- no docs/ directory exists in this repo yet.",
+    "clauses": [
+      {
+        "gap_id": "gap-u5dlygw2",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-qgh3bive",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-qjcrfd64",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-yfezurch",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-di4d5msq",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid integration test for the journal-read leg: the console reflects each orchestrator auto-disposition through its own event path and surfaces each escalation as a needs-attention item, re-deriving neither. Tier: top-of-pyramid integration, under crates/console-cli/tests/. Owed by the Dispatcher-journal settings-attribution code child.",
+    "clauses": [
+      {
+        "gap_id": "gap-34qvabhn",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-h5nbb7fk",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-dumhd5mg",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-cr2zwgfl",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-4c2sd2bd",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-n7i5m6ya",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-pibyrz3e",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-gi26n6eq",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid acceptance test for the factory-drain launcher argv: the drain port invokes the Dispatcher with NO per-run policy-arming argument, leaving dispatch-time policy to the orchestrator-owned `dispatcher.*` settings the Dispatcher reads itself. A per-run flag writes no setting, so this is a distinct obligation from the settings-write scenarios and earns its own bound test. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the drain-launcher code child; W1 already fixed the shipped launcher, so this test pins that fix against regression rather than driving new behavior.",
+    "clauses": [
+      {
+        "gap_id": "gap-xgf6bv6m",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      },
+      {
+        "gap_id": "gap-zsdfhxxn",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      },
+      {
+        "gap_id": "gap-pictmulm",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      },
+      {
+        "gap_id": "gap-qpuhrnoh",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
       }
     ]
   }
