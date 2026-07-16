@@ -6,10 +6,13 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
+# Internal application crate — never published; enables cargo-deny's
+# allow-wildcard-paths for the versionless internal path deps below.
+publish = false
 
 [dependencies]
-console-application = { path = "../console-application", version = "0.1.0" }
-console-domain = { path = "../console-domain", version = "0.1.0" }
+console-application = { path = "../console-application" }
+console-domain = { path = "../console-domain" }
 crossterm = "0.29.0"
 ratatui = { version = "0.30.2", default-features = false, features = [
   "crossterm_0_29",

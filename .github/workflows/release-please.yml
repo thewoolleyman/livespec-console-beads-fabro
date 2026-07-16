@@ -1,0 +1,67 @@
+# release-please.yml — semver-managed releases via Conventional Commits.
+#
+# Adapted from the fleet reference (livespec core's release-please.yml).
+# This repo is a Cargo WORKSPACE whose member crates inherit their version
+# from the root `[workspace.package].version` via `version.workspace = true`.
+# release-please's native `rust` / `cargo-workspace` support is incompatible
+# with that layout (its Cargo.toml updater rejects a virtual workspace
+# manifest, and the cargo-workspace plugin requires an explicit
+# `[package.version]` in every member), so this uses `release-type: simple`
+# and bumps the SINGLE source-of-truth version — the root
+# `[workspace.package].version` — via the release-please generic updater's
+# `x-release-please-version` annotation (see release-please-config.json
+# `extra-files`). All member crates track it automatically through
+# `version.workspace = true`.
+#
+# Behavior: on every push to master, release-please opens (or updates) a
+# release PR carrying the next-version bump per the Conventional Commits →
+# semver mapping:
+#
+#   feat:                                   → MINOR
+#   fix:                                    → PATCH
+#   feat!:, fix!:, BREAKING CHANGE: footer  → MAJOR
+#   chore, docs, style, refactor, perf,     → no bump
+#   test, build, ci, revert
+#
+# When the release PR merges, release-please tags vX.Y.Z and creates a
+# GitHub Release. That published Release is what triggers
+# `release-binary.yml`, which builds the standalone binary and uploads it
+# as a release asset.
+#
+# Auth model:
+#   release-please MUST authenticate via the livespec GitHub App
+#   installation token (secrets APP_ID + APP_PRIVATE_KEY), NOT the default
+#   `GITHUB_TOKEN`. A GitHub Release authored by `github-actions[bot]`
+#   (i.e. via `GITHUB_TOKEN`) does NOT fire the `release: published` event,
+#   so `release-binary.yml` would never trigger and no binary asset would be
+#   attached. A Release authored via an App installation token DOES fire the
+#   event. (Same App identity backs this repo's `bump-pin-from-dispatch.yml`.)
+
+name: Release Please
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run release-please
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

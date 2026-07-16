@@ -8,8 +8,8 @@ version = "0.0.0"
 cargo-fuzz = true
 
 [dependencies]
-console-application = { path = "../crates/console-application", version = "0.1.0" }
-console-domain = { path = "../crates/console-domain", version = "0.1.0" }
+console-application = { path = "../crates/console-application" }
+console-domain = { path = "../crates/console-domain" }
 libfuzzer-sys = "0.4"
 
 [[bin]]

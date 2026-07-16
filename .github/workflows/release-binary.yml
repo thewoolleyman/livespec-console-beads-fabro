@@ -1,0 +1,67 @@
+# release-binary.yml — build the standalone console binary and attach it to
+# the GitHub Release.
+#
+# Trigger: fires when a GitHub Release is PUBLISHED. In the normal flow that
+# Release is created by `release-please.yml` when its release PR merges (see
+# that file's auth note — the App-token authorship is what makes this
+# `release: published` event fire at all).
+#
+# What it does: checks out the exact released tag, builds the standalone
+# release binary via the repo's own task runner (`just build-release`, which
+# runs `cargo build --release`), then uploads the binary plus a SHA-256
+# checksum as assets on that same Release. End users download the binary
+# directly from the Release page — no local Rust build required.
+#
+# Target: the linux x86_64-unknown-linux-gnu baseline (the fleet runner
+# platform). SQLite is compiled in via rusqlite's `bundled` feature, so the
+# asset is a single self-contained executable. Additional targets (macOS,
+# arm64, musl-static) and signing are deliberately out of scope for this
+# baseline and can be added as a build matrix later.
+
+name: Release Binary
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install pinned binaries via mise
+        uses: jdx/mise-action@v2
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-
+
+      - name: Build the standalone release binary
+        run: just build-release
+
+      - name: Package, checksum, and upload as Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          target="x86_64-unknown-linux-gnu"
+          bin="target/release/livespec-console-beads-fabro"
+          test -x "$bin"
+          asset="livespec-console-beads-fabro-${TAG}-${target}"
+          cp "$bin" "$asset"
+          sha256sum "$asset" > "${asset}.sha256"
+          gh release upload "$TAG" "$asset" "${asset}.sha256" --clobber

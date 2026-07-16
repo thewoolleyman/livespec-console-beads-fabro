@@ -18,7 +18,11 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/thewoolleyman/livespec-console-beads-fabro"
 rust-version = "1.92"
-version = "0.1.0"
+# release-please bumps this single source-of-truth version (release-type:
+# simple + generic updater in release-please-config.json). Every member
+# crate inherits it via `version.workspace = true`. Keep the annotation on
+# the same line as the version literal.
+version = "0.1.0" # x-release-please-version
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
