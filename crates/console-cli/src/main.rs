@@ -166,14 +166,16 @@ fn run_interactive_store_tui() -> Result<(), String> {
         resolution.programs().drive(),
         &["--repo", repo_path.as_str(), "--json"],
     );
-    let autonomous_mode_enabled = derive_autonomous_mode(&mut drive);
+    let dispatcher_settings = DispatcherSettingsPort::new(&mut drive)
+        .read_settings()
+        .unwrap_or(DispatcherSettingsRead::NotObserved);
     let decisions = JournalAutonomousDecisionsPort::new(
         &probe,
         livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
     );
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo.clone(),
-        autonomous_mode_enabled,
+        dispatcher_settings,
     };
     livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
@@ -252,23 +254,10 @@ fn console_repo() -> String {
     )
 }
 
-/// Derive the selected repo's autonomous-mode header flag from the orchestrator's
-/// published settings read, so the live TUI header and toggle reflect the
-/// orchestrator-owned `auto_approve_ready` setting. An unreadable surface is
-/// treated as disabled (the default-off contract). This transitional header
-/// segment is retired with the arming surface by the Settings surface (W4).
-#[cfg(all(not(test), not(coverage)))]
-fn derive_autonomous_mode(drive: &mut DispatcherOrchestratorActionPort<'_>) -> bool {
-    match DispatcherSettingsPort::new(drive).read_settings() {
-        Ok(DispatcherSettingsRead::Observed(settings)) => settings.auto_approve_ready(),
-        Ok(DispatcherSettingsRead::NotObserved) | Err(_) => false,
-    }
-}
-
 #[cfg(all(not(test), not(coverage)))]
 struct InteractiveTuiRunner {
     selected_repo: String,
-    autonomous_mode_enabled: bool,
+    dispatcher_settings: DispatcherSettingsRead,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -283,7 +272,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             events,
             requested_by,
             &self.selected_repo,
-            self.autonomous_mode_enabled,
+            self.dispatcher_settings.clone(),
             effect_sink,
         )
         .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)

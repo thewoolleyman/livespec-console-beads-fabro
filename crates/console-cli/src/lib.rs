@@ -31,11 +31,11 @@ use console_application::source_adapters::{
 use console_application::{
     ApplicationError, AutonomousDecision, AutonomousDecisionsPort, DispatcherSettingsPort,
     FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
-    autonomous_reflection_attention_id, build_tui_model, handle_config_autonomous_mode_set_command,
-    handle_factory_drain_command, handle_work_item_accept_command,
-    handle_work_item_approve_command, handle_work_item_reject_command,
-    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-    project_attention,
+    autonomous_reflection_attention_id, build_tui_model,
+    handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
+    handle_work_item_accept_command, handle_work_item_approve_command,
+    handle_work_item_reject_command, handle_work_item_set_acceptance_command,
+    handle_work_item_set_admission_command, project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
@@ -1083,13 +1083,14 @@ pub fn handle_pending_work_item_commands(
     Ok(outcomes)
 }
 
-/// Handle pending `config.autonomous_mode_set` commands through the settings port.
+/// Handle pending `config.dispatcher_setting_set` commands through the settings
+/// port.
 ///
 /// Each pending command is dispatched to the Configuration context handler,
-/// which guards a dangerous enable, effects the change through the
-/// orchestrator's published `set-config` command surface (via the
-/// [`DispatcherSettingsPort`] built over the shared orchestrator-action port),
-/// and appends the audit event. `handled_at` is the audit event's `occurred_at`.
+/// which effects the one-setting change through the orchestrator's published
+/// `set-config` command surface (via the [`DispatcherSettingsPort`] built over
+/// the shared orchestrator-action port) and appends the audit event.
+/// `handled_at` is the audit event's `occurred_at`.
 ///
 /// # Errors
 /// Returns a console runtime error when a command is malformed or the store
@@ -1108,7 +1109,7 @@ pub fn handle_pending_config_commands(
         let Some((command, payload_json)) = config_command_from_stored(&stored_command)? else {
             continue;
         };
-        let command_outcome = handle_config_autonomous_mode_set_command(
+        let command_outcome = handle_config_dispatcher_setting_set_command(
             &command,
             &payload_json,
             handled_at,
@@ -1125,13 +1126,13 @@ pub fn handle_pending_config_commands(
     Ok(outcomes)
 }
 
-/// Rebuild a `config.autonomous_mode_set` command and its stored `payload_json`
-/// (the `{ repo, enabled, confirmed }` object) from a stored command, or `None`
-/// when the stored command is not a configuration command.
+/// Rebuild a `config.dispatcher_setting_set` command and its stored
+/// `payload_json` (the `{ repo, setting, value }` object) from a stored command,
+/// or `None` when the stored command is not a configuration command.
 fn config_command_from_stored(
     stored_command: &StoredCommand,
 ) -> ConsoleRuntimeResult<Option<(CommandEnvelope, String)>> {
-    if stored_command.command_type() != CommandType::ConfigAutonomousModeSet.contract_name() {
+    if stored_command.command_type() != CommandType::ConfigDispatcherSettingSet.contract_name() {
         return Ok(None);
     }
     let Some(aggregate_id) = stored_command.aggregate_id() else {
@@ -1141,7 +1142,7 @@ fn config_command_from_stored(
     };
     let command = CommandEnvelope::new(
         stored_command.command_id().to_owned(),
-        CommandType::ConfigAutonomousModeSet,
+        CommandType::ConfigDispatcherSettingSet,
         aggregate_id.to_owned(),
         stored_command.idempotency_key().to_owned(),
         stored_command.requested_by().to_owned(),
@@ -2711,10 +2712,10 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_tui_session_persists_and_arms_a_payload_bearing_autonomous_command()
+    fn store_backed_tui_session_persists_and_effects_a_payload_bearing_setting_write()
     -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
-        let mut runner = ScriptedTuiSessionRunner::new(vec![autonomous_enable_effect()]);
+        let mut runner = ScriptedTuiSessionRunner::new(vec![dispatcher_setting_set_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list();
@@ -2735,22 +2736,21 @@ mod tests {
         );
         assert!(outcome.is_ok());
 
-        // The payload-bearing effect is persisted with its { repo, enabled,
-        // confirmed } payload intact, so the Configuration handler parses it and
-        // completes the command (an empty `{}` payload would be rejected).
+        // The payload-bearing effect is persisted with its { repo, setting, value }
+        // payload intact, so the Configuration handler parses it and completes the
+        // command (an empty `{}` payload would be rejected).
         let commands = store.list_commands()?;
-        let autonomous = commands.iter().find(|command| {
-            command.command_type() == CommandType::ConfigAutonomousModeSet.contract_name()
+        let setting = commands.iter().find(|command| {
+            command.command_type() == CommandType::ConfigDispatcherSettingSet.contract_name()
         });
-        assert_eq!(autonomous.map(StoredCommand::status), Some("completed"));
+        assert_eq!(setting.map(StoredCommand::status), Some("completed"));
         assert_eq!(
-            autonomous.map(|command| command.payload_json().contains(r#""confirmed":true"#)),
+            setting.map(|command| command.payload_json().contains(r#""value":true"#)),
             Some(true)
         );
 
-        // The setting write rode the shared orchestrator-action port (the
-        // autonomous-enable bridge writes `auto_approve_ready`), and the audit
-        // event is recorded through the same path.
+        // The setting write rode the shared orchestrator-action port, and the
+        // change audit event is recorded through the same path.
         assert_eq!(
             work_item_port.observed_action_ids,
             ["set-config:auto_approve_ready:true"]
@@ -2759,7 +2759,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| event.event_type() == &EventType::ConfigAutonomousModeEnabled)
+                .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged)
         );
         Ok(())
     }
@@ -3325,25 +3325,25 @@ mod tests {
     fn config_command_append(payload_json: &str) -> CommandAppend {
         CommandAppend::new(
             CommandEnvelope::new(
-                "cmd_autonomous".to_owned(),
-                CommandType::ConfigAutonomousModeSet,
+                "cmd_setting".to_owned(),
+                CommandType::ConfigDispatcherSettingSet,
                 "livespec-console-beads-fabro".to_owned(),
-                "livespec-console-beads-fabro:config.autonomous_mode_set".to_owned(),
+                "livespec-console-beads-fabro:config.dispatcher_setting_set".to_owned(),
                 "operator".to_owned(),
             ),
             "2026-07-11T00:00:00Z".to_owned(),
             Some("livespec-console-beads-fabro".to_owned()),
-            "corr_cmd_autonomous".to_owned(),
+            "corr_cmd_setting".to_owned(),
             payload_json.to_owned(),
         )
     }
 
     #[test]
-    fn pending_config_autonomous_mode_set_arms_through_port_and_is_idempotent()
+    fn pending_config_dispatcher_setting_set_effects_through_port_and_is_idempotent()
     -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
         store.append_command(&config_command_append(
-            r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#,
+            r#"{"repo":"livespec-console-beads-fabro","setting":"auto_approve_ready","value":true}"#,
         ))?;
         let mut port = SimulatedWorkItemActionPort::default();
 
@@ -3352,20 +3352,20 @@ mod tests {
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].command_status(), "completed");
-        // The enable was effected through the orchestrator's `set-config` action.
+        // The write was effected through the orchestrator's `set-config` action.
         assert_eq!(
             port.observed_action_ids,
             ["set-config:auto_approve_ready:true"]
         );
         let commands = store.list_commands()?;
-        assert_eq!(commands[0].command_type(), "config.autonomous_mode_set");
+        assert_eq!(commands[0].command_type(), "config.dispatcher_setting_set");
         assert_eq!(commands[0].status(), "completed");
-        // The audit event was persisted.
+        // The change audit event was persisted.
         let events = store.list_console_events()?;
         assert!(
             events
                 .iter()
-                .any(|event| event.event_type() == &EventType::ConfigAutonomousModeEnabled)
+                .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged)
         );
 
         // A second pass skips the already-completed command: no re-write.
@@ -3405,7 +3405,7 @@ mod tests {
         assert!(matches!(
             outcome,
             Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidAutonomousModePayload
+                ApplicationError::InvalidDispatcherSettingPayload
             ))
         ));
         // The malformed command never reached the settings port.
@@ -3416,11 +3416,11 @@ mod tests {
     #[test]
     fn config_command_reconstruction_requires_aggregate() {
         let stored_command = StoredCommand::new(
-            "cmd_autonomous".to_owned(),
+            "cmd_setting".to_owned(),
             "configuration".to_owned(),
-            "config.autonomous_mode_set".to_owned(),
+            "config.dispatcher_setting_set".to_owned(),
             None,
-            "idem_autonomous".to_owned(),
+            "idem_setting".to_owned(),
             "operator".to_owned(),
             "pending".to_owned(),
         );
@@ -3429,7 +3429,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_autonomous"
+            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_setting"
         ));
     }
 
@@ -4446,21 +4446,22 @@ mod tests {
         ))
     }
 
-    /// A payload-bearing autonomous-mode enable effect, as the TUI's
-    /// type-to-confirm modal produces it: a `config.autonomous_mode_set` command
-    /// carrying the `{ repo, enabled, confirmed }` payload the Configuration
-    /// handler reads.
-    fn autonomous_enable_effect() -> TuiRuntimeEffect {
+    /// A payload-bearing dispatcher-setting write effect, as a Settings-row edit
+    /// produces it: a `config.dispatcher_setting_set` command carrying the
+    /// `{ repo, setting, value }` payload the Configuration handler reads.
+    fn dispatcher_setting_set_effect() -> TuiRuntimeEffect {
         TuiRuntimeEffect::PersistCommandWithPayload {
             command: CommandEnvelope::new(
-                "cmd_autonomous_mode_set_livespec-console-beads-fabro_true".to_owned(),
-                CommandType::ConfigAutonomousModeSet,
+                "cmd_config_dispatcher_setting_set_livespec-console-beads-fabro_auto_approve_ready_true"
+                    .to_owned(),
+                CommandType::ConfigDispatcherSettingSet,
                 "livespec-console-beads-fabro".to_owned(),
-                "livespec-console-beads-fabro:config.autonomous_mode_set:enabled=true".to_owned(),
+                "livespec-console-beads-fabro:config.dispatcher_setting_set:auto_approve_ready=true"
+                    .to_owned(),
                 "operator".to_owned(),
             ),
             payload_json:
-                r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#
+                r#"{"repo":"livespec-console-beads-fabro","setting":"auto_approve_ready","value":true}"#
                     .to_owned(),
         }
     }
@@ -4841,16 +4842,16 @@ mod tests {
             }
             if self.mode == ScriptedStoreMode::ConfigAppendFails {
                 return vec![StoredCommand::new(
-                    "cmd_autonomous".to_owned(),
+                    "cmd_setting".to_owned(),
                     "configuration".to_owned(),
-                    "config.autonomous_mode_set".to_owned(),
+                    "config.dispatcher_setting_set".to_owned(),
                     Some("livespec-console-beads-fabro".to_owned()),
-                    "livespec-console-beads-fabro:config.autonomous_mode_set".to_owned(),
+                    "livespec-console-beads-fabro:config.dispatcher_setting_set".to_owned(),
                     "operator".to_owned(),
                     "pending".to_owned(),
                 )
                 .with_payload_json(
-                    r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#
+                    r#"{"repo":"livespec-console-beads-fabro","setting":"auto_approve_ready","value":true}"#
                         .to_owned(),
                 )];
             }

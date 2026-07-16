@@ -513,8 +513,8 @@
   {
     "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Pending top-of-pyramid acceptance test for the dispatcher-settings write path: the Settings > Dispatcher settings row, the single-setting `config.dispatcher_setting_set` command, the ordinary recorded write with no arming ceremony, the orchestrator-owned setting state the console never duplicates, and the not-wired honesty outcome. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the W3 Settings-surface code child -- the same slice that deletes the now-non-conformant LivespecJsoncArmingPort.",
+    "test": "crates/console-cli/tests/scenario_9_dispatcher_setting.rs",
+    "reason": "Top-of-pyramid acceptance test for the dispatcher-settings write path, driving the console command pump end to end over the real DispatcherOrchestratorActionPort: the single-setting `config.dispatcher_setting_set` command, the ordinary recorded write with no arming ceremony, the orchestrator-owned setting state the console never duplicates (the write rides `drive.py --action set-config:<key>:<value>`, never a `.livespec.jsonc` write), the `config.dispatcher_setting.changed` audit with previous/new values, and the not-wired honesty outcome. The Settings-surface TUI slice (six-row content pane, per-setting detail help, and the Enter/Space edit that emits the command with no confirm modal) is unit-covered in console-application and console-tui; this acceptance test covers the handler round-trip.",
     "clauses": [
       {
         "gap_id": "gap-mrb6qt3j",

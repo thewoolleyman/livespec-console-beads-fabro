@@ -103,6 +103,8 @@ pub enum TuiView {
     Events,
     /// Repos variant.
     Repos,
+    /// Settings variant -- the dispatcher-settings surface.
+    Settings,
 }
 
 impl TuiView {
@@ -115,6 +117,7 @@ impl TuiView {
             Self::Lanes,
             Self::Events,
             Self::Repos,
+            Self::Settings,
         ]
     }
 
@@ -127,6 +130,7 @@ impl TuiView {
             Self::Lanes => "Lanes",
             Self::Events => "Events",
             Self::Repos => "Repos",
+            Self::Settings => "Settings",
         }
     }
 }
@@ -288,14 +292,6 @@ pub enum TuiOverlay {
         /// Index of the currently selected action within the modal's action list.
         selected_action_index: usize,
     },
-    /// Autonomous-mode type-to-confirm variant: the dangerous enable modal that
-    /// gates a `config.autonomous_mode_set` submit until the operator types the
-    /// confirmation phrase (the selected repo's id). Enabling full autonomous
-    /// mode is dangerous, so it is never submitted straight from the toggle.
-    AutonomousModeConfirm {
-        /// The confirmation text the operator has typed so far.
-        typed: String,
-    },
     /// Help variant: a read-only keybinding reference opened with `?` and
     /// dismissed with `Esc` or `?`. It carries no state and submits nothing.
     Help,
@@ -322,11 +318,7 @@ impl TuiOverlay {
     pub fn query(&self) -> Option<&str> {
         match self {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
-            Self::None
-            | Self::CommandModal { .. }
-            | Self::AutonomousModeConfirm { .. }
-            | Self::ValveConfirm { .. }
-            | Self::Help => None,
+            Self::None | Self::CommandModal { .. } | Self::ValveConfirm { .. } | Self::Help => None,
         }
     }
 
@@ -340,22 +332,6 @@ impl TuiOverlay {
             Self::None
             | Self::Search { .. }
             | Self::CommandPalette { .. }
-            | Self::AutonomousModeConfirm { .. }
-            | Self::ValveConfirm { .. }
-            | Self::Help => None,
-        }
-    }
-
-    #[must_use]
-    /// Return the confirmation text typed into the autonomous-mode confirm modal,
-    /// or `None` for any other overlay.
-    pub fn autonomous_confirm_typed(&self) -> Option<&str> {
-        match self {
-            Self::AutonomousModeConfirm { typed } => Some(typed),
-            Self::None
-            | Self::Search { .. }
-            | Self::CommandPalette { .. }
-            | Self::CommandModal { .. }
             | Self::ValveConfirm { .. }
             | Self::Help => None,
         }
@@ -371,7 +347,6 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
-            | Self::AutonomousModeConfirm { .. }
             | Self::Help => None,
         }
     }
@@ -408,9 +383,6 @@ pub enum TuiInteraction {
     DrillIntoLane,
     /// Return to lane overview variant.
     ReturnToLaneOverview,
-    /// Open the autonomous-mode type-to-confirm modal (the dangerous enable
-    /// path for the selected repo).
-    OpenAutonomousModeConfirm,
     /// Move focus from the Views nav to the Content pane (the `Enter`/`right`
     /// dive-in from the nav).
     FocusContent,
@@ -448,7 +420,8 @@ pub struct TuiInteractionState {
     detail_max_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
-    autonomous_mode_enabled: bool,
+    selected_setting_index: usize,
+    dispatcher_settings: DispatcherSettingsRead,
 }
 
 impl TuiInteractionState {
@@ -465,7 +438,8 @@ impl TuiInteractionState {
             detail_max_scroll: 0,
             overlay,
             selected_repo: String::new(),
-            autonomous_mode_enabled: false,
+            selected_setting_index: 0,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
         }
     }
 
@@ -486,7 +460,8 @@ impl TuiInteractionState {
             detail_max_scroll: 0,
             overlay,
             selected_repo: String::new(),
-            autonomous_mode_enabled: false,
+            selected_setting_index: 0,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
         }
     }
 
@@ -557,19 +532,31 @@ impl TuiInteractionState {
 
     #[must_use]
     /// Return this value with the selected repo replaced. The composition root
-    /// sets the repo whose autonomous-mode toggle and header indicator the TUI
-    /// presents.
+    /// sets the repo the operator's writes target -- the Settings-view setting
+    /// edits and the valve confirmations.
     pub fn with_selected_repo(mut self, selected_repo: String) -> Self {
         self.selected_repo = selected_repo;
         self
     }
 
     #[must_use]
-    /// Return this value with the selected repo's derived autonomous-mode flag
-    /// replaced. The composition root derives it from the repo's `.livespec.jsonc`
-    /// (an absent key is disabled) and the TUI only reflects it.
-    pub const fn with_autonomous_mode_enabled(mut self, autonomous_mode_enabled: bool) -> Self {
-        self.autonomous_mode_enabled = autonomous_mode_enabled;
+    /// Return this value with the selected setting row (the Settings view's
+    /// content selection) replaced.
+    pub const fn with_selected_setting_index(mut self, selected_setting_index: usize) -> Self {
+        self.selected_setting_index = selected_setting_index;
+        self
+    }
+
+    #[must_use]
+    /// Return this value with the observed dispatcher settings replaced. The
+    /// composition root reads them once from the orchestrator's published read
+    /// surface; the console holds no setting state of its own and only renders
+    /// what it observed (an unreadable surface stays `NotObserved`).
+    pub const fn with_dispatcher_settings(
+        mut self,
+        dispatcher_settings: DispatcherSettingsRead,
+    ) -> Self {
+        self.dispatcher_settings = dispatcher_settings;
         self
     }
 
@@ -625,16 +612,21 @@ impl TuiInteractionState {
     }
 
     #[must_use]
-    /// Return the selected repo whose autonomous-mode toggle and header
-    /// indicator the TUI presents.
+    /// Return the selected repo whose dispatcher settings the TUI presents.
     pub fn selected_repo(&self) -> &str {
         &self.selected_repo
     }
 
     #[must_use]
-    /// Return the selected repo's derived autonomous-mode flag.
-    pub const fn autonomous_mode_enabled(&self) -> bool {
-        self.autonomous_mode_enabled
+    /// Return the selected setting row (the Settings view's content selection).
+    pub const fn selected_setting_index(&self) -> usize {
+        self.selected_setting_index
+    }
+
+    #[must_use]
+    /// Return the dispatcher settings the console observed for the selected repo.
+    pub const fn dispatcher_settings(&self) -> &DispatcherSettingsRead {
+        &self.dispatcher_settings
     }
 }
 
@@ -761,7 +753,8 @@ pub struct TuiScreenModel {
     detail_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
-    autonomous_mode_enabled: bool,
+    selected_setting_index: Option<usize>,
+    dispatcher_settings: DispatcherSettingsRead,
     unavailable_sources: Vec<String>,
     header: String,
     footer: String,
@@ -854,17 +847,24 @@ impl TuiScreenModel {
     }
 
     #[must_use]
-    /// Return the selected repo whose autonomous-mode toggle and header
-    /// indicator this model presents.
+    /// Return the selected repo whose dispatcher settings this model presents.
     pub fn selected_repo(&self) -> &str {
         &self.selected_repo
     }
 
     #[must_use]
-    /// Return whether autonomous mode is active for the selected repo, derived
-    /// from that repo's `.livespec.jsonc` (an absent key is disabled).
-    pub const fn autonomous_mode_enabled(&self) -> bool {
-        self.autonomous_mode_enabled
+    /// Return the dispatcher settings the console observed for the selected repo,
+    /// rendered by the `Settings` view. The console holds no setting state of its
+    /// own; an unreadable read surface stays `NotObserved`.
+    pub const fn dispatcher_settings(&self) -> &DispatcherSettingsRead {
+        &self.dispatcher_settings
+    }
+
+    #[must_use]
+    /// Return the selected setting row in the `Settings` view, present only while
+    /// that view is active; `None` otherwise.
+    pub const fn selected_setting_index(&self) -> Option<usize> {
+        self.selected_setting_index
     }
 
     #[must_use]
@@ -893,15 +893,13 @@ impl TuiScreenModel {
     /// segment's names (to `+N more`, then to a bare count) and drops the
     /// low-value constant fields (`mode: tui`, then `fleet: livespec`), before it
     /// ever drops a lower-value field (`view` — already shown highlighted in the
-    /// nav pane — then the `attention` count). The `repo` and `autonomous` fields
-    /// are never dropped, and — while any
-    /// source is unavailable — the source COUNT is never dropped, so the header
-    /// always keeps the cockpit-blind-vs-idle tell. At a width wide enough for
-    /// everything this returns the same content as [`header`](Self::header).
+    /// nav pane — then the `attention` count). The `repo` field is never dropped,
+    /// and — while any source is unavailable — the source COUNT is never dropped,
+    /// so the header always keeps the cockpit-blind-vs-idle tell. At a width wide
+    /// enough for everything this returns the same content as [`header`](Self::header).
     pub fn header_line(&self, width: usize) -> String {
         fit_header_line(
             header_repo_label(&self.selected_repo),
-            autonomous_mode_header_label(self.autonomous_mode_enabled),
             self.active_view.label(),
             self.attention_items.len(),
             &self.unavailable_sources,
@@ -963,14 +961,18 @@ pub enum ApplicationError {
     /// `work_item.set_acceptance_requested` command carried a payload whose
     /// `policy` was absent or not one of {ai-only, human-only, ai-then-human}.
     InvalidAcceptancePolicy,
-    /// Invalid autonomous-mode payload variant -- a `config.autonomous_mode_set`
-    /// command carried a payload that was malformed, missing a required
-    /// `repo` / `enabled` / `confirmed` field, or carried an empty `repo`.
-    InvalidAutonomousModePayload,
-    /// Autonomous-mode confirmation mismatch variant -- the operator confirmed
-    /// the dangerous enable modal without typing the required confirmation
-    /// phrase (the selected repo's id), so the enable is not submitted.
-    AutonomousModeConfirmationMismatch,
+    /// Invalid dispatcher-setting payload variant -- a
+    /// `config.dispatcher_setting_set` command carried a payload that was
+    /// malformed, missing a required `repo` / `setting` / `value` field, named an
+    /// unknown setting, or carried a value of the wrong type for that setting.
+    InvalidDispatcherSettingPayload,
+    /// Dispatcher settings not observed variant -- an edit was attempted on the
+    /// Settings view while the orchestrator's read surface had not produced a
+    /// trustworthy read, so there is no effective value to edit.
+    DispatcherSettingsNotObserved,
+    /// No selected dispatcher setting variant -- an edit was attempted with no
+    /// Settings row selected.
+    NoSelectedDispatcherSetting,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
     /// No selected attention item variant.
@@ -990,10 +992,11 @@ pub enum OperatorActionOutcome {
     /// Persist command variant.
     PersistCommand(CommandEnvelope),
     /// Persist a command carrying an operator-supplied JSON payload. Used by the
-    /// autonomous-mode arming command, whose `{ repo, enabled, confirmed }`
-    /// payload the Configuration context reads back (the payload-less
-    /// `PersistCommand` path persists an empty `{}` object, which that handler
-    /// would reject).
+    /// payload-bearing commands whose object the handler reads back -- the
+    /// `config.dispatcher_setting_set` write (`{ repo, setting, value }`) and the
+    /// payload-bearing work-item valves (`{ mode }` / `{ policy }`) -- since the
+    /// payload-less `PersistCommand` path persists an empty `{}` object those
+    /// handlers would reject.
     PersistCommandWithPayload {
         /// The command envelope to persist.
         command: CommandEnvelope,
@@ -1157,10 +1160,9 @@ impl FactoryDrainPolicy {
 /// never claims an action that did not happen.
 ///
 /// The drain NEVER passes a `--mode` flag to the Dispatcher `loop` subcommand:
-/// the Dispatcher owns its own mode, and the console's persistent
-/// autonomous-mode permission key is read by the orchestrator itself, not
-/// forwarded on the launcher argv. Every drain -- armed or not -- therefore
-/// builds the SAME argv.
+/// the Dispatcher owns its own mode, read from the orchestrator's own policy
+/// settings, not forwarded on the launcher argv. Every drain therefore builds
+/// the SAME argv.
 pub struct DispatcherFactoryDrainPort<'a> {
     probe: &'a dyn SourceProbe,
     program: String,
@@ -1723,6 +1725,14 @@ pub fn build_tui_model_for_state(
         }
         _ => None,
     };
+    let selected_setting_index = match active_view {
+        TuiView::Settings => Some(
+            state
+                .selected_setting_index()
+                .min(DispatcherSettingRow::all().len() - 1),
+        ),
+        _ => None,
+    };
     TuiScreenModel {
         active_view,
         navigation: TuiView::all().to_vec(),
@@ -1737,22 +1747,22 @@ pub fn build_tui_model_for_state(
         detail_scroll: state.detail_scroll(),
         overlay,
         selected_repo: state.selected_repo().to_owned(),
-        autonomous_mode_enabled: state.autonomous_mode_enabled(),
+        selected_setting_index,
+        dispatcher_settings: state.dispatcher_settings().clone(),
         // The canonical, untruncated header. The source-health segment sits LAST
         // (after attention) so that when a narrow terminal cannot hold every
         // field, `header_line` degrades from the right — dropping the low-value
         // constants and eliding source names — while the operationally-important
-        // repo / autonomous / view / attention fields survive. See `header_line`.
+        // repo / view / attention fields survive. See `header_line`.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | autonomous: {} | view: {} | attention: {}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}",
             header_repo_label(state.selected_repo()),
-            autonomous_mode_header_label(state.autonomous_mode_enabled()),
             active_view.label(),
             attention_count,
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
-        footer: "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+        footer: "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
             .to_owned(),
     }
 }
@@ -1766,12 +1776,6 @@ fn header_repo_label(selected_repo: &str) -> &str {
     } else {
         selected_repo
     }
-}
-
-/// The header's autonomous-mode segment: `on` when autonomous mode is active for
-/// the selected repo, else `off`.
-const fn autonomous_mode_header_label(enabled: bool) -> &'static str {
-    if enabled { "on" } else { "off" }
 }
 
 /// The distinct backing-source names that degraded to a not-observed finding in
@@ -1852,11 +1856,10 @@ enum Shrink {
 /// a fixed display order and, while the line is over `width`, applies the shrink
 /// plan one step at a time — eliding source names, then dropping the constant
 /// `mode`/`fleet` fields, then the lower-value `view`/`attention` fields —
-/// re-measuring after each step and stopping as soon as it fits. `repo` and
-/// `autonomous` are never dropped.
+/// re-measuring after each step and stopping as soon as it fits. `repo` is never
+/// dropped.
 fn fit_header_line(
     repo: &str,
-    autonomous: &str,
     view: &str,
     attention: usize,
     unavailable_sources: &[String],
@@ -1864,18 +1867,17 @@ fn fit_header_line(
 ) -> String {
     // Fixed display order; `Some` = present, `None` = dropped to make room. Each
     // field is atomic — kept or dropped whole, never mid-truncated.
-    let mut fields: [Option<String>; 6] = [
-        Some("fleet: livespec".to_owned()),        // 0 — constant identity
-        Some("mode: tui".to_owned()),              // 1 — constant
-        Some(format!("repo: {repo}")),             // 2 — never dropped
-        Some(format!("autonomous: {autonomous}")), // 3 — never dropped
-        Some(format!("view: {view}")),             // 4
-        Some(format!("attention: {attention}")),   // 5
+    let mut fields: [Option<String>; 5] = [
+        Some("fleet: livespec".to_owned()),      // 0 — constant identity
+        Some("mode: tui".to_owned()),            // 1 — constant
+        Some(format!("repo: {repo}")),           // 2 — never dropped
+        Some(format!("view: {view}")),           // 3
+        Some(format!("attention: {attention}")), // 4
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<String>; 6], source_idx: usize| -> String {
+    let compose = |fields: &[Option<String>; 5], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_deref())
@@ -1897,8 +1899,8 @@ fn fit_header_line(
         Shrink::DropField(0),  // fleet: livespec
         Shrink::DegradeSource, // full names -> +N more
         Shrink::DegradeSource, // +N more -> count only
-        Shrink::DropField(4),  // view (already shown, highlighted, in the nav pane)
-        Shrink::DropField(5),  // attention count
+        Shrink::DropField(3),  // view (already shown, highlighted, in the nav pane)
+        Shrink::DropField(4),  // attention count
     ];
 
     let mut line = compose(&fields, source_idx);
@@ -1964,13 +1966,6 @@ pub fn reduce_tui_interaction(
         }
         TuiInteraction::DrillIntoLane => drill_into_lane(state),
         TuiInteraction::ReturnToLaneOverview => state.clone().with_lane_focus(LaneFocus::Overview),
-        TuiInteraction::OpenAutonomousModeConfirm => {
-            state
-                .clone()
-                .with_overlay(TuiOverlay::AutonomousModeConfirm {
-                    typed: String::new(),
-                })
-        }
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
         TuiInteraction::FocusDetail => state.clone().with_focus(FocusPane::Detail),
@@ -2015,14 +2010,27 @@ fn is_lane_overview(state: &TuiInteractionState) -> bool {
     state.active_view() == TuiView::Lanes && state.lane_focus() == LaneFocus::Overview
 }
 
-/// Move the selection down, routed to the lane overview row when the lane
-/// overview is active, else to the attention list.
+/// Whether the `Settings` view is active, where up/down moves the selected
+/// setting row rather than the attention selection.
+fn is_settings_view(state: &TuiInteractionState) -> bool {
+    state.active_view() == TuiView::Settings
+}
+
+/// Move the selection down, routed to the lane overview row or the settings row
+/// when one of those views is active, else to the attention list.
 fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiInteractionState {
     if is_lane_overview(state) {
         state.clone().with_selected_lane_index(move_selection_down(
             Lane::all().len(),
             state.selected_lane_index(),
         ))
+    } else if is_settings_view(state) {
+        state
+            .clone()
+            .with_selected_setting_index(move_selection_down(
+                DispatcherSettingRow::all().len(),
+                state.selected_setting_index(),
+            ))
     } else {
         state
             .clone()
@@ -2037,13 +2045,17 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
     }
 }
 
-/// Move the selection up, routed to the lane overview row when the lane
-/// overview is active, else to the attention list.
+/// Move the selection up, routed to the lane overview row or the settings row
+/// when one of those views is active, else to the attention list.
 fn select_previous(state: &TuiInteractionState) -> TuiInteractionState {
     if is_lane_overview(state) {
         state
             .clone()
             .with_selected_lane_index(move_selection_up(state.selected_lane_index()))
+    } else if is_settings_view(state) {
+        state
+            .clone()
+            .with_selected_setting_index(move_selection_up(state.selected_setting_index()))
     } else {
         state
             .clone()
@@ -2090,90 +2102,66 @@ pub fn resolve_selected_operator_action(
     })
 }
 
-/// Whether the operator's typed confirmation phrase matches the required phrase.
+/// Resolve the edit of the selected `Settings` row into a single per-setting
+/// write.
 ///
-/// The required phrase to enable autonomous mode for `repo` is the repo's own
-/// id, so the operator must type the exact repo they are arming. An empty repo
-/// can never match.
-#[must_use]
-pub fn autonomous_mode_confirmation_matches(typed: &str, repo: &str) -> bool {
-    !repo.trim().is_empty() && typed.trim() == repo.trim()
-}
-
-/// Resolve the autonomous-mode ENABLE submit from the type-to-confirm modal.
-///
-/// Enabling full autonomous mode is dangerous, so the submit is gated: it is
-/// produced only when the overlay is the autonomous-mode confirm modal AND the
-/// operator typed the confirmation phrase (the selected repo's id). The
-/// resulting command carries `{ repo, enabled: true, confirmed: true }`.
+/// Editing a dispatcher setting is an ORDINARY recorded write: it produces a
+/// `config.dispatcher_setting_set` command for the one setting under the cursor,
+/// carrying the NEXT value (a flipped bool, a cycled enum, or an incremented
+/// int) computed from the effective value the console observed. There is NO
+/// type-to-confirm modal or any other arming ceremony -- enabling a dangerous
+/// setting rides the exact same path as any other operator command.
 ///
 /// # Errors
 /// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
-/// blank, [`ApplicationError::NoSelectedOperatorAction`] when the overlay is not
-/// the confirm modal, and [`ApplicationError::AutonomousModeConfirmationMismatch`]
-/// when the typed phrase does not match -- in which case the enable is not
-/// submitted.
-pub fn resolve_autonomous_mode_enable(
-    model: &TuiScreenModel,
-    requested_by: &str,
-) -> ApplicationResult<OperatorActionOutcome> {
-    validate_operator_action(requested_by)?;
-    let typed = model
-        .overlay()
-        .autonomous_confirm_typed()
-        .ok_or(ApplicationError::NoSelectedOperatorAction)?;
-    let repo = model.selected_repo();
-    if !autonomous_mode_confirmation_matches(typed, repo) {
-        return Err(ApplicationError::AutonomousModeConfirmationMismatch);
-    }
-    Ok(autonomous_mode_set_outcome(repo, true, true, requested_by))
-}
-
-/// Resolve the autonomous-mode DISABLE submit for the selected repo.
-///
-/// Disabling requires no confirmation, so it is produced directly (no modal).
-/// The resulting command carries `{ repo, enabled: false, confirmed: false }`.
-///
-/// # Errors
-/// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
-/// blank and [`ApplicationError::InvalidAutonomousModePayload`] when no repo is
+/// blank, [`ApplicationError::DispatcherSettingsNotObserved`] when no
+/// trustworthy read produced the effective values, and
+/// [`ApplicationError::NoSelectedDispatcherSetting`] when no Settings row is
 /// selected.
-pub fn resolve_autonomous_mode_disable(
+pub fn resolve_dispatcher_setting_edit(
     model: &TuiScreenModel,
     requested_by: &str,
 ) -> ApplicationResult<OperatorActionOutcome> {
     validate_operator_action(requested_by)?;
-    let repo = model.selected_repo();
-    if repo.trim().is_empty() {
-        return Err(ApplicationError::InvalidAutonomousModePayload);
-    }
-    Ok(autonomous_mode_set_outcome(
-        repo,
-        false,
-        false,
+    let DispatcherSettingsRead::Observed(settings) = model.dispatcher_settings() else {
+        return Err(ApplicationError::DispatcherSettingsNotObserved);
+    };
+    let index = model
+        .selected_setting_index()
+        .ok_or(ApplicationError::NoSelectedDispatcherSetting)?;
+    let row = DispatcherSettingRow::all()
+        .get(index)
+        .ok_or(ApplicationError::NoSelectedDispatcherSetting)?;
+    let write = row.next_write(settings);
+    Ok(dispatcher_setting_set_outcome(
+        model.selected_repo(),
+        &write,
         requested_by,
     ))
 }
 
-/// Build the `config.autonomous_mode_set` persist outcome for `repo`, carrying
-/// the `{ repo, enabled, confirmed }` payload the Configuration context reads.
-fn autonomous_mode_set_outcome(
+/// Build the `config.dispatcher_setting_set` persist outcome for `repo`,
+/// carrying the `{ repo, setting, value }` payload the Configuration context
+/// reads back. This is the one and only console command that changes a global
+/// default, and it changes exactly one setting.
+fn dispatcher_setting_set_outcome(
     repo: &str,
-    enabled: bool,
-    confirmed: bool,
+    write: &DispatcherSettingWrite,
     requested_by: &str,
 ) -> OperatorActionOutcome {
+    let key = write.key();
+    let value_literal = write.value_literal();
     let command = CommandEnvelope::new(
-        format!("cmd_autonomous_mode_set_{repo}_{enabled}"),
-        CommandType::ConfigAutonomousModeSet,
+        format!("cmd_config_dispatcher_setting_set_{repo}_{key}_{value_literal}"),
+        CommandType::ConfigDispatcherSettingSet,
         repo.to_owned(),
-        format!("{repo}:config.autonomous_mode_set:enabled={enabled}"),
+        format!("{repo}:config.dispatcher_setting_set:{key}={value_literal}"),
         requested_by.to_owned(),
     );
     let payload_json = serde_json::json!({
         "repo": repo,
-        "enabled": enabled,
-        "confirmed": confirmed,
+        "setting": key,
+        "value": write.value_json(),
     })
     .to_string();
     OperatorActionOutcome::PersistCommandWithPayload {
@@ -2442,15 +2430,12 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::FactoryDrainFailed
         | EventType::FactoryDrainNotWired
         | EventType::FactoryDrainRequested
-        | EventType::FactoryDrainStarted
-        | EventType::FactoryAutonomousModeEnableRequested
-        | EventType::FactoryAutonomousModeDisableRequested
-        | EventType::FactoryAutonomousModeNotWired => "factory",
+        | EventType::FactoryDrainStarted => "factory",
         EventType::WorkItemActionStarted
         | EventType::WorkItemActionCompleted
         | EventType::WorkItemActionFailed
         | EventType::WorkItemActionNotWired => "work_item",
-        EventType::ConfigAutonomousModeEnabled | EventType::ConfigAutonomousModeDisabled => {
+        EventType::ConfigDispatcherSettingChanged | EventType::ConfigDispatcherSettingNotWired => {
             "configuration"
         }
         EventType::WorkItemSnapshotObserved
@@ -2793,24 +2778,20 @@ fn work_item_command_event(
 // Configuration context — dispatcher-settings read/write through the API.
 // ---------------------------------------------------------------------------
 
-/// The parsed `{ repo, enabled, confirmed }` payload of a
-/// `config.autonomous_mode_set` command.
+/// The parsed `{ repo, setting, value }` payload of a
+/// `config.dispatcher_setting_set` command: the target repo plus the single
+/// typed [`DispatcherSettingWrite`] it changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AutonomousModeSetRequest {
+pub struct DispatcherSettingSetRequest {
     repo: String,
-    enabled: bool,
-    confirmed: bool,
+    write: DispatcherSettingWrite,
 }
 
-impl AutonomousModeSetRequest {
+impl DispatcherSettingSetRequest {
     #[must_use]
     /// Construct a new value from its required fields.
-    pub const fn new(repo: String, enabled: bool, confirmed: bool) -> Self {
-        Self {
-            repo,
-            enabled,
-            confirmed,
-        }
+    pub const fn new(repo: String, write: DispatcherSettingWrite) -> Self {
+        Self { repo, write }
     }
 
     #[must_use]
@@ -2820,44 +2801,81 @@ impl AutonomousModeSetRequest {
     }
 
     #[must_use]
-    /// Whether the command requests autonomous mode enabled.
-    pub const fn enabled(&self) -> bool {
-        self.enabled
+    /// Return the single setting write this command effects.
+    pub const fn write(&self) -> &DispatcherSettingWrite {
+        &self.write
     }
 
-    #[must_use]
-    /// Whether the operator explicitly confirmed the change.
-    pub const fn confirmed(&self) -> bool {
-        self.confirmed
-    }
-
-    /// Parse the `{ repo, enabled, confirmed }` payload from a command's
-    /// persisted `payload_json`.
+    /// Parse the `{ repo, setting, value }` payload from a command's persisted
+    /// `payload_json`.
     ///
     /// # Errors
-    /// Returns [`ApplicationError::InvalidAutonomousModePayload`] when the JSON
-    /// is malformed, a required field is absent or the wrong type, or `repo` is
-    /// empty.
+    /// Returns [`ApplicationError::InvalidDispatcherSettingPayload`] when the JSON
+    /// is malformed, a required field is absent, `repo` is empty, `setting` names
+    /// no known key, or `value` is the wrong type for that setting.
     pub fn from_payload_json(payload_json: &str) -> ApplicationResult<Self> {
         let value: serde_json::Value = serde_json::from_str(payload_json)
-            .map_err(|_error| ApplicationError::InvalidAutonomousModePayload)?;
+            .map_err(|_error| ApplicationError::InvalidDispatcherSettingPayload)?;
         let repo = value
             .get("repo")
             .and_then(serde_json::Value::as_str)
-            .ok_or(ApplicationError::InvalidAutonomousModePayload)?;
+            .ok_or(ApplicationError::InvalidDispatcherSettingPayload)?;
         if repo.trim().is_empty() {
-            return Err(ApplicationError::InvalidAutonomousModePayload);
+            return Err(ApplicationError::InvalidDispatcherSettingPayload);
         }
-        let enabled = value
-            .get("enabled")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or(ApplicationError::InvalidAutonomousModePayload)?;
-        let confirmed = value
-            .get("confirmed")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or(ApplicationError::InvalidAutonomousModePayload)?;
-        Ok(Self::new(repo.to_owned(), enabled, confirmed))
+        let setting = value
+            .get("setting")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ApplicationError::InvalidDispatcherSettingPayload)?;
+        let setting_value = value
+            .get("value")
+            .ok_or(ApplicationError::InvalidDispatcherSettingPayload)?;
+        let write = dispatcher_setting_write_from_key_value(setting, setting_value)
+            .ok_or(ApplicationError::InvalidDispatcherSettingPayload)?;
+        Ok(Self::new(repo.to_owned(), write))
     }
+}
+
+/// Build the typed [`DispatcherSettingWrite`] for one `{ setting, value }` pair,
+/// or `None` when `setting` names no known key or `value` is the wrong type for
+/// that setting. The mapping is exhaustive over the six keys, so a key the type
+/// system knows is handled here too.
+fn dispatcher_setting_write_from_key_value(
+    setting: &str,
+    value: &serde_json::Value,
+) -> Option<DispatcherSettingWrite> {
+    match setting {
+        "auto_approve_ready" => value
+            .as_bool()
+            .map(DispatcherSettingWrite::AutoApproveReady),
+        "merge_on_review_cap" => value
+            .as_bool()
+            .map(DispatcherSettingWrite::MergeOnReviewCap),
+        "acceptance_mode" => value
+            .as_str()
+            .and_then(acceptance_policy_from_label)
+            .map(DispatcherSettingWrite::AcceptanceMode),
+        "review_fix_cap" => u32_from_json(value).map(DispatcherSettingWrite::ReviewFixCap),
+        "acceptance_rework_cap" => {
+            u32_from_json(value).map(DispatcherSettingWrite::AcceptanceReworkCap)
+        }
+        "wip_cap" => u32_from_json(value).map(DispatcherSettingWrite::WipCap),
+        _unknown => None,
+    }
+}
+
+/// Parse an [`AcceptancePolicy`] from its kebab-case label, or `None`.
+fn acceptance_policy_from_label(label: &str) -> Option<AcceptancePolicy> {
+    AcceptancePolicy::all()
+        .iter()
+        .copied()
+        .find(|policy| policy.label() == label)
+}
+
+/// Read a JSON number as a `u32`, or `None` when it is not a non-negative
+/// integer in range.
+fn u32_from_json(value: &serde_json::Value) -> Option<u32> {
+    value.as_u64().and_then(|number| u32::try_from(number).ok())
 }
 
 /// One of the six API-configurable dispatcher settings paired with the value to
@@ -2908,6 +2926,236 @@ impl DispatcherSettingWrite {
             }
         }
     }
+
+    #[must_use]
+    /// The value as typed JSON for the `config.dispatcher_setting_set` payload's
+    /// `value` field: a JSON bool for a bool, a JSON string (the kebab-case
+    /// label) for [`AcceptancePolicy`], and a JSON number for an int.
+    pub fn value_json(&self) -> serde_json::Value {
+        match self {
+            Self::AutoApproveReady(value) | Self::MergeOnReviewCap(value) => {
+                serde_json::Value::Bool(*value)
+            }
+            Self::AcceptanceMode(policy) => serde_json::Value::String(policy.label().to_owned()),
+            Self::ReviewFixCap(value) | Self::AcceptanceReworkCap(value) | Self::WipCap(value) => {
+                serde_json::Value::Number((*value).into())
+            }
+        }
+    }
+}
+
+/// The largest value the console proposes when cycling an integer setting row;
+/// `Enter`/`Space` increments by one and wraps back to [`INT_SETTING_MIN`] past
+/// this ceiling. The console owns no policy semantics -- the orchestrator is the
+/// authority on a value's legality -- so this is only the operator-facing dial
+/// range, never a persisted bound.
+const INT_SETTING_MAX: u32 = 9;
+
+/// The smallest value the integer-setting dial proposes; the caps are per-run
+/// ceilings for which zero is never a useful operator proposal, so the dial
+/// wraps to one rather than zero.
+const INT_SETTING_MIN: u32 = 1;
+
+/// One step of the integer-setting dial: increment by one, wrapping from
+/// [`INT_SETTING_MAX`] back to [`INT_SETTING_MIN`] (an observed value below the
+/// minimum, including zero, is nudged up to the minimum).
+const fn cycled_int_setting(value: u32) -> u32 {
+    if value >= INT_SETTING_MAX || value < INT_SETTING_MIN {
+        INT_SETTING_MIN
+    } else {
+        value + 1
+    }
+}
+
+/// The six dispatcher policy settings the `Settings` view renders, in display
+/// order.
+///
+/// This is the single source of truth binding each row's label, inline
+/// help, dangerous-ness, rendered value, and per-edit write, so the surface and
+/// its edits can never drift from each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatcherSettingRow {
+    /// The `auto_approve_ready` bool row.
+    AutoApproveReady,
+    /// The `merge_on_review_cap` bool row.
+    MergeOnReviewCap,
+    /// The `acceptance_mode` enum row.
+    AcceptanceMode,
+    /// The `review_fix_cap` int row.
+    ReviewFixCap,
+    /// The `acceptance_rework_cap` int row.
+    AcceptanceReworkCap,
+    /// The `wip_cap` int row.
+    WipCap,
+}
+
+impl DispatcherSettingRow {
+    #[must_use]
+    /// The six rows in display order.
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::AutoApproveReady,
+            Self::MergeOnReviewCap,
+            Self::AcceptanceMode,
+            Self::ReviewFixCap,
+            Self::AcceptanceReworkCap,
+            Self::WipCap,
+        ]
+    }
+
+    #[must_use]
+    /// The operator-facing row label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::AutoApproveReady => "Auto-approve ready",
+            Self::MergeOnReviewCap => "Merge on review cap",
+            Self::AcceptanceMode => "Acceptance mode",
+            Self::ReviewFixCap => "Review fix cap",
+            Self::AcceptanceReworkCap => "Acceptance rework cap",
+            Self::WipCap => "WIP cap",
+        }
+    }
+
+    #[must_use]
+    /// The row's inline help. A dangerous row's help carries the
+    /// "dangerous / use with caution" label (see [`Self::dangerous`]).
+    pub const fn help(&self) -> &'static str {
+        match self {
+            Self::AutoApproveReady => {
+                "dangerous / use with caution -- when on, the factory auto-approves a ready \
+                 work-item with no human in the loop. Enter/Space toggles."
+            }
+            Self::MergeOnReviewCap => {
+                "dangerous / use with caution -- when on, the factory merges a change once the \
+                 review-fix cap is reached with no human sign-off. Enter/Space toggles."
+            }
+            Self::AcceptanceMode => {
+                "dangerous / use with caution when ai-only -- how a work-item is accepted: \
+                 ai-then-human, ai-only (AI auto-accepts, no human), or human-only. \
+                 Enter/Space cycles."
+            }
+            Self::ReviewFixCap => {
+                "the review-fix attempt ceiling before the factory escalates to a human. \
+                 Enter/Space increments (wraps)."
+            }
+            Self::AcceptanceReworkCap => {
+                "the acceptance-rework attempt ceiling before the factory escalates to a human. \
+                 Enter/Space increments (wraps)."
+            }
+            Self::WipCap => {
+                "the per-repo concurrency ceiling (no per-item override). \
+                 Enter/Space increments (wraps)."
+            }
+        }
+    }
+
+    #[must_use]
+    /// Whether a non-default value of this setting lets the factory act without a
+    /// human, so every UI surface labels it "dangerous / use with caution".
+    pub const fn dangerous(&self) -> bool {
+        matches!(
+            self,
+            Self::AutoApproveReady | Self::MergeOnReviewCap | Self::AcceptanceMode
+        )
+    }
+
+    #[must_use]
+    /// The effective value of this row, rendered as the operator sees it.
+    pub fn value(&self, settings: &DispatcherSettings) -> String {
+        match self {
+            Self::AutoApproveReady => bool_label(settings.auto_approve_ready()).to_owned(),
+            Self::MergeOnReviewCap => bool_label(settings.merge_on_review_cap()).to_owned(),
+            Self::AcceptanceMode => settings.acceptance_mode().label().to_owned(),
+            Self::ReviewFixCap => settings.review_fix_cap().to_string(),
+            Self::AcceptanceReworkCap => settings.acceptance_rework_cap().to_string(),
+            Self::WipCap => settings.wip_cap().to_string(),
+        }
+    }
+
+    #[must_use]
+    /// The single-setting write an edit of this row submits: a flipped bool, the
+    /// enum cycled one step, or the int incremented (wrapping).
+    pub fn next_write(&self, settings: &DispatcherSettings) -> DispatcherSettingWrite {
+        match self {
+            Self::AutoApproveReady => {
+                DispatcherSettingWrite::AutoApproveReady(!settings.auto_approve_ready())
+            }
+            Self::MergeOnReviewCap => {
+                DispatcherSettingWrite::MergeOnReviewCap(!settings.merge_on_review_cap())
+            }
+            Self::AcceptanceMode => DispatcherSettingWrite::AcceptanceMode(rotate(
+                AcceptancePolicy::all(),
+                settings.acceptance_mode(),
+                true,
+            )),
+            Self::ReviewFixCap => {
+                DispatcherSettingWrite::ReviewFixCap(cycled_int_setting(settings.review_fix_cap()))
+            }
+            Self::AcceptanceReworkCap => DispatcherSettingWrite::AcceptanceReworkCap(
+                cycled_int_setting(settings.acceptance_rework_cap()),
+            ),
+            Self::WipCap => DispatcherSettingWrite::WipCap(cycled_int_setting(settings.wip_cap())),
+        }
+    }
+}
+
+/// A `Settings` view row prepared for rendering: the label, the effective value,
+/// the inline help for the detail pane, and whether the row is dangerous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingRow {
+    label: &'static str,
+    value: String,
+    help: &'static str,
+    dangerous: bool,
+}
+
+impl SettingRow {
+    #[must_use]
+    /// The operator-facing row label.
+    pub const fn label(&self) -> &'static str {
+        self.label
+    }
+
+    #[must_use]
+    /// The effective value the console observed for this row.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    #[must_use]
+    /// The row's inline help for the detail pane.
+    pub const fn help(&self) -> &'static str {
+        self.help
+    }
+
+    #[must_use]
+    /// Whether the row is dangerous (labelled "dangerous / use with caution").
+    pub const fn dangerous(&self) -> bool {
+        self.dangerous
+    }
+}
+
+/// Build the six `Settings` rows from the effective values the console observed,
+/// in display order.
+///
+/// The `Settings` view renders these; an unobserved read surface has no rows to
+/// render (the caller degrades to a not-observed finding).
+#[must_use]
+pub fn dispatcher_setting_rows(settings: &DispatcherSettings) -> Vec<SettingRow> {
+    DispatcherSettingRow::all()
+        .iter()
+        .map(|row| SettingRow {
+            label: row.label(),
+            value: row.value(settings),
+            help: row.help(),
+            dangerous: row.dangerous(),
+        })
+        .collect()
+}
+
+/// The operator-facing on/off label for a bool setting value.
+const fn bool_label(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 /// The `config` read action-id: the orchestrator reports every effective
@@ -3375,51 +3623,39 @@ impl AutonomousDecisionsPort for JournalAutonomousDecisionsPort<'_> {
     }
 }
 
-/// Handle a `config.autonomous_mode_set` command.
+/// Handle a `config.dispatcher_setting_set` command.
 ///
-/// The Configuration context's arming command. It parses the
-/// `{ repo, enabled, confirmed }` payload and guards a dangerous enable: an
-/// enable without `confirmed` true is REJECTED with no effect -- no settings
-/// write and no audit event, only a `command.rejected` event. On acceptance it
-/// effects the change through the orchestrator's published `set-config` command
-/// surface (via [`DispatcherSettingsPort`], writing the `auto_approve_ready`
-/// setting) rather than the orchestrator's `.livespec.jsonc` directly, and when
-/// the write completes appends the matching `config.autonomous_mode.enabled` /
-/// `config.autonomous_mode.disabled` audit event carrying
-/// `{ repo, actor, occurred_at }`. A not-wired or failed write surfaces
-/// `factory.autonomous_mode.not_wired` and no audit event, never a fabricated
-/// success.
-///
-/// This is the transitional bridge from the retired single autonomous-mode
-/// boolean onto the six-setting surface; the `config.autonomous_mode_set`
-/// command and its TUI toggle are retired by the Settings surface (W4).
+/// The Configuration context's per-setting write. It parses the
+/// `{ repo, setting, value }` payload into a single typed
+/// [`DispatcherSettingWrite`], reads the effective value the setting had before
+/// the write (for the audit fact), then effects the change through the
+/// orchestrator's published `set-config` command surface (via
+/// [`DispatcherSettingsPort`]) rather than the orchestrator's `.livespec.jsonc`
+/// directly. On a completed write it appends the durable
+/// `config.dispatcher_setting.changed` audit event carrying
+/// `{ repo, setting, previous, new, actor, occurred_at }`. A not-wired or failed
+/// write surfaces `config.dispatcher_setting.not_wired` and NO changed event,
+/// never a fabricated success. There is NO arming ceremony: enabling a dangerous
+/// setting rides this exact path like any other write.
 ///
 /// # Errors
-/// Returns [`ApplicationError::InvalidAutonomousModePayload`] when the payload
+/// Returns [`ApplicationError::InvalidDispatcherSettingPayload`] when the payload
 /// is malformed, and surfaces a port error when the port cannot produce a
 /// trustworthy outcome.
-pub fn handle_config_autonomous_mode_set_command(
+pub fn handle_config_dispatcher_setting_set_command(
     command: &CommandEnvelope,
     payload_json: &str,
     occurred_at: &str,
     settings_port: &mut DispatcherSettingsPort<'_>,
 ) -> ApplicationResult<ConfigCommandOutcome> {
-    let request = AutonomousModeSetRequest::from_payload_json(payload_json)?;
-    if request.enabled() && !request.confirmed() {
-        // Dangerous-enable guard: reject with no effect (no settings write, no
-        // audit event) -- only the rejection is recorded.
-        let reason = "autonomous mode enable requires explicit confirmation";
-        return Ok(ConfigCommandOutcome::new(
-            "rejected".to_owned(),
-            vec![config_command_event(
-                command,
-                EventType::CommandRejected,
-                "rejected",
-                1,
-                &serde_json::json!({ "reason": reason, "repo": request.repo() }).to_string(),
-            )],
-        ));
-    }
+    let request = DispatcherSettingSetRequest::from_payload_json(payload_json)?;
+    let write = request.write();
+    // The effective value before the write, for the audit fact. An unreadable
+    // read surface yields a null `previous` rather than a fabricated value.
+    let previous_value = match settings_port.read_settings()? {
+        DispatcherSettingsRead::Observed(settings) => previous_setting_value_json(&settings, write),
+        DispatcherSettingsRead::NotObserved => serde_json::Value::Null,
+    };
     let mut events = vec![config_command_event(
         command,
         EventType::CommandAccepted,
@@ -3427,34 +3663,18 @@ pub fn handle_config_autonomous_mode_set_command(
         1,
         "{}",
     )];
-    let write = DispatcherSettingWrite::AutoApproveReady(request.enabled());
-    let command_status = match settings_port.write_setting(&write)? {
+    let command_status = match settings_port.write_setting(write)? {
         OrchestratorActionOutcome::Completed => {
-            let (factory_event, audit_event) = if request.enabled() {
-                (
-                    EventType::FactoryAutonomousModeEnableRequested,
-                    EventType::ConfigAutonomousModeEnabled,
-                )
-            } else {
-                (
-                    EventType::FactoryAutonomousModeDisableRequested,
-                    EventType::ConfigAutonomousModeDisabled,
-                )
-            };
             events.push(config_command_event(
                 command,
-                factory_event,
-                "arming_requested",
+                EventType::ConfigDispatcherSettingChanged,
+                "changed",
                 2,
-                &serde_json::json!({ "repo": request.repo() }).to_string(),
-            ));
-            events.push(config_command_event(
-                command,
-                audit_event,
-                "audited",
-                3,
                 &serde_json::json!({
                     "repo": request.repo(),
+                    "setting": write.key(),
+                    "previous": previous_value,
+                    "new": write.value_json(),
                     "actor": command.requested_by(),
                     "occurred_at": occurred_at,
                 })
@@ -3464,19 +3684,46 @@ pub fn handle_config_autonomous_mode_set_command(
         }
         OrchestratorActionOutcome::NotWired | OrchestratorActionOutcome::Failed => {
             // The settings write did not land (no real surface, or the action
-            // failed). Emit the honest not-wired outcome and NO audit event
+            // failed). Emit the honest not-wired outcome and NO changed event
             // rather than fabricating success.
             events.push(config_command_event(
                 command,
-                EventType::FactoryAutonomousModeNotWired,
+                EventType::ConfigDispatcherSettingNotWired,
                 "not_wired",
                 2,
-                &serde_json::json!({ "repo": request.repo() }).to_string(),
+                &serde_json::json!({ "repo": request.repo(), "setting": write.key() }).to_string(),
             ));
             "not_wired"
         }
     };
     Ok(ConfigCommandOutcome::new(command_status.to_owned(), events))
+}
+
+/// The effective value one setting had BEFORE a write, as typed JSON for the
+/// `config.dispatcher_setting.changed` audit fact's `previous` field. Reads the
+/// field the `write` targets from the pre-write [`DispatcherSettings`].
+fn previous_setting_value_json(
+    settings: &DispatcherSettings,
+    write: &DispatcherSettingWrite,
+) -> serde_json::Value {
+    match write {
+        DispatcherSettingWrite::AutoApproveReady(_) => {
+            serde_json::Value::Bool(settings.auto_approve_ready())
+        }
+        DispatcherSettingWrite::MergeOnReviewCap(_) => {
+            serde_json::Value::Bool(settings.merge_on_review_cap())
+        }
+        DispatcherSettingWrite::AcceptanceMode(_) => {
+            serde_json::Value::String(settings.acceptance_mode().label().to_owned())
+        }
+        DispatcherSettingWrite::ReviewFixCap(_) => {
+            serde_json::Value::Number(settings.review_fix_cap().into())
+        }
+        DispatcherSettingWrite::AcceptanceReworkCap(_) => {
+            serde_json::Value::Number(settings.acceptance_rework_cap().into())
+        }
+        DispatcherSettingWrite::WipCap(_) => serde_json::Value::Number(settings.wip_cap().into()),
+    }
 }
 
 /// Build one Configuration-context command event, carrying `payload_json`, from
@@ -3751,7 +3998,6 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         TuiOverlay::None
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => None,
     }
@@ -3767,7 +4013,6 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => overlay.clone(),
     }
@@ -3815,9 +4060,6 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
             query: format!("{query}{value}"),
         },
-        TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
-            typed: format!("{typed}{value}"),
-        },
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -3832,9 +4074,6 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         },
         TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
             query: drop_last_char(query),
-        },
-        TuiOverlay::AutonomousModeConfirm { typed } => TuiOverlay::AutonomousModeConfirm {
-            typed: drop_last_char(typed),
         },
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
@@ -3861,7 +4100,6 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => overlay.clone(),
     }
@@ -3877,7 +4115,6 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::Help => overlay.clone(),
     }
@@ -3907,9 +4144,10 @@ fn view_summary_items(active_view: TuiView, events: &[ConsoleEvent]) -> Vec<View
         TuiView::Spec => spec_view_items(events),
         TuiView::Events => events_view_items(events),
         TuiView::Repos => repos_view_items(events),
-        // The Attention and Lanes views render their own projections (the
-        // attention list / detail and the lane board), not summary rows.
-        TuiView::Attention | TuiView::Lanes => Vec::new(),
+        // The Attention, Lanes, and Settings views render their own projections
+        // (the attention list / detail, the lane board, the dispatcher-settings
+        // rows), not summary rows.
+        TuiView::Attention | TuiView::Lanes | TuiView::Settings => Vec::new(),
     }
 }
 
@@ -4078,11 +4316,8 @@ impl AttentionEvent for EventType {
             Self::AttentionItemAppeared => "Attention item appeared",
             Self::AttentionItemChanged => "Attention item changed",
             Self::AttentionItemResolved => "Attention item resolved",
-            Self::ConfigAutonomousModeEnabled => "Autonomous mode enabled",
-            Self::ConfigAutonomousModeDisabled => "Autonomous mode disabled",
-            Self::FactoryAutonomousModeEnableRequested => "Autonomous mode enable requested",
-            Self::FactoryAutonomousModeDisableRequested => "Autonomous mode disable requested",
-            Self::FactoryAutonomousModeNotWired => "Autonomous mode arming not wired",
+            Self::ConfigDispatcherSettingChanged => "Dispatcher setting changed",
+            Self::ConfigDispatcherSettingNotWired => "Dispatcher setting not wired",
         }
     }
 }
@@ -4101,22 +4336,22 @@ mod tests {
     };
     use super::{
         ApplicationError, AttentionDetail, AttentionEvent, AttentionItem, AutonomousAudit,
-        AutonomousDecisionsPort, AutonomousModeSetRequest, ConfigCommandOutcome,
-        DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, DispatcherSettingWrite,
-        DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy,
-        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
-        JournalAutonomousDecisionsPort, LaneFocus, OperatorAction, OperatorActionOutcome,
-        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, PendingValve,
-        RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-        autonomous_mode_confirmation_matches, build_tui_model, build_tui_model_for_state,
-        handle_config_autonomous_mode_set_command, handle_factory_drain_command,
+        AutonomousDecisionsPort, ConfigCommandOutcome, DispatcherFactoryDrainPort,
+        DispatcherOrchestratorActionPort, DispatcherSettingRow, DispatcherSettingSetRequest,
+        DispatcherSettingWrite, DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead,
+        FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+        FocusPane, JournalAutonomousDecisionsPort, LaneFocus, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, PendingValve, RejectMode, SettingRow, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        build_tui_model_for_state, dispatcher_setting_rows,
+        handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
         handle_work_item_reject_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_autonomous_mode_disable, resolve_autonomous_mode_enable,
-        resolve_command_palette_action, resolve_selected_operator_action, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload,
-        validate_operator_action,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, validate_operator_action,
     };
 
     #[test]
@@ -4618,11 +4853,11 @@ mod tests {
         assert_eq!(model.selected_operator_action(), None);
         assert_eq!(
             model.header(),
-            "fleet: livespec | mode: tui | repo: - | autonomous: off | view: Attention | attention: 0"
+            "fleet: livespec | mode: tui | repo: - | view: Attention | attention: 0"
         );
         assert_eq!(
             model.footer(),
-            "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | a autonomous-mode (dangerous / use with caution) | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+            "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
         );
     }
 
@@ -4907,10 +5142,11 @@ mod tests {
         assert_eq!(state.active_view(), TuiView::Attention);
         assert_eq!(model.active_view(), TuiView::Attention);
 
-        let state = TuiInteractionState::for_view(TuiView::Repos, 0, TuiOverlay::None);
+        // SelectNextView clamps at the last view (Settings, now the sixth).
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None);
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextView);
 
-        assert_eq!(state.active_view(), TuiView::Repos);
+        assert_eq!(state.active_view(), TuiView::Settings);
     }
 
     #[test]
@@ -5416,7 +5652,8 @@ mod tests {
                 selected_action_index: 0,
             },
             selected_repo: String::new(),
-            autonomous_mode_enabled: false,
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: Vec::new(),
             header: "LiveSpec Console".to_owned(),
             footer: String::new(),
@@ -5666,7 +5903,8 @@ mod tests {
                 selected_action_index: 0,
             },
             selected_repo: String::new(),
-            autonomous_mode_enabled: false,
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: Vec::new(),
             header: String::new(),
             footer: String::new(),
@@ -7134,12 +7372,12 @@ mod tests {
     // Configuration context — dispatcher-settings read/write through the API.
     // -----------------------------------------------------------------------
 
-    fn autonomous_mode_set_command() -> CommandEnvelope {
+    fn dispatcher_setting_set_command() -> CommandEnvelope {
         CommandEnvelope::new(
-            "cmd_autonomous".to_owned(),
-            CommandType::ConfigAutonomousModeSet,
+            "cmd_config_dispatcher_setting_set".to_owned(),
+            CommandType::ConfigDispatcherSettingSet,
             "livespec-console-beads-fabro".to_owned(),
-            "livespec-console-beads-fabro:config.autonomous_mode_set".to_owned(),
+            "livespec-console-beads-fabro:config.dispatcher_setting_set".to_owned(),
             "operator".to_owned(),
         )
     }
@@ -7169,65 +7407,111 @@ mod tests {
       "summary": "Read effective dispatcher settings."
     }"#;
 
+    /// A `config` read at the default values, for asserting a change's `previous`
+    /// field (here `auto_approve_ready` is off, so enabling it records a
+    /// `false -> true` change).
+    const CONFIG_READ_JSON_DEFAULTS: &str = r#"{
+      "settings": [
+        { "key": "auto_approve_ready", "value": false, "source": "default" },
+        { "key": "merge_on_review_cap", "value": false, "source": "default" },
+        { "key": "acceptance_mode", "value": "ai-then-human", "source": "default" },
+        { "key": "review_fix_cap", "value": 3, "source": "default" },
+        { "key": "acceptance_rework_cap", "value": 2, "source": "default" },
+        { "key": "wip_cap", "value": 5, "source": "default" }
+      ]
+    }"#;
+
     #[test]
-    fn autonomous_mode_event_labels_are_present() {
+    fn dispatcher_setting_event_labels_are_present() {
         assert_eq!(
-            EventType::ConfigAutonomousModeEnabled.label(),
-            "Autonomous mode enabled"
+            EventType::ConfigDispatcherSettingChanged.label(),
+            "Dispatcher setting changed"
         );
         assert_eq!(
-            EventType::ConfigAutonomousModeDisabled.label(),
-            "Autonomous mode disabled"
-        );
-        assert_eq!(
-            EventType::FactoryAutonomousModeEnableRequested.label(),
-            "Autonomous mode enable requested"
-        );
-        assert_eq!(
-            EventType::FactoryAutonomousModeDisableRequested.label(),
-            "Autonomous mode disable requested"
-        );
-        assert_eq!(
-            EventType::FactoryAutonomousModeNotWired.label(),
-            "Autonomous mode arming not wired"
+            EventType::ConfigDispatcherSettingNotWired.label(),
+            "Dispatcher setting not wired"
         );
     }
 
     #[test]
-    fn autonomous_mode_set_request_exposes_its_fields() {
-        let request = AutonomousModeSetRequest::new("repo-a".to_owned(), true, false);
+    fn dispatcher_setting_set_request_exposes_its_fields() {
+        let request = DispatcherSettingSetRequest::new(
+            "repo-a".to_owned(),
+            DispatcherSettingWrite::AutoApproveReady(true),
+        );
         assert_eq!(request.repo(), "repo-a");
-        assert!(request.enabled());
-        assert!(!request.confirmed());
+        assert_eq!(
+            request.write(),
+            &DispatcherSettingWrite::AutoApproveReady(true)
+        );
     }
 
     #[test]
-    fn autonomous_mode_set_request_parses_a_valid_payload() {
+    fn dispatcher_setting_set_request_parses_each_setting_type() {
         assert_eq!(
-            AutonomousModeSetRequest::from_payload_json(
-                r#"{"repo":"repo-a","enabled":true,"confirmed":true}"#
+            DispatcherSettingSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","setting":"auto_approve_ready","value":true}"#
             ),
-            Ok(AutonomousModeSetRequest::new(
+            Ok(DispatcherSettingSetRequest::new(
                 "repo-a".to_owned(),
-                true,
-                true
+                DispatcherSettingWrite::AutoApproveReady(true)
+            ))
+        );
+        assert_eq!(
+            DispatcherSettingSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","setting":"merge_on_review_cap","value":true}"#
+            ),
+            Ok(DispatcherSettingSetRequest::new(
+                "repo-a".to_owned(),
+                DispatcherSettingWrite::MergeOnReviewCap(true)
+            ))
+        );
+        assert_eq!(
+            DispatcherSettingSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","setting":"acceptance_mode","value":"ai-only"}"#
+            ),
+            Ok(DispatcherSettingSetRequest::new(
+                "repo-a".to_owned(),
+                DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::AiOnly)
+            ))
+        );
+        assert_eq!(
+            DispatcherSettingSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","setting":"acceptance_rework_cap","value":2}"#
+            ),
+            Ok(DispatcherSettingSetRequest::new(
+                "repo-a".to_owned(),
+                DispatcherSettingWrite::AcceptanceReworkCap(2)
+            ))
+        );
+        assert_eq!(
+            DispatcherSettingSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","setting":"wip_cap","value":5}"#
+            ),
+            Ok(DispatcherSettingSetRequest::new(
+                "repo-a".to_owned(),
+                DispatcherSettingWrite::WipCap(5)
             ))
         );
     }
 
     #[test]
-    fn autonomous_mode_set_request_rejects_malformed_or_incomplete_payloads() {
+    fn dispatcher_setting_set_request_rejects_malformed_unknown_or_mistyped_payloads() {
         for payload in [
             "not json",
-            r#"{"enabled":true,"confirmed":true}"#,
-            r#"{"repo":"  ","enabled":true,"confirmed":true}"#,
-            r#"{"repo":"repo-a","confirmed":true}"#,
-            r#"{"repo":"repo-a","enabled":true}"#,
-            r#"{"repo":"repo-a","enabled":"yes","confirmed":true}"#,
+            r#"{"setting":"wip_cap","value":5}"#,
+            r#"{"repo":"  ","setting":"wip_cap","value":5}"#,
+            r#"{"repo":"repo-a","value":5}"#,
+            r#"{"repo":"repo-a","setting":"wip_cap"}"#,
+            r#"{"repo":"repo-a","setting":"unknown_key","value":5}"#,
+            r#"{"repo":"repo-a","setting":"auto_approve_ready","value":5}"#,
+            r#"{"repo":"repo-a","setting":"wip_cap","value":"five"}"#,
+            r#"{"repo":"repo-a","setting":"wip_cap","value":-1}"#,
+            r#"{"repo":"repo-a","setting":"acceptance_mode","value":"bogus"}"#,
         ] {
             assert_eq!(
-                AutonomousModeSetRequest::from_payload_json(payload),
-                Err(ApplicationError::InvalidAutonomousModePayload)
+                DispatcherSettingSetRequest::from_payload_json(payload),
+                Err(ApplicationError::InvalidDispatcherSettingPayload)
             );
         }
     }
@@ -7431,7 +7715,37 @@ mod tests {
         );
     }
 
-    // ---- The transitional `config.autonomous_mode_set` handler. ----
+    // ---- The `config.dispatcher_setting_set` handler. ----
+
+    /// A mock action port whose `config` read returns a fixed observed settings
+    /// payload and whose writes return a fixed outcome, recording every WRITE
+    /// action-id. The read rides `read_action` (which the default port leaves
+    /// not-wired), so this exercises the handler's observed-previous path.
+    struct ObservedReadRecordingPort {
+        read_stdout: String,
+        write_outcome: OrchestratorActionOutcome,
+        observed_action_ids: Vec<String>,
+    }
+
+    impl OrchestratorActionPort for ObservedReadRecordingPort {
+        fn run_action(
+            &mut self,
+            request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<OrchestratorActionOutcome> {
+            self.observed_action_ids
+                .push(request.action_id().to_owned());
+            Ok(self.write_outcome.clone())
+        }
+
+        fn read_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<super::OrchestratorActionReading> {
+            Ok(super::OrchestratorActionReading::observed(
+                self.read_stdout.clone(),
+            ))
+        }
+    }
 
     /// The event contexts of a handled config outcome, for assertion without
     /// extracting the outcome out of its `Result`.
@@ -7448,51 +7762,73 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// The parsed payload of the config outcome's audit event (index 2), or
-    /// `Null` when absent.
+    /// The parsed payload of the config outcome's second event (the changed /
+    /// not-wired outcome event at index 1), or `Null` when absent.
     fn audit_payload(
         outcome: &super::ApplicationResult<ConfigCommandOutcome>,
     ) -> serde_json::Value {
         outcome
             .as_ref()
             .ok()
-            .and_then(|handled| handled.events().get(2))
+            .and_then(|handled| handled.events().get(1))
             .map(|event| serde_json::from_str(event.payload_json()).unwrap_or_default())
             .unwrap_or_default()
     }
 
     #[test]
-    fn config_handler_rejects_an_unconfirmed_enable_with_no_effect() {
-        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
-        let mut settings = DispatcherSettingsPort::new(&mut port);
-        let outcome = handle_config_autonomous_mode_set_command(
-            &autonomous_mode_set_command(),
-            r#"{"repo":"repo-a","enabled":true,"confirmed":false}"#,
-            "2026-07-11T00:00:00Z",
-            &mut settings,
-        );
-
+    fn previous_setting_value_json_reads_each_targeted_field() {
+        let settings = DispatcherSettings::new(true, false, AcceptancePolicy::HumanOnly, 4, 2, 9);
         assert_eq!(
-            outcome.as_ref().map(ConfigCommandOutcome::command_status),
-            Ok("rejected")
+            super::previous_setting_value_json(
+                &settings,
+                &DispatcherSettingWrite::AutoApproveReady(false)
+            ),
+            serde_json::json!(true)
         );
-        // Only the rejection is recorded -- no settings write and no audit.
         assert_eq!(
-            outcome.as_ref().map(event_types),
-            Ok(vec![EventType::CommandRejected])
+            super::previous_setting_value_json(
+                &settings,
+                &DispatcherSettingWrite::MergeOnReviewCap(true)
+            ),
+            serde_json::json!(false)
         );
-        assert_eq!(event_contexts(&outcome), ["command"]);
-        // The settings port was NEVER called: no orchestrator action was issued.
-        assert!(port.observed_action_ids.is_empty());
+        assert_eq!(
+            super::previous_setting_value_json(
+                &settings,
+                &DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::AiOnly)
+            ),
+            serde_json::json!("human-only")
+        );
+        assert_eq!(
+            super::previous_setting_value_json(&settings, &DispatcherSettingWrite::ReviewFixCap(5)),
+            serde_json::json!(4)
+        );
+        assert_eq!(
+            super::previous_setting_value_json(
+                &settings,
+                &DispatcherSettingWrite::AcceptanceReworkCap(5)
+            ),
+            serde_json::json!(2)
+        );
+        assert_eq!(
+            super::previous_setting_value_json(&settings, &DispatcherSettingWrite::WipCap(5)),
+            serde_json::json!(9)
+        );
     }
 
     #[test]
-    fn config_handler_writes_and_audits_a_confirmed_enable() {
-        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+    fn config_handler_writes_a_setting_and_audits_the_change_with_the_previous_value() {
+        // The read reports auto_approve_ready currently false, so the changed
+        // event's `previous` is the observed value and `new` is the write's value.
+        let mut port = ObservedReadRecordingPort {
+            read_stdout: CONFIG_READ_JSON_DEFAULTS.to_owned(),
+            write_outcome: OrchestratorActionOutcome::completed(),
+            observed_action_ids: Vec::new(),
+        };
         let mut settings = DispatcherSettingsPort::new(&mut port);
-        let outcome = handle_config_autonomous_mode_set_command(
-            &autonomous_mode_set_command(),
-            r#"{"repo":"repo-a","enabled":true,"confirmed":true}"#,
+        let outcome = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
+            r#"{"repo":"repo-a","setting":"auto_approve_ready","value":true}"#,
             "2026-07-11T00:00:00Z",
             &mut settings,
         );
@@ -7501,26 +7837,24 @@ mod tests {
             outcome.as_ref().map(ConfigCommandOutcome::command_status),
             Ok("completed")
         );
+        // Two events, both in the configuration context: the acceptance and the
+        // durable change audit -- no arming ceremony, no factory event.
         assert_eq!(
             outcome.as_ref().map(event_types),
             Ok(vec![
                 EventType::CommandAccepted,
-                EventType::FactoryAutonomousModeEnableRequested,
-                EventType::ConfigAutonomousModeEnabled,
+                EventType::ConfigDispatcherSettingChanged,
             ])
         );
-        // The factory event is in the factory context; the audit event is in
-        // the configuration context.
-        assert_eq!(
-            event_contexts(&outcome),
-            ["command", "factory", "configuration"]
-        );
-        // The audit event carries { repo, actor, occurred_at }.
+        assert_eq!(event_contexts(&outcome), ["command", "configuration"]);
         let payload = audit_payload(&outcome);
         assert_eq!(payload["repo"], "repo-a");
+        assert_eq!(payload["setting"], "auto_approve_ready");
+        assert_eq!(payload["previous"], serde_json::json!(false));
+        assert_eq!(payload["new"], serde_json::json!(true));
         assert_eq!(payload["actor"], "operator");
         assert_eq!(payload["occurred_at"], "2026-07-11T00:00:00Z");
-        // The enable was effected through the orchestrator's `set-config` action.
+        // The change was effected through the orchestrator's `set-config` action.
         assert_eq!(
             port.observed_action_ids,
             ["set-config:auto_approve_ready:true"]
@@ -7528,12 +7862,14 @@ mod tests {
     }
 
     #[test]
-    fn config_handler_writes_and_audits_a_disable_without_requiring_confirmation() {
+    fn config_handler_records_a_null_previous_when_the_read_surface_is_not_observed() {
+        // The default RecordingActionPort leaves `read_action` not-wired, so the
+        // handler records `previous: null` rather than fabricating a value.
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
         let mut settings = DispatcherSettingsPort::new(&mut port);
-        let outcome = handle_config_autonomous_mode_set_command(
-            &autonomous_mode_set_command(),
-            r#"{"repo":"repo-a","enabled":false,"confirmed":false}"#,
+        let outcome = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
+            r#"{"repo":"repo-a","setting":"wip_cap","value":5}"#,
             "2026-07-11T00:00:01Z",
             &mut settings,
         );
@@ -7542,28 +7878,20 @@ mod tests {
             outcome.as_ref().map(ConfigCommandOutcome::command_status),
             Ok("completed")
         );
-        assert_eq!(
-            outcome.as_ref().map(event_types),
-            Ok(vec![
-                EventType::CommandAccepted,
-                EventType::FactoryAutonomousModeDisableRequested,
-                EventType::ConfigAutonomousModeDisabled,
-            ])
-        );
-        assert_eq!(audit_payload(&outcome)["repo"], "repo-a");
-        assert_eq!(
-            port.observed_action_ids,
-            ["set-config:auto_approve_ready:false"]
-        );
+        let payload = audit_payload(&outcome);
+        assert_eq!(payload["setting"], "wip_cap");
+        assert_eq!(payload["previous"], serde_json::Value::Null);
+        assert_eq!(payload["new"], serde_json::json!(5));
+        assert_eq!(port.observed_action_ids, ["set-config:wip_cap:5"]);
     }
 
     #[test]
-    fn config_handler_surfaces_not_wired_without_an_audit_event() {
+    fn config_handler_surfaces_not_wired_without_a_changed_event() {
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::not_wired());
         let mut settings = DispatcherSettingsPort::new(&mut port);
-        let outcome = handle_config_autonomous_mode_set_command(
-            &autonomous_mode_set_command(),
-            r#"{"repo":"repo-a","enabled":true,"confirmed":true}"#,
+        let outcome = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
+            r#"{"repo":"repo-a","setting":"auto_approve_ready","value":true}"#,
             "2026-07-11T00:00:02Z",
             &mut settings,
         );
@@ -7572,24 +7900,25 @@ mod tests {
             outcome.as_ref().map(ConfigCommandOutcome::command_status),
             Ok("not_wired")
         );
-        // The honest not-wired outcome, and NO audit event.
+        // The honest not-wired outcome, and NO changed event.
         assert_eq!(
             outcome.as_ref().map(event_types),
             Ok(vec![
                 EventType::CommandAccepted,
-                EventType::FactoryAutonomousModeNotWired,
+                EventType::ConfigDispatcherSettingNotWired,
             ])
         );
-        assert_eq!(event_contexts(&outcome), ["command", "factory"]);
+        assert_eq!(event_contexts(&outcome), ["command", "configuration"]);
+        assert_eq!(audit_payload(&outcome)["setting"], "auto_approve_ready");
     }
 
     #[test]
     fn config_handler_surfaces_not_wired_when_the_action_fails() {
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::failed());
         let mut settings = DispatcherSettingsPort::new(&mut port);
-        let outcome = handle_config_autonomous_mode_set_command(
-            &autonomous_mode_set_command(),
-            r#"{"repo":"repo-a","enabled":false,"confirmed":false}"#,
+        let outcome = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
+            r#"{"repo":"repo-a","setting":"review_fix_cap","value":3}"#,
             "2026-07-11T00:00:02Z",
             &mut settings,
         );
@@ -7602,7 +7931,7 @@ mod tests {
             outcome.as_ref().map(event_types),
             Ok(vec![
                 EventType::CommandAccepted,
-                EventType::FactoryAutonomousModeNotWired,
+                EventType::ConfigDispatcherSettingNotWired,
             ])
         );
     }
@@ -7611,14 +7940,17 @@ mod tests {
     fn config_handler_rejects_a_malformed_payload() {
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
         let mut settings = DispatcherSettingsPort::new(&mut port);
-        let outcome = handle_config_autonomous_mode_set_command(
-            &autonomous_mode_set_command(),
+        let outcome = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
             "not json",
             "2026-07-11T00:00:03Z",
             &mut settings,
         );
 
-        assert_eq!(outcome, Err(ApplicationError::InvalidAutonomousModePayload));
+        assert_eq!(
+            outcome,
+            Err(ApplicationError::InvalidDispatcherSettingPayload)
+        );
         assert!(port.observed_action_ids.is_empty());
     }
     // -----------------------------------------------------------------------
@@ -7628,30 +7960,21 @@ mod tests {
 
     const CONFIRM_REPO: &str = "livespec-console-beads-fabro";
 
-    /// A model over the given overlay whose selected repo carries the given
-    /// derived autonomous mode, built with no events (no attention items).
-    fn autonomous_model(
-        overlay: TuiOverlay,
-        selected_repo: &str,
-        autonomous_mode_enabled: bool,
-    ) -> TuiScreenModel {
-        let state = TuiInteractionState::new(0, overlay)
-            .with_selected_repo(selected_repo.to_owned())
-            .with_autonomous_mode_enabled(autonomous_mode_enabled);
+    /// A model over the given overlay whose selected repo is `selected_repo`,
+    /// built with no events (no attention items).
+    fn repo_model(overlay: TuiOverlay, selected_repo: &str) -> TuiScreenModel {
+        let state =
+            TuiInteractionState::new(0, overlay).with_selected_repo(selected_repo.to_owned());
         build_tui_model_for_state(&[], &state)
     }
 
     #[test]
-    fn header_reflects_the_selected_repo_and_its_autonomous_mode() {
-        let on = autonomous_model(TuiOverlay::None, CONFIRM_REPO, true);
-        assert_eq!(on.selected_repo(), CONFIRM_REPO);
-        assert!(on.autonomous_mode_enabled());
-        assert!(on.header().contains(&format!("repo: {CONFIRM_REPO}")));
-        assert!(on.header().contains("autonomous: on"));
-
-        let off = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
-        assert!(!off.autonomous_mode_enabled());
-        assert!(off.header().contains("autonomous: off"));
+    fn header_reflects_the_selected_repo_and_carries_no_autonomous_segment() {
+        let model = repo_model(TuiOverlay::None, CONFIRM_REPO);
+        assert_eq!(model.selected_repo(), CONFIRM_REPO);
+        assert!(model.header().contains(&format!("repo: {CONFIRM_REPO}")));
+        // The retired arming surface left no `autonomous:` header segment.
+        assert!(!model.header().contains("autonomous:"));
     }
 
     #[test]
@@ -7724,7 +8047,6 @@ mod tests {
         let line = model.header_line(110);
         assert!(line.chars().count() <= 110);
         assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
-        assert!(line.contains("autonomous: off"));
         assert!(line.contains("view: Attention"));
         assert!(line.contains("attention: 0"));
         // The count survives even when the names cannot: how-many is the tell.
@@ -7746,23 +8068,22 @@ mod tests {
         // At an intermediate width the names abbreviate to a `+N more` marker
         // while the priority fields stay whole -- never a mid-field truncation.
         let model = blind_model(CONFIRM_REPO, &["alpha", "bravo", "charlie"]);
-        let line = model.header_line(130);
-        assert!(line.chars().count() <= 130);
+        let line = model.header_line(112);
+        assert!(line.chars().count() <= 112);
         assert!(line.contains("+2 more"));
         assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
         assert!(line.contains("attention: 0"));
     }
 
     #[test]
-    fn header_line_never_drops_the_source_count_repo_or_autonomous() {
+    fn header_line_never_drops_the_source_count_or_repo() {
         // Even on an absurdly narrow terminal (below the target), the header keeps
-        // the source count (the blind-vs-idle tell) and the repo / autonomous
-        // fields; only lower-value fields and the source names are shed.
+        // the source count (the blind-vs-idle tell) and the repo field; only
+        // lower-value fields and the source names are shed.
         let model = blind_model(CONFIRM_REPO, &["fabro", "github", "orchestrator"]);
         let line = model.header_line(60);
         assert!(line.contains("sources: 3 unavailable"));
         assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
-        assert!(line.contains("autonomous: off"));
     }
 
     #[test]
@@ -7775,7 +8096,6 @@ mod tests {
             assert!(!line.contains("sources:"));
         }
         assert!(model.header_line(300).contains("repo: -"));
-        assert!(model.header_line(300).contains("autonomous: off"));
     }
 
     #[test]
@@ -7794,179 +8114,230 @@ mod tests {
     }
 
     #[test]
-    fn footer_presents_the_dangerous_autonomous_toggle_shortcut() {
-        let model = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
+    fn footer_presents_the_settings_edit_shortcut() {
+        let model = repo_model(TuiOverlay::None, CONFIRM_REPO);
         assert!(
             model
                 .footer()
-                .contains("a autonomous-mode (dangerous / use with caution)")
+                .contains("settings: enter/space edit the selected row")
         );
     }
 
     #[test]
-    fn interaction_state_carries_selected_repo_and_mode_through_the_reducer() {
+    fn interaction_state_carries_selected_repo_and_settings_through_the_reducer() {
+        let settings = DispatcherSettings::new(true, false, AcceptancePolicy::AiOnly, 4, 2, 5);
         let state = TuiInteractionState::new(0, TuiOverlay::None)
             .with_selected_repo(CONFIRM_REPO.to_owned())
-            .with_autonomous_mode_enabled(true);
+            .with_dispatcher_settings(DispatcherSettingsRead::Observed(settings.clone()));
         assert_eq!(state.selected_repo(), CONFIRM_REPO);
-        assert!(state.autonomous_mode_enabled());
+        assert_eq!(
+            state.dispatcher_settings(),
+            &DispatcherSettingsRead::Observed(settings.clone())
+        );
 
-        // A view-navigation interaction must preserve the ambient repo + mode.
+        // A view-navigation interaction must preserve the ambient repo + settings.
         let next = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextView);
         assert_eq!(next.selected_repo(), CONFIRM_REPO);
-        assert!(next.autonomous_mode_enabled());
-    }
-
-    #[test]
-    fn autonomous_confirm_overlay_exposes_only_its_typed_text() {
-        let confirm = TuiOverlay::AutonomousModeConfirm {
-            typed: "abc".to_owned(),
-        };
-        assert_eq!(confirm.autonomous_confirm_typed(), Some("abc"));
-        assert_eq!(confirm.query(), None);
-        assert_eq!(confirm.selected_action_index(), None);
-        assert!(confirm.is_open());
-        // Other overlays carry no confirm text.
-        assert_eq!(TuiOverlay::None.autonomous_confirm_typed(), None);
-    }
-
-    #[test]
-    fn reducer_opens_the_autonomous_mode_confirm_modal_empty() {
-        let state = TuiInteractionState::new(0, TuiOverlay::None);
-        let opened = reduce_tui_interaction(&state, &[], TuiInteraction::OpenAutonomousModeConfirm);
         assert_eq!(
-            opened.overlay(),
-            &TuiOverlay::AutonomousModeConfirm {
-                typed: String::new(),
-            }
+            next.dispatcher_settings(),
+            &DispatcherSettingsRead::Observed(settings)
         );
     }
 
+    // -----------------------------------------------------------------------
+    // The Settings surface: six views, the six dispatcher-setting rows, their
+    // per-edit writes, and the ordinary recorded edit with no arming ceremony.
+    // -----------------------------------------------------------------------
+
+    /// A Settings-view model whose observed dispatcher settings are `settings`,
+    /// with row `selected` under the cursor.
+    fn settings_model(settings: DispatcherSettings, selected: usize) -> TuiScreenModel {
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_selected_setting_index(selected)
+            .with_dispatcher_settings(DispatcherSettingsRead::Observed(settings));
+        build_tui_model_for_state(&[], &state)
+    }
+
     #[test]
-    fn autonomous_confirm_modal_accepts_typed_characters_and_backspace() {
-        let empty = TuiInteractionState::new(
-            0,
-            TuiOverlay::AutonomousModeConfirm {
-                typed: String::new(),
-            },
-        );
-        let typed_a = reduce_tui_interaction(&empty, &[], TuiInteraction::TypeChar('a'));
+    fn tui_has_six_views_including_settings() {
+        let views = TuiView::all();
+        assert_eq!(views.len(), 6);
         assert_eq!(
-            typed_a.overlay(),
-            &TuiOverlay::AutonomousModeConfirm {
-                typed: "a".to_owned(),
-            }
+            views,
+            [
+                TuiView::Attention,
+                TuiView::Spec,
+                TuiView::Lanes,
+                TuiView::Events,
+                TuiView::Repos,
+                TuiView::Settings,
+            ]
         );
-        let typed_ab = reduce_tui_interaction(&typed_a, &[], TuiInteraction::TypeChar('b'));
-        let backspaced = reduce_tui_interaction(&typed_ab, &[], TuiInteraction::Backspace);
+        assert_eq!(TuiView::Settings.label(), "Settings");
+    }
+
+    #[test]
+    fn dispatcher_setting_rows_render_each_effective_value_and_flag_dangerous_rows() {
+        let settings = DispatcherSettings::new(true, false, AcceptancePolicy::AiOnly, 4, 2, 5);
+        let rows: Vec<SettingRow> = dispatcher_setting_rows(&settings);
+        assert_eq!(rows.len(), 6);
+
+        let rendered: Vec<(&str, &str, bool)> = rows
+            .iter()
+            .map(|row| (row.label(), row.value(), row.dangerous()))
+            .collect();
         assert_eq!(
-            backspaced.overlay(),
-            &TuiOverlay::AutonomousModeConfirm {
-                typed: "a".to_owned(),
-            }
+            rendered,
+            [
+                ("Auto-approve ready", "on", true),
+                ("Merge on review cap", "off", true),
+                ("Acceptance mode", "ai-only", true),
+                ("Review fix cap", "4", false),
+                ("Acceptance rework cap", "2", false),
+                ("WIP cap", "5", false),
+            ]
         );
-        // Backspacing an already-empty confirm buffer stays empty.
-        let still_empty = reduce_tui_interaction(&empty, &[], TuiInteraction::Backspace);
+        // A dangerous row's help carries the required "dangerous / use with
+        // caution" label; a cap row's does not.
+        assert!(rows[0].help().contains("dangerous / use with caution"));
+        assert!(!rows[5].help().contains("dangerous / use with caution"));
+    }
+
+    #[test]
+    fn dispatcher_setting_row_next_write_flips_cycles_and_increments() {
+        // review_fix_cap 9 wraps to the minimum; acceptance_rework_cap 0 (below the
+        // minimum) is nudged up to it; wip_cap 3 increments.
+        let settings = DispatcherSettings::new(false, true, AcceptancePolicy::AiThenHuman, 9, 0, 3);
+        let writes: Vec<DispatcherSettingWrite> = DispatcherSettingRow::all()
+            .iter()
+            .map(|row| row.next_write(&settings))
+            .collect();
         assert_eq!(
-            still_empty.overlay(),
-            &TuiOverlay::AutonomousModeConfirm {
-                typed: String::new(),
-            }
+            writes,
+            [
+                DispatcherSettingWrite::AutoApproveReady(true),
+                DispatcherSettingWrite::MergeOnReviewCap(false),
+                DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::AiOnly),
+                DispatcherSettingWrite::ReviewFixCap(1),
+                DispatcherSettingWrite::AcceptanceReworkCap(1),
+                DispatcherSettingWrite::WipCap(4),
+            ]
         );
     }
 
     #[test]
-    fn autonomous_confirm_overlay_is_inert_for_action_and_search_helpers() {
-        // The confirm modal is normalized/searched/action-navigated as a no-op:
-        // build a model over it (search_query + normalize arms) and move the
-        // action selection up/down (move_action arms) -- the overlay is
-        // preserved unchanged.
-        let confirm = TuiOverlay::AutonomousModeConfirm {
-            typed: "x".to_owned(),
-        };
-        let model = autonomous_model(confirm.clone(), CONFIRM_REPO, false);
-        assert_eq!(model.overlay(), &confirm);
-
-        let state = TuiInteractionState::new(0, confirm.clone());
-        let down = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextAction);
-        assert_eq!(down.overlay(), &confirm);
-        let up = reduce_tui_interaction(&state, &[], TuiInteraction::SelectPreviousAction);
-        assert_eq!(up.overlay(), &confirm);
+    fn dispatcher_setting_write_value_json_is_typed() {
+        assert_eq!(
+            DispatcherSettingWrite::AutoApproveReady(true).value_json(),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::HumanOnly).value_json(),
+            serde_json::json!("human-only")
+        );
+        assert_eq!(
+            DispatcherSettingWrite::WipCap(7).value_json(),
+            serde_json::json!(7)
+        );
     }
 
     #[test]
-    fn autonomous_mode_confirmation_matches_requires_the_exact_repo() {
-        assert!(autonomous_mode_confirmation_matches(
-            CONFIRM_REPO,
-            CONFIRM_REPO
-        ));
-        assert!(autonomous_mode_confirmation_matches(
-            &format!("  {CONFIRM_REPO}  "),
-            CONFIRM_REPO
-        ));
-        assert!(!autonomous_mode_confirmation_matches("nope", CONFIRM_REPO));
-        assert!(!autonomous_mode_confirmation_matches("", ""));
-    }
-
-    #[test]
-    fn enabling_submits_a_confirmed_command_only_when_the_typed_phrase_matches() {
-        let overlay = TuiOverlay::AutonomousModeConfirm {
-            typed: CONFIRM_REPO.to_owned(),
-        };
-        let model = autonomous_model(overlay, CONFIRM_REPO, false);
-        let outcome = resolve_autonomous_mode_enable(&model, "operator");
+    fn editing_a_dangerous_setting_is_an_ordinary_recorded_write_with_no_ceremony() {
+        // The Auto-approve ready row is dangerous, yet editing it submits an
+        // ordinary `config.dispatcher_setting_set` command carrying that one
+        // setting -- NO type-the-repo-name confirmation and NO other arming
+        // ceremony (Scenario 9 / criterion 6).
+        let settings =
+            DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
+        let model = settings_model(settings, 0);
+        let outcome = resolve_dispatcher_setting_edit(&model, "operator");
         assert!(matches!(
             &outcome,
             Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
-                if command.command_type() == &CommandType::ConfigAutonomousModeSet
+                if command.command_type() == &CommandType::ConfigDispatcherSettingSet
                     && command.aggregate_id() == CONFIRM_REPO
                     && payload_json.contains(r#""repo":"livespec-console-beads-fabro""#)
-                    && payload_json.contains(r#""enabled":true"#)
-                    && payload_json.contains(r#""confirmed":true"#)
+                    && payload_json.contains(r#""setting":"auto_approve_ready""#)
+                    && payload_json.contains(r#""value":true"#)
         ));
     }
 
     #[test]
-    fn enabling_rejects_a_mismatched_confirmation_without_submitting() {
-        let overlay = TuiOverlay::AutonomousModeConfirm {
-            typed: "wrong-repo".to_owned(),
-        };
-        let model = autonomous_model(overlay, CONFIRM_REPO, false);
-        assert_eq!(
-            resolve_autonomous_mode_enable(&model, "operator"),
-            Err(ApplicationError::AutonomousModeConfirmationMismatch)
-        );
-    }
-
-    #[test]
-    fn enabling_requires_the_confirm_overlay_to_be_open() {
-        let model = autonomous_model(TuiOverlay::None, CONFIRM_REPO, false);
-        assert_eq!(
-            resolve_autonomous_mode_enable(&model, "operator"),
-            Err(ApplicationError::NoSelectedOperatorAction)
-        );
-    }
-
-    #[test]
-    fn disabling_submits_an_unconfirmed_command_with_no_modal() {
-        let model = autonomous_model(TuiOverlay::None, CONFIRM_REPO, true);
-        let outcome = resolve_autonomous_mode_disable(&model, "operator");
+    fn editing_an_int_row_submits_the_incremented_value() {
+        let settings =
+            DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
+        let model = settings_model(settings, 5); // WIP cap row
+        let outcome = resolve_dispatcher_setting_edit(&model, "operator");
         assert!(matches!(
             &outcome,
-            Ok(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
-                if command.aggregate_id() == CONFIRM_REPO
-                    && payload_json.contains(r#""enabled":false"#)
-                    && payload_json.contains(r#""confirmed":false"#)
+            Ok(OperatorActionOutcome::PersistCommandWithPayload { payload_json, .. })
+                if payload_json.contains(r#""setting":"wip_cap""#)
+                    && payload_json.contains(r#""value":6"#)
         ));
     }
 
     #[test]
-    fn disabling_requires_a_selected_repo() {
-        let model = autonomous_model(TuiOverlay::None, "", true);
+    fn editing_errors_when_the_settings_are_not_observed() {
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned());
+        let model = build_tui_model_for_state(&[], &state);
         assert_eq!(
-            resolve_autonomous_mode_disable(&model, "operator"),
-            Err(ApplicationError::InvalidAutonomousModePayload)
+            resolve_dispatcher_setting_edit(&model, "operator"),
+            Err(ApplicationError::DispatcherSettingsNotObserved)
         );
+    }
+
+    #[test]
+    fn editing_errors_without_a_selected_setting_row() {
+        // Observed settings but no Settings row selected (a non-Settings view
+        // leaves `selected_setting_index` unset) is the defensive no-selection
+        // path.
+        let settings =
+            DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_dispatcher_settings(DispatcherSettingsRead::Observed(settings));
+        let model = build_tui_model_for_state(&[], &state);
+        assert_eq!(model.selected_setting_index(), None);
+        assert_eq!(
+            resolve_dispatcher_setting_edit(&model, "operator"),
+            Err(ApplicationError::NoSelectedDispatcherSetting)
+        );
+    }
+
+    #[test]
+    fn editing_errors_on_a_blank_operator() {
+        let settings =
+            DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
+        let model = settings_model(settings, 0);
+        assert_eq!(
+            resolve_dispatcher_setting_edit(&model, "   "),
+            Err(ApplicationError::EmptyOperatorAction)
+        );
+    }
+
+    #[test]
+    fn settings_selection_moves_within_the_six_rows_and_clamps() {
+        let settings =
+            DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_dispatcher_settings(DispatcherSettingsRead::Observed(settings))
+            .with_focus(FocusPane::Content);
+
+        let down = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNext);
+        assert_eq!(down.selected_setting_index(), 1);
+
+        // Stepping down past the last row clamps at the sixth (index 5).
+        let mut walked = state.clone();
+        for _ in 0..10 {
+            walked = reduce_tui_interaction(&walked, &[], TuiInteraction::SelectNext);
+        }
+        assert_eq!(walked.selected_setting_index(), 5);
+
+        // Stepping up from the top row stays at the first.
+        let up = reduce_tui_interaction(&state, &[], TuiInteraction::SelectPrevious);
+        assert_eq!(up.selected_setting_index(), 0);
     }
 
     #[test]
@@ -7974,7 +8345,7 @@ mod tests {
         let outcome = OperatorActionOutcome::PersistCommandWithPayload {
             command: CommandEnvelope::new(
                 "cmd".to_owned(),
-                CommandType::ConfigAutonomousModeSet,
+                CommandType::ConfigDispatcherSettingSet,
                 CONFIRM_REPO.to_owned(),
                 "key".to_owned(),
                 "operator".to_owned(),
