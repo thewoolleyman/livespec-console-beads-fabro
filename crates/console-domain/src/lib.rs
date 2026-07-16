@@ -343,6 +343,10 @@ pub enum CommandType {
     /// command payload carries `policy` in {ai-only, human-only, ai-then-human}.
     /// A policy edit never moves the item between lifecycle states.
     WorkItemSetAcceptanceRequested,
+    /// Request to move a `blocked` work-item on to `ready` or `backlog` -- maps
+    /// onto the orchestrator's `resolve-blocked:<work-item-id>:<target>` action,
+    /// where the command payload carries `target_status` in {ready, backlog}.
+    WorkItemResolveBlockedRequested,
     /// Request to set ONE dispatcher policy setting's global default -- the
     /// Configuration context's per-setting write, whose payload carries
     /// `{ repo, setting, value }`. A single command MUST change exactly one
@@ -367,6 +371,7 @@ impl CommandType {
             Self::WorkItemRejectRequested => "work_item.reject_requested",
             Self::WorkItemSetAdmissionRequested => "work_item.set_admission_requested",
             Self::WorkItemSetAcceptanceRequested => "work_item.set_acceptance_requested",
+            Self::WorkItemResolveBlockedRequested => "work_item.resolve_blocked_requested",
             Self::ConfigDispatcherSettingSet => "config.dispatcher_setting_set",
             Self::FactoryAutonomousDecisionReflected => "factory.autonomous_decision_reflected",
         }
@@ -381,7 +386,8 @@ impl CommandType {
             | Self::WorkItemAcceptRequested
             | Self::WorkItemRejectRequested
             | Self::WorkItemSetAdmissionRequested
-            | Self::WorkItemSetAcceptanceRequested => "work_item",
+            | Self::WorkItemSetAcceptanceRequested
+            | Self::WorkItemResolveBlockedRequested => "work_item",
             Self::ConfigDispatcherSettingSet => "configuration",
         }
     }
@@ -638,6 +644,10 @@ mod tests {
             "work_item.set_acceptance_requested"
         );
         assert_eq!(
+            CommandType::WorkItemResolveBlockedRequested.contract_name(),
+            "work_item.resolve_blocked_requested"
+        );
+        assert_eq!(
             CommandType::ConfigDispatcherSettingSet.contract_name(),
             "config.dispatcher_setting_set"
         );
@@ -659,6 +669,10 @@ mod tests {
         );
         assert_eq!(
             CommandType::WorkItemSetAcceptanceRequested.context(),
+            "work_item"
+        );
+        assert_eq!(
+            CommandType::WorkItemResolveBlockedRequested.context(),
             "work_item"
         );
         assert_eq!(

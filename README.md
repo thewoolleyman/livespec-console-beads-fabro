@@ -97,29 +97,31 @@ Configuration (all optional environment variables):
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `LIVESPEC_CONSOLE_REPO` | selected repo id; drives the header, the autonomous-mode target, and the `--repo` passed to the drive program | `livespec-console-beads-fabro` |
+| `LIVESPEC_CONSOLE_REPO` | selected repo id; drives the header and the `--repo` passed to the drive program | `livespec-console-beads-fabro` |
 | `LIVESPEC_CONSOLE_STORE_PATH` | SQLite event-store path (parent dir auto-created) | `tmp/livespec-console.sqlite` |
 | `LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM` | attention-snapshot program, called `<prog> --json` | `needs-attention` |
-| `LIVESPEC_CONSOLE_LIVESPEC_JSONC_PATH` | the `.livespec.jsonc` read to derive, and written to arm, autonomous mode | `.livespec.jsonc` |
 | `LIVESPEC_CONSOLE_DRAIN_PROGRAM` | factory drain program, called `<prog> drain` | `livespec-dispatcher-drain` |
-| `LIVESPEC_CONSOLE_DRIVE_PROGRAM` | orchestrator drive/valve program, called `<prog> --repo <repo>` | `livespec-orchestrator-drive` |
+| `LIVESPEC_CONSOLE_DRIVE_PROGRAM` | orchestrator drive/valve program, called `<prog> --repo <repo> --action <id>`; every setting write and per-item valve rides this one program | `livespec-orchestrator-drive` |
 
 ### The screen
 
 A single screen laid out in three rows:
 
 - **Header** (`LiveSpec Console`) — a status line:
-  `fleet: livespec | mode: tui | repo: <repo> | autonomous: on|off | view: <view> | attention: <N>`.
-  The `autonomous:` segment is *derived* from the orchestrator's
-  `dispatcher.autonomous_mode` key in `.livespec.jsonc` — the console reflects
-  the mode, it does not own it. An unreadable config reads as `off`.
+  `fleet: livespec | mode: tui | repo: <repo> | view: <view> | attention: <N>`.
+  On a narrow terminal the header degrades gracefully (dropping the constant
+  fields first); while any backing source is unavailable it also carries a
+  `sources: <N> unavailable (…)` segment so a cockpit-blind screen is never
+  mistaken for an idle factory.
 - **Body** — a left **Views** navigation list plus a middle list and a
-  **Detail** pane. There are five views: **Attention, Spec, Lanes, Events,
-  Repos**. Focus starts on the **Views** menu (the focused pane's title carries
-  a `[focus]` tag): `↑`/`↓` walk the menu, and `Enter`/`→` move focus into the
-  content pane. The **Lanes** view shows a lane overview (each lane with its
-  count and a few preview items); in the content pane `Enter` drills into a
-  single lane.
+  **Detail** pane. There are six views: **Attention, Spec, Lanes, Events,
+  Repos, Settings**. Focus starts on the **Views** menu (the focused pane's
+  title carries a `[focus]` tag): `↑`/`↓` walk the menu, and `Enter`/`→` move
+  focus into the content pane. The **Lanes** view shows a lane overview (each
+  lane with its count and a few preview items); in the content pane `Enter`
+  drills into a single lane, where `↑`/`↓` then select an individual
+  work-item. The **Settings** view lists the dispatcher policy settings (see
+  [Dispatcher settings](#dispatcher-settings)).
 - **Footer** (`Status`) — the shortcut hint line.
 
 ### Keys
@@ -130,51 +132,89 @@ back. The focused pane's title carries a `[focus]` tag.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | **Views** focus: move the highlighted view up/down the menu. **Content** focus: move the list / lane / modal-action selection |
-| `Enter` | dive from the Views menu into the content pane; in content, open the selected item's details, drill into the selected lane, or confirm a modal |
+| `↑` / `↓` | **Views** focus: move the highlighted view up/down the menu. **Content** focus: move the list / lane / **drilled-in lane's per-item** / settings-row / modal-action selection |
+| `Enter` | dive from the Views menu into the content pane; in content, open the selected item's details, drill into the selected lane, edit the selected Settings row, or confirm a modal |
 | `Esc` | step back (content → Views menu; a drilled-in lane → its overview first); closes an open overlay first |
 | `←` / `→` | `←` previous view (Views focus) or step out to the menu (content focus); `→` dive into content (Views focus) or next view (content focus) |
 | `/` | open search |
-| `:` | open the command palette |
-| `a` | toggle autonomous mode (see below) |
+| `:` | open the command palette (drain) |
+| `Enter` / `Space` | edit the selected **Settings** row (an ordinary recorded write — no arming ceremony) |
+| `s` | **move the selected work-item to a status** it may be driven to (pending-approval → ready, acceptance → done, blocked → ready/backlog); opens a confirm modal, `↑`/`↓` change the target, `Enter` confirms |
+| `p` / `c` / `r` | **approve** / **accept** / **reject** the selected work-item (confirm modal; reject is warned as dangerous) |
+| `m` / `n` | **set-admission** / **set-acceptance** — the per-item override of `auto_approve_ready` / `acceptance_mode` for the selected work-item |
 | `?` | toggle the help overlay |
 | `q` | quit (only when no overlay is open) |
 | `Ctrl-C` | quit (any time) |
 
-Press `?` for a help overlay that lists every keybinding; the footer line is
-the always-visible affordance summary. `Tab` does **not** switch views — walk
+The per-item valves `p` / `c` / `r` / `m` / `n` act on the **selected
+work-item** — the selected item in the **Attention** view, or the individually
+selected item in a **drilled-in lane** (`Lanes` view). The **`s` move-to-status**
+valve acts on the selected item in a **drilled-in lane only** — it needs the
+item's current lane to offer the statuses it may be driven to, so it is inert in
+the Attention view. Every one is issued through the orchestrator's `drive` API;
+the console never writes the ledger directly.
+
+Press `?` for a help overlay that lists every keybinding, **scoped to the active
+view** (the Settings view describes the dispatcher settings; the item views
+describe selection, the status move, and the per-item valves). The footer line
+is the always-visible affordance summary. `Tab` does **not** switch views — walk
 the **Views** menu with `↑` / `↓` (or use `←` / `→`).
 
-### Enabling autonomous mode (the dangerous switch)
+### Dispatcher settings
 
-Full autonomous mode lets the factory drive ready work to `done` unattended,
-so enabling it is guarded. Press `a`:
+The factory's routine autonomy is governed by six **dispatcher policy
+settings**. The orchestrator OWNS every setting; the console only **commands and
+observes** them — it holds no setting state of its own, derives every value it
+shows from the orchestrator's published read surface, and issues every write
+through the orchestrator's `drive` API (never by editing the orchestrator's
+`.livespec.jsonc` or the ledger directly). There is **no autonomous-mode master
+switch**: each setting is an independent dial, and enabling a dangerous one is
+an ordinary recorded write — no type-the-repo-name ceremony.
 
-1. A confirm modal titled **"Autonomous Mode (dangerous)"** opens, labelled
-   **"dangerous / use with caution"**.
-2. **Type the repo name exactly** (the modal shows which repo — it is
-   `LIVESPEC_CONSOLE_REPO`, default `livespec-console-beads-fabro`) and press
-   **Enter**. A mismatched entry is rejected with no effect.
-3. The header's `autonomous:` segment flips to `on`, and the mode is persisted
-   to the orchestrator's `dispatcher.autonomous_mode` key in `.livespec.jsonc`.
+Open the **Settings** view and press `Enter` / `Space` on a row to edit it (a
+bool toggles, an enum cycles, an int increments/wraps). A setting whose
+non-default value lets the factory act without a human is labelled **"dangerous
+/ use with caution"** wherever it appears.
 
-Press `a` again to **disable** — disabling is immediate and takes no
-confirmation.
+The six settings (by their orchestrator key), and each one's **per-item
+override** — the mechanism for departing from the global default on a single
+work-item:
 
-### Acting on work (current scope)
+| Setting (global default) | Type | Dangerous? | Per-item override |
+|---|---|---|---|
+| `auto_approve_ready` | bool | **yes** — auto-approves a ready item with no human | **`m`** set-admission (`auto`/`manual`) on the selected item |
+| `merge_on_review_cap` | bool | **yes** — ships past the review cap with no sign-off | *pending an orchestrator-side drive action* (global only for now) |
+| `acceptance_mode` | enum `ai-then-human` \| `ai-only` \| `human-only` | **yes** when `ai-only` (AI auto-accepts) | **`n`** set-acceptance (the policy) on the selected item |
+| `review_fix_cap` | int | no | *pending an orchestrator-side drive action* (global only for now) |
+| `acceptance_rework_cap` | int | no | *pending an orchestrator-side drive action* (global only for now) |
+| `wip_cap` | int | no | **none** — a per-repo concurrency ceiling, structurally not per-item |
 
-From the running TUI today you can:
+Two overridable settings (`auto_approve_ready`, `acceptance_mode`) already have
+a per-item valve (`m` / `n`), because the orchestrator publishes `set-admission`
+and `set-acceptance` actions for them. The other three overridable settings
+(`merge_on_review_cap`, `review_fix_cap`, `acceptance_rework_cap`) are edited
+**globally** in the Settings view today; their per-item override awaits a
+per-setting override action on the orchestrator's `drive` surface and is not yet
+bound to a console key.
 
-- **toggle autonomous mode** (`a`), and
-- **drain the ready queue** — press `:`, type `drain` (or `drain ready
-  queue`), then `Enter`.
+### Acting on work
 
 Needs-attention items (pending approval, acceptance review, blocked-on-human)
-appear in the **Attention** view, with their details in the **Detail** pane.
-The per-item operator valves (approve / accept / reject / set-admission /
-set-acceptance) exist in the command/event backend but are **not yet bound to
-a TUI key** — surfacing them as in-TUI actions is tracked work. Until then,
-those valves are driven through the orchestrator directly.
+appear in the **Attention** view, with their details in the **Detail** pane. The
+**Lanes** view shows the full seven-lane board; drill into a lane and `↑`/`↓`
+select an **individual work-item**.
+
+On the selected work-item the per-item valves are **bound to keys** and drive
+the orchestrator's `drive` API:
+
+- **`s` move to a status** the item may be driven to — **drilled-in lane only**
+  (pending-approval → ready via `approve`, acceptance → done via `accept`,
+  blocked → ready/backlog via `resolve-blocked`);
+- **`p` / `c` / `r`** approve / accept / reject; **`m` / `n`** set the admission
+  / acceptance policy override — on the selected item in the **Attention** view
+  or a **drilled-in lane**;
+- **drain the ready queue** — press `:`, type `drain` (or `drain ready queue`),
+  then `Enter`.
 
 ### Quitting
 

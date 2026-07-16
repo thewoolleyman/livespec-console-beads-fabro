@@ -371,6 +371,7 @@ pub fn key_event_to_terminal_input(
             PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
             'n',
         ),
+        KeyCode::Char('s') => move_status_open_input(model),
         KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
@@ -599,9 +600,10 @@ fn space_input(model: &TuiScreenModel, overlay: &TuiOverlay) -> Option<TuiTermin
 }
 
 /// A valve key (`p`/`c`/`r`/`m`/`n`): with no overlay open and a selected
-/// work-item in the Attention view, open the valve-confirm modal staging the
-/// given valve; on any other view or with nothing selected it is inert; behind
-/// an open text overlay it is a literal character.
+/// work-item -- either the selected Attention item OR the individually-selected
+/// item in a drilled-in lane -- open the valve-confirm modal staging the given
+/// valve; on any view without a selected work-item it is inert; behind an open
+/// text overlay it is a literal character.
 fn valve_open_input(
     model: &TuiScreenModel,
     valve: PendingValve,
@@ -609,7 +611,7 @@ fn valve_open_input(
 ) -> Option<TuiTerminalInput> {
     let overlay = model.overlay();
     if matches!(overlay, TuiOverlay::None) {
-        if model.active_view() == TuiView::Attention && model.detail().is_some() {
+        if model.selected_work_item_id().is_some() {
             return Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenValveConfirm(valve),
             ));
@@ -617,6 +619,21 @@ fn valve_open_input(
         return None;
     }
     text_input(character, overlay)
+}
+
+/// The move-status key (`s`): with no overlay open and an individually-selected
+/// work-item in a drilled-in lane whose current lane has an operator-drivable
+/// target, open the valve-confirm modal staging the move-status valve at its
+/// first target; on a lane item with no drivable target, or off the drill-in, it
+/// is inert; behind an open text overlay it is a literal character.
+fn move_status_open_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    let overlay = model.overlay();
+    if matches!(overlay, TuiOverlay::None) {
+        return model
+            .selected_move_status_valve()
+            .map(|valve| TuiTerminalInput::Interaction(TuiInteraction::OpenValveConfirm(valve)));
+    }
+    text_input('s', overlay)
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -780,22 +797,48 @@ fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer)
     render_vertical_scrollbar(area, buffer, count, list_state.offset());
 }
 
-/// A single drilled-in lane: its full rank-ordered item list, full width.
+/// A single drilled-in lane: its full rank-ordered item list, full width, with
+/// the individually-selected work-item highlighted so the operator can pick one
+/// item and act on it. Renders a stateful list (so the selected row scrolls into
+/// view) plus a scrollbar; an empty lane shows a placeholder.
 fn render_lane_drilldown(model: &TuiScreenModel, lane: Lane, area: Rect, buffer: &mut Buffer) {
     let items: &[LaneWorkItem] = model
         .lane_board()
         .column(lane)
         .map(LaneColumn::items)
         .unwrap_or_default();
-    let lines = if items.is_empty() {
-        vec![Line::from("No work-items in this lane")]
-    } else {
-        items.iter().map(lane_item_detail).collect::<Vec<_>>()
-    };
     let title = focus_title(&format!("Lane: {}", lane.label()), content_focused(model));
-    Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title(title))
-        .render(area, buffer);
+    let block = Block::new().borders(Borders::ALL).title(title);
+    if items.is_empty() {
+        Paragraph::new(vec![Line::from("No work-items in this lane")])
+            .block(block)
+            .render(area, buffer);
+        return;
+    }
+    let selected = model.selected_lane_item_index();
+    let list_items = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| lane_item_line(item, Some(index) == selected))
+        .collect::<Vec<_>>();
+    let count = list_items.len();
+    let list = List::new(list_items).block(block);
+    let mut list_state = ListState::default();
+    list_state.select(selected);
+    StatefulWidget::render(list, area, buffer, &mut list_state);
+    render_vertical_scrollbar(area, buffer, count, list_state.offset());
+}
+
+/// One drilled-in lane row prepared for the selectable list: the full drill-in
+/// line, with a `>` marker and bold style on the selected row.
+fn lane_item_line(item: &LaneWorkItem, selected: bool) -> ListItem<'static> {
+    let marker = if selected { ">" } else { " " };
+    let label = format!("{marker} {}", lane_item_detail_text(item));
+    ListItem::new(label).style(if selected {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    })
 }
 
 /// A compact overview-line for one work-item: id, status, and (when blocked)
@@ -810,15 +853,15 @@ fn lane_item_summary(item: &LaneWorkItem) -> String {
 }
 
 /// A full drill-in line for one work-item: id, repo, rank, status, and reason.
-fn lane_item_detail(item: &LaneWorkItem) -> Line<'static> {
-    Line::from(format!(
-        "- {}  {}  rank {}  [{}]{}",
+fn lane_item_detail_text(item: &LaneWorkItem) -> String {
+    format!(
+        "{}  {}  rank {}  [{}]{}",
         item.work_item_id(),
         item.repo(),
         item.rank(),
         item.status(),
         lane_reason_suffix(item)
-    ))
+    )
 }
 
 /// The ` (reason)` suffix for a blocked work-item, or empty when none.
@@ -854,14 +897,20 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
             );
         }
         TuiOverlay::ValveConfirm { valve } => {
+            // The modal's consent target MUST read from the SAME source `Enter`
+            // dispatches on (`selected_work_item_id` — the Attention detail OR the
+            // drilled-in lane selection), never from `detail()` alone: in a
+            // drilled-in lane the dispatch acts on the lane item, so reading the
+            // Attention detail here would show a DIFFERENT (or blank) target and
+            // let the operator confirm against the wrong work-item.
             render_valve_confirm(
                 *valve,
-                model.detail().map_or("", AttentionDetail::work_item),
+                model.selected_work_item_id().unwrap_or(""),
                 overlay_rect(area),
                 buffer,
             );
         }
-        TuiOverlay::Help => render_help_overlay(overlay_rect(area), buffer),
+        TuiOverlay::Help => render_help_overlay(overlay_rect(area), buffer, model.active_view()),
     }
 }
 
@@ -892,14 +941,16 @@ fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer
         .render(area, buffer);
 }
 
-/// Render the read-only Help overlay: a one-line "how to use" note plus every
-/// keybinding with a short description. The text MUST stay in lock-step with the
-/// key handler and the footer hint.
-fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
+/// Render the read-only Help overlay, SCOPED to the active view: the shared
+/// navigation keys plus a view-specific section -- the Settings view's help
+/// describes the six dispatcher settings and their edit, while the item views
+/// (Attention / Lanes) describe item selection, the move-to-status action, and
+/// the per-item valves. The text MUST stay in lock-step with the key handler and
+/// the footer hint.
+fn render_help_overlay(area: Rect, buffer: &mut Buffer, view: TuiView) {
     Clear.render(area, buffer);
-    let lines = vec![
+    let mut lines = vec![
         Line::from("Navigate the Views menu with up/down; Enter drills in, Esc goes back."),
-        Line::from("Edit a Settings row with Enter/Space; drain via :; quit with q."),
         Line::from(""),
         Line::from("left / right  move focus across panes (Views -> Content -> Detail), clamped"),
         Line::from("up / down    move the focused pane's selection, or scroll the Detail pane"),
@@ -909,19 +960,52 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
         ),
         Line::from("/            open search"),
         Line::from(":            open the command palette (drain)"),
-        Line::from("enter/space  edit the selected Settings row (ordinary recorded write)"),
-        Line::from("p / c / r    approve / accept / reject the selected work-item (confirm modal)"),
-        Line::from("m / n        set-admission / set-acceptance policy for the selected work-item"),
-        Line::from("             (in a valve modal: up/down change mode/policy, Enter confirms)"),
         Line::from("q / ctrl-c   quit"),
         Line::from("?            toggle this help"),
         Line::from(""),
-        Line::from("Esc or ? closes this help."),
     ];
+    lines.extend(help_lines_for_view(view));
+    lines.push(Line::from(""));
+    lines.push(Line::from("Esc or ? closes this help."));
     Paragraph::new(lines)
         .block(Block::new().borders(Borders::ALL).title("Help"))
         .wrap(Wrap { trim: true })
         .render(area, buffer);
+}
+
+/// The view-scoped help section: the Settings view lists the six dispatcher
+/// settings and their edit; every other item view lists item selection, the
+/// move-to-status action, and the per-item valves.
+fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
+    match view {
+        TuiView::Settings => vec![
+            Line::from("Settings view -- the six dispatcher policy settings:"),
+            Line::from(
+                "  auto_approve_ready, merge_on_review_cap, acceptance_mode, review_fix_cap,",
+            ),
+            Line::from("  acceptance_rework_cap, wip_cap."),
+            Line::from("enter/space  edit the selected setting row (ordinary recorded write)"),
+        ],
+        TuiView::Attention | TuiView::Spec | TuiView::Lanes | TuiView::Events | TuiView::Repos => {
+            vec![
+                Line::from("Lanes view -- select and act on an individual work-item:"),
+                Line::from("up / down    (in a drilled-in lane) select an individual work-item"),
+                Line::from(
+                    "s            move the selected work-item to a status it may be driven to",
+                ),
+                Line::from("             (pending-approval -> ready, acceptance -> done,"),
+                Line::from(
+                    "              blocked -> ready/backlog; up/down change target, Enter confirms)",
+                ),
+                Line::from(
+                    "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
+                ),
+                Line::from(
+                    "m / n        set-admission / set-acceptance override for the selected work-item",
+                ),
+            ]
+        }
+    }
 }
 
 fn render_prompt_overlay(title: &'static str, value: String, area: Rect, buffer: &mut Buffer) {
@@ -2389,17 +2473,18 @@ mod tests {
         let output = render_to_text(&model, 96, 24);
 
         assert_eq!(output.as_ref().map(|r| r.contains("Lane: ready")), Ok(true));
-        // The drill-in shows repo + rank alongside the id.
+        // The drill-in shows repo + rank alongside the id; the first item is the
+        // selected per-item cursor, marked with `>`.
         assert_eq!(
             output
                 .as_ref()
-                .map(|r| r.contains("- console-ready-a  console  rank a0  [ready]")),
+                .map(|r| r.contains("> console-ready-a  console  rank a0  [ready]")),
             Ok(true)
         );
         assert_eq!(
             output
                 .as_ref()
-                .map(|r| r.contains("- console-ready-b  console  rank a1  [ready]")),
+                .map(|r| r.contains("console-ready-b  console  rank a1  [ready]")),
             Ok(true)
         );
     }
@@ -3007,6 +3092,161 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Char('r')), &search),
             Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('r')))
         );
+    }
+
+    /// One pending-approval work-item, so a drilled-in lane holds a selectable
+    /// item the operator can approve.
+    fn pending_lane_events() -> [ConsoleEvent; 1] {
+        [lane_event(
+            "evt_pa",
+            "console-pending",
+            Lane::PendingApproval,
+            None,
+            "a0",
+            "pending-approval",
+        )]
+    }
+
+    /// A Lanes-view state drilled into the pending-approval lane with its first
+    /// item selected and the Content pane focused.
+    fn drilled_pending_state(overlay: TuiOverlay) -> TuiInteractionState {
+        TuiInteractionState::for_view(TuiView::Lanes, 0, overlay)
+            .with_lane_focus(LaneFocus::Lane(Lane::PendingApproval))
+            .with_selected_lane_item_index(0)
+            .with_focus(FocusPane::Content)
+    }
+
+    #[test]
+    fn valve_and_move_status_keys_fire_on_a_selected_lane_item() {
+        let events = pending_lane_events();
+        let model = build_tui_model_for_state(&events, &drilled_pending_state(TuiOverlay::None));
+        // A per-item valve key now opens on a drilled-in lane item, not only in
+        // the Attention view.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('p')), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenValveConfirm(PendingValve::Approve)
+            ))
+        );
+        // `s` stages the move-status valve at the first drivable target.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('s')), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenValveConfirm(PendingValve::MoveStatus {
+                    from: Lane::PendingApproval,
+                    to: Lane::Ready,
+                })
+            ))
+        );
+    }
+
+    #[test]
+    fn move_status_on_a_pending_approval_lane_item_persists_the_approve_command() {
+        // W7 proof: from a drilled-in lane, selecting a pending-approval item and
+        // confirming the move-to-status valve persists the approve command that
+        // the shared orchestrator port dispatches as `approve:<id>`
+        // (pending-approval -> ready), with no payload.
+        let state = drilled_pending_state(TuiOverlay::ValveConfirm {
+            valve: PendingValve::MoveStatus {
+                from: Lane::PendingApproval,
+                to: Lane::Ready,
+            },
+        });
+        let step = step_tui_runtime(
+            &state,
+            &pending_lane_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            persisted_command(step.effect()).map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::WorkItemApproveRequested)
+        );
+        assert_eq!(persisted_payload(step.effect()), None);
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn valve_confirm_modal_targets_the_selected_lane_item_not_the_attention_detail() {
+        // Operator-safety: in a drilled-in lane with a NON-EMPTY Attention inbox,
+        // the valve-confirm modal's "Target:" line MUST name the LANE-selected
+        // work-item (the same item `Enter` dispatches on via
+        // `selected_work_item_id`), never the Attention detail. `lane_render_events`
+        // puts two ready items in the Ready lane and one blocked (needs-human) item
+        // that fills the Attention inbox, so the drilled Ready selection and the
+        // Attention detail are guaranteed to be different work-items — the exact
+        // condition under which reading `detail()` here would show the wrong id.
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_selected_lane_item_index(0)
+        .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+        // Preconditions: the dispatch target is the lane selection, and the
+        // Attention detail is a DIFFERENT, non-empty item.
+        assert_eq!(model.selected_work_item_id(), Some("console-ready-a"));
+        assert_eq!(
+            model.detail().map(AttentionDetail::work_item),
+            Some("console-blocked")
+        );
+
+        let rendered = render_to_text(&model, 96, 24).unwrap_or_default();
+        // The modal names the lane selection, never the Attention detail.
+        assert!(rendered.contains("Target: console-ready-a"));
+        assert!(!rendered.contains("console-blocked"));
+    }
+
+    #[test]
+    fn move_status_key_is_inert_without_a_drivable_target_and_literal_in_a_text_overlay() {
+        // Drilled into the ready lane, whose items have no operator-drivable
+        // onward transition, so `s` is inert.
+        let ready = build_tui_model_for_state(
+            &lane_render_events(),
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+                .with_focus(FocusPane::Content),
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('s')), &ready),
+            None
+        );
+        // Behind a text overlay `s` is a literal character.
+        let search = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('s')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('s')))
+        );
+    }
+
+    #[test]
+    fn help_overlay_is_scoped_to_the_active_view() {
+        // The Settings view help names the six settings and the edit, not the
+        // item-lane actions.
+        let settings = build_tui_model_for_state(
+            &[],
+            &TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::Help),
+        );
+        let settings_help = render_to_text(&settings, 120, 72).unwrap_or_default();
+        assert!(settings_help.contains("auto_approve_ready"));
+        assert!(settings_help.contains("edit the selected setting row"));
+        assert!(!settings_help.contains("move the selected work-item to a status"));
+
+        // The Lanes view help describes item selection and the move-to-status
+        // action.
+        let lanes = build_tui_model_for_state(
+            &lane_render_events(),
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Help),
+        );
+        let lanes_help = render_to_text(&lanes, 120, 72).unwrap_or_default();
+        assert!(lanes_help.contains("move the selected work-item to a status"));
+        assert!(lanes_help.contains("select an individual work-item"));
     }
 
     #[test]
