@@ -24,8 +24,8 @@ use console_application::source_adapters::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_application::{
-    DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, JournalAutonomousDecisionsPort,
-    LivespecJsoncArmingPort, read_autonomous_mode_from_jsonc,
+    DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, DispatcherSettingsPort,
+    DispatcherSettingsRead, JournalAutonomousDecisionsPort,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
@@ -109,7 +109,6 @@ fn run_store_backed_command(
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
-    let livespec_jsonc_path = livespec_jsonc_path();
     let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
@@ -119,9 +118,8 @@ fn run_store_backed_command(
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
-        &["--repo", repo_path.as_str()],
+        &["--repo", repo_path.as_str(), "--json"],
     );
-    let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
     let decisions = JournalAutonomousDecisionsPort::new(
         &probe,
         livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
@@ -133,7 +131,6 @@ fn run_store_backed_command(
         &sources,
         &mut drain,
         &mut drive,
-        &mut arming,
         &decisions,
         &needs_attention,
     ))
@@ -158,7 +155,6 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
-    let livespec_jsonc_path = livespec_jsonc_path();
     let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
@@ -168,10 +164,9 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
-        &["--repo", repo_path.as_str()],
+        &["--repo", repo_path.as_str(), "--json"],
     );
-    let autonomous_mode_enabled = derive_autonomous_mode(&probe, &livespec_jsonc_path);
-    let mut arming = LivespecJsoncArmingPort::new(&probe, &livespec_jsonc_path);
+    let autonomous_mode_enabled = derive_autonomous_mode(&mut drive);
     let decisions = JournalAutonomousDecisionsPort::new(
         &probe,
         livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
@@ -188,7 +183,6 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &sources,
         &mut drain,
         &mut drive,
-        &mut arming,
         &decisions,
         &needs_attention,
     )
@@ -238,13 +232,6 @@ impl SourceProbe for SystemSourceProbe {
             Err(error) => SourceProbeOutcome::unavailable(&format!("{path}: {error}")),
         }
     }
-
-    fn write_file(&self, path: &str, contents: &str) -> SourceProbeOutcome {
-        match std::fs::write(path, contents) {
-            Ok(()) => SourceProbeOutcome::observed("", true),
-            Err(error) => SourceProbeOutcome::unavailable(&format!("{path}: {error}")),
-        }
-    }
 }
 
 /// The observed tenant repo the cockpit is watching.
@@ -265,24 +252,16 @@ fn console_repo() -> String {
     )
 }
 
+/// Derive the selected repo's autonomous-mode header flag from the orchestrator's
+/// published settings read, so the live TUI header and toggle reflect the
+/// orchestrator-owned `auto_approve_ready` setting. An unreadable surface is
+/// treated as disabled (the default-off contract). This transitional header
+/// segment is retired with the arming surface by the Settings surface (W4).
 #[cfg(all(not(test), not(coverage)))]
-fn livespec_jsonc_path() -> String {
-    std::env::var("LIVESPEC_CONSOLE_LIVESPEC_JSONC_PATH")
-        .unwrap_or_else(|_error| ".livespec.jsonc".to_owned())
-}
-
-/// Derive the selected repo's autonomous mode from its `.livespec.jsonc`, so the
-/// live TUI header and toggle reflect the orchestrator permission key. An
-/// unreadable config is treated as disabled (the default-off contract).
-#[cfg(all(not(test), not(coverage)))]
-fn derive_autonomous_mode(probe: &SystemSourceProbe, livespec_jsonc_path: &str) -> bool {
-    match probe.read_file(livespec_jsonc_path) {
-        SourceProbeOutcome::Observed {
-            stdout,
-            success: true,
-        } => read_autonomous_mode_from_jsonc(&stdout),
-        SourceProbeOutcome::Observed { success: false, .. }
-        | SourceProbeOutcome::Unavailable { .. } => false,
+fn derive_autonomous_mode(drive: &mut DispatcherOrchestratorActionPort<'_>) -> bool {
+    match DispatcherSettingsPort::new(drive).read_settings() {
+        Ok(DispatcherSettingsRead::Observed(settings)) => settings.auto_approve_ready(),
+        Ok(DispatcherSettingsRead::NotObserved) | Err(_) => false,
     }
 }
 

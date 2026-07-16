@@ -1278,21 +1278,15 @@ impl SourceProbeOutcome {
 /// Runs a stable CLI or reads a file. UI/domain code must never call sources
 /// directly; adapters reach them only through this port. The concrete
 /// host-backed implementation lives in the binary (`console-cli` `main.rs`),
-/// outside the covered library surface.
+/// outside the covered library surface. The port is READ-ONLY by construction:
+/// it exposes no write capability, so the console cannot write the
+/// orchestrator's `.livespec.jsonc` (or any file) — every setting change is
+/// commanded THROUGH the orchestrator's published `drive` action surface.
 pub trait SourceProbe {
     /// Run a host command and return its observed stdout/success outcome.
     fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome;
     /// Read a host file and return its observed contents or unavailable reason.
     fn read_file(&self, path: &str) -> SourceProbeOutcome;
-    /// Write `contents` to a host file, returning an observed-success outcome
-    /// when the write lands or an unavailable reason when it cannot.
-    ///
-    /// The default is an honest not-wired outcome: a probe that carries no real
-    /// write capability MUST NOT report a fabricated success. The host-backed
-    /// probe in the binary overrides this with a real filesystem write.
-    fn write_file(&self, path: &str, _contents: &str) -> SourceProbeOutcome {
-        SourceProbeOutcome::unavailable(&format!("{path}: write not supported by this probe"))
-    }
 }
 
 /// How a given adapter observes its source instance.
