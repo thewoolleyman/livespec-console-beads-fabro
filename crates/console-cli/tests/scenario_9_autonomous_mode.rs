@@ -1,72 +1,55 @@
-//! Scenario 9 -- Enabling full autonomous mode is guarded and audited
-//! (SPECIFICATION/scenarios.md). Autonomous mode defaults to disabled; enabling
-//! it MUST be confirmed, MUST arm the orchestrator plane's single permission key
-//! (`livespec-orchestrator-beads-fabro.dispatcher.autonomous_mode`) through that
-//! plane's published arming surface, and MUST append a durable
-//! `config.autonomous_mode.enabled` audit event -- while an unconfirmed enable is
-//! rejected with no effect (no key write, no audit event).
+//! Scenario 9 -- Operator sets a dispatcher policy setting from the console
+//! (SPECIFICATION/scenarios.md). The console holds no dispatcher-setting state of
+//! its own: a setting change is a single per-setting write that MUST be effected
+//! THROUGH the orchestrator's published command surface (`drive.py --action
+//! set-config:<key>:<value>`) and MUST append the audit fact -- rather than the
+//! console writing the orchestrator's `.livespec.jsonc` itself.
 //!
-//! Both gherkin cases drive the real `LivespecJsoncArmingPort` against an
-//! in-memory `.livespec.jsonc` document so the guarded-enable path is exercised
-//! end to end: the audit event and the issued factory command are observed in the
-//! event store, and the orchestrator permission key is observed actually written
-//! (or, for the rejection, observed unchanged). The type-to-confirm modal itself
-//! is the TUI surface (a later slice); this scenario covers the command,
-//! key-write, and audit contract the modal ultimately submits.
+//! This drives the console command pump end to end over the REAL
+//! `DispatcherOrchestratorActionPort` wired to a recording `SourceProbe`, so the
+//! full path is exercised: the stored `config.autonomous_mode_set` command (the
+//! transitional bridge onto the six-setting surface, retired with the arming
+//! surface by the Settings surface) is handled, the orchestrator `set-config`
+//! action is observed issued through `drive.py`, the audit event lands in the
+//! event store, and the probe observes NO `.livespec.jsonc` write. An unconfirmed
+//! dangerous enable is still rejected with no effect in this transitional slice.
 
 use std::cell::RefCell;
 
+use console_application::DispatcherOrchestratorActionPort;
 use console_application::source_adapters::{SourceProbe, SourceProbeOutcome};
-use console_application::{LivespecJsoncArmingPort, read_autonomous_mode_from_jsonc};
 use console_domain::{CommandEnvelope, CommandType, EventType};
 use console_eventstore::{CommandAppend, SqliteEventStore};
 use livespec_console_beads_fabro::{ConsoleRuntimeError, handle_pending_config_commands};
 
-/// A `.livespec.jsonc` for a registered repo whose autonomous mode is disabled
-/// by default: the orchestrator block carries no `dispatcher.autonomous_mode`
-/// key, and comments and other members must survive an arming write.
-const CONFIG_DISABLED_BY_DEFAULT: &str = r#"{
-  "template": "livespec-with-diagrams",
-  // The orchestrator block, with no dispatcher.autonomous_mode key yet.
-  "livespec-orchestrator-beads-fabro": {
-    "format": "beads",
-    "connection": { "tenant": "livespec-console-beads-fabro" }
-  }
-}"#;
-
-const SCRATCH_PATH: &str = "/scratch/.livespec.jsonc";
-
-/// A `SourceProbe` backed by an in-memory `.livespec.jsonc` document: reads
-/// return the current contents and writes replace them, so the real arming port
-/// is driven end to end without touching the filesystem.
-struct InMemoryConfigProbe {
-    contents: RefCell<String>,
+/// A read-only `SourceProbe` that returns a scripted `run_command` outcome and
+/// records every command argv. It stands in for a live `drive.py`, so the
+/// settings write is driven end to end; the probe (like the shipped one) exposes
+/// no write capability, so the console cannot write a file even in principle.
+struct RecordingDriveProbe {
+    run_outcome: SourceProbeOutcome,
+    run_calls: RefCell<Vec<Vec<String>>>,
 }
 
-impl InMemoryConfigProbe {
-    fn new(initial: &str) -> Self {
+impl RecordingDriveProbe {
+    const fn returning(run_outcome: SourceProbeOutcome) -> Self {
         Self {
-            contents: RefCell::new(initial.to_owned()),
+            run_outcome,
+            run_calls: RefCell::new(Vec::new()),
         }
     }
-
-    fn contents(&self) -> String {
-        self.contents.borrow().clone()
-    }
 }
 
-impl SourceProbe for InMemoryConfigProbe {
-    fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
-        SourceProbeOutcome::unavailable("run_command unused by the arming port")
+impl SourceProbe for RecordingDriveProbe {
+    fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome {
+        let mut call = vec![program.to_owned()];
+        call.extend(args.iter().map(|arg| (*arg).to_owned()));
+        self.run_calls.borrow_mut().push(call);
+        self.run_outcome.clone()
     }
 
     fn read_file(&self, _path: &str) -> SourceProbeOutcome {
-        SourceProbeOutcome::observed(&self.contents.borrow(), true)
-    }
-
-    fn write_file(&self, _path: &str, contents: &str) -> SourceProbeOutcome {
-        self.contents.replace(contents.to_owned());
-        SourceProbeOutcome::observed("", true)
+        SourceProbeOutcome::unavailable("read_file unused by the settings port")
     }
 }
 
@@ -86,75 +69,74 @@ fn autonomous_mode_set_command(payload_json: &str) -> CommandAppend {
     )
 }
 
-/// Enabling autonomous mode is confirmed, armed, and audited: a
-/// `config.autonomous_mode_set` with `confirmed` true completes, appends the
-/// `config.autonomous_mode.enabled` audit event, issues
-/// `factory.autonomous_mode_enable_requested` through the orchestrator's arming
-/// surface, and the orchestrator permission key ends up actually written.
+/// Setting a dispatcher policy is commanded THROUGH the orchestrator API: a
+/// confirmed `config.autonomous_mode_set` completes, issues the orchestrator's
+/// published `set-config` action through `drive.py`, appends the audit event, and
+/// writes NO `.livespec.jsonc` on disk.
 #[test]
-fn scenario_9_enabling_autonomous_mode_is_confirmed_armed_and_audited()
+fn scenario_9_setting_a_dispatcher_policy_is_commanded_through_the_orchestrator_api()
 -> Result<(), ConsoleRuntimeError> {
     let mut store = SqliteEventStore::open_in_memory()?;
 
-    // Given a registered repo whose autonomous mode is disabled by default.
-    let probe = InMemoryConfigProbe::new(CONFIG_DISABLED_BY_DEFAULT);
-    assert!(!read_autonomous_mode_from_jsonc(&probe.contents()));
-
-    // When the operator submits config.autonomous_mode_set with confirmed true.
+    // Given a registered repo. When the operator submits a confirmed setting
+    // change through the console command pump.
     store.append_command(&autonomous_mode_set_command(
         r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":true}"#,
     ))?;
-    let mut port = LivespecJsoncArmingPort::new(&probe, SCRATCH_PATH);
-    let outcomes = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+    let probe = RecordingDriveProbe::returning(SourceProbeOutcome::observed("{}", true));
+    let mut drive =
+        DispatcherOrchestratorActionPort::new(&probe, "drive.py", &["--repo", "/orch", "--json"]);
+    let outcomes = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut drive)?;
 
     // Then the command completes.
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].command_status(), "completed");
 
+    // And the setting was effected through the orchestrator's published
+    // `set-config` action -- never by the console writing `.livespec.jsonc`.
+    assert_eq!(
+        probe.run_calls.borrow().as_slice(),
+        [vec![
+            "drive.py".to_owned(),
+            "--repo".to_owned(),
+            "/orch".to_owned(),
+            "--json".to_owned(),
+            "--action".to_owned(),
+            "set-config:auto_approve_ready:true".to_owned(),
+        ]]
+    );
+
+    // And the durable audit event lands in the configuration context.
     let events = store.list_console_events()?;
-    // And appends a config.autonomous_mode.enabled audit event (configuration).
     let audit = events
         .iter()
         .find(|event| event.event_type() == &EventType::ConfigAutonomousModeEnabled);
     assert!(matches!(audit, Some(event) if event.context() == "configuration"));
-    // And issues factory.autonomous_mode_enable_requested to the orchestrator
-    // through its published arming surface (factory context).
-    let issued = events
-        .iter()
-        .find(|event| event.event_type() == &EventType::FactoryAutonomousModeEnableRequested);
-    assert!(matches!(issued, Some(event) if event.context() == "factory"));
-
-    // And the orchestrator permission key is actually armed in the config.
-    assert!(read_autonomous_mode_from_jsonc(&probe.contents()));
     Ok(())
 }
 
-/// An unconfirmed enable is rejected with no effect: the Configuration context
-/// rejects the command, no setting is written (the permission key stays
-/// disabled), and no audit event is appended.
+/// The transitional dangerous-enable guard: an unconfirmed enable is rejected
+/// with no effect -- no orchestrator action issued, no `.livespec.jsonc` write,
+/// and no audit event.
 #[test]
 fn scenario_9_an_unconfirmed_enable_is_rejected_with_no_effect() -> Result<(), ConsoleRuntimeError>
 {
     let mut store = SqliteEventStore::open_in_memory()?;
 
-    // Given a registered repo whose autonomous mode is disabled.
-    let probe = InMemoryConfigProbe::new(CONFIG_DISABLED_BY_DEFAULT);
-
-    // When a config.autonomous_mode_set with enabled true arrives without
-    // confirmed true.
     store.append_command(&autonomous_mode_set_command(
         r#"{"repo":"livespec-console-beads-fabro","enabled":true,"confirmed":false}"#,
     ))?;
-    let mut port = LivespecJsoncArmingPort::new(&probe, SCRATCH_PATH);
-    let outcomes = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+    let probe = RecordingDriveProbe::returning(SourceProbeOutcome::observed("{}", true));
+    let mut drive =
+        DispatcherOrchestratorActionPort::new(&probe, "drive.py", &["--repo", "/orch", "--json"]);
+    let outcomes = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut drive)?;
 
-    // Then the Configuration context rejects the command.
+    // Then the command is rejected with no effect.
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].command_status(), "rejected");
 
-    // And no setting is written: the permission key stays disabled.
-    assert!(!read_autonomous_mode_from_jsonc(&probe.contents()));
-    assert_eq!(probe.contents(), CONFIG_DISABLED_BY_DEFAULT);
+    // And no orchestrator action was issued.
+    assert!(probe.run_calls.borrow().is_empty());
 
     // And no audit event is appended.
     let events = store.list_console_events()?;

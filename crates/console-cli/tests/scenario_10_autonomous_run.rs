@@ -14,8 +14,7 @@ use console_application::source_adapters::{
     NeedsAttentionSnapshotPort, SourceProbe, SourceProbeOutcome,
 };
 use console_application::{
-    ApplicationError, AutonomousModeArmingOutcome, AutonomousModeArmingPort,
-    AutonomousModeArmingRequest, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+    ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
     JournalAutonomousDecisionsPort, OrchestratorActionOutcome, OrchestratorActionPort,
     OrchestratorActionRequest, project_attention,
 };
@@ -91,17 +90,6 @@ impl OrchestratorActionPort for NoWorkItemActionPort {
     }
 }
 
-struct NoArmingPort;
-
-impl AutonomousModeArmingPort for NoArmingPort {
-    fn arm(
-        &mut self,
-        _request: &AutonomousModeArmingRequest,
-    ) -> Result<AutonomousModeArmingOutcome, ApplicationError> {
-        Ok(AutonomousModeArmingOutcome::not_wired())
-    }
-}
-
 #[test]
 fn scenario_10_autonomous_run_reflects_the_decidable_and_escalates_the_rest()
 -> Result<(), ConsoleRuntimeError> {
@@ -112,7 +100,6 @@ fn scenario_10_autonomous_run_reflects_the_decidable_and_escalates_the_rest()
     let decisions = JournalAutonomousDecisionsPort::new(&probe, "tmp/dispatcher-journal.jsonl");
     let mut drain = NoDrainPort;
     let mut work_item = NoWorkItemActionPort;
-    let mut arming = NoArmingPort;
 
     // The shipped run loop: ingest the needs-attention surface, then observe the
     // plane's published per-decision audit and reflect it.
@@ -122,7 +109,6 @@ fn scenario_10_autonomous_run_reflects_the_decidable_and_escalates_the_rest()
         &[],
         &mut drain,
         &mut work_item,
-        &mut arming,
         &decisions,
         &needs_attention,
     )?;
