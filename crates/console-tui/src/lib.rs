@@ -19,11 +19,11 @@
 
 use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneColumn, LaneFocus,
-    LaneWorkItem, OperatorAction, OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry,
-    TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
-    build_tui_model_for_state, reduce_tui_interaction, resolve_autonomous_mode_disable,
-    resolve_autonomous_mode_enable, resolve_command_palette_action,
+    ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
+    LaneColumn, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome, PendingValve,
+    RejectMode, SettingRow, TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay,
+    TuiScreenModel, TuiView, ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows,
+    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
     resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
@@ -71,14 +71,14 @@ pub fn run_interactive_tui(
     events: &[ConsoleEvent],
     requested_by: &str,
     selected_repo: &str,
-    autonomous_mode_enabled: bool,
+    dispatcher_settings: DispatcherSettingsRead,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut effect_sink = DeferredTuiRuntimeEffectSink;
     run_interactive_tui_with_effect_sink(
         events,
         requested_by,
         selected_repo,
-        autonomous_mode_enabled,
+        dispatcher_settings,
         &mut effect_sink,
     )
 }
@@ -89,7 +89,7 @@ pub fn run_interactive_tui_with_effect_sink(
     events: &[ConsoleEvent],
     requested_by: &str,
     selected_repo: &str,
-    autonomous_mode_enabled: bool,
+    dispatcher_settings: DispatcherSettingsRead,
     effect_sink: &mut dyn TuiRuntimeEffectSink,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
@@ -111,7 +111,7 @@ pub fn run_interactive_tui_with_effect_sink(
         events,
         requested_by,
         selected_repo,
-        autonomous_mode_enabled,
+        dispatcher_settings,
         effect_sink,
     );
     let raw_mode_result = disable_raw_mode();
@@ -129,12 +129,12 @@ fn run_terminal_loop(
     events: &[ConsoleEvent],
     requested_by: &str,
     selected_repo: &str,
-    autonomous_mode_enabled: bool,
+    dispatcher_settings: DispatcherSettingsRead,
     effect_sink: &mut dyn TuiRuntimeEffectSink,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
         .with_selected_repo(selected_repo.to_owned())
-        .with_autonomous_mode_enabled(autonomous_mode_enabled);
+        .with_dispatcher_settings(dispatcher_settings);
     let mut effects = Vec::new();
     loop {
         let model = build_tui_model_for_state(events, &state);
@@ -180,9 +180,6 @@ pub enum TuiTerminalInput {
     Interaction(TuiInteraction),
     /// Confirm variant.
     Confirm,
-    /// Toggle the selected repo's autonomous mode: enabling opens the dangerous
-    /// type-to-confirm modal, disabling submits directly with no confirmation.
-    ToggleAutonomousMode,
     /// Quit variant.
     Quit,
 }
@@ -194,8 +191,8 @@ pub enum TuiRuntimeEffect {
     Render,
     /// Persist command variant.
     PersistCommand(CommandEnvelope),
-    /// Persist a command carrying an operator-supplied JSON payload (the
-    /// autonomous-mode arming command's `{ repo, enabled, confirmed }`).
+    /// Persist a command carrying an operator-supplied JSON payload (for example
+    /// the `config.dispatcher_setting_set` write's `{ repo, setting, value }`).
     PersistCommandWithPayload {
         /// The command envelope to persist.
         command: CommandEnvelope,
@@ -286,9 +283,6 @@ pub fn step_tui_runtime(
             TuiRuntimeEffect::Render,
         ),
         TuiTerminalInput::Confirm => confirm_operator_action(state, events, requested_by),
-        TuiTerminalInput::ToggleAutonomousMode => {
-            toggle_autonomous_mode(state, events, requested_by)
-        }
         TuiTerminalInput::Quit => TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
     }
 }
@@ -301,10 +295,12 @@ fn confirm_operator_action(
     let model = build_tui_model_for_state(events, state);
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
-        TuiOverlay::AutonomousModeConfirm { .. } => {
-            resolve_autonomous_mode_enable(&model, requested_by)
-        }
         TuiOverlay::ValveConfirm { .. } => resolve_valve_action(&model, requested_by),
+        // `Enter`/`Space` on a Settings row is an ordinary recorded setting write
+        // (no overlay, no arming ceremony).
+        TuiOverlay::None if model.active_view() == TuiView::Settings => {
+            resolve_dispatcher_setting_edit(&model, requested_by)
+        }
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
@@ -317,29 +313,6 @@ fn confirm_operator_action(
     TuiRuntimeStep::new(
         reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
         effect,
-    )
-}
-
-/// Toggle the selected repo's autonomous mode. Enabling is dangerous, so it
-/// opens the type-to-confirm modal (no submit yet); disabling requires no
-/// confirmation, so it submits the disarm command directly with the overlay
-/// unchanged.
-fn toggle_autonomous_mode(
-    state: &TuiInteractionState,
-    events: &[ConsoleEvent],
-    requested_by: &str,
-) -> TuiRuntimeStep {
-    let model = build_tui_model_for_state(events, state);
-    if model.autonomous_mode_enabled() {
-        let effect = match resolve_autonomous_mode_disable(&model, requested_by) {
-            Ok(outcome) => action_outcome_effect(outcome),
-            Err(error) => TuiRuntimeEffect::ApplicationError(error),
-        };
-        return TuiRuntimeStep::new(state.clone(), effect);
-    }
-    TuiRuntimeStep::new(
-        reduce_tui_interaction(state, events, TuiInteraction::OpenAutonomousModeConfirm),
-        TuiRuntimeEffect::Render,
     )
 }
 
@@ -382,7 +355,7 @@ pub fn key_event_to_terminal_input(
         KeyCode::Char(':') => colon_input(overlay),
         KeyCode::Char('?') => question_input(overlay),
         KeyCode::Char('q') => q_input(overlay),
-        KeyCode::Char('a') => autonomous_toggle_input(overlay),
+        KeyCode::Char(' ') => space_input(model, overlay),
         KeyCode::Char('p') => valve_open_input(model, PendingValve::Approve, 'p'),
         KeyCode::Char('c') => valve_open_input(model, PendingValve::Accept, 'c'),
         KeyCode::Char('r') => {
@@ -436,10 +409,9 @@ const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
             FocusPane::Content => TuiInteraction::SelectPrevious,
             FocusPane::Detail => TuiInteraction::ScrollDetailUp,
         },
-        TuiOverlay::Search { .. }
-        | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
-        | TuiOverlay::Help => TuiInteraction::SelectPrevious,
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => {
+            TuiInteraction::SelectPrevious
+        }
     }
 }
 
@@ -453,21 +425,19 @@ const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
             FocusPane::Content => TuiInteraction::SelectNext,
             FocusPane::Detail => TuiInteraction::ScrollDetailDown,
         },
-        TuiOverlay::Search { .. }
-        | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
-        | TuiOverlay::Help => TuiInteraction::SelectNext,
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => {
+            TuiInteraction::SelectNext
+        }
     }
 }
 
-/// Enter: confirm a command modal / autonomous-confirm modal; behind a
-/// text/help overlay it is inert; with no overlay open it dives into the
-/// focused pane (see [`enter_content_input`]).
+/// Enter: confirm a command modal / valve-confirm modal; behind a text/help
+/// overlay it is inert; with no overlay open it dives into the focused pane (see
+/// [`enter_content_input`]).
 fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.overlay() {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. } => Some(TuiTerminalInput::Confirm),
         TuiOverlay::Search { .. } | TuiOverlay::Help => None,
         TuiOverlay::None => enter_content_input(model),
@@ -476,9 +446,10 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 
 /// Enter with no overlay open: from the Views nav it dives focus into the
 /// Content pane; in the Content pane it drills into the selected lane (lane
-/// overview), is inert in a drilled-in lane, or opens the command modal on the
-/// selected attention item for any other view; on the Detail pane it is inert
-/// (the command modal is opened from the Content pane).
+/// overview), edits the selected Settings row, is inert in a drilled-in lane, or
+/// opens the command modal on the selected attention item for any other view; on
+/// the Detail pane it is inert (the command modal is opened from the Content
+/// pane).
 fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.focus() {
         FocusPane::Nav => Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent)),
@@ -490,6 +461,11 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                     }
                     LaneFocus::Lane(_lane) => None,
                 };
+            }
+            // A Settings row edit is an ordinary recorded write resolved on
+            // `Confirm`; every other view opens the command modal.
+            if model.active_view() == TuiView::Settings {
+                return Some(TuiTerminalInput::Confirm);
             }
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenCommandModal,
@@ -598,7 +574,6 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::AutonomousModeConfirm { .. }
         | TuiOverlay::ValveConfirm { .. } => text_input('?', overlay),
     }
 }
@@ -610,13 +585,17 @@ const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     text_input('q', overlay)
 }
 
-/// `a`: with no overlay open, toggle the selected repo's autonomous mode;
-/// otherwise it is a literal character typed into the open text overlay.
-const fn autonomous_toggle_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
+/// Space: with no overlay open, edit the selected Settings row (the `Enter`
+/// alias on the Settings surface); otherwise it is a literal space typed into
+/// the open text overlay.
+fn space_input(model: &TuiScreenModel, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     if matches!(overlay, TuiOverlay::None) {
-        return Some(TuiTerminalInput::ToggleAutonomousMode);
+        if model.active_view() == TuiView::Settings && model.focus() == FocusPane::Content {
+            return Some(TuiTerminalInput::Confirm);
+        }
+        return None;
     }
-    text_input('a', overlay)
+    text_input(' ', overlay)
 }
 
 /// A valve key (`p`/`c`/`r`/`m`/`n`): with no overlay open and a selected
@@ -643,9 +622,7 @@ fn valve_open_input(
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     if matches!(
         overlay,
-        TuiOverlay::Search { .. }
-            | TuiOverlay::CommandPalette { .. }
-            | TuiOverlay::AutonomousModeConfirm { .. }
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. }
     ) {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(
             value,
@@ -729,6 +706,16 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize
         render_attention(model, horizontal[1], buffer);
         return render_detail(
             model.detail(),
+            model.detail_scroll(),
+            detail_focused,
+            horizontal[2],
+            buffer,
+        );
+    }
+    if model.active_view() == TuiView::Settings {
+        render_settings(model, horizontal[1], buffer);
+        return render_settings_detail(
+            model,
             model.detail_scroll(),
             detail_focused,
             horizontal[2],
@@ -866,14 +853,6 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
-        TuiOverlay::AutonomousModeConfirm { typed } => {
-            render_autonomous_mode_confirm(
-                model.selected_repo(),
-                typed,
-                overlay_rect(area),
-                buffer,
-            );
-        }
         TuiOverlay::ValveConfirm { valve } => {
             render_valve_confirm(
                 *valve,
@@ -920,7 +899,7 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
     Clear.render(area, buffer);
     let lines = vec![
         Line::from("Navigate the Views menu with up/down; Enter drills in, Esc goes back."),
-        Line::from("Toggle autonomous mode with a; drain via :; quit with q."),
+        Line::from("Edit a Settings row with Enter/Space; drain via :; quit with q."),
         Line::from(""),
         Line::from("left / right  move focus across panes (Views -> Content -> Detail), clamped"),
         Line::from("up / down    move the focused pane's selection, or scroll the Detail pane"),
@@ -930,7 +909,7 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
         ),
         Line::from("/            open search"),
         Line::from(":            open the command palette (drain)"),
-        Line::from("a            toggle autonomous mode (dangerous / type-to-confirm)"),
+        Line::from("enter/space  edit the selected Settings row (ordinary recorded write)"),
         Line::from("p / c / r    approve / accept / reject the selected work-item (confirm modal)"),
         Line::from("m / n        set-admission / set-acceptance policy for the selected work-item"),
         Line::from("             (in a valve modal: up/down change mode/policy, Enter confirms)"),
@@ -942,27 +921,6 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer) {
     Paragraph::new(lines)
         .block(Block::new().borders(Borders::ALL).title("Help"))
         .wrap(Wrap { trim: true })
-        .render(area, buffer);
-}
-
-/// Render the dangerous autonomous-mode type-to-confirm modal: the enable is
-/// labelled "dangerous / use with caution" and gated until the operator types
-/// the repo name.
-fn render_autonomous_mode_confirm(repo: &str, typed: &str, area: Rect, buffer: &mut Buffer) {
-    Clear.render(area, buffer);
-    let lines = vec![
-        Line::from("Enable full autonomous mode"),
-        Line::from("dangerous / use with caution").style(Style::new().add_modifier(Modifier::BOLD)),
-        Line::from(format!("Type the repo name to confirm: {repo}")),
-        Line::from(format!("> {typed}")),
-        Line::from("Enter to confirm | Esc to cancel"),
-    ];
-    Paragraph::new(lines)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title("Autonomous Mode (dangerous)"),
-        )
         .render(area, buffer);
 }
 
@@ -1162,6 +1120,85 @@ fn summary_detail_lines(items: &[ViewSummaryItem]) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Render the `Settings` view content pane: one row per dispatcher setting,
+/// `label [ value ]`, the selected row highlighted, or a not-observed placeholder
+/// when the read surface produced no trustworthy values.
+fn render_settings(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    let title = focus_title("Settings > Dispatcher settings", content_focused(model));
+    let block = Block::new().borders(Borders::ALL).title(title);
+    match model.dispatcher_settings() {
+        DispatcherSettingsRead::Observed(settings) => {
+            let rows = dispatcher_setting_rows(settings);
+            let items = rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| settings_row_line(model, index, row))
+                .collect::<Vec<_>>();
+            let count = items.len();
+            let list = List::new(items).block(block);
+            let mut list_state = ListState::default();
+            list_state.select(model.selected_setting_index());
+            StatefulWidget::render(list, area, buffer, &mut list_state);
+            render_vertical_scrollbar(area, buffer, count, list_state.offset());
+        }
+        DispatcherSettingsRead::NotObserved => {
+            Paragraph::new(vec![Line::from("Dispatcher settings not observed")])
+                .block(block)
+                .render(area, buffer);
+        }
+    }
+}
+
+/// One `Settings` content row: `> label  [ value ]`, with a compact `(dangerous)`
+/// marker for a dangerous setting and the selected row bolded.
+fn settings_row_line(model: &TuiScreenModel, index: usize, row: &SettingRow) -> ListItem<'static> {
+    let selected = Some(index) == model.selected_setting_index();
+    let marker = if selected { ">" } else { " " };
+    let danger = if row.dangerous() { "  (dangerous)" } else { "" };
+    let label = format!("{marker} {}  [ {} ]{danger}", row.label(), row.value());
+    ListItem::new(label).style(if selected {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    })
+}
+
+/// Render the `Settings` view detail pane: the selected row's value plus its
+/// inline help (which carries the "dangerous / use with caution" label for a
+/// dangerous row), or a not-observed placeholder.
+fn render_settings_detail(
+    model: &TuiScreenModel,
+    scroll: usize,
+    focused: bool,
+    area: Rect,
+    buffer: &mut Buffer,
+) -> usize {
+    render_scrollable_detail(settings_detail_lines(model), scroll, focused, area, buffer)
+}
+
+/// The Detail-pane lines for the selected `Settings` row: the label and value, a
+/// blank line, then the row's inline help. A standalone builder so the content
+/// can be exercised directly.
+fn settings_detail_lines(model: &TuiScreenModel) -> Vec<Line<'static>> {
+    let DispatcherSettingsRead::Observed(settings) = model.dispatcher_settings() else {
+        return vec![Line::from("Dispatcher settings not observed")];
+    };
+    let rows = dispatcher_setting_rows(settings);
+    model
+        .selected_setting_index()
+        .and_then(|index| rows.get(index))
+        .map_or_else(
+            || vec![Line::from("No setting selected")],
+            |row| {
+                vec![
+                    Line::from(format!("{}: {}", row.label(), row.value())),
+                    Line::from(String::new()),
+                    Line::from(row.help().to_owned()),
+                ]
+            },
+        )
+}
+
 fn render_detail(
     detail: Option<&AttentionDetail>,
     scroll: usize,
@@ -1265,21 +1302,23 @@ mod tests {
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
     use console_application::{
-        ApplicationError, AttentionDetail, AttentionItem, FocusPane, LaneFocus, OperatorAction,
-        OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        AttentionDetail, AttentionItem, DispatcherSettings, DispatcherSettingsRead, FocusPane,
+        LaneFocus, OperatorAction, OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
         build_tui_model_for_state, reduce_tui_interaction,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::text::Line;
 
     use super::{
         DeferredTuiRuntimeEffectSink, TuiRenderError, TuiRuntimeEffect, TuiRuntimeEffectSink,
         TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_outcome_effect, attention_item_line,
         buffer_to_text, detail_lines, key_event_to_terminal_input, render_command_modal,
-        render_detail, render_model, render_summary_detail, render_to_text, step_tui_runtime,
+        render_detail, render_model, render_summary_detail, render_to_text, settings_detail_lines,
+        step_tui_runtime,
     };
 
     #[test]
@@ -2755,189 +2794,145 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Autonomous-mode toggle / type-to-confirm modal (C3 slice 2), covering the
-    // Scenario 9 enable path at the TUI runtime level.
+    // The Settings surface at the TUI runtime level: the six-row content pane,
+    // the per-setting detail help, and the Enter/Space edit that persists a
+    // `config.dispatcher_setting_set` command with no arming ceremony (Scenario
+    // 9).
     // -----------------------------------------------------------------------
 
     const CONFIRM_REPO: &str = "livespec-console-beads-fabro";
 
-    /// An interaction state over the given overlay whose selected repo carries
-    /// the given derived autonomous mode.
-    fn autonomous_state(overlay: TuiOverlay, autonomous_mode_enabled: bool) -> TuiInteractionState {
-        TuiInteractionState::new(0, overlay)
-            .with_selected_repo(CONFIRM_REPO.to_owned())
-            .with_autonomous_mode_enabled(autonomous_mode_enabled)
+    /// Six effective dispatcher settings for the Settings-surface tests, with
+    /// `auto_approve_ready` off so editing it records a `false -> true` change.
+    fn observed_settings() -> DispatcherSettings {
+        DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5)
     }
 
-    /// A model over the given overlay whose selected repo carries the given mode.
-    fn autonomous_model(overlay: TuiOverlay, autonomous_mode_enabled: bool) -> TuiScreenModel {
-        build_tui_model_for_state(&[], &autonomous_state(overlay, autonomous_mode_enabled))
+    /// A Settings-view interaction state with row `selected` under the cursor and
+    /// the Content pane focused (where an edit fires).
+    fn settings_state(selected: usize) -> TuiInteractionState {
+        TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_focus(FocusPane::Content)
+            .with_selected_setting_index(selected)
+            .with_dispatcher_settings(DispatcherSettingsRead::Observed(observed_settings()))
+    }
+
+    /// The Settings-view model for row `selected`.
+    fn settings_model(selected: usize) -> TuiScreenModel {
+        build_tui_model_for_state(&[], &settings_state(selected))
     }
 
     #[test]
-    fn keymap_toggles_autonomous_mode_and_types_into_the_confirm_modal() {
-        // `a` with no overlay open toggles autonomous mode.
-        let none = autonomous_model(TuiOverlay::None, false);
+    fn keymap_edits_a_settings_row_with_enter_and_space_and_leaves_the_a_key_free() {
+        let model = settings_model(0);
+        // Enter and Space on a Content-focused Settings row both resolve the edit.
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('a')), &none),
-            Some(TuiTerminalInput::ToggleAutonomousMode)
-        );
-
-        // With the confirm modal open, `a` and any char are literal input, and
-        // Enter confirms.
-        let confirm = autonomous_model(
-            TuiOverlay::AutonomousModeConfirm {
-                typed: String::new(),
-            },
-            false,
-        );
-        assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('a')), &confirm),
-            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('a')))
-        );
-        assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('x')), &confirm),
-            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('x')))
-        );
-        assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Enter), &confirm),
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
             Some(TuiTerminalInput::Confirm)
         );
-    }
-
-    #[test]
-    fn toggling_a_disabled_repo_opens_the_confirm_modal_without_submitting() {
-        let state = autonomous_state(TuiOverlay::None, false);
-        let step = step_tui_runtime(
-            &state,
-            &[],
-            TuiTerminalInput::ToggleAutonomousMode,
-            "operator",
-        );
-        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
         assert_eq!(
-            step.state().overlay(),
-            &TuiOverlay::AutonomousModeConfirm {
-                typed: String::new(),
-            }
+            key_event_to_terminal_input(key(KeyCode::Char(' ')), &model),
+            Some(TuiTerminalInput::Confirm)
         );
-        assert_eq!(persisted_command(step.effect()), None);
+        // The `a` key is free: it is inert with no overlay open (the retired
+        // autonomous toggle no longer binds it).
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('a')), &model),
+            None
+        );
+        // Space is inert on a non-Settings view with no overlay open.
+        assert_eq!(
+            key_event_to_terminal_input(
+                key(KeyCode::Char(' ')),
+                &attention_model(TuiOverlay::None)
+            ),
+            None
+        );
+        // Space still types into an open search overlay.
+        let searching = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char(' ')), &searching),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(' ')))
+        );
     }
 
     #[test]
-    fn confirming_the_typed_modal_submits_a_confirmed_enable_command() {
-        let state = autonomous_state(
-            TuiOverlay::AutonomousModeConfirm {
-                typed: CONFIRM_REPO.to_owned(),
-            },
-            false,
-        );
+    fn editing_a_settings_row_persists_a_dispatcher_setting_set_command_with_no_ceremony() {
+        // Enter on the dangerous Auto-approve ready row submits an ordinary
+        // `config.dispatcher_setting_set` command carrying that one setting -- no
+        // confirm modal is opened.
+        let state = settings_state(0);
         let step = step_tui_runtime(&state, &[], TuiTerminalInput::Confirm, "operator");
 
         let command = persisted_command(step.effect());
         assert_eq!(
             command.map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::ConfigAutonomousModeSet)
+            Some(&CommandType::ConfigDispatcherSettingSet)
         );
         let payload = persisted_payload(step.effect());
         assert_eq!(
-            payload.map(|value| value.contains(r#""enabled":true"#)),
+            payload.map(|value| value.contains(r#""setting":"auto_approve_ready""#)),
             Some(true)
         );
         assert_eq!(
-            payload.map(|value| value.contains(r#""confirmed":true"#)),
+            payload.map(|value| value.contains(r#""value":true"#)),
             Some(true)
         );
         assert_eq!(
             payload.map(|value| value.contains(r#""repo":"livespec-console-beads-fabro""#)),
             Some(true)
         );
-        // The modal closes after the submit.
+        // No overlay was opened -- the edit is not gated behind any modal.
         assert_eq!(step.state().overlay(), &TuiOverlay::None);
     }
 
     #[test]
-    fn confirming_a_mismatched_modal_does_not_submit() {
-        let state = autonomous_state(
-            TuiOverlay::AutonomousModeConfirm {
-                typed: "wrong".to_owned(),
-            },
-            false,
-        );
-        let step = step_tui_runtime(&state, &[], TuiTerminalInput::Confirm, "operator");
-        assert_eq!(
-            step.effect(),
-            &TuiRuntimeEffect::ApplicationError(
-                ApplicationError::AutonomousModeConfirmationMismatch
-            )
-        );
-        assert_eq!(persisted_command(step.effect()), None);
-        assert_eq!(persisted_payload(step.effect()), None);
+    fn renders_six_settings_rows_the_selected_value_and_the_dangerous_label() {
+        let rendered = render_to_text(&settings_model(0), 120, 24);
+        let text = rendered.unwrap_or_default();
+        // The six setting rows and their effective values.
+        for label in [
+            "Auto-approve ready",
+            "Merge on review cap",
+            "Acceptance mode",
+            "Review fix cap",
+            "Acceptance rework cap",
+            "WIP cap",
+        ] {
+            assert!(text.contains(label), "missing row: {label}");
+        }
+        assert!(text.contains("ai-then-human"));
+        // The selected dangerous row's detail help carries the required label.
+        assert!(text.contains("dangerous / use with caution"));
     }
 
     #[test]
-    fn toggling_an_enabled_repo_submits_a_disable_without_confirmation() {
-        let state = autonomous_state(TuiOverlay::None, true);
-        let step = step_tui_runtime(
-            &state,
-            &[],
-            TuiTerminalInput::ToggleAutonomousMode,
-            "operator",
-        );
-
-        let payload = persisted_payload(step.effect());
+    fn renders_the_not_observed_placeholder_when_settings_are_unreadable() {
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned());
+        let model = build_tui_model_for_state(&[], &state);
+        let rendered = render_to_text(&model, 120, 24);
         assert_eq!(
-            payload.map(|value| value.contains(r#""enabled":false"#)),
-            Some(true)
-        );
-        assert_eq!(
-            payload.map(|value| value.contains(r#""confirmed":false"#)),
-            Some(true)
-        );
-        // No confirmation modal is opened for a disable.
-        assert_eq!(step.state().overlay(), &TuiOverlay::None);
-    }
-
-    #[test]
-    fn toggling_an_enabled_repo_without_a_selected_repo_surfaces_an_error() {
-        let state =
-            TuiInteractionState::new(0, TuiOverlay::None).with_autonomous_mode_enabled(true);
-        let step = step_tui_runtime(
-            &state,
-            &[],
-            TuiTerminalInput::ToggleAutonomousMode,
-            "operator",
-        );
-        assert_eq!(
-            step.effect(),
-            &TuiRuntimeEffect::ApplicationError(ApplicationError::InvalidAutonomousModePayload)
+            rendered.map(|value| value.contains("Dispatcher settings not observed")),
+            Ok(true)
         );
     }
 
     #[test]
-    fn renders_the_dangerous_label_in_the_confirm_modal() {
-        let model = autonomous_model(
-            TuiOverlay::AutonomousModeConfirm {
-                typed: String::new(),
-            },
-            false,
-        );
-        let rendered = render_to_text(&model, 96, 24);
+    fn settings_detail_shows_the_no_selection_placeholder_when_no_row_is_selected() {
+        // The detail builder is defensive: observed settings but no selected row
+        // (a non-Settings view carries `selected_setting_index() == None`) yields
+        // the no-selection placeholder rather than indexing out of range.
+        let state = TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None)
+            .with_dispatcher_settings(DispatcherSettingsRead::Observed(observed_settings()));
+        let model = build_tui_model_for_state(&[], &state);
+        assert_eq!(model.selected_setting_index(), None);
         assert_eq!(
-            rendered
-                .as_ref()
-                .map(|value| value.contains("dangerous / use with caution")),
-            Ok(true)
-        );
-        assert_eq!(
-            rendered
-                .as_ref()
-                .map(|value| value.contains("Type the repo name to confirm")),
-            Ok(true)
-        );
-        assert_eq!(
-            rendered.as_ref().map(|value| value.contains(CONFIRM_REPO)),
-            Ok(true)
+            settings_detail_lines(&model),
+            vec![Line::from("No setting selected")]
         );
     }
 
@@ -2946,16 +2941,16 @@ mod tests {
         let effect = action_outcome_effect(OperatorActionOutcome::PersistCommandWithPayload {
             command: console_domain::CommandEnvelope::new(
                 "cmd".to_owned(),
-                CommandType::ConfigAutonomousModeSet,
+                CommandType::ConfigDispatcherSettingSet,
                 CONFIRM_REPO.to_owned(),
                 "key".to_owned(),
                 "operator".to_owned(),
             ),
-            payload_json: r#"{"repo":"r","enabled":true,"confirmed":true}"#.to_owned(),
+            payload_json: r#"{"repo":"r","setting":"wip_cap","value":6}"#.to_owned(),
         });
         assert_eq!(
             persisted_payload(&effect),
-            Some(r#"{"repo":"r","enabled":true,"confirmed":true}"#)
+            Some(r#"{"repo":"r","setting":"wip_cap","value":6}"#)
         );
     }
 
