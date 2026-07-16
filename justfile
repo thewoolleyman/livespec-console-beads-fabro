@@ -30,6 +30,15 @@ tui *ARGS:
 
 alias serve := tui
 
+# Build the standalone release binary for distribution. This is the artifact
+# `release-binary.yml` uploads to each GitHub Release (linux
+# x86_64-unknown-linux-gnu baseline). SQLite is compiled in via rusqlite's
+# `bundled` feature, so the output is a single self-contained executable at
+# `target/release/livespec-console-beads-fabro` — no local Rust build or
+# system SQLite required by the end user.
+build-release:
+    cargo build --release --package livespec-console-beads-fabro
+
 # First-touch setup — a THIN delegator to the shipped LOCAL first-touch
 # reconcile verb (`livespec_dev_tooling.fleet.local_reconcile`), the
 # generalized successor to this recipe's former inline steps (livespec-zs22.8

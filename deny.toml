@@ -13,7 +13,15 @@ confidence-threshold = 0.8
 
 [bans]
 multiple-versions = "warn"
+# Bans `*` version requirements — the real hazard is an unpinned crates.io
+# (registry) dependency.
 wildcards = "deny"
+# Scopes that ban to REGISTRY deps only, NOT a weakening: internal path deps
+# are unpublished workspace members that intentionally carry no version
+# requirement (dropping their pins is what lets a release-please workspace
+# version bump still resolve), and a `*` on a path dep always resolves to the
+# local crate — harmless. The registry-dep wildcard ban stays fully in force.
+allow-wildcard-paths = true
 
 [sources]
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -6,12 +6,17 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
+# Internal application crate — never published to a registry. This also lets
+# cargo-deny's allow-wildcard-paths permit the versionless internal path deps
+# below (crates.io forbids path deps, so wildcard paths are only allowed for
+# private crates).
+publish = false
 
 [dependencies]
-console-application = { path = "../console-application", version = "0.1.0" }
-console-domain = { path = "../console-domain", version = "0.1.0" }
-console-eventstore = { path = "../console-eventstore", version = "0.1.0" }
-console-tui = { path = "../console-tui", version = "0.1.0" }
+console-application = { path = "../console-application" }
+console-domain = { path = "../console-domain" }
+console-eventstore = { path = "../console-eventstore" }
+console-tui = { path = "../console-tui" }
 serde_json = "1"
 time = { version = "0.3.37", default-features = false, features = [
   "formatting",
