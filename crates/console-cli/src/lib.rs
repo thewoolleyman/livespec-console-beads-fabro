@@ -34,8 +34,9 @@ use console_application::{
     autonomous_reflection_attention_id, build_tui_model,
     handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
     handle_work_item_accept_command, handle_work_item_approve_command,
-    handle_work_item_reject_command, handle_work_item_set_acceptance_command,
-    handle_work_item_set_admission_command, project_attention,
+    handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
+    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+    project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
@@ -1071,6 +1072,10 @@ pub fn handle_pending_work_item_commands(
                 command,
                 payload_json,
             } => handle_work_item_set_acceptance_command(command, payload_json, port)?,
+            PendingWorkItemCommand::ResolveBlocked {
+                command,
+                payload_json,
+            } => handle_work_item_resolve_blocked_command(command, payload_json, port)?,
         };
         outcomes.push(finalize_pending_command(
             store,
@@ -1424,6 +1429,14 @@ enum PendingWorkItemCommand {
         /// The persisted `payload_json` carrying `{"policy": ...}`.
         payload_json: String,
     },
+    /// A rebuilt `work_item.resolve_blocked_requested` command plus its stored
+    /// payload.
+    ResolveBlocked {
+        /// The rebuilt command envelope.
+        command: CommandEnvelope,
+        /// The persisted `payload_json` carrying `{"target_status": ...}`.
+        payload_json: String,
+    },
 }
 
 impl PendingWorkItemCommand {
@@ -1434,7 +1447,8 @@ impl PendingWorkItemCommand {
             | Self::Accept(command)
             | Self::Reject { command, .. }
             | Self::SetAdmission { command, .. }
-            | Self::SetAcceptance { command, .. } => command,
+            | Self::SetAcceptance { command, .. }
+            | Self::ResolveBlocked { command, .. } => command,
         }
     }
 }
@@ -1456,7 +1470,15 @@ fn work_item_command_from_stored(
         contract_name == CommandType::WorkItemSetAdmissionRequested.contract_name();
     let is_set_acceptance =
         contract_name == CommandType::WorkItemSetAcceptanceRequested.contract_name();
-    if !(is_approve || is_accept || is_reject || is_set_admission || is_set_acceptance) {
+    let is_resolve_blocked =
+        contract_name == CommandType::WorkItemResolveBlockedRequested.contract_name();
+    if !(is_approve
+        || is_accept
+        || is_reject
+        || is_set_admission
+        || is_set_acceptance
+        || is_resolve_blocked)
+    {
         return Ok(None);
     }
     let Some(aggregate_id) = stored_command.aggregate_id() else {
@@ -1492,12 +1514,20 @@ fn work_item_command_from_stored(
             command: rebuild(CommandType::WorkItemSetAdmissionRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
-    } else {
+    } else if is_set_acceptance {
         // Set-acceptance is the acceptance policy dial: it surfaces the stored
         // `payload_json` (the `{"policy": ...}` object) for the application
         // handler to parse.
         PendingWorkItemCommand::SetAcceptance {
             command: rebuild(CommandType::WorkItemSetAcceptanceRequested),
+            payload_json: stored_command.payload_json().to_owned(),
+        }
+    } else {
+        // Resolve-blocked moves a `blocked` item to `ready`/`backlog`: it
+        // surfaces the stored `payload_json` (the `{"target_status": ...}`
+        // object) for the application handler to parse.
+        PendingWorkItemCommand::ResolveBlocked {
+            command: rebuild(CommandType::WorkItemResolveBlockedRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
     };
@@ -3655,6 +3685,65 @@ mod tests {
             outcome,
             Err(ConsoleRuntimeError::Application(
                 ApplicationError::InvalidAcceptancePolicy
+            ))
+        ));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        Ok(())
+    }
+
+    fn resolve_blocked_command_append(payload_json: &str) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_resolve_blocked".to_owned(),
+                CommandType::WorkItemResolveBlockedRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.resolve_blocked_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_resolve_blocked".to_owned(),
+            payload_json.to_owned(),
+        )
+    }
+
+    #[test]
+    fn pending_work_item_resolve_blocked_routes_target_from_payload_through_port()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&resolve_blocked_command_append(
+            r#"{"target_status":"ready"}"#,
+        ))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        // The target extracted from the stored payload lands in the action-id.
+        assert_eq!(port.observed_action_ids, ["resolve-blocked:wi-1:ready"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_resolve_blocked_surfaces_invalid_target_as_application_error()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&resolve_blocked_command_append(
+            r#"{"target_status":"active"}"#,
+        ))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::InvalidResolveBlockedTarget
             ))
         ));
         assert_eq!(port.observed_action_ids, [] as [String; 0]);

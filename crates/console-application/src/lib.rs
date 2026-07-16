@@ -204,6 +204,17 @@ pub enum PendingValve {
     SetAdmission(AdmissionPolicy),
     /// The set-acceptance policy dial with its dialed-in policy.
     SetAcceptance(AcceptancePolicy),
+    /// The move-to-status valve: move the selected work-item from its current
+    /// lane (`from`) to an operator-drivable target lane (`to`), cycling `to`
+    /// through the targets the operator may drive from `from`. It maps onto the
+    /// orchestrator's real transition actions (approve / accept / resolve-blocked)
+    /// -- never an invented status jump.
+    MoveStatus {
+        /// The selected work-item's current lane (its source state).
+        from: Lane,
+        /// The dialed-in target lane, cycled among the operator-drivable targets.
+        to: Lane,
+    },
 }
 
 impl PendingValve {
@@ -216,18 +227,20 @@ impl PendingValve {
             Self::Reject(_mode) => "Reject",
             Self::SetAdmission(_policy) => "Set admission",
             Self::SetAcceptance(_policy) => "Set acceptance",
+            Self::MoveStatus { .. } => "Move status",
         }
     }
 
     #[must_use]
-    /// The dialed-in mode/policy label for a payload valve, or `None` for the
-    /// payload-free approve/accept valves.
+    /// The dialed-in mode/policy/target label for a payload valve, or `None` for
+    /// the payload-free approve/accept valves.
     pub const fn option_label(&self) -> Option<&'static str> {
         match self {
             Self::Approve | Self::Accept => None,
             Self::Reject(mode) => Some(mode.as_str()),
             Self::SetAdmission(policy) => Some(policy.label()),
             Self::SetAcceptance(policy) => Some(policy.label()),
+            Self::MoveStatus { to, .. } => Some(to.label()),
         }
     }
 
@@ -239,8 +252,8 @@ impl PendingValve {
     }
 
     #[must_use]
-    /// This valve with its mode/policy rotated one step (forward or backward).
-    /// The payload-free approve/accept valves are returned unchanged.
+    /// This valve with its mode/policy/target rotated one step (forward or
+    /// backward). The payload-free approve/accept valves are returned unchanged.
     pub fn cycled(self, forward: bool) -> Self {
         match self {
             Self::Approve | Self::Accept => self,
@@ -251,7 +264,30 @@ impl PendingValve {
             Self::SetAcceptance(policy) => {
                 Self::SetAcceptance(rotate(AcceptancePolicy::all(), policy, forward))
             }
+            Self::MoveStatus { from, to } => Self::MoveStatus {
+                from,
+                to: rotate(status_move_targets(from), to, forward),
+            },
         }
+    }
+}
+
+/// The operator-drivable target lanes an item may be moved to from `from`,
+/// mapping each to a real orchestrator transition action.
+///
+/// The set is deliberately narrow: `pending-approval -> ready` (approve),
+/// `acceptance -> done` (accept), and `blocked -> ready | backlog`
+/// (resolve-blocked). The corrective `acceptance -> active | backlog` reject
+/// routes are NOT offered here -- reject stays on its own `r` valve, since it
+/// reverts a merged change and is warned as destructive. A lane with no
+/// operator-drivable target returns an empty slice, so the move-status valve
+/// never opens on it.
+const fn status_move_targets(from: Lane) -> &'static [Lane] {
+    match from {
+        Lane::PendingApproval => &[Lane::Ready],
+        Lane::Acceptance => &[Lane::Done],
+        Lane::Blocked => &[Lane::Ready, Lane::Backlog],
+        Lane::Backlog | Lane::Ready | Lane::Active | Lane::Done => &[],
     }
 }
 
@@ -415,6 +451,7 @@ pub struct TuiInteractionState {
     selected_attention_index: usize,
     lane_focus: LaneFocus,
     selected_lane_index: usize,
+    selected_lane_item_index: usize,
     focus: FocusPane,
     detail_scroll: usize,
     detail_max_scroll: usize,
@@ -433,6 +470,7 @@ impl TuiInteractionState {
             selected_attention_index,
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
+            selected_lane_item_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -455,6 +493,7 @@ impl TuiInteractionState {
             selected_attention_index,
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
+            selected_lane_item_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -520,6 +559,15 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn with_selected_lane_index(mut self, selected_lane_index: usize) -> Self {
         self.selected_lane_index = selected_lane_index;
+        self
+    }
+
+    /// Replace the selected work-item row within a drilled-in lane (the
+    /// per-item cursor the `Lanes` drill-in moves with up/down), preserving every
+    /// other field.
+    #[must_use]
+    pub const fn with_selected_lane_item_index(mut self, selected_lane_item_index: usize) -> Self {
+        self.selected_lane_item_index = selected_lane_item_index;
         self
     }
 
@@ -603,6 +651,12 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn selected_lane_index(&self) -> usize {
         self.selected_lane_index
+    }
+
+    #[must_use]
+    /// Return the selected work-item row within a drilled-in lane.
+    pub const fn selected_lane_item_index(&self) -> usize {
+        self.selected_lane_item_index
     }
 
     #[must_use]
@@ -749,6 +803,7 @@ pub struct TuiScreenModel {
     lane_board: LaneBoard,
     lane_focus: LaneFocus,
     selected_lane_index: Option<usize>,
+    selected_lane_item_index: Option<usize>,
     focus: FocusPane,
     detail_scroll: usize,
     overlay: TuiOverlay,
@@ -816,6 +871,54 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_lane_index(&self) -> Option<usize> {
         self.selected_lane_index
+    }
+
+    /// The selected work-item row within a drilled-in lane, present only while
+    /// the `Lanes` view is drilled into a lane that holds at least one item;
+    /// `None` otherwise. This is the per-item cursor the operator moves with
+    /// up/down to select an individual work-item.
+    #[must_use]
+    pub const fn selected_lane_item_index(&self) -> Option<usize> {
+        self.selected_lane_item_index
+    }
+
+    /// The selected work-item within a drilled-in lane, or `None` when the
+    /// `Lanes` view is not drilled into a non-empty lane.
+    #[must_use]
+    pub fn selected_lane_item(&self) -> Option<&LaneWorkItem> {
+        let LaneFocus::Lane(lane) = self.lane_focus else {
+            return None;
+        };
+        let index = self.selected_lane_item_index?;
+        self.lane_board.column(lane)?.items().get(index)
+    }
+
+    /// The work-item id the per-item valves act on: the selected drilled-in lane
+    /// item's id in the `Lanes` view, the selected Attention item's work-item id
+    /// in the `Attention` view, else `None`. This is what lets a per-item valve
+    /// fire on an individually-selected lane item, not only on an Attention item;
+    /// the other views carry no selectable work-item, so valves stay inert there.
+    #[must_use]
+    pub fn selected_work_item_id(&self) -> Option<&str> {
+        match self.active_view {
+            TuiView::Attention => self.detail.as_ref().map(AttentionDetail::work_item),
+            TuiView::Lanes => self.selected_lane_item().map(LaneWorkItem::work_item_id),
+            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
+        }
+    }
+
+    /// The move-status valve the operator may open on the selected drilled-in
+    /// lane item, staged at the first operator-drivable target for the item's
+    /// current lane, or `None` when no lane item is selected or its lane has no
+    /// operator-drivable target (so the move-status valve never opens on it).
+    #[must_use]
+    pub fn selected_move_status_valve(&self) -> Option<PendingValve> {
+        let item = self.selected_lane_item()?;
+        let to = status_move_targets(item.lane()).first().copied()?;
+        Some(PendingValve::MoveStatus {
+            from: item.lane(),
+            to,
+        })
     }
 
     /// Which pane the arrow keys currently drive (the Views nav, the Content
@@ -961,6 +1064,10 @@ pub enum ApplicationError {
     /// `work_item.set_acceptance_requested` command carried a payload whose
     /// `policy` was absent or not one of {ai-only, human-only, ai-then-human}.
     InvalidAcceptancePolicy,
+    /// Invalid resolve-blocked target variant -- a
+    /// `work_item.resolve_blocked_requested` command carried a payload whose
+    /// `target_status` was absent or not one of {ready, backlog}.
+    InvalidResolveBlockedTarget,
     /// Invalid dispatcher-setting payload variant -- a
     /// `config.dispatcher_setting_set` command carried a payload that was
     /// malformed, missing a required `repo` / `setting` / `value` field, named an
@@ -977,6 +1084,9 @@ pub enum ApplicationError {
     FactoryDrainPortFailed,
     /// No selected attention item variant.
     NoSelectedAttentionItem,
+    /// No selected work-item variant -- a per-item valve was invoked with no
+    /// work-item selected in either the Attention detail or a drilled-in lane.
+    NoSelectedWorkItem,
     /// No selected operator action variant.
     NoSelectedOperatorAction,
     /// Unknown command palette action variant.
@@ -1725,6 +1835,16 @@ pub fn build_tui_model_for_state(
         }
         _ => None,
     };
+    // The per-item cursor exists only while drilled into a lane that holds at
+    // least one item; an empty lane has nothing to select.
+    let selected_lane_item_index = match (active_view, lane_focus) {
+        (TuiView::Lanes, LaneFocus::Lane(lane)) => lane_board
+            .column(lane)
+            .map(LaneColumn::count)
+            .filter(|count| *count > 0)
+            .map(|count| state.selected_lane_item_index().min(count - 1)),
+        _ => None,
+    };
     let selected_setting_index = match active_view {
         TuiView::Settings => Some(
             state
@@ -1743,6 +1863,7 @@ pub fn build_tui_model_for_state(
         lane_board,
         lane_focus,
         selected_lane_index,
+        selected_lane_item_index,
         focus: state.focus(),
         detail_scroll: state.detail_scroll(),
         overlay,
@@ -1762,7 +1883,7 @@ pub fn build_tui_model_for_state(
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
-        footer: "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+        footer: "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: s move-status · p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
             .to_owned(),
     }
 }
@@ -2010,6 +2131,22 @@ fn is_lane_overview(state: &TuiInteractionState) -> bool {
     state.active_view() == TuiView::Lanes && state.lane_focus() == LaneFocus::Overview
 }
 
+/// Whether the `Lanes` view is drilled into a single lane, where up/down moves
+/// the per-item cursor within that lane's list rather than the attention
+/// selection.
+fn is_lane_drilldown(state: &TuiInteractionState) -> bool {
+    state.active_view() == TuiView::Lanes && matches!(state.lane_focus(), LaneFocus::Lane(_lane))
+}
+
+/// The number of work-items in the currently drilled-in lane, or `0` when the
+/// `Lanes` view is not drilled into a lane. Used to bound the per-item cursor.
+fn drilldown_item_count(state: &TuiInteractionState, model: &TuiScreenModel) -> usize {
+    let LaneFocus::Lane(lane) = state.lane_focus() else {
+        return 0;
+    };
+    model.lane_board().column(lane).map_or(0, LaneColumn::count)
+}
+
 /// Whether the `Settings` view is active, where up/down moves the selected
 /// setting row rather than the attention selection.
 fn is_settings_view(state: &TuiInteractionState) -> bool {
@@ -2024,6 +2161,13 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
             Lane::all().len(),
             state.selected_lane_index(),
         ))
+    } else if is_lane_drilldown(state) {
+        state
+            .clone()
+            .with_selected_lane_item_index(move_selection_down(
+                drilldown_item_count(state, model),
+                state.selected_lane_item_index(),
+            ))
     } else if is_settings_view(state) {
         state
             .clone()
@@ -2052,6 +2196,10 @@ fn select_previous(state: &TuiInteractionState) -> TuiInteractionState {
         state
             .clone()
             .with_selected_lane_index(move_selection_up(state.selected_lane_index()))
+    } else if is_lane_drilldown(state) {
+        state
+            .clone()
+            .with_selected_lane_item_index(move_selection_up(state.selected_lane_item_index()))
     } else if is_settings_view(state) {
         state
             .clone()
@@ -2201,10 +2349,12 @@ pub fn resolve_command_palette_action(
 /// # Errors
 /// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
 /// blank, [`ApplicationError::NoSelectedOperatorAction`] when the overlay is not
-/// the valve-confirm modal, and [`ApplicationError::NoSelectedAttentionItem`]
-/// when nothing is selected. The selected item's work-item id is carried
-/// verbatim as the command aggregate; the orchestrator's `drive` surface (and
-/// the downstream `work_item.*` handler) is the authority on its legality.
+/// the valve-confirm modal (or a move-status valve stages a pair that is not an
+/// operator-drivable transition), and [`ApplicationError::NoSelectedWorkItem`]
+/// when no work-item is selected in either the Attention detail or a drilled-in
+/// lane. The selected item's work-item id is carried verbatim as the command
+/// aggregate; the orchestrator's `drive` surface (and the downstream
+/// `work_item.*` handler) is the authority on its legality.
 pub fn resolve_valve_action(
     model: &TuiScreenModel,
     requested_by: &str,
@@ -2214,55 +2364,103 @@ pub fn resolve_valve_action(
         .overlay()
         .valve_confirm()
         .ok_or(ApplicationError::NoSelectedOperatorAction)?;
-    let detail = model
-        .detail()
-        .ok_or(ApplicationError::NoSelectedAttentionItem)?;
-    Ok(valve_outcome(valve, detail.work_item(), requested_by))
+    let work_item_id = model
+        .selected_work_item_id()
+        .ok_or(ApplicationError::NoSelectedWorkItem)?;
+    valve_outcome(valve, work_item_id, requested_by)
+        .ok_or(ApplicationError::NoSelectedOperatorAction)
 }
 
-/// Build the persist outcome for one staged valve against `work_item_id`.
+/// Build the persist outcome for one staged valve against `work_item_id`, or
+/// `None` when a move-status valve stages a pair that is not an
+/// operator-drivable transition (the payload-carrying valves and the plain
+/// human valves are always `Some`).
 fn valve_outcome(
     valve: PendingValve,
     work_item_id: &str,
     requested_by: &str,
-) -> OperatorActionOutcome {
+) -> Option<OperatorActionOutcome> {
     match valve {
-        PendingValve::Approve => OperatorActionOutcome::PersistCommand(work_item_command(
+        PendingValve::Approve => Some(OperatorActionOutcome::PersistCommand(work_item_command(
             "approve",
             CommandType::WorkItemApproveRequested,
             work_item_id,
             requested_by,
-        )),
-        PendingValve::Accept => OperatorActionOutcome::PersistCommand(work_item_command(
+        ))),
+        PendingValve::Accept => Some(OperatorActionOutcome::PersistCommand(work_item_command(
             "accept",
             CommandType::WorkItemAcceptRequested,
             work_item_id,
             requested_by,
-        )),
-        PendingValve::Reject(mode) => work_item_payload_outcome(
+        ))),
+        PendingValve::Reject(mode) => Some(work_item_payload_outcome(
             "reject",
             CommandType::WorkItemRejectRequested,
             work_item_id,
             "mode",
             mode.as_str(),
             requested_by,
-        ),
-        PendingValve::SetAdmission(policy) => work_item_payload_outcome(
+        )),
+        PendingValve::SetAdmission(policy) => Some(work_item_payload_outcome(
             "set_admission",
             CommandType::WorkItemSetAdmissionRequested,
             work_item_id,
             "policy",
             policy.label(),
             requested_by,
-        ),
-        PendingValve::SetAcceptance(policy) => work_item_payload_outcome(
+        )),
+        PendingValve::SetAcceptance(policy) => Some(work_item_payload_outcome(
             "set_acceptance",
             CommandType::WorkItemSetAcceptanceRequested,
             work_item_id,
             "policy",
             policy.label(),
             requested_by,
-        ),
+        )),
+        PendingValve::MoveStatus { from, to } => {
+            move_status_outcome(from, to, work_item_id, requested_by)
+        }
+    }
+}
+
+/// Map a `from -> to` move onto the persist outcome for the real orchestrator
+/// transition it drives: `approve` (`pending-approval -> ready`), `accept`
+/// (`acceptance -> done`), or `resolve-blocked` (`blocked -> ready | backlog`).
+/// `None` for any pair that is not an operator-drivable transition -- the
+/// move-status valve only ever stages a pair produced by [`status_move_targets`],
+/// so this never rejects a valve the operator could actually open.
+fn move_status_outcome(
+    from: Lane,
+    to: Lane,
+    work_item_id: &str,
+    requested_by: &str,
+) -> Option<OperatorActionOutcome> {
+    match (from, to) {
+        (Lane::PendingApproval, Lane::Ready) => {
+            Some(OperatorActionOutcome::PersistCommand(work_item_command(
+                "approve",
+                CommandType::WorkItemApproveRequested,
+                work_item_id,
+                requested_by,
+            )))
+        }
+        (Lane::Acceptance, Lane::Done) => {
+            Some(OperatorActionOutcome::PersistCommand(work_item_command(
+                "accept",
+                CommandType::WorkItemAcceptRequested,
+                work_item_id,
+                requested_by,
+            )))
+        }
+        (Lane::Blocked, Lane::Ready | Lane::Backlog) => Some(work_item_payload_outcome(
+            "resolve_blocked",
+            CommandType::WorkItemResolveBlockedRequested,
+            work_item_id,
+            "target_status",
+            to.label(),
+            requested_by,
+        )),
+        _other => None,
     }
 }
 
@@ -2674,6 +2872,53 @@ fn set_acceptance_policy_from_payload(payload_json: &str) -> ApplicationResult<A
         .ok_or(ApplicationError::InvalidAcceptancePolicy)?;
     serde_json::from_value(policy.clone())
         .map_err(|_error| ApplicationError::InvalidAcceptancePolicy)
+}
+
+/// Handle a `work_item.resolve_blocked_requested` command.
+///
+/// Resolve-blocked moves a `blocked` work-item on to `ready` or `backlog`:
+/// `payload_json` is `{"target_status": "ready" | "backlog"}`. The handler
+/// validates the work-item id, parses and validates the target, derives the
+/// `resolve-blocked:<work-item-id>:<target>` action-id, and rides the shared
+/// orchestrator-action port and `work_item` outcome family exactly like the
+/// other valves. Thin console-side validation only -- the orchestrator's `drive`
+/// surface owns state-legality (it refuses a non-`blocked` item) -- and it never
+/// writes the ledger directly.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidResolveBlockedTarget`] when the payload's
+/// `target_status` is absent or not one of {ready, backlog}; also surfaces a port
+/// error when the port cannot produce a trustworthy outcome.
+pub fn handle_work_item_resolve_blocked_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let target = resolve_blocked_target_from_payload(payload_json)?;
+    let action_id = format!("resolve-blocked:{work_item_id}:{target}");
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Extract the resolve-blocked `target_status` from a command's persisted
+/// `payload_json`.
+///
+/// The payload is the JSON object `{"target_status": "ready" | "backlog"}`; any
+/// other shape is an [`ApplicationError::InvalidResolveBlockedTarget`]. These are
+/// the two targets the orchestrator's `resolve-blocked` action accepts.
+fn resolve_blocked_target_from_payload(payload_json: &str) -> ApplicationResult<&'static str> {
+    let value: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|_error| ApplicationError::InvalidResolveBlockedTarget)?;
+    let target = value
+        .get("target_status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ApplicationError::InvalidResolveBlockedTarget)?;
+    match target {
+        "ready" => Ok("ready"),
+        "backlog" => Ok("backlog"),
+        _other => Err(ApplicationError::InvalidResolveBlockedTarget),
+    }
 }
 
 /// Run one resolved work-item action-id through the port and emit the shared
@@ -4340,18 +4585,19 @@ mod tests {
         DispatcherOrchestratorActionPort, DispatcherSettingRow, DispatcherSettingSetRequest,
         DispatcherSettingWrite, DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead,
         FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        FocusPane, JournalAutonomousDecisionsPort, LaneFocus, OperatorAction,
+        FocusPane, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, PendingValve, RejectMode, SettingRow, TuiInteraction,
         TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, dispatcher_setting_rows,
+        build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
-        handle_work_item_reject_command, handle_work_item_set_acceptance_command,
-        handle_work_item_set_admission_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
+        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+        project_attention, project_lane_board, reduce_tui_interaction,
+        resolve_command_palette_action, resolve_dispatcher_setting_edit,
         resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, validate_operator_action,
+        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
     };
 
     #[test]
@@ -4857,7 +5103,7 @@ mod tests {
         );
         assert_eq!(
             model.footer(),
-            "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+            "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: s move-status · p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
         );
     }
 
@@ -5646,6 +5892,7 @@ mod tests {
             lane_board: project_lane_board(&[]),
             lane_focus: super::LaneFocus::Overview,
             selected_lane_index: None,
+            selected_lane_item_index: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             overlay: TuiOverlay::CommandModal {
@@ -5897,6 +6144,7 @@ mod tests {
             lane_board: project_lane_board(&[]),
             lane_focus: LaneFocus::Overview,
             selected_lane_index: Some(0),
+            selected_lane_item_index: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             overlay: TuiOverlay::CommandModal {
@@ -7009,6 +7257,80 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    fn resolve_blocked_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_resolve_blocked".to_owned(),
+            CommandType::WorkItemResolveBlockedRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.resolve_blocked_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn resolve_blocked_handler_maps_each_target_onto_the_action_id() -> super::ApplicationResult<()>
+    {
+        for (payload, expected) in [
+            (r#"{"target_status":"ready"}"#, "resolve-blocked:wi-1:ready"),
+            (
+                r#"{"target_status":"backlog"}"#,
+                "resolve-blocked:wi-1:backlog",
+            ),
+        ] {
+            let command = resolve_blocked_command();
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+            let outcome = handle_work_item_resolve_blocked_command(&command, payload, &mut port)?;
+
+            assert_eq!(port.observed_action_ids, [expected]);
+            assert_eq!(outcome.command_status(), "completed");
+            for event in outcome.events() {
+                assert_eq!(
+                    event.payload_json(),
+                    format!(r#"{{"action_id":"{expected}"}}"#)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_blocked_handler_rejects_bad_targets_and_empty_ids_without_invoking_port() {
+        // An absent, malformed, or out-of-range target is refused before the port.
+        for payload in [
+            r#"{"target_status":"active"}"#,
+            r#"{"target_status":42}"#,
+            "{}",
+            "not json",
+        ] {
+            let command = resolve_blocked_command();
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            assert_eq!(
+                handle_work_item_resolve_blocked_command(&command, payload, &mut port),
+                Err(ApplicationError::InvalidResolveBlockedTarget)
+            );
+            assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        }
+        // An empty work-item id is refused before parsing the payload.
+        let blank = CommandEnvelope::new(
+            "cmd_resolve_blocked".to_owned(),
+            CommandType::WorkItemResolveBlockedRequested,
+            "   ".to_owned(),
+            "blank:work_item.resolve_blocked_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        assert_eq!(
+            handle_work_item_resolve_blocked_command(
+                &blank,
+                r#"{"target_status":"ready"}"#,
+                &mut port
+            ),
+            Err(ApplicationError::EmptyWorkItemId)
+        );
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
     }
 
     #[test]
@@ -8407,6 +8729,56 @@ mod tests {
         assert!(PendingValve::Reject(RejectMode::Rework).is_destructive());
         assert!(!PendingValve::Approve.is_destructive());
         assert!(!PendingValve::SetAdmission(AdmissionPolicy::Auto).is_destructive());
+
+        // The move-status valve labels itself and shows its target lane; it is
+        // never destructive (its reject-based routes are excluded).
+        let move_valve = PendingValve::MoveStatus {
+            from: Lane::PendingApproval,
+            to: Lane::Ready,
+        };
+        assert_eq!(move_valve.valve_label(), "Move status");
+        assert_eq!(move_valve.option_label(), Some("ready"));
+        assert!(!move_valve.is_destructive());
+    }
+
+    #[test]
+    fn move_status_valve_cycles_targets_and_status_move_targets_are_operator_drivable() {
+        // Blocked offers ready and backlog; up/down wraps between them.
+        let blocked_ready = PendingValve::MoveStatus {
+            from: Lane::Blocked,
+            to: Lane::Ready,
+        };
+        assert_eq!(
+            blocked_ready.cycled(true),
+            PendingValve::MoveStatus {
+                from: Lane::Blocked,
+                to: Lane::Backlog,
+            }
+        );
+        assert_eq!(
+            blocked_ready.cycled(false),
+            PendingValve::MoveStatus {
+                from: Lane::Blocked,
+                to: Lane::Backlog,
+            }
+        );
+        // A single-target lane (pending-approval -> ready) cycles to itself.
+        let pending_ready = PendingValve::MoveStatus {
+            from: Lane::PendingApproval,
+            to: Lane::Ready,
+        };
+        assert_eq!(pending_ready.cycled(true), pending_ready);
+
+        // The drivable target sets match the orchestrator's real transitions.
+        assert_eq!(status_move_targets(Lane::PendingApproval), &[Lane::Ready]);
+        assert_eq!(status_move_targets(Lane::Acceptance), &[Lane::Done]);
+        assert_eq!(
+            status_move_targets(Lane::Blocked),
+            &[Lane::Ready, Lane::Backlog]
+        );
+        for lane in [Lane::Backlog, Lane::Ready, Lane::Active, Lane::Done] {
+            assert_eq!(status_move_targets(lane), &[] as &[Lane]);
+        }
     }
 
     #[test]
@@ -8597,7 +8969,7 @@ mod tests {
             resolve_valve_action(&build_tui_model(&fabro_gate_events(), 0), "operator"),
             Err(ApplicationError::NoSelectedOperatorAction)
         );
-        // No attention item is selected (empty inbox).
+        // No work-item is selected (empty inbox, Attention view).
         let empty = build_tui_model_for_state(
             &[],
             &TuiInteractionState::new(
@@ -8609,7 +8981,265 @@ mod tests {
         );
         assert_eq!(
             resolve_valve_action(&empty, "operator"),
-            Err(ApplicationError::NoSelectedAttentionItem)
+            Err(ApplicationError::NoSelectedWorkItem)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-item selection in a drilled-in lane, and the move-to-status valve
+    // that transitions the individually-selected item through the orchestrator's
+    // real transition actions (W7).
+    // -----------------------------------------------------------------------
+
+    /// Two pending-approval work-items plus one item per other tested lane, so a
+    /// drilled-in lane holds a selectable list.
+    fn drilldown_events() -> Vec<ConsoleEvent> {
+        vec![
+            lane_event(
+                "e1",
+                "wi-a",
+                Lane::PendingApproval,
+                None,
+                "a",
+                "pending-approval",
+            ),
+            lane_event(
+                "e2",
+                "wi-b",
+                Lane::PendingApproval,
+                None,
+                "b",
+                "pending-approval",
+            ),
+            lane_event("e3", "wi-acc", Lane::Acceptance, None, "a", "acceptance"),
+            lane_event(
+                "e4",
+                "wi-blk",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a",
+                "blocked",
+            ),
+            lane_event("e5", "wi-act", Lane::Active, None, "a", "active"),
+        ]
+    }
+
+    fn drilldown_state(lane: Lane, item_index: usize, overlay: TuiOverlay) -> TuiInteractionState {
+        TuiInteractionState::for_view(TuiView::Lanes, 0, overlay)
+            .with_lane_focus(LaneFocus::Lane(lane))
+            .with_selected_lane_item_index(item_index)
+    }
+
+    #[test]
+    fn drilled_in_lane_selects_an_individual_work_item_and_clamps_the_cursor() {
+        let events = drilldown_events();
+        // Second pending-approval item selected.
+        let model = build_tui_model_for_state(
+            &events,
+            &drilldown_state(Lane::PendingApproval, 1, TuiOverlay::None),
+        );
+        assert_eq!(model.selected_lane_item_index(), Some(1));
+        assert_eq!(
+            model.selected_lane_item().map(LaneWorkItem::work_item_id),
+            Some("wi-b")
+        );
+        assert_eq!(model.selected_work_item_id(), Some("wi-b"));
+
+        // An out-of-range cursor clamps to the last item.
+        let clamped = build_tui_model_for_state(
+            &events,
+            &drilldown_state(Lane::PendingApproval, 9, TuiOverlay::None),
+        );
+        assert_eq!(clamped.selected_lane_item_index(), Some(1));
+
+        // An empty lane has no selectable item.
+        let empty =
+            build_tui_model_for_state(&events, &drilldown_state(Lane::Done, 0, TuiOverlay::None));
+        assert_eq!(empty.selected_lane_item_index(), None);
+        assert_eq!(empty.selected_lane_item(), None);
+        assert_eq!(empty.selected_work_item_id(), None);
+
+        // The lane overview (not drilled in) carries no per-item cursor.
+        let overview = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+        );
+        assert_eq!(overview.selected_lane_item_index(), None);
+        assert_eq!(overview.selected_work_item_id(), None);
+    }
+
+    #[test]
+    fn selected_work_item_id_is_view_scoped() {
+        let events = fabro_gate_events();
+        // Attention view -> the selected attention item's work-item.
+        let attention = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None),
+        );
+        assert!(attention.selected_work_item_id().is_some());
+        // A view with no selectable work-item is inert.
+        for view in [
+            TuiView::Spec,
+            TuiView::Events,
+            TuiView::Repos,
+            TuiView::Settings,
+        ] {
+            let model = build_tui_model_for_state(
+                &events,
+                &TuiInteractionState::for_view(view, 0, TuiOverlay::None),
+            );
+            assert_eq!(model.selected_work_item_id(), None);
+        }
+    }
+
+    #[test]
+    fn selected_move_status_valve_offers_only_drivable_lanes() {
+        let events = drilldown_events();
+        // Pending-approval -> ready is the maintainer's headline transition.
+        let pending = build_tui_model_for_state(
+            &events,
+            &drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None),
+        );
+        assert_eq!(
+            pending.selected_move_status_valve(),
+            Some(PendingValve::MoveStatus {
+                from: Lane::PendingApproval,
+                to: Lane::Ready,
+            })
+        );
+        // A lane with no operator-drivable target offers no move-status valve.
+        let active =
+            build_tui_model_for_state(&events, &drilldown_state(Lane::Active, 0, TuiOverlay::None));
+        assert_eq!(active.selected_move_status_valve(), None);
+        // No lane item selected (overview) -> no valve.
+        let overview = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+        );
+        assert_eq!(overview.selected_move_status_valve(), None);
+    }
+
+    #[test]
+    fn drilldown_item_count_is_zero_off_a_drilled_in_lane_and_the_lane_size_within_it() {
+        let events = drilldown_events();
+        // Off a drill-in (the lane overview), the cursor bound is zero.
+        let overview = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let overview_model = build_tui_model_for_state(&events, &overview);
+        assert_eq!(drilldown_item_count(&overview, &overview_model), 0);
+        // Drilled into the pending-approval lane, it is that lane's item count.
+        let drilled = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
+        let drilled_model = build_tui_model_for_state(&events, &drilled);
+        assert_eq!(drilldown_item_count(&drilled, &drilled_model), 2);
+    }
+
+    #[test]
+    fn reduce_moves_the_per_item_cursor_within_a_drilled_in_lane() {
+        let events = drilldown_events();
+        let start = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
+        // Down advances to the second item; a further down clamps at the last.
+        let down = reduce_tui_interaction(&start, &events, TuiInteraction::SelectNext);
+        assert_eq!(down.selected_lane_item_index(), 1);
+        let down_again = reduce_tui_interaction(&down, &events, TuiInteraction::SelectNext);
+        assert_eq!(down_again.selected_lane_item_index(), 1);
+        // Up returns to the first item.
+        let up = reduce_tui_interaction(&down, &events, TuiInteraction::SelectPrevious);
+        assert_eq!(up.selected_lane_item_index(), 0);
+    }
+
+    #[test]
+    fn move_status_resolves_to_the_real_orchestrator_transition_for_the_selected_item()
+    -> super::ApplicationResult<()> {
+        let events = drilldown_events();
+        // pending-approval -> ready maps onto the approve command (W7 proof).
+        let approve = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::PendingApproval,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::PendingApproval,
+                        to: Lane::Ready,
+                    },
+                },
+            ),
+        );
+        let outcome = resolve_valve_action(&approve, "operator")?;
+        let command = outcome.command();
+        assert_eq!(
+            command.map(CommandEnvelope::command_type),
+            Some(&CommandType::WorkItemApproveRequested)
+        );
+        assert_eq!(command.map(CommandEnvelope::aggregate_id), Some("wi-a"));
+
+        // acceptance -> done maps onto the accept command.
+        let accept = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::Acceptance,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::Acceptance,
+                        to: Lane::Done,
+                    },
+                },
+            ),
+        );
+        assert_eq!(
+            resolve_valve_action(&accept, "operator")?
+                .command()
+                .map(CommandEnvelope::command_type),
+            Some(&CommandType::WorkItemAcceptRequested)
+        );
+
+        // blocked -> backlog maps onto resolve-blocked with the target payload.
+        let resolve = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::Blocked,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::Blocked,
+                        to: Lane::Backlog,
+                    },
+                },
+            ),
+        );
+        let resolve_outcome = resolve_valve_action(&resolve, "operator")?;
+        assert!(matches!(
+            &resolve_outcome,
+            OperatorActionOutcome::PersistCommandWithPayload { command, payload_json }
+                if command.command_type() == &CommandType::WorkItemResolveBlockedRequested
+                    && command.aggregate_id() == "wi-blk"
+                    && payload_json == r#"{"target_status":"backlog"}"#
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn move_status_with_a_non_drivable_pair_is_no_selected_operator_action() {
+        let events = drilldown_events();
+        // A staged pair the operator could never open (pending-approval -> done)
+        // has no real transition, so it resolves to a no-op error rather than a
+        // fabricated command.
+        let model = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::PendingApproval,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::PendingApproval,
+                        to: Lane::Done,
+                    },
+                },
+            ),
+        );
+        assert_eq!(
+            resolve_valve_action(&model, "operator"),
+            Err(ApplicationError::NoSelectedOperatorAction)
         );
     }
 }
