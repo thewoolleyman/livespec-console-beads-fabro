@@ -257,7 +257,13 @@ The enforced gate runs Rust formatting, strict Clippy, `cargo test`,
 `cargo-nextest`, 100% library line coverage through `cargo-llvm-cov`,
 dependency policy through `cargo-deny`, unused dependency detection
 through `cargo-machete`, the repo-local AST-based architecture check,
-and the behavioral-coverage link check (`check-behavior-coverage`).
+the behavioral-coverage link check (`check-behavior-coverage`), and the
+settings-completeness check (`check-completeness`) — which asserts every
+API-configurable dispatcher key the orchestrator declares (its published
+config-manifest, captured at `tests/fixtures/orchestrator-config-manifest.json`)
+reaches a Settings row, its inline help, and this README's **Dispatcher
+settings** section. Refresh the captured manifest with `just
+refresh-config-manifest` after the orchestrator's dispatcher key set changes.
 
 Two higher-cost probes are exposed as explicit smoke targets:
 

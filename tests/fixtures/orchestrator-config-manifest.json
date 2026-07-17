@@ -1,0 +1,52 @@
+{
+  "action_id": "config-manifest",
+  "kind": "config-manifest",
+  "manifest": {
+    "keys": [
+      {
+        "default": false,
+        "key": "auto_approve_ready",
+        "per_item_override": true,
+        "type": "boolean"
+      },
+      {
+        "default": false,
+        "key": "merge_on_review_cap",
+        "per_item_override": true,
+        "type": "boolean"
+      },
+      {
+        "default": "ai-then-human",
+        "key": "acceptance_mode",
+        "per_item_override": true,
+        "type": "enum",
+        "values": [
+          "ai-only",
+          "ai-then-human",
+          "human-only"
+        ]
+      },
+      {
+        "default": 3,
+        "key": "review_fix_cap",
+        "per_item_override": true,
+        "type": "positive_integer"
+      },
+      {
+        "default": 2,
+        "key": "acceptance_rework_cap",
+        "per_item_override": true,
+        "type": "positive_integer"
+      },
+      {
+        "default": 5,
+        "key": "wip_cap",
+        "per_item_override": false,
+        "type": "positive_integer"
+      }
+    ],
+    "surface": "livespec-orchestrator-beads-fabro.dispatcher"
+  },
+  "status": "green",
+  "summary": "Read API-configurable dispatcher key manifest."
+}

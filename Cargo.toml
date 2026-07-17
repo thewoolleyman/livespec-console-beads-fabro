@@ -3,6 +3,7 @@ members = [
   "crates/console-application",
   "crates/console-arch-check",
   "crates/console-cli",
+  "crates/console-completeness-check",
   "crates/console-domain",
   "crates/console-eventstore",
   "crates/console-spec-check",
