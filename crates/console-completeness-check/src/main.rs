@@ -8,16 +8,28 @@
 //! Reading a captured copy of the orchestrator's PUBLISHED declared-key surface
 //! (never its internals) keeps the check hermetic — `just check`/CI run it
 //! offline with no live orchestrator, credential wrapper, or Dolt tenant — while
-//! honoring the No-Circular-Dependency Directive. The capture is refreshed from
-//! the live `drive --action config-manifest` when the orchestrator's key set
-//! changes (part of the orchestrator pin bump).
+//! honoring the No-Circular-Dependency Directive.
+//!
+//! The capture is PIN-STAMPED (its `captured_at_pin`) with the orchestrator
+//! release it was taken at. Before the lockstep check, the gate FAILS when that
+//! stamp differs from `.livespec.jsonc` `compat.pinned` — so the auto-merging
+//! pin-bump PR goes RED the moment the pin advances, forcing a
+//! `just refresh-config-manifest` (which re-captures the manifest and thereby
+//! surfaces any newly-declared key) before the bump can merge.
+//!
+//! `console-completeness-check --refresh` reads a fresh `config-manifest` output
+//! on STDIN, stamps the current `.livespec.jsonc` pin into it, and writes the
+//! committed fixture. `just refresh-config-manifest` drives it.
 
 #![forbid(unsafe_code)]
 
+use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
-use console_completeness_check::{console_settings_rows, declared_keys, evaluate};
+use console_completeness_check::{
+    check_pin, console_settings_rows, declared_keys, evaluate, read_pinned, stamp_manifest,
+};
 
 /// The committed capture of the orchestrator's published `config-manifest`,
 /// read relative to the repository root (where `just check` runs).
@@ -27,8 +39,13 @@ const MANIFEST_FIXTURE: &str = "tests/fixtures/orchestrator-config-manifest.json
 /// the README IS the settings doc).
 const README: &str = "README.md";
 
+/// The project config carrying the orchestrator pin (`compat.pinned`).
+const LIVESPEC_JSONC: &str = ".livespec.jsonc";
+
 fn main() -> ExitCode {
-    match run() {
+    let refresh = std::env::args().any(|arg| arg == "--refresh");
+    let result = if refresh { refresh_fixture() } else { run() };
+    match result {
         Ok(code) => code,
         Err(message) => {
             eprintln!("console-completeness-check: {message}");
@@ -38,10 +55,16 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode, String> {
-    let manifest = std::fs::read_to_string(Path::new(MANIFEST_FIXTURE))
-        .map_err(|error| format!("cannot read {MANIFEST_FIXTURE}: {error}"))?;
-    let readme = std::fs::read_to_string(Path::new(README))
-        .map_err(|error| format!("cannot read {README}: {error}"))?;
+    let manifest = read_file(MANIFEST_FIXTURE)?;
+    let readme = read_file(README)?;
+    let livespec_jsonc = read_file(LIVESPEC_JSONC)?;
+
+    // Staleness gate FIRST: a capture taken at a different pin than the project now
+    // pins cannot be trusted to declare the current key set.
+    if let Some(mismatch) = check_pin(&livespec_jsonc, &manifest)? {
+        eprintln!("console-completeness-check: {}", mismatch.diagnostic());
+        return Ok(ExitCode::FAILURE);
+    }
 
     let declared = declared_keys(&manifest)?;
     let rows = console_settings_rows();
@@ -58,9 +81,30 @@ fn run() -> Result<ExitCode, String> {
         eprintln!("console-completeness-check: {line}");
     }
     eprintln!(
-        "console-completeness-check: after an orchestrator key change, refresh the capture with \
-         `just refresh-config-manifest`, then add the missing Settings row / inline help / README \
+        "console-completeness-check: add the missing Settings row / inline help / README \
          settings-doc entry for the named key(s)."
     );
     Ok(ExitCode::FAILURE)
+}
+
+/// Re-capture the fixture: stamp the current `.livespec.jsonc` pin into a fresh
+/// `config-manifest` output read from STDIN and write the committed fixture.
+fn refresh_fixture() -> Result<ExitCode, String> {
+    let livespec_jsonc = read_file(LIVESPEC_JSONC)?;
+    let pinned = read_pinned(&livespec_jsonc)?;
+    let mut drive_output = String::new();
+    std::io::stdin()
+        .read_to_string(&mut drive_output)
+        .map_err(|error| format!("cannot read config-manifest output from stdin: {error}"))?;
+    let stamped = stamp_manifest(&drive_output, &pinned)?;
+    std::fs::write(Path::new(MANIFEST_FIXTURE), format!("{stamped}\n"))
+        .map_err(|error| format!("cannot write {MANIFEST_FIXTURE}: {error}"))?;
+    eprintln!(
+        "console-completeness-check: refreshed {MANIFEST_FIXTURE} (captured_at_pin `{pinned}`)"
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn read_file(path: &str) -> Result<String, String> {
+    std::fs::read_to_string(Path::new(path)).map_err(|error| format!("cannot read {path}: {error}"))
 }

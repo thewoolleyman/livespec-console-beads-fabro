@@ -1,5 +1,6 @@
 {
   "action_id": "config-manifest",
+  "captured_at_pin": "v0.16.0",
   "kind": "config-manifest",
   "manifest": {
     "keys": [

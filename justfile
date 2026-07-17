@@ -186,12 +186,14 @@ check-completeness:
     cargo run --quiet --package console-completeness-check
 
 # Refresh the captured orchestrator config-manifest the completeness gate reads,
-# from the LIVE orchestrator drive surface. Run after an orchestrator dispatcher
-# key set change (part of the orchestrator pin bump); requires the orchestrator
-# plugin + credential wrapper on PATH. DRIVE defaults to the family drive CLI.
+# from the LIVE orchestrator drive surface, PIN-STAMPED with the current
+# .livespec.jsonc compat.pinned. Run after an orchestrator dispatcher key set
+# change (part of the orchestrator pin bump); requires the orchestrator plugin +
+# credential wrapper on PATH. DRIVE defaults to the family drive CLI. The
+# --refresh mode stamps captured_at_pin so the gate fails until the capture is
+# refreshed at the new pin.
 refresh-config-manifest DRIVE="livespec-orchestrator-drive":
-    {{DRIVE}} --action config-manifest --json > tests/fixtures/orchestrator-config-manifest.json
-    @echo "refreshed tests/fixtures/orchestrator-config-manifest.json"
+    {{DRIVE}} --action config-manifest --json | cargo run --quiet --package console-completeness-check -- --refresh
 
 # Baseline worktree-discipline verifier — the `baseline` profile's Verifier,
 # REUSED from livespec-dev-tooling (NOT re-implemented). Fail-closed: exit 4
