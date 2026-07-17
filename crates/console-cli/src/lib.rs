@@ -55,7 +55,9 @@ use console_eventstore::{
     CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult, SqliteEventStore,
     StoredCommand,
 };
-use console_tui::{TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome};
+use console_tui::{
+    TuiLiveSession, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
+};
 
 mod backing_cli;
 
@@ -244,7 +246,7 @@ pub trait TuiSessionRunner {
         &mut self,
         events: &[ConsoleEvent],
         requested_by: &str,
-        effect_sink: &mut dyn TuiRuntimeEffectSink,
+        session: &mut dyn TuiLiveSession,
     ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>>;
 }
 
@@ -253,6 +255,11 @@ struct StoreBackedTuiRuntimeEffectSink<'a> {
     observed_at: &'a str,
     factory_port: &'a mut dyn FactoryDrainPort,
     work_item_port: &'a mut dyn OrchestratorActionPort,
+    // The live sources and needs-attention bundle so the running loop can
+    // re-poll + re-ingest through the SAME object that owns `store` (a separate
+    // refresh port would need its own `&mut store` and conflict).
+    sources: &'a [SourceAdapterRef<'a>],
+    needs_attention: &'a NeedsAttentionIngest<'a>,
     persisted_command_count: usize,
     handled_command_count: usize,
 }
@@ -263,12 +270,16 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
         observed_at: &'a str,
         factory_port: &'a mut dyn FactoryDrainPort,
         work_item_port: &'a mut dyn OrchestratorActionPort,
+        sources: &'a [SourceAdapterRef<'a>],
+        needs_attention: &'a NeedsAttentionIngest<'a>,
     ) -> Self {
         Self {
             store,
             observed_at,
             factory_port,
             work_item_port,
+            sources,
+            needs_attention,
             persisted_command_count: 0,
             handled_command_count: 0,
         }
@@ -303,6 +314,29 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
         self.persisted_command_count += persisted.len();
         self.handled_command_count += factory_handled.len();
         Ok(TuiRuntimeEffectSinkOutcome::Applied)
+    }
+}
+
+impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
+    fn refresh_events(&mut self, poll_sources: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
+        // On a throttled tick (or right after an applied effect) re-poll the
+        // source adapters + re-ingest needs-attention so the ledger's current
+        // state — including the operator's own just-applied action — is appended
+        // to the log; the checkpointed/idempotent adapter design (Scenario 3)
+        // makes re-polling every cycle safe (duplicates dedupe). Between polls we
+        // still re-list every frame (cheap), so newly-appended events project at
+        // once.
+        if poll_sources {
+            backfill_source_adapters(self.store, self.observed_at, self.sources)
+                .map_err(effect_sink_io_error)?;
+            ingest_needs_attention(self.store, self.needs_attention, self.observed_at)
+                .map_err(effect_sink_io_error)?;
+        }
+        let events = self
+            .store
+            .list_console_events()
+            .map_err(effect_sink_io_error)?;
+        Ok(Some(events))
     }
 }
 
@@ -392,20 +426,26 @@ pub fn run_store_backed_tui_session(
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
-    let existing_events = store.list_console_events()?;
-    let ingestion = if existing_events.is_empty() {
-        backfill_source_adapters(store, observed_at, sources)?
-    } else {
-        Vec::new()
-    };
+    // Ingest the source adapters unconditionally on every launch (Bug A fix):
+    // the Lanes projection must reduce over the CURRENT ledger, not a snapshot
+    // frozen at the first-ever run. The checkpointed/idempotent adapter design
+    // (Scenario 3) makes a re-ingest against a non-empty log safe — duplicates
+    // dedupe, a changed lane appends a fresh snapshot event.
+    let ingestion = backfill_source_adapters(store, observed_at, sources)?;
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     // Reflect the plane's auto-resolutions AFTER ingest so a reflection wins over
     // a lagging needs-attention surface still showing a resolved item.
     let _reflected = observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
     let presented_events = store.list_console_events()?;
     let (effects, live_persisted_count, live_handled_count) = {
-        let mut effect_sink =
-            StoreBackedTuiRuntimeEffectSink::new(store, observed_at, factory_port, work_item_port);
+        let mut effect_sink = StoreBackedTuiRuntimeEffectSink::new(
+            store,
+            observed_at,
+            factory_port,
+            work_item_port,
+            sources,
+            needs_attention,
+        );
         let effects = runner.run_tui(&presented_events, requested_by, &mut effect_sink)?;
         (
             effects,
@@ -819,12 +859,11 @@ pub fn serve_report(
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
-    let events = store.list_console_events()?;
-    let ingestion = if events.is_empty() {
-        backfill_source_adapters(store, observed_at, sources)?
-    } else {
-        Vec::new()
-    };
+    // Ingest the source adapters unconditionally on every serve (Bug A fix):
+    // like the interactive launch, the headless report must reflect the CURRENT
+    // ledger, not a first-run snapshot. Checkpointed/idempotent re-ingest
+    // (Scenario 3) keeps this safe on a non-empty log.
+    let ingestion = backfill_source_adapters(store, observed_at, sources)?;
     let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
     // Reflect the plane's auto-resolutions AFTER ingest so a reflection wins over
     // a lagging needs-attention surface still showing a resolved item.
@@ -1840,11 +1879,12 @@ mod tests {
         PendingValve, TuiInteractionState, TuiOverlay, build_tui_model, project_attention,
         project_lane_board,
         source_adapters::{
-            AcceptancePolicy, AdapterError, AdmissionPolicy, AttentionHandoff,
-            AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason, NeedsAttentionReadOutcome,
-            NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, PullSourcePort,
-            SourceAdapterKind, SourceEventAppendPort, SourcePayload, SourceProbe,
-            SourceProbeOutcome, WorkItemSnapshot, normalize_work_item_snapshot,
+            AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
+            AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
+            NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
+            NotObservedFinding, PullSourcePort, SourceAdapterKind, SourceEventAppendPort,
+            SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+            normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1853,14 +1893,17 @@ mod tests {
         CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult,
         SqliteEventStore, StoredCommand,
     };
-    use console_tui::{TuiRuntimeEffect, TuiRuntimeEffectSink, TuiTerminalInput};
+    use console_tui::{
+        TuiLiveSession, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
+        TuiTerminalInput,
+    };
 
     use super::{
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
         ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
         NeedsAttentionIngest, PendingCommandOutcome, ResolveInputs, ScriptedSource,
-        SharedSqliteStore, SourceAdapterRef, SqliteSourceEventLog, TuiSessionOutcome,
-        TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
+        SharedSqliteStore, SourceAdapterRef, SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink,
+        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
         backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
         config_command_from_stored, demo_events, doctor_report, events_tail_report,
         factory_command_from_stored, handle_pending_config_commands,
@@ -2463,7 +2506,13 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_serve_does_not_backfill_non_empty_store() -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_serve_reingests_sources_over_a_non_empty_store()
+    -> Result<(), ConsoleRuntimeError> {
+        // Bug A fix: serve re-ingests the source adapters on EVERY run, not only
+        // when the log is empty, so the report reflects the CURRENT ledger. Here
+        // the store already holds the 2 demo events; the scripted seed adds its 6
+        // source events on top (checkpointed/idempotent per Scenario 3), so the
+        // report tallies backfill events 6 over a store that grows to 8 events.
         let mut store = SqliteEventStore::open_in_memory()?;
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
         let scripted = scripted_source_list();
@@ -2485,7 +2534,7 @@ mod tests {
 
         assert_eq!(
             report?,
-            "serve: store ready\nbackfill events: 0\nevents: 2\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"
+            "serve: store ready\nbackfill events: 6\nevents: 8\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"
         );
         Ok(())
     }
@@ -2918,8 +2967,14 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_tui_session_uses_existing_events_without_backfill()
+    fn store_backed_tui_session_reingests_sources_over_existing_events()
     -> Result<(), ConsoleRuntimeError> {
+        // Bug A fix: the interactive launch re-ingests the source adapters on
+        // EVERY run, not only when the log is empty, so the Lanes projection
+        // reduces over the CURRENT ledger rather than a first-run snapshot. The
+        // store starts with the 2 demo events; the scripted seed adds its 6
+        // source events on top (idempotent per Scenario 3), so 8 events are
+        // presented to the runner and left in the store.
         let mut store = SqliteEventStore::open_in_memory()?;
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
         let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
@@ -2944,10 +2999,189 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            Ok(ref value) if value == &TuiSessionOutcome::new(0, 2, 0, 0, 2, 0)
+            Ok(ref value) if value == &TuiSessionOutcome::new(6, 8, 0, 0, 8, 0)
         ));
-        assert_eq!(runner.observed_event_count(), 2);
-        assert_eq!(store.list_console_events()?.len(), 2);
+        assert_eq!(runner.observed_event_count(), 8);
+        assert_eq!(store.list_console_events()?.len(), 8);
+        Ok(())
+    }
+
+    /// A pull source returning a scripted SEQUENCE of polls — one per successive
+    /// live `refresh_events` re-poll — so a test can observe an item move lanes
+    /// across polls. Once the sequence is exhausted it repeats the final poll, so
+    /// any extra re-poll stays stable.
+    struct SequencedWorkItemSource {
+        polls: Vec<AdapterPoll>,
+        cursor: std::cell::Cell<usize>,
+    }
+
+    impl SequencedWorkItemSource {
+        fn new(polls: Vec<AdapterPoll>) -> Self {
+            Self {
+                polls,
+                cursor: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl PullSourcePort for SequencedWorkItemSource {
+        fn poll(&self, _request: &AdapterPollRequest) -> Result<AdapterPoll, AdapterError> {
+            let index = self.cursor.get().min(self.polls.len() - 1);
+            self.cursor.set(index + 1);
+            Ok(self.polls[index].clone())
+        }
+    }
+
+    /// A [`SequencedWorkItemSource`] returning one work-item snapshot poll per
+    /// `(id, lane, status, source_version)` spec — successive re-polls report the
+    /// successive lanes, so a test can watch an item move across polls. Malformed
+    /// specs are dropped (like [`scripted_source_list_with_ready_work`]), so a
+    /// missing lane surfaces as an assertion failure rather than a panic.
+    fn sequenced_work_item_source(specs: &[(&str, Lane, &str, u64)]) -> SequencedWorkItemSource {
+        let polls = specs
+            .iter()
+            .filter_map(|&(work_item_id, lane, status, source_version)| {
+                WorkItemSnapshot::new(
+                    "livespec-console-beads-fabro",
+                    work_item_id,
+                    lane,
+                    None,
+                    "a0",
+                    status,
+                    AdmissionPolicy::Manual,
+                    AcceptancePolicy::AiThenHuman,
+                    source_version,
+                )
+                .ok()
+                .map(|snapshot| normalize_work_item_snapshot(&snapshot))
+            })
+            .collect();
+        SequencedWorkItemSource::new(polls)
+    }
+
+    /// The work-item ids the lane projection places in `lane`, for asserting a
+    /// live refresh moved an item between lanes.
+    fn lane_work_item_ids(events: &[ConsoleEvent], lane: Lane) -> Vec<String> {
+        project_lane_board(events)
+            .column(lane)
+            .map(|column| {
+                column
+                    .items()
+                    .iter()
+                    .map(|item| item.work_item_id().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Extract the events a live refresh re-listed. The store-backed session
+    /// always returns `Ok(Some(..))`, so the never-taken no-events / IO-error
+    /// shapes map to a runtime error a test can `?`.
+    fn refreshed_events(
+        outcome: std::io::Result<Option<Vec<ConsoleEvent>>>,
+    ) -> ConsoleRuntimeResult<Vec<ConsoleEvent>> {
+        outcome
+            .ok()
+            .flatten()
+            .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+    }
+
+    #[test]
+    fn store_backed_refresh_reprojects_a_lane_change_across_source_polls()
+    -> Result<(), ConsoleRuntimeError> {
+        // Scenario 3 + Bug B: an item observed in one lane, then re-observed in
+        // another on a subsequent source poll (a higher `source_version`),
+        // projects to the NEW lane after a live refresh. This is the running loop
+        // re-projecting over the latest events rather than a snapshot frozen at
+        // launch — the fix for the lane board going stale until a manual backfill.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let source = sequenced_work_item_source(&[
+            ("wi-live", Lane::Ready, "ready", 1),
+            ("wi-live", Lane::Backlog, "backlog", 2),
+        ]);
+        let sources: Vec<SourceAdapterRef<'_>> =
+            vec![("orchestrator:livespec-console-beads-fabro", &source)];
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-07-17T00:00:00Z",
+            &mut factory_port,
+            &mut work_item_port,
+            &sources,
+            &needs_attention,
+        );
+
+        // First live refresh re-polls the source (poll 1) → item in the Ready lane.
+        let first = refreshed_events(sink.refresh_events(true))?;
+        assert_eq!(lane_work_item_ids(&first, Lane::Ready), ["wi-live"]);
+        assert!(lane_work_item_ids(&first, Lane::Backlog).is_empty());
+
+        // A subsequent live refresh re-polls the source (poll 2, higher version)
+        // → the SAME item now projects to the Backlog lane, with no restart.
+        let second = refreshed_events(sink.refresh_events(true))?;
+        assert_eq!(lane_work_item_ids(&second, Lane::Backlog), ["wi-live"]);
+        assert!(lane_work_item_ids(&second, Lane::Ready).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_refresh_reflects_the_operators_just_applied_action()
+    -> Result<(), ConsoleRuntimeError> {
+        // Scenario 2 + Bug B: with ready implementation work present, the
+        // operator drains; applying the effect persists the command and appends
+        // its accepted + started + completed outcome events, and even a cheap
+        // re-list — no source poll — reflects the operator's OWN just-appended
+        // outcome. This is the loop's post-effect refresh: the operator sees
+        // their action at once ("the TUI updates live from projections") rather
+        // than a snapshot frozen at startup.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let source = sequenced_work_item_source(&[("wi-ready", Lane::Ready, "ready", 1)]);
+        let sources: Vec<SourceAdapterRef<'_>> =
+            vec![("orchestrator:livespec-console-beads-fabro", &source)];
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-07-17T00:00:00Z",
+            &mut factory_port,
+            &mut work_item_port,
+            &sources,
+            &needs_attention,
+        );
+
+        // A live refresh seeds the ready work-item (so the drain is accepted, not
+        // policy-rejected) and, before the action, carries no drain outcome.
+        let before = refreshed_events(sink.refresh_events(true))?;
+        assert_eq!(lane_work_item_ids(&before, Lane::Ready), ["wi-ready"]);
+        assert!(
+            !before
+                .iter()
+                .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
+        );
+
+        // The operator acts: applying the effect persists the command and appends
+        // its outcome events through the injected drain port.
+        let applied = sink
+            .handle_runtime_effect(&factory_drain_effect())
+            .ok()
+            .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
+        assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+
+        // A cheap re-list (poll_sources = false) already reflects the operator's
+        // own just-appended outcome — no source re-poll, no restart.
+        let after = refreshed_events(sink.refresh_events(false))?;
+        assert!(
+            after
+                .iter()
+                .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
+        );
         Ok(())
     }
 
@@ -4932,7 +5166,7 @@ mod tests {
             &mut self,
             events: &[ConsoleEvent],
             requested_by: &str,
-            _effect_sink: &mut dyn TuiRuntimeEffectSink,
+            _session: &mut dyn TuiLiveSession,
         ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
             self.observed_event_count = events.len();
             self.observed_requested_by = requested_by.to_owned();
@@ -4947,7 +5181,7 @@ mod tests {
             &mut self,
             events: &[ConsoleEvent],
             requested_by: &str,
-            effect_sink: &mut dyn TuiRuntimeEffectSink,
+            session: &mut dyn TuiLiveSession,
         ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
             let state = TuiInteractionState::new(
                 0,
@@ -4961,7 +5195,7 @@ mod tests {
                 TuiTerminalInput::Confirm,
                 requested_by,
             );
-            effect_sink
+            session
                 .handle_runtime_effect(step.effect())
                 .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
             Ok(Vec::new())
@@ -4975,7 +5209,7 @@ mod tests {
             &mut self,
             _events: &[ConsoleEvent],
             _requested_by: &str,
-            _effect_sink: &mut dyn TuiRuntimeEffectSink,
+            _session: &mut dyn TuiLiveSession,
         ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
             Err(ConsoleRuntimeError::TuiRuntimeFailed)
         }

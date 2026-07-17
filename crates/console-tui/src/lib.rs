@@ -40,8 +40,13 @@ use ratatui::widgets::{
 
 #[cfg(all(not(test), not(coverage)))]
 use std::io;
-#[cfg(all(not(test), not(coverage)))]
+// `Duration` backs the throttle seam (present under test and in the non-coverage
+// loop build) and the loop's keyboard poll; it is unused only in the
+// coverage-plain-lib build, so it carries the same gate as the seam.
+#[cfg(any(test, not(coverage)))]
 use std::time::Duration;
+#[cfg(all(not(test), not(coverage)))]
+use std::time::Instant;
 
 #[cfg(all(not(test), not(coverage)))]
 use crossterm::event::{self, Event, KeyEventKind};
@@ -85,13 +90,17 @@ pub fn run_interactive_tui(
 }
 
 #[cfg(all(not(test), not(coverage)))]
-/// Run interactive tui with a per-effect sink and return deferred effects.
+/// Run interactive tui with a live session and return deferred effects.
+///
+/// The `session` both applies the operator's effects and re-projects the latest
+/// events on the loop's poll cadence (see [`TuiLiveSession`]), so the cockpit
+/// stays live rather than rendering a snapshot frozen at startup.
 pub fn run_interactive_tui_with_effect_sink(
     events: &[ConsoleEvent],
     requested_by: &str,
     selected_repo: &str,
     dispatcher_settings: DispatcherSettingsRead,
-    effect_sink: &mut dyn TuiRuntimeEffectSink,
+    session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -113,7 +122,7 @@ pub fn run_interactive_tui_with_effect_sink(
         requested_by,
         selected_repo,
         dispatcher_settings,
-        effect_sink,
+        session,
     );
     let raw_mode_result = disable_raw_mode();
     let alternate_screen_result = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -131,14 +140,19 @@ fn run_terminal_loop(
     requested_by: &str,
     selected_repo: &str,
     dispatcher_settings: DispatcherSettingsRead,
-    effect_sink: &mut dyn TuiRuntimeEffectSink,
+    session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
         .with_selected_repo(selected_repo.to_owned())
         .with_dispatcher_settings(dispatcher_settings);
+    // The event log is OWNED and re-projected every iteration (Bug B fix): each
+    // projection reduces over the LATEST events, not a snapshot frozen at
+    // startup, so the board and detail panes stay live.
+    let mut events = events.to_vec();
     let mut effects = Vec::new();
+    let mut last_source_poll = Instant::now();
     loop {
-        let model = build_tui_model_for_state(events, &state);
+        let model = build_tui_model_for_state(&events, &state);
         // Measure the Detail pane's wrapped max scroll while drawing and feed it
         // back into the state, so the next ScrollDetailDown clamps to the true
         // wrapped bottom (the SAME count the scrollbar is sized from) rather than
@@ -148,30 +162,125 @@ fn run_terminal_loop(
             detail_max_scroll = render_model(&model, frame.area(), frame.buffer_mut());
         })?;
         state = state.with_detail_max_scroll(detail_max_scroll);
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
-        let Event::Key(key_event) = event::read()? else {
-            continue;
-        };
-        if key_event.kind != KeyEventKind::Press {
-            continue;
-        }
-        let model = build_tui_model_for_state(events, &state);
-        let Some(input) = key_event_to_terminal_input(key_event, &model) else {
-            continue;
-        };
-        let step = step_tui_runtime(&state, events, input, requested_by);
-        state = step.state().clone();
-        let effect = step.effect().clone();
-        let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
-        if effect_sink.handle_runtime_effect(&effect)? == TuiRuntimeEffectSinkOutcome::Deferred {
-            effects.push(effect);
-        }
-        if should_quit {
+        let tick = process_input_tick(&mut state, &events, requested_by, &mut effects, session)?;
+        if matches!(tick, LoopTick::Quit) {
             return Ok(effects);
         }
+        // Re-project over the latest events: re-poll the (expensive) source
+        // adapters on the throttle or immediately after a ledger-mutating
+        // effect, and re-list the store every iteration so the operator's own
+        // just-applied outcomes appear at once.
+        let poll_sources = should_poll_sources(
+            last_source_poll.elapsed(),
+            LIVE_SOURCE_POLL_INTERVAL,
+            matches!(tick, LoopTick::Mutated),
+        );
+        if let Some(fresh) = session.refresh_events(poll_sources)? {
+            events = fresh;
+        }
+        if poll_sources {
+            last_source_poll = Instant::now();
+        }
     }
+}
+
+/// The outcome of one 250 ms input tick, telling the loop whether to re-poll
+/// sources at once or return.
+#[cfg(all(not(test), not(coverage)))]
+enum LoopTick {
+    /// A poll timeout or an inert key — just re-project on the normal cadence.
+    Idle,
+    /// A ledger-mutating effect was applied — re-poll the sources at once so the
+    /// operator sees their own action's lane change without waiting.
+    Mutated,
+    /// The operator asked to quit; return the deferred effects.
+    Quit,
+}
+
+/// Handle at most one keyboard event: map it to an interaction, step the pure
+/// runtime, apply the resulting effect through the session, and report whether
+/// it mutated the ledger or asked to quit. Terminal-bound (blocks on
+/// `event::poll`), so excluded from tests; the logic it composes
+/// (`key_event_to_terminal_input`, `step_tui_runtime`,
+/// `effect_triggers_source_poll`) is exercised directly.
+#[cfg(all(not(test), not(coverage)))]
+fn process_input_tick(
+    state: &mut TuiInteractionState,
+    events: &[ConsoleEvent],
+    requested_by: &str,
+    effects: &mut Vec<TuiRuntimeEffect>,
+    session: &mut dyn TuiLiveSession,
+) -> io::Result<LoopTick> {
+    if !event::poll(Duration::from_millis(250))? {
+        return Ok(LoopTick::Idle);
+    }
+    let Event::Key(key_event) = event::read()? else {
+        return Ok(LoopTick::Idle);
+    };
+    if key_event.kind != KeyEventKind::Press {
+        return Ok(LoopTick::Idle);
+    }
+    let model = build_tui_model_for_state(events, state);
+    let Some(input) = key_event_to_terminal_input(key_event, &model) else {
+        return Ok(LoopTick::Idle);
+    };
+    let step = step_tui_runtime(state, events, input, requested_by);
+    *state = step.state().clone();
+    let effect = step.effect().clone();
+    let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
+    let mutated = effect_triggers_source_poll(&effect);
+    if session.handle_runtime_effect(&effect)? == TuiRuntimeEffectSinkOutcome::Deferred {
+        effects.push(effect);
+    }
+    if should_quit {
+        return Ok(LoopTick::Quit);
+    }
+    Ok(if mutated {
+        LoopTick::Mutated
+    } else {
+        LoopTick::Idle
+    })
+}
+
+// The throttle seam is used by the terminal loop (excluded from tests and
+// coverage) and by the unit tests, so it is present exactly where it has a
+// caller and absent only in the coverage-plain-lib build (`coverage`, no
+// `test`), where the loop and the tests are both compiled out.
+/// How long the live loop waits between (expensive) source re-polls. Between
+/// polls the loop still re-lists the store every frame — cheap — so the
+/// operator's own just-applied actions and any externally-appended events show
+/// promptly; only the external CLI re-poll (the orchestrator's
+/// `list-work-items`, needs-attention, `gh`, `fabro`, `livespec`) is throttled
+/// to this cadence, since those shell-outs take seconds.
+#[cfg(any(test, not(coverage)))]
+const LIVE_SOURCE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Whether the live loop should re-poll the (expensive) source adapters this
+/// tick: immediately after an applied ledger-mutating effect, or once `interval`
+/// has elapsed since the last source poll. Pure, so the throttle decision is
+/// exercised without a real clock or terminal.
+#[cfg(any(test, not(coverage)))]
+#[must_use]
+fn should_poll_sources(
+    elapsed_since_poll: Duration,
+    interval: Duration,
+    effect_applied: bool,
+) -> bool {
+    effect_applied || elapsed_since_poll >= interval
+}
+
+/// Whether a runtime effect mutated the ledger and so warrants an immediate
+/// source re-poll (so the operator sees their own action's lane change without
+/// waiting for the throttle). Only the command-bearing effects — an approve /
+/// accept / reject / move / policy write — change the ledger; navigation
+/// (`Render`), the attach helpers, quit, and errors do not.
+#[cfg(any(test, not(coverage)))]
+#[must_use]
+const fn effect_triggers_source_poll(effect: &TuiRuntimeEffect) -> bool {
+    matches!(
+        effect,
+        TuiRuntimeEffect::PersistCommand(_) | TuiRuntimeEffect::PersistCommandWithPayload { .. }
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +340,35 @@ pub trait TuiRuntimeEffectSink {
     ) -> std::io::Result<TuiRuntimeEffectSinkOutcome>;
 }
 
+/// A live session driving the interactive loop.
+///
+/// It applies the operator's runtime effects (as a [`TuiRuntimeEffectSink`]) AND
+/// re-projects the latest events, so every projection reduces over the newest
+/// event log rather than a snapshot frozen at startup. One object owns the event
+/// store, so the loop drives applying-effects and re-projecting through a single
+/// mutable borrow (two separate ports would both need `&mut store` and conflict).
+///
+/// This is the testable seam behind the terminal loop: the loop itself is
+/// terminal-bound and excluded from tests, but [`refresh_events`] carries the
+/// live-update logic (re-poll + re-ingest + re-list) and the pure
+/// `should_poll_sources` throttle decision beside it are exercised directly.
+///
+/// [`refresh_events`]: TuiLiveSession::refresh_events
+pub trait TuiLiveSession: TuiRuntimeEffectSink {
+    /// Re-project the latest events, returning `Some(events)` to replace the
+    /// loop's current snapshot or `None` to keep it (the legacy no-store path).
+    ///
+    /// When `poll_sources` is set the implementation first re-polls the source
+    /// adapters + re-ingests needs-attention — the expensive external step the
+    /// loop throttles — appending any fresh events; it always re-lists the store
+    /// so freshly-appended events, including the operator's own just-applied
+    /// outcomes, fold into the projection.
+    ///
+    /// # Errors
+    /// Returns an IO error when a re-poll or a store read fails.
+    fn refresh_events(&mut self, poll_sources: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>>;
+}
+
 /// Effect sink that preserves the legacy end-of-session flush behavior.
 pub struct DeferredTuiRuntimeEffectSink;
 
@@ -240,6 +378,17 @@ impl TuiRuntimeEffectSink for DeferredTuiRuntimeEffectSink {
         _effect: &TuiRuntimeEffect,
     ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
         Ok(TuiRuntimeEffectSinkOutcome::Deferred)
+    }
+}
+
+impl TuiLiveSession for DeferredTuiRuntimeEffectSink {
+    fn refresh_events(
+        &mut self,
+        _poll_sources: bool,
+    ) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
+        // The legacy no-store path has no live source, so it keeps its startup
+        // snapshot rather than re-projecting.
+        Ok(None)
     }
 }
 
@@ -1441,18 +1590,21 @@ mod tests {
         TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
         build_tui_model_for_state, reduce_tui_interaction,
     };
-    use console_domain::{CommandType, ConsoleEvent, EventType};
+    use std::time::Duration;
+
+    use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
 
     use super::{
-        DeferredTuiRuntimeEffectSink, TuiRenderError, TuiRuntimeEffect, TuiRuntimeEffectSink,
-        TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_outcome_effect, attention_item_line,
-        buffer_to_text, detail_lines, key_event_to_terminal_input, render_command_modal,
+        DeferredTuiRuntimeEffectSink, LIVE_SOURCE_POLL_INTERVAL, TuiLiveSession, TuiRenderError,
+        TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome, TuiTerminalInput,
+        action_outcome_effect, attention_item_line, buffer_to_text, detail_lines,
+        effect_triggers_source_poll, key_event_to_terminal_input, render_command_modal,
         render_detail, render_model, render_summary_detail, render_to_text, settings_detail_lines,
-        step_tui_runtime,
+        should_poll_sources, step_tui_runtime,
     };
 
     #[test]
@@ -1462,6 +1614,74 @@ mod tests {
         let outcome = sink.handle_runtime_effect(&TuiRuntimeEffect::Quit);
 
         assert!(matches!(outcome, Ok(TuiRuntimeEffectSinkOutcome::Deferred)));
+    }
+
+    /// A minimal command envelope for building command-bearing runtime effects.
+    fn sample_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_sample".to_owned(),
+            CommandType::FactoryDrainRequested,
+            "fleet:livespec".to_owned(),
+            "fleet:livespec:factory.drain_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn deferred_runtime_effect_sink_keeps_its_startup_snapshot() {
+        // The legacy no-store path has no live source: a refresh returns None so
+        // the loop keeps its startup snapshot rather than re-projecting.
+        let mut sink = DeferredTuiRuntimeEffectSink;
+
+        let refreshed = sink.refresh_events(true);
+
+        assert!(matches!(refreshed, Ok(None)));
+    }
+
+    #[test]
+    fn should_poll_sources_polls_at_once_after_a_mutating_effect() {
+        // Scenario 11: after an applied action the loop re-polls sources
+        // immediately — even inside the throttle window — so the operator sees
+        // their own lane change without waiting.
+        assert!(should_poll_sources(
+            Duration::from_millis(0),
+            LIVE_SOURCE_POLL_INTERVAL,
+            true,
+        ));
+    }
+
+    #[test]
+    fn should_poll_sources_throttles_the_expensive_poll_between_ticks() {
+        // Scenarios 2/3: with no effect applied, the expensive source poll waits
+        // for the throttle interval — a tick inside the window does not re-poll,
+        // a tick at or past the interval does.
+        assert!(!should_poll_sources(
+            LIVE_SOURCE_POLL_INTERVAL.saturating_sub(Duration::from_millis(1)),
+            LIVE_SOURCE_POLL_INTERVAL,
+            false,
+        ));
+        assert!(should_poll_sources(
+            LIVE_SOURCE_POLL_INTERVAL,
+            LIVE_SOURCE_POLL_INTERVAL,
+            false,
+        ));
+    }
+
+    #[test]
+    fn effect_triggers_source_poll_only_for_ledger_mutating_effects() {
+        // A command-bearing effect (the operator's approve / move / policy write)
+        // triggers an immediate source re-poll; navigation and quit do not.
+        assert!(effect_triggers_source_poll(
+            &TuiRuntimeEffect::PersistCommand(sample_command())
+        ));
+        assert!(effect_triggers_source_poll(
+            &TuiRuntimeEffect::PersistCommandWithPayload {
+                command: sample_command(),
+                payload_json: "{}".to_owned(),
+            }
+        ));
+        assert!(!effect_triggers_source_poll(&TuiRuntimeEffect::Render));
+        assert!(!effect_triggers_source_poll(&TuiRuntimeEffect::Quit));
     }
 
     #[test]

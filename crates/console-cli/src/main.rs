@@ -266,14 +266,14 @@ impl TuiSessionRunner for InteractiveTuiRunner {
         &mut self,
         events: &[console_domain::ConsoleEvent],
         requested_by: &str,
-        effect_sink: &mut dyn console_tui::TuiRuntimeEffectSink,
+        session: &mut dyn console_tui::TuiLiveSession,
     ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
         console_tui::run_interactive_tui_with_effect_sink(
             events,
             requested_by,
             &self.selected_repo,
             self.dispatcher_settings.clone(),
-            effect_sink,
+            session,
         )
         .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
     }
