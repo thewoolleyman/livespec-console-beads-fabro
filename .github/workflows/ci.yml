@@ -1,15 +1,58 @@
+# Per-target matrix CI for livespec-console-beads-fabro (the fleet's one RUST repo).
+#
+# The check matrix + check-doctor-static run in the SAME baked image the Fabro
+# sandbox uses, on the local self-hosted runner — so "green in CI" and "green in
+# sandbox" are the same environment (livespec plan/fabro-ci-image-factoring).
+# The tag is python-rust-v0.48.2: the layered Rust image, and specifically the
+# tag THIS repo's own .fabro/workflows/implement-work-item/workflow.toml pins.
+# Do NOT copy the Python members' python-v0.43.2 — a different layer AND a
+# drifted tag (livespec-dev-tooling-xb7).
+#
+# runs-on resolves from the repo variable CI_RUNNER_LABELS, defaulting to the
+# self-hosted label; set it to '["ubuntu-latest"]' to reroute to GitHub-hosted
+# when the local host is down (the merge-gate fallback). ci-green stays
+# ubuntu-latest so the branch-protection context is reportable host-down.
+
 name: CI
 
+# merge_group is deliberately ABSENT: no merge queue is configured for this repo
+# (verified live — zero rulesets, required_merge_queue: null; branch protection
+# requires only ci-green). Keeping the vestigial trigger would be exactly the
+# routing hole the trusted-event audit forbids, since merge_group is not a
+# fork-gated event and the jobs below are self-hosted. Re-add it WITH hosted
+# routing only if a merge queue is adopted.
 on:
   pull_request:
   push:
     branches: [master]
-  merge_group:
 
 jobs:
   check:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    # Local self-hosted runner in the baked python-rust image (fallback: set the
+    # CI_RUNNER_LABELS repo variable to '["ubuntu-latest"]').
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
+    container:
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.48.2
+    env:
+      # The image installs the pinned tools under /root (build-time HOME), but
+      # container-hooks run steps with a DIFFERENT HOME — so mise's default data
+      # dir ($HOME/.local/share/mise) is empty and `mise install` would RE-fetch
+      # every tool. At matrix scale that means concurrent UNauthed GitHub-API
+      # installs, which blow the anonymous rate limit and red the run (proven
+      # live on livespec's cutover). Point mise at the baked data dir so
+      # `mise install` is a true no-op.
+      MISE_DATA_DIR: /root/.local/share/mise
+      # A missing shim must fail fast, never busy-loop on auto-install.
+      MISE_NOT_FOUND_AUTO_INSTALL: "0"
+      # Defense-in-depth against GitHub's anonymous REST limit (60/hr PER IP):
+      # the self-hosted matrix shares ONE host IP, and this repo's
+      # taiki-e/install-action steps DOWNLOAD cargo tools from GitHub releases on
+      # every run — exactly the kind of residual API traffic that hits the anon
+      # wall. The per-run, auto-revoked, read-scoped Actions token lifts them to
+      # the authenticated (~1000/hr) cap. NOT a Kind-2 secret.
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -35,31 +78,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pinned binaries via mise
-        uses: jdx/mise-action@v2
+      # The Rust toolchain is BAKED into the python-rust image (rustc/cargo/
+      # clippy/rustfmt 1.92.0 at /root/.cargo/bin, matching rust-toolchain.toml),
+      # so `mise install` is a near-no-op that just confirms the pinned versions.
+      # A fresh container does not TRUST the repo .mise.toml, so `mise trust` is
+      # required for the shims to resolve.
+      - name: mise trust + install (baked tools — install is a near-no-op)
+        run: |
+          mise trust
+          mise install
 
-      # The baseline job is pure-Python (uv) and never touches cargo, so it
-      # skips the cargo cache; the Rust targets keep it.
-      - name: Cache cargo registry and build output
-        if: matrix.target != 'check-baseline'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+      # The actions/cache steps (cargo registry + git + target, and the uv cache
+      # for check-baseline) are DELETED — this is not a leap of faith, it was
+      # MEASURED in this exact image on this host against the real workspace:
+      #   cargo clippy --workspace --all-targets  COLD here 37s vs 53s WARM-cached on ubuntu-latest
+      #   cargo test  --workspace                 COLD here 35s vs 48s WARM-cached on ubuntu-latest
+      # A cold build on this 18-core box beats a warm-cached build on a 2-4 core
+      # GitHub runner, so the cache was buying nothing we cannot out-compute. And
+      # KEEPING actions/cache on a self-hosted runner would be actively worse: it
+      # would network-restore/save a multi-GB cache FROM this host every run —
+      # precisely the cost co-locating removes — while fighting the 10 GB/repo cap.
+      # (check-coverage/check-nextest build under different profiles, so the warm
+      # cache barely helped them even before this change.)
 
       # ---- baseline (worktree-discipline) reuse: uv env + hook install ----
-      - name: Restore uv download cache
-        if: matrix.target == 'check-baseline'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: uv-${{ runner.os }}-
-
       - name: Install commit-refuse hook + worktree pack (satisfy baseline verifier)
         if: matrix.target == 'check-baseline'
         run: |
@@ -92,13 +134,24 @@ jobs:
   # — that no other target does.
   check-doctor-static:
     name: check-doctor-static
-    runs-on: ubuntu-latest
+    # Self-hosted in the baked image. The livespec-core checkout below is a fresh
+    # PUBLIC clone INSIDE the container (no host mount — containment preserved).
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
+    container:
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.48.2
+    env:
+      MISE_DATA_DIR: /root/.local/share/mise
+      MISE_NOT_FOUND_AUTO_INSTALL: "0"
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pinned binaries via mise
-        uses: jdx/mise-action@v2
+      - name: mise trust + install (baked tools — install is a near-no-op)
+        run: |
+          mise trust
+          mise install
 
       - name: Resolve pinned livespec core ref (.livespec.jsonc compat.pinned)
         id: corepin
@@ -114,9 +167,12 @@ jobs:
           path: .livespec-core
 
       - name: just check-doctor-static
-        env:
-          LIVESPEC_CORE_PLUGIN_ROOT: ${{ github.workspace }}/.livespec-core/.claude-plugin
-        run: just check-doctor-static
+        run: |
+          # In a container job, github.workspace (context) may be the HOST path;
+          # $GITHUB_WORKSPACE (env) is the in-container mount, so derive the core
+          # plugin root from it to stay container-correct.
+          export LIVESPEC_CORE_PLUGIN_ROOT="${GITHUB_WORKSPACE}/.livespec-core/.claude-plugin"
+          just check-doctor-static
 
   # Single all-green gate job (livespec epic livespec-cf4bcu,
   # fleet-ci-aggregate-coverage). This is the SOLE branch-protection
