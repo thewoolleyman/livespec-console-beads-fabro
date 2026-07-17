@@ -181,11 +181,21 @@ fn run_runtime_result(result: ConsoleRuntimeResult<String>, command: &str) -> Ru
 pub trait CommandAppendStore {
     /// Append a command envelope and return whether it was inserted or deduplicated.
     fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome>;
+
+    /// The count of commands already appended — a monotonic sequence (commands
+    /// are append-only) used to make each repeatable operator action (a broad
+    /// MOVE) a distinct command so it always lands (see
+    /// [`command_append_from_tui_effect`]).
+    fn command_count(&self) -> EventStoreResult<usize>;
 }
 
 impl CommandAppendStore for SqliteEventStore {
     fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome> {
         Self::append_command(self, append)
+    }
+
+    fn command_count(&self) -> EventStoreResult<usize> {
+        Self::list_commands(self).map(|commands| commands.len())
     }
 }
 
@@ -197,7 +207,11 @@ pub fn persist_tui_runtime_effects(
 ) -> EventStoreResult<Vec<CommandAppendOutcome>> {
     let mut outcomes = Vec::new();
     for effect in effects {
-        let Some(append) = command_append_from_tui_effect(effect, requested_at) else {
+        // Read the monotonic command count BEFORE each append so a repeatable
+        // move gets a distinct key (an earlier append in this batch bumps the
+        // count for the next).
+        let sequence = store.command_count()?;
+        let Some(append) = command_append_from_tui_effect(effect, requested_at, sequence) else {
             continue;
         };
         outcomes.push(store.append_command(&append)?);
@@ -250,18 +264,33 @@ pub trait TuiSessionRunner {
     ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>>;
 }
 
+/// Port for requesting an out-of-band source re-poll from the UI thread without
+/// blocking it.
+///
+/// The store-backed sink holds one of these and pings it after a ledger-mutating
+/// effect; the binary backs it with a channel to the poller thread. Keeping it a
+/// port lets the UI-thread logic be exercised with a recording double, off the
+/// real thread.
+pub trait SourcePollRequester {
+    /// Request an out-of-band source re-poll. Non-blocking and best-effort — a
+    /// dropped request (e.g. the poller has already stopped) is ignored.
+    fn request_poll(&self);
+}
+
 struct StoreBackedTuiRuntimeEffectSink<'a> {
     store: &'a mut SqliteEventStore,
     observed_at: &'a str,
     factory_port: &'a mut dyn FactoryDrainPort,
     work_item_port: &'a mut dyn OrchestratorActionPort,
-    // The live sources, needs-attention bundle, and autonomous-decisions port so
-    // the running loop can re-run the WHOLE startup ingest/reflect sequence
-    // through the SAME object that owns `store` (a separate refresh port would
-    // need its own `&mut store` and conflict).
-    sources: &'a [SourceAdapterRef<'a>],
-    needs_attention: &'a NeedsAttentionIngest<'a>,
+    // The autonomous-decisions port so the UI thread can run the CHEAP
+    // local-journal reflection on every refresh (an auto-disposition that lands
+    // mid-session leaves the inbox live). The SLOW CLI source polls do NOT run
+    // here — they run on the off-thread poller — so `refresh_events` never blocks
+    // the UI thread.
     decisions_port: &'a dyn AutonomousDecisionsPort,
+    // The out-of-band poll requester: after a ledger-mutating effect the sink
+    // pings it so the off-thread poller re-polls sources at once.
+    poll_requester: &'a dyn SourcePollRequester,
     persisted_command_count: usize,
     handled_command_count: usize,
 }
@@ -272,18 +301,16 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
         observed_at: &'a str,
         factory_port: &'a mut dyn FactoryDrainPort,
         work_item_port: &'a mut dyn OrchestratorActionPort,
-        sources: &'a [SourceAdapterRef<'a>],
-        needs_attention: &'a NeedsAttentionIngest<'a>,
         decisions_port: &'a dyn AutonomousDecisionsPort,
+        poll_requester: &'a dyn SourcePollRequester,
     ) -> Self {
         Self {
             store,
             observed_at,
             factory_port,
             work_item_port,
-            sources,
-            needs_attention,
             decisions_port,
+            poll_requester,
             persisted_command_count: 0,
             handled_command_count: 0,
         }
@@ -322,24 +349,18 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
 }
 
 impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
-    fn refresh_events(&mut self, poll_sources: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
-        // On a throttled tick (or right after an applied effect) re-run the WHOLE
-        // startup ingest/reflect sequence — source adapters (Lanes), needs-attention
-        // (Attention), and the autonomous-decision reflection (Events/journal) — so
-        // the ledger's current state, including the operator's own just-applied
-        // action, is appended to the log. The checkpointed/idempotent adapter
-        // design (Scenario 3) makes re-running every cycle safe (duplicates dedupe,
-        // content-stable reflection ids no-op). Between polls we still re-list every
-        // frame (cheap), so newly-appended events project at once.
-        if poll_sources {
-            refresh_ingest_sequence(
-                self.store,
-                self.observed_at,
-                self.sources,
-                self.needs_attention,
-                self.decisions_port,
-            )
+    fn refresh_events(&mut self, request_poll: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
+        // The CHEAP local-journal reflection runs on EVERY refresh, so an
+        // auto-disposition that lands mid-session leaves the inbox live at once.
+        // It reads a local file, never a slow CLI, so the UI thread does not block.
+        observe_and_reflect_autonomous_decisions(self.store, self.observed_at, self.decisions_port)
             .map_err(effect_sink_io_error)?;
+        // The SLOW CLI source polls run OFF this thread on the poller: on a
+        // ledger-mutating effect (`request_poll`) ping the poller to re-poll at
+        // once so the ledger's lane change appears promptly. Non-blocking; the
+        // operator's OWN just-appended outcome is already in the re-list below.
+        if request_poll {
+            self.poll_requester.request_poll();
         }
         let events = self
             .store
@@ -349,23 +370,42 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
     }
 }
 
-/// The full per-launch ingest/reflect sequence, re-run both at startup and on
-/// every live refresh so every projection reduces over the CURRENT ledger:
-/// backfill the source adapters (Lanes / `work_item.*` events), diff-ingest the
-/// needs-attention snapshot (the Attention list), then reflect the plane's
-/// auto-resolutions (the Events/journal auto-disposition surface). The reflect
-/// step runs AFTER ingest so a reflection wins over a lagging needs-attention
-/// surface still showing a resolved item. Returns the source-adapter ingestion
+/// The two SLOW source polls.
+///
+/// Backfill the source adapters (Lanes / `work_item.*` events) then diff-ingest
+/// the needs-attention snapshot (the Attention list). Each shells a CLI, so this
+/// runs OFF the UI thread on the poller (and once synchronously at startup as
+/// part of [`ingest_and_reflect`]). Returns the source-adapter ingestion
 /// summaries the startup path tallies into its `TuiSessionOutcome`.
-fn refresh_ingest_sequence(
+pub fn refresh_sources(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
+    needs_attention: &NeedsAttentionIngest<'_>,
+) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
+    let ingestion = backfill_source_adapters(store, observed_at, sources)?;
+    let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
+    Ok(ingestion)
+}
+
+/// The full launch ingest/reflect sequence.
+///
+/// The two slow source polls ([`refresh_sources`]) plus the cheap local-journal
+/// auto-disposition reflection. Run ONCE synchronously at startup (Bug A — the
+/// first frame reduces over the CURRENT ledger) and by the headless serve. During
+/// the running session the two cadences split: the slow polls run off-thread on
+/// the poller (via [`refresh_sources`]) while the reflection runs on the UI thread
+/// every frame (the sink's `refresh_events`). Reflect runs AFTER the ingests so a
+/// reflection wins over a lagging needs-attention surface still showing a resolved
+/// item. Returns the source-adapter ingestion summaries the startup path tallies.
+pub fn ingest_and_reflect(
     store: &mut SqliteEventStore,
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     needs_attention: &NeedsAttentionIngest<'_>,
     decisions_port: &dyn AutonomousDecisionsPort,
 ) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
-    let ingestion = backfill_source_adapters(store, observed_at, sources)?;
-    let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
+    let ingestion = refresh_sources(store, observed_at, sources, needs_attention)?;
     let _reflected = observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
     Ok(ingestion)
 }
@@ -455,14 +495,15 @@ pub fn run_store_backed_tui_session(
     work_item_port: &mut dyn OrchestratorActionPort,
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
+    poll_requester: &dyn SourcePollRequester,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
-    // Run the full ingest/reflect sequence unconditionally on every launch (Bug A
-    // fix): every projection must reduce over the CURRENT ledger, not a snapshot
-    // frozen at the first-ever run. The running loop re-runs this SAME sequence on
-    // its throttled cadence and after each applied effect (see `refresh_events`),
-    // so the startup path and the live refresh never drift.
+    // Run the full ingest/reflect sequence once on launch (Bug A fix): the first
+    // frame must reduce over the CURRENT ledger, not a snapshot frozen at the
+    // first-ever run. This ONE synchronous ingest happens before the UI loop
+    // starts; ongoing polling then runs on the off-thread poller (see the
+    // binary's `poller_loop`), so the UI thread never blocks on a source poll.
     let ingestion =
-        refresh_ingest_sequence(store, observed_at, sources, needs_attention, decisions_port)?;
+        ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
     let presented_events = store.list_console_events()?;
     let (effects, live_persisted_count, live_handled_count) = {
         let mut effect_sink = StoreBackedTuiRuntimeEffectSink::new(
@@ -470,9 +511,8 @@ pub fn run_store_backed_tui_session(
             observed_at,
             factory_port,
             work_item_port,
-            sources,
-            needs_attention,
             decisions_port,
+            poll_requester,
         );
         let effects = runner.run_tui(&presented_events, requested_by, &mut effect_sink)?;
         (
@@ -892,7 +932,7 @@ pub fn serve_report(
     // CURRENT ledger, not a first-run snapshot. Checkpointed/idempotent re-ingest
     // (Scenario 3) keeps this safe on a non-empty log.
     let ingestion =
-        refresh_ingest_sequence(store, observed_at, sources, needs_attention, decisions_port)?;
+        ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let _config_handled = handle_pending_config_commands(store, observed_at, work_item_port)?;
@@ -1418,6 +1458,7 @@ fn command_status_update_runtime_result(
 fn command_append_from_tui_effect(
     effect: &TuiRuntimeEffect,
     requested_at: &str,
+    sequence: usize,
 ) -> Option<CommandAppend> {
     match effect {
         TuiRuntimeEffect::PersistCommand(command) => Some(CommandAppend::new(
@@ -1430,19 +1471,45 @@ fn command_append_from_tui_effect(
         TuiRuntimeEffect::PersistCommandWithPayload {
             command,
             payload_json,
-        } => Some(CommandAppend::new(
-            command.clone(),
-            requested_at.to_owned(),
-            Some(command.aggregate_id().to_owned()),
-            command_correlation_id(command),
-            payload_json.clone(),
-        )),
+        } => {
+            let command = distinguish_repeatable_command(command, sequence);
+            Some(CommandAppend::new(
+                command.clone(),
+                requested_at.to_owned(),
+                Some(command.aggregate_id().to_owned()),
+                command_correlation_id(&command),
+                payload_json.clone(),
+            ))
+        }
         TuiRuntimeEffect::Render
         | TuiRuntimeEffect::OpenAttachCommand(_)
         | TuiRuntimeEffect::CopyAttachCommand(_)
         | TuiRuntimeEffect::Quit
         | TuiRuntimeEffect::ApplicationError(_) => None,
     }
+}
+
+/// A broad MOVE is a REPEATABLE action: the operator may move one item any number
+/// of times, to different targets and back to a prior target. Its command carries
+/// a STATIC identity keyed only by the work-item (`cmd_work_item_move_requested_<id>`
+/// / `<id>:work_item.move_requested`), so the second move of an item would dedupe
+/// against the first and silently no-op. Fold the monotonic append `sequence` into
+/// BOTH the `command_id` and `idempotency_key` so every distinct move lands, while
+/// an exact re-persist at the same sequence still dedupes. The SEMANTIC
+/// once-per-item transitions (approve `pending-approval -> ready`, accept
+/// `acceptance -> done`) KEEP their static key — approving an item twice SHOULD be
+/// an idempotent no-op — so only the broad move is distinguished here.
+fn distinguish_repeatable_command(command: &CommandEnvelope, sequence: usize) -> CommandEnvelope {
+    if *command.command_type() != CommandType::WorkItemMoveRequested {
+        return command.clone();
+    }
+    CommandEnvelope::new(
+        format!("{}_{sequence}", command.command_id()),
+        *command.command_type(),
+        command.aggregate_id().to_owned(),
+        format!("{}:{sequence}", command.idempotency_key()),
+        command.requested_by().to_owned(),
+    )
 }
 
 fn command_correlation_id(command: &CommandEnvelope) -> String {
@@ -1927,17 +1994,18 @@ mod tests {
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
         ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
         NeedsAttentionIngest, PendingCommandOutcome, ResolveInputs, ScriptedSource,
-        SharedSqliteStore, SourceAdapterRef, SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink,
-        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
-        config_command_from_stored, demo_events, doctor_report, events_tail_report,
-        factory_command_from_stored, handle_pending_config_commands,
-        handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
-        initial_source_seed, live_source_adapters, load_tui_events_from_store,
-        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects,
-        python_normalized_invocation, render_tui_preview, resolve_console_repo, run,
-        run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
-        source_polls_from_seed, work_item_command_from_stored,
+        SharedSqliteStore, SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog,
+        StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
+        append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
+        backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
+        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
+        handle_pending_config_commands, handle_pending_factory_commands,
+        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
+        live_source_adapters, load_tui_events_from_store, observe_and_reflect_autonomous_decisions,
+        persist_tui_runtime_effects, python_normalized_invocation, refresh_sources,
+        render_tui_preview, resolve_console_repo, run, run_store_backed_tui_session,
+        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
+        work_item_command_from_stored,
     };
 
     #[test]
@@ -2817,6 +2885,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &poll_requester(),
         );
         let commands = store.list_commands()?;
 
@@ -2884,6 +2953,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &poll_requester(),
         );
         assert!(outcome.is_ok());
 
@@ -2940,6 +3010,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &poll_requester(),
         );
 
         let commands = store.list_commands()?;
@@ -2982,6 +3053,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &poll_requester(),
         );
 
         assert!(matches!(
@@ -3020,6 +3092,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &poll_requester(),
         );
 
         assert!(matches!(
@@ -3112,13 +3185,11 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_refresh_reprojects_a_lane_change_across_source_polls()
-    -> Result<(), ConsoleRuntimeError> {
-        // Scenario 3 + Bug B: an item observed in one lane, then re-observed in
-        // another on a subsequent source poll (a higher `source_version`),
-        // projects to the NEW lane after a live refresh. This is the running loop
-        // re-projecting over the latest events rather than a snapshot frozen at
-        // launch — the fix for the lane board going stale until a manual backfill.
+    fn refresh_sources_reprojects_a_lane_change_across_polls() -> Result<(), ConsoleRuntimeError> {
+        // Scenario 3 + Bug B: the off-thread poller runs `refresh_sources` on its
+        // cadence. An item observed in one lane, then re-observed in another on a
+        // subsequent poll (a higher `source_version`), reprojects to the NEW lane —
+        // the poller keeping the board live without a restart.
         let mut store = SqliteEventStore::open_in_memory()?;
         let source = sequenced_work_item_source(&[
             ("wi-live", Lane::Ready, "ready", 1),
@@ -3126,114 +3197,106 @@ mod tests {
         ]);
         let sources: Vec<SourceAdapterRef<'_>> =
             vec![("orchestrator:livespec-console-beads-fabro", &source)];
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        let decisions = empty_decisions_port();
+        let (at1, at2) = ("2026-07-17T00:00:00Z", "2026-07-17T00:00:01Z");
 
-        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
-            &mut store,
-            "2026-07-17T00:00:00Z",
-            &mut factory_port,
-            &mut work_item_port,
-            &sources,
-            &needs_attention,
-            &decisions,
-        );
-
-        // First live refresh re-polls the source (poll 1) → item in the Ready lane.
-        let first = refreshed_events(sink.refresh_events(true))?;
+        // First poll → item in the Ready lane.
+        refresh_sources(&mut store, at1, &sources, &needs_attention)?;
+        let first = store.list_console_events()?;
         assert_eq!(lane_work_item_ids(&first, Lane::Ready), ["wi-live"]);
         assert!(lane_work_item_ids(&first, Lane::Backlog).is_empty());
 
-        // A subsequent live refresh re-polls the source (poll 2, higher version)
-        // → the SAME item now projects to the Backlog lane, with no restart.
-        let second = refreshed_events(sink.refresh_events(true))?;
+        // A subsequent poll (poll 2, higher version) → the SAME item now projects
+        // to the Backlog lane, with no restart.
+        refresh_sources(&mut store, at2, &sources, &needs_attention)?;
+        let second = store.list_console_events()?;
         assert_eq!(lane_work_item_ids(&second, Lane::Backlog), ["wi-live"]);
         assert!(lane_work_item_ids(&second, Lane::Ready).is_empty());
         Ok(())
     }
 
     #[test]
-    fn store_backed_refresh_reflects_the_operators_just_applied_action()
+    fn store_backed_refresh_reflects_the_operators_action_and_signals_a_poll()
     -> Result<(), ConsoleRuntimeError> {
-        // Scenario 2 + Bug B: with ready implementation work present, the
-        // operator drains; applying the effect persists the command and appends
-        // its accepted + started + completed outcome events, and even a cheap
-        // re-list — no source poll — reflects the operator's OWN just-appended
-        // outcome. This is the loop's post-effect refresh: the operator sees
-        // their action at once ("the TUI updates live from projections") rather
-        // than a snapshot frozen at startup.
+        // Bug B: after the operator drains, a CHEAP `refresh_events` re-list (no
+        // source poll on the UI thread) already reflects the operator's OWN
+        // just-appended drain outcome. `refresh_events(true)` also pings the
+        // off-thread poller to re-poll sources at once (so the ledger's lane
+        // change appears promptly); `refresh_events(false)` never pings.
         let mut store = SqliteEventStore::open_in_memory()?;
+        // Seed a ready work-item so the drain is accepted (not policy-rejected).
         let source = sequenced_work_item_source(&[("wi-ready", Lane::Ready, "ready", 1)]);
         let sources: Vec<SourceAdapterRef<'_>> =
             vec![("orchestrator:livespec-console-beads-fabro", &source)];
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        let seed_at = "2026-07-17T00:00:00Z";
+        refresh_sources(&mut store, seed_at, &sources, &needs_attention)?;
+
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
+        let requester = poll_requester();
+        {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                &mut store,
+                "2026-07-17T00:00:01Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &requester,
+            );
 
-        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
-            &mut store,
-            "2026-07-17T00:00:00Z",
-            &mut factory_port,
-            &mut work_item_port,
-            &sources,
-            &needs_attention,
-            &decisions,
-        );
+            // A cheap re-list (request_poll = false) carries no drain outcome yet
+            // and does NOT ping the poller.
+            let before = refreshed_events(sink.refresh_events(false))?;
+            assert!(
+                !before
+                    .iter()
+                    .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
+            );
+            assert_eq!(requester.poll_count(), 0);
 
-        // A live refresh seeds the ready work-item (so the drain is accepted, not
-        // policy-rejected) and, before the action, carries no drain outcome.
-        let before = refreshed_events(sink.refresh_events(true))?;
-        assert_eq!(lane_work_item_ids(&before, Lane::Ready), ["wi-ready"]);
-        assert!(
-            !before
-                .iter()
-                .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
-        );
+            // The operator drains: the effect persists the command and appends its
+            // outcome events through the injected drain port.
+            let applied = sink
+                .handle_runtime_effect(&factory_drain_effect())
+                .ok()
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
+            assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
 
-        // The operator acts: applying the effect persists the command and appends
-        // its outcome events through the injected drain port.
-        let applied = sink
-            .handle_runtime_effect(&factory_drain_effect())
-            .ok()
-            .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
-        assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
-
-        // A cheap re-list (poll_sources = false) already reflects the operator's
-        // own just-appended outcome — no source re-poll, no restart.
-        let after = refreshed_events(sink.refresh_events(false))?;
-        assert!(
-            after
-                .iter()
-                .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
-        );
+            // A ledger-mutating refresh (request_poll = true) re-lists the
+            // operator's own outcome AND pings the poller exactly once.
+            let after = refreshed_events(sink.refresh_events(true))?;
+            assert!(
+                after
+                    .iter()
+                    .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
+            );
+            assert_eq!(requester.poll_count(), 1);
+        }
         Ok(())
     }
 
     #[test]
-    fn store_backed_refresh_reflects_autonomous_decisions_live() -> Result<(), ConsoleRuntimeError>
-    {
-        // Scenario 15 + Bug B: a live refresh re-runs the WHOLE ingest/reflect
-        // sequence, including the autonomous-decision reflection — not just the
-        // source and needs-attention ingests. An item the plane already
-        // auto-resolved leaves the needs-attention inbox on a live refresh, so the
-        // Attention and Events/journal views update without a restart.
+    fn store_backed_refresh_reflects_autonomous_decisions_on_every_refresh()
+    -> Result<(), ConsoleRuntimeError> {
+        // Scenario 15 + Bug B (folds PR #256): the CHEAP local-journal reflection
+        // runs on EVERY `refresh_events` — even a re-list that does not ping the
+        // poller (`request_poll = false`) — so an auto-disposition that lands
+        // mid-session leaves the needs-attention inbox live at once.
         let mut store = SqliteEventStore::open_in_memory()?;
-        let empty_sources: Vec<(String, ScriptedSource)> = Vec::new();
-        let sources = scripted_source_refs(&empty_sources);
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
-        // The needs-attention surface still shows the auto-resolved item...
+        // The item is already surfaced in the needs-attention inbox.
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
             "valve:approve:wi-1",
             "Approve wi-1",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        // ...but the plane's engine already auto-resolved wi-1's approve gate.
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+
+        // The plane's engine has now auto-resolved wi-1's approve gate.
         let decisions = SimulatedDecisionsPort::returning(AutonomousAudit::new(
             vec![AutonomousDecision::new(
                 "wi-1",
@@ -3243,22 +3306,111 @@ mod tests {
             )],
             Vec::new(),
         ));
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let requester = poll_requester();
 
-        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
-            &mut store,
-            "2026-07-17T00:00:00Z",
-            &mut factory_port,
-            &mut work_item_port,
-            &sources,
-            &needs_attention,
-            &decisions,
-        );
+        let events = {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                &mut store,
+                "2026-07-17T00:00:01Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &requester,
+            );
+            // A CHEAP refresh (request_poll = false) still runs the reflection.
+            refreshed_events(sink.refresh_events(false))?
+        };
 
-        let events = refreshed_events(sink.refresh_events(true))?;
-
-        // The reflection ran as part of the live refresh: the item appeared then
-        // was resolved on the same pass, so the attention inbox is empty.
+        // The auto-resolved item left the inbox on the cheap refresh.
         assert!(project_attention(&events).is_empty());
+        Ok(())
+    }
+
+    /// Build the `work_item.move_requested` effect the `s`-move valve produces for
+    /// the operator-selected work-item, by driving the pure runtime's Confirm on a
+    /// staged `MoveStatus` valve — the same key → valve → Confirm → effect path the
+    /// interactive loop drives.
+    fn move_effect(events: &[ConsoleEvent], from: Lane, to: Lane) -> TuiRuntimeEffect {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::MoveStatus { from, to },
+            },
+        );
+        console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
+            .effect()
+            .clone()
+    }
+
+    #[test]
+    fn store_backed_repeated_moves_all_land_and_drive_the_move_action()
+    -> Result<(), ConsoleRuntimeError> {
+        // The regression the gate missed, plus the move idempotency-key fix: the
+        // s-move valve → Confirm → effect → command → drive round-trip, exercised
+        // for THREE moves of the SAME item (to backlog, back to ready, to backlog
+        // AGAIN). The pre-fix static per-item key (`<id>:work_item.move_requested`)
+        // deduped every move after the first, so the item could be moved once ever
+        // and the third (repeat target) silently no-oped. Folding the monotonic
+        // append sequence into the key makes every distinct move a distinct command
+        // that lands and drives `move:<id>:<target>`.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        // Surface a selectable work-item "wi-1" via the needs-attention inbox.
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-1",
+            "Move wi-1",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
+        let events = store.list_console_events()?;
+
+        let move_to_backlog = move_effect(&events, Lane::Ready, Lane::Backlog);
+        let move_back_to_ready = move_effect(&events, Lane::Backlog, Lane::Ready);
+        let move_to_backlog_again = move_effect(&events, Lane::Ready, Lane::Backlog);
+
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions = empty_decisions_port();
+        let requester = poll_requester();
+        {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                &mut store,
+                "2026-07-17T00:00:01Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &requester,
+            );
+            for effect in [
+                &move_to_backlog,
+                &move_back_to_ready,
+                &move_to_backlog_again,
+            ] {
+                let applied = sink
+                    .handle_runtime_effect(effect)
+                    .ok()
+                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
+                assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+            }
+        }
+
+        // All THREE distinct moves reached the orchestrator port as
+        // `move:<id>:<target>` — including the repeat back to a prior target, which
+        // the pre-fix static key would have silently deduped.
+        assert_eq!(
+            work_item_port.observed_action_ids,
+            ["move:wi-1:backlog", "move:wi-1:ready", "move:wi-1:backlog"]
+        );
+        // Three distinct move commands landed (not deduped down to one).
+        let move_commands = store
+            .list_commands()?
+            .iter()
+            .filter(|command| {
+                command.command_type() == CommandType::WorkItemMoveRequested.contract_name()
+            })
+            .count();
+        assert_eq!(move_commands, 3);
         Ok(())
     }
 
@@ -3283,6 +3435,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &poll_requester(),
         );
 
         assert!(matches!(
@@ -5099,6 +5252,36 @@ mod tests {
         SimulatedDecisionsPort::returning(AutonomousAudit::default())
     }
 
+    /// A poll requester that counts the out-of-band poll requests it received, so
+    /// a test can assert `refresh_events(true)` pings the poller while
+    /// `refresh_events(false)` does not. Used by every store-backed test (the ones
+    /// that do not care simply ignore the count).
+    struct RecordingPollRequester {
+        polls: std::cell::Cell<usize>,
+    }
+
+    impl RecordingPollRequester {
+        fn new() -> Self {
+            Self {
+                polls: std::cell::Cell::new(0),
+            }
+        }
+
+        fn poll_count(&self) -> usize {
+            self.polls.get()
+        }
+    }
+
+    impl SourcePollRequester for RecordingPollRequester {
+        fn request_poll(&self) {
+            self.polls.set(self.polls.get() + 1);
+        }
+    }
+
+    fn poll_requester() -> RecordingPollRequester {
+        RecordingPollRequester::new()
+    }
+
     #[test]
     fn observe_and_reflect_resolves_auto_resolutions_and_leaves_escalations()
     -> Result<(), ConsoleRuntimeError> {
@@ -5300,6 +5483,10 @@ mod tests {
             _append: &CommandAppend,
         ) -> EventStoreResult<CommandAppendOutcome> {
             Err(EventStoreError::InvalidSequence)
+        }
+
+        fn command_count(&self) -> EventStoreResult<usize> {
+            Ok(0)
         }
     }
 

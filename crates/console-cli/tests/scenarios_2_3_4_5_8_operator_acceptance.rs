@@ -12,10 +12,18 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{CommandAppend, EventAppend, SqliteEventStore};
 use console_tui::{TuiLiveSession, TuiRuntimeEffect};
 use livespec_console_beads_fabro::{
-    ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef, TuiSessionOutcome,
-    TuiSessionRunner, backfill_source_report, handle_pending_factory_commands,
+    ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef, SourcePollRequester,
+    TuiSessionOutcome, TuiSessionRunner, backfill_source_report, handle_pending_factory_commands,
     run_store_backed_tui_session,
 };
+
+/// A poll requester that drops every request — this scenario does not exercise
+/// out-of-band source polling.
+struct NoopPollRequester;
+
+impl SourcePollRequester for NoopPollRequester {
+    fn request_poll(&self) {}
+}
 
 #[test]
 fn scenario_2_factory_drain_command_dispatches_and_projects_outcome()
@@ -134,6 +142,7 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
         &mut work_item_port,
         &decisions_port,
         &needs_attention,
+        &NoopPollRequester,
     )?;
 
     assert_eq!(outcome, TuiSessionOutcome::new(2, 2, 1, 1, 5, 0));
