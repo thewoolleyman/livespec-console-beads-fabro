@@ -122,6 +122,7 @@ check:
         check-deps
         check-arch
         check-behavior-coverage
+        check-completeness
         check-baseline
         check-plugin-resolution
         check-doctor-static
@@ -173,6 +174,24 @@ check-arch:
 # report-only runs.
 check-behavior-coverage:
     cargo run --quiet --package console-spec-check
+
+# API-to-Settings-to-help-to-doc completeness gate: asserts every key the
+# orchestrator declares as API-configurable (its published config-manifest,
+# captured at tests/fixtures/orchestrator-config-manifest.json) reaches the
+# console's Settings surface, its inline help, and the README settings doc,
+# FAILING and naming any key that fell out of lockstep. Consumer-side per the
+# No-Circular-Dependency Directive; hermetic (reads the committed capture, no
+# live orchestrator). Refresh the capture with `just refresh-config-manifest`.
+check-completeness:
+    cargo run --quiet --package console-completeness-check
+
+# Refresh the captured orchestrator config-manifest the completeness gate reads,
+# from the LIVE orchestrator drive surface. Run after an orchestrator dispatcher
+# key set change (part of the orchestrator pin bump); requires the orchestrator
+# plugin + credential wrapper on PATH. DRIVE defaults to the family drive CLI.
+refresh-config-manifest DRIVE="livespec-orchestrator-drive":
+    {{DRIVE}} --action config-manifest --json > tests/fixtures/orchestrator-config-manifest.json
+    @echo "refreshed tests/fixtures/orchestrator-config-manifest.json"
 
 # Baseline worktree-discipline verifier — the `baseline` profile's Verifier,
 # REUSED from livespec-dev-tooling (NOT re-implemented). Fail-closed: exit 4

@@ -160,9 +160,10 @@ fn check_layering(nodes: &[CrateNode]) -> Vec<String> {
 fn allowed_workspace_deps(crate_name: &str) -> &'static [&'static str] {
     match crate_name {
         "console-application" => &["console-domain"],
-        "console-eventstore" | "console-tui" | "console-arch-check" => {
-            &["console-domain", "console-application"]
-        }
+        "console-eventstore"
+        | "console-tui"
+        | "console-arch-check"
+        | "console-completeness-check" => &["console-domain", "console-application"],
         "livespec-console-beads-fabro" => &[
             "console-domain",
             "console-application",

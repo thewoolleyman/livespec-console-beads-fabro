@@ -3681,6 +3681,22 @@ impl DispatcherSettingRow {
     }
 
     #[must_use]
+    /// The orchestrator `dispatcher.*` key this row surfaces -- the
+    /// API-configurable key name the settings-completeness check matches against
+    /// the orchestrator's published config-manifest. It is the same key the
+    /// row's [`DispatcherSettingWrite`] carries.
+    pub const fn orchestrator_key(&self) -> &'static str {
+        match self {
+            Self::AutoApproveReady => "auto_approve_ready",
+            Self::MergeOnReviewCap => "merge_on_review_cap",
+            Self::AcceptanceMode => "acceptance_mode",
+            Self::ReviewFixCap => "review_fix_cap",
+            Self::AcceptanceReworkCap => "acceptance_rework_cap",
+            Self::WipCap => "wip_cap",
+        }
+    }
+
+    #[must_use]
     /// The effective value of this row, rendered as the operator sees it.
     pub fn value(&self, settings: &DispatcherSettings) -> String {
         match self {
@@ -9090,6 +9106,24 @@ mod tests {
         // caution" label; a cap row's does not.
         assert!(rows[0].help().contains("dangerous / use with caution"));
         assert!(!rows[5].help().contains("dangerous / use with caution"));
+
+        // Each row surfaces its orchestrator `dispatcher.*` key, in display order,
+        // for the settings-completeness check to match against the manifest.
+        let keys: Vec<&str> = DispatcherSettingRow::all()
+            .iter()
+            .map(DispatcherSettingRow::orchestrator_key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "auto_approve_ready",
+                "merge_on_review_cap",
+                "acceptance_mode",
+                "review_fix_cap",
+                "acceptance_rework_cap",
+                "wip_cap",
+            ]
+        );
     }
 
     #[test]

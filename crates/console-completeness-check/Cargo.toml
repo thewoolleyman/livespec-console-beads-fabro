@@ -1,0 +1,18 @@
+[package]
+name = "console-completeness-check"
+description = "API-configurable-key completeness check (Settings/help/README lockstep) for livespec-console-beads-fabro"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+# Internal check crate — never published; the versionless path dep below is
+# only permitted for private crates (cargo-deny allow-wildcard-paths).
+publish = false
+
+[dependencies]
+console-application = { path = "../console-application" }
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -150,6 +150,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "console-completeness-check"
+version = "0.1.0"
+dependencies = [
+ "console-application",
+ "serde_json",
+]
+
+[[package]]
 name = "console-domain"
 version = "0.1.0"
 dependencies = [

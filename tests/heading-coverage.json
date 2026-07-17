@@ -681,8 +681,8 @@
   {
     "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Pending top-of-pyramid integration test for the consumer-side API-to-Settings-to-docs completeness check: it reads the orchestrator's declared API-configurable-key surface and fails when a declared key is missing from the Settings rows or from `docs/settings.md`. Tier: top-of-pyramid integration. Owed by the completeness-check code child, which also creates docs/settings.md -- no docs/ directory exists in this repo yet.",
+    "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_key_missing_from_the_settings_surface",
+    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the README settings doc. Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, evaluate_names_a_key_missing_from_the_readme_settings_doc, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
     "clauses": [
       {
         "gap_id": "gap-u5dlygw2",
