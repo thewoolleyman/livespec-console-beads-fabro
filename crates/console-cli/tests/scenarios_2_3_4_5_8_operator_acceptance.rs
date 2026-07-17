@@ -10,7 +10,7 @@ use console_application::{
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{CommandAppend, EventAppend, SqliteEventStore};
-use console_tui::{TuiRuntimeEffect, TuiRuntimeEffectSink};
+use console_tui::{TuiLiveSession, TuiRuntimeEffect};
 use livespec_console_beads_fabro::{
     ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef, TuiSessionOutcome,
     TuiSessionRunner, backfill_source_report, handle_pending_factory_commands,
@@ -218,7 +218,7 @@ impl TuiSessionRunner for CommandingTuiRunner {
         &mut self,
         events: &[ConsoleEvent],
         requested_by: &str,
-        _effect_sink: &mut dyn TuiRuntimeEffectSink,
+        _session: &mut dyn TuiLiveSession,
     ) -> Result<Vec<TuiRuntimeEffect>, ConsoleRuntimeError> {
         self.observed_events = events.len();
         requested_by.clone_into(&mut self.observed_requested_by);
