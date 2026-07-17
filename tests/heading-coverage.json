@@ -205,10 +205,6 @@
       {
         "gap_id": "gap-7hcn45eu",
         "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-      },
-      {
-        "gap_id": "gap-ynlyhqcv",
-        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
       }
     ]
   },
@@ -653,7 +649,7 @@
         "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
       },
       {
-        "gap_id": "gap-vdhnpmnj",
+        "gap_id": "gap-65d6ylmc",
         "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
       },
       {
@@ -669,11 +665,7 @@
         "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
       },
       {
-        "gap_id": "gap-3htwrn56",
-        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-      },
-      {
-        "gap_id": "gap-cfmnxsdp",
+        "gap_id": "gap-lba5jutm",
         "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
       },
       {
@@ -775,6 +767,22 @@
       {
         "gap_id": "gap-qpuhrnoh",
         "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-tui/src/lib.rs::move_status_on_a_pending_approval_lane_item_persists_the_approve_command",
+    "reason": "Top-of-pyramid proof of the operator status-move surface: selecting a lane work-item and confirming the move-to-status valve persists the command the shared orchestrator port dispatches. It anchors the two re-derived command-count clauses (the eight-command / seven-map-1:1 Command-Handling and TUI-Contract MUST lines), which now assert the move and resolve-blocked commands issue through the drive surface; the sibling tests move_handler_maps_each_pre_terminal_target_onto_the_move_action_id, move_handler_rejects_ship_guarded_and_malformed_targets_and_empty_ids, and valve_and_move_status_keys_fire_on_a_selected_lane_item complete the pyramid across the broad move, the ship-guard, and the picker firing on a selected lane item.",
+    "clauses": [
+      {
+        "gap_id": "gap-3yr4q3vk",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      },
+      {
+        "gap_id": "gap-qcfog6ab",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
       }
     ]
   }
