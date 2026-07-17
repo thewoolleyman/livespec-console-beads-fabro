@@ -729,6 +729,10 @@ impl SqliteEventStore {
 fn initialize_connection(connection: &Connection) -> EventStoreResult<()> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    // With WAL a reader never blocks a writer, but the two writers the live TUI
+    // runs — the UI thread's effect appends and the off-thread source poller —
+    // still serialize; wait out a peer's brief write rather than failing SQLITE_BUSY.
+    connection.pragma_update(None, "busy_timeout", 5000)?;
     connection.execute_batch(SCHEMA)?;
     Ok(())
 }

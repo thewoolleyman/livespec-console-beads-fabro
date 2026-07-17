@@ -17,6 +17,10 @@
 use std::io::IsTerminal;
 #[cfg(all(not(test), not(coverage)))]
 use std::path::{Path, PathBuf};
+#[cfg(all(not(test), not(coverage)))]
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+#[cfg(all(not(test), not(coverage)))]
+use std::time::Duration;
 
 #[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
@@ -32,8 +36,25 @@ use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
     BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef,
-    TuiSessionRunner,
+    SourcePollRequester, TuiSessionRunner,
 };
+
+/// A message to the off-thread source poller: run a source poll now (on demand),
+/// or stop.
+#[cfg(all(not(test), not(coverage)))]
+enum PollMessage {
+    /// Re-poll the source adapters at once (sent right after a ledger-mutating
+    /// operator effect so the ledger's lane change appears promptly).
+    PollNow,
+    /// Stop the poller and let it join.
+    Shutdown,
+}
+
+/// How long the off-thread source poller waits between (slow, CLI-shelling)
+/// source re-polls when no on-demand `PollNow` arrives. Short enough that
+/// external ledger changes surface promptly; the UI thread never waits on it.
+#[cfg(all(not(test), not(coverage)))]
+const POLLER_CADENCE: Duration = Duration::from_secs(2);
 #[cfg(all(not(test), not(coverage)))]
 use time::OffsetDateTime;
 #[cfg(all(not(test), not(coverage)))]
@@ -177,7 +198,19 @@ fn run_interactive_store_tui() -> Result<(), String> {
         selected_repo: repo.clone(),
         dispatcher_settings,
     };
-    livespec_console_beads_fabro::run_store_backed_tui_session(
+    // Move the SLOW CLI-shelling source polls onto a background thread so the UI
+    // thread never blocks on them (dropped keystrokes were the move-doesn't-land
+    // symptom). The poller is fully self-contained — it re-resolves its own
+    // adapters + probe and opens its OWN store connection (SqliteEventStore is
+    // WAL, so a second connection is safe) — so nothing non-`Send` crosses the
+    // thread boundary. The UI thread pings it (via `ChannelPollRequester`) after a
+    // ledger-mutating effect, and the channel doubles as the shutdown signal.
+    let (poll_tx, poll_rx) = std::sync::mpsc::channel::<PollMessage>();
+    let poller = std::thread::spawn(move || poller_loop(&poll_rx));
+    let requester = ChannelPollRequester {
+        tx: poll_tx.clone(),
+    };
+    let session_result = livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
         &observed_at,
         "operator",
@@ -187,9 +220,75 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &mut drive,
         &decisions,
         &needs_attention,
-    )
-    .map_err(|error| format!("{error:?}"))?;
+        &requester,
+    );
+    // Stop the poller (wake it if it is mid-`recv_timeout`) and join before
+    // returning, so no source poll outlives the session.
+    let _ = poll_tx.send(PollMessage::Shutdown);
+    let _ = poller.join();
+    session_result.map_err(|error| format!("{error:?}"))?;
     Ok(())
+}
+
+/// The background source poller: it owns its own store connection and adapters
+/// (re-resolved from the environment) and runs the SLOW CLI-shelling source polls
+/// ([`refresh_sources`]) on a cadence and on demand, appending to the store. The
+/// UI thread never runs these polls, so its `event::poll`/`read` stays responsive
+/// and keystrokes are never dropped. Terminal-adjacent + thread-bound, so
+/// `#[cfg]`-excluded from tests; the polling logic it drives (`refresh_sources`)
+/// is exercised directly.
+#[cfg(all(not(test), not(coverage)))]
+fn poller_loop(poll_rx: &Receiver<PollMessage>) {
+    let Ok(resolution) = BackingCliResolution::from_environment() else {
+        return;
+    };
+    let path = console_store_path();
+    let Ok(mut store) = SqliteEventStore::open(&path) else {
+        return;
+    };
+    let probe = SystemSourceProbe;
+    let repo = console_repo();
+    let Ok(adapters) = livespec_console_beads_fabro::live_source_adapters_with_programs(
+        &probe,
+        &repo,
+        resolution.programs(),
+    ) else {
+        return;
+    };
+    let sources = source_refs(&adapters);
+    let needs_attention_port =
+        ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
+    let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    loop {
+        // A source poll failure (transient CLI/store hiccup) must NEVER crash the
+        // poller — ignore it and try again next cycle.
+        if let Ok(observed_at) = current_requested_at() {
+            let _ = livespec_console_beads_fabro::refresh_sources(
+                &mut store,
+                &observed_at,
+                &sources,
+                &needs_attention,
+            );
+        }
+        match poll_rx.recv_timeout(POLLER_CADENCE) {
+            Ok(PollMessage::PollNow) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(PollMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Backs [`SourcePollRequester`] with the channel to the poller thread: a
+/// non-blocking `PollNow` send that is dropped if the poller has already stopped.
+#[cfg(all(not(test), not(coverage)))]
+struct ChannelPollRequester {
+    tx: Sender<PollMessage>,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl SourcePollRequester for ChannelPollRequester {
+    fn request_poll(&self) {
+        let _ = self.tx.send(PollMessage::PollNow);
+    }
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -216,8 +315,12 @@ impl SourceProbe for SystemSourceProbe {
         // Non-`.py` programs (env overrides, bare-name defaults) run directly.
         let (resolved_program, resolved_args) =
             livespec_console_beads_fabro::python_normalized_invocation(program, args);
+        // Explicitly null the child's stdin so a shelled source CLI can never
+        // steal the TUI's PTY stdin (belt-and-suspenders — `.output()` already
+        // nulls stdin rather than inheriting it).
         match std::process::Command::new(resolved_program)
             .args(&resolved_args)
+            .stdin(std::process::Stdio::null())
             .output()
         {
             Ok(output) => {
