@@ -323,20 +323,28 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
 
 impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
     fn refresh_events(&mut self, poll_sources: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
-        // On a throttled tick (or right after an applied effect) re-run the WHOLE
-        // startup ingest/reflect sequence — source adapters (Lanes), needs-attention
-        // (Attention), and the autonomous-decision reflection (Events/journal) — so
-        // the ledger's current state, including the operator's own just-applied
-        // action, is appended to the log. The checkpointed/idempotent adapter
-        // design (Scenario 3) makes re-running every cycle safe (duplicates dedupe,
-        // content-stable reflection ids no-op). Between polls we still re-list every
-        // frame (cheap), so newly-appended events project at once.
+        // Re-run the ingest/reflect work over the CURRENT ledger, then re-list so
+        // freshly-appended events — including the operator's own just-applied
+        // action — fold into the projection. On a throttled tick (or right after
+        // an applied effect) re-run the FULL sequence — the SAME `ingest_and_reflect`
+        // the startup path runs (source adapters -> Lanes, needs-attention ->
+        // Attention, reflection -> Events/journal). Between those ticks the slow
+        // source polls are skipped, but the cheap local-journal reflection still
+        // runs on EVERY refresh, so an auto-disposition landing mid-session leaves
+        // the inbox live without waiting for the throttle.
         if poll_sources {
-            refresh_ingest_sequence(
+            ingest_and_reflect(
                 self.store,
                 self.observed_at,
                 self.sources,
                 self.needs_attention,
+                self.decisions_port,
+            )
+            .map_err(effect_sink_io_error)?;
+        } else {
+            observe_and_reflect_autonomous_decisions(
+                self.store,
+                self.observed_at,
                 self.decisions_port,
             )
             .map_err(effect_sink_io_error)?;
@@ -349,15 +357,18 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
     }
 }
 
-/// The full per-launch ingest/reflect sequence, re-run both at startup and on
-/// every live refresh so every projection reduces over the CURRENT ledger:
-/// backfill the source adapters (Lanes / `work_item.*` events), diff-ingest the
-/// needs-attention snapshot (the Attention list), then reflect the plane's
-/// auto-resolutions (the Events/journal auto-disposition surface). The reflect
-/// step runs AFTER ingest so a reflection wins over a lagging needs-attention
-/// surface still showing a resolved item. Returns the source-adapter ingestion
+/// The full per-launch ingest/reflect sequence, run at startup, on the headless
+/// serve, and on every throttled live-refresh tick so every projection reduces
+/// over the CURRENT ledger: backfill the source adapters (Lanes / `work_item.*`
+/// events), diff-ingest the needs-attention snapshot (the Attention list), then
+/// reflect the plane's auto-resolutions (the Events/journal auto-disposition
+/// surface). Reflect runs AFTER the ingests so a reflection wins over a lagging
+/// needs-attention surface still showing a resolved item; the reflection is
+/// idempotent (content-stable reflection command ids make a re-observed decision
+/// a duplicate no-op), which is why the running loop can also run it alone on
+/// every cheap tick (see `refresh_events`). Returns the source-adapter ingestion
 /// summaries the startup path tallies into its `TuiSessionOutcome`.
-fn refresh_ingest_sequence(
+fn ingest_and_reflect(
     store: &mut SqliteEventStore,
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
@@ -462,7 +473,7 @@ pub fn run_store_backed_tui_session(
     // its throttled cadence and after each applied effect (see `refresh_events`),
     // so the startup path and the live refresh never drift.
     let ingestion =
-        refresh_ingest_sequence(store, observed_at, sources, needs_attention, decisions_port)?;
+        ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
     let presented_events = store.list_console_events()?;
     let (effects, live_persisted_count, live_handled_count) = {
         let mut effect_sink = StoreBackedTuiRuntimeEffectSink::new(
@@ -892,7 +903,7 @@ pub fn serve_report(
     // CURRENT ledger, not a first-run snapshot. Checkpointed/idempotent re-ingest
     // (Scenario 3) keeps this safe on a non-empty log.
     let ingestion =
-        refresh_ingest_sequence(store, observed_at, sources, needs_attention, decisions_port)?;
+        ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let _config_handled = handle_pending_config_commands(store, observed_at, work_item_port)?;
@@ -3215,25 +3226,25 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_refresh_reflects_autonomous_decisions_live() -> Result<(), ConsoleRuntimeError>
-    {
-        // Scenario 15 + Bug B: a live refresh re-runs the WHOLE ingest/reflect
-        // sequence, including the autonomous-decision reflection — not just the
-        // source and needs-attention ingests. An item the plane already
-        // auto-resolved leaves the needs-attention inbox on a live refresh, so the
-        // Attention and Events/journal views update without a restart.
+    fn store_backed_refresh_reflects_autonomous_decisions_on_every_refresh()
+    -> Result<(), ConsoleRuntimeError> {
+        // Scenario 15 + Bug B: the autonomous-decision reflection reads a cheap
+        // LOCAL journal, so it runs on EVERY refresh — NOT gated behind the
+        // source-poll throttle. An item the plane auto-resolves mid-session leaves
+        // the inbox on the very next CHEAP refresh (`poll_sources = false`, so no
+        // source re-poll and no needs-attention re-ingest), without waiting for a
+        // source poll.
         let mut store = SqliteEventStore::open_in_memory()?;
-        let empty_sources: Vec<(String, ScriptedSource)> = Vec::new();
-        let sources = scripted_source_refs(&empty_sources);
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
-        // The needs-attention surface still shows the auto-resolved item...
+        // The item is already surfaced in the needs-attention inbox.
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
             "valve:approve:wi-1",
             "Approve wi-1",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        // ...but the plane's engine already auto-resolved wi-1's approve gate.
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+
+        // The plane's engine has now auto-resolved wi-1's approve gate.
         let decisions = SimulatedDecisionsPort::returning(AutonomousAudit::new(
             vec![AutonomousDecision::new(
                 "wi-1",
@@ -3243,21 +3254,26 @@ mod tests {
             )],
             Vec::new(),
         ));
+        let empty_sources: Vec<(String, ScriptedSource)> = Vec::new();
+        let sources = scripted_source_refs(&empty_sources);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
 
-        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
-            &mut store,
-            "2026-07-17T00:00:00Z",
-            &mut factory_port,
-            &mut work_item_port,
-            &sources,
-            &needs_attention,
-            &decisions,
-        );
+        let events = {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                &mut store,
+                "2026-07-17T00:00:01Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &sources,
+                &needs_attention,
+                &decisions,
+            );
+            // A CHEAP refresh (poll_sources = false) still runs the reflection.
+            refreshed_events(sink.refresh_events(false))?
+        };
 
-        let events = refreshed_events(sink.refresh_events(true))?;
-
-        // The reflection ran as part of the live refresh: the item appeared then
-        // was resolved on the same pass, so the attention inbox is empty.
+        // The auto-resolved item left the inbox on the cheap refresh.
         assert!(project_attention(&events).is_empty());
         Ok(())
     }
