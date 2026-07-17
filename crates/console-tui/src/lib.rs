@@ -19,11 +19,12 @@
 
 use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
-    LaneColumn, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome, PendingValve,
-    RejectMode, SettingRow, TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay,
-    TuiScreenModel, TuiView, ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows,
-    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+    ApplicationError, AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettingsRead,
+    FocusPane, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome,
+    OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow, TimelineEntry, TuiInteraction,
+    TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
+    build_tui_model_for_state, dispatcher_setting_rows, reduce_tui_interaction,
+    resolve_command_palette_action, resolve_dispatcher_setting_edit,
     resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
@@ -372,6 +373,21 @@ pub fn key_event_to_terminal_input(
             'n',
         ),
         KeyCode::Char('s') => move_status_open_input(model),
+        KeyCode::Char('g') => override_open_input(
+            model,
+            DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear),
+            'g',
+        ),
+        KeyCode::Char('f') => override_open_input(
+            model,
+            DispatcherOverride::ReviewFixCap(OverrideInt::Clear),
+            'f',
+        ),
+        KeyCode::Char('k') => override_open_input(
+            model,
+            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear),
+            'k',
+        ),
         KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
@@ -614,6 +630,28 @@ fn valve_open_input(
         if model.selected_work_item_id().is_some() {
             return Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenValveConfirm(valve),
+            ));
+        }
+        return None;
+    }
+    text_input(character, overlay)
+}
+
+/// A per-item override key (`g`/`f`/`k`): with no overlay open and a selected
+/// work-item (Attention or drilled-in lane), open the valve-confirm modal staging
+/// the given override valve at its `clear` starting value; on a view without a
+/// selected work-item it is inert; behind an open text overlay it is a literal
+/// character.
+fn override_open_input(
+    model: &TuiScreenModel,
+    override_dial: DispatcherOverride,
+    character: char,
+) -> Option<TuiTerminalInput> {
+    let overlay = model.overlay();
+    if matches!(overlay, TuiOverlay::None) {
+        if model.selected_work_item_id().is_some() {
+            return Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenValveConfirm(PendingValve::SetOverride(override_dial)),
             ));
         }
         return None;
@@ -924,7 +962,7 @@ fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer
         Line::from(format!("{} work-item", valve.valve_label())),
         Line::from(format!("Target: {work_item}")),
     ];
-    if let Some(option) = valve.option_label() {
+    if let Some(option) = valve.option_display() {
         lines.push(Line::from(format!(
             "Policy/mode: {option}  (up/down to change)"
         )));
@@ -993,15 +1031,26 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
                 Line::from(
                     "s            move the selected work-item to a status it may be driven to",
                 ),
-                Line::from("             (pending-approval -> ready, acceptance -> done,"),
                 Line::from(
-                    "              blocked -> ready/backlog; up/down change target, Enter confirms)",
+                    "             (any pre-terminal status: backlog / ready / active / blocked;",
+                ),
+                Line::from(
+                    "              plus approve -> ready, accept -> done, resolve-blocked; `done` is",
+                ),
+                Line::from(
+                    "              reached only via accept; up/down change target, Enter confirms)",
                 ),
                 Line::from(
                     "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
                 ),
                 Line::from(
                     "m / n        set-admission / set-acceptance override for the selected work-item",
+                ),
+                Line::from(
+                    "g / f / k    per-item override of merge_on_review_cap / review_fix_cap /",
+                ),
+                Line::from(
+                    "              acceptance_rework_cap (up/down cycle the value, incl. `clear`)",
                 ),
             ]
         }
@@ -1386,9 +1435,10 @@ mod tests {
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
     use console_application::{
-        AttentionDetail, AttentionItem, DispatcherSettings, DispatcherSettingsRead, FocusPane,
-        LaneFocus, OperatorAction, OperatorActionOutcome, PendingValve, RejectMode, TimelineEntry,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
+        DispatcherSettingsRead, FocusPane, LaneFocus, OperatorAction, OperatorActionOutcome,
+        OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
         build_tui_model_for_state, reduce_tui_interaction,
     };
     use console_domain::{CommandType, ConsoleEvent, EventType};
@@ -3128,14 +3178,25 @@ mod tests {
                 TuiInteraction::OpenValveConfirm(PendingValve::Approve)
             ))
         );
-        // `s` stages the move-status valve at the first drivable target.
+        // `s` stages the move-status valve at the first drivable target -- now the
+        // first pre-terminal status (backlog), with up/down cycling on to ready
+        // (which still routes through approve).
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Char('s')), &model),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenValveConfirm(PendingValve::MoveStatus {
                     from: Lane::PendingApproval,
-                    to: Lane::Ready,
+                    to: Lane::Backlog,
                 })
+            ))
+        );
+        // A per-item override key stages the override valve at its `clear` start.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('f')), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenValveConfirm(PendingValve::SetOverride(
+                    DispatcherOverride::ReviewFixCap(OverrideInt::Clear)
+                ))
             ))
         );
     }
@@ -3203,16 +3264,25 @@ mod tests {
 
     #[test]
     fn move_status_key_is_inert_without_a_drivable_target_and_literal_in_a_text_overlay() {
-        // Drilled into the ready lane, whose items have no operator-drivable
-        // onward transition, so `s` is inert.
-        let ready = build_tui_model_for_state(
-            &lane_render_events(),
+        // Drilled into the done lane, whose shipped item has no operator-drivable
+        // onward move, so `s` is inert (the picker never un-ships a done item).
+        let done_events = [lane_event(
+            "evt_done",
+            "console-done",
+            Lane::Done,
+            None,
+            "a0",
+            "done",
+        )];
+        let done = build_tui_model_for_state(
+            &done_events,
             &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
-                .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+                .with_lane_focus(LaneFocus::Lane(Lane::Done))
+                .with_selected_lane_item_index(0)
                 .with_focus(FocusPane::Content),
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::Char('s')), &ready),
+            key_event_to_terminal_input(key(KeyCode::Char('s')), &done),
             None
         );
         // Behind a text overlay `s` is a literal character.
@@ -3222,6 +3292,78 @@ mod tests {
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Char('s')), &search),
             Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('s')))
+        );
+    }
+
+    #[test]
+    fn override_keys_are_inert_without_a_selection_and_literal_in_a_text_overlay() {
+        // A view with no selected work-item makes g/f/k inert.
+        let events = demo_events();
+        let non_item = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+        );
+        for code in ['g', 'f', 'k'] {
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char(code)), &non_item),
+                None
+            );
+        }
+        // Behind a text overlay an override key is a literal character.
+        let search = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('g')), &search),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('g')))
+        );
+    }
+
+    #[test]
+    fn override_keys_stage_each_setting_and_confirming_persists_the_override_command() {
+        // g/f/k stage the three per-item cap overrides at their `clear` start.
+        let attention = attention_model(TuiOverlay::None);
+        for (code, dial) in [
+            (
+                'g',
+                DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear),
+            ),
+            ('f', DispatcherOverride::ReviewFixCap(OverrideInt::Clear)),
+            (
+                'k',
+                DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear),
+            ),
+        ] {
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char(code)), &attention),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::OpenValveConfirm(PendingValve::SetOverride(dial))
+                ))
+            );
+        }
+        // Confirming a staged override persists the set-dispatcher-override command
+        // carrying the setting and value payload.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(
+                    OverrideInt::Value(3),
+                )),
+            },
+        );
+        let step = step_tui_runtime(
+            &state,
+            &demo_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            persisted_command(step.effect()).map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::WorkItemSetDispatcherOverrideRequested)
+        );
+        assert_eq!(
+            persisted_payload(step.effect()),
+            Some(r#"{"setting":"review_fix_cap","value":3}"#)
         );
     }
 
@@ -3247,6 +3389,29 @@ mod tests {
         let lanes_help = render_to_text(&lanes, 120, 72).unwrap_or_default();
         assert!(lanes_help.contains("move the selected work-item to a status"));
         assert!(lanes_help.contains("select an individual work-item"));
+        // The broadened move set and the three per-item override keys are named.
+        assert!(lanes_help.contains("any pre-terminal status"));
+        assert!(lanes_help.contains("per-item override of merge_on_review_cap"));
+    }
+
+    #[test]
+    fn render_valve_confirm_shows_the_override_dial_value() {
+        // The per-item override modal renders its dynamic `key = value` dial via
+        // option_display (the `'static` option_label path cannot carry the int).
+        let model = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(
+                        OverrideInt::Value(4),
+                    )),
+                },
+            ),
+        );
+        let rendered = render_to_text(&model, 96, 24).unwrap_or_default();
+        assert!(rendered.contains("Set override work-item"));
+        assert!(rendered.contains("review_fix_cap = 4"));
     }
 
     #[test]

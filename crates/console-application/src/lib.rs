@@ -215,6 +215,12 @@ pub enum PendingValve {
         /// The dialed-in target lane, cycled among the operator-drivable targets.
         to: Lane,
     },
+    /// The per-item override valve: set or clear ONE of the three overridable cap
+    /// settings (`merge_on_review_cap` / `review_fix_cap` / `acceptance_rework_cap`)
+    /// on the selected work-item, cycling the dialed-in value including a
+    /// `clear`-to-inherit-global option. It maps onto the orchestrator's per-cap
+    /// override actions -- never a console-side ledger write.
+    SetOverride(DispatcherOverride),
 }
 
 impl PendingValve {
@@ -228,19 +234,33 @@ impl PendingValve {
             Self::SetAdmission(_policy) => "Set admission",
             Self::SetAcceptance(_policy) => "Set acceptance",
             Self::MoveStatus { .. } => "Move status",
+            Self::SetOverride(_dial) => "Set override",
         }
     }
 
     #[must_use]
     /// The dialed-in mode/policy/target label for a payload valve, or `None` for
-    /// the payload-free approve/accept valves.
+    /// the payload-free approve/accept valves. The per-item override valve renders
+    /// a dynamic value string, so it returns `None` here and is handled by
+    /// [`Self::option_display`].
     pub const fn option_label(&self) -> Option<&'static str> {
         match self {
-            Self::Approve | Self::Accept => None,
+            Self::Approve | Self::Accept | Self::SetOverride(_) => None,
             Self::Reject(mode) => Some(mode.as_str()),
             Self::SetAdmission(policy) => Some(policy.label()),
             Self::SetAcceptance(policy) => Some(policy.label()),
             Self::MoveStatus { to, .. } => Some(to.label()),
+        }
+    }
+
+    #[must_use]
+    /// The dialed-in option as an owned display string, for every payload valve
+    /// (including the per-item override, whose value is dynamic and so has no
+    /// `'static` label). `None` for the payload-free approve/accept valves.
+    pub fn option_display(&self) -> Option<String> {
+        match self {
+            Self::SetOverride(dial) => Some(dial.option_display()),
+            _other => self.option_label().map(str::to_owned),
         }
     }
 
@@ -252,7 +272,7 @@ impl PendingValve {
     }
 
     #[must_use]
-    /// This valve with its mode/policy/target rotated one step (forward or
+    /// This valve with its mode/policy/target/value rotated one step (forward or
     /// backward). The payload-free approve/accept valves are returned unchanged.
     pub fn cycled(self, forward: bool) -> Self {
         match self {
@@ -268,26 +288,190 @@ impl PendingValve {
                 from,
                 to: rotate(status_move_targets(from), to, forward),
             },
+            Self::SetOverride(dial) => Self::SetOverride(dial.cycled(forward)),
         }
     }
 }
 
-/// The operator-drivable target lanes an item may be moved to from `from`,
-/// mapping each to a real orchestrator transition action.
+/// One of the three per-item override valves, paired with its dialed-in value.
 ///
-/// The set is deliberately narrow: `pending-approval -> ready` (approve),
-/// `acceptance -> done` (accept), and `blocked -> ready | backlog`
-/// (resolve-blocked). The corrective `acceptance -> active | backlog` reject
-/// routes are NOT offered here -- reject stays on its own `r` valve, since it
-/// reverts a merged change and is warned as destructive. A lane with no
-/// operator-drivable target returns an empty slice, so the move-status valve
-/// never opens on it.
+/// Each maps onto the orchestrator's named per-cap override action; a `Clear`
+/// value clears the per-item label back to inherit-global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatcherOverride {
+    /// The `merge_on_review_cap` boolean override.
+    MergeOnReviewCap(OverrideBool),
+    /// The `review_fix_cap` positive-integer override.
+    ReviewFixCap(OverrideInt),
+    /// The `acceptance_rework_cap` positive-integer override.
+    AcceptanceReworkCap(OverrideInt),
+}
+
+/// The dialed-in value of a boolean per-item override: on, off, or cleared
+/// (inherit the global default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverrideBool {
+    /// Override the item to `true`.
+    On,
+    /// Override the item to `false`.
+    Off,
+    /// Clear the per-item override, inheriting the global default.
+    Clear,
+}
+
+impl OverrideBool {
+    /// This value cycled one step (forward `On -> Off -> Clear -> On`).
+    #[must_use]
+    const fn cycled(self, forward: bool) -> Self {
+        match (self, forward) {
+            (Self::On, true) | (Self::Clear, false) => Self::Off,
+            (Self::Off, true) | (Self::On, false) => Self::Clear,
+            (Self::Clear, true) | (Self::Off, false) => Self::On,
+        }
+    }
+}
+
+/// The dialed-in value of a positive-integer per-item override: a value in
+/// `1..=INT_OVERRIDE_MAX`, or cleared (inherit the global default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverrideInt {
+    /// Override the item to this positive integer.
+    Value(u32),
+    /// Clear the per-item override, inheriting the global default.
+    Clear,
+}
+
+/// The largest per-item integer override the dial proposes; forward past it wraps
+/// back to `Clear`. The console owns no cap policy -- the orchestrator is the
+/// authority on legality -- so this is only the operator-facing dial range.
+const INT_OVERRIDE_MAX: u32 = 9;
+
+impl OverrideInt {
+    /// This value cycled one step. Forward walks `Clear -> 1 -> 2 -> ... ->
+    /// INT_OVERRIDE_MAX -> Clear`; backward reverses. Values stay positive
+    /// (`>= 1`), matching the orchestrator's positive-int contract.
+    #[must_use]
+    const fn cycled(self, forward: bool) -> Self {
+        match (self, forward) {
+            (Self::Clear, true) => Self::Value(1),
+            (Self::Clear, false) => Self::Value(INT_OVERRIDE_MAX),
+            (Self::Value(value), true) if value >= INT_OVERRIDE_MAX => Self::Clear,
+            (Self::Value(value), true) => Self::Value(value + 1),
+            (Self::Value(value), false) if value <= 1 => Self::Clear,
+            (Self::Value(value), false) => Self::Value(value - 1),
+        }
+    }
+}
+
+impl DispatcherOverride {
+    /// The orchestrator `dispatcher.*` key this override targets.
+    #[must_use]
+    pub const fn setting_key(&self) -> &'static str {
+        match self {
+            Self::MergeOnReviewCap(_value) => "merge_on_review_cap",
+            Self::ReviewFixCap(_value) => "review_fix_cap",
+            Self::AcceptanceReworkCap(_value) => "acceptance_rework_cap",
+        }
+    }
+
+    /// The orchestrator `drive` action verb this override rides.
+    #[must_use]
+    pub const fn action_verb(&self) -> &'static str {
+        match self {
+            Self::MergeOnReviewCap(_value) => "set-merge-on-review-cap",
+            Self::ReviewFixCap(_value) => "set-review-fix-cap",
+            Self::AcceptanceReworkCap(_value) => "set-acceptance-rework-cap",
+        }
+    }
+
+    /// The dialed-in value as the action-id's trailing segment: `true`/`false`
+    /// for a bool, the decimal digits for an int, and `clear` for either's clear.
+    #[must_use]
+    pub fn value_literal(&self) -> String {
+        match self {
+            Self::MergeOnReviewCap(OverrideBool::On) => "true".to_owned(),
+            Self::MergeOnReviewCap(OverrideBool::Off) => "false".to_owned(),
+            Self::MergeOnReviewCap(OverrideBool::Clear)
+            | Self::ReviewFixCap(OverrideInt::Clear)
+            | Self::AcceptanceReworkCap(OverrideInt::Clear) => "clear".to_owned(),
+            Self::ReviewFixCap(OverrideInt::Value(value))
+            | Self::AcceptanceReworkCap(OverrideInt::Value(value)) => value.to_string(),
+        }
+    }
+
+    /// The dialed-in value as the `{ setting, value }` payload's `value` field: a
+    /// JSON bool, a JSON number, or JSON `null` for a clear.
+    #[must_use]
+    pub fn payload_value(&self) -> serde_json::Value {
+        match self {
+            Self::MergeOnReviewCap(OverrideBool::On) => serde_json::Value::Bool(true),
+            Self::MergeOnReviewCap(OverrideBool::Off) => serde_json::Value::Bool(false),
+            Self::MergeOnReviewCap(OverrideBool::Clear)
+            | Self::ReviewFixCap(OverrideInt::Clear)
+            | Self::AcceptanceReworkCap(OverrideInt::Clear) => serde_json::Value::Null,
+            Self::ReviewFixCap(OverrideInt::Value(value))
+            | Self::AcceptanceReworkCap(OverrideInt::Value(value)) => {
+                serde_json::Value::Number((*value).into())
+            }
+        }
+    }
+
+    /// The operator-facing `key = value` string the confirm modal renders (with
+    /// `on`/`off`/`clear` for a bool and the number or `clear` for an int).
+    #[must_use]
+    pub fn option_display(&self) -> String {
+        let value = match self {
+            Self::MergeOnReviewCap(OverrideBool::On) => "on".to_owned(),
+            Self::MergeOnReviewCap(OverrideBool::Off) => "off".to_owned(),
+            Self::MergeOnReviewCap(OverrideBool::Clear)
+            | Self::ReviewFixCap(OverrideInt::Clear)
+            | Self::AcceptanceReworkCap(OverrideInt::Clear) => "clear".to_owned(),
+            Self::ReviewFixCap(OverrideInt::Value(value))
+            | Self::AcceptanceReworkCap(OverrideInt::Value(value)) => value.to_string(),
+        };
+        format!("{} = {value}", self.setting_key())
+    }
+
+    /// This override with its value cycled one step (forward or backward).
+    #[must_use]
+    pub const fn cycled(self, forward: bool) -> Self {
+        match self {
+            Self::MergeOnReviewCap(value) => Self::MergeOnReviewCap(value.cycled(forward)),
+            Self::ReviewFixCap(value) => Self::ReviewFixCap(value.cycled(forward)),
+            Self::AcceptanceReworkCap(value) => Self::AcceptanceReworkCap(value.cycled(forward)),
+        }
+    }
+}
+
+/// The operator-drivable target lanes an item may be moved to from `from`, each
+/// mapping to a real orchestrator action ([`move_status_outcome`]).
+///
+/// Every pre-terminal pipeline status is reachable via the guarded broad
+/// `move:<id>:<target>` action -- `backlog`, `ready`, `active`, `blocked` (minus
+/// `from` itself) -- with a SEMANTIC valve preferred where one exists:
+/// `pending-approval -> ready` uses approve, and `blocked -> ready | backlog`
+/// uses resolve-blocked. `done` is reachable ONLY from `acceptance` via accept
+/// (the ship-guard: no broad move ever targets `done`), and a `done` item offers
+/// no onward move at all (the picker never surfaces un-shipping). The corrective
+/// `acceptance -> active | backlog` reject routes are NOT offered here -- reject
+/// stays on its own `r` valve, since it reverts a merged change and is warned as
+/// destructive. A lane with no operator-drivable target returns an empty slice,
+/// so the move-status valve never opens on it.
 const fn status_move_targets(from: Lane) -> &'static [Lane] {
     match from {
-        Lane::PendingApproval => &[Lane::Ready],
-        Lane::Acceptance => &[Lane::Done],
-        Lane::Blocked => &[Lane::Ready, Lane::Backlog],
-        Lane::Backlog | Lane::Ready | Lane::Active | Lane::Done => &[],
+        Lane::Backlog => &[Lane::Ready, Lane::Active, Lane::Blocked],
+        Lane::PendingApproval => &[Lane::Backlog, Lane::Ready, Lane::Active, Lane::Blocked],
+        Lane::Ready => &[Lane::Backlog, Lane::Active, Lane::Blocked],
+        Lane::Active => &[Lane::Backlog, Lane::Ready, Lane::Blocked],
+        Lane::Acceptance => &[
+            Lane::Backlog,
+            Lane::Ready,
+            Lane::Active,
+            Lane::Blocked,
+            Lane::Done,
+        ],
+        Lane::Blocked => &[Lane::Backlog, Lane::Ready, Lane::Active],
+        Lane::Done => &[],
     }
 }
 
@@ -1068,6 +1252,16 @@ pub enum ApplicationError {
     /// `work_item.resolve_blocked_requested` command carried a payload whose
     /// `target_status` was absent or not one of {ready, backlog}.
     InvalidResolveBlockedTarget,
+    /// Invalid move target variant -- a `work_item.move_requested` command carried
+    /// a payload whose `target_status` was absent or not one of the pre-terminal
+    /// pipeline statuses {backlog, ready, blocked, active}.
+    InvalidMoveTarget,
+    /// Invalid dispatcher-override variant -- a
+    /// `work_item.set_dispatcher_override_requested` command named a setting that
+    /// admits no per-item override (`wip_cap`) or is served by a policy dial
+    /// (`auto_approve_ready` / `acceptance_mode`), named an unknown setting, or
+    /// carried a `value` of the wrong type (or a non-positive int) for its cap.
+    InvalidDispatcherOverrideSetting,
     /// Invalid dispatcher-setting payload variant -- a
     /// `config.dispatcher_setting_set` command carried a payload that was
     /// malformed, missing a required `repo` / `setting` / `value` field, named an
@@ -2420,15 +2614,23 @@ fn valve_outcome(
         PendingValve::MoveStatus { from, to } => {
             move_status_outcome(from, to, work_item_id, requested_by)
         }
+        PendingValve::SetOverride(override_dial) => Some(work_item_override_outcome(
+            work_item_id,
+            override_dial,
+            requested_by,
+        )),
     }
 }
 
 /// Map a `from -> to` move onto the persist outcome for the real orchestrator
-/// transition it drives: `approve` (`pending-approval -> ready`), `accept`
-/// (`acceptance -> done`), or `resolve-blocked` (`blocked -> ready | backlog`).
-/// `None` for any pair that is not an operator-drivable transition -- the
-/// move-status valve only ever stages a pair produced by [`status_move_targets`],
-/// so this never rejects a valve the operator could actually open.
+/// transition it drives. A SEMANTIC valve wins where one exists: `approve`
+/// (`pending-approval -> ready`), `accept` (`acceptance -> done`), and
+/// `resolve-blocked` (`blocked -> ready | backlog`). Every other pre-terminal
+/// target (`backlog`/`ready`/`active`/`blocked`) rides the guarded broad
+/// `move:<id>:<target>` action. `None` for any pair that is not an
+/// operator-drivable transition -- the move-status valve only ever stages a pair
+/// produced by [`status_move_targets`], so this never rejects a valve the
+/// operator could actually open.
 fn move_status_outcome(
     from: Lane,
     to: Lane,
@@ -2460,6 +2662,16 @@ fn move_status_outcome(
             to.label(),
             requested_by,
         )),
+        (_from, Lane::Backlog | Lane::Ready | Lane::Active | Lane::Blocked) => {
+            Some(work_item_payload_outcome(
+                "move",
+                CommandType::WorkItemMoveRequested,
+                work_item_id,
+                "target_status",
+                to.label(),
+                requested_by,
+            ))
+        }
         _other => None,
     }
 }
@@ -2918,6 +3130,170 @@ fn resolve_blocked_target_from_payload(payload_json: &str) -> ApplicationResult<
         "ready" => Ok("ready"),
         "backlog" => Ok("backlog"),
         _other => Err(ApplicationError::InvalidResolveBlockedTarget),
+    }
+}
+
+/// Handle a `work_item.move_requested` command.
+///
+/// Move relocates a work-item to a pre-terminal pipeline status: `payload_json`
+/// is `{"target_status": "backlog" | "ready" | "blocked" | "active"}`. The
+/// handler validates the work-item id, parses and validates the target, derives
+/// the guarded `move:<work-item-id>:<target>` action-id, and rides the shared
+/// orchestrator-action port and `work_item` outcome family. Thin console-side
+/// validation only -- the orchestrator's `drive` surface owns state-legality (it
+/// refuses `done`/`acceptance`/`pending-approval` targets, the ship-guard) -- and
+/// it never writes the ledger directly.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidMoveTarget`] when the payload's `target_status` is
+/// absent or not a pre-terminal pipeline status; also surfaces a port error when
+/// the port cannot produce a trustworthy outcome.
+pub fn handle_work_item_move_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let target = move_target_from_payload(payload_json)?;
+    let action_id = format!("move:{work_item_id}:{target}");
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Extract the move `target_status` from a command's persisted `payload_json`.
+///
+/// The payload is `{"target_status": "backlog" | "ready" | "blocked" |
+/// "active"}` -- the four pre-terminal pipeline statuses the orchestrator's
+/// guarded `move` action accepts. Any other shape (including a `done` /
+/// `acceptance` / `pending-approval` target the ship-guard forbids) is an
+/// [`ApplicationError::InvalidMoveTarget`].
+fn move_target_from_payload(payload_json: &str) -> ApplicationResult<&'static str> {
+    let value: serde_json::Value =
+        serde_json::from_str(payload_json).map_err(|_error| ApplicationError::InvalidMoveTarget)?;
+    let target = value
+        .get("target_status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ApplicationError::InvalidMoveTarget)?;
+    match target {
+        "backlog" => Ok("backlog"),
+        "ready" => Ok("ready"),
+        "blocked" => Ok("blocked"),
+        "active" => Ok("active"),
+        _other => Err(ApplicationError::InvalidMoveTarget),
+    }
+}
+
+/// Handle a `work_item.set_dispatcher_override_requested` command.
+///
+/// Per-item override sets or clears ONE of the three overridable cap settings:
+/// `payload_json` is `{"setting": "<key>", "value": <json>}` where `value` is a
+/// bool for `merge_on_review_cap`, a positive int for `review_fix_cap` /
+/// `acceptance_rework_cap`, or `null` to clear the override back to
+/// inherit-global. The handler validates the work-item id, maps the setting onto
+/// its orchestrator action verb, serializes the value (`clear` for a null), and
+/// rides the shared orchestrator-action port and `work_item` outcome family. It
+/// rejects `wip_cap` (no per-item override) and `auto_approve_ready` /
+/// `acceptance_mode` (served by the admission / acceptance policy dials), so each
+/// overridable setting has exactly one console command.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidDispatcherOverrideSetting`] when `setting` is
+/// absent/unknown/not overridable by this command or `value` is the wrong type
+/// (or a non-positive int) for its cap; also surfaces a port error.
+pub fn handle_work_item_set_dispatcher_override_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let action_id = dispatcher_override_action_id(work_item_id, payload_json)?;
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Derive the `set-<cap>:<work-item-id>:<value>` action-id from a per-item
+/// override command's `{ setting, value }` payload, mapping each of the three cap
+/// settings onto its orchestrator verb and rejecting any other setting.
+fn dispatcher_override_action_id(
+    work_item_id: &str,
+    payload_json: &str,
+) -> ApplicationResult<String> {
+    let value: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|_error| ApplicationError::InvalidDispatcherOverrideSetting)?;
+    let setting = value
+        .get("setting")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ApplicationError::InvalidDispatcherOverrideSetting)?;
+    let raw_value = value
+        .get("value")
+        .ok_or(ApplicationError::InvalidDispatcherOverrideSetting)?;
+    let (verb, literal) = match setting {
+        "merge_on_review_cap" => ("set-merge-on-review-cap", bool_override_literal(raw_value)?),
+        "review_fix_cap" => ("set-review-fix-cap", int_override_literal(raw_value)?),
+        "acceptance_rework_cap" => (
+            "set-acceptance-rework-cap",
+            int_override_literal(raw_value)?,
+        ),
+        _other => return Err(ApplicationError::InvalidDispatcherOverrideSetting),
+    };
+    Ok(format!("{verb}:{work_item_id}:{literal}"))
+}
+
+/// The action-id value segment for a boolean cap override: `true`/`false`, or
+/// `clear` for a JSON null (clear-to-inherit). Any other JSON type is invalid.
+fn bool_override_literal(value: &serde_json::Value) -> ApplicationResult<String> {
+    if value.is_null() {
+        return Ok("clear".to_owned());
+    }
+    value
+        .as_bool()
+        .map(|flag| flag.to_string())
+        .ok_or(ApplicationError::InvalidDispatcherOverrideSetting)
+}
+
+/// The action-id value segment for an integer cap override: the positive decimal
+/// value, or `clear` for a JSON null. Zero and non-integers are invalid (the
+/// orchestrator's cap contract is a positive int).
+fn int_override_literal(value: &serde_json::Value) -> ApplicationResult<String> {
+    if value.is_null() {
+        return Ok("clear".to_owned());
+    }
+    let number = u32_from_json(value).ok_or(ApplicationError::InvalidDispatcherOverrideSetting)?;
+    if number == 0 {
+        return Err(ApplicationError::InvalidDispatcherOverrideSetting);
+    }
+    Ok(number.to_string())
+}
+
+/// Build the persist-with-payload outcome for a per-item override valve: a
+/// `work_item.set_dispatcher_override_requested` command carrying
+/// `{ "setting": "<key>", "value": <json> }`, where the value is a bool, a
+/// number, or `null` for clear-to-inherit.
+fn work_item_override_outcome(
+    work_item_id: &str,
+    override_dial: DispatcherOverride,
+    requested_by: &str,
+) -> OperatorActionOutcome {
+    let key = override_dial.setting_key();
+    let value_literal = override_dial.value_literal();
+    let command = CommandEnvelope::new(
+        format!(
+            "cmd_work_item_set_dispatcher_override_requested_{work_item_id}_{key}_{value_literal}"
+        ),
+        CommandType::WorkItemSetDispatcherOverrideRequested,
+        work_item_id.to_owned(),
+        format!("{work_item_id}:work_item.set_dispatcher_override_requested:{key}={value_literal}"),
+        requested_by.to_owned(),
+    );
+    let mut payload = serde_json::Map::new();
+    let _ = payload.insert(
+        "setting".to_owned(),
+        serde_json::Value::String(key.to_owned()),
+    );
+    let _ = payload.insert("value".to_owned(), override_dial.payload_value());
+    OperatorActionOutcome::PersistCommandWithPayload {
+        command,
+        payload_json: serde_json::Value::Object(payload).to_string(),
     }
 }
 
@@ -4582,22 +4958,24 @@ mod tests {
     use super::{
         ApplicationError, AttentionDetail, AttentionEvent, AttentionItem, AutonomousAudit,
         AutonomousDecisionsPort, ConfigCommandOutcome, DispatcherFactoryDrainPort,
-        DispatcherOrchestratorActionPort, DispatcherSettingRow, DispatcherSettingSetRequest,
-        DispatcherSettingWrite, DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead,
-        FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        FocusPane, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
-        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, PendingValve, RejectMode, SettingRow, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count,
-        handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
-        handle_work_item_accept_command, handle_work_item_approve_command,
+        DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
+        DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
+        DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
+        FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, JournalAutonomousDecisionsPort,
+        LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome,
+        OrchestratorActionPort, OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve,
+        RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, build_tui_model, build_tui_model_for_state, dispatcher_setting_rows,
+        drilldown_item_count, handle_config_dispatcher_setting_set_command,
+        handle_factory_drain_command, handle_work_item_accept_command,
+        handle_work_item_approve_command, handle_work_item_move_command,
         handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
         handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-        project_attention, project_lane_board, reduce_tui_interaction,
-        resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        handle_work_item_set_dispatcher_override_command, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
         resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
+        work_item_override_outcome,
     };
 
     #[test]
@@ -7333,6 +7711,194 @@ mod tests {
         assert_eq!(port.observed_action_ids, [] as [String; 0]);
     }
 
+    fn move_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_move".to_owned(),
+            CommandType::WorkItemMoveRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.move_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn move_handler_maps_each_pre_terminal_target_onto_the_move_action_id()
+    -> super::ApplicationResult<()> {
+        for (payload, expected) in [
+            (r#"{"target_status":"backlog"}"#, "move:wi-1:backlog"),
+            (r#"{"target_status":"ready"}"#, "move:wi-1:ready"),
+            (r#"{"target_status":"blocked"}"#, "move:wi-1:blocked"),
+            (r#"{"target_status":"active"}"#, "move:wi-1:active"),
+        ] {
+            let command = move_command();
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            let outcome = handle_work_item_move_command(&command, payload, &mut port)?;
+            assert_eq!(port.observed_action_ids, [expected]);
+            assert_eq!(outcome.command_status(), "completed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn move_handler_rejects_ship_guarded_and_malformed_targets_and_empty_ids() {
+        // `done`/`acceptance`/`pending-approval` are the ship-guarded targets the
+        // orchestrator refuses; a malformed or absent target is likewise refused,
+        // all before the port is invoked.
+        for payload in [
+            r#"{"target_status":"done"}"#,
+            r#"{"target_status":"acceptance"}"#,
+            r#"{"target_status":"pending-approval"}"#,
+            r#"{"target_status":42}"#,
+            "{}",
+            "not json",
+        ] {
+            let command = move_command();
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            assert_eq!(
+                handle_work_item_move_command(&command, payload, &mut port),
+                Err(ApplicationError::InvalidMoveTarget)
+            );
+            assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        }
+        let blank = CommandEnvelope::new(
+            "cmd_move".to_owned(),
+            CommandType::WorkItemMoveRequested,
+            "   ".to_owned(),
+            "blank:work_item.move_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        assert_eq!(
+            handle_work_item_move_command(&blank, r#"{"target_status":"ready"}"#, &mut port),
+            Err(ApplicationError::EmptyWorkItemId)
+        );
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    fn override_command() -> CommandEnvelope {
+        CommandEnvelope::new(
+            "cmd_override".to_owned(),
+            CommandType::WorkItemSetDispatcherOverrideRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_dispatcher_override_requested".to_owned(),
+            "operator".to_owned(),
+        )
+    }
+
+    #[test]
+    fn dispatcher_override_handler_maps_each_cap_setting_and_clear_onto_its_action_id()
+    -> super::ApplicationResult<()> {
+        for (payload, expected) in [
+            (
+                r#"{"setting":"merge_on_review_cap","value":true}"#,
+                "set-merge-on-review-cap:wi-1:true",
+            ),
+            (
+                r#"{"setting":"merge_on_review_cap","value":false}"#,
+                "set-merge-on-review-cap:wi-1:false",
+            ),
+            (
+                r#"{"setting":"merge_on_review_cap","value":null}"#,
+                "set-merge-on-review-cap:wi-1:clear",
+            ),
+            (
+                r#"{"setting":"review_fix_cap","value":3}"#,
+                "set-review-fix-cap:wi-1:3",
+            ),
+            (
+                r#"{"setting":"review_fix_cap","value":null}"#,
+                "set-review-fix-cap:wi-1:clear",
+            ),
+            (
+                r#"{"setting":"acceptance_rework_cap","value":2}"#,
+                "set-acceptance-rework-cap:wi-1:2",
+            ),
+            (
+                r#"{"setting":"acceptance_rework_cap","value":null}"#,
+                "set-acceptance-rework-cap:wi-1:clear",
+            ),
+        ] {
+            let command = override_command();
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            let outcome =
+                handle_work_item_set_dispatcher_override_command(&command, payload, &mut port)?;
+            assert_eq!(port.observed_action_ids, [expected]);
+            assert_eq!(outcome.command_status(), "completed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dispatcher_override_handler_rejects_non_overridable_settings_bad_values_and_empty_ids() {
+        // `wip_cap` admits no per-item override; `auto_approve_ready` /
+        // `acceptance_mode` are served by the policy dials; an unknown setting, a
+        // wrong-typed value, and a non-positive int are all refused before the port.
+        for payload in [
+            r#"{"setting":"wip_cap","value":5}"#,
+            r#"{"setting":"auto_approve_ready","value":true}"#,
+            r#"{"setting":"acceptance_mode","value":"ai-only"}"#,
+            r#"{"setting":"nonsense","value":1}"#,
+            r#"{"setting":"merge_on_review_cap","value":3}"#,
+            r#"{"setting":"review_fix_cap","value":true}"#,
+            r#"{"setting":"review_fix_cap","value":0}"#,
+            r#"{"value":1}"#,
+            "not json",
+        ] {
+            let command = override_command();
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            assert_eq!(
+                handle_work_item_set_dispatcher_override_command(&command, payload, &mut port),
+                Err(ApplicationError::InvalidDispatcherOverrideSetting)
+            );
+            assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        }
+        let blank = CommandEnvelope::new(
+            "cmd_override".to_owned(),
+            CommandType::WorkItemSetDispatcherOverrideRequested,
+            "   ".to_owned(),
+            "blank:work_item.set_dispatcher_override_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        assert_eq!(
+            handle_work_item_set_dispatcher_override_command(
+                &blank,
+                r#"{"setting":"review_fix_cap","value":3}"#,
+                &mut port
+            ),
+            Err(ApplicationError::EmptyWorkItemId)
+        );
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn dispatcher_override_valve_outcome_carries_the_setting_and_value_payload() {
+        // The valve builds a persist-with-payload outcome the handler reads back.
+        let outcome = work_item_override_outcome(
+            "wi-1",
+            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Value(4)),
+            "operator",
+        );
+        assert!(matches!(
+            &outcome,
+            OperatorActionOutcome::PersistCommandWithPayload { command, payload_json }
+                if command.command_type() == &CommandType::WorkItemSetDispatcherOverrideRequested
+                    && payload_json
+                        == r#"{"setting":"acceptance_rework_cap","value":4}"#
+        ));
+        // A cleared override serializes its value as JSON null.
+        let cleared = work_item_override_outcome(
+            "wi-1",
+            DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear),
+            "operator",
+        );
+        assert!(matches!(
+            &cleared,
+            OperatorActionOutcome::PersistCommandWithPayload { payload_json, .. }
+                if payload_json == r#"{"setting":"merge_on_review_cap","value":null}"#
+        ));
+    }
+
     #[test]
     fn reject_handler_maps_rework_payload_onto_the_reject_action_id() -> super::ApplicationResult<()>
     {
@@ -8738,12 +9304,129 @@ mod tests {
         };
         assert_eq!(move_valve.valve_label(), "Move status");
         assert_eq!(move_valve.option_label(), Some("ready"));
+        assert_eq!(move_valve.option_display(), Some("ready".to_owned()));
         assert!(!move_valve.is_destructive());
+
+        // The per-item override valve labels itself, carries no `'static`
+        // option_label (its value is dynamic), renders its value via
+        // option_display, and is never destructive.
+        let override_valve =
+            PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Value(3)));
+        assert_eq!(override_valve.valve_label(), "Set override");
+        assert_eq!(override_valve.option_label(), None);
+        assert_eq!(
+            override_valve.option_display(),
+            Some("review_fix_cap = 3".to_owned())
+        );
+        assert!(!override_valve.is_destructive());
     }
 
     #[test]
-    fn move_status_valve_cycles_targets_and_status_move_targets_are_operator_drivable() {
-        // Blocked offers ready and backlog; up/down wraps between them.
+    fn dispatcher_override_maps_each_setting_onto_its_verb_literal_payload_and_display() {
+        // merge_on_review_cap is a bool: on/off/clear.
+        let merge_on = DispatcherOverride::MergeOnReviewCap(OverrideBool::On);
+        assert_eq!(merge_on.setting_key(), "merge_on_review_cap");
+        assert_eq!(merge_on.action_verb(), "set-merge-on-review-cap");
+        assert_eq!(merge_on.value_literal(), "true");
+        assert_eq!(merge_on.payload_value(), serde_json::Value::Bool(true));
+        assert_eq!(merge_on.option_display(), "merge_on_review_cap = on");
+        let merge_off = DispatcherOverride::MergeOnReviewCap(OverrideBool::Off);
+        assert_eq!(merge_off.value_literal(), "false");
+        assert_eq!(merge_off.payload_value(), serde_json::Value::Bool(false));
+        assert_eq!(merge_off.option_display(), "merge_on_review_cap = off");
+        let merge_clear = DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear);
+        assert_eq!(merge_clear.value_literal(), "clear");
+        assert_eq!(merge_clear.payload_value(), serde_json::Value::Null);
+        assert_eq!(merge_clear.option_display(), "merge_on_review_cap = clear");
+
+        // review_fix_cap / acceptance_rework_cap are positive ints or clear.
+        let review = DispatcherOverride::ReviewFixCap(OverrideInt::Value(5));
+        assert_eq!(review.setting_key(), "review_fix_cap");
+        assert_eq!(review.action_verb(), "set-review-fix-cap");
+        assert_eq!(review.value_literal(), "5");
+        assert_eq!(review.payload_value(), serde_json::Value::Number(5.into()));
+        assert_eq!(review.option_display(), "review_fix_cap = 5");
+        let rework = DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear);
+        assert_eq!(rework.setting_key(), "acceptance_rework_cap");
+        assert_eq!(rework.action_verb(), "set-acceptance-rework-cap");
+        assert_eq!(rework.value_literal(), "clear");
+        assert_eq!(rework.payload_value(), serde_json::Value::Null);
+        assert_eq!(rework.option_display(), "acceptance_rework_cap = clear");
+
+        // Exercise the remaining or-pattern arms: acceptance_rework_cap with a
+        // value, and review_fix_cap cleared, so every setting x value combination
+        // of the literal / payload / display mappings is covered.
+        let rework_value = DispatcherOverride::AcceptanceReworkCap(OverrideInt::Value(6));
+        assert_eq!(rework_value.value_literal(), "6");
+        assert_eq!(
+            rework_value.payload_value(),
+            serde_json::Value::Number(6.into())
+        );
+        assert_eq!(rework_value.option_display(), "acceptance_rework_cap = 6");
+        let review_clear = DispatcherOverride::ReviewFixCap(OverrideInt::Clear);
+        assert_eq!(review_clear.value_literal(), "clear");
+        assert_eq!(review_clear.payload_value(), serde_json::Value::Null);
+        assert_eq!(review_clear.option_display(), "review_fix_cap = clear");
+    }
+
+    #[test]
+    fn dispatcher_override_cycles_bool_and_positive_int_values_including_clear() {
+        // The bool dial walks on -> off -> clear -> on (forward), reverse back.
+        let on = DispatcherOverride::MergeOnReviewCap(OverrideBool::On);
+        assert_eq!(
+            on.cycled(true),
+            DispatcherOverride::MergeOnReviewCap(OverrideBool::Off)
+        );
+        assert_eq!(
+            on.cycled(true).cycled(true),
+            DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear)
+        );
+        assert_eq!(
+            on.cycled(true).cycled(true).cycled(true),
+            DispatcherOverride::MergeOnReviewCap(OverrideBool::On)
+        );
+        assert_eq!(
+            on.cycled(false),
+            DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear)
+        );
+
+        // The int dial walks clear -> 1 -> 2 -> ... -> 9 -> clear (forward),
+        // reverse back, and never proposes a non-positive value.
+        let clear = DispatcherOverride::ReviewFixCap(OverrideInt::Clear);
+        assert_eq!(
+            clear.cycled(true),
+            DispatcherOverride::ReviewFixCap(OverrideInt::Value(1))
+        );
+        assert_eq!(
+            clear.cycled(false),
+            DispatcherOverride::ReviewFixCap(OverrideInt::Value(9))
+        );
+        assert_eq!(
+            DispatcherOverride::ReviewFixCap(OverrideInt::Value(9)).cycled(true),
+            DispatcherOverride::ReviewFixCap(OverrideInt::Clear)
+        );
+        assert_eq!(
+            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Value(1)).cycled(false),
+            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)
+        );
+        assert_eq!(
+            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Value(4)).cycled(true),
+            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Value(5))
+        );
+        assert_eq!(
+            DispatcherOverride::ReviewFixCap(OverrideInt::Value(5)).cycled(false),
+            DispatcherOverride::ReviewFixCap(OverrideInt::Value(4))
+        );
+        // The override valve delegates cycling to its dial.
+        assert_eq!(
+            PendingValve::SetOverride(clear).cycled(true),
+            PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Value(1)))
+        );
+    }
+
+    #[test]
+    fn move_status_valve_cycles_targets_and_status_move_targets_are_the_pre_terminal_set() {
+        // Blocked offers backlog/ready/active; up/down walks the ordered set.
         let blocked_ready = PendingValve::MoveStatus {
             from: Lane::Blocked,
             to: Lane::Ready,
@@ -8752,7 +9435,7 @@ mod tests {
             blocked_ready.cycled(true),
             PendingValve::MoveStatus {
                 from: Lane::Blocked,
-                to: Lane::Backlog,
+                to: Lane::Active,
             }
         );
         assert_eq!(
@@ -8762,23 +9445,41 @@ mod tests {
                 to: Lane::Backlog,
             }
         );
-        // A single-target lane (pending-approval -> ready) cycles to itself.
-        let pending_ready = PendingValve::MoveStatus {
-            from: Lane::PendingApproval,
-            to: Lane::Ready,
-        };
-        assert_eq!(pending_ready.cycled(true), pending_ready);
 
-        // The drivable target sets match the orchestrator's real transitions.
-        assert_eq!(status_move_targets(Lane::PendingApproval), &[Lane::Ready]);
-        assert_eq!(status_move_targets(Lane::Acceptance), &[Lane::Done]);
+        // The drivable target sets are the pre-terminal pipeline statuses (minus
+        // the item's own lane), plus `done` only from acceptance, and nothing at
+        // all from a shipped `done` item.
+        assert_eq!(
+            status_move_targets(Lane::Backlog),
+            &[Lane::Ready, Lane::Active, Lane::Blocked]
+        );
+        assert_eq!(
+            status_move_targets(Lane::PendingApproval),
+            &[Lane::Backlog, Lane::Ready, Lane::Active, Lane::Blocked]
+        );
+        assert_eq!(
+            status_move_targets(Lane::Ready),
+            &[Lane::Backlog, Lane::Active, Lane::Blocked]
+        );
+        assert_eq!(
+            status_move_targets(Lane::Active),
+            &[Lane::Backlog, Lane::Ready, Lane::Blocked]
+        );
+        assert_eq!(
+            status_move_targets(Lane::Acceptance),
+            &[
+                Lane::Backlog,
+                Lane::Ready,
+                Lane::Active,
+                Lane::Blocked,
+                Lane::Done
+            ]
+        );
         assert_eq!(
             status_move_targets(Lane::Blocked),
-            &[Lane::Ready, Lane::Backlog]
+            &[Lane::Backlog, Lane::Ready, Lane::Active]
         );
-        for lane in [Lane::Backlog, Lane::Ready, Lane::Active, Lane::Done] {
-            assert_eq!(status_move_targets(lane), &[] as &[Lane]);
-        }
+        assert_eq!(status_move_targets(Lane::Done), &[] as &[Lane]);
     }
 
     #[test]
@@ -9021,6 +9722,7 @@ mod tests {
                 "blocked",
             ),
             lane_event("e5", "wi-act", Lane::Active, None, "a", "active"),
+            lane_event("e6", "wi-done", Lane::Done, None, "a", "done"),
         ]
     }
 
@@ -9052,9 +9754,11 @@ mod tests {
         );
         assert_eq!(clamped.selected_lane_item_index(), Some(1));
 
-        // An empty lane has no selectable item.
-        let empty =
-            build_tui_model_for_state(&events, &drilldown_state(Lane::Done, 0, TuiOverlay::None));
+        // An empty lane has no selectable item (backlog carries no fixture item).
+        let empty = build_tui_model_for_state(
+            &events,
+            &drilldown_state(Lane::Backlog, 0, TuiOverlay::None),
+        );
         assert_eq!(empty.selected_lane_item_index(), None);
         assert_eq!(empty.selected_lane_item(), None);
         assert_eq!(empty.selected_work_item_id(), None);
@@ -9093,9 +9797,10 @@ mod tests {
     }
 
     #[test]
-    fn selected_move_status_valve_offers_only_drivable_lanes() {
+    fn selected_move_status_valve_offers_the_first_pre_terminal_target() {
         let events = drilldown_events();
-        // Pending-approval -> ready is the maintainer's headline transition.
+        // A pending-approval item can move to any pre-terminal status; the valve
+        // opens staged at the first target (backlog), and up/down cycles on.
         let pending = build_tui_model_for_state(
             &events,
             &drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None),
@@ -9104,13 +9809,24 @@ mod tests {
             pending.selected_move_status_valve(),
             Some(PendingValve::MoveStatus {
                 from: Lane::PendingApproval,
-                to: Lane::Ready,
+                to: Lane::Backlog,
             })
         );
-        // A lane with no operator-drivable target offers no move-status valve.
+        // An active item now also has pre-terminal move targets (it did not
+        // before the broad move landed).
         let active =
             build_tui_model_for_state(&events, &drilldown_state(Lane::Active, 0, TuiOverlay::None));
-        assert_eq!(active.selected_move_status_valve(), None);
+        assert_eq!(
+            active.selected_move_status_valve(),
+            Some(PendingValve::MoveStatus {
+                from: Lane::Active,
+                to: Lane::Backlog,
+            })
+        );
+        // A shipped `done` item offers no onward move (the picker never un-ships).
+        let done =
+            build_tui_model_for_state(&events, &drilldown_state(Lane::Done, 0, TuiOverlay::None));
+        assert_eq!(done.selected_move_status_valve(), None);
         // No lane item selected (overview) -> no valve.
         let overview = build_tui_model_for_state(
             &events,
@@ -9241,5 +9957,126 @@ mod tests {
             resolve_valve_action(&model, "operator"),
             Err(ApplicationError::NoSelectedOperatorAction)
         );
+    }
+
+    #[test]
+    fn move_status_broad_targets_map_onto_the_move_command_with_the_target_payload()
+    -> super::ApplicationResult<()> {
+        let events = drilldown_events();
+        // pending-approval -> backlog is a broad pre-terminal move (no semantic
+        // valve for that pair), so it rides the guarded move command with the
+        // target payload rather than approve/accept/resolve-blocked.
+        let model = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::PendingApproval,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::PendingApproval,
+                        to: Lane::Backlog,
+                    },
+                },
+            ),
+        );
+        assert!(matches!(
+            resolve_valve_action(&model, "operator")?,
+            OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json }
+                if command.command_type() == &CommandType::WorkItemMoveRequested
+                    && command.aggregate_id() == "wi-a"
+                    && payload_json == r#"{"target_status":"backlog"}"#
+        ));
+        // active -> blocked is likewise a broad move.
+        let active = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::Active,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::Active,
+                        to: Lane::Blocked,
+                    },
+                },
+            ),
+        );
+        assert!(matches!(
+            resolve_valve_action(&active, "operator")?,
+            OperatorActionOutcome::PersistCommandWithPayload { ref payload_json, .. }
+                if payload_json == r#"{"target_status":"blocked"}"#
+        ));
+
+        // Cover the remaining move-outcome arms: the `ready` and `active` broad
+        // targets, and blocked -> ready via resolve-blocked (the other half of the
+        // blocked pair).
+        let cases = [
+            (
+                Lane::Active,
+                Lane::Ready,
+                "wi-act",
+                "move",
+                r#"{"target_status":"ready"}"#,
+            ),
+            (
+                Lane::PendingApproval,
+                Lane::Active,
+                "wi-a",
+                "move",
+                r#"{"target_status":"active"}"#,
+            ),
+            (
+                Lane::Blocked,
+                Lane::Ready,
+                "wi-blk",
+                "resolve_blocked",
+                r#"{"target_status":"ready"}"#,
+            ),
+        ];
+        for (from, to, item, _kind, expected_payload) in cases {
+            let model = build_tui_model_for_state(
+                &events,
+                &drilldown_state(
+                    from,
+                    0,
+                    TuiOverlay::ValveConfirm {
+                        valve: PendingValve::MoveStatus { from, to },
+                    },
+                ),
+            );
+            assert!(matches!(
+                resolve_valve_action(&model, "operator")?,
+                OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json }
+                    if command.aggregate_id() == item && payload_json == expected_payload
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn set_override_valve_resolves_to_the_override_command_for_the_selected_item()
+    -> super::ApplicationResult<()> {
+        // A staged per-item override valve resolves, through the shared valve
+        // path, into the set-dispatcher-override command for the selected item.
+        let events = drilldown_events();
+        let model = build_tui_model_for_state(
+            &events,
+            &drilldown_state(
+                Lane::PendingApproval,
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(
+                        OverrideBool::On,
+                    )),
+                },
+            ),
+        );
+        assert!(matches!(
+            resolve_valve_action(&model, "operator")?,
+            OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json }
+                if command.command_type() == &CommandType::WorkItemSetDispatcherOverrideRequested
+                    && command.aggregate_id() == "wi-a"
+                    && payload_json == r#"{"setting":"merge_on_review_cap","value":true}"#
+        ));
+        Ok(())
     }
 }

@@ -139,20 +139,21 @@ back. The focused pane's title carries a `[focus]` tag.
 | `/` | open search |
 | `:` | open the command palette (drain) |
 | `Enter` / `Space` | edit the selected **Settings** row (an ordinary recorded write — no arming ceremony) |
-| `s` | **move the selected work-item to a status** it may be driven to (pending-approval → ready, acceptance → done, blocked → ready/backlog); opens a confirm modal, `↑`/`↓` change the target, `Enter` confirms |
+| `s` | **move the selected work-item to a status** — any pre-terminal pipeline status (`backlog` / `ready` / `active` / `blocked`), plus the semantic `approve` (→ ready), `accept` (→ done), and `resolve-blocked`; opens a confirm modal, `↑`/`↓` change the target, `Enter` confirms. `done` is reached only via `accept`, and a shipped `done` item offers no onward move |
 | `p` / `c` / `r` | **approve** / **accept** / **reject** the selected work-item (confirm modal; reject is warned as dangerous) |
 | `m` / `n` | **set-admission** / **set-acceptance** — the per-item override of `auto_approve_ready` / `acceptance_mode` for the selected work-item |
+| `g` / `f` / `k` | **per-item override** of `merge_on_review_cap` / `review_fix_cap` / `acceptance_rework_cap` on the selected work-item (confirm modal; `↑`/`↓` cycle the value, including `clear` to inherit the global default) |
 | `?` | toggle the help overlay |
 | `q` | quit (only when no overlay is open) |
 | `Ctrl-C` | quit (any time) |
 
-The per-item valves `p` / `c` / `r` / `m` / `n` act on the **selected
-work-item** — the selected item in the **Attention** view, or the individually
-selected item in a **drilled-in lane** (`Lanes` view). The **`s` move-to-status**
-valve acts on the selected item in a **drilled-in lane only** — it needs the
-item's current lane to offer the statuses it may be driven to, so it is inert in
-the Attention view. Every one is issued through the orchestrator's `drive` API;
-the console never writes the ledger directly.
+The per-item valves `p` / `c` / `r` / `m` / `n` / `g` / `f` / `k` act on the
+**selected work-item** — the selected item in the **Attention** view, or the
+individually selected item in a **drilled-in lane** (`Lanes` view). The **`s`
+move-to-status** valve acts on the selected item in a **drilled-in lane only** —
+it needs the item's current lane to offer the statuses it may be driven to, so it
+is inert in the Attention view. Every one is issued through the orchestrator's
+`drive` API; the console never writes the ledger directly.
 
 Press `?` for a help overlay that lists every keybinding, **scoped to the active
 view** (the Settings view describes the dispatcher settings; the item views
@@ -183,19 +184,19 @@ work-item:
 | Setting (global default) | Type | Dangerous? | Per-item override |
 |---|---|---|---|
 | `auto_approve_ready` | bool | **yes** — auto-approves a ready item with no human | **`m`** set-admission (`auto`/`manual`) on the selected item |
-| `merge_on_review_cap` | bool | **yes** — ships past the review cap with no sign-off | *pending an orchestrator-side drive action* (global only for now) |
+| `merge_on_review_cap` | bool | **yes** — ships past the review cap with no sign-off | **`g`** on the selected item (`on`/`off`/`clear`) |
 | `acceptance_mode` | enum `ai-then-human` \| `ai-only` \| `human-only` | **yes** when `ai-only` (AI auto-accepts) | **`n`** set-acceptance (the policy) on the selected item |
-| `review_fix_cap` | int | no | *pending an orchestrator-side drive action* (global only for now) |
-| `acceptance_rework_cap` | int | no | *pending an orchestrator-side drive action* (global only for now) |
+| `review_fix_cap` | int | no | **`f`** on the selected item (positive int, or `clear`) |
+| `acceptance_rework_cap` | int | no | **`k`** on the selected item (positive int, or `clear`) |
 | `wip_cap` | int | no | **none** — a per-repo concurrency ceiling, structurally not per-item |
 
-Two overridable settings (`auto_approve_ready`, `acceptance_mode`) already have
-a per-item valve (`m` / `n`), because the orchestrator publishes `set-admission`
-and `set-acceptance` actions for them. The other three overridable settings
-(`merge_on_review_cap`, `review_fix_cap`, `acceptance_rework_cap`) are edited
-**globally** in the Settings view today; their per-item override awaits a
-per-setting override action on the orchestrator's `drive` surface and is not yet
-bound to a console key.
+Every overridable setting has a per-item valve: `auto_approve_ready` and
+`acceptance_mode` ride the established `set-admission` / `set-acceptance` actions
+(`m` / `n`), and `merge_on_review_cap` / `review_fix_cap` / `acceptance_rework_cap`
+ride the orchestrator's per-cap override actions (`g` / `f` / `k`). Each
+per-item valve sets the override for one work-item, or clears it (value `clear`)
+to inherit the global default. Only `wip_cap` — a per-repo concurrency ceiling —
+admits no per-item override.
 
 ### Acting on work
 
@@ -207,12 +208,16 @@ select an **individual work-item**.
 On the selected work-item the per-item valves are **bound to keys** and drive
 the orchestrator's `drive` API:
 
-- **`s` move to a status** the item may be driven to — **drilled-in lane only**
-  (pending-approval → ready via `approve`, acceptance → done via `accept`,
-  blocked → ready/backlog via `resolve-blocked`);
+- **`s` move to a status** the item may be driven to — **drilled-in lane only** —
+  any pre-terminal pipeline status (`backlog` / `ready` / `active` / `blocked`)
+  via the guarded `move` action, plus the semantic `approve` (pending-approval →
+  ready), `accept` (acceptance → done), and `resolve-blocked` (blocked →
+  ready/backlog). `done` is reached only via `accept`, and the picker never
+  un-ships a `done` item;
 - **`p` / `c` / `r`** approve / accept / reject; **`m` / `n`** set the admission
-  / acceptance policy override — on the selected item in the **Attention** view
-  or a **drilled-in lane**;
+  / acceptance policy override; **`g` / `f` / `k`** set the `merge_on_review_cap`
+  / `review_fix_cap` / `acceptance_rework_cap` per-item override (value or `clear`)
+  — on the selected item in the **Attention** view or a **drilled-in lane**;
 - **drain the ready queue** — press `:`, type `drain` (or `drain ready queue`),
   then `Enter`.
 

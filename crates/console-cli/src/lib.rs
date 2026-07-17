@@ -34,8 +34,9 @@ use console_application::{
     autonomous_reflection_attention_id, build_tui_model,
     handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
     handle_work_item_accept_command, handle_work_item_approve_command,
-    handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
-    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+    handle_work_item_move_command, handle_work_item_reject_command,
+    handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
+    handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
     project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
@@ -1076,6 +1077,14 @@ pub fn handle_pending_work_item_commands(
                 command,
                 payload_json,
             } => handle_work_item_resolve_blocked_command(command, payload_json, port)?,
+            PendingWorkItemCommand::Move {
+                command,
+                payload_json,
+            } => handle_work_item_move_command(command, payload_json, port)?,
+            PendingWorkItemCommand::SetDispatcherOverride {
+                command,
+                payload_json,
+            } => handle_work_item_set_dispatcher_override_command(command, payload_json, port)?,
         };
         outcomes.push(finalize_pending_command(
             store,
@@ -1437,6 +1446,21 @@ enum PendingWorkItemCommand {
         /// The persisted `payload_json` carrying `{"target_status": ...}`.
         payload_json: String,
     },
+    /// A rebuilt `work_item.move_requested` command plus its stored payload.
+    Move {
+        /// The rebuilt command envelope.
+        command: CommandEnvelope,
+        /// The persisted `payload_json` carrying `{"target_status": ...}`.
+        payload_json: String,
+    },
+    /// A rebuilt `work_item.set_dispatcher_override_requested` command plus its
+    /// stored payload.
+    SetDispatcherOverride {
+        /// The rebuilt command envelope.
+        command: CommandEnvelope,
+        /// The persisted `payload_json` carrying `{"setting": ..., "value": ...}`.
+        payload_json: String,
+    },
 }
 
 impl PendingWorkItemCommand {
@@ -1448,7 +1472,9 @@ impl PendingWorkItemCommand {
             | Self::Reject { command, .. }
             | Self::SetAdmission { command, .. }
             | Self::SetAcceptance { command, .. }
-            | Self::ResolveBlocked { command, .. } => command,
+            | Self::ResolveBlocked { command, .. }
+            | Self::Move { command, .. }
+            | Self::SetDispatcherOverride { command, .. } => command,
         }
     }
 }
@@ -1472,12 +1498,17 @@ fn work_item_command_from_stored(
         contract_name == CommandType::WorkItemSetAcceptanceRequested.contract_name();
     let is_resolve_blocked =
         contract_name == CommandType::WorkItemResolveBlockedRequested.contract_name();
+    let is_move = contract_name == CommandType::WorkItemMoveRequested.contract_name();
+    let is_set_override =
+        contract_name == CommandType::WorkItemSetDispatcherOverrideRequested.contract_name();
     if !(is_approve
         || is_accept
         || is_reject
         || is_set_admission
         || is_set_acceptance
-        || is_resolve_blocked)
+        || is_resolve_blocked
+        || is_move
+        || is_set_override)
     {
         return Ok(None);
     }
@@ -1522,12 +1553,28 @@ fn work_item_command_from_stored(
             command: rebuild(CommandType::WorkItemSetAcceptanceRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
-    } else {
+    } else if is_resolve_blocked {
         // Resolve-blocked moves a `blocked` item to `ready`/`backlog`: it
         // surfaces the stored `payload_json` (the `{"target_status": ...}`
         // object) for the application handler to parse.
         PendingWorkItemCommand::ResolveBlocked {
             command: rebuild(CommandType::WorkItemResolveBlockedRequested),
+            payload_json: stored_command.payload_json().to_owned(),
+        }
+    } else if is_move {
+        // Move relocates an item to a pre-terminal pipeline status: it surfaces
+        // the stored `payload_json` (the `{"target_status": ...}` object) for the
+        // application handler to parse.
+        PendingWorkItemCommand::Move {
+            command: rebuild(CommandType::WorkItemMoveRequested),
+            payload_json: stored_command.payload_json().to_owned(),
+        }
+    } else {
+        // Set-dispatcher-override sets/clears one per-item cap override: it
+        // surfaces the stored `payload_json` (the `{"setting": ..., "value": ...}`
+        // object) for the application handler to parse.
+        PendingWorkItemCommand::SetDispatcherOverride {
+            command: rebuild(CommandType::WorkItemSetDispatcherOverrideRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
     };
@@ -3744,6 +3791,99 @@ mod tests {
             outcome,
             Err(ConsoleRuntimeError::Application(
                 ApplicationError::InvalidResolveBlockedTarget
+            ))
+        ));
+        assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        Ok(())
+    }
+
+    fn move_command_append(payload_json: &str) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_move".to_owned(),
+                CommandType::WorkItemMoveRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.move_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_move".to_owned(),
+            payload_json.to_owned(),
+        )
+    }
+
+    #[test]
+    fn pending_work_item_move_routes_target_from_payload_through_port()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&move_command_append(r#"{"target_status":"blocked"}"#))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        // The target extracted from the stored payload lands in the move action-id.
+        assert_eq!(port.observed_action_ids, ["move:wi-1:blocked"]);
+        Ok(())
+    }
+
+    fn set_override_command_append(payload_json: &str) -> CommandAppend {
+        CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_override".to_owned(),
+                CommandType::WorkItemSetDispatcherOverrideRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.set_dispatcher_override_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-07-10T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_override".to_owned(),
+            payload_json.to_owned(),
+        )
+    }
+
+    #[test]
+    fn pending_work_item_set_dispatcher_override_routes_setting_and_value_through_port()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        // A null value clears the per-item override back to inherit-global.
+        store.append_command(&set_override_command_append(
+            r#"{"setting":"review_fix_cap","value":null}"#,
+        ))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command_status(), "completed");
+        assert_eq!(port.observed_action_ids, ["set-review-fix-cap:wi-1:clear"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_work_item_set_dispatcher_override_surfaces_bad_setting_as_application_error()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&set_override_command_append(
+            r#"{"setting":"wip_cap","value":5}"#,
+        ))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::InvalidDispatcherOverrideSetting
             ))
         ));
         assert_eq!(port.observed_action_ids, [] as [String; 0]);
