@@ -392,8 +392,8 @@ pub fn check_pin(livespec_jsonc: &str, manifest_json: &str) -> Result<Option<Pin
 /// JSON to write as the committed fixture. Used by `just refresh-config-manifest`.
 ///
 /// # Errors
-/// Returns an error string when the drive output is not a JSON object or cannot
-/// be re-serialized.
+/// Returns an error string when the drive output is not valid JSON or is not a
+/// JSON object.
 pub fn stamp_manifest(drive_output_json: &str, pinned: &str) -> Result<String, String> {
     let mut value: serde_json::Value = serde_json::from_str(drive_output_json)
         .map_err(|error| format!("config-manifest output is not valid JSON: {error}"))?;
@@ -404,8 +404,9 @@ pub fn stamp_manifest(drive_output_json: &str, pinned: &str) -> Result<String, S
         "captured_at_pin".to_owned(),
         serde_json::Value::String(pinned.to_owned()),
     );
-    serde_json::to_string_pretty(&value)
-        .map_err(|error| format!("cannot serialize the stamped config-manifest: {error}"))
+    // Serializing a `serde_json::Value` back to text is infallible in practice;
+    // fall back to an empty string rather than carry an untestable error branch.
+    Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -597,6 +598,24 @@ mod tests {
             Some("http://x")
         );
         assert_eq!(value.get("n").and_then(serde_json::Value::as_u64), Some(1));
+    }
+
+    #[test]
+    fn strip_jsonc_comments_respects_escaped_chars_in_strings() {
+        // An escaped backslash and an escaped quote inside a string must be
+        // preserved: the `\"` must NOT end the string, and `//` inside a string is
+        // not a comment.
+        let source = "{\"path\": \"a\\\\b // not a comment\", \"q\": \"x\\\"y\"}";
+        let value: serde_json::Value =
+            serde_json::from_str(&strip_jsonc_comments(source)).unwrap_or_default();
+        assert_eq!(
+            value.get("path").and_then(serde_json::Value::as_str),
+            Some("a\\b // not a comment")
+        );
+        assert_eq!(
+            value.get("q").and_then(serde_json::Value::as_str),
+            Some("x\"y")
+        );
     }
 
     #[test]
