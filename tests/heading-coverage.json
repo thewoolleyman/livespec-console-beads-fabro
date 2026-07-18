@@ -845,5 +845,17 @@
         "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
       }
     ]
+  },
+  {
+    "scenario": "Scenario 19 -- Operator reads context-specific shortcut hints in the Status line",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid acceptance test for the context-specific Status-line shortcut hints: the Status line renders non-empty, context-appropriate shortcut key hints for the focused pane; switching focus changes the hints; opening a modal/overlay swaps the hints to that overlay's and closing restores the pane's; and no context with available actions shows an empty hint line. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the tui-status-line-context-hints impl follow-up; the new §\"TUI Contract\" Status-line-hints clause binds here.",
+    "clauses": [
+      {
+        "gap_id": "gap-2hiwqz3g",
+        "scenario": "Scenario 19 -- Operator reads context-specific shortcut hints in the Status line"
+      }
+    ]
   }
 ]
