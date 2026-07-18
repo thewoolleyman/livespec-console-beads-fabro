@@ -6,7 +6,7 @@ spec_commitments:
   impl_followups:
     - id_hint: tui-pane-specific-modal-help-overlay
       description: |
-        Implement the pane-specific modal help overlay in the console TUI (crate console-tui): upgrade/replace render_help_overlay so help opens as a modal overlay with entries scoped to the focused view, a menu navigated by arrow keys, and Esc as the only dismissal; add loop-level + render tests binding Scenario 18's three cases (pane-specific content, arrow-key menu navigation, modal Esc-only exit).
+        Implement the pane-specific modal help overlay in the console TUI (crate console-tui): upgrade/replace render_help_overlay so help opens as a modal overlay with entries scoped to the focused view, a menu navigated by arrow keys, and Esc as the only dismissal; add loop-level + render tests binding Scenario 18's four cases (pane-specific `?`-auto-focus to the focused pane's section, 3-character-border near-full-viewport window geometry, left-menu/right-pane up-down-only scroll navigation, and modal Esc-only exit with `esc to exit` always shown).
 ---
 
 ## Proposal: Pane-specific modal help overlay
