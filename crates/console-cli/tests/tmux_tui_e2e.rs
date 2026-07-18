@@ -385,3 +385,127 @@ fn two_repo_fixtures() -> Vec<RepoFixture> {
         RepoFixture::new("e2e-beta", &workspace_root),
     ]
 }
+
+/// One repo fixture rooted at this crate's manifest dir, for the single-repo B1
+/// source-availability scenes.
+fn one_repo_fixture() -> RepoFixture {
+    RepoFixture::new("e2e-b1", &PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+// --- B1 source-availability honesty (Scenario 13) ---------------------------
+//
+// These real-TUI scenes prove the cockpit-blind-vs-idle distinction end to end:
+// every backing CLI stubbed to emit `{}` is a REACHABLE-but-empty source, so the
+// header carries NO source-unavailability indicator (and keeps `mode: tui`),
+// while a genuinely-unreachable source is counted, NAMED, and its human-readable
+// reason is durably persisted with the finding.
+
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_all_reachable_sources_are_idle_not_unavailable() -> HarnessResult<()> {
+    // Every source is stubbed to emit `{}` (reachable-but-empty). The header
+    // must show NO source-unavailability indicator -- an idle factory is never
+    // dressed as a cockpit-blind screen -- and therefore keeps the low-value
+    // `mode: tui` field it would otherwise shed to make room for a phantom
+    // `sources: N unavailable` suffix.
+    let repo = one_repo_fixture();
+    let console = TmuxConsole::launch(&repo)?;
+
+    let header_needle = format!("repo: {}", repo.tenant());
+    let screen = console.wait_for_settled(&header_needle, RENDER_TIMEOUT)?;
+    assert!(
+        screen.contains("mode: tui"),
+        "an all-idle header must keep `mode: tui` (no phantom unavailability \
+         suffix forcing a shrink):\n{screen}"
+    );
+    assert!(
+        !screen.contains("unavailable") && !screen.contains("sources:"),
+        "an all-idle header must carry NO source-unavailability indicator:\n{screen}"
+    );
+
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+
+    // The idle sources persisted observed-and-idle markers, and NO source
+    // degraded to a not-observed finding.
+    let store = SqliteEventStore::open(console.store_path())
+        .map_err(|error| format!("open isolated store failed: {error:?}"))?;
+    let events = store
+        .list_console_events()
+        .map_err(|error| format!("read isolated store events failed: {error:?}"))?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type() == &EventType::SourceObservedFindingObserved),
+        "expected at least one observed-and-idle marker from a reachable-but-empty source"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.event_type() == &EventType::SourceNotObservedFindingObserved),
+        "no source should degrade to a not-observed finding when every source is reachable"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned() -> HarnessResult<()> {
+    // Point ONLY the fabro source at a nonexistent binary; every other source
+    // stays idle. The header must count the ONE unavailable source and NAME it,
+    // and the not-observed finding must carry a human-readable reason that is
+    // durably persisted.
+    let repo = one_repo_fixture();
+    let console = TmuxConsole::launch_with_env(
+        &repo,
+        &[(
+            "LIVESPEC_CONSOLE_FABRO_PROGRAM",
+            "/nonexistent/livespec-console-fabro-missing",
+        )],
+    )?;
+
+    let screen = console.wait_for("sources: 1 unavailable", RENDER_TIMEOUT)?;
+    assert!(
+        screen.contains("fabro"),
+        "the header must NAME the one unavailable source (fabro):\n{screen}"
+    );
+
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+
+    // Exactly one source (fabro) degraded to a not-observed finding, and its
+    // reason is durably persisted with the finding (not dropped to `{}`).
+    let store = SqliteEventStore::open(console.store_path())
+        .map_err(|error| format!("open isolated store failed: {error:?}"))?;
+    let events = store
+        .list_console_events()
+        .map_err(|error| format!("read isolated store events failed: {error:?}"))?;
+    let fabro_not_observed: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event_type() == &EventType::SourceNotObservedFindingObserved
+                && event.source() == "fabro"
+        })
+        .collect();
+    assert!(
+        !fabro_not_observed.is_empty(),
+        "fabro must degrade to a not-observed finding when its binary is unresolvable"
+    );
+    for event in &fabro_not_observed {
+        assert!(
+            event.payload_json().contains("\"reason\""),
+            "the not-observed finding must durably persist a human-readable reason, got {}",
+            event.payload_json()
+        );
+    }
+    // No OTHER source degraded -- the idle sources stayed idle.
+    let other_not_observed = events.iter().any(|event| {
+        event.event_type() == &EventType::SourceNotObservedFindingObserved
+            && event.source() != "fabro"
+    });
+    assert!(
+        !other_not_observed,
+        "only the genuinely-unreachable fabro source should be counted unavailable"
+    );
+    Ok(())
+}

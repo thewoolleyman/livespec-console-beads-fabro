@@ -313,12 +313,18 @@ fn write_named_stub(scratch: &Path, name: &str) -> HarnessResult<PathBuf> {
     Ok(stub)
 }
 
-/// Write the pane launcher script and return its path. It prepends the scratch
-/// dir to PATH (so the `gh` stub shadows the hardcoded github backing CLI),
-/// exports the isolated store, the pinned tenant, and the six backing-CLI stub
-/// overrides, execs the binary's `serve` (interactive TUI), then keeps the pane
-/// alive so a captured error survives inspection. The harness's `Drop` kills the
-/// session long before the keep-alive elapses.
+/// Write the pane launcher script and return its path. It sets a HERMETIC PATH
+/// (the scratch dir front, then only the coreutils dirs — NOT the ambient PATH),
+/// so the `gh` stub shadows the github backing CLI AND no source can silently
+/// resolve a real backing CLI (fabro, `livespec`, ...) further down an inherited
+/// PATH. That determinism is load-bearing: with the ambient PATH inherited, a
+/// reachable-but-empty source could resolve a REAL binary locally and be
+/// classified observed, masking a misclassification that a CI runner (whose base
+/// PATH lacks those binaries) would surface. It also exports the isolated store,
+/// the pinned tenant, and the six backing-CLI stub overrides, execs the binary's
+/// `serve` (interactive TUI), then keeps the pane alive so a captured error
+/// survives inspection. The harness's `Drop` kills the session long before the
+/// keep-alive elapses.
 fn write_launcher(
     scratch: &Path,
     binary: &Path,
@@ -331,7 +337,7 @@ fn write_launcher(
     let body = format!(
         "#!/usr/bin/env bash\n\
          cd {repo_path} || exit 97\n\
-         export PATH={scratch_dir}:\"$PATH\"\n\
+         export PATH={scratch_dir}:/usr/local/bin:/usr/bin:/bin\n\
          export LIVESPEC_CONSOLE_STORE_PATH={store}\n\
          export LIVESPEC_CONSOLE_REPO={tenant}\n\
          export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
@@ -341,6 +347,7 @@ fn write_launcher(
          export LIVESPEC_CONSOLE_DRAIN_PROGRAM={stub}\n\
          export LIVESPEC_CONSOLE_DRIVE_PROGRAM={stub}\n\
          export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_GH_PROGRAM={stub}\n\
          {binary} serve\n\
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
          sleep 300\n",
@@ -367,4 +374,119 @@ fn make_executable(path: &Path) -> HarnessResult<()> {
     let permissions = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(path, permissions)
         .map_err(|error| format!("chmod {} failed: {error}", path.display()))
+}
+
+// --- B1 source-availability extension (append-only) --------------------------
+//
+// The default launcher points every backing CLI at the `{}`-emitting stub, so a
+// hermetic run resolves EVERY source as observed-and-idle. To exercise a
+// GENUINELY-unreachable source (Scenario 13's "named with a reason"), the B1
+// tests need to point exactly one `*_PROGRAM` at a bad program while leaving the
+// rest idle. This extension launches with EXTRA environment exports appended
+// after the default stub exports, so a caller's override wins (later bash
+// `export` wins).
+
+impl TmuxConsole {
+    /// Launch like [`Self::launch`], but append `extra_env` exports AFTER the
+    /// default `{}`-stub `*_PROGRAM` exports so a caller can repoint one backing
+    /// source (for example at a nonexistent binary) while the rest stay idle.
+    pub fn launch_with_env(repo: &RepoFixture, extra_env: &[(&str, &str)]) -> HarnessResult<Self> {
+        let tmux = resolve_tmux()?;
+        let binary = resolve_binary();
+        if !binary.is_file() {
+            return Err(format!(
+                "console binary not found at {}; run `just check-e2e-tmux` (which builds \
+                 the release binary and sets LIVESPEC_CONSOLE_E2E_BIN)",
+                binary.display()
+            ));
+        }
+
+        let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
+        let unique = format!("{}-{nonce}", std::process::id());
+        let scratch = std::env::temp_dir().join(format!("lc-e2e-{unique}"));
+        std::fs::create_dir_all(&scratch)
+            .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
+        let store_path = scratch.join("store.sqlite");
+
+        let stub = write_named_stub(&scratch, "stub-backing-cli.sh")?;
+        write_named_stub(&scratch, "gh")?;
+        let launcher =
+            write_launcher_with_env(&scratch, &binary, repo, &store_path, &stub, extra_env)?;
+
+        let session = format!("lc_e2e_{unique}");
+        run_tmux(&tmux, &["kill-session", "-t", &session]);
+
+        let status = Command::new(&tmux)
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "-x",
+                &DEFAULT_COLS.to_string(),
+                "-y",
+                &DEFAULT_ROWS.to_string(),
+            ])
+            .arg(&launcher)
+            .status()
+            .map_err(|error| format!("spawn tmux new-session failed: {error}"))?;
+        if !status.success() {
+            return Err(format!("tmux new-session exited unsuccessfully: {status}"));
+        }
+
+        Ok(Self {
+            tmux,
+            session,
+            scratch,
+            store_path,
+        })
+    }
+}
+
+/// Like [`write_launcher`], but append `extra_env` exports after the default
+/// stub `*_PROGRAM` exports so a caller's override wins.
+fn write_launcher_with_env(
+    scratch: &Path,
+    binary: &Path,
+    repo: &RepoFixture,
+    store_path: &Path,
+    stub: &Path,
+    extra_env: &[(&str, &str)],
+) -> HarnessResult<PathBuf> {
+    use std::fmt::Write as _;
+    let launcher = scratch.join("launch.sh");
+    let stub = shell_quote(&stub.display().to_string());
+    let mut extra = String::new();
+    for (key, value) in extra_env {
+        // Writing to a String is infallible; the Result is discarded.
+        let _ = writeln!(extra, "export {key}={}", shell_quote(value));
+    }
+    let body = format!(
+        "#!/usr/bin/env bash\n\
+         cd {repo_path} || exit 97\n\
+         export PATH={scratch_dir}:/usr/local/bin:/usr/bin:/bin\n\
+         export LIVESPEC_CONSOLE_STORE_PATH={store}\n\
+         export LIVESPEC_CONSOLE_REPO={tenant}\n\
+         export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
+         export LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_LIVESPEC_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_FABRO_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_DRAIN_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_DRIVE_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_GH_PROGRAM={stub}\n\
+         {extra}\
+         {binary} serve\n\
+         printf 'TUI_EXIT=%s\\n' \"$?\"\n\
+         sleep 300\n",
+        repo_path = shell_quote(&repo.repo_path().display().to_string()),
+        scratch_dir = shell_quote(&scratch.display().to_string()),
+        store = shell_quote(&store_path.display().to_string()),
+        tenant = shell_quote(repo.tenant()),
+        binary = shell_quote(&binary.display().to_string()),
+    );
+    std::fs::write(&launcher, body)
+        .map_err(|error| format!("write launcher {} failed: {error}", launcher.display()))?;
+    make_executable(&launcher)?;
+    Ok(launcher)
 }

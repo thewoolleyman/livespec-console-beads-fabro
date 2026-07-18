@@ -12,6 +12,18 @@ const FABRO_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_FABRO_PROGRAM";
 const DRAIN_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRAIN_PROGRAM";
 const DRIVE_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRIVE_PROGRAM";
 const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
+const GH_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_GH_PROGRAM";
+
+/// Home-relative install locations probed for the `fabro` binary, in order,
+/// when it is not overridden by [`FABRO_PROGRAM_ENV`]. The cockpit runs under
+/// the credential wrapper, whose scrubbed `PATH` does NOT include `~/.local/bin`,
+/// so a bare `fabro` fails to spawn and the fabro source silently degrades to
+/// not-observed. Resolving to the absolute home-relative install path makes it
+/// reachable under the wrapper. These are expanded against the injected home
+/// directory ONLY (never the ambient filesystem), so resolution stays hermetic:
+/// with no injected home, or no `fabro` under it, the bare `fabro` default is
+/// kept and any other host provides its path via [`FABRO_PROGRAM_ENV`].
+const FABRO_HOME_RELATIVE_CANDIDATES: [&str; 2] = [".local/bin/fabro", ".fabro/bin/fabro"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Resolved backing CLI programs and argument shapes.
@@ -22,6 +34,7 @@ pub struct BackingCliPrograms {
     dispatcher: String,
     drive: String,
     needs_attention: String,
+    github: String,
 }
 
 impl Default for BackingCliPrograms {
@@ -33,6 +46,7 @@ impl Default for BackingCliPrograms {
             dispatcher: "livespec-dispatcher-drain".to_owned(),
             drive: "livespec-orchestrator-drive".to_owned(),
             needs_attention: "needs-attention".to_owned(),
+            github: "gh".to_owned(),
         }
     }
 }
@@ -72,6 +86,12 @@ impl BackingCliPrograms {
     /// Return the needs-attention program path.
     pub fn needs_attention(&self) -> &str {
         &self.needs_attention
+    }
+
+    #[must_use]
+    /// Return the GitHub CLI program path (the `gh pr list` github source).
+    pub fn github(&self) -> &str {
+        &self.github
     }
 }
 
@@ -141,6 +161,12 @@ impl BackingCliResolution {
             .as_deref()
             .map(programs_from_plugin_bin)
             .unwrap_or_default();
+        // Resolve the bare `fabro` default to an absolute install path so it
+        // spawns under the credential wrapper's scrubbed PATH. An explicit
+        // `LIVESPEC_CONSOLE_FABRO_PROGRAM` override (applied next) still wins.
+        if let Some(resolved) = resolve_fabro_program(inputs.home_dir.as_deref()) {
+            programs.fabro = resolved;
+        }
         apply_program_overrides(&inputs.env, &mut programs);
         Ok(Self {
             selected_repo_path,
@@ -167,6 +193,20 @@ impl BackingCliResolution {
     /// Return resolved backing CLI programs.
     pub const fn programs(&self) -> &BackingCliPrograms {
         &self.programs
+    }
+
+    #[must_use]
+    /// Return the ABSOLUTE Dispatcher journal path the dispatch source reads:
+    /// the selected repo checkout joined with the repo-relative journal location
+    /// ([`crate::DISPATCHER_JOURNAL_PATH`]). Resolving it against the selected
+    /// repo (not the process working directory) keeps the source reading the
+    /// right tenant's journal even when the console is launched from another
+    /// directory.
+    pub fn dispatcher_journal_path(&self) -> String {
+        self.selected_repo_path
+            .join(crate::DISPATCHER_JOURNAL_PATH)
+            .display()
+            .to_string()
     }
 }
 
@@ -316,14 +356,20 @@ fn validate_plugin_root(root: &Path) -> Result<(), BackingCliResolutionError> {
 fn programs_from_plugin_bin(bin: &Path) -> BackingCliPrograms {
     BackingCliPrograms {
         list_work_items: bin.join("list_work_items.py").display().to_string(),
-        livespec: CommandShape {
-            program: bin.join("next.py").display().to_string(),
-            args: vec!["--json".to_owned()],
-        },
+        // The livespec source observes the SPEC-side `livespec next` action
+        // (revise / critique / none), NOT the orchestrator's impl-side
+        // `next.py` (which ranks work-items). Resolving it from the orchestrator
+        // plugin bin wired it to the wrong CLI, whose work-item-ranking output
+        // never parses as a spec-next action and so degraded the source. Keep the
+        // spec-side `livespec next --json` command; the
+        // `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` override points it at a concrete
+        // spec-side next CLI (for example core's `next.py`) where one is present.
+        livespec: CommandShape::new("livespec", &["next", "--json"]),
         fabro: "fabro".to_owned(),
         dispatcher: bin.join("dispatcher.py").display().to_string(),
         drive: bin.join("drive.py").display().to_string(),
         needs_attention: bin.join("needs_attention.py").display().to_string(),
+        github: "gh".to_owned(),
     }
 }
 
@@ -364,6 +410,21 @@ pub fn python_normalized_invocation<'a>(
     (program, args.to_vec())
 }
 
+/// Resolve `fabro` to the first existing home-relative install path, or `None`
+/// to keep the bare `fabro` default. Probes ONLY paths under `home_dir` (never
+/// the ambient filesystem), so a caller that injects no home — or a home with no
+/// `fabro` — deterministically keeps the bare default.
+fn resolve_fabro_program(home_dir: Option<&Path>) -> Option<String> {
+    let home = home_dir?;
+    for candidate in FABRO_HOME_RELATIVE_CANDIDATES {
+        let path = home.join(candidate);
+        if path.is_file() {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
 fn apply_program_overrides(env: &BTreeMap<String, String>, programs: &mut BackingCliPrograms) {
     if let Some(value) = env.get(LIST_WORK_ITEMS_PROGRAM_ENV) {
         programs.list_work_items.clone_from(value);
@@ -382,5 +443,8 @@ fn apply_program_overrides(env: &BTreeMap<String, String>, programs: &mut Backin
     }
     if let Some(value) = env.get(NEEDS_ATTENTION_PROGRAM_ENV) {
         programs.needs_attention.clone_from(value);
+    }
+    if let Some(value) = env.get(GH_PROGRAM_ENV) {
+        programs.github.clone_from(value);
     }
 }

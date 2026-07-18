@@ -120,10 +120,12 @@ fn run_store_backed_command(
     let probe = SystemSourceProbe;
     let repo = console_repo();
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
+    let journal_path = resolution.dispatcher_journal_path();
     let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
         &repo,
         resolution.programs(),
+        &journal_path,
     )
     .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
@@ -141,10 +143,7 @@ fn run_store_backed_command(
         resolution.programs().drive(),
         &["--repo", repo_path.as_str(), "--json"],
     );
-    let decisions = JournalAutonomousDecisionsPort::new(
-        &probe,
-        livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
-    );
+    let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     Ok(livespec_console_beads_fabro::run_with_store(
         args,
         &mut store,
@@ -166,10 +165,12 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let probe = SystemSourceProbe;
     let repo = console_repo();
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
+    let journal_path = resolution.dispatcher_journal_path();
     let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
         &repo,
         resolution.programs(),
+        &journal_path,
     )
     .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
@@ -190,10 +191,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let dispatcher_settings = DispatcherSettingsPort::new(&mut drive)
         .read_settings()
         .unwrap_or(DispatcherSettingsRead::NotObserved);
-    let decisions = JournalAutonomousDecisionsPort::new(
-        &probe,
-        livespec_console_beads_fabro::DISPATCHER_JOURNAL_PATH,
-    );
+    let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo.clone(),
         dispatcher_settings,
@@ -248,10 +246,12 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
     };
     let probe = SystemSourceProbe;
     let repo = console_repo();
+    let journal_path = resolution.dispatcher_journal_path();
     let Ok(adapters) = livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
         &repo,
         resolution.programs(),
+        &journal_path,
     ) else {
         return;
     };
@@ -334,6 +334,14 @@ impl SourceProbe for SystemSourceProbe {
     fn read_file(&self, path: &str) -> SourceProbeOutcome {
         match std::fs::read_to_string(path) {
             Ok(contents) => SourceProbeOutcome::observed(&contents, true),
+            // An ABSENT expected file is observed-and-idle, not unreachable: a
+            // factory that has not yet written its dispatch journal reads as an
+            // empty observation, so the source is idle rather than cockpit-blind
+            // (scenarios.md Scenario 13). A present-but-unreadable file (a real
+            // permission or I/O fault) is genuinely unreachable.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                SourceProbeOutcome::observed("", true)
+            }
             Err(error) => SourceProbeOutcome::unavailable(&format!("{path}: {error}")),
         }
     }
