@@ -122,7 +122,14 @@ impl TmuxConsole {
             .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
         let store_path = scratch.join("store.sqlite");
 
-        let stub = write_stub(&scratch)?;
+        let stub = write_named_stub(&scratch, "stub-backing-cli.sh")?;
+        // Shadow the ONE backing CLI the six *_PROGRAM overrides do NOT cover: the
+        // github source runs a literal `gh pr list` on the synchronous startup
+        // path (crates/console-cli/src/lib.rs), which otherwise hits the real
+        // authenticated GitHub API and lands a live `pr.snapshot_observed` event.
+        // A `gh` stub on the front of PATH (see `write_launcher`) keeps the run
+        // hermetic: no live network, no real github event.
+        write_named_stub(&scratch, "gh")?;
         let launcher = write_launcher(&scratch, &binary, repo, &store_path, &stub)?;
 
         let session = format!("lc_e2e_{unique}");
@@ -203,6 +210,35 @@ impl TmuxConsole {
         }
     }
 
+    /// Poll until a SETTLED frame containing `needle` appears, and return it.
+    ///
+    /// A frame is settled when a capture both contains `needle` AND is
+    /// byte-identical to the immediately preceding capture — so a partially
+    /// painted frame (upper rows drawn, lower rows not yet) is never handed back
+    /// for multi-token assertions. Use this before asserting several substrings
+    /// against one screen; use [`Self::wait_for`] for a single token. Returns an
+    /// error with the last capture attached if no settled frame appears in time.
+    pub fn wait_for_settled(&self, needle: &str, timeout: Duration) -> HarnessResult<String> {
+        let deadline = Instant::now() + timeout;
+        let mut previous: Option<String> = None;
+        loop {
+            let capture = self.capture()?;
+            if capture.contains(needle) && previous.as_deref() == Some(capture.as_str()) {
+                return Ok(capture);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out after {timeout:?} waiting for a settled frame containing \
+                     {needle:?} in tmux session {session}.\n---- last capture ----\n{capture}\n\
+                     ---- end capture ----",
+                    session = self.session
+                ));
+            }
+            previous = Some(capture);
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     /// The isolated event-store path this run wrote, for side-effect assertions.
     #[must_use]
     pub fn store_path(&self) -> &Path {
@@ -264,11 +300,12 @@ fn resolve_binary() -> PathBuf {
     )
 }
 
-/// Write the fast backing-CLI stub and return its path. The stub emits an empty
-/// JSON object and exits 0, so every source adapter resolves instantly with no
-/// Beads/Dolt backend and no credential wrapper.
-fn write_stub(scratch: &Path) -> HarnessResult<PathBuf> {
-    let stub = scratch.join("stub-backing-cli.sh");
+/// Write a fast `{}`-emitting stub named `name` into the scratch dir and return
+/// its path. The stub prints an empty JSON object and exits 0, so any backing CLI
+/// pointed at it resolves instantly with no Beads/Dolt backend and no credential
+/// wrapper — turning that source into a deterministic not-observed finding.
+fn write_named_stub(scratch: &Path, name: &str) -> HarnessResult<PathBuf> {
+    let stub = scratch.join(name);
     let body = "#!/usr/bin/env bash\nprintf '{}\\n'\nexit 0\n";
     std::fs::write(&stub, body)
         .map_err(|error| format!("write stub {} failed: {error}", stub.display()))?;
@@ -276,11 +313,12 @@ fn write_stub(scratch: &Path) -> HarnessResult<PathBuf> {
     Ok(stub)
 }
 
-/// Write the pane launcher script and return its path. It exports the isolated
-/// store, the pinned tenant, and the six backing-CLI stub overrides, execs the
-/// binary's `serve` (interactive TUI), then keeps the pane alive so a captured
-/// error survives inspection. The harness's `Drop` kills the session long before
-/// the keep-alive elapses.
+/// Write the pane launcher script and return its path. It prepends the scratch
+/// dir to PATH (so the `gh` stub shadows the hardcoded github backing CLI),
+/// exports the isolated store, the pinned tenant, and the six backing-CLI stub
+/// overrides, execs the binary's `serve` (interactive TUI), then keeps the pane
+/// alive so a captured error survives inspection. The harness's `Drop` kills the
+/// session long before the keep-alive elapses.
 fn write_launcher(
     scratch: &Path,
     binary: &Path,
@@ -293,6 +331,7 @@ fn write_launcher(
     let body = format!(
         "#!/usr/bin/env bash\n\
          cd {repo_path} || exit 97\n\
+         export PATH={scratch_dir}:\"$PATH\"\n\
          export LIVESPEC_CONSOLE_STORE_PATH={store}\n\
          export LIVESPEC_CONSOLE_REPO={tenant}\n\
          export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
@@ -306,6 +345,7 @@ fn write_launcher(
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
          sleep 300\n",
         repo_path = shell_quote(&repo.repo_path.display().to_string()),
+        scratch_dir = shell_quote(&scratch.display().to_string()),
         store = shell_quote(&store_path.display().to_string()),
         tenant = shell_quote(repo.tenant()),
         binary = shell_quote(&binary.display().to_string()),

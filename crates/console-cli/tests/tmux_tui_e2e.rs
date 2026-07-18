@@ -30,6 +30,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use console_domain::EventType;
 use console_eventstore::SqliteEventStore;
 use support::{HarnessResult, RepoFixture, TmuxConsole};
 
@@ -53,8 +54,10 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
     let console = TmuxConsole::launch(repo)?;
 
     // The shell renders: header title, this repo's tenant, and the nav menu.
+    // Wait for a SETTLED frame (two identical consecutive captures) so the
+    // several substring assertions below never race a partially painted frame.
     let header_needle = format!("repo: {}", repo.tenant());
-    let screen = console.wait_for(&header_needle, RENDER_TIMEOUT)?;
+    let screen = console.wait_for_settled(&header_needle, RENDER_TIMEOUT)?;
     assert!(
         screen.contains("LiveSpec Console"),
         "header title missing for tenant {}:\n{screen}",
@@ -78,7 +81,7 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
     console.send_keys(&["Down"])?;
     console.send_keys(&["Down"])?;
     console.send_keys(&["Enter"])?;
-    let lanes = console.wait_for("view: Lanes", RENDER_TIMEOUT)?;
+    let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
     assert!(
         lanes.contains(&header_needle),
         "tenant must persist after navigation for {}:\n{lanes}",
@@ -96,14 +99,25 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
     console.send_keys(&["q"])?;
     console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
 
-    // Side effect: the isolated event store took real writes during the session.
-    assert_store_has_events(console.store_path())?;
+    // Side effect + hermeticity: the session wrote real events into its isolated
+    // store, and NONE of them is a live GitHub observation.
+    assert_store_side_effects(console.store_path())?;
     Ok(())
 }
 
-/// Assert the run persisted at least one console event into its isolated store,
-/// reusing the production event-store reader rather than a raw `SQLite` probe.
-fn assert_store_has_events(store_path: &Path) -> HarnessResult<()> {
+/// Assert the run's store side effects, reusing the production event-store reader
+/// rather than a raw `SQLite` probe:
+///
+/// 1. At least one console event was persisted — proving the launch's
+///    source-ingest pass ran against a writable isolated store. (This is NOT
+///    evidence that a keypress produced a write; the keypress evidence is the
+///    render change asserted above, e.g. `view: Attention` -> `view: Lanes`.)
+/// 2. HERMETICITY: no `pr.snapshot_observed` from the github source. That event
+///    only lands when the hardcoded `gh pr list` reaches the real authenticated
+///    GitHub API; the harness's `gh` stub (front of PATH) must degrade the
+///    github source to a not-observed finding instead, so a leak here means the
+///    stub / PATH shadow stopped taking effect.
+fn assert_store_side_effects(store_path: &Path) -> HarnessResult<()> {
     assert!(
         store_path.is_file(),
         "isolated store was never created at {}",
@@ -117,6 +131,16 @@ fn assert_store_has_events(store_path: &Path) -> HarnessResult<()> {
     assert!(
         !events.is_empty(),
         "expected the session to persist at least one event into {}",
+        store_path.display()
+    );
+    let github_leak = events.iter().any(|event| {
+        event.source() == "github"
+            && event.event_type() == &EventType::GithubPullRequestSnapshotObserved
+    });
+    assert!(
+        !github_leak,
+        "hermeticity leak: a live github pr.snapshot_observed event landed in {} — \
+         the gh stub / PATH shadow is not taking effect",
         store_path.display()
     );
     Ok(())
