@@ -89,10 +89,21 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // sections were re-scoped to the delegation model; the v016 CN1 revision added
     // one normative clause to contracts.md; the earlier v014 console-cruft-cleanup
     // revision added four.)
+    // The B4 pane-specific modal Help revision added seven contracts.md
+    // TUI-Contract clauses (the navigable, context-specific `?`-invoked modal
+    // overlay: a near-full-viewport 3-character-border window never wider than the
+    // viewport, a left-side section menu beside an up/down-only-scrolling right
+    // pane, a Global-actions section plus one per focusable pane with per-pane
+    // auto-focus, and Esc-only dismissal with `esc to exit` always shown), and the
+    // B1 source-availability-honesty revision added six contracts.md Adapter-
+    // Contract clauses (a reachable-but-empty source is observed-and-idle not
+    // unavailable, a not-observed finding carries a durably-persisted human-
+    // readable reason, and the header tally reflects the latest poll outcome per
+    // source so a recovered source clears): 159 normative clauses, 15/70/22/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 57),
+        ("contracts.md", 70),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
@@ -104,7 +115,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 146,
+        total, 159,
         "total normative clauses across the console spec"
     );
     Ok(())
