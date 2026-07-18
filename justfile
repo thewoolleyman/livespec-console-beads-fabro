@@ -52,10 +52,25 @@ build-release:
 # `--ignored`, pointing the harness at the freshly built release binary through
 # LIVESPEC_CONSOLE_E2E_BIN. Prerequisite for the tmux E2E test of every cockpit
 # behavior (B1-B8) and the backfill.
+#
+# The trailing guard defends against a silent pass: `cargo test -- --ignored`
+# exits 0 even when it matches ZERO tests (e.g. if the `#[ignore]` attribute is
+# ever dropped, the run reports "0 passed ... N filtered out" and still greens).
+# So we require the summary to report at least one passing test, failing the gate
+# if the E2E suite silently ran nothing.
 check-e2e-tmux:
+    #!/usr/bin/env bash
+    set -uo pipefail
     cargo build --release --package livespec-console-beads-fabro
-    LIVESPEC_CONSOLE_E2E_BIN="{{justfile_directory()}}/target/release/livespec-console-beads-fabro" \
-      cargo test --package livespec-console-beads-fabro --test tmux_tui_e2e -- --ignored
+    output="$(LIVESPEC_CONSOLE_E2E_BIN="{{justfile_directory()}}/target/release/livespec-console-beads-fabro" \
+      cargo test --package livespec-console-beads-fabro --test tmux_tui_e2e -- --ignored 2>&1)"
+    status=$?
+    echo "$output"
+    if [ "$status" -ne 0 ]; then exit "$status"; fi
+    if ! grep -qE '[1-9][0-9]* passed' <<<"$output"; then
+      echo "ERROR: the tmux E2E suite ran ZERO tests (0 passed) — did the #[ignore] get dropped, or the test rename?" >&2
+      exit 1
+    fi
 
 # First-touch setup — a THIN delegator to the shipped LOCAL first-touch
 # reconcile verb (`livespec_dev_tooling.fleet.local_reconcile`), the
