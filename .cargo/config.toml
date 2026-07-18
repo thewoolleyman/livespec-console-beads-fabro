@@ -1,0 +1,18 @@
+# Per-job parallelism caps for the shared self-hosted CI runners.
+#
+# CI runs each `just check-*` target as its own concurrent matrix job on a
+# shared runner. Uncapped, every job's cargo compile step (and every test
+# binary) fans out to all host cores, so N concurrent jobs oversubscribe the
+# host N-fold. Cap each job's parallelism to a fixed 4 so concurrent jobs
+# coexist without starving the shared runner.
+
+# Cap compile-time parallelism (parallel codegen units / crate builds) for
+# every cargo invocation: build, clippy, test, nextest, llvm-cov, run.
+[build]
+jobs = 4
+
+# Cap libtest runtime worker threads for `cargo test` and `cargo llvm-cov`
+# (which wraps `cargo test`). nextest ignores RUST_TEST_THREADS and is capped
+# separately in .config/nextest.toml.
+[env]
+RUST_TEST_THREADS = "4"

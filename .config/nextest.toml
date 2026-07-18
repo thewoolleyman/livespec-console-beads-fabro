@@ -1,0 +1,9 @@
+# Per-job parallelism cap for the shared self-hosted CI runners.
+#
+# nextest defaults its parallel test execution to the host core count, so a
+# `check-nextest` CI job grabs all cores. On the shared runner, concurrent CI
+# jobs then oversubscribe the host. Cap nextest to a fixed 4 test threads so
+# concurrent jobs coexist. (Compile parallelism and `cargo test` runtime
+# threads are capped in .cargo/config.toml.)
+[profile.default]
+test-threads = 4
