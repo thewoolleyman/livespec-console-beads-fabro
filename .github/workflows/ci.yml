@@ -174,6 +174,46 @@ jobs:
           export LIVESPEC_CORE_PLUGIN_ROOT="${GITHUB_WORKSPACE}/.livespec-core/.claude-plugin"
           just check-doctor-static
 
+  # Real-TUI end-to-end gate (DELIVERABLE #0): drives the SHIPPED interactive TUI
+  # through a real tmux pane (send-keys -> capture-pane -> assert), the first
+  # automated coverage of the run_interactive_tui raw-mode/render path that the
+  # rest of the pyramid compiles out. Its OWN job (not the matrix above) because
+  # it needs `tmux`, which the base image does not yet carry — the step below
+  # provisions it so the gate is self-sufficient regardless of the image (baking
+  # tmux into the fabro-sandbox image is the follow-up that lets this step drop).
+  #
+  # NOT YET in `ci-green.needs`: kept advisory on this first landing so it does
+  # not gate merges until it has proven stable in this environment. Promote it to
+  # a required gate by adding `check-e2e-tmux` to `ci-green.needs` below.
+  check-e2e-tmux:
+    name: check-e2e-tmux
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
+    container:
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.48.2
+    env:
+      MISE_DATA_DIR: /root/.local/share/mise
+      MISE_NOT_FOUND_AUTO_INSTALL: "0"
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: mise trust + install (baked tools — install is a near-no-op)
+        run: |
+          mise trust
+          mise install
+
+      - name: Provision tmux (harness dependency, absent from the base image)
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends tmux
+          fi
+          tmux -V
+
+      - name: just check-e2e-tmux
+        run: just check-e2e-tmux
+
   # Single all-green gate job (livespec epic livespec-cf4bcu,
   # fleet-ci-aggregate-coverage). This is the SOLE branch-protection
   # required context: it `needs:` every check-bearing job, so requiring
