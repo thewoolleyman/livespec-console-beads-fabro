@@ -1026,7 +1026,6 @@ pub struct TuiScreenModel {
     dispatcher_settings: DispatcherSettingsRead,
     unavailable_sources: Vec<String>,
     header: String,
-    footer: String,
 }
 
 impl TuiScreenModel {
@@ -1225,9 +1224,62 @@ impl TuiScreenModel {
     }
 
     #[must_use]
-    /// Return the footer value.
-    pub fn footer(&self) -> &str {
-        &self.footer
+    /// The Status-line shortcut hints for the CURRENT context (per the TUI
+    /// Contract's Status-line-hints clause / Scenario 19).
+    ///
+    /// Derived on read from the currently-focused pane (`active_view`) and any
+    /// open modal/overlay (`overlay`) rather than stored, so the hint line is
+    /// never a single static string: it renders the keys that act in the
+    /// current context, it changes when focus moves to a different pane, and an
+    /// open overlay replaces the pane's hints with that overlay's (restored when
+    /// the overlay closes). It is never empty, so no context in which shortcut
+    /// actions are available shows a blank hint line. See [`footer_hint`].
+    pub const fn footer(&self) -> &str {
+        footer_hint(self.active_view, &self.overlay)
+    }
+}
+
+/// The context-specific Status-line shortcut hints for a focused pane
+/// (`active_view`) and any open `overlay`, per the TUI Contract / Scenario 19.
+///
+/// An open modal/overlay owns the hints while it holds focus, so it is matched
+/// FIRST: the returned keys are the ones that act in that overlay, replacing the
+/// pane's hints until the overlay closes. With no overlay open the hints reflect
+/// the focused pane's own available actions, so switching focus to a different
+/// pane changes the hints. Every arm returns a non-empty, context-appropriate
+/// string, so no context with available actions renders a blank line. The
+/// specific strings and bindings are an implementation detail; they stay in
+/// lock-step with the key handler and the modal Help sections.
+const fn footer_hint(active_view: TuiView, overlay: &TuiOverlay) -> &'static str {
+    match overlay {
+        TuiOverlay::None => pane_footer_hint(active_view),
+        TuiOverlay::Search { .. } => "type to search | esc cancel",
+        TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
+        TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
+        TuiOverlay::ValveConfirm { .. } => "up/down change | enter confirm | esc cancel",
+        TuiOverlay::Help { .. } => "up/down section | PgUp/PgDn scroll | esc close help",
+    }
+}
+
+/// The Status-line hints for a focused pane `view` with no overlay open: the
+/// keys that act on that pane. The read-only nav views (Spec, Events, Repos)
+/// share one hint set because their available actions are identical (select +
+/// move focus + search); the actionable panes (Attention, Lanes) surface their
+/// human-valve/status-move keys, and Settings surfaces its edit key.
+const fn pane_footer_hint(view: TuiView) -> &'static str {
+    match view {
+        TuiView::Attention => {
+            "up/down move | enter open | p/c/r approve/accept/reject | \
+             m/n set-admission/acceptance | ? help | q quit"
+        }
+        TuiView::Lanes => {
+            "up/down move | enter drill | s move-status | p/c/r approve/accept/reject | \
+             m/n set-admission/acceptance | ? help | q quit"
+        }
+        TuiView::Settings => "up/down move | enter/space edit row | ? help | q quit",
+        TuiView::Spec | TuiView::Events | TuiView::Repos => {
+            "up/down move | left/right focus | / search | ? help | q quit"
+        }
     }
 }
 
@@ -2107,8 +2159,6 @@ pub fn build_tui_model_for_state(
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
-        footer: "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: s move-status · p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
-            .to_owned(),
     }
 }
 
@@ -5128,7 +5178,7 @@ mod tests {
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
         TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count,
+        build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count, footer_hint,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
         handle_work_item_move_command, handle_work_item_reject_command,
@@ -5642,9 +5692,13 @@ mod tests {
             model.header(),
             "fleet: livespec | mode: tui | repo: - | view: Attention | attention: 0"
         );
+        // The default Attention view (no overlay) shows the Attention pane's
+        // context-specific hints -- non-empty and appropriate to the focused
+        // pane, never the old single static string (Scenario 19 / TUI Contract).
         assert_eq!(
             model.footer(),
-            "shortcuts: left/right move focus across panes (views | content | detail) | up/down move selection or scroll the focused pane | enter dive in | esc back | / search | : drain | settings: enter/space edit the selected row | valves: s move-status · p approve · c accept · r reject · m set-admission · n set-acceptance | ? help | q quit"
+            "up/down move | enter open | p/c/r approve/accept/reject | \
+             m/n set-admission/acceptance | ? help | q quit"
         );
     }
 
@@ -6585,7 +6639,6 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: Vec::new(),
             header: "LiveSpec Console".to_owned(),
-            footer: String::new(),
         };
 
         assert_eq!(model.selected_operator_action(), None);
@@ -6837,7 +6890,6 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: Vec::new(),
             header: String::new(),
-            footer: String::new(),
         };
 
         let open = resolve_selected_operator_action(&model, "operator");
@@ -9396,12 +9448,102 @@ mod tests {
 
     #[test]
     fn footer_presents_the_settings_edit_shortcut() {
-        let model = repo_model(TuiOverlay::None, CONFIRM_REPO);
+        // The Settings pane's Status-line hints surface its edit key. Built as a
+        // real model (Settings is the last view, reached by clamping
+        // SelectNextView) so this exercises the `footer()` accessor end to end,
+        // not just the free `footer_hint`.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        for _step in 0..TuiView::all().len() {
+            state = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextView);
+        }
+        let model = build_tui_model_for_state(&[], &state);
+        assert_eq!(model.active_view(), TuiView::Settings);
+        assert!(model.footer().contains("enter/space edit row"));
+    }
+
+    #[test]
+    fn footer_hint_is_non_empty_and_context_specific_for_every_focused_pane() {
+        // Scenario 19 case 1 + case 4: every focused pane renders a non-empty,
+        // context-appropriate hint line -- never a blank one where actions are
+        // available -- and the actionable panes surface their distinct keys.
+        for view in TuiView::all() {
+            assert!(!footer_hint(*view, &TuiOverlay::None).trim().is_empty());
+        }
         assert!(
-            model
-                .footer()
-                .contains("settings: enter/space edit the selected row")
+            footer_hint(TuiView::Attention, &TuiOverlay::None).contains("approve/accept/reject")
         );
+        assert!(footer_hint(TuiView::Lanes, &TuiOverlay::None).contains("move-status"));
+        assert!(footer_hint(TuiView::Settings, &TuiOverlay::None).contains("enter/space edit row"));
+        // The read-only nav views surface select + focus-move + search.
+        for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
+            let hint = footer_hint(view, &TuiOverlay::None);
+            assert!(hint.contains("left/right focus") && hint.contains("search"));
+        }
+    }
+
+    #[test]
+    fn footer_hint_changes_when_focus_moves_to_a_different_pane() {
+        // Scenario 19 case 2: moving focus from Lanes to Settings changes the
+        // hints to that pane's actions, and the two panes' hints DIFFER (their
+        // action sets genuinely differ: status-move/valves vs. edit).
+        let lanes = footer_hint(TuiView::Lanes, &TuiOverlay::None);
+        let settings = footer_hint(TuiView::Settings, &TuiOverlay::None);
+        assert_ne!(lanes, settings);
+        assert!(lanes.contains("move-status") && !lanes.contains("edit row"));
+        assert!(settings.contains("edit row") && !settings.contains("move-status"));
+    }
+
+    #[test]
+    fn footer_hint_reflects_the_open_overlay_and_restores_the_pane_on_close() {
+        // Scenario 19 case 3: opening an overlay replaces the focused pane's
+        // hints with that overlay's, and closing it (overlay back to None)
+        // restores the pane's hints. Exercised against the Lanes pane so the
+        // restore is observable via its distinctive `move-status` key.
+        let pane = footer_hint(TuiView::Lanes, &TuiOverlay::None);
+        let help = footer_hint(
+            TuiView::Lanes,
+            &TuiOverlay::Help {
+                selected_section: help_section_for_view(TuiView::Lanes),
+                scroll: 0,
+            },
+        );
+        assert_ne!(pane, help);
+        assert!(help.contains("close help") && !help.contains("move-status"));
+        // Closing the overlay restores the underlying pane's hints verbatim.
+        assert_eq!(footer_hint(TuiView::Lanes, &TuiOverlay::None), pane);
+    }
+
+    #[test]
+    fn footer_hint_covers_every_overlay_with_its_own_non_empty_hints() {
+        // Every overlay owns the hint line while open (matched before the pane),
+        // so each renders its own non-empty, overlay-appropriate keys regardless
+        // of the underlying view -- no overlay context shows a blank hint line.
+        let overlays = [
+            TuiOverlay::Search {
+                query: "gate".to_owned(),
+            },
+            TuiOverlay::CommandPalette {
+                query: String::new(),
+            },
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+            },
+            TuiOverlay::Help {
+                selected_section: 0,
+                scroll: 0,
+            },
+        ];
+        for overlay in &overlays {
+            let hint = footer_hint(TuiView::Attention, overlay);
+            // Non-empty and mentions the overlay's exit key.
+            assert!(!hint.trim().is_empty() && hint.contains("esc"));
+            // The overlay owns the hints: they do NOT fall through to the
+            // underlying Attention pane's keys.
+            assert_ne!(hint, footer_hint(TuiView::Attention, &TuiOverlay::None));
+        }
     }
 
     #[test]

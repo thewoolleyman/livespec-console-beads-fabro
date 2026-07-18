@@ -843,12 +843,19 @@ pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> 
     if area.is_empty() {
         return 0;
     }
+    // The Status line is a bordered box like the header: height 3 leaves exactly
+    // ONE inner content row for the context-specific shortcut hints (a height-2
+    // box would leave zero inner rows, which is why the old static hint never
+    // rendered). This bottom band sits BELOW the Help modal's 3-row bottom margin
+    // (the modal insets by 3 on every side), so the Status hints stay visible and
+    // tmux-capturable while a modal is open -- the modal's `Clear` never reaches
+    // this row. See `help_overlay_rect` and `render_footer`.
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(area);
     render_header(model, vertical[0], buffer);

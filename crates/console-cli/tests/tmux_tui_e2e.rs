@@ -291,6 +291,92 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     Ok(())
 }
 
+/// Scenario 19 / B2 — the context-specific Status-line shortcut hints, driven
+/// live through a real `tmux` pane against the SHIPPED binary.
+///
+/// Covers every clause of Scenario 19: (1) a focused pane renders a NON-EMPTY
+/// hint line showing that pane's actions; (2) switching focus to a different
+/// pane (Lanes -> Settings) changes the hints AND the two panes' hints DIFFER;
+/// (3) opening an overlay (`?` Help) replaces the pane's hints with the
+/// overlay's, and closing it (Esc) restores the focused pane's hints; and (4) no
+/// context in which shortcut actions are available shows an empty hint line.
+///
+/// The Status line sits at the very bottom of the pane, BELOW the Help modal's
+/// 3-row bottom margin, so it stays visible and tmux-capturable while the modal
+/// is open — which is how case (3) observes the overlay's hints replacing the
+/// pane's. The tokens asserted are each footer-only on their screen: `move-status`
+/// (Lanes hint, hyphenated — distinct from the modal body's "move ... to a
+/// status"), `edit row` (Settings hint), and `close help` (Help-overlay hint).
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
+    let repo = RepoFixture::new("e2e-hints", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let console = TmuxConsole::launch(&repo)?;
+
+    // --- case 1: the default focused pane (Attention) shows non-empty hints ---
+    let attention = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    assert!(
+        attention.contains("Status"),
+        "the Status line box must be present:\n{attention}"
+    );
+    assert!(
+        attention.contains("approve/accept/reject") && attention.contains("? help"),
+        "the Attention pane must render its non-empty, context-specific hints:\n{attention}"
+    );
+
+    // --- case 2 (part A): switch focus to the Lanes pane; its hints appear ---
+    // Down x2 moves the nav selection Attention -> Spec -> Lanes (no Enter needed;
+    // moving the selection switches the active view).
+    console.send_keys(&["Down", "Down"])?;
+    let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    assert!(
+        lanes.contains("move-status"),
+        "the Lanes pane hints must surface its distinctive move-status key:\n{lanes}"
+    );
+    assert!(
+        !lanes.contains("edit row"),
+        "the Lanes hints must not carry the Settings edit key:\n{lanes}"
+    );
+
+    // --- case 3: opening the `?` Help overlay swaps the hints to the overlay's ---
+    console.send_keys(&["?"])?;
+    let help = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    assert!(
+        help.contains("close help"),
+        "an open overlay must replace the pane hints with the overlay's hints:\n{help}"
+    );
+    assert!(
+        !help.contains("move-status"),
+        "the Lanes pane hints must be gone while the Help overlay owns the Status line:\n{help}"
+    );
+
+    // --- case 3 (cont.): closing the overlay (Esc) restores the pane's hints ---
+    console.send_keys(&["Escape"])?;
+    let restored = wait_until_absent(&console, "esc to exit", RENDER_TIMEOUT)?;
+    assert!(
+        restored.contains("move-status") && !restored.contains("close help"),
+        "closing the overlay must restore the Lanes pane's hints:\n{restored}"
+    );
+
+    // --- case 2 (part B): switch to the Settings pane; hints DIFFER from Lanes ---
+    // Down x3 moves the nav selection Lanes -> Events -> Repos -> Settings.
+    console.send_keys(&["Down", "Down", "Down"])?;
+    let settings = console.wait_for_settled("view: Settings", RENDER_TIMEOUT)?;
+    assert!(
+        settings.contains("edit row"),
+        "the Settings pane must render its own edit-key hints:\n{settings}"
+    );
+    assert!(
+        !settings.contains("move-status"),
+        "the Settings hints must differ from the Lanes hints (no move-status):\n{settings}"
+    );
+
+    // Quit cleanly.
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    Ok(())
+}
+
 /// Assert the modal Help window is inset by a 3-character border on every side
 /// of whatever viewport `tmux` gave the pane. `tmux` honors the pinned height
 /// but sizes the width to the outer terminal, so the corner columns are derived
