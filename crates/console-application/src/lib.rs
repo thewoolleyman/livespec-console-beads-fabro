@@ -2123,20 +2123,49 @@ fn header_repo_label(selected_repo: &str) -> &str {
     }
 }
 
-/// The distinct backing-source names that degraded to a not-observed finding in
-/// the current event set, sorted for a stable header order. A source appears
-/// here when its adapter emitted a [`EventType::SourceNotObservedFindingObserved`]
-/// event this cycle instead of an observed snapshot, so the operator can see how
-/// many and which sources are unreachable rather than mistaking a cockpit-blind
-/// screen for an idle factory.
+/// The distinct backing-source names whose MOST RECENT observation was a
+/// not-observed finding, sorted for a stable header order.
+///
+/// The tally reflects the LATEST poll outcome per source, not any historical
+/// failure: folding the event log in `global_seq` order, a
+/// [`EventType::SourceNotObservedFindingObserved`] marks its source unavailable,
+/// and any LATER positive observation of that same source -- a snapshot event or
+/// the observed-and-idle [`EventType::SourceObservedFindingObserved`] marker --
+/// clears it. So a source that degraded on an earlier cycle but was observed
+/// successfully on a later one no longer counts, and a transient failure is
+/// never branded permanently. A source counts only while its most recent
+/// observation was not-observed, so the operator can distinguish a cockpit-blind
+/// screen from an idle factory.
 fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
-    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut unavailable: BTreeMap<String, bool> = BTreeMap::new();
     for event in events {
-        if *event.event_type() == EventType::SourceNotObservedFindingObserved {
-            names.insert(event.source().to_owned());
+        match event.event_type() {
+            EventType::SourceNotObservedFindingObserved => {
+                unavailable.insert(event.source().to_owned(), true);
+            }
+            // A positive observation from a backing source clears any prior
+            // not-observed finding for it. `and_modify` (never `insert`) keeps a
+            // never-degraded source out of the map entirely, so only genuinely
+            // degraded-then-recovered sources are tracked and cleared.
+            EventType::SourceObservedFindingObserved
+            | EventType::WorkItemSnapshotObserved
+            | EventType::SourceCompletenessFindingObserved
+            | EventType::DispatcherBacklogBounceObserved
+            | EventType::FabroHumanGateObserved
+            | EventType::GithubPullRequestSnapshotObserved
+            | EventType::LivespecNextSnapshotObserved
+            | EventType::LivespecReviseRequired => {
+                unavailable
+                    .entry(event.source().to_owned())
+                    .and_modify(|degraded| *degraded = false);
+            }
+            _other => {}
         }
     }
-    names.into_iter().collect()
+    unavailable
+        .into_iter()
+        .filter_map(|(source, degraded)| degraded.then_some(source))
+        .collect()
 }
 
 /// The header's source-health segment: an empty string when every source was
@@ -2901,6 +2930,7 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::LivespecReviseRequired
         | EventType::SourceCompletenessFindingObserved
         | EventType::SourceNotObservedFindingObserved
+        | EventType::SourceObservedFindingObserved
         | EventType::AttentionItemAppeared
         | EventType::AttentionItemChanged
         | EventType::AttentionItemResolved => "source",
@@ -5065,6 +5095,7 @@ impl AttentionEvent for EventType {
             Self::WorkItemActionNotWired => "Work-item action not wired",
             Self::SourceCompletenessFindingObserved => "Source completeness finding",
             Self::SourceNotObservedFindingObserved => "Source not-observed finding",
+            Self::SourceObservedFindingObserved => "Source observed (idle)",
             Self::AttentionItemAppeared => "Attention item appeared",
             Self::AttentionItemChanged => "Attention item changed",
             Self::AttentionItemResolved => "Attention item resolved",
@@ -7332,6 +7363,10 @@ mod tests {
             "Source not-observed finding"
         );
         assert_eq!(
+            EventType::SourceObservedFindingObserved.label(),
+            "Source observed (idle)"
+        );
+        assert_eq!(
             EventType::AttentionItemAppeared.label(),
             "Attention item appeared"
         );
@@ -9175,6 +9210,91 @@ mod tests {
         assert!(idle.unavailable_sources().is_empty());
         assert!(!idle.header().contains("unavailable"));
         assert!(!idle.header().contains("sources:"));
+    }
+
+    #[test]
+    fn unavailable_tally_clears_a_source_recovered_on_a_later_observation() {
+        // A source that degraded to not-observed on an earlier cycle clears from
+        // the tally when a LATER cycle observes it -- whether it recovers to an
+        // observed-and-idle marker or to a data snapshot. The tally reflects the
+        // LATEST poll outcome per source, so a transient failure is never
+        // branded permanently.
+        let recovered_to_idle = [
+            ConsoleEvent::fixture(
+                "evt_orch_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "orchestrator",
+            ),
+            ConsoleEvent::fixture(
+                "evt_orch_observed_idle",
+                EventType::SourceObservedFindingObserved,
+                "orchestrator",
+            ),
+        ];
+        assert!(
+            build_tui_model(&recovered_to_idle, 0)
+                .unavailable_sources()
+                .is_empty()
+        );
+
+        let recovered_to_data = [
+            ConsoleEvent::fixture(
+                "evt_orch_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "orchestrator",
+            ),
+            ConsoleEvent::fixture(
+                "evt_orch_snapshot",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            ),
+        ];
+        assert!(
+            build_tui_model(&recovered_to_data, 0)
+                .unavailable_sources()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unavailable_tally_reflects_the_latest_outcome_per_source() {
+        // One source recovers, another degrades AFTER a prior observation, and a
+        // third re-degrades after recovering: the tally is exactly the sources
+        // whose MOST RECENT observation was not-observed, in sorted order.
+        let events = [
+            // github: observed then degraded -> unavailable.
+            ConsoleEvent::fixture(
+                "evt_github_idle",
+                EventType::SourceObservedFindingObserved,
+                "github",
+            ),
+            ConsoleEvent::fixture(
+                "evt_github_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "github",
+            ),
+            // orchestrator: degraded then recovered -> cleared.
+            ConsoleEvent::fixture(
+                "evt_orch_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "orchestrator",
+            ),
+            ConsoleEvent::fixture(
+                "evt_orch_idle",
+                EventType::SourceObservedFindingObserved,
+                "orchestrator",
+            ),
+            // fabro: never degraded -> never in the tally.
+            ConsoleEvent::fixture(
+                "evt_fabro_idle",
+                EventType::SourceObservedFindingObserved,
+                "fabro",
+            ),
+        ];
+        assert_eq!(
+            build_tui_model(&events, 0).unavailable_sources(),
+            ["github".to_owned()]
+        );
     }
 
     /// A model whose selected repo is `repo` and whose header reports each name

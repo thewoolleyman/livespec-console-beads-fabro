@@ -44,9 +44,10 @@ use console_application::{
         ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
         SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
         attention_item_payload_json, attention_resolved_payload_json, diff_needs_attention,
-        materialize_attention_items, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_payload_json,
+        materialize_attention_items, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
+        work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -620,10 +621,15 @@ fn backfill_source_adapters(
     Ok(summaries)
 }
 
-/// The orchestrator plane's Dispatcher journal file the console reads.
+/// The orchestrator plane's Dispatcher journal file the console reads, as a
+/// path RELATIVE to the selected repo checkout.
 ///
 /// Both the dispatch source adapter and the autonomous per-decision audit
 /// surface ([`observe_and_reflect_autonomous_decisions`]) ride this one journal.
+/// Callers resolve it to an ABSOLUTE path against the selected repo via
+/// [`BackingCliResolution::dispatcher_journal_path`] before reading, so the
+/// dispatch source keeps reading the right tenant's journal regardless of the
+/// process working directory.
 pub const DISPATCHER_JOURNAL_PATH: &str = "tmp/dispatcher-journal.jsonl";
 
 /// A live source adapter paired with its adapter id, as references.
@@ -641,14 +647,25 @@ pub fn live_source_adapters<'a>(
     repo: &str,
 ) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
     let resolution = BackingCliResolution::from_environment()?;
-    live_source_adapters_with_programs(probe, repo, resolution.programs())
+    live_source_adapters_with_programs(
+        probe,
+        repo,
+        resolution.programs(),
+        &resolution.dispatcher_journal_path(),
+    )
 }
 
 /// Build real source adapters with an explicit backing CLI resolution.
+///
+/// `journal_path` is the ABSOLUTE Dispatcher journal path
+/// ([`BackingCliResolution::dispatcher_journal_path`]); the dispatch source
+/// reads it directly so the source resolves the right tenant's journal
+/// regardless of the process working directory.
 pub fn live_source_adapters_with_programs<'a>(
     probe: &'a dyn SourceProbe,
     repo: &str,
     programs: &BackingCliPrograms,
+    journal_path: &str,
 ) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
     let livespec_args = programs
         .livespec()
@@ -671,7 +688,7 @@ pub fn live_source_adapters_with_programs<'a>(
         (
             "dispatcher",
             SourceAdapterKind::Dispatcher,
-            SourceObservationPlan::file(DISPATCHER_JOURNAL_PATH),
+            SourceObservationPlan::file(journal_path),
             parse_dispatcher_observation,
         ),
         (
@@ -690,7 +707,7 @@ pub fn live_source_adapters_with_programs<'a>(
             "github",
             SourceAdapterKind::GitHub,
             SourceObservationPlan::command(
-                "gh",
+                programs.github(),
                 &["pr", "list", "--json", "number,state", "--limit", "1"],
             ),
             parse_github_observation,
@@ -1763,7 +1780,9 @@ fn event_append_from_normalized_source_event(
 }
 
 /// The persisted `payload_json` for a normalized observation. Work-item
-/// snapshots are serialized in full so the lane board can rebuild from them;
+/// snapshots are serialized in full so the lane board can rebuild from them; a
+/// not-observed finding carries its human-readable reason so the operator can
+/// DURABLY see WHY a source is unavailable (Adapter Contract honesty rule);
 /// other source payloads carry no projection state yet and persist as `{}`.
 fn normalized_payload_json(payload: &SourcePayload) -> String {
     match payload {
@@ -1772,12 +1791,13 @@ fn normalized_payload_json(payload: &SourcePayload) -> String {
             attention_item_payload_json(item)
         }
         SourcePayload::AttentionItemResolved(id) => attention_resolved_payload_json(id),
+        SourcePayload::NotObservedFinding(finding) => not_observed_finding_payload_json(finding),
         SourcePayload::CompletenessFinding(_)
         | SourcePayload::DispatcherJournalEntry(_)
         | SourcePayload::FabroRunSnapshot(_)
         | SourcePayload::GithubPullRequestSnapshot(_)
         | SourcePayload::LivespecNextSnapshot(_)
-        | SourcePayload::NotObservedFinding(_) => "{}".to_owned(),
+        | SourcePayload::ObservedIdle => "{}".to_owned(),
     }
 }
 
@@ -4501,6 +4521,10 @@ mod tests {
             "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM".to_owned(),
             "/custom/needs".to_owned(),
         );
+        env.insert(
+            "LIVESPEC_CONSOLE_GH_PROGRAM".to_owned(),
+            "/custom/gh".to_owned(),
+        );
 
         let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, None))?;
 
@@ -4517,6 +4541,7 @@ mod tests {
         assert_eq!(resolution.programs().dispatcher(), "/custom/dispatcher");
         assert_eq!(resolution.programs().drive(), "/custom/drive");
         assert_eq!(resolution.programs().needs_attention(), "/custom/needs");
+        assert_eq!(resolution.programs().github(), "/custom/gh");
         Ok(())
     }
 
@@ -4537,14 +4562,16 @@ mod tests {
             resolution.programs().list_work_items(),
             bin.join("list_work_items.py").display().to_string()
         );
-        assert_eq!(
-            resolution.programs().livespec().program(),
-            bin.join("next.py").display().to_string()
-        );
+        // The livespec source observes the SPEC-side `livespec next` action, NOT
+        // the orchestrator plugin's impl-side `next.py` (which ranks work-items).
+        assert_eq!(resolution.programs().livespec().program(), "livespec");
         assert_eq!(
             resolution.programs().livespec().args(),
-            &["--json".to_owned()]
+            &["next".to_owned(), "--json".to_owned()]
         );
+        // The github source uses the `gh` CLI, overridable via
+        // LIVESPEC_CONSOLE_GH_PROGRAM.
+        assert_eq!(resolution.programs().github(), "gh");
         assert_eq!(
             resolution.programs().drive(),
             bin.join("drive.py").display().to_string()
@@ -4582,9 +4609,11 @@ mod tests {
             resolution.programs().list_work_items(),
             bin.join("list_work_items.py").display().to_string()
         );
+        // Spec-side `livespec next`, not the orchestrator's impl-side `next.py`.
+        assert_eq!(resolution.programs().livespec().program(), "livespec");
         assert_eq!(
-            resolution.programs().livespec().program(),
-            bin.join("next.py").display().to_string()
+            resolution.programs().livespec().args(),
+            &["next".to_owned(), "--json".to_owned()]
         );
         assert_eq!(
             resolution.programs().drive(),
@@ -4729,12 +4758,91 @@ mod tests {
             "livespec-dispatcher-drain"
         );
         assert_eq!(resolution.programs().drive(), "livespec-orchestrator-drive");
+        // No `fabro` under the injected (empty) home, so the bare default is
+        // kept — resolution never touches the ambient filesystem.
         assert_eq!(resolution.programs().fabro(), "fabro");
+        assert_eq!(resolution.programs().github(), "gh");
         assert_eq!(resolution.programs().livespec().program(), "livespec");
         assert_eq!(
             resolution.programs().livespec().args(),
             &["next".to_owned(), "--json".to_owned()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_resolves_fabro_under_the_injected_home() -> Result<(), Box<dyn Error>>
+    {
+        // A `fabro` binary at `~/.local/bin/fabro` resolves to its absolute
+        // path so it spawns under the credential wrapper's scrubbed PATH, which
+        // does not include `~/.local/bin`. Resolution reads ONLY the injected
+        // home, so this is hermetic.
+        let temp = resolver_temp_root("fabro-home")?;
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        let fabro_dir = home.join(".local/bin");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&fabro_dir)?;
+        let fabro = fabro_dir.join("fabro");
+        fs::write(&fabro, "#!/usr/bin/env bash\n")?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(home),
+        ))?;
+
+        assert_eq!(resolution.programs().fabro(), fabro.display().to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_fabro_env_override_wins_over_home_resolution()
+    -> Result<(), Box<dyn Error>> {
+        // An explicit LIVESPEC_CONSOLE_FABRO_PROGRAM override still wins over the
+        // home-relative absolute resolution.
+        let temp = resolver_temp_root("fabro-override")?;
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        let fabro_dir = home.join(".local/bin");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&fabro_dir)?;
+        fs::write(fabro_dir.join("fabro"), "#!/usr/bin/env bash\n")?;
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_FABRO_PROGRAM".to_owned(),
+            "/custom/fabro".to_owned(),
+        );
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, Some(home)))?;
+
+        assert_eq!(resolution.programs().fabro(), "/custom/fabro");
+        Ok(())
+    }
+
+    #[test]
+    fn dispatcher_journal_path_is_absolute_under_the_selected_repo() -> Result<(), Box<dyn Error>> {
+        // The dispatch source reads an ABSOLUTE journal path under the SELECTED
+        // repo, not a working-directory-relative path, so it observes the right
+        // tenant's journal regardless of the process working directory.
+        let temp = resolver_temp_root("journal")?;
+        let repo = temp.join("selected-repo");
+        fs::create_dir_all(&repo)?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            None,
+        ))?;
+
+        let journal = resolution.dispatcher_journal_path();
+        assert_eq!(
+            journal,
+            repo.join("tmp/dispatcher-journal.jsonl")
+                .display()
+                .to_string()
+        );
+        assert!(Path::new(&journal).is_absolute());
         Ok(())
     }
 

@@ -174,6 +174,13 @@ pub enum EventType {
     SourceCompletenessFindingObserved,
     /// Source could not be observed honestly.
     SourceNotObservedFindingObserved,
+    /// A backing source was successfully observed this cycle -- the positive
+    /// dual of [`Self::SourceNotObservedFindingObserved`]. Emitted when a source
+    /// is reached but holds nothing to report (observed-and-idle), so a LATER
+    /// successful poll clears a source that degraded earlier. The header's
+    /// source-availability tally reflects the LATEST poll outcome per source, so
+    /// a transient failure is never a permanent brand.
+    SourceObservedFindingObserved,
     /// Attention item appeared in the product inbox.
     AttentionItemAppeared,
     /// Attention item changed in the product inbox.
@@ -215,6 +222,7 @@ impl EventType {
             Self::LivespecReviseRequired => "spec.revise_required",
             Self::SourceCompletenessFindingObserved => "source.completeness_finding_observed",
             Self::SourceNotObservedFindingObserved => "source.not_observed_finding_observed",
+            Self::SourceObservedFindingObserved => "source.observed_finding_observed",
             Self::AttentionItemAppeared => "attention_item.appeared",
             Self::AttentionItemChanged => "attention_item.changed",
             Self::AttentionItemResolved => "attention_item.resolved",
@@ -248,6 +256,7 @@ impl EventType {
             "spec.revise_required" => Some(Self::LivespecReviseRequired),
             "source.completeness_finding_observed" => Some(Self::SourceCompletenessFindingObserved),
             "source.not_observed_finding_observed" => Some(Self::SourceNotObservedFindingObserved),
+            "source.observed_finding_observed" => Some(Self::SourceObservedFindingObserved),
             "attention_item.appeared" => Some(Self::AttentionItemAppeared),
             "attention_item.changed" => Some(Self::AttentionItemChanged),
             "attention_item.resolved" => Some(Self::AttentionItemResolved),
@@ -559,6 +568,10 @@ mod tests {
             "source.not_observed_finding_observed"
         );
         assert_eq!(
+            EventType::SourceObservedFindingObserved.contract_name(),
+            "source.observed_finding_observed"
+        );
+        assert_eq!(
             EventType::AttentionItemAppeared.contract_name(),
             "attention_item.appeared"
         );
@@ -606,6 +619,7 @@ mod tests {
             EventType::LivespecReviseRequired,
             EventType::SourceCompletenessFindingObserved,
             EventType::SourceNotObservedFindingObserved,
+            EventType::SourceObservedFindingObserved,
             EventType::AttentionItemAppeared,
             EventType::AttentionItemChanged,
             EventType::AttentionItemResolved,

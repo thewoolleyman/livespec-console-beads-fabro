@@ -946,6 +946,10 @@ pub enum SourcePayload {
     LivespecNextSnapshot(LivespecNextSnapshot),
     /// Not observed finding variant.
     NotObservedFinding(NotObservedFinding),
+    /// Observed-and-idle marker -- a source reached successfully that held
+    /// nothing to report this cycle. It carries no payload of its own; the
+    /// observed source and repo travel on the event envelope.
+    ObservedIdle,
     /// Attention item appeared variant.
     AttentionItemAppeared(AttentionItemSnapshot),
     /// Attention item changed variant.
@@ -1440,6 +1444,22 @@ impl<'a> ObservedSourceAdapter<'a> {
             events: vec![not_observed_event(self.source, &self.repo, reason)],
         }
     }
+
+    /// A reached-but-empty source: OBSERVED-AND-IDLE, not unavailable. Emits the
+    /// positive `source.observed_finding_observed` marker (so a source that
+    /// degraded on an earlier cycle clears from the header's unavailability tally
+    /// on this later successful poll) and carries the previous checkpoint
+    /// forward. It emits NO not-observed finding -- an idle factory (an empty
+    /// work-item ledger, zero open pull requests, or a factory that has not yet
+    /// written a dispatch journal) is never dressed as a cockpit-blind screen.
+    fn idle_poll(&self, previous_checkpoint: Option<&str>) -> AdapterPoll {
+        let checkpoint = previous_checkpoint
+            .map_or_else(|| OBSERVED_IDLE_CHECKPOINT.to_owned(), ToOwned::to_owned);
+        AdapterPoll {
+            checkpoint,
+            events: vec![source_observed_event(self.source, &self.repo)],
+        }
+    }
 }
 
 impl PullSourcePort for ObservedSourceAdapter<'_> {
@@ -1450,6 +1470,15 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 stdout,
                 success: true,
             } => {
+                // A SUCCESSFUL observation of an EMPTY source is NOT an
+                // unavailability: the source was reached and simply holds nothing
+                // to report. Treat it as observed-and-idle BEFORE the
+                // source-specific normalizer (whose empty-record branch predates
+                // the honesty rule and still returns an error) can misclassify it
+                // as unreachable.
+                if is_idle_payload(&stdout) {
+                    return Ok(self.idle_poll(previous));
+                }
                 let observed = ObservedSource::new(self.source, &self.repo, &stdout);
                 match (self.normalize)(&observed) {
                     Ok(parsed) if !parsed.events.is_empty() => {
@@ -1468,6 +1497,35 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 Ok(self.not_observed_poll(previous, &reason))
             }
         }
+    }
+}
+
+/// The stable checkpoint an observed-and-idle poll carries when there is no
+/// previous checkpoint to advance -- the source was reached but held nothing to
+/// report, so there is no observed state version to record.
+const OBSERVED_IDLE_CHECKPOINT: &str = "observed_idle";
+
+/// Whether a successfully-probed payload represents a reached-but-empty source
+/// (observed-and-idle) rather than an interpretable observation.
+///
+/// A blank payload, or valid JSON that is `null`, an empty array (`[]`), or an
+/// empty object (`{}`), means the source was reached and holds nothing to
+/// report -- an empty work-item ledger, zero open pull requests, or a factory
+/// that has not yet written a dispatch journal. Any other payload (non-empty
+/// JSON, or non-JSON text) is handed to the source-specific normalizer, which
+/// interprets it or returns an honest not-observed reason. This is the
+/// cockpit-blind-vs-idle distinction (`scenarios.md` Scenario 13).
+fn is_idle_payload(stdout: &str) -> bool {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(serde_json::Value::Null) => true,
+        Ok(serde_json::Value::Array(items)) => items.is_empty(),
+        Ok(serde_json::Value::Object(fields)) => fields.is_empty(),
+        Ok(_scalar) => false,
+        Err(_not_json) => false,
     }
 }
 
@@ -1509,6 +1567,24 @@ impl NotObservedFinding {
     }
 }
 
+/// The persisted `payload_json` for a not-observed finding.
+///
+/// Carries the human-readable reason so it is DURABLY recorded with the
+/// finding: the operator sees WHY a source is unavailable, not merely THAT it
+/// is (`contracts.md` -> Adapter Contract honesty rule; `scenarios.md`
+/// Scenario 13 "named with a reason").
+#[must_use]
+pub fn not_observed_finding_payload_json(finding: &NotObservedFinding) -> String {
+    let mut object = serde_json::Map::new();
+    object.insert("repo".to_owned(), finding.repo.clone().into());
+    object.insert(
+        "source".to_owned(),
+        finding.source.source_name().to_owned().into(),
+    );
+    object.insert("reason".to_owned(), finding.reason.clone().into());
+    serde_json::Value::Object(object).to_string()
+}
+
 fn not_observed_event(
     source: SourceAdapterKind,
     repo: &str,
@@ -1527,6 +1603,30 @@ fn not_observed_event(
         ),
         format!("{}:{repo}:not_observed", source.source_name()),
         SourcePayload::NotObservedFinding(finding),
+    )
+}
+
+/// The positive `source.observed_finding_observed` marker for an
+/// observed-and-idle poll. Its identity is stable per (source, repo), so
+/// repeated idle polls deduplicate to one stored fact; a later cycle's marker
+/// still lands AFTER an intervening not-observed finding (higher `global_seq`),
+/// so the latest-per-source projection (the `unavailable_sources` fold in the
+/// crate root) clears the source. The observed source and repo travel on the
+/// event envelope (`source`, `stream_id`), so the marker payload carries no
+/// data of its own -- it persists as `{}`.
+fn source_observed_event(source: SourceAdapterKind, repo: &str) -> NormalizedSourceEvent {
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!("evt:{}:{repo}:observed_idle", source.source_name()),
+            1,
+            "source".to_owned(),
+            EventType::SourceObservedFindingObserved,
+            source.source_name().to_owned(),
+            repo_stream(repo),
+            1,
+        ),
+        format!("{}:{repo}:observed_idle", source.source_name()),
+        SourcePayload::ObservedIdle,
     )
 }
 
@@ -2279,9 +2379,10 @@ mod tests {
         materialize_attention_items, normalize_dispatcher_journal_entry,
         normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
         normalize_livespec_next_snapshot, normalize_work_item_snapshot,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
+        parse_orchestrator_observation, run_adapter_poll, work_item_snapshot_from_payload_json,
+        work_item_snapshot_payload_json,
     };
 
     #[test]
@@ -2353,12 +2454,11 @@ mod tests {
     }
 
     // Test normalizer: a non-empty payload normalizes into a work-item snapshot
-    // poll; the literal "empty" yields zero events; blank input is an error.
+    // poll; the literal "empty" yields zero events. A blank/empty payload never
+    // reaches the normalizer -- the adapter's idle gate treats it as
+    // observed-and-idle first.
     fn stub_normalize(observed: &ObservedSource) -> Result<ParsedObservation, String> {
         let trimmed = observed.stdout().trim();
-        if trimmed.is_empty() {
-            return Err("blank observation".to_owned());
-        }
         if trimmed == "empty" {
             return Ok(ParsedObservation::new("v-empty", Vec::new()));
         }
@@ -2509,6 +2609,19 @@ mod tests {
         );
     }
 
+    /// A reached-but-empty poll: exactly one positive observed-and-idle marker
+    /// and NO not-observed finding, so the header's unavailability tally never
+    /// counts an idle source.
+    fn assert_observed_idle(poll: &AdapterPoll) {
+        assert_eq!(poll.events().len(), 1);
+        let event = &poll.events()[0];
+        assert_eq!(
+            event.event().event_type(),
+            &EventType::SourceObservedFindingObserved
+        );
+        assert_eq!(event.payload(), &SourcePayload::ObservedIdle);
+    }
+
     #[test]
     fn observed_source_adapter_emits_not_observed_when_unavailable() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
@@ -2557,13 +2670,67 @@ mod tests {
     }
 
     #[test]
-    fn observed_source_adapter_emits_not_observed_on_parse_error() -> AdapterResult<()> {
+    fn observed_source_adapter_treats_a_blank_observation_as_idle() -> AdapterResult<()> {
+        // A reached source that returns blank output holds nothing to report:
+        // observed-and-idle, never a not-observed finding. The blank payload is
+        // caught BEFORE the normalizer (whose blank branch predates the honesty
+        // rule and returns "blank observation").
         let probe = StubProbe::command(SourceProbeOutcome::observed("   ", true));
         let adapter = orchestrator_command_adapter(&probe)?;
 
         let poll = adapter.poll(&cold_request()?)?;
 
-        assert_not_observed(&poll, "blank observation");
+        assert_observed_idle(&poll);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_treats_empty_json_containers_as_idle() -> AdapterResult<()> {
+        // An empty work-item ledger (`[]`), an empty object (`{}`), or `null`
+        // are reachable-but-empty: each is observed-and-idle, not unavailable.
+        for empty in ["[]", "{}", "null", "  [ ]  ", "\n{}\n"] {
+            let probe = StubProbe::command(SourceProbeOutcome::observed(empty, true));
+            let adapter = orchestrator_command_adapter(&probe)?;
+
+            let poll = adapter.poll(&cold_request()?)?;
+
+            assert_observed_idle(&poll);
+            // The idle poll carries a stable checkpoint (cold start) and emits no
+            // not-observed finding, so an empty source never bloats the header.
+            assert_eq!(poll.checkpoint(), "observed_idle");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observed_idle_poll_carries_the_previous_checkpoint_forward() -> AdapterResult<()> {
+        // When the source was observed before, an idle poll keeps the previous
+        // checkpoint rather than regressing to the cold-start idle sentinel.
+        let probe = StubProbe::command(SourceProbeOutcome::observed("[]", true));
+        let adapter = orchestrator_command_adapter(&probe)?;
+        let request = AdapterPollRequest::new("orchestrator:console", Some("ck-prior"), 1)?;
+
+        let poll = adapter.poll(&request)?;
+
+        assert_observed_idle(&poll);
+        assert_eq!(poll.checkpoint(), "ck-prior");
+        Ok(())
+    }
+
+    #[test]
+    fn observed_source_adapter_normalizes_a_non_empty_scalar_payload() -> AdapterResult<()> {
+        // A JSON scalar (here the number `42`) is NOT an empty container, so it
+        // is handed to the normalizer rather than treated as idle.
+        let probe = StubProbe::command(SourceProbeOutcome::observed("42", true));
+        let adapter = orchestrator_command_adapter(&probe)?;
+
+        let poll = adapter.poll(&cold_request()?)?;
+
+        assert_eq!(poll.checkpoint(), "ck-observed");
+        assert_eq!(
+            poll.events()[0].event().event_type(),
+            &EventType::WorkItemSnapshotObserved
+        );
         Ok(())
     }
 
@@ -2576,6 +2743,25 @@ mod tests {
 
         assert_not_observed(&poll, "snapshot build failed");
         Ok(())
+    }
+
+    #[test]
+    fn not_observed_finding_payload_json_carries_the_human_readable_reason() {
+        // The reason is durably persisted WITH the finding, so an operator sees
+        // WHY a source is unavailable, not merely THAT it is. Asserting on the
+        // compact JSON string keeps the test free of a never-taken parse-error
+        // path.
+        let finding = NotObservedFinding::new(
+            "livespec-console-beads-fabro",
+            SourceAdapterKind::Fabro,
+            "fabro: No such file or directory (os error 2)",
+        );
+
+        let payload = not_observed_finding_payload_json(&finding);
+
+        assert!(payload.contains(r#""repo":"livespec-console-beads-fabro""#));
+        assert!(payload.contains(r#""source":"fabro""#));
+        assert!(payload.contains(r#""reason":"fabro: No such file or directory (os error 2)""#));
     }
 
     #[test]
