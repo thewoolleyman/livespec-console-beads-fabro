@@ -498,11 +498,71 @@
     "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle",
     "scenario_file": "scenarios.md",
     "test": "crates/console-tui/src/lib.rs::tests::render_to_text_distinguishes_cockpit_blind_from_factory_idle_in_the_header",
-    "reason": "Top-of-pyramid render-level test asserting the idle-vs-blind header distinction: unavailable sources are counted and named in the header, and a healthy cycle shows no phantom unavailability count.",
+    "reason": "Top-of-pyramid render-level test asserting the idle-vs-blind header distinction: unavailable sources are counted and named in the header, and a healthy cycle shows no phantom unavailability count. Extended with four source-availability-honesty assertions (b1-source-availability-honesty): a reachable source is counted available and shows no unavailability indicator; a reached-but-empty source (an empty work-item ledger, zero open pull requests, or an absent-but-expected dispatch journal) is observed-and-idle, never counted or named unavailable; a recovered source clears from the tally on its next successful observation (latest-poll-outcome-per-source, not any historical failure); and a genuinely-unreachable source is counted and named with a durably-persisted human-readable reason. Binds the new Adapter Contract honesty clause (empty-is-not-unavailable / persisted-reason / latest-per-source).",
     "clauses": [
       {
         "gap_id": "gap-hmxhswp7",
         "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-7yl7qdx3",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-4rhbuikn",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-jez5gaos",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-vgferywx",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-uezyiwwk",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-n7vt6nbj",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid render + loop-level test for the pane-specific modal Help overlay (impl commitment tui-pane-specific-modal-help-overlay): `?` opens the overlay auto-focused to the focused pane's section, with a Global-actions section plus one per focusable pane; the overlay is a 3-character-border near-full-viewport window that never renders wider than the viewport; a left-side section menu beside a right-side help-text pane that scrolls up and down only; and a modal that always prints `esc to exit` and closes only on Esc, with any other key leaving the underlying view unswitched and unscrolled. Binds the new TUI Contract modal-help clause.",
+    "clauses": [
+      {
+        "gap_id": "gap-kz3ucpjv",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-gpol7uvv",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-bwlmtboa",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-wpgqv4zu",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-oieftjkf",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-lgc3ymdx",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-5i56qfnu",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
       }
     ]
   },
