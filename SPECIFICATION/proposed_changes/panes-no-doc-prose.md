@@ -6,7 +6,7 @@ spec_commitments:
   impl_followups:
     - id_hint: tui-panes-no-doc-prose
       description: |
-        Strip baked-in explanatory / documentation prose from the console TUI's pane bodies (crate console-tui): every pane MUST render its operational content only — the live data and state an operator acts on — and MUST NOT carry documentation sentences describing what the console is, how a projection is derived, or how a view behaves. Today several panes render useless explanatory sentences INSIDE the pane body (for example "Spec lifecycle status is projected from LiveSpec adapter observations." and "Revise-required events stay visible in the Spec view until resolved."), which waste the limited pane space and belong in the user documentation instead. Add loop-level + render tests binding Scenario 21's cases (a pane renders its operational content with no explanatory documentation sentence; a sweep of every pane finds no baked-in documentation prose; explanatory content belongs in the user documentation, not the live panes). Note: the RELOCATION of genuinely-useful explanation into the user documentation tree is a SEPARATE deliverable (B6); this follow-up covers only the constraint that pane bodies carry no baked-in documentation prose. The exact sentences removed and the exact operational content each pane renders are an implementation detail the acceptance test enumerates.
+        Strip baked-in explanatory / documentation prose from the console TUI's pane bodies (crate console-tui): every pane MUST render its operational content only — the live data and state an operator acts on — and MUST NOT carry documentation sentences describing what the console is, how a projection is derived, or how a view behaves. Today several panes render useless explanatory sentences INSIDE the pane body (for example "Spec lifecycle status is projected from LiveSpec adapter observations." and "Revise-required events stay visible in the Spec view until resolved."), which waste the limited pane space and belong in the user documentation instead. Add loop-level + render tests binding Scenario 21's cases (a pane renders its operational content with no explanatory documentation sentence beyond the operational help surfaces this contract separately requires (the Status-line hints, the modal Help overlay, and the Settings per-row inline help); a sweep of every pane finds no such baked-in documentation prose beyond those required operational help surfaces; explanatory content belongs in the user documentation, not the live panes). Note: the RELOCATION of genuinely-useful explanation into the user documentation tree is a SEPARATE deliverable (B6); this follow-up covers only the constraint that pane bodies carry no baked-in documentation prose. The exact sentences removed and the exact operational content each pane renders are an implementation detail the acceptance test enumerates.
 ---
 
 ## Proposal: Panes render operational content only, no baked-in documentation prose
@@ -57,7 +57,7 @@ ADD the following as a new paragraph, inserted immediately AFTER the existing to
 
 Verbatim text to add (a SINGLE unwrapped physical line — see the ground-truth note under CHANGE 3):
 
-"The TUI's pane bodies MUST render operational content only — the live data and state an operator acts on — and MUST NOT carry baked-in explanatory or documentation prose describing what the console is, how a projection is derived, or how a view behaves; any such explanation belongs in the user documentation, not the live panes. What operational content each pane renders is an implementation detail; the contract is that a pane body carries operational content only, with no explanatory or documentation sentences baked into it."
+"The TUI's pane bodies MUST render operational content only — the live data and state an operator acts on — and MUST NOT carry baked-in explanatory or documentation prose describing what the console is, how a projection is derived, or how a view behaves; any such explanation belongs in the user documentation, not the live panes. What operational content each pane renders is an implementation detail; the contract is that a pane body carries operational content only, with no explanatory or documentation sentences baked into it beyond the operational help surfaces this contract separately requires (the Status-line hints, the modal Help overlay, and the Settings per-row inline help)."
 
 --- CHANGE 2: SPECIFICATION/scenarios.md ---
 APPEND a new scenario section after Scenario 20 (which ends at end-of-file, with the closing ` ``` ` fence of its gherkin block). Verbatim:
@@ -86,12 +86,12 @@ Scenario: A pane renders its operational content without an explanatory document
   Given the operator has a pane focused (for example the Spec pane)
   When the pane is rendered
   Then the pane body shows only its operational content -- the live items and state the operator acts on
-  And the pane body carries no explanatory or documentation sentence describing what the console is or how the view is derived
+  And the pane body carries no explanatory or documentation sentence describing what the console is, how a projection is derived, or how a view behaves
 
 Scenario: A sweep of every pane finds no baked-in documentation prose
   Given the console TUI is rendered across all of its panes
   When every pane body is examined
-  Then no pane body contains a baked-in explanatory or documentation sentence
+  Then no pane body contains a baked-in sentence describing what the console is, how a projection is derived, or how a view behaves
   And documentation sentences such as "Spec lifecycle status is projected from LiveSpec adapter observations." and "Revise-required events stay visible in the Spec view until resolved." do not appear in any pane body
 
 Scenario: Explanatory content belongs in the user documentation, not the live panes
@@ -108,7 +108,7 @@ At revise/accept time, when Scenario 21 becomes a live `## ` heading in scenario
   "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
   "scenario_file": "scenarios.md",
   "test": "TODO",
-  "reason": "Pending top-of-pyramid acceptance test for panes rendering operational content only with no baked-in documentation prose: a pane renders its operational content (live items/state) without any explanatory documentation sentence; a sweep of every pane finds no baked-in documentation prose (for example the sentences 'Spec lifecycle status is projected from LiveSpec adapter observations.' and 'Revise-required events stay visible in the Spec view until resolved.' do not appear in any pane body); and explanatory content belongs in the user documentation, not the live panes. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the tui-panes-no-doc-prose impl follow-up; the new §\"TUI Contract\" panes-operational-content-only clause binds here.",
+  "reason": "Pending top-of-pyramid acceptance test for panes rendering operational content only with no baked-in documentation prose: a pane renders its operational content (live items/state) without any explanatory documentation sentence beyond the operational help surfaces this contract separately requires (the Status-line hints, the modal Help overlay, and the Settings per-row inline help); a sweep of every pane finds no such baked-in documentation prose beyond those required operational help surfaces (for example the sentences 'Spec lifecycle status is projected from LiveSpec adapter observations.' and 'Revise-required events stay visible in the Spec view until resolved.' do not appear in any pane body); and explanatory content belongs in the user documentation, not the live panes. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the tui-panes-no-doc-prose impl follow-up; the new §\"TUI Contract\" panes-operational-content-only clause binds here.",
   "clauses": []
 }
 
