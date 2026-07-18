@@ -44,7 +44,7 @@ ADD the following clause to the "Adapter rules:" bullet list, inserted immediate
 
 The adapter honesty rule tightens to separate a reachable-but-empty source from a genuinely unreachable one:
 
-- A SUCCESSFUL observation of an EMPTY source is NOT an unavailability. When the adapter reaches its source and the source simply holds nothing to report -- an empty work-item ledger, zero open pull requests, or an absent-but-expected dispatch journal -- the adapter MUST treat it as observed-and-idle and MUST NOT emit a not-observed finding for it. A not-observed finding is reserved for GENUINE unreachability: an unresolvable program, a non-zero command exit, an unreadable or absent required file, or an uninterpretable payload. This is the cockpit-blind-vs-idle distinction (`scenarios.md` Scenario 13): an idle factory MUST NEVER be counted or named as an unavailable source.
+- A SUCCESSFUL observation of an EMPTY source is NOT an unavailability. When the adapter reaches its source and the source simply holds nothing to report -- an empty work-item ledger, zero open pull requests, or an absent-but-expected dispatch journal -- the adapter MUST treat it as observed-and-idle and MUST NOT emit a not-observed finding for it. A not-observed finding is reserved for GENUINE unreachability: an unresolvable program, a non-zero command exit, an unreadable or absent required file, or an uninterpretable payload, or the preceding bullet's simulated / unimplemented (no real source I/O) case. This is the cockpit-blind-vs-idle distinction (`scenarios.md` Scenario 13): an idle factory MUST NEVER be counted or named as an unavailable source.
 - A not-observed finding MUST carry a human-readable reason, and that reason MUST be durably persisted with the finding so the operator can see WHY a source is unavailable, not merely THAT it is.
 - The header's source-availability tally MUST reflect the LATEST poll outcome per source: a source counts as unavailable only while its MOST RECENT poll was not-observed. A source that is observed on a later cycle MUST clear from the tally, so a transient failure is never a permanent brand.
 
@@ -73,7 +73,7 @@ Scenario: A recovered source clears from the unavailability tally on its next ob
   And the unavailability tally reflects the latest poll outcome per source rather than any historical failure
 
 Scenario: Only a genuinely unreachable source is counted, and it is named with a reason
-  Given a backing source that cannot be reached this cycle because its binary is unresolvable, its command exits non-zero, or its expected file is absent
+  Given a backing source that cannot be reached this cycle because its binary is unresolvable, its command exits non-zero, or its required file is absent or unreadable
   When the operator screen is rendered
   Then the header counts that source among the unavailable and names it
   And the not-observed finding carries a human-readable reason
