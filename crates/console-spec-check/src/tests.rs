@@ -100,10 +100,15 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // unavailable, a not-observed finding carries a durably-persisted human-
     // readable reason, and the header tally reflects the latest poll outcome per
     // source so a recovered source clears): 159 normative clauses, 15/70/22/52.
+    // The B2 status-line-context-hints revision added one contracts.md
+    // TUI-Contract clause requiring the Status line to render context-specific,
+    // non-empty shortcut key hints that reflect the focused pane and change when
+    // focus moves or a modal/overlay opens or closes: 160 normative clauses,
+    // 15/71/22/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 70),
+        ("contracts.md", 71),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
@@ -115,7 +120,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 159,
+        total, 160,
         "total normative clauses across the console spec"
     );
     Ok(())
