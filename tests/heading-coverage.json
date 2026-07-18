@@ -533,8 +533,8 @@
   {
     "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Pending top-of-pyramid render + loop-level test for the pane-specific modal Help overlay (impl commitment tui-pane-specific-modal-help-overlay): `?` opens the overlay auto-focused to the focused pane's section, with a Global-actions section plus one per focusable pane; the overlay is a 3-character-border near-full-viewport window that never renders wider than the viewport; a left-side section menu beside a right-side help-text pane that scrolls up and down only; and a modal that always prints `esc to exit` and closes only on Esc, with any other key leaving the underlying view unswitched and unscrolled. Binds the new TUI Contract modal-help clause.",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_modal_help_scenario_18`) driving the shipped binary through a real tmux pane: `?` opens the overlay auto-focused to the focused pane's section (Attention, Lanes, Settings), with a Global-actions section plus one per focusable pane; the overlay is a 3-character-border near-full-viewport window (corners derived from the captured viewport) that never renders wider than the viewport; a left-side section menu beside a right-side help-text pane whose content switches as the menu is navigated and which left/right never scroll; and a modal that always prints `esc to exit` and closes only on Esc -- `?` and other keys leave it open with the underlying view unswitched and unscrolled, and Esc returns focus to the originating pane. The render/keymap/reducer slices (auto-focus section selection, Esc-only close, section navigation resetting scroll, up/down-and-PgUp/PgDn key mapping, and the 3-character border geometry) are unit-covered in console-application and console-tui; this E2E covers the shipped raw-mode render/loop path end to end.",
     "clauses": [
       {
         "gap_id": "gap-kz3ucpjv",

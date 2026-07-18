@@ -20,10 +20,10 @@
 use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettingsRead,
-    FocusPane, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome,
-    OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow, TimelineEntry, TuiInteraction,
-    TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
-    build_tui_model_for_state, dispatcher_setting_rows, reduce_tui_interaction,
+    FocusPane, HELP_SECTION_COUNT, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
+    OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
+    TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
+    ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows, reduce_tui_interaction,
     resolve_command_palette_action, resolve_dispatcher_setting_edit,
     resolve_selected_operator_action, resolve_valve_action,
 };
@@ -418,7 +418,7 @@ fn confirm_operator_action(
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::Help => resolve_selected_operator_action(&model, requested_by),
+        | TuiOverlay::Help { .. } => resolve_selected_operator_action(&model, requested_by),
     };
     let effect = match outcome {
         Ok(outcome) => action_outcome_effect(outcome),
@@ -504,10 +504,10 @@ pub fn key_event_to_terminal_input(
         KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
+        KeyCode::PageUp => help_scroll_input(overlay, false),
+        KeyCode::PageDown => help_scroll_input(overlay, true),
         KeyCode::Home
         | KeyCode::End
-        | KeyCode::PageUp
-        | KeyCode::PageDown
         | KeyCode::Tab
         | KeyCode::BackTab
         | KeyCode::Delete
@@ -526,38 +526,40 @@ pub fn key_event_to_terminal_input(
     }
 }
 
-/// Up: in a command modal, move the action selection; with no overlay open,
-/// act within the focused pane (move the Views selection on the nav, the content
+/// Up: in a command modal, move the action selection; behind the modal Help
+/// overlay, move the left-menu section selection UP; with no overlay open, act
+/// within the focused pane (move the Views selection on the nav, the content
 /// selection in the content list, or scroll the Detail pane up); behind any
 /// other overlay it is the harmless content move.
 const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
     match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
+        TuiOverlay::Help { .. } => TuiInteraction::HelpSelectPreviousSection,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
             FocusPane::Detail => TuiInteraction::ScrollDetailUp,
         },
-        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => {
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
             TuiInteraction::SelectPrevious
         }
     }
 }
 
-/// Down: the mirror of [`up_interaction`].
+/// Down: the mirror of [`up_interaction`] (behind Help it moves the left-menu
+/// section selection DOWN).
 const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
     match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
+        TuiOverlay::Help { .. } => TuiInteraction::HelpSelectNextSection,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
             FocusPane::Detail => TuiInteraction::ScrollDetailDown,
         },
-        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } | TuiOverlay::Help => {
-            TuiInteraction::SelectNext
-        }
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => TuiInteraction::SelectNext,
     }
 }
 
@@ -569,7 +571,7 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. } => Some(TuiTerminalInput::Confirm),
-        TuiOverlay::Search { .. } | TuiOverlay::Help => None,
+        TuiOverlay::Search { .. } | TuiOverlay::Help { .. } => None,
         TuiOverlay::None => enter_content_input(model),
     }
 }
@@ -694,17 +696,37 @@ const fn colon_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     text_input(':', overlay)
 }
 
-/// `?`: with no overlay open, open the Help overlay; with Help open, close it
-/// (so `?` toggles); otherwise it is a literal character typed into the open
-/// text overlay.
+/// `?`: with no overlay open, open the modal Help overlay. While Help is open
+/// `?` is INERT -- the modal closes ONLY on `Esc`, so `?` no longer toggles it
+/// shut (per the TUI Contract: no other key, command, valve, or view-switch
+/// dismisses it). Behind an open text overlay it is a literal character.
 const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     match overlay {
         TuiOverlay::None => Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp)),
-        TuiOverlay::Help => Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay)),
+        // Esc-only close: `?` while Help is open is inert (does NOT dismiss it).
+        TuiOverlay::Help { .. } => None,
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. } => text_input('?', overlay),
+    }
+}
+
+/// `PageUp` / `PageDown`: while the modal Help overlay is open they scroll its
+/// right-hand text pane up/down; on every other surface they are inert. The
+/// right pane scrolls UP and DOWN only, so no horizontal counterpart exists.
+const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTerminalInput> {
+    match overlay {
+        TuiOverlay::Help { .. } => Some(TuiTerminalInput::Interaction(if down {
+            TuiInteraction::HelpScrollDown
+        } else {
+            TuiInteraction::HelpScrollUp
+        })),
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ValveConfirm { .. } => None,
     }
 }
 
@@ -1061,7 +1083,10 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
-        TuiOverlay::Help => render_help_overlay(overlay_rect(area), buffer, model.active_view()),
+        TuiOverlay::Help {
+            selected_section,
+            scroll,
+        } => render_help_overlay(help_overlay_rect(area), buffer, *selected_section, *scroll),
     }
 }
 
@@ -1092,81 +1117,234 @@ fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer
         .render(area, buffer);
 }
 
-/// Render the read-only Help overlay, SCOPED to the active view: the shared
-/// navigation keys plus a view-specific section -- the Settings view's help
-/// describes the six dispatcher settings and their edit, while the item views
-/// (Attention / Lanes) describe item selection, the move-to-status action, and
-/// the per-item valves. The text MUST stay in lock-step with the key handler and
-/// the footer hint.
-fn render_help_overlay(area: Rect, buffer: &mut Buffer, view: TuiView) {
+/// The character frame (margin) the modal Help window leaves between its box and
+/// the viewport edge on every side, per the TUI Contract: the window occupies
+/// nearly the full viewport with only a 3-character border on each side and on
+/// top and bottom, and it never renders wider than the viewport.
+const HELP_MODAL_MARGIN: u16 = 3;
+
+/// Width of the modal Help left-side section menu column (fits the longest
+/// section label plus its `> ` selection marker, beside a right-border divider).
+const HELP_MENU_WIDTH: u16 = 22;
+
+/// The modal Help window rect: the viewport inset by [`HELP_MODAL_MARGIN`] on
+/// every side, so a 3-character frame of the underlying screen shows around it,
+/// it occupies nearly the full viewport, and it never renders wider than the
+/// viewport. Degrades to a minimal rect on a viewport too small to inset.
+fn help_overlay_rect(area: Rect) -> Rect {
+    let margin = HELP_MODAL_MARGIN;
+    let width = area.width.saturating_sub(margin.saturating_mul(2)).max(1);
+    let height = area.height.saturating_sub(margin.saturating_mul(2)).max(1);
+    Rect::new(
+        area.x.saturating_add(margin),
+        area.y.saturating_add(margin),
+        width,
+        height,
+    )
+}
+
+/// Render the navigable, pane-specific modal Help overlay (Scenario 18 / B4): a
+/// bordered window drawn ON TOP of the main screen, laid out as a LEFT-side
+/// section menu beside a RIGHT-side help-text pane that scrolls UP and DOWN only.
+///
+/// `selected_section` is the menu section in focus -- `0` is `Global actions`,
+/// then one section per focusable pane in `TuiView::all()` order; `scroll` is the
+/// right pane's topmost visible wrapped row, clamped here to the section's
+/// wrapped height. `esc to exit` is printed at the bottom at all times, and the
+/// modal closes ONLY on `Esc`. The text MUST stay in lock-step with the key
+/// handler and the footer hint.
+fn render_help_overlay(area: Rect, buffer: &mut Buffer, selected_section: usize, scroll: usize) {
     Clear.render(area, buffer);
-    let mut lines = vec![
-        Line::from("Navigate the Views menu with up/down; Enter drills in, Esc goes back."),
+    let outer = Block::new().borders(Borders::ALL).title("Help");
+    let inner = outer.inner(area);
+    outer.render(area, buffer);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    // Reserve the bottom row for the always-visible `esc to exit` line; the menu
+    // and the scrollable text pane share the region above it.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(HELP_MENU_WIDTH), Constraint::Min(1)])
+        .split(rows[0]);
+    render_help_menu(columns[0], buffer, selected_section);
+    render_help_section_text(columns[1], buffer, selected_section, scroll);
+    // `esc to exit` sits on its own reserved row, so it is printed at the bottom
+    // at all times regardless of the selected section or the scroll offset.
+    Paragraph::new(Line::from("esc to exit")).render(rows[1], buffer);
+}
+
+/// Render the modal Help LEFT-side section menu: one row per section (`Global
+/// actions` plus one per focusable pane), the selected row marked `>` and drawn
+/// bold/reversed, beside a right-border divider separating it from the text pane.
+fn render_help_menu(area: Rect, buffer: &mut Buffer, selected_section: usize) {
+    let divider = Block::new().borders(Borders::RIGHT);
+    let inner = divider.inner(area);
+    divider.render(area, buffer);
+    let items = (0..HELP_SECTION_COUNT)
+        .map(|section| {
+            let marker = if section == selected_section {
+                "> "
+            } else {
+                "  "
+            };
+            let line = Line::from(format!("{marker}{}", help_section_label(section)));
+            if section == selected_section {
+                line.style(Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>();
+    Paragraph::new(items).render(inner, buffer);
+}
+
+/// The stable label for Help menu section `section`: `0` is `Global actions`;
+/// `1..` are the focusable panes in `TuiView::all()` order.
+fn help_section_label(section: usize) -> &'static str {
+    section
+        .checked_sub(1)
+        .and_then(|view_index| TuiView::all().get(view_index))
+        .map_or("Global actions", |view| view.label())
+}
+
+/// Render the modal Help RIGHT-side text pane for the selected section: the
+/// section's help lines, wrapped (so the pane scrolls UP and DOWN only, never
+/// left or right) and clamped so `scroll` never runs past the last wrapped row.
+fn render_help_section_text(
+    area: Rect,
+    buffer: &mut Buffer,
+    selected_section: usize,
+    scroll: usize,
+) {
+    let lines = help_section_lines(selected_section);
+    let viewport = usize::from(area.height);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let content_rows = paragraph.line_count(area.width);
+    let max_scroll = content_rows.saturating_sub(viewport);
+    let offset = scroll.min(max_scroll);
+    paragraph
+        .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
+        .render(area, buffer);
+}
+
+/// The help lines for menu section `section`: section `0` is the `Global
+/// actions` keybinding reference; `1..` are the per-pane sections.
+fn help_section_lines(section: usize) -> Vec<Line<'static>> {
+    section
+        .checked_sub(1)
+        .and_then(|view_index| TuiView::all().get(view_index).copied())
+        .map_or_else(global_help_lines, help_lines_for_view)
+}
+
+/// The `Global actions` section: the navigation and command keys available from
+/// every view, plus how the modal Help itself is navigated.
+fn global_help_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from("Global actions -- available from every view:"),
         Line::from(""),
-        Line::from("left / right  move focus across panes (Views -> Content -> Detail), clamped"),
-        Line::from("up / down    move the focused pane's selection, or scroll the Detail pane"),
+        Line::from("up / down    navigate the focused pane; in this help, the section menu"),
+        Line::from("left / right move focus across panes (Views -> Content -> Detail), clamped"),
         Line::from("enter        dive from the nav into content, or open the selected item"),
         Line::from(
             "esc          step focus back (Detail -> Content -> nav; drilled lane -> overview)",
         ),
         Line::from("/            open search"),
         Line::from(":            open the command palette (drain)"),
+        Line::from("?            open this help"),
         Line::from("q / ctrl-c   quit"),
-        Line::from("?            toggle this help"),
         Line::from(""),
-    ];
-    lines.extend(help_lines_for_view(view));
-    lines.push(Line::from(""));
-    lines.push(Line::from("Esc or ? closes this help."));
-    Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title("Help"))
-        .wrap(Wrap { trim: true })
-        .render(area, buffer);
+        Line::from("In this help: up/down change the section, PgUp/PgDn scroll this pane,"),
+        Line::from("Left/Right are inert, and only Esc closes it."),
+    ]
 }
 
-/// The view-scoped help section: the Settings view lists the six dispatcher
-/// settings and their edit; every other item view lists item selection, the
-/// move-to-status action, and the per-item valves.
+/// The per-pane help section for `view`: what the pane shows plus the keys usable
+/// while it is focused. Kept in lock-step with the key handler.
 fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
     match view {
-        TuiView::Settings => vec![
-            Line::from("Settings view -- the six dispatcher policy settings:"),
+        TuiView::Attention => vec![
+            Line::from("Attention -- the default view: the merged, ranked needs-attention"),
+            Line::from("list across the fleet, with the selected item's detail on the right."),
+            Line::from(""),
+            Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+            Line::from("enter        open the command modal for the selected work-item"),
             Line::from(
-                "  auto_approve_ready, merge_on_review_cap, acceptance_mode, review_fix_cap,",
+                "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
             ),
-            Line::from("  acceptance_rework_cap, wip_cap."),
-            Line::from("enter/space  edit the selected setting row (ordinary recorded write)"),
+            Line::from(
+                "m / n        set-admission / set-acceptance override for the selected item",
+            ),
+            Line::from("g / f / k    per-item override of merge_on_review_cap / review_fix_cap /"),
+            Line::from(
+                "              acceptance_rework_cap (up/down cycle the value, incl. `clear`)",
+            ),
         ],
-        TuiView::Attention | TuiView::Spec | TuiView::Lanes | TuiView::Events | TuiView::Repos => {
-            vec![
-                Line::from("Lanes view -- select and act on an individual work-item:"),
-                Line::from("up / down    (in a drilled-in lane) select an individual work-item"),
-                Line::from(
-                    "s            move the selected work-item to a status it may be driven to",
-                ),
-                Line::from(
-                    "             (any pre-terminal status: backlog / ready / active / blocked;",
-                ),
-                Line::from(
-                    "              plus approve -> ready, accept -> done, resolve-blocked; `done` is",
-                ),
-                Line::from(
-                    "              reached only via accept; up/down change target, Enter confirms)",
-                ),
-                Line::from(
-                    "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
-                ),
-                Line::from(
-                    "m / n        set-admission / set-acceptance override for the selected work-item",
-                ),
-                Line::from(
-                    "g / f / k    per-item override of merge_on_review_cap / review_fix_cap /",
-                ),
-                Line::from(
-                    "              acceptance_rework_cap (up/down cycle the value, incl. `clear`)",
-                ),
-            ]
-        }
+        TuiView::Spec => vec![
+            Line::from("Spec -- the spec-side status view (read-only): the specification's"),
+            Line::from("lifecycle state for the selected repo."),
+            Line::from(""),
+            Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+            Line::from("left / right move focus across the panes (Views -> Content -> Detail)"),
+        ],
+        TuiView::Lanes => vec![
+            Line::from("Lanes -- the work-item lane board: every lane column beside the nav."),
+            Line::from("Enter drills into a lane for its full rank-ordered list."),
+            Line::from(""),
+            Line::from("up / down    move the lane selection; in a drilled-in lane,"),
+            Line::from("             select an individual work-item"),
+            Line::from("enter        drill into the selected lane"),
+            Line::from("esc          return a drilled-in lane to its overview"),
+            Line::from("s            move the selected work-item to a status it may be driven to"),
+            Line::from(
+                "             (any pre-terminal status: backlog / ready / active / blocked;",
+            ),
+            Line::from(
+                "              plus approve -> ready, accept -> done, resolve-blocked; `done`",
+            ),
+            Line::from(
+                "              is reached only via accept; up/down change target, Enter confirms)",
+            ),
+            Line::from(
+                "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
+            ),
+            Line::from(
+                "m / n        set-admission / set-acceptance override for the selected item",
+            ),
+            Line::from("g / f / k    per-item override of merge_on_review_cap / review_fix_cap /"),
+            Line::from(
+                "              acceptance_rework_cap (up/down cycle the value, incl. `clear`)",
+            ),
+        ],
+        TuiView::Events => vec![
+            Line::from("Events -- the console event timeline (read-only): the observed"),
+            Line::from("source events for the selected repo."),
+            Line::from(""),
+            Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+            Line::from("left / right move focus across the panes (Views -> Content -> Detail)"),
+        ],
+        TuiView::Repos => vec![
+            Line::from("Repos -- the fleet repo roster (read-only): the repos the console"),
+            Line::from("observes, with the selected repo's detail on the right."),
+            Line::from(""),
+            Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+            Line::from("left / right move focus across the panes (Views -> Content -> Detail)"),
+        ],
+        TuiView::Settings => vec![
+            Line::from("Settings -- the dispatcher-settings surface: one row per orchestrator"),
+            Line::from("setting, each showing the effective value and inline help."),
+            Line::from(""),
+            Line::from("The six dispatcher policy settings:"),
+            Line::from("  auto_approve_ready, merge_on_review_cap, acceptance_mode,"),
+            Line::from("  review_fix_cap, acceptance_rework_cap, wip_cap."),
+            Line::from("enter / space  edit the selected setting row (an ordinary recorded write)"),
+            Line::from("A non-default value that lets the factory act without a human is"),
+            Line::from("labelled \"dangerous / use with caution\"."),
+        ],
     }
 }
 
@@ -1552,7 +1730,7 @@ mod tests {
         DispatcherSettingsRead, FocusPane, LaneFocus, OperatorAction, OperatorActionOutcome,
         OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
         TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, reduce_tui_interaction,
+        build_tui_model_for_state, help_section_for_view, reduce_tui_interaction,
     };
 
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1998,12 +2176,15 @@ mod tests {
     }
 
     #[test]
-    fn keymap_toggles_the_help_overlay_with_question_mark() {
-        // `?` with no overlay open opens Help; `?` again (Help open) closes it;
-        // `?` typed into a text overlay is a literal char; `?` behind the
-        // command modal is inert.
+    fn keymap_opens_help_and_closes_it_only_on_esc() {
+        // `?` with no overlay open opens Help; while Help is open `?` is INERT
+        // (Esc-only close -- no toggle); `?` typed into a text overlay is a
+        // literal char; `?` behind the command modal is inert.
         let none = attention_model(TuiOverlay::None);
-        let help = attention_model(TuiOverlay::Help);
+        let help = attention_model(TuiOverlay::Help {
+            selected_section: 1,
+            scroll: 0,
+        });
         let search = attention_model(TuiOverlay::Search {
             query: String::new(),
         });
@@ -2015,9 +2196,10 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Char('?')), &none),
             Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp))
         );
+        // Esc-only close: `?` while Help is open no longer dismisses it.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Char('?')), &help),
-            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+            None
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Char('?')), &search),
@@ -2028,17 +2210,35 @@ mod tests {
             None
         );
 
-        // Behind the Help overlay, up/down are the harmless content moves, Enter
-        // is inert, and Esc closes the overlay.
+        // Behind the Help overlay: up/down navigate the section menu, PgUp/PgDn
+        // scroll the right pane, left/right and Enter are inert, and only Esc
+        // closes the overlay.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Up), &help),
             Some(TuiTerminalInput::Interaction(
-                TuiInteraction::SelectPrevious
+                TuiInteraction::HelpSelectPreviousSection
             ))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &help),
-            Some(TuiTerminalInput::Interaction(TuiInteraction::SelectNext))
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::HelpSelectNextSection
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageDown), &help),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::HelpScrollDown
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageUp), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpScrollUp))
+        );
+        assert_eq!(key_event_to_terminal_input(key(KeyCode::Left), &help), None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Right), &help),
+            None
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &help),
@@ -2070,19 +2270,26 @@ mod tests {
     }
 
     #[test]
-    fn render_to_text_draws_the_help_overlay() {
-        let state = TuiInteractionState::new(0, TuiOverlay::Help);
+    fn render_to_text_draws_the_modal_help_overlay() {
+        // The modal renders its title, the always-visible `esc to exit` footer,
+        // the `Global actions` menu section, and one section per focusable pane.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                selected_section: help_section_for_view(TuiView::Attention),
+                scroll: 0,
+            },
+        );
         let model = build_tui_model_for_state(&demo_events(), &state);
 
-        let output = render_to_text(&model, 96, 24);
+        let output = render_to_text(&model, 96, 24).unwrap_or_default();
 
-        assert_eq!(output.as_ref().map(|r| r.contains("Help")), Ok(true));
-        assert_eq!(
-            output
-                .as_ref()
-                .map(|r| r.contains("Navigate the Views menu")),
-            Ok(true)
-        );
+        assert!(output.contains("Help"), "modal title missing");
+        assert!(output.contains("esc to exit"), "esc-to-exit footer missing");
+        assert!(output.contains("Global actions"), "Global actions missing");
+        for pane in ["Attention", "Lanes", "Settings"] {
+            assert!(output.contains(pane), "menu section {pane:?} missing");
+        }
     }
 
     #[test]
@@ -3521,30 +3728,49 @@ mod tests {
     }
 
     #[test]
-    fn help_overlay_is_scoped_to_the_active_view() {
-        // The Settings view help names the six settings and the edit, not the
-        // item-lane actions.
+    fn help_overlay_auto_focuses_the_active_pane_section() {
+        // `?` from the Settings pane auto-focuses the Settings section: the right
+        // pane names the six settings and the edit, not the item-lane actions,
+        // and the menu marks Settings as selected.
         let settings = build_tui_model_for_state(
             &[],
-            &TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::Help),
+            &TuiInteractionState::for_view(
+                TuiView::Settings,
+                0,
+                TuiOverlay::Help {
+                    selected_section: help_section_for_view(TuiView::Settings),
+                    scroll: 0,
+                },
+            ),
         );
         let settings_help = render_to_text(&settings, 120, 72).unwrap_or_default();
+        assert!(settings_help.contains("> Settings"), "{settings_help}");
         assert!(settings_help.contains("auto_approve_ready"));
         assert!(settings_help.contains("edit the selected setting row"));
         assert!(!settings_help.contains("move the selected work-item to a status"));
 
-        // The Lanes view help describes item selection and the move-to-status
-        // action.
+        // `?` from the Lanes pane auto-focuses the Lanes section: item selection
+        // and the move-to-status action, with Lanes marked selected.
         let lanes = build_tui_model_for_state(
             &lane_render_events(),
-            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Help),
+            &TuiInteractionState::for_view(
+                TuiView::Lanes,
+                0,
+                TuiOverlay::Help {
+                    selected_section: help_section_for_view(TuiView::Lanes),
+                    scroll: 0,
+                },
+            ),
         );
         let lanes_help = render_to_text(&lanes, 120, 72).unwrap_or_default();
+        assert!(lanes_help.contains("> Lanes"), "{lanes_help}");
         assert!(lanes_help.contains("move the selected work-item to a status"));
         assert!(lanes_help.contains("select an individual work-item"));
         // The broadened move set and the three per-item override keys are named.
         assert!(lanes_help.contains("any pre-terminal status"));
         assert!(lanes_help.contains("per-item override of merge_on_review_cap"));
+        // The Lanes right pane must not spill the Settings section's text.
+        assert!(!lanes_help.contains("edit the selected setting row"));
     }
 
     #[test]
@@ -3697,10 +3923,18 @@ mod tests {
 
     #[test]
     fn help_overlay_lists_the_valve_keys() {
-        let state = TuiInteractionState::new(0, TuiOverlay::Help);
+        // The Attention section (auto-focused on the default view) names the
+        // per-item valve keys.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                selected_section: help_section_for_view(TuiView::Attention),
+                scroll: 0,
+            },
+        );
         let model = build_tui_model_for_state(&demo_events(), &state);
-        // A tall area so the full help body (including the valve keys near the
-        // bottom) renders inside the centered modal rather than being clipped.
+        // A tall area so the full section body (including the valve keys near the
+        // bottom) renders inside the modal rather than being clipped.
         let output = render_to_text(&model, 120, 72);
         assert_eq!(
             output
@@ -3713,6 +3947,163 @@ mod tests {
                 .as_ref()
                 .map(|r| r.contains("set-admission / set-acceptance")),
             Ok(true)
+        );
+    }
+
+    #[test]
+    fn help_menu_navigation_switches_the_right_pane_section() {
+        // Navigating the left menu (HelpSelectNextSection) switches the right
+        // pane's content: from the Lanes section (auto-focused) to the Events
+        // section, the Lanes-only text disappears and the Events text appears.
+        let events = lane_render_events();
+        let opened = reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenHelp,
+        );
+        let lanes = build_tui_model_for_state(&events, &opened);
+        let lanes_text = render_to_text(&lanes, 120, 40).unwrap_or_default();
+        assert!(lanes_text.contains("lane board"), "{lanes_text}");
+        assert!(!lanes_text.contains("event timeline"), "{lanes_text}");
+
+        let next = reduce_tui_interaction(&opened, &events, TuiInteraction::HelpSelectNextSection);
+        let events_model = build_tui_model_for_state(&events, &next);
+        let events_text = render_to_text(&events_model, 120, 40).unwrap_or_default();
+        assert!(events_text.contains("> Events"), "{events_text}");
+        assert!(events_text.contains("event timeline"), "{events_text}");
+        assert!(!events_text.contains("lane board"), "{events_text}");
+    }
+
+    #[test]
+    fn help_modal_is_inset_by_a_three_character_border() {
+        // The modal is a window on top of the main screen with a 3-character
+        // border on each side and on top and bottom, never wider than the
+        // viewport. At 112x28 the box's corners sit at column 3 and column 108.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                selected_section: 0,
+                scroll: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+        let output = render_to_text(&model, 112, 28).unwrap_or_default();
+        let lines: Vec<&str> = output.lines().collect();
+        // The char AT a given column (one char per cell); the nav's own box lives
+        // at column 0, so read column 3 directly rather than the first corner.
+        let at = |line: &str, col: usize| line.chars().nth(col);
+        // A 3-char left/right margin puts the modal's box corners at column 3 and
+        // column 108 (112 - 1 - 3). Top and bottom rows are inset 3 from the edges.
+        let top_row = lines.iter().position(|line| at(line, 3) == Some('┌'));
+        assert_eq!(top_row, Some(3), "top-border inset to column 3");
+        assert_eq!(at(lines[3], 108), Some('┐'), "top-right corner");
+        let bottom_row = lines.iter().position(|line| at(line, 3) == Some('└'));
+        assert_eq!(bottom_row, Some(24), "bottom-border at row 24");
+        assert_eq!(at(lines[24], 108), Some('┘'), "bottom-right corner");
+        // Never wider than the viewport.
+        for line in &lines {
+            assert!(line.chars().count() <= 112, "line exceeds viewport");
+        }
+    }
+
+    #[test]
+    fn render_help_overlay_renders_every_pane_section() {
+        // Each menu section renders its own text: Global actions plus one per
+        // focusable pane (Attention, Spec, Lanes, Events, Repos, Settings), each
+        // marked selected, with the always-visible `esc to exit` footer.
+        let render_section = |section: usize| {
+            let state = TuiInteractionState::new(
+                0,
+                TuiOverlay::Help {
+                    selected_section: section,
+                    scroll: 0,
+                },
+            );
+            let model = build_tui_model_for_state(&demo_events(), &state);
+            render_to_text(&model, 120, 72).unwrap_or_default()
+        };
+        let global = render_section(0);
+        assert!(global.contains("Global actions -- available from every view"));
+        let expectations = [
+            (TuiView::Attention, "merged, ranked needs-attention"),
+            (TuiView::Spec, "spec-side status"),
+            (TuiView::Lanes, "work-item lane board"),
+            (TuiView::Events, "console event timeline"),
+            (TuiView::Repos, "fleet repo roster"),
+            (TuiView::Settings, "dispatcher-settings surface"),
+        ];
+        for (view, needle) in expectations {
+            let output = render_section(help_section_for_view(view));
+            assert!(output.contains(needle), "{view:?} missing {needle:?}");
+            let marker = format!("> {}", view.label());
+            assert!(output.contains(&marker), "{view:?} not marked selected");
+            assert!(output.contains("esc to exit"), "{view:?} footer missing");
+        }
+    }
+
+    #[test]
+    fn render_help_overlay_survives_a_viewport_too_small_to_inset() {
+        // A viewport smaller than the 3-char frame collapses the modal's inner
+        // area to nothing; the renderer must guard it and not panic.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                selected_section: 0,
+                scroll: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+        let output = render_to_text(&model, 7, 7);
+        assert!(output.is_ok(), "tiny render must not error: {output:?}");
+    }
+
+    #[test]
+    fn keymap_page_keys_scroll_only_the_help_pane() {
+        // PageUp/PageDown scroll the Help right pane; on every other surface they
+        // are inert.
+        let help = attention_model(TuiOverlay::Help {
+            selected_section: 0,
+            scroll: 0,
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageDown), &help),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::HelpScrollDown
+            ))
+        );
+        let none = attention_model(TuiOverlay::None);
+        let search = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageDown), &none),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageUp), &search),
+            None
+        );
+    }
+
+    #[test]
+    fn keymap_up_down_move_the_selection_behind_a_text_overlay() {
+        // Behind Search / Command Palette, up/down are the harmless content
+        // moves; the section-menu navigation is Help-only.
+        let search = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        let palette = attention_model(TuiOverlay::CommandPalette {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &search),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::SelectPrevious
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &palette),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::SelectNext))
         );
     }
 }

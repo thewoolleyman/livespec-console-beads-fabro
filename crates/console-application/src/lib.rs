@@ -512,9 +512,20 @@ pub enum TuiOverlay {
         /// Index of the currently selected action within the modal's action list.
         selected_action_index: usize,
     },
-    /// Help variant: a read-only keybinding reference opened with `?` and
-    /// dismissed with `Esc` or `?`. It carries no state and submits nothing.
-    Help,
+    /// Help variant: the navigable, pane-specific modal help overlay opened
+    /// with `?`. It carries the selected left-menu section index and the
+    /// right-pane vertical scroll offset. It closes ONLY on `Esc` -- no other
+    /// key, command, valve, or view-switch dismisses it (per the TUI Contract).
+    Help {
+        /// Index of the selected help section in the left menu. `0` is the
+        /// `Global actions` section; `1..` map to `TuiView::all()` in order, so
+        /// section `i` (for `i >= 1`) is `TuiView::all()[i - 1]`.
+        selected_section: usize,
+        /// The right-pane vertical scroll offset (the topmost visible wrapped
+        /// row) for the selected section. Reset to `0` whenever the section
+        /// changes, and clamped by the renderer to the section's wrapped height.
+        scroll: usize,
+    },
     /// Valve-confirm variant: the confirm modal that stages one operator
     /// human-valve/policy-edit intent against the selected work-item. `Enter`
     /// submits the valve through the shared orchestrator action port; `up`/`down`
@@ -538,7 +549,10 @@ impl TuiOverlay {
     pub fn query(&self) -> Option<&str> {
         match self {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
-            Self::None | Self::CommandModal { .. } | Self::ValveConfirm { .. } | Self::Help => None,
+            Self::None
+            | Self::CommandModal { .. }
+            | Self::ValveConfirm { .. }
+            | Self::Help { .. } => None,
         }
     }
 
@@ -553,7 +567,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::ValveConfirm { .. }
-            | Self::Help => None,
+            | Self::Help { .. } => None,
         }
     }
 
@@ -567,7 +581,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
-            | Self::Help => None,
+            | Self::Help { .. } => None,
         }
     }
 }
@@ -618,8 +632,24 @@ pub enum TuiInteraction {
     /// Scroll the focused Detail pane's content up one line (the `up` key while
     /// the Detail pane holds focus).
     ScrollDetailUp,
-    /// Open the read-only Help overlay (the `?` keybinding reference).
+    /// Open the navigable, pane-specific modal Help overlay (the `?` binding),
+    /// auto-focused to the section for the currently active pane/view.
     OpenHelp,
+    /// Move the modal Help left-menu selection to the NEXT section (down),
+    /// clamped at the last section, resetting the right-pane scroll. Inert
+    /// unless the Help overlay is open.
+    HelpSelectNextSection,
+    /// Move the modal Help left-menu selection to the PREVIOUS section (up),
+    /// clamped at the first section, resetting the right-pane scroll. Inert
+    /// unless the Help overlay is open.
+    HelpSelectPreviousSection,
+    /// Scroll the modal Help right-hand text pane DOWN one row. Inert unless the
+    /// Help overlay is open; the renderer clamps the offset to the section
+    /// height, so the scroll never runs past the last wrapped row.
+    HelpScrollDown,
+    /// Scroll the modal Help right-hand text pane UP one row. Inert unless the
+    /// Help overlay is open.
+    HelpScrollUp,
     /// Open the valve-confirm modal staging the given human-valve/policy-edit
     /// intent against the selected work-item.
     OpenValveConfirm(PendingValve),
@@ -2298,7 +2328,22 @@ pub fn reduce_tui_interaction(
         TuiInteraction::ScrollDetailUp => state
             .clone()
             .with_detail_scroll(state.detail_scroll().saturating_sub(1)),
-        TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help),
+        TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help {
+            selected_section: help_section_for_view(state.active_view()),
+            scroll: 0,
+        }),
+        TuiInteraction::HelpSelectNextSection => state
+            .clone()
+            .with_overlay(help_select_section(state.overlay(), true)),
+        TuiInteraction::HelpSelectPreviousSection => state
+            .clone()
+            .with_overlay(help_select_section(state.overlay(), false)),
+        TuiInteraction::HelpScrollDown => state
+            .clone()
+            .with_overlay(help_scroll(state.overlay(), true)),
+        TuiInteraction::HelpScrollUp => state
+            .clone()
+            .with_overlay(help_scroll(state.overlay(), false)),
         TuiInteraction::OpenValveConfirm(valve) => state
             .clone()
             .with_overlay(TuiOverlay::ValveConfirm { valve }),
@@ -4636,7 +4681,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
-        | TuiOverlay::Help => None,
+        | TuiOverlay::Help { .. } => None,
     }
 }
 
@@ -4651,7 +4696,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
-        | TuiOverlay::Help => overlay.clone(),
+        | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
 
@@ -4689,6 +4734,76 @@ fn view_index(active_view: TuiView) -> usize {
         .unwrap_or_default()
 }
 
+/// The number of sections the modal Help menu carries.
+///
+/// One `Global actions` section plus one section per focusable pane
+/// (`TuiView`) -- the count the menu enumerates and the navigation clamp
+/// bounds against.
+pub const HELP_SECTION_COUNT: usize = 1 + TuiView::all().len();
+
+/// The Help-menu section index that pane/view `view` auto-focuses.
+///
+/// Section `0` is `Global actions`; each view occupies section
+/// `view_index + 1`, so the section order mirrors the nav (per the TUI
+/// Contract: one section per focusable pane, `?` opens auto-focused to THAT
+/// pane's section).
+#[must_use]
+pub fn help_section_for_view(view: TuiView) -> usize {
+    view_index(view) + 1
+}
+
+/// Move the modal Help menu selection one section forward (`down`) or backward
+/// (`up`), clamped to the valid section range, resetting the right-pane scroll
+/// so a newly selected section always starts at its top. Leaves a non-Help
+/// overlay unchanged (the interaction is inert unless Help is open).
+fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::Help {
+            selected_section, ..
+        } => {
+            let next = if down {
+                (selected_section + 1).min(HELP_SECTION_COUNT - 1)
+            } else {
+                selected_section.saturating_sub(1)
+            };
+            TuiOverlay::Help {
+                selected_section: next,
+                scroll: 0,
+            }
+        }
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ValveConfirm { .. } => overlay.clone(),
+    }
+}
+
+/// Scroll the modal Help right-hand text pane one row down (`down`) or up,
+/// preserving the selected section. Down saturates (the renderer clamps the
+/// offset to the section's wrapped height); up saturates at the top. Leaves a
+/// non-Help overlay unchanged.
+fn help_scroll(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
+    match overlay {
+        TuiOverlay::Help {
+            selected_section,
+            scroll,
+        } => TuiOverlay::Help {
+            selected_section: *selected_section,
+            scroll: if down {
+                scroll.saturating_add(1)
+            } else {
+                scroll.saturating_sub(1)
+            },
+        },
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ValveConfirm { .. } => overlay.clone(),
+    }
+}
+
 fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
     match overlay {
         TuiOverlay::Search { query } => TuiOverlay::Search {
@@ -4700,7 +4815,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
-        | TuiOverlay::Help => overlay.clone(),
+        | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
 
@@ -4715,7 +4830,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
-        | TuiOverlay::Help => overlay.clone(),
+        | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
 
@@ -4738,7 +4853,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
-        | TuiOverlay::Help => overlay.clone(),
+        | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
 
@@ -4753,7 +4868,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
-        | TuiOverlay::Help => overlay.clone(),
+        | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
 
@@ -4977,18 +5092,19 @@ mod tests {
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, JournalAutonomousDecisionsPort,
-        LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome,
-        OrchestratorActionPort, OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve,
-        RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, build_tui_model, build_tui_model_for_state, dispatcher_setting_rows,
-        drilldown_item_count, handle_config_dispatcher_setting_set_command,
-        handle_factory_drain_command, handle_work_item_accept_command,
-        handle_work_item_approve_command, handle_work_item_move_command,
-        handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
-        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-        handle_work_item_set_dispatcher_override_command, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HELP_SECTION_COUNT,
+        JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count,
+        handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
+        handle_work_item_accept_command, handle_work_item_approve_command,
+        handle_work_item_move_command, handle_work_item_reject_command,
+        handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
+        handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
+        help_section_for_view, project_attention, project_lane_board, reduce_tui_interaction,
+        resolve_command_palette_action, resolve_dispatcher_setting_edit,
         resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
         work_item_override_outcome,
@@ -5891,14 +6007,155 @@ mod tests {
         let events = fabro_gate_events();
         let state = TuiInteractionState::new(0, TuiOverlay::None);
 
+        // OpenHelp auto-focuses the section for the active view. The default view
+        // is Attention (view index 0), so its section is 1 (`Global actions` is 0).
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenHelp);
         let model = build_tui_model_for_state(&events, &state);
-        assert_eq!(state.overlay(), &TuiOverlay::Help);
-        assert_eq!(model.overlay(), &TuiOverlay::Help);
+        let expected = TuiOverlay::Help {
+            selected_section: help_section_for_view(TuiView::Attention),
+            scroll: 0,
+        };
+        assert_eq!(state.overlay(), &expected);
+        assert_eq!(model.overlay(), &expected);
+        assert_eq!(help_section_for_view(TuiView::Attention), 1);
         assert!(model.overlay().is_open());
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::CloseOverlay);
         assert_eq!(state.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn open_help_auto_focuses_the_active_pane_section() {
+        // `?` from the Settings pane opens auto-focused to the Settings section;
+        // from Lanes, the Lanes section. Section order mirrors the nav, so the
+        // Settings section is the last one and Lanes is the fourth.
+        let events = fabro_gate_events();
+        for (view, expected_section) in [
+            (TuiView::Attention, 1),
+            (TuiView::Lanes, 3),
+            (TuiView::Settings, HELP_SECTION_COUNT - 1),
+        ] {
+            let state = TuiInteractionState::for_view(view, 0, TuiOverlay::None);
+            let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenHelp);
+            let expected = TuiOverlay::Help {
+                selected_section: expected_section,
+                scroll: 0,
+            };
+            assert_eq!(opened.overlay(), &expected, "auto-focus from {view:?}");
+        }
+    }
+
+    #[test]
+    fn help_menu_navigation_changes_section_and_resets_scroll() {
+        // Up/Down navigate the left menu, clamped at both ends; each move resets
+        // the right-pane scroll so a new section starts at its top.
+        let events = fabro_gate_events();
+        // Open on Lanes (section 3), scroll the right pane down, then navigate.
+        let opened = reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenHelp,
+        );
+        let scrolled = reduce_tui_interaction(&opened, &events, TuiInteraction::HelpScrollDown);
+        assert_eq!(
+            scrolled.overlay(),
+            &TuiOverlay::Help {
+                selected_section: 3,
+                scroll: 1,
+            }
+        );
+        // Down moves to the next section AND resets the scroll to the top.
+        let down =
+            reduce_tui_interaction(&scrolled, &events, TuiInteraction::HelpSelectNextSection);
+        assert_eq!(
+            down.overlay(),
+            &TuiOverlay::Help {
+                selected_section: 4,
+                scroll: 0,
+            }
+        );
+        // Up moves back.
+        let up = reduce_tui_interaction(&down, &events, TuiInteraction::HelpSelectPreviousSection);
+        assert_eq!(
+            up.overlay(),
+            &TuiOverlay::Help {
+                selected_section: 3,
+                scroll: 0,
+            }
+        );
+        // Down clamps at the last section.
+        let mut clamped = up;
+        for _step in 0..HELP_SECTION_COUNT + 2 {
+            clamped =
+                reduce_tui_interaction(&clamped, &events, TuiInteraction::HelpSelectNextSection);
+        }
+        assert_eq!(
+            clamped.overlay(),
+            &TuiOverlay::Help {
+                selected_section: HELP_SECTION_COUNT - 1,
+                scroll: 0,
+            }
+        );
+        // Up clamps at the first section.
+        let mut floored = clamped;
+        for _step in 0..HELP_SECTION_COUNT + 2 {
+            floored = reduce_tui_interaction(
+                &floored,
+                &events,
+                TuiInteraction::HelpSelectPreviousSection,
+            );
+        }
+        assert_eq!(
+            floored.overlay(),
+            &TuiOverlay::Help {
+                selected_section: 0,
+                scroll: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn help_scroll_saturates_at_the_top_and_leaves_section_untouched() {
+        // HelpScrollUp at the top stays at 0; the selected section never moves.
+        let events = fabro_gate_events();
+        let opened = reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenHelp,
+        );
+        let up = reduce_tui_interaction(&opened, &events, TuiInteraction::HelpScrollUp);
+        assert_eq!(
+            up.overlay(),
+            &TuiOverlay::Help {
+                selected_section: help_section_for_view(TuiView::Events),
+                scroll: 0,
+            }
+        );
+        let down = reduce_tui_interaction(&up, &events, TuiInteraction::HelpScrollDown);
+        let down = reduce_tui_interaction(&down, &events, TuiInteraction::HelpScrollDown);
+        assert_eq!(
+            down.overlay(),
+            &TuiOverlay::Help {
+                selected_section: help_section_for_view(TuiView::Events),
+                scroll: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn help_navigation_and_scroll_are_inert_without_the_help_overlay() {
+        // The Help-specific interactions never mutate a non-Help overlay.
+        let events = fabro_gate_events();
+        let base = TuiInteractionState::new(0, TuiOverlay::None);
+        for interaction in [
+            TuiInteraction::HelpSelectNextSection,
+            TuiInteraction::HelpSelectPreviousSection,
+            TuiInteraction::HelpScrollDown,
+            TuiInteraction::HelpScrollUp,
+        ] {
+            let stepped = reduce_tui_interaction(&base, &events, interaction);
+            assert_eq!(stepped.overlay(), &TuiOverlay::None);
+        }
     }
 
     #[test]
