@@ -63,9 +63,15 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
         "header title missing for tenant {}:\n{screen}",
         repo.tenant()
     );
+    // Assert the header's PRIORITY status fields -- the ones the header
+    // deliberately preserves at the pinned 112-column width when several sources
+    // are down. `mode: tui` / `fleet: livespec` are the low-value constant fields
+    // the header intentionally sheds first at that width (see console-application
+    // `fit_header_line` and its `header_line_fits_the_pinned_width_and_preserves_the_priority_fields`
+    // unit test), so this real-tmux frame must NOT require them.
     assert!(
-        screen.contains("mode: tui") && screen.contains("view: Attention"),
-        "expected header status fields for tenant {}:\n{screen}",
+        screen.contains("view: Attention") && screen.contains("attention:"),
+        "expected header priority fields for tenant {}:\n{screen}",
         repo.tenant()
     );
     for label in ["Attention", "Spec", "Lanes", "Events", "Repos", "Settings"] {
