@@ -108,19 +108,18 @@ jobs:
           just install-commit-refuse-hooks
           just install-worktree-pack
 
-      - name: Install cargo-nextest
-        if: matrix.target == 'check-nextest'
-        uses: taiki-e/install-action@nextest
-
-      - name: Install cargo-llvm-cov
-        if: matrix.target == 'check-coverage'
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install dependency audit tools
-        if: matrix.target == 'check-deps'
+      # Prebuild ALL FOUR quality tools (not just the target's own) for every job
+      # that calls `just ensure-rust-quality-tools`. That recipe does
+      # `command -v <tool> || cargo install --locked <tool>`, so any tool NOT on
+      # PATH is compiled FROM SOURCE — ~740s wasted per job on this self-hosted
+      # runner (measured 2026-07-18: check-deps spent its whole 810s building
+      # nextest+llvm-cov from source). The taiki-e prebuilt binaries are on PATH,
+      # so ensure-rust-quality-tools finds them and returns immediately.
+      - name: Install rust quality tools (prebuilt — avoids source builds)
+        if: matrix.target == 'check-nextest' || matrix.target == 'check-coverage' || matrix.target == 'check-deps'
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-machete
+          tool: cargo-nextest,cargo-llvm-cov,cargo-deny,cargo-machete
 
       - name: just ${{ matrix.target }}
         run: just ${{ matrix.target }}
