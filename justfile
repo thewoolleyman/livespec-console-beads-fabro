@@ -39,6 +39,24 @@ alias serve := tui
 build-release:
     cargo build --release --package livespec-console-beads-fabro
 
+# Real-TUI end-to-end gate — the TOP tier of the console test pyramid. Builds the
+# RELEASE binary and drives the SHIPPED interactive TUI through a real tmux pane
+# (send-keys -> capture-pane -> assert on the rendered screen AND on store side
+# effects). This is the FIRST automated coverage of the `run_interactive_tui`
+# raw-mode/render path, which every other test compiles out via
+# `#[cfg(all(not(test), not(coverage)))]`. Hermetic: the harness points the six
+# backing CLIs at fast stubs and isolates the event store, so it needs NO beads
+# backend and NO credential wrapper — only `tmux` (which the CI image must
+# provide). The E2E test is `#[ignore]`d so the default check-test/check-nextest
+# matrix stays green and tmux-free; this target runs it explicitly via
+# `--ignored`, pointing the harness at the freshly built release binary through
+# LIVESPEC_CONSOLE_E2E_BIN. Prerequisite for the tmux E2E test of every cockpit
+# behavior (B1-B8) and the backfill.
+check-e2e-tmux:
+    cargo build --release --package livespec-console-beads-fabro
+    LIVESPEC_CONSOLE_E2E_BIN="{{justfile_directory()}}/target/release/livespec-console-beads-fabro" \
+      cargo test --package livespec-console-beads-fabro --test tmux_tui_e2e -- --ignored
+
 # First-touch setup — a THIN delegator to the shipped LOCAL first-touch
 # reconcile verb (`livespec_dev_tooling.fleet.local_reconcile`), the
 # generalized successor to this recipe's former inline steps (livespec-zs22.8
