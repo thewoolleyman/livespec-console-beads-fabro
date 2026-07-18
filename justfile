@@ -62,7 +62,12 @@ check-e2e-tmux:
     #!/usr/bin/env bash
     set -uo pipefail
     cargo build --release --package livespec-console-beads-fabro
-    output="$(LIVESPEC_CONSOLE_E2E_BIN="{{justfile_directory()}}/target/release/livespec-console-beads-fabro" \
+    # Respect CARGO_TARGET_DIR (the self-hosted CI runner redirects it to a shared
+    # cache, e.g. /opt/ci-cache/target); a hardcoded {{justfile_directory()}}/target
+    # path resolves to nothing when the redirect is in effect, so the E2E test cannot
+    # find the release binary it just built.
+    target_dir="${CARGO_TARGET_DIR:-{{justfile_directory()}}/target}"
+    output="$(LIVESPEC_CONSOLE_E2E_BIN="$target_dir/release/livespec-console-beads-fabro" \
       cargo test --package livespec-console-beads-fabro --test tmux_tui_e2e -- --ignored 2>&1)"
     status=$?
     echo "$output"
