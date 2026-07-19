@@ -632,10 +632,14 @@ struct WorkItemSnapshotPayload {
     #[serde(default)]
     acceptance_policy: AcceptancePolicy,
     source_version: u64,
-    /// Absent on any row written before the descriptive record was carried, so
-    /// an older ledger still replays (observing an empty detail, not a failure).
+    /// `Option<_>` (not a bare `#[serde(default)]` struct) for the same reason
+    /// the policy fields above are optional: a bare `#[serde(default)]` rescues
+    /// a MISSING key but NOT a present `null`, and a `null` here would fail the
+    /// whole payload — silently dropping an otherwise-good work-item from the
+    /// board on replay. Absent, `null`, and an empty object must all observe
+    /// identically as an empty record.
     #[serde(default)]
-    detail: WorkItemDetail,
+    detail: Option<WorkItemDetail>,
 }
 
 /// Serialize a work-item snapshot into its canonical persisted `payload_json`.
@@ -702,7 +706,7 @@ pub fn work_item_snapshot_from_payload_json(payload_json: &str) -> Option<WorkIt
         payload.acceptance_policy,
         payload.source_version,
     )
-    .map(|snapshot| snapshot.with_detail(payload.detail))
+    .map(|snapshot| snapshot.with_detail(payload.detail.unwrap_or_default()))
     .ok()
 }
 
@@ -4031,11 +4035,24 @@ mod tests {
         assert_eq!(&restored, snapshot);
 
         // A payload written BEFORE the record was carried still replays, with an
-        // empty detail rather than a failed observation.
-        let legacy = r#"{"repo":"console","work_item_id":"console-legacy","lane":"ready","rank":"a1","status":"ready","source_version":3}"#;
-        let legacy_snapshot =
-            work_item_snapshot_from_payload_json(legacy).ok_or("legacy payload did not replay")?;
-        assert_eq!(legacy_snapshot.detail(), &WorkItemDetail::default());
+        // empty detail rather than a failed observation. An ABSENT key, a
+        // present `null`, and an empty object must all observe identically --
+        // `null` especially, because a bare `#[serde(default)]` rescues only a
+        // missing key, so treating it as a hard error would silently drop an
+        // otherwise-good work-item from the board on replay.
+        for (label, tail) in [
+            ("absent", ""),
+            ("null", r#","detail":null"#),
+            ("empty", r#","detail":{}"#),
+        ] {
+            let payload = format!(
+                r#"{{"repo":"console","work_item_id":"console-legacy","lane":"ready","rank":"a1","status":"ready","source_version":3{tail}}}"#
+            );
+            let replayed = work_item_snapshot_from_payload_json(&payload)
+                .ok_or_else(|| format!("{label} detail payload did not replay"))?;
+            assert_eq!(replayed.detail(), &WorkItemDetail::default(), "{label}");
+            assert_eq!(replayed.work_item_id(), "console-legacy", "{label}");
+        }
         Ok(())
     }
 
