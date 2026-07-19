@@ -1441,19 +1441,16 @@ const fn footer_hint(
 }
 
 /// The Status-line hints for a focused pane `view` with no overlay open: the
-/// keys that act on that pane. The read-only nav views (Spec, Events, Repos)
-/// share one hint set because their available actions are identical (select +
-/// move focus + search); the actionable panes (Attention, Lanes) surface their
-/// human-valve/status-move keys, and Settings surfaces its edit key.
-///
-/// `Lanes` is keyed on `lane_focus` because `Enter` does two DIFFERENT things
-/// there: on the lane overview it drills into a lane, and inside a drilled-in
-/// lane it opens the selected work-item's detail modal. Advertising the same
-/// `enter drill` in both places is precisely the lie this hint used to tell —
-/// the hint MUST name the action `Enter` actually performs in the current
-/// context, or the Status line is worse than blank.
-/// The Status-line hints for a focused pane `view` with no overlay open: the
 /// keys that act on that pane RIGHT NOW.
+///
+/// `has_selected_work_item` is `false` EXACTLY when the pane has no rows, in
+/// BOTH panes that carry work-items: `selected_lane_item` is `None` only when
+/// the drilled-in lane is empty, and Attention's detail comes from
+/// `selected_index`, which returns `None` only for an empty list. The rule is
+/// therefore uniform across them -- with no rows, the per-item keys and the
+/// up/down navigation are alike inert, and none is advertised. `enter` is the
+/// exception on Attention: it opens the command modal unconditionally, so it
+/// still does something and is still listed.
 ///
 /// Keyed on `lane_focus` and `has_selected_work_item`, not on the view alone,
 /// because both change which keys actually do anything. `Enter` means "drill
@@ -1478,7 +1475,11 @@ const fn pane_footer_hint(
                 "up/down move | enter open | p/c/r approve/accept/reject | \
                  m/n set-admission/acceptance | ? help | q quit"
             } else {
-                "up/down move | enter open | ? help | q quit"
+                // An EMPTY inbox: the per-item valves act on nothing, and
+                // up/down have no row to move over either. `enter` stays --
+                // it opens the command modal unconditionally, so it is not
+                // inert, unlike the keys dropped here.
+                "enter open | ? help | q quit"
             }
         }
         TuiView::Lanes => match lane_focus {
@@ -1492,13 +1493,6 @@ const fn pane_footer_hint(
             // An EMPTY drilled-in lane: nothing is selected, so `enter` opens
             // nothing, every per-item key is inert, AND up/down have no row to
             // move over. Only stepping back out does anything.
-            //
-            // Navigation is suppressed here and NOT on an empty Attention pane
-            // because only here does "no selected work-item" mean "no rows":
-            // `selected_lane_item` is `None` exactly when the drilled-in lane
-            // holds nothing, whereas Attention's detail can be absent for other
-            // reasons, and hiding a key that does work is a worse error than
-            // showing one that idles.
             LaneFocus::Lane(_lane) => "esc lane list | ? help | q quit",
         },
         TuiView::Settings => "up/down move | enter/space edit row | ? help | q quit",
@@ -6107,11 +6101,9 @@ mod tests {
         // context-specific hints -- non-empty and appropriate to the focused
         // pane, never the old single static string (Scenario 19 / TUI Contract).
         // This fixture's inbox is EMPTY ("attention: 0"), so the per-item valve
-        // keys act on nothing and are correctly absent from the hint line.
-        assert_eq!(
-            model.footer(),
-            "up/down move | enter open | ? help | q quit"
-        );
+        // keys act on nothing -- and neither does up/down, with no row to move
+        // over. Only `enter` survives: it opens the command modal regardless.
+        assert_eq!(model.footer(), "enter open | ? help | q quit");
     }
 
     #[test]

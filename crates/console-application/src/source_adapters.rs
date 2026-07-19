@@ -500,34 +500,52 @@ impl WorkItemDetail {
             .iter()
             .map(|dependency| length_prefixed(dependency))
             .collect::<String>();
-        let parts: [&str; 20] = [
-            self.title.as_deref().unwrap_or_default(),
-            self.description.as_deref().unwrap_or_default(),
-            self.item_type.as_deref().unwrap_or_default(),
-            self.origin.as_deref().unwrap_or_default(),
-            self.gap_id.as_deref().unwrap_or_default(),
-            self.assignee.as_deref().unwrap_or_default(),
-            &dependencies,
-            self.captured_at.as_deref().unwrap_or_default(),
-            self.resolution.as_deref().unwrap_or_default(),
-            self.reason.as_deref().unwrap_or_default(),
-            self.audit.as_deref().unwrap_or_default(),
-            self.superseded_by.as_deref().unwrap_or_default(),
-            self.spec_commitment_hint.as_deref().unwrap_or_default(),
-            self.acceptance_criteria.as_deref().unwrap_or_default(),
-            self.notes.as_deref().unwrap_or_default(),
-            self.supersedes.as_deref().unwrap_or_default(),
-            self.blocked_reason.as_deref().unwrap_or_default(),
-            self.factory_safety.as_deref().unwrap_or_default(),
-            self.admission_policy.as_deref().unwrap_or_default(),
-            self.acceptance_policy.as_deref().unwrap_or_default(),
+        let fields: [Option<&str>; 19] = [
+            self.title.as_deref(),
+            self.description.as_deref(),
+            self.item_type.as_deref(),
+            self.origin.as_deref(),
+            self.gap_id.as_deref(),
+            self.assignee.as_deref(),
+            self.captured_at.as_deref(),
+            self.resolution.as_deref(),
+            self.reason.as_deref(),
+            self.audit.as_deref(),
+            self.superseded_by.as_deref(),
+            self.spec_commitment_hint.as_deref(),
+            self.acceptance_criteria.as_deref(),
+            self.notes.as_deref(),
+            self.supersedes.as_deref(),
+            self.blocked_reason.as_deref(),
+            self.factory_safety.as_deref(),
+            self.admission_policy.as_deref(),
+            self.acceptance_policy.as_deref(),
         ];
-        let encoded = parts
-            .iter()
-            .map(|part| length_prefixed(part))
-            .collect::<String>();
+        let mut encoded = String::new();
+        for field in fields {
+            encoded.push_str(&presence_tagged(field));
+        }
+        // `depends_on` is a list, never absent, so it is always tagged present.
+        encoded.push_str(&presence_tagged(Some(&dependencies)));
         stable_version(&[&encoded]).to_string()
     }
+}
+
+/// An optional field encoded so that ABSENT and EMPTY stay distinguishable.
+///
+/// Collapsing `None` to `""` before hashing would make an unset field and an
+/// emitted-but-empty one digest identically — and the two are wire-reachable
+/// (an absent key reads as `None`, `"notes": ""` reads as `Some("")`) and
+/// render differently (the absent placeholder versus an empty line). Without
+/// the tag, editing `"notes": ""` to an absent `notes` would leave the digest
+/// and the lifecycle fields alike unchanged, the fresh observation would dedupe
+/// against the stored one, and the console would show the pre-edit record
+/// forever — the same staleness this digest exists to prevent.
+fn presence_tagged(value: Option<&str>) -> String {
+    value.map_or_else(
+        || "N".to_owned(),
+        |text| format!("S{}", length_prefixed(text)),
+    )
 }
 
 /// `value` prefixed by its byte length, so a concatenation of these is
@@ -4234,6 +4252,27 @@ mod tests {
             ..WorkItemDetail::default()
         };
         assert_ne!(shifted_separator.digest(), absorbed_separator.digest());
+
+        // An UNSET field and an emitted-but-EMPTY one must differ too. Both are
+        // wire-reachable (an absent key reads as None, `"notes": ""` reads as
+        // Some("")) and they render differently, so collapsing them would let
+        // an edit between the two dedupe away and freeze the stale record.
+        let unset = WorkItemDetail {
+            notes: None,
+            ..WorkItemDetail::default()
+        };
+        let emitted_empty = WorkItemDetail {
+            notes: Some(String::new()),
+            ..WorkItemDetail::default()
+        };
+        assert_ne!(unset.digest(), emitted_empty.digest());
+
+        // ...and the tag must not be forgeable from a neighbouring field's text.
+        let tag_lookalike = WorkItemDetail {
+            title: Some("N".to_owned()),
+            ..WorkItemDetail::default()
+        };
+        assert_ne!(tag_lookalike.digest(), WorkItemDetail::default().digest());
 
         // Same hazard inside `depends_on`, where a bare `,` join would let one
         // comma-bearing id imitate two ids.
