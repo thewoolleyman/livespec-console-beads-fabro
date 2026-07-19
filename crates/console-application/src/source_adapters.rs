@@ -1862,7 +1862,7 @@ pub fn parse_livespec_observation(observed: &ObservedSource) -> Result<ParsedObs
 // `.resolved` events keyed by each item's stable `id`. The surface is stateless
 // / point-in-time, so this diff-at-ingest is what turns the point-in-time
 // snapshots into a durable event stream: ALL event-sourcing lives in the
-// console (contracts.md §"Initial Adapters"; scenarios.md Scenario 12).
+// console (contracts.md; scenarios.md Scenario 12).
 
 /// The reference an attention item points at.
 ///

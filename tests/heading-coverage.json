@@ -229,7 +229,7 @@
         "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
       },
       {
-        "gap_id": "gap-cijpvz66",
+        "gap_id": "gap-ahcqrwyu",
         "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
       },
       {
@@ -757,7 +757,7 @@
         "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
       },
       {
-        "gap_id": "gap-umnfoimk",
+        "gap_id": "gap-z3xisytt",
         "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
       },
       {
@@ -893,11 +893,11 @@
         "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
       },
       {
-        "gap_id": "gap-fyxmwbti",
+        "gap_id": "gap-hbcwvf5e",
         "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
       },
       {
-        "gap_id": "gap-qwlrri47",
+        "gap_id": "gap-ynr73rzr",
         "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
       }
     ]

@@ -1984,7 +1984,7 @@ impl WorkItemCommandOutcome {
 /// CN1) from the diffed `attention_item.*` stream instead of re-deriving
 /// attention from work-item lane snapshots: the inbox is now the product
 /// needs-attention surface the console ingests and diffs at ingest, not a single
-/// work-item lane (contracts.md §"Initial Adapters"; scenarios.md Scenario 12).
+/// work-item lane (contracts.md; scenarios.md Scenario 12).
 #[must_use]
 pub fn project_attention(events: &[ConsoleEvent]) -> Vec<AttentionItem> {
     materialize_attention_items(events)
@@ -2450,7 +2450,7 @@ fn fit_header_line(
 /// few presses (a one-line status header has no need for column-fine control);
 /// the render-measured clamp still stops exactly at the true right edge, and the
 /// left step saturates at the left-justified default. The specific step is an
-/// implementation detail per the TUI Contract (§"TUI Contract").
+/// implementation detail per the TUI Contract in contracts.md.
 const HEADER_SCROLL_STEP: usize = 8;
 
 /// The pane the focus ring lands on AFTER `current` when cycling forward (the
