@@ -220,7 +220,23 @@ four keep their requirements in description prose, which is easy to skim past.
   `console-tui/src/lib.rs:3654`.
 - `-nxsfih` (epic) — console-cruft-cleanup plan-thread anchor; its thread is
   **archived** at `plan/archive/console-cruft-cleanup/` while the epic stays
-  `backlog`. Reconcile or close.
+  `backlog`. **ASSESSED 2026-07-19 — DO NOT CLOSE; it has live, unfiled
+  substance.** The archived thread's close-out names three remaining impl
+  slices: `mb64bv` (gone from the ledger, dispositioned) and `pke3y3` (closed)
+  are both settled, but the third — **the arch-check zero-Beads-knowledge rule —
+  is NOT implemented and has no work-item of its own.**
+  `non-functional-requirements.md:366-368` mandates it ("no crate invokes `bd`
+  or embeds a Beads-native read path") and demands it be checked falsifiably,
+  yet `console-arch-check`'s `run_checks` (`main.rs:63-71`) runs only
+  `check_crate_graph`, `check_crate_sources` and `check_tmux_socket_scoping` —
+  no `bd` guard anywhere. **This is a latent GUARD gap, not a live violation:**
+  the invariant holds today (no crate invokes `bd`; the console reaches
+  work-items only via `drive.py`), but it is the load-bearing invariant of the
+  whole design (state-machine decision 16) and a regression would pass CI.
+  Recommend filing that slice as a child, then closing the epic. Note the active
+  worktree `fix/arch-check-suspect-by-default` touches this exact crate —
+  coordinate rather than duplicate. Full evidence recorded as a comment on the
+  epic.
 
 ## THE PIN TRAIN — 12 stacked dependency PRs, all red for ONE reason
 
