@@ -216,7 +216,8 @@ check-behavior-coverage:
 # API-to-Settings-to-help-to-doc completeness gate: asserts every key the
 # orchestrator declares as API-configurable (its published config-manifest,
 # captured at tests/fixtures/orchestrator-config-manifest.json) reaches the
-# console's Settings surface, its inline help, and the README settings doc,
+# console's Settings surface, its inline help, and the settings doc
+# (docs/detailed-usage.md, per the spec's User Documentation Contract),
 # FAILING and naming any key that fell out of lockstep. Consumer-side per the
 # No-Circular-Dependency Directive; hermetic (reads the committed capture, no
 # live orchestrator). Refresh the capture with `just refresh-config-manifest`.

@@ -2,7 +2,7 @@
 //! gate. Reads the orchestrator's PUBLISHED `config-manifest` (a committed
 //! capture — see `tests/fixtures/orchestrator-config-manifest.json`, refreshed
 //! by `just refresh-config-manifest`) and asserts every declared API-configurable
-//! key reaches the console's Settings surface, its inline help, and the README
+//! key reaches the console's Settings surface, its inline help, and the
 //! settings doc. Exits non-zero NAMING any key that fell out of lockstep.
 //!
 //! Reading a captured copy of the orchestrator's PUBLISHED declared-key surface
@@ -28,16 +28,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use console_completeness_check::{
-    check_pin, console_settings_rows, declared_keys, evaluate, read_pinned, stamp_manifest,
+    SETTINGS_DOC, check_pin, console_settings_rows, declared_keys, evaluate, read_pinned,
+    stamp_manifest,
 };
 
 /// The committed capture of the orchestrator's published `config-manifest`,
 /// read relative to the repository root (where `just check` runs).
 const MANIFEST_FIXTURE: &str = "tests/fixtures/orchestrator-config-manifest.json";
-
-/// The console's settings doc — the repo `README.md` (there is no `docs/` dir;
-/// the README IS the settings doc).
-const README: &str = "README.md";
 
 /// The project config carrying the orchestrator pin (`compat.pinned`).
 const LIVESPEC_JSONC: &str = ".livespec.jsonc";
@@ -56,7 +53,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode, String> {
     let manifest = read_file(MANIFEST_FIXTURE)?;
-    let readme = read_file(README)?;
+    let settings_doc = read_file(SETTINGS_DOC)?;
     let livespec_jsonc = read_file(LIVESPEC_JSONC)?;
 
     // Staleness gate FIRST: a capture taken at a different pin than the project now
@@ -68,7 +65,7 @@ fn run() -> Result<ExitCode, String> {
 
     let declared = declared_keys(&manifest)?;
     let rows = console_settings_rows();
-    let report = evaluate(&declared, &rows, &readme);
+    let report = evaluate(&declared, &rows, &settings_doc);
 
     if report.is_clean() {
         eprintln!(
@@ -81,8 +78,8 @@ fn run() -> Result<ExitCode, String> {
         eprintln!("console-completeness-check: {line}");
     }
     eprintln!(
-        "console-completeness-check: add the missing Settings row / inline help / README \
-         settings-doc entry for the named key(s)."
+        "console-completeness-check: add the missing Settings row / inline help / settings-doc \
+         entry for the named key(s)."
     );
     Ok(ExitCode::FAILURE)
 }
