@@ -34,30 +34,62 @@ A bare `bd list` fails with `Access denied` — the tenant password only arrives
 through the credential wrapper. The ledger is authoritative; this file is a
 durable orientation note that goes stale between refreshes.
 
+> **`bd list` silently truncates at 50.** It defaults to `-n 50` with no warning.
+> The console tenant is under that today (17 open), so counts here are complete —
+> but the `livespec` tenant returned exactly 50 of 70 when surveyed, hiding 20
+> items. Pass `-n 0` for any cross-tenant read.
+
 ## THE DISPATCH QUEUE (2026-07-19) — 17 open items
 
-**Autonomously dispatchable right now: effectively nothing.** One item is `ready`
-and it is a deliberate long-run exercise, not queue work:
+**THE DISPATCH QUEUE IS ENTIRELY PHANTOM.** Every item in it is either already
+delivered or already superseded. There is no real dispatchable work here — only
+records that need reconciling. Details below; do not act on the lanes at face
+value.
 
-- **`-6sf`** (`ready`) — "Add console-domain crate docs". This is the **>60-minute
-  TTL exercise**: its mandated first step is ~67 minutes of `sleep`, existing
-  solely to prove the publish node re-mints an expired GitHub-App installation
-  token. The actual code change is one `//!` doc comment. **Run it only when
-  intentionally exercising that path** — it is not a queue-drain candidate, and
-  draining it "because it's ready" wastes an hour and proves nothing.
+### The one `ready` item is REDUNDANT, not merely expensive
+
+- **`-6sf`** (`ready`) — "Add console-domain crate docs", i.e. the **>60-minute
+  TTL exercise**: ~67 minutes of mandated `sleep` to prove the publish node
+  re-mints an expired GitHub-App installation token. The code change is one `//!`
+  doc comment.
+
+  **That proof already exists, and is stronger than what `-6sf` would produce.**
+  `livespec-orchestrator-beads-fabro:plan/fabro-token-refresh/handoff.md` records
+  **T1: a 92-minute run in THIS repo**, fresh token minted at +90 min, zero
+  TTL-expiry errors, part-3 refresh-ahead firing mid-turn — explicitly "satisfies
+  the epic's live-exercise acceptance (slice `.3`)" for epic `bd-ib-2nq`. 92 > 67,
+  same repo, formally accepted.
+
+  `-6sf` was created **2026-07-08**; the fix landed and was proven **2026-07-11**.
+  It is pre-fix residue. Running it would re-prove a solved problem at a cost of
+  an hour. (Root cause, for the record, was not a missing re-mint but `GH_TOKEN`
+  name-shadowing: Fabro re-mints only `GITHUB_TOKEN`, while the dispatcher overlay
+  projected a static `GH_TOKEN`.) **Close it as superseded.**
 
 Everything else is gated. The gates are the real content of this file:
 
-### Gate 1 — ONE genuine maintainer valve
+### Gate 1 — ONE genuine maintainer valve (with a precondition)
 
 - **`-f2k`** (`acceptance`) — E2E tmux harness private-socket scoping +
   enforcement check. The work **is done and merged** (`dd2ccb4` "enforce private
   tmux sockets in e2e harness", `85b2976` "harden tmux socket-scope
   enforcement"); `acceptance` is the correct lane for delivered work awaiting the
-  human accept. **This is a real valve — walk it.** Cross-repo child of livespec
-  epic `livespec-yiycvd` (tmux-fleet-kill-prevention), whose thread carries a
-  binding maintainer instruction that "done" means *demonstrated live on the
-  target runtime*, not merged — so check that thread's bar before accepting.
+  human accept. This is the **only** genuine valve in the queue.
+
+  **Two preconditions before accepting, both from other repos' threads:**
+  1. `livespec:plan/tmux-fleet-kill-prevention/` (epic `livespec-yiycvd`) carries
+     a binding maintainer instruction that "done" means *installed on the target
+     runtime and demonstrated live with a payload* — never merged-and-CI-green.
+     A merge SHA is not protection. It was written because an agent working that
+     thread killed the maintainer's tmux fleet twice.
+  2. `livespec:plan/rop-sweep-fleet-policy/` records a maintainer rule
+     (2026-07-19) that `drive --action accept:<id>` fires **only after a separate
+     Codex reviewer AND a separate Opus reviewer have both cleared the merged
+     PR**. That gate applies here.
+
+  Its core-side twin is `livespec-n3o5e5` (`blocked`), whose `repo` field is the
+  console and which targets the same `crates/console-cli/tests/support/mod.rs`.
+  Reconcile the two rather than accepting one and stranding the other.
 
 ### Gate 1b — STALE RECORDS: five `pending-approval` items are ALREADY DELIVERED
 
@@ -244,12 +276,69 @@ standalone track. Verified 2026-07-19.
   items carry no typed `depends_on` — the association is prose only, so it will
   not show up in dependency queries.
 
-### Other livespec threads (no current console dependency, but they move fast)
+### Open items in OTHER tenants that affect this repo
+
+None of these are in the console ledger, so `bd list` here will never show them.
+
+**Orchestrator (`livespec-orchestrator-beads-fabro`):**
+- **`bd-ib-9yi`** (`backlog`, bug) — **highest direct impact.** The post-merge
+  janitor reports `failed:janitor-post-merge` on **every** console dispatch, even
+  a clean green merge, because the orchestrator image carries no Rust toolchain.
+  Every console run currently ends with a false failure signal.
+- `bd-ib-2nq` (`backlog`, epic) — the >60-min token-TTL fix whose live-exercise
+  acceptance `-6sf` duplicates (see above). 3/4 slices complete; open only for an
+  upstream `fabro-sh/fabro` #568 merge. Nothing actionable on our side.
+- `bd-ib-lza6` (`acceptance`, bug) — merged items strand in `active`; adds a
+  post-merge reconcile valve to the very state machine the console renders. **This
+  is plausibly the mechanism behind this repo's own stale-record problem** — worth
+  checking before treating the console reconciliations as isolated oversights.
+- `bd-ib-18r`, `bd-ib-6vu` (`backlog`, bugs) — dispatcher orphans parked runs;
+  parked-run resume must re-project credentials.
+
+**Runtime (`livespec-runtime`):**
+- `livespec-runtime-dnu` (`backlog`, bug) — `validate_attention_item_id` rejects
+  `internal:` ids although `kind=internal` is first-class, and names **console
+  ingest** as the strict validator that would reject the shipped
+  `internal:<signal>:<repo>` form. Open residue of the supposedly-closed `bj9x`.
+
+**Dev-tooling (`livespec-dev-tooling`):**
+- `-9mp` (T10 cache-tiering) is titled as blocking the Rust console cutover, but
+  `livespec:plan/fabro-ci-image-factoring/` records the console-cache follow-up as
+  **explicitly disproven** (console cold builds ~138s on hosted runners). Treat the
+  title as stale; do not act on it without re-measuring.
+- `-xb7` (unmanaged CI image pin — the python/python-rust layer split exists
+  because of the console), `-fz4` (bump-pin missing a 5th pin format, which this
+  checkout carries — **possibly related to the pin-train failure above**).
+
+**Cross-repo CI epic:** `livespec-3lev` (`active`) — fabro-ci-image-factoring;
+the console is a named owning repo, with children touching `workflow.toml`, a new
+Rust-pin lockstep against `rust-toolchain.toml`, and an 8-member fan-out.
+
+### Other livespec threads
 
 `fabro-ci-image-factoring`, `overseer-productization`, `rop-sweep-fleet-policy`,
-`shipped-hook-seam-hardening` — all active in `livespec:plan/` and several were
-touched today. The CI-image thread is the one most likely to reach this repo,
-since the console's CI pins `ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.49.2`.
+`shipped-hook-seam-hardening` (opened 2026-07-19, `00dad81f`, epic
+`livespec-hvtc`) — all active in `livespec:plan/`. Of these, only
+`fabro-ci-image-factoring` and `rop-sweep-fleet-policy` bind the console:
+the former via CI image pins
+(`ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.49.2`), the latter
+via the two-reviewer accept gate noted under `-f2k`. `overseer-productization`
+has no console dependency at all.
+
+**Checked and NOT stale, despite a report to the contrary:** console master's
+`Cargo.lock` is consistent — every console crate resolves to `0.2.0`, and
+`cargo metadata` does not dirty the tree. The "lock at 0.1.0" residual recorded
+in the CI-image thread no longer applies.
+
+### A cross-repo record that is itself stale
+
+`livespec-bvuy4w` (`backlog`, epic — "per-repo full autonomous mode armed from
+the console TUI") is the cross-repo anchor the orchestrator's own
+`autonomous-mode` thread still gates "console C3" against. Both are **stale**:
+orchestrator step O2 retired full autonomous mode (the dispatcher now drains by
+default), console spec v028 re-baselined around that, and the console items
+`bvuy4w` names in prose — `rt4`, `pke3y3`, `mb64bv` — are all closed. The
+orchestrator thread was last refreshed 2026-07-10. Do not resume C3 from it.
 
 ### The seam that keeps biting
 
@@ -292,4 +381,8 @@ gate list into the cockpit thread and archive this one.
   #2). Resolve it live.
 - Repo changes still use the required worktree → PR → merge → cleanup path.
 - Do not treat a `ready` lane as dispatch authorization on its own — `-6sf` is
-  the standing counter-example.
+  the standing counter-example: `ready`, and entirely redundant.
+- Before dispatching or valving ANY item here, check whether it is already
+  delivered. As of this refresh **every single queue item was phantom** — 5
+  `pending-approval` records for merged work, 1 `ready` record for a solved
+  problem. Lane state in this tenant has repeatedly lagged reality.
