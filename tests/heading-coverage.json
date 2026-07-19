@@ -869,5 +869,17 @@
         "scenario": "Scenario 20 -- Operator focuses and horizontally scrolls the top/header pane on a narrow viewport"
       }
     ]
+  },
+  {
+    "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Pending top-of-pyramid acceptance test for panes rendering operational content only with no baked-in documentation prose: a pane renders its operational content (live items/state) without any explanatory documentation sentence beyond the operational help surfaces this contract separately requires (the Status-line hints, the modal Help overlay, and the Settings per-row inline help); a sweep of every pane finds no such baked-in documentation prose beyond those required operational help surfaces (for example the sentences 'Spec lifecycle status is projected from LiveSpec adapter observations.' and 'Revise-required events stay visible in the Spec view until resolved.' do not appear in any pane body); and explanatory content belongs in the user documentation, not the live panes. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the tui-panes-no-doc-prose impl follow-up; the new §\"TUI Contract\" panes-operational-content-only clause binds here.",
+    "clauses": [
+      {
+        "gap_id": "gap-xiziukv6",
+        "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose"
+      }
+    ]
   }
 ]
