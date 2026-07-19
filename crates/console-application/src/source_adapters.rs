@@ -448,6 +448,16 @@ pub struct WorkItemDetail {
     pub superseded_by: Option<String>,
     /// The spec commitment this item is expected to satisfy.
     pub spec_commitment_hint: Option<String>,
+    /// The item's stated acceptance criteria.
+    pub acceptance_criteria: Option<String>,
+    /// Operator notes carried on the item (regroom notes and the like).
+    pub notes: Option<String>,
+    /// The item this one supersedes (the inverse of `superseded_by`).
+    pub supersedes: Option<String>,
+    /// Why the item is blocked, when it is.
+    pub blocked_reason: Option<String>,
+    /// The item's factory-safety marking.
+    pub factory_safety: Option<String>,
 }
 
 impl WorkItemDetail {
@@ -460,7 +470,7 @@ impl WorkItemDetail {
     /// shadow-state failure the lane design set out to kill.
     fn digest(&self) -> String {
         let joined = self.depends_on.join(",");
-        let parts: [&str; 13] = [
+        let parts: [&str; 18] = [
             self.title.as_deref().unwrap_or_default(),
             self.description.as_deref().unwrap_or_default(),
             self.item_type.as_deref().unwrap_or_default(),
@@ -474,6 +484,11 @@ impl WorkItemDetail {
             self.audit.as_deref().unwrap_or_default(),
             self.superseded_by.as_deref().unwrap_or_default(),
             self.spec_commitment_hint.as_deref().unwrap_or_default(),
+            self.acceptance_criteria.as_deref().unwrap_or_default(),
+            self.notes.as_deref().unwrap_or_default(),
+            self.supersedes.as_deref().unwrap_or_default(),
+            self.blocked_reason.as_deref().unwrap_or_default(),
+            self.factory_safety.as_deref().unwrap_or_default(),
         ];
         stable_version(&parts).to_string()
     }
@@ -1800,6 +1815,39 @@ fn stable_version(parts: &[&str]) -> u64 {
     hash | 1
 }
 
+/// Read one descriptive field as display text, TOTALLY.
+///
+/// A JSON string is taken as-is. Anything else the orchestrator might emit for
+/// a descriptive field — a number, a bool, a nested object — degrades to its own
+/// JSON text rather than failing. Absent and `null` alike read as `None`.
+///
+/// Totality is the point: the record contract forbids dropping a work-item from
+/// the board because a descriptive field is absent or unparseable, and a typed
+/// `#[serde(default)]` field would do exactly that on a present `null` (the trap
+/// this file already documents for the policy fields).
+fn record_text(record: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    match record.get(key) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(other) => Some(other.to_string()),
+    }
+}
+
+/// Read the `depends_on` field as display ids, TOTALLY.
+///
+/// Absent, `null`, and a non-array value all read as no dependencies rather
+/// than failing the record; an array is flattened element-by-element.
+fn record_dependencies(
+    record: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Vec<String> {
+    record
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|elements| elements.iter().map(flatten_dependency).collect())
+        .unwrap_or_default()
+}
+
 /// Flatten one `depends_on` element into the id the operator reads.
 ///
 /// The orchestrator emits `{"kind": "local", "work_item_id": "<id>"}`. `local`
@@ -1809,6 +1857,12 @@ fn stable_version(parts: &[&str]) -> u64 {
 /// than being silently dropped: showing something unparsed is honest, showing
 /// nothing is not.
 fn flatten_dependency(value: &serde_json::Value) -> String {
+    // The pre-typed-form store shape: a BARE STRING element is a valid local
+    // dependency, so it reads as the id itself -- never as its quoted JSON text,
+    // which would render a legitimate shape as though it were unparseable.
+    if let serde_json::Value::String(id) = value {
+        return id.clone();
+    }
     let Some(id) = value
         .get("work_item_id")
         .and_then(serde_json::Value::as_str)
@@ -1827,6 +1881,12 @@ fn flatten_dependency(value: &serde_json::Value) -> String {
 pub fn parse_orchestrator_observation(
     observed: &ObservedSource,
 ) -> Result<ParsedObservation, String> {
+    // ONLY the lifecycle half is deserialized through a typed struct, because
+    // only it can legitimately fail a record (an unknown `lane` the console
+    // cannot place). The DESCRIPTIVE half is read field-by-field off the raw
+    // JSON below, through total helpers, so no descriptive field -- whatever
+    // shape or type the orchestrator emits it in -- can ever trip the fail-soft
+    // `continue` and drop the work-item from the board.
     #[derive(serde::Deserialize)]
     struct WorkItemRecord {
         id: String,
@@ -1847,41 +1907,6 @@ pub fn parse_orchestrator_observation(
         admission_policy: Option<AdmissionPolicy>,
         #[serde(default)]
         acceptance_policy: Option<AcceptancePolicy>,
-        // The descriptive half of the standardized record. Every field is
-        // `#[serde(default)]` so a leaner emission -- or an older
-        // `list-work-items` revision predating a field -- still parses into a
-        // record with that field absent, rather than tripping the fail-soft
-        // `continue` below and DROPPING the whole work-item from the board.
-        #[serde(default)]
-        title: Option<String>,
-        #[serde(default)]
-        description: Option<String>,
-        #[serde(default, rename = "type")]
-        item_type: Option<String>,
-        #[serde(default)]
-        origin: Option<String>,
-        #[serde(default)]
-        gap_id: Option<String>,
-        #[serde(default)]
-        assignee: Option<String>,
-        // Structured on the wire: a list of `{kind, work_item_id}` objects.
-        // Held as raw `Value`s and flattened below, so an unexpected element
-        // shape degrades to its own JSON text instead of failing the record.
-        #[serde(default)]
-        depends_on: Vec<serde_json::Value>,
-        #[serde(default)]
-        captured_at: Option<String>,
-        #[serde(default)]
-        resolution: Option<String>,
-        #[serde(default)]
-        reason: Option<String>,
-        // Structured on the wire: an object of commits / files_changed.
-        #[serde(default)]
-        audit: Option<serde_json::Value>,
-        #[serde(default)]
-        superseded_by: Option<String>,
-        #[serde(default)]
-        spec_commitment_hint: Option<String>,
     }
 
     let values: Vec<serde_json::Value> = serde_json::from_str(observed.stdout())
@@ -1897,6 +1922,9 @@ pub fn parse_orchestrator_observation(
         // is skipped so one bad record does not sink the whole-array
         // observation and degrade the adapter to not-observed. The surrounding
         // interpretable work-items are still observed.
+        // Keep the raw object so the descriptive half can be read off it
+        // totally, independently of whether the typed lifecycle half parses.
+        let raw = value.as_object().cloned().unwrap_or_default();
         let Ok(item) = serde_json::from_value::<WorkItemRecord>(value) else {
             continue;
         };
@@ -1905,19 +1933,24 @@ pub fn parse_orchestrator_observation(
         let admission_policy = item.admission_policy.unwrap_or_default();
         let acceptance_policy = item.acceptance_policy.unwrap_or_default();
         let detail = WorkItemDetail {
-            title: item.title,
-            description: item.description,
-            item_type: item.item_type,
-            origin: item.origin,
-            gap_id: item.gap_id,
-            assignee: item.assignee,
-            depends_on: item.depends_on.iter().map(flatten_dependency).collect(),
-            captured_at: item.captured_at,
-            resolution: item.resolution,
-            reason: item.reason,
-            audit: item.audit.map(|value| value.to_string()),
-            superseded_by: item.superseded_by,
-            spec_commitment_hint: item.spec_commitment_hint,
+            title: record_text(&raw, "title"),
+            description: record_text(&raw, "description"),
+            item_type: record_text(&raw, "type"),
+            origin: record_text(&raw, "origin"),
+            gap_id: record_text(&raw, "gap_id"),
+            assignee: record_text(&raw, "assignee"),
+            depends_on: record_dependencies(&raw, "depends_on"),
+            captured_at: record_text(&raw, "captured_at"),
+            resolution: record_text(&raw, "resolution"),
+            reason: record_text(&raw, "reason"),
+            audit: record_text(&raw, "audit"),
+            superseded_by: record_text(&raw, "superseded_by"),
+            spec_commitment_hint: record_text(&raw, "spec_commitment_hint"),
+            acceptance_criteria: record_text(&raw, "acceptance_criteria"),
+            notes: record_text(&raw, "notes"),
+            supersedes: record_text(&raw, "supersedes"),
+            blocked_reason: record_text(&raw, "blocked_reason"),
+            factory_safety: record_text(&raw, "factory_safety"),
         };
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
@@ -3954,7 +3987,12 @@ mod tests {
         "reason": "landed via PR #123",
         "audit": {"commits": ["abc123"]},
         "superseded_by": "livespec-console-beads-fabro-newer",
-        "spec_commitment_hint": "scenario-23-work-item-drill-in"
+        "spec_commitment_hint": "scenario-23-work-item-drill-in",
+        "acceptance_criteria": "it renders",
+        "notes": "an operator note",
+        "supersedes": "livespec-console-beads-fabro-older",
+        "blocked_reason": "waiting on review",
+        "factory_safety": "safe"
     }]"#;
 
     fn only_snapshot(parsed: &ParsedObservation) -> &WorkItemSnapshot {
@@ -4001,6 +4039,15 @@ mod tests {
             detail.spec_commitment_hint.as_deref(),
             Some("scenario-23-work-item-drill-in")
         );
+        // The five fields the record used to drop on the floor entirely.
+        assert_eq!(detail.acceptance_criteria.as_deref(), Some("it renders"));
+        assert_eq!(detail.notes.as_deref(), Some("an operator note"));
+        assert_eq!(
+            detail.supersedes.as_deref(),
+            Some("livespec-console-beads-fabro-older")
+        );
+        assert_eq!(detail.blocked_reason.as_deref(), Some("waiting on review"));
+        assert_eq!(detail.factory_safety.as_deref(), Some("safe"));
         // `audit` arrives as an OBJECT and is flattened to its JSON text.
         assert_eq!(detail.audit.as_deref(), Some(r#"{"commits":["abc123"]}"#));
         // `depends_on` arrives as objects: a `local` kind shows the bare id, a
@@ -4085,6 +4132,59 @@ mod tests {
         assert_eq!(
             only_snapshot(&original).source_version(),
             only_snapshot(&again).source_version()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_descriptive_field_shape_can_drop_a_work_item() -> Result<(), String> {
+        // The record contract forbids dropping a work-item from the board
+        // because a descriptive field is absent or unparseable. A typed
+        // `#[serde(default)]` field would do exactly that on a present `null`
+        // (serde's `default` rescues a MISSING key only), and on a wrong-typed
+        // value -- so the descriptive half is read through TOTAL helpers and
+        // every one of these shapes must still land the item.
+        let stdout = r#"[{
+            "id": "livespec-console-beads-fabro-odd",
+            "lane": "ready",
+            "depends_on": null,
+            "captured_at": 1234,
+            "title": {"nested": "object"},
+            "notes": null,
+            "audit": [1, 2],
+            "description": true
+        }]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            stdout,
+        ))?;
+        let detail = only_snapshot(&parsed).detail();
+        // Present but null / wrong-typed reads as absent or as its own JSON
+        // text -- never as a dropped work-item.
+        assert!(detail.depends_on.is_empty());
+        assert_eq!(detail.notes, None);
+        assert_eq!(detail.captured_at.as_deref(), Some("1234"));
+        assert_eq!(detail.title.as_deref(), Some(r#"{"nested":"object"}"#));
+        assert_eq!(detail.audit.as_deref(), Some("[1,2]"));
+        assert_eq!(detail.description.as_deref(), Some("true"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_bare_string_dependency_reads_as_its_id() -> Result<(), String> {
+        // The pre-typed-form store shape: a bare string element is a VALID
+        // local dependency, so it must read as the id itself rather than as its
+        // quoted JSON text, which would display a legitimate shape as garbage.
+        let stdout = r#"[{"id":"livespec-console-beads-fabro-legacy","lane":"ready","depends_on":["dep-bare",{"kind":"local","work_item_id":"dep-typed"}]}]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            stdout,
+        ))?;
+        assert_eq!(
+            only_snapshot(&parsed).detail().depends_on,
+            vec!["dep-bare".to_owned(), "dep-typed".to_owned()]
         );
         Ok(())
     }

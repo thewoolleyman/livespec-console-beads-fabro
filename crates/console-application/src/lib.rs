@@ -1389,7 +1389,7 @@ impl TuiScreenModel {
     /// open overlay replaces the pane's hints with that overlay's (restored when
     /// the overlay closes). It is never empty, so no context in which shortcut
     /// actions are available shows a blank hint line. See [`footer_hint`].
-    pub const fn footer(&self) -> &str {
+    pub fn footer(&self) -> &str {
         // The Header pane is not view-keyed, so its focused hints come from
         // `focus` rather than `active_view`: while it holds focus (and no overlay
         // owns the line), the hints describe its horizontal-scroll keys. An open
@@ -1397,7 +1397,12 @@ impl TuiScreenModel {
         // Header-focus branch.
         match (&self.overlay, self.focus) {
             (TuiOverlay::None, FocusPane::Header) => HEADER_FOOTER_HINT,
-            (overlay, _) => footer_hint(self.active_view, self.lane_focus, overlay),
+            (overlay, _) => footer_hint(
+                self.active_view,
+                self.lane_focus,
+                self.selected_work_item_id().is_some(),
+                overlay,
+            ),
         }
     }
 }
@@ -1421,10 +1426,11 @@ const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q
 const fn footer_hint(
     active_view: TuiView,
     lane_focus: LaneFocus,
+    has_selected_work_item: bool,
     overlay: &TuiOverlay,
 ) -> &'static str {
     match overlay {
-        TuiOverlay::None => pane_footer_hint(active_view, lane_focus),
+        TuiOverlay::None => pane_footer_hint(active_view, lane_focus, has_selected_work_item),
         TuiOverlay::Search { .. } => "type to search | esc cancel",
         TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
@@ -1446,21 +1452,46 @@ const fn footer_hint(
 /// `enter drill` in both places is precisely the lie this hint used to tell —
 /// the hint MUST name the action `Enter` actually performs in the current
 /// context, or the Status line is worse than blank.
-const fn pane_footer_hint(view: TuiView, lane_focus: LaneFocus) -> &'static str {
+/// The Status-line hints for a focused pane `view` with no overlay open: the
+/// keys that act on that pane RIGHT NOW.
+///
+/// Keyed on `lane_focus` and `has_selected_work_item`, not on the view alone,
+/// because both change which keys actually do anything. `Enter` means "drill
+/// into a lane" on the lane overview but "open the selected item's record"
+/// inside a drilled-in lane; and every per-item key (the valves, the policy
+/// dials, the status move) acts only on a SELECTED work-item, so all of them are
+/// inert on the lane overview -- which selects a lane, not an item -- and in an
+/// empty drilled-in lane. Listing them there would advertise keys that do
+/// nothing, which is the dishonesty the Status-line contract forbids.
+///
+/// The read-only nav views (Spec, Events, Repos) share one hint set because
+/// their available actions are identical (select + move focus + search), and
+/// Settings surfaces its edit key.
+const fn pane_footer_hint(
+    view: TuiView,
+    lane_focus: LaneFocus,
+    has_selected_work_item: bool,
+) -> &'static str {
     match view {
         TuiView::Attention => {
-            "up/down move | enter open | p/c/r approve/accept/reject | \
-             m/n set-admission/acceptance | ? help | q quit"
+            if has_selected_work_item {
+                "up/down move | enter open | p/c/r approve/accept/reject | \
+                 m/n set-admission/acceptance | ? help | q quit"
+            } else {
+                "up/down move | enter open | ? help | q quit"
+            }
         }
         TuiView::Lanes => match lane_focus {
-            LaneFocus::Overview => {
-                "up/down move | enter drill | s move-status | p/c/r approve/accept/reject | \
-                 m/n set-admission/acceptance | ? help | q quit"
-            }
-            LaneFocus::Lane(_lane) => {
+            // The lane OVERVIEW selects a LANE, never a work-item, so every
+            // per-item key is inert here and none is advertised.
+            LaneFocus::Overview => "up/down move | enter drill | ? help | q quit",
+            LaneFocus::Lane(_lane) if has_selected_work_item => {
                 "up/down move | enter item | esc lane list | s move-status | \
                  p/c/r approve/accept/reject | m/n set-admission/acceptance | ? help | q quit"
             }
+            // An EMPTY drilled-in lane: nothing is selected, so `enter` opens
+            // nothing and every per-item key is inert.
+            LaneFocus::Lane(_lane) => "up/down move | esc lane list | ? help | q quit",
         },
         TuiView::Settings => "up/down move | enter/space edit row | ? help | q quit",
         TuiView::Spec | TuiView::Events | TuiView::Repos => {
@@ -2115,6 +2146,8 @@ pub struct LaneWorkItem {
     lane_reason: Option<LaneReason>,
     rank: String,
     status: String,
+    admission_policy: AdmissionPolicy,
+    acceptance_policy: AcceptancePolicy,
     detail: WorkItemDetail,
 }
 
@@ -2127,8 +2160,22 @@ impl LaneWorkItem {
             lane_reason: snapshot.lane_reason(),
             rank: snapshot.rank().to_owned(),
             status: snapshot.status().to_owned(),
+            admission_policy: snapshot.admission_policy(),
+            acceptance_policy: snapshot.acceptance_policy(),
             detail: snapshot.detail().clone(),
         }
+    }
+
+    #[must_use]
+    /// The item's admission policy, as the orchestrator emitted it.
+    pub const fn admission_policy(&self) -> AdmissionPolicy {
+        self.admission_policy
+    }
+
+    #[must_use]
+    /// The item's acceptance policy, as the orchestrator emitted it.
+    pub const fn acceptance_policy(&self) -> AcceptancePolicy {
+        self.acceptance_policy
     }
 
     #[must_use]
@@ -6051,10 +6098,11 @@ mod tests {
         // The default Attention view (no overlay) shows the Attention pane's
         // context-specific hints -- non-empty and appropriate to the focused
         // pane, never the old single static string (Scenario 19 / TUI Contract).
+        // This fixture's inbox is EMPTY ("attention: 0"), so the per-item valve
+        // keys act on nothing and are correctly absent from the hint line.
         assert_eq!(
             model.footer(),
-            "up/down move | enter open | p/c/r approve/accept/reject | \
-             m/n set-admission/acceptance | ? help | q quit"
+            "up/down move | enter open | ? help | q quit"
         );
     }
 
@@ -6497,7 +6545,12 @@ mod tests {
         assert!(model.footer().contains("scroll") && model.footer().contains("leave"));
         assert_ne!(
             model.footer(),
-            footer_hint(model.active_view(), model.lane_focus(), &TuiOverlay::None)
+            footer_hint(
+                model.active_view(),
+                model.lane_focus(),
+                model.selected_work_item_id().is_some(),
+                &TuiOverlay::None,
+            )
         );
 
         // An open overlay wins the hint line even while the header holds focus.
@@ -10009,26 +10062,41 @@ mod tests {
         // available -- and the actionable panes surface their distinct keys.
         for view in TuiView::all() {
             assert!(
-                !footer_hint(*view, LaneFocus::Overview, &TuiOverlay::None)
+                !footer_hint(*view, LaneFocus::Overview, true, &TuiOverlay::None)
                     .trim()
                     .is_empty()
             );
         }
         assert!(
-            footer_hint(TuiView::Attention, LaneFocus::Overview, &TuiOverlay::None)
-                .contains("approve/accept/reject")
+            footer_hint(
+                TuiView::Attention,
+                LaneFocus::Overview,
+                true,
+                &TuiOverlay::None
+            )
+            .contains("approve/accept/reject")
         );
         assert!(
-            footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None)
-                .contains("move-status")
+            footer_hint(
+                TuiView::Lanes,
+                LaneFocus::Lane(Lane::Ready),
+                true,
+                &TuiOverlay::None
+            )
+            .contains("move-status")
         );
         assert!(
-            footer_hint(TuiView::Settings, LaneFocus::Overview, &TuiOverlay::None)
-                .contains("enter/space edit row")
+            footer_hint(
+                TuiView::Settings,
+                LaneFocus::Overview,
+                true,
+                &TuiOverlay::None
+            )
+            .contains("enter/space edit row")
         );
         // The read-only nav views surface select + focus-move + search.
         for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
-            let hint = footer_hint(view, LaneFocus::Overview, &TuiOverlay::None);
+            let hint = footer_hint(view, LaneFocus::Overview, true, &TuiOverlay::None);
             assert!(hint.contains("left/right focus") && hint.contains("search"));
         }
     }
@@ -10038,8 +10106,18 @@ mod tests {
         // Scenario 19 case 2: moving focus from Lanes to Settings changes the
         // hints to that pane's actions, and the two panes' hints DIFFER (their
         // action sets genuinely differ: status-move/valves vs. edit).
-        let lanes = footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None);
-        let settings = footer_hint(TuiView::Settings, LaneFocus::Overview, &TuiOverlay::None);
+        let lanes = footer_hint(
+            TuiView::Lanes,
+            LaneFocus::Lane(Lane::Ready),
+            true,
+            &TuiOverlay::None,
+        );
+        let settings = footer_hint(
+            TuiView::Settings,
+            LaneFocus::Overview,
+            true,
+            &TuiOverlay::None,
+        );
         assert_ne!(lanes, settings);
         assert!(lanes.contains("move-status") && !lanes.contains("edit row"));
         assert!(settings.contains("edit row") && !settings.contains("move-status"));
@@ -10051,10 +10129,11 @@ mod tests {
         // hints with that overlay's, and closing it (overlay back to None)
         // restores the pane's hints. Exercised against the Lanes pane so the
         // restore is observable via its distinctive `move-status` key.
-        let pane = footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None);
+        let pane = footer_hint(TuiView::Lanes, LaneFocus::Overview, true, &TuiOverlay::None);
         let help = footer_hint(
             TuiView::Lanes,
             LaneFocus::Overview,
+            true,
             &TuiOverlay::Help {
                 selected_section: help_section_for_view(TuiView::Lanes),
                 scroll: 0,
@@ -10064,7 +10143,7 @@ mod tests {
         assert!(help.contains("close help") && !help.contains("move-status"));
         // Closing the overlay restores the underlying pane's hints verbatim.
         assert_eq!(
-            footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None),
+            footer_hint(TuiView::Lanes, LaneFocus::Overview, true, &TuiOverlay::None),
             pane
         );
     }
@@ -10105,18 +10184,55 @@ mod tests {
         // Enter drills into a LANE from the overview but opens an ITEM inside a
         // drilled-in lane, so the hint must name a different action in each --
         // advertising "enter drill" in both is the lie this surface fixes.
-        let overview = footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None);
-        let drilled = footer_hint(
+        // The lane OVERVIEW selects a LANE, not an item, so every per-item key
+        // is inert there and none may be advertised.
+        let overview = footer_hint(
             TuiView::Lanes,
-            LaneFocus::Lane(Lane::Ready),
+            LaneFocus::Overview,
+            false,
             &TuiOverlay::None,
         );
         assert!(overview.contains("enter drill"));
+        for inert in ["move-status", "approve/accept/reject", "set-admission"] {
+            assert!(!overview.contains(inert));
+        }
+
+        let drilled = footer_hint(
+            TuiView::Lanes,
+            LaneFocus::Lane(Lane::Ready),
+            true,
+            &TuiOverlay::None,
+        );
         assert!(drilled.contains("enter item") && !drilled.contains("enter drill"));
+        // With an item selected the per-item keys DO act, so they are listed.
+        assert!(drilled.contains("move-status") && drilled.contains("approve/accept/reject"));
+
+        // An EMPTY drilled-in lane selects nothing: `enter` opens nothing and
+        // every per-item key is inert, so neither is advertised.
+        let empty = footer_hint(
+            TuiView::Lanes,
+            LaneFocus::Lane(Lane::Ready),
+            false,
+            &TuiOverlay::None,
+        );
+        assert!(!empty.contains("enter item") && !empty.contains("enter drill"));
+        assert!(!empty.contains("move-status") && !empty.contains("approve/accept/reject"));
+        assert!(empty.contains("esc lane list"));
+
+        // Attention drops its per-item valves when the inbox is empty.
+        let attention_empty = footer_hint(
+            TuiView::Attention,
+            LaneFocus::Overview,
+            false,
+            &TuiOverlay::None,
+        );
+        assert!(!attention_empty.contains("approve/accept/reject"));
+        assert!(attention_empty.contains("enter open"));
         // The open modal owns the hint line and names its own keys.
         let modal = footer_hint(
             TuiView::Lanes,
             LaneFocus::Lane(Lane::Ready),
+            true,
             &TuiOverlay::WorkItemDetail {
                 work_item_id: MODAL_ITEM.to_owned(),
                 scroll: 0,
@@ -10240,14 +10356,19 @@ mod tests {
             },
         ];
         for overlay in &overlays {
-            let hint = footer_hint(TuiView::Attention, LaneFocus::Overview, overlay);
+            let hint = footer_hint(TuiView::Attention, LaneFocus::Overview, true, overlay);
             // Non-empty and mentions the overlay's exit key.
             assert!(!hint.trim().is_empty() && hint.contains("esc"));
             // The overlay owns the hints: they do NOT fall through to the
             // underlying Attention pane's keys.
             assert_ne!(
                 hint,
-                footer_hint(TuiView::Attention, LaneFocus::Overview, &TuiOverlay::None)
+                footer_hint(
+                    TuiView::Attention,
+                    LaneFocus::Overview,
+                    true,
+                    &TuiOverlay::None
+                )
             );
         }
     }
