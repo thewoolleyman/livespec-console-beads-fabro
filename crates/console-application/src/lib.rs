@@ -5939,12 +5939,12 @@ mod tests {
             AttentionHandoff::new("livespec-op", None, "codex exec livespec:prune-history"),
         );
         let plan = AttentionItemSnapshot::new(
-            "plan:autonomous-mode",
+            "plan:console-autonomous-mode",
             "plan",
             "medium",
-            "Review plan thread autonomous-mode.",
-            AttentionSourceRef::new(orchestrator, None, Some("plan/autonomous-mode/")),
-            AttentionHandoff::new("plan", None, "codex exec plan autonomous-mode"),
+            "Review plan thread console-autonomous-mode.",
+            AttentionSourceRef::new(orchestrator, None, Some("plan/console-autonomous-mode/")),
+            AttentionHandoff::new("plan", None, "codex exec plan console-autonomous-mode"),
         );
         let events = [
             lane_event(
@@ -5974,7 +5974,7 @@ mod tests {
             ids,
             [
                 "bd-ib-ss7rkr",
-                "plan:autonomous-mode",
+                "plan:console-autonomous-mode",
                 "spec:prune-history:SPECIFICATION",
             ]
         );
@@ -5984,10 +5984,13 @@ mod tests {
         // The needs-attention items carry their TRUE orchestrator repo in the
         // composed source reference, never the console's own name.
         let plan_item = &model.attention_items()[1];
-        assert_eq!(plan_item.title(), "Review plan thread autonomous-mode.");
+        assert_eq!(
+            plan_item.title(),
+            "Review plan thread console-autonomous-mode."
+        );
         assert_eq!(
             plan_item.source_reference(),
-            "livespec-orchestrator-beads-fabro:plan/autonomous-mode/"
+            "livespec-orchestrator-beads-fabro:plan/console-autonomous-mode/"
         );
 
         // The work-item entry preserves its existing lane-derived detail.
@@ -6005,7 +6008,7 @@ mod tests {
         );
         assert_eq!(
             plan_model.detail().map(super::AttentionDetail::work_item),
-            Some("plan/autonomous-mode/")
+            Some("plan/console-autonomous-mode/")
         );
     }
 
@@ -6021,12 +6024,12 @@ mod tests {
             AttentionHandoff::new("livespec-op", None, "codex exec livespec:prune-history"),
         );
         let plan = AttentionItemSnapshot::new(
-            "plan:autonomous-mode",
+            "plan:console-autonomous-mode",
             "plan",
             "medium",
-            "Review plan thread autonomous-mode.",
-            AttentionSourceRef::new(orchestrator, None, Some("plan/autonomous-mode/")),
-            AttentionHandoff::new("plan", None, "codex exec plan autonomous-mode"),
+            "Review plan thread console-autonomous-mode.",
+            AttentionSourceRef::new(orchestrator, None, Some("plan/console-autonomous-mode/")),
+            AttentionHandoff::new("plan", None, "codex exec plan console-autonomous-mode"),
         );
         let events = [
             lane_event(
@@ -6114,14 +6117,14 @@ mod tests {
     #[test]
     fn attention_item_matches_covers_query_branches() {
         let item = AttentionItemSnapshot::new(
-            "plan:autonomous-mode",
+            "plan:console-autonomous-mode",
             "plan",
             "medium",
-            "Review plan thread autonomous-mode.",
+            "Review plan thread console-autonomous-mode.",
             AttentionSourceRef::new(
                 "livespec-orchestrator-beads-fabro",
                 Some("bd-ib-ss7rkr"),
-                Some("plan/autonomous-mode/"),
+                Some("plan/console-autonomous-mode/"),
             ),
             AttentionHandoff::new("plan", None, "cmd"),
         );
@@ -7616,10 +7619,13 @@ mod tests {
             "needs-attention".to_owned(),
             EventType::AttentionItemResolved,
             "needs-attention".to_owned(),
-            "attention_item:livespec-orchestrator-beads-fabro:plan:autonomous-mode".to_owned(),
+            "attention_item:livespec-orchestrator-beads-fabro:plan:console-autonomous-mode"
+                .to_owned(),
             1,
         )
-        .with_payload_json(attention_resolved_payload_json("plan:autonomous-mode"));
+        .with_payload_json(attention_resolved_payload_json(
+            "plan:console-autonomous-mode",
+        ));
         assert_eq!(
             super::repo_id(&resolved),
             "livespec-orchestrator-beads-fabro"

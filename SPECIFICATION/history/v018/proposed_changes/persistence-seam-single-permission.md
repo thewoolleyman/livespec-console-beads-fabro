@@ -15,7 +15,7 @@ created_at: 2026-07-11T06:00:00Z
 ### Summary
 
 Resolve the persistence-model seam (console plan
-`plan/autonomous-mode/design.md`, the "Resolve the persistence-model seam"
+`plan/console-autonomous-mode/design.md`, the "Resolve the persistence-model seam"
 bullet; overall plan `thewoolleyman/livespec` `plan/autonomous-mode/design.md`
 §6.1) now that the orchestrator's O1 arming contract has FROZEN. The console
 STOPS persisting its own per-repo autonomous-mode preference. The SINGLE
@@ -66,7 +66,7 @@ orchestrator's key, and re-target the handler to write the orchestrator's key
 through the published command surface.
 
 Design record (read in full): repo `thewoolleyman/livespec-console-beads-fabro`,
-`plan/autonomous-mode/design.md`, the C1 "Resolve the persistence-model seam
+`plan/console-autonomous-mode/design.md`, the C1 "Resolve the persistence-model seam
 (overall plan §6.1)" bullet -- "the console's
 `factory.autonomous_mode_enable/disable_requested` commands set the
 ORCHESTRATOR's key, and the console's own namespaced `autonomous_mode` block is

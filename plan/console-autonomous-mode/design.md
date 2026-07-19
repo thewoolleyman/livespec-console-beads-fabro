@@ -1,7 +1,7 @@
 # Autonomous-mode MVP — console operator surface plan
 
 **Repo:** `thewoolleyman/livespec-console-beads-fabro` · **Thread:**
-`plan/autonomous-mode/` · **Role:** the Control-Plane operator surface for the
+`plan/console-autonomous-mode/` · **Role:** the Control-Plane operator surface for the
 autonomous-mode MVP — the TUI toggle, the command surface, the `.livespec.jsonc`
 persistence and audit, and the observe/reflect loop. The GUI is OUT of scope.
 

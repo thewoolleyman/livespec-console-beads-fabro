@@ -51,7 +51,7 @@ cannot occur.
 Design record (read in full): repo `thewoolleyman/livespec`,
 `plan/autonomous-mode/design.md` §6.2 (division of resolution / avoid
 double-resolution) and §3 (the plane boundary); the console plan
-`plan/autonomous-mode/design.md` §4 (the resolution-division bullet) and §5
+`plan/console-autonomous-mode/design.md` §4 (the resolution-division bullet) and §5
 (what is NOT console work -- the decision engine is orchestrator item
 `bd-ib-82a`).
 

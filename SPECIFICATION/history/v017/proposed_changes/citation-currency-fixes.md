@@ -54,7 +54,7 @@ against the live orchestrator spec before quoting here:
   `acceptance`, `blocked`, `done`) is the orchestrator's Work-item state
   semantics, not core's; core ships no lane names. Design record: repo
   `thewoolleyman/livespec`, `plan/autonomous-mode/design.md` §6.3 (d/e) and the
-  console plan `plan/autonomous-mode/design.md` §4.
+  console plan `plan/console-autonomous-mode/design.md` §4.
 
 No implementation follow-up: the console impl already targets the `drive`
 surface for its (not-yet-built) valve wiring (plan step C2), and no lane names
