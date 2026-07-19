@@ -28,7 +28,7 @@ a pin-alignment assertion, so it belongs here.
 2. `crates/console-arch-check/src/main.rs` — `run_checks` :63-71 (exactly three
    families today: crate-graph, crate-sources, tmux-socket-scoping), vacuity-guard
    pattern :234-241.
-3. `justfile` — the `targets=(...)` array (~:151-167) that new guard targets append to;
+3. `justfile` — the `targets=(...)` array (:154-167) that new guard targets append to;
    contended with `plan/test-adequacy-gates/` (see §Sequencing).
 4. `lefthook.yml` — must GAIN a `commit-msg` section for `-mvu22t`; it has none today.
 5. `/data/projects/livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py`
@@ -134,16 +134,19 @@ is `:234-241` on master and **drifts to `:234-242` after PR #317** (which adds a
 PRE-#317 shape. The designs are sound; only these anchors are stale. Correction comments
 are on the records.
 
-**Branch question RESOLVED 2026-07-19 — no coordination needed.** Remote branch
-`fix/arch-check-suspect-by-default` touches this crate but is fully landed and stale:
-its sole commit `8f3ee6f` is already in master by patch-id (`git cherry` reports `-`)
-and its PR #307 is MERGED. It is a deletion candidate, not in-flight work.
+**Branch question RESOLVED — there is no branch.** `fix/arch-check-suspect-by-default`
+was deleted on the remote when PR #307 merged (`git ls-remote --heads origin` does not
+list it; the API returns 404). What survives in some checkouts is a STALE LOCAL
+REMOTE-TRACKING REF, `remotes/origin/fix/...`, which `git remote prune origin` clears.
+Its work is in master — commit `8f3ee6f` is present by patch-id (`git cherry` reports
+`-`), landing as squash commit `5bddff8`. Nothing to coordinate with, and nothing to
+delete on the remote.
 
 **PR #317 IS the real gate, and it REWRITES THE GUARD THIS ITEM TELLS YOU TO COPY.**
 Read the diff body, not the hunk labels: git labels a hunk with the *preceding* function
 signature, so `@@ -231,15 @@ fn check_crate_sources` is misleading — those changed lines
 are inside `check_tmux_socket_scoping` and they ARE the `paths.is_empty()` vacuity guard
-at :234-241.
+at :234-241 (plus the removal of `let mut findings = Vec::new();` just after it).
 
 After #317 merges, the pattern changes shape:
 - `rust_files_for_tmux_scan` returns `(Vec<PathBuf>, Vec<String>)` instead of
@@ -170,8 +173,10 @@ Do NOT "fix" this in dev-tooling: `fabro_image_pin_lockstep.py` deliberately exc
 RUST_VERSION (it parses the ARG at :90-98 then discards it), and that exclusion is
 LOCKED IN BY A PASSING TEST (`test_fabro_image_pin_lockstep.py:36,59`).
 
-Grooming must WIDEN the item's scope — there are **four** copies of the pin in this
-repo, not the two the item names:
+Its scope was ALREADY WIDENED in the record 2026-07-19 — do not redo it. The item now
+enumerates all **four** copies itself, and already says to fix the misleading
+`workflow.toml` comment. Repeated here only so the reader knows what the widened scope
+is without a ledger round-trip:
 - `rust-toolchain.toml:2` — authoritative
 - `Cargo.toml:21` `rust-version = "1.92"` — a real MSRV declaration cargo enforces
 - `.github/workflows/ci.yml:94` — prose comment (the unfiled third copy)
@@ -212,7 +217,7 @@ trailer grammar evolves. Either pin the ported grammar version or add a parity f
 ## Sequencing
 
 1. **Merge PR #317 first — it rewrites the vacuity guard this thread copies** (and adds
-   ~109 test lines in the same file). `run_checks` itself is untouched and unshifted.
+   ~103 test lines in the same file). `run_checks` itself is untouched and unshifted.
    See the note under `-p4bvrt`; do not work from the master shape of the guard.
 2. ~~`-nxsfih` closes only after its slice-3 child exists~~ — DONE 2026-07-19: `-p4bvrt`
    was filed first, then `-nxsfih` closed, in that order.
@@ -222,7 +227,7 @@ trailer grammar evolves. Either pin the ported grammar version or add a parity f
 5. **Shared files with `plan/test-adequacy-gates/`: BOTH `justfile` AND
    `.github/workflows/ci.yml`** (that thread adds CI jobs; `-mcj` here reconciles the
    pin comment at `ci.yml:94`). The one genuinely line-adjacent hazard is the
-   `targets=(...)` array in `justfile` (~:151-167) — that thread edits `check-coverage`
+   `targets=(...)` array in `justfile` (:154-167) — that thread edits `check-coverage`
    at :195 while new guards here plausibly append to the array.
 
    **Tie-break, so neither session waits on the other:** `plan/test-adequacy-gates/`
