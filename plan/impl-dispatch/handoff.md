@@ -510,8 +510,17 @@ refresh's own B6 entry was wrong an hour after it was written).
 - Before dispatching or valving ANY item here, check whether it is already
   delivered. At the 2026-07-19 refresh **every single queue item was phantom** —
   5 `pending-approval` records for merged work, 1 `ready` record for a solved
-  problem (all now closed). Lane state in this tenant has repeatedly lagged
-  reality.
+  problem (all now closed).
+  **But this was a CLEARED HISTORICAL BACKLOG, not a live filing defect — do not
+  over-apply the suspicion.** The two bugs filed the same day by other sessions,
+  `-6hbfq6` and `-ipwtll`, were both spot-checked against the code and are
+  **genuine**: `HelpScrollDown`/`HelpScrollUp` really are one-row scrolls bound
+  to PageUp/PageDown (`console-application/src/lib.rs:669-675`,
+  `console-tui/src/lib.rs:511-512`), and the three `handle_pending_*_commands`
+  calls (`console-cli/src/lib.rs:338-344`, `:526-528`) really do run with no
+  claim/lease/consumer-id semantics anywhere. So **newly-filed items in this
+  tenant are accurate**; the phantoms were old records whose delivery never got
+  written back. Verify before valving, but expect to find the queue honest now.
 - When closing, cite evidence **per AC clause, not per item**. `-3rdmqu` records
   a close that claimed "met in full" on a two-part criterion after weighing only
   one part. Watch for items whose requirements live in description prose rather
