@@ -1687,14 +1687,16 @@ fn command_append_from_tui_effect(
 /// Whether an operator action is REPEATABLE — issuable any number of times, and
 /// expected to take effect on every issue rather than be absorbed as a no-op.
 ///
-/// The split is SEMANTIC, so it is enumerated rather than derived from the
-/// envelope's shape:
+/// The split is SEMANTIC, not structural, so it is enumerated rather than
+/// derived from the envelope's shape:
 ///
-/// * A broad MOVE is repeatable per work-item — the operator may move one item
-///   any number of times, to different targets and back to a prior target. Its
-///   command carries a STATIC identity keyed only by the work-item
-///   (`cmd_work_item_move_requested_<id>` / `<id>:work_item.move_requested`), so
-///   the second move of an item would dedupe against the first.
+/// * A payload-CARRYING action (the broad move, reject, the policy dials, the
+///   dispatcher overrides, the config setting) has an identity that is a pure
+///   function of `(aggregate, action, value)`, which means the A -> B -> A
+///   sequence an operator naturally performs (set a dial, change it, set it
+///   back) collides the third edit onto the first. Carrying the payload value in
+///   the key — which every such command already does — narrows the collision but
+///   cannot remove it, because the value itself repeats.
 /// * A factory DRAIN is repeatable fleet-wide — draining the ready queue is a
 ///   gesture the operator repeats whenever the queue refills. Its aggregate is
 ///   the fleet (`fleet:livespec`), not an item, and it is PAYLOAD-LESS, so its
@@ -1711,20 +1713,33 @@ fn command_append_from_tui_effect(
 const fn is_repeatable_command(command_type: CommandType) -> bool {
     matches!(
         command_type,
-        CommandType::WorkItemMoveRequested | CommandType::FactoryDrainRequested
+        CommandType::WorkItemMoveRequested
+            | CommandType::FactoryDrainRequested
+            | CommandType::WorkItemRejectRequested
+            | CommandType::WorkItemSetAdmissionRequested
+            | CommandType::WorkItemSetAcceptanceRequested
+            | CommandType::WorkItemResolveBlockedRequested
+            | CommandType::WorkItemSetDispatcherOverrideRequested
+            | CommandType::ConfigDispatcherSettingSet
     )
 }
 
 /// Give a REPEATABLE command a per-append identity so every distinct issue lands.
 ///
-/// Fold the monotonic append `sequence` into BOTH the `command_id` and the
-/// `idempotency_key` so every distinct issue is a distinct command, while an
-/// exact re-persist AT THE SAME sequence still dedupes — the store's replay
-/// safety is preserved. A sequence-distinguished key also means an already-spent
-/// terminal row (a drain left at `status: failed`) can never block a later issue,
-/// so recovery needs no store surgery.
+/// Each such command carries an identity that is a pure function of its content
+/// (`<id>:work_item.<action>_requested[:<key>=<value>]`), so re-issuing an action
+/// with a value it already held dedupes against the earlier row and silently
+/// no-ops — the operator presses the key and nothing happens. Folding the
+/// monotonic append `sequence` into BOTH the `command_id` and the
+/// `idempotency_key` makes every distinct issue a distinct command, while an exact
+/// re-persist AT THE SAME sequence still dedupes, so the store's replay-safety is
+/// preserved. A sequence-distinguished key also means an already-spent terminal
+/// row (a drain left at `status: failed`) can never block a later issue, so
+/// recovery needs no store surgery.
 ///
-/// See [`is_repeatable_command`] for which actions are repeatable and why the
+/// Originally scoped to the broad MOVE (PR #258, commit 17154dd); widened to the
+/// full repeatable set after an audit of every `CommandType` — see
+/// [`is_repeatable_command`] for which actions are repeatable and why the
 /// once-per-item valves are excluded.
 fn distinguish_repeatable_command(command: &CommandEnvelope, sequence: usize) -> CommandEnvelope {
     if !is_repeatable_command(*command.command_type()) {
@@ -2202,10 +2217,10 @@ mod tests {
 
     use console_application::{
         ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
-        AutonomousDecisionsPort, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest,
-        PendingValve, TuiInteractionState, TuiOverlay, build_tui_model, project_attention,
-        project_lane_board,
+        AutonomousDecisionsPort, DispatcherOverride, FactoryDrainPort, FactoryDrainPortOutcome,
+        FactoryDrainRequest, LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode, TuiInteractionState,
+        TuiOverlay, build_tui_model, project_attention, project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
             AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
@@ -3570,20 +3585,274 @@ mod tests {
         Ok(())
     }
 
-    /// Build the `work_item.move_requested` effect the `s`-move valve produces for
-    /// the operator-selected work-item, by driving the pure runtime's Confirm on a
-    /// staged `MoveStatus` valve — the same key → valve → Confirm → effect path the
-    /// interactive loop drives.
-    fn move_effect(events: &[ConsoleEvent], from: Lane, to: Lane) -> TuiRuntimeEffect {
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::ValveConfirm {
-                valve: PendingValve::MoveStatus { from, to },
-            },
+    #[test]
+    fn distinguish_repeatable_command_folds_the_sequence_only_for_repeatable_actions() {
+        // The pure-function contract, tested directly rather than through the
+        // effect pipeline. Worth doing explicitly: EVERY payload-bearing command
+        // the pipeline can produce is now repeatable, so the once-only guard is
+        // unreachable from that direction — but it is still the property that
+        // stops a future payload-bearing once-only command from being silently
+        // sequence-distinguished into firing twice.
+        let once_only = CommandEnvelope::new(
+            "cmd_work_item_approve_requested_wi-1".to_owned(),
+            CommandType::WorkItemApproveRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.approve_requested".to_owned(),
+            "operator".to_owned(),
         );
+        let unchanged = distinguish_repeatable_command(&once_only, 7);
+        assert_eq!(unchanged.command_id(), once_only.command_id());
+        assert_eq!(unchanged.idempotency_key(), once_only.idempotency_key());
+
+        let repeatable = CommandEnvelope::new(
+            "cmd_work_item_set_admission_requested_wi-1_auto".to_owned(),
+            CommandType::WorkItemSetAdmissionRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_admission_requested:policy=auto".to_owned(),
+            "operator".to_owned(),
+        );
+        let distinguished = distinguish_repeatable_command(&repeatable, 7);
+        assert_eq!(
+            distinguished.command_id(),
+            "cmd_work_item_set_admission_requested_wi-1_auto_7"
+        );
+        assert_eq!(
+            distinguished.idempotency_key(),
+            "wi-1:work_item.set_admission_requested:policy=auto:7"
+        );
+        // Same command, same sequence — an exact re-persist still dedupes, so
+        // replay safety survives the widening.
+        assert_eq!(
+            distinguish_repeatable_command(&repeatable, 7).idempotency_key(),
+            distinguished.idempotency_key()
+        );
+    }
+
+    /// Build the effect a staged valve produces for the operator-selected
+    /// work-item, by driving the pure runtime's Confirm — the same key → valve →
+    /// Confirm → effect path the interactive loop drives.
+    fn valve_effect(events: &[ConsoleEvent], valve: PendingValve) -> TuiRuntimeEffect {
+        let state = TuiInteractionState::new(0, TuiOverlay::ValveConfirm { valve });
         console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
             .effect()
             .clone()
+    }
+
+    /// Build the `work_item.move_requested` effect the `s`-move valve produces for
+    /// the operator-selected work-item.
+    fn move_effect(events: &[ConsoleEvent], from: Lane, to: Lane) -> TuiRuntimeEffect {
+        valve_effect(events, PendingValve::MoveStatus { from, to })
+    }
+
+    /// Drive `effects` through a store-backed sink in order, returning the
+    /// action-ids the orchestrator port observed and the number of commands of
+    /// `command_type` that actually landed in the store.
+    ///
+    /// The two together are what distinguishes a repeatable action that LANDS
+    /// from one that silently dedupes: a deduped command neither appends a row
+    /// nor reaches the port.
+    fn drive_effects(
+        store: &mut SqliteEventStore,
+        effects: &[TuiRuntimeEffect],
+        kind: CommandType,
+    ) -> Result<(Vec<String>, usize), ConsoleRuntimeError> {
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions = empty_decisions_port();
+        let requester = poll_requester();
+        {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                store,
+                "2026-07-19T00:00:01Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &requester,
+            );
+            for effect in effects {
+                let outcome = sink.handle_runtime_effect(effect).ok();
+                let applied = outcome.ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
+                assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+            }
+        }
+        let commands = store.list_commands()?;
+        let landed = commands
+            .iter()
+            .filter(|command| command.command_type() == kind.contract_name())
+            .count();
+        Ok((work_item_port.observed_action_ids, landed))
+    }
+
+    /// A store seeded with one selectable work-item `wi-1` in the inbox.
+    fn store_with_selectable_item()
+    -> Result<(SqliteEventStore, Vec<ConsoleEvent>), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-1",
+            "Repeatable actions on wi-1",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-19T00:00:00Z")?;
+        let events = store.list_console_events()?;
+        Ok((store, events))
+    }
+
+    #[test]
+    fn store_backed_repeated_admission_edits_all_land_and_drive_set_admission()
+    -> Result<(), ConsoleRuntimeError> {
+        // The same latent static-key bug PR #258 fixed for MOVE, on the admission
+        // policy dial. Its key carries the VALUE
+        // (`<id>:work_item.set_admission_requested:policy=<p>`) but no per-action
+        // distinguisher, so auto -> manual -> auto dedupes the THIRD edit onto the
+        // first and the operator's dial silently stops responding.
+        let (mut store, events) = store_with_selectable_item()?;
+        let effects = [
+            valve_effect(&events, PendingValve::SetAdmission(AdmissionPolicy::Auto)),
+            valve_effect(&events, PendingValve::SetAdmission(AdmissionPolicy::Manual)),
+            valve_effect(&events, PendingValve::SetAdmission(AdmissionPolicy::Auto)),
+        ];
+        let kind = CommandType::WorkItemSetAdmissionRequested;
+        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
+        assert_eq!(
+            actions,
+            [
+                "set-admission:wi-1:auto",
+                "set-admission:wi-1:manual",
+                "set-admission:wi-1:auto"
+            ]
+        );
+        assert_eq!(landed, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_repeated_acceptance_edits_all_land_and_drive_set_acceptance()
+    -> Result<(), ConsoleRuntimeError> {
+        // Same shape on the acceptance policy dial: ai-only -> human-only ->
+        // ai-only must land three distinct edits.
+        let (mut store, events) = store_with_selectable_item()?;
+        let effects = [
+            valve_effect(
+                &events,
+                PendingValve::SetAcceptance(AcceptancePolicy::AiOnly),
+            ),
+            valve_effect(
+                &events,
+                PendingValve::SetAcceptance(AcceptancePolicy::HumanOnly),
+            ),
+            valve_effect(
+                &events,
+                PendingValve::SetAcceptance(AcceptancePolicy::AiOnly),
+            ),
+        ];
+        let kind = CommandType::WorkItemSetAcceptanceRequested;
+        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
+        assert_eq!(
+            actions,
+            [
+                "set-acceptance:wi-1:ai-only",
+                "set-acceptance:wi-1:human-only",
+                "set-acceptance:wi-1:ai-only"
+            ]
+        );
+        assert_eq!(landed, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_set_clear_set_override_all_land() -> Result<(), ConsoleRuntimeError> {
+        // The per-item cap override is the clearest repeat case: set a cap, CLEAR
+        // it back to inherit-global, then set the SAME cap again. The third edit
+        // carries the same `{setting}={value}` as the first, so a value-only key
+        // deduped it and the override stuck cleared.
+        let (mut store, events) = store_with_selectable_item()?;
+        let effects = [
+            valve_effect(
+                &events,
+                PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Value(2))),
+            ),
+            valve_effect(
+                &events,
+                PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Clear)),
+            ),
+            valve_effect(
+                &events,
+                PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Value(2))),
+            ),
+        ];
+        let kind = CommandType::WorkItemSetDispatcherOverrideRequested;
+        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
+        // All three land, and the third re-issues the first's action-id — the
+        // repeat a value-only key would have swallowed.
+        assert_eq!(actions.len(), 3);
+        assert_eq!(actions[0], actions[2]);
+        assert_eq!(landed, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_repeated_rejects_all_land_and_drive_reject() -> Result<(), ConsoleRuntimeError>
+    {
+        // Reject is repeatable across modes: rework -> regroom -> rework.
+        let (mut store, events) = store_with_selectable_item()?;
+        let effects = [
+            valve_effect(&events, PendingValve::Reject(RejectMode::Rework)),
+            valve_effect(&events, PendingValve::Reject(RejectMode::Regroom)),
+            valve_effect(&events, PendingValve::Reject(RejectMode::Rework)),
+        ];
+        let kind = CommandType::WorkItemRejectRequested;
+        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
+        assert_eq!(actions.len(), 3);
+        assert_eq!(actions[0], actions[2]);
+        assert_eq!(landed, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_repeated_resolve_blocked_all_land() -> Result<(), ConsoleRuntimeError> {
+        // An item can be blocked, resolved to ready, blocked AGAIN, and resolved to
+        // ready again. The second resolve-to-ready repeats the first key.
+        let (mut store, events) = store_with_selectable_item()?;
+        let effects = [
+            move_effect(&events, Lane::Blocked, Lane::Ready),
+            move_effect(&events, Lane::Blocked, Lane::Backlog),
+            move_effect(&events, Lane::Blocked, Lane::Ready),
+        ];
+        let kind = CommandType::WorkItemResolveBlockedRequested;
+        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
+        assert_eq!(
+            actions,
+            [
+                "resolve-blocked:wi-1:ready",
+                "resolve-blocked:wi-1:backlog",
+                "resolve-blocked:wi-1:ready"
+            ]
+        );
+        assert_eq!(landed, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_once_only_valves_still_dedupe() -> Result<(), ConsoleRuntimeError> {
+        // The other half of the audit, and the regression this fix must NOT cause.
+        // approve (pending-approval -> ready) and accept (acceptance -> done) are
+        // SEMANTICALLY once-per-item: approving twice is a no-op, and their static
+        // per-item key is CORRECT. Widening the repeatable set must not sweep them
+        // in — if it did, a double keypress would fire the valve twice.
+        let (mut store, events) = store_with_selectable_item()?;
+        let approve = move_effect(&events, Lane::PendingApproval, Lane::Ready);
+        let once = [approve];
+        let kind = CommandType::WorkItemApproveRequested;
+        let (actions, landed) = drive_effects(&mut store, &once, kind)?;
+        assert_eq!(actions, ["approve:wi-1"]);
+        assert_eq!(landed, 1);
+
+        // The SAME approve again dedupes: no second command, no second action.
+        let kind = CommandType::WorkItemApproveRequested;
+        let (repeat_actions, still_landed) = drive_effects(&mut store, &once, kind)?;
+        assert!(repeat_actions.is_empty());
+        assert_eq!(still_landed, 1);
+        Ok(())
     }
 
     #[test]
