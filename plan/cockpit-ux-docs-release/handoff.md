@@ -32,18 +32,35 @@ real-TUI E2E backfill, and (separately, maintainer-gated) autonomous-mode Stage-
 | B3 top/header-pane focus + h-scroll (Scenario 20, v027) | ✅ DONE | PR #286 (`4e8598f`) |
 | B4 navigable modal Help (Scenario 18, v025) | ✅ DONE | PR #267 |
 | B5 panes operational-content-only (Scenario 21, v028) | ✅ DONE | propose #280 → revise #288 → impl #289 (`1bfdb41d`) |
-| **B6** user-docs → `docs/` tree (4 sub-docs) | ⬜ NOT STARTED | §"B6" below |
+| **B6** user-docs → `docs/` tree (4 sub-docs) | ◑ SPEC LEG STARTED — anchor RATIFIED **v029** (`8839d63`, propose `bc11030`); a corrections proposal sits UNMERGED on branch `b6-spec-review-fixes` (`0b6ef76`, pushed, **no PR open**). `docs/` tree itself NOT yet created. | §"B6" below |
 | **B7** key-by-key lifecycle walkthrough doc | ⬜ NOT STARTED | §"B7" below |
 | **B8** release capstone | ◑ PARTIAL — release pipeline + v0.2.0 asset shipped (PR #243); the `/tmp` two-repo download-run + README de-gate REMAIN | §"B8" below |
 | **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
 | **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`) |
+
+### Ledger reconciliation owed (found 2026-07-19 — see `plan/impl-dispatch/handoff.md`)
+Five `pending-approval` items — **W3 `-636m46` / W4 `-j3ts23` / W5 `-2ctzhm` /
+W6 `-zmunjo` / W7 `-yvikqp.1`** — plus their parent epic **`-yvikqp`**
+(`backlog`) are **already DELIVERED and merged**, verified against the code. They
+are stale records, NOT admission gates; do not walk them as valves. This matches
+`livespec/plan/autonomous-mode/handoff.md` cont.22 ("genuinely DONE:
+W3/W4/W5-valves/W6/W7"). Close as completed, per the `-0tu` / `-6tn` pattern.
+
+Also: **12 stacked pin-bump PRs are all red** on `check-completeness` because the
+bump automation rewrites `.livespec.jsonc` `compat.pinned` without refreshing
+`tests/fixtures/orchestrator-config-manifest.json`. Unfiled. Details in the
+impl-dispatch handoff.
 
 ### Open follow-up work items (console beads ledger)
 - **`livespec-console-beads-fabro-25rvmd`** (P2, blocked) — B1 transition-epoch source-availability tally (re-down-after-recovery dedups in a persistent cross-run store).
 - **`livespec-console-beads-fabro-ble`** (P2, backlog) — extend `distinguish_repeatable_command` idempotency-key fix to ALL repeatable operator actions (currently move-only).
 - **`livespec-console-beads-fabro-7wy`** (P2, open) — rewrite the section-sign (§) spec-citation in `console-application/src/lib.rs` to file-level form before the next core-pin bump past v0.16.0 (CORE master's stricter `doctor-no-spec-section-citation-in-code` flags it; the console's pinned core release does not).
 
-The B6/B7/B8 deliverables live in THIS plan by design — the freeform work-item vehicle for them was RETIRED (see §"RETIRED"); concrete follow-up bugs live as the work items above. Four stale worktrees (`docs-console-tui-usage`, `console-release-pipeline`, `cap-test-parallelism`, `phase3-selfhosted-cutover`) — leftover from ALREADY-MERGED PRs (#165 / #243 / #266 / #250) — were reaped 2026-07-19; they were NOT holding in-progress B6/B7/B8 work. A fifth, `ci-concurrency-group`, was LEFT untouched: its head (`79305bc`, the merged E2E-targetdir fix) is in master but it carries UNCOMMITTED CI work (`.github/workflows/ci.yml` + a `Cargo.lock` drift) — another session's in-progress/abandoned CI-infra worktree, not part of this cockpit track.
+The B6/B7/B8 deliverables live in THIS plan by design — the freeform work-item vehicle for them was RETIRED (see §"RETIRED"); concrete follow-up bugs live as the work items above. Four stale worktrees (`docs-console-tui-usage`, `console-release-pipeline`, `cap-test-parallelism`, `phase3-selfhosted-cutover`) — leftover from ALREADY-MERGED PRs (#165 / #243 / #266 / #250) — were reaped 2026-07-19; they were NOT holding in-progress B6/B7/B8 work. **Added since this audit (2026-07-19):** worktree `b6-spec-review-fixes` holds
+`0b6ef76` "docs(spec): propose B6 corrections — pin the settings-doc anchor,
+widen the Boundary" — clean, one commit ahead of master, **pushed to origin but
+with NO open PR**. Pick it up before starting B6 from scratch; do not re-derive
+it. A fifth, `ci-concurrency-group`, was LEFT untouched: its head (`79305bc`, the merged E2E-targetdir fix) is in master but it carries UNCOMMITTED CI work (`.github/workflows/ci.yml` + a `Cargo.lock` drift) — another session's in-progress/abandoned CI-infra worktree, not part of this cockpit track.
 
 ## KEY FINDING — the real TUI has ZERO automated coverage today
 `run_interactive_tui` (raw-mode / alternate-screen) in
