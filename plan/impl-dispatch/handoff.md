@@ -249,6 +249,33 @@ four keep their requirements in description prose, which is easy to skim past.
   coordinate rather than duplicate. Full evidence recorded as a comment on the
   epic.
 
+## COMPLETE VERIFICATION SWEEP (2026-07-19) — every open item, checked against the code
+
+The queue turned out entirely phantom, so **every remaining open item was
+verified against the code** rather than trusted. This table is the result. It
+exists so the next reader does not repeat the sweep: each row was checked once,
+with a file:line anchor. Re-verify only what has plausibly moved.
+
+| Item | Verdict | Anchor |
+|---|---|---|
+| `-ble` | **GENUINE** | `distinguish_repeatable_command` early-returns unless `WorkItemMoveRequested` — `console-cli/src/lib.rs:1519-1522` |
+| `-mvu22t` | **GENUINE** | no `red_green_replay` in `justfile` / `.git/hooks/commit-msg` / `crates/`. Its `ready` *label* is decorative — the ranker keys on STATUS (proven: it never surfaced this item while surfacing `-6sf` then `-mwzrby`, both `ready` status) |
+| `-ipi` | **GENUINE** | lane-derived path survives as CN1 intended — `WorkItemSnapshot(Observed)` at `console-application/src/lib.rs:2034,2149,2301`, `console-tui/src/lib.rs:3654` |
+| `-8aw` | **GENUINE** | only `FactoryDrainRequested` exists (`console-domain/src/lib.rs:152,214,248`); the four commands it names are absent |
+| `-txtzn5` | **GENUINE** | `justfile:195` has `--fail-under-lines 100` but NOT `--fail-under-regions 100`; no `fuzz`/`mutants` job anywhere in `ci.yml` |
+| `-topr34` | **GENUINE** | `.github/workflows/` holds only `bump-pin-from-dispatch`, `ci`, `release-binary`, `release-please` — no nightly soak |
+| `-25rvmd` | **GENUINE — mechanism fully corroborated** | all three elements confirmed: stable id `evt:{source}:{repo}:not_observed` (`source_adapters.rs:1596`), `insert or ignore into events` (`console-eventstore/src/lib.rs:486`), and an order-dependent last-write-wins fold with no epoch concept (`unavailable_sources`, `console-application/src/lib.rs:2289-2319`) |
+| `-6hbfq6` | **GENUINE** | `HelpScrollDown`/`Up` documented one-row scrolls (`console-application/src/lib.rs:669-675`), bound to PageUp/PageDown (`console-tui/src/lib.rs:511-512`) |
+| `-ipwtll` | **GENUINE** | `handle_pending_*_commands` at `console-cli/src/lib.rs:338-344`, `:526-528` with no claim/lease/consumer-id semantics anywhere |
+| `-7wy` | **DELIVERED — recommend closing** | all three AC clauses verified; see its Gate 4 entry and the per-clause comments on the item |
+| `-nxsfih` | **DO NOT CLOSE — has live substance** | the NFR-mandated zero-Beads guard is unimplemented; see its Gate 4 entry |
+| `-f2k` | **DELIVERED, awaiting valve** | see Gate 1 |
+| `-tafkuw`, `-3rdmqu` | not re-derived | filed today by other sessions with their own evidence; owned elsewhere (`fleet-pin-propagation` / the `0tu` correction) |
+
+**Net: the backlog is real work.** Only the *queue* (`ready` + `pending-approval`)
+was phantom, and it has been reconciled. Nothing below `-f2k` is blocked on
+anything except admission, regroom, or a human decision.
+
 ## THE PIN TRAIN — 12 stacked dependency PRs, all red for ONE reason
 
 `gh pr list` shows **13 open PRs; 12 are automated pin bumps** (livespec core
