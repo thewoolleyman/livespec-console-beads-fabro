@@ -509,6 +509,105 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     Ok(())
 }
 
+/// Scenario 21 / B5 — pane bodies render operational content only, with no
+/// baked-in documentation prose, driven live through a real `tmux` pane against
+/// the SHIPPED binary.
+///
+/// Covers every clause of Scenario 21: (1) a focused pane renders its
+/// operational content — the live counts/state the operator acts on — without an
+/// explanatory documentation sentence; (2) a SWEEP of every view finds none of
+/// the removed documentation sentences in any pane body — specifically the two
+/// named sentences "Spec lifecycle status is projected from `LiveSpec` adapter
+/// observations." and "Revise-required events stay visible in the Spec view
+/// until resolved.", plus the swept "The event log is the canonical source for
+/// projections."; and (3) the operational content stays present (the spec
+/// counts, the stored-event count, the repo roster).
+///
+/// The absence assertions turn on short, distinctive fragments unique to the
+/// removed sentences (see [`assert_no_baked_doc_prose`]) so a re-added sentence
+/// is caught even if the detail pane wraps it across lines. This test never
+/// opens an overlay, so the three KEPT operational-help surfaces (the
+/// Status-line hints, the modal Help overlay, the Settings per-row help) are out
+/// of frame and correctly untouched by the sweep.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()> {
+    let repo = RepoFixture::new("e2e-panes-b5", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let console = TmuxConsole::launch(&repo)?;
+
+    // The default Attention view: swept, and its own operational projection (the
+    // ranked attention list) confirmed present via its header field.
+    let attention = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    assert_no_baked_doc_prose(&attention, "Attention");
+
+    // --- case 1: the Spec pane renders its operational counts, no doc prose ---
+    // From the default Attention view, one Down moves the nav selection to Spec
+    // and switches the active view to it (no Enter needed).
+    console.send_keys(&["Down"])?;
+    let spec = console.wait_for_settled("view: Spec", RENDER_TIMEOUT)?;
+    assert!(
+        spec.contains("LiveSpec next snapshots:") && spec.contains("Revise required:"),
+        "the Spec pane must render its operational counts:\n{spec}"
+    );
+    assert_no_baked_doc_prose(&spec, "Spec");
+
+    // --- sweep: the Lanes pane (its own lane-board projection), no doc prose ---
+    // One Down moves the nav selection Spec -> Lanes.
+    console.send_keys(&["Down"])?;
+    let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    assert_no_baked_doc_prose(&lanes, "Lanes");
+
+    // --- case 2: the Events pane renders its operational count, no doc prose ---
+    // One Down moves the nav selection Lanes -> Events.
+    console.send_keys(&["Down"])?;
+    let events = console.wait_for_settled("view: Events", RENDER_TIMEOUT)?;
+    assert!(
+        events.contains("Stored events:"),
+        "the Events pane must render its operational stored-event count:\n{events}"
+    );
+    assert_no_baked_doc_prose(&events, "Events");
+
+    // --- case 3: the Repos pane renders its operational roster, no doc prose ---
+    // One Down moves the nav selection Events -> Repos.
+    console.send_keys(&["Down"])?;
+    let repos = console.wait_for_settled("view: Repos", RENDER_TIMEOUT)?;
+    assert!(
+        repos.contains("Repos observed:"),
+        "the Repos pane must render its operational repo roster:\n{repos}"
+    );
+    assert_no_baked_doc_prose(&repos, "Repos");
+
+    // --- sweep: the Settings pane (its own dispatcher-settings rows), no prose ---
+    // One Down moves the nav selection Repos -> Settings.
+    console.send_keys(&["Down"])?;
+    let settings = console.wait_for_settled("view: Settings", RENDER_TIMEOUT)?;
+    assert_no_baked_doc_prose(&settings, "Settings");
+
+    // Quit cleanly.
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    Ok(())
+}
+
+/// Assert a rendered frame's pane bodies carry NONE of the documentation
+/// sentences B5 removed. Keyed on short, distinctive fragments unique to those
+/// sentences — `is projected from` (from "Spec lifecycle status is projected
+/// from `LiveSpec` adapter observations."), `stay visible` (from "Revise-required
+/// events stay visible in the Spec view until resolved."), and `canonical
+/// source` (from "The event log is the canonical source for projections.").
+/// Each fragment renders on a single line if its sentence were present, so a
+/// re-added sentence is caught even when the detail pane wraps it; and none of
+/// the three fragments renders in any KEPT surface, so a match is an
+/// unambiguous B5 regression.
+fn assert_no_baked_doc_prose(frame: &str, view: &str) {
+    for fragment in ["is projected from", "stay visible", "canonical source"] {
+        assert!(
+            !frame.contains(fragment),
+            "the {view} pane body must carry no baked-in documentation prose (found {fragment:?}):\n{frame}"
+        );
+    }
+}
+
 /// The pinned pane width for the narrow top/header-pane scroll scenes: small
 /// enough that the header's `attention:` field is clipped off the right edge and
 /// the shrink-to-fit default drops the low-value `fleet: livespec` field.

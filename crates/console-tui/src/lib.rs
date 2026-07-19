@@ -1654,9 +1654,13 @@ fn render_summary_detail(
     render_scrollable_detail(summary_detail_lines(items), scroll, focused, area, buffer)
 }
 
-/// The Detail-pane lines for a summary view: a `title:` line plus its detail line
-/// per projection row, or a single placeholder when there are no rows. A
-/// standalone builder so the scroll behavior can be exercised over its length.
+/// The Detail-pane lines for a summary view: one `title` line per projection
+/// row, followed by a `detail` line only when the row carries operational
+/// detail (a repo list, the latest-event summary); a row whose operational
+/// content is fully carried by its title contributes the title line alone, with
+/// no trailing `:` and no empty detail line. A single placeholder renders when
+/// there are no rows. A standalone builder so the scroll behavior can be
+/// exercised over its length.
 fn summary_detail_lines(items: &[ViewSummaryItem]) -> Vec<Line<'static>> {
     if items.is_empty() {
         return vec![Line::from("No projection rows")];
@@ -1664,10 +1668,14 @@ fn summary_detail_lines(items: &[ViewSummaryItem]) -> Vec<Line<'static>> {
     items
         .iter()
         .flat_map(|item| {
-            [
-                Line::from(format!("{}:", item.title())),
-                Line::from(item.detail().to_owned()),
-            ]
+            if item.detail().is_empty() {
+                vec![Line::from(item.title().to_owned())]
+            } else {
+                vec![
+                    Line::from(format!("{}:", item.title())),
+                    Line::from(item.detail().to_owned()),
+                ]
+            }
         })
         .collect()
 }
@@ -3153,11 +3161,54 @@ mod tests {
                 .map(|rendered| rendered.contains("Stored events: 2")),
             Ok(true)
         );
+        // The detail pane carries the operational latest-event row, not the
+        // removed "canonical source" documentation sentence (B5).
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Latest event")),
+            Ok(true)
+        );
         assert_eq!(
             output
                 .as_ref()
                 .map(|rendered| rendered.contains("The event log is the canonical source")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn render_to_text_spec_view_shows_counts_without_doc_prose() {
+        let state = TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&factory_events(), &state);
+
+        let output = render_to_text(&model, 96, 24);
+
+        // The Spec pane bodies render their operational counts...
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("LiveSpec next snapshots:")),
             Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Revise required:")),
+            Ok(true)
+        );
+        // ...with no baked-in documentation sentence anywhere in the panes (B5).
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Spec lifecycle status is projected")),
+            Ok(false)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| rendered.contains("Revise-required events stay visible")),
+            Ok(false)
         );
     }
 
