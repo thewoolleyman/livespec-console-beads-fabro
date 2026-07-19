@@ -865,3 +865,61 @@ Scenario: The settings doc the completeness check reads is the detailed-usage su
   Then it reads `docs/detailed-usage.md`
   And it does not read the top-level README.md
 ```
+
+## Scenario 23 -- Operator reads a work-item's full record without leaving the console
+
+```mermaid
+flowchart LR
+  Overview["Lane overview"]
+  Lane["Drilled-in lane (item list)"]
+  Item["Work-item record (title, description, whole standardized shape)"]
+
+  Overview -- "enter: drill into lane" --> Lane
+  Lane -- "enter: open selected item" --> Item
+  Item -- "esc" --> Lane
+  Lane -- "esc" --> Overview
+```
+
+```gherkin
+Feature: Work-item record drill-in
+  As a LiveSpec operator
+  I want to read a selected work-item's whole standardized record inside the console
+  So that I can tell what an item IS -- its title and description, not just its id -- without leaving the cockpit
+
+Scenario: Enter on a selected work-item opens its record
+  Given the Lanes view drilled into a lane with a work-item selected
+  When the operator presses the key the Status line advertises for the item
+  Then the selected work-item's record opens over the lane list
+  And the record shows that work-item, not any other
+
+Scenario: The record surface shows every standardized field
+  Given a selected work-item whose standardized record has every field populated
+  When the operator opens its record
+  Then the title, description, type, status, lane, rank, origin, gap id, assignee, dependencies, capture time, resolution, reason, audit trail, superseding item, and spec commitment hint are all readable
+  And the description is shown as the orchestrator emitted it
+
+Scenario: A field the orchestrator did not emit reads as absent
+  Given a selected work-item whose standardized record leaves fields unset
+  When the operator opens its record
+  Then each unset field renders as explicitly absent
+  And the work-item is still listed in its lane
+
+Scenario: A record taller than the viewport scrolls to its end
+  Given an open work-item record whose description exceeds the viewport height
+  When the operator scrolls the record down
+  Then the end of the description becomes reachable
+  And scrolling stops at the last row rather than running past it
+
+Scenario: Esc closes the record back to the lane it was opened from
+  Given an open work-item record
+  When the operator presses Esc
+  Then the record closes
+  And the operator is back in the drilled-in lane, not the lane overview
+
+Scenario: The Status line names the action the key actually performs
+  Given the Lanes view
+  When the operator is on the lane overview and then inside a drilled-in lane
+  Then the hint names the lane drill-in on the overview
+  And the hint names the item drill-in inside the drilled-in lane
+  And no hint advertises a key that is inert in that context
+```
