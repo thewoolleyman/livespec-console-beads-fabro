@@ -162,8 +162,8 @@ that spends it blocks `git push` and every ledger write fleet-wide, for other
 sessions too. Batch: make one `bd list --json -n 0` and parse the cached result
 locally as often as needed, and loop multi-item work inside a single wrapper
 invocation rather than wrapping each command. Do not narrate into the ledger.
-Detail: `livespec/.ai/agent-disciplines.md` §"Ledger-write economy under a shared
-secret wrapper".
+Detail: the `livespec` repo's fleet agent-disciplines reference, §"Ledger-write
+economy under a shared secret wrapper".
 
 ## Repository mutation protocol
 

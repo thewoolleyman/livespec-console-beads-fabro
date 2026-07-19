@@ -2,7 +2,9 @@
 
 **Epic anchor:** `livespec-console-beads-fabro-thu6gp`
 
-**Supersedes:** `plan/archive/impl-dispatch/handoff.md` (split 2026-07-19).
+**Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
+carries the routing table showing how these items landed here. Do NOT resume the
+archived `handoff.md` beside it.
 
 ## Charter
 
@@ -10,18 +12,27 @@ Three invariants this repo relies on but does not mechanically enforce. Each is 
 self-contained guard whose design is already written down. None is a live violation
 today — every one is a LATENT gap that would let a regression through silently.
 
+Scope note: "invariant" here covers both structural invariants of the repo (the
+zero-Beads-knowledge rule, the toolchain pin) AND commit protocol (`-mvu22t`'s
+red-green-replay hook). The common mechanism is a mechanical guard asserting a named
+rule that nothing currently checks.
+
 Distinct from `plan/test-adequacy-gates/`: that thread measures whether tests are
-adequate; this one asserts named structural invariants.
+adequate; this one asserts named rules. `-mcj` is the clearest test of the boundary —
+under vehicle-grouping it would land there because it touches CI, but its mechanism is
+a pin-alignment assertion, so it belongs here.
 
 ## Read first
 
 1. This file.
 2. `crates/console-arch-check/src/main.rs` — `run_checks` :63-71 (exactly three
    families today: crate-graph, crate-sources, tmux-socket-scoping), vacuity-guard
-   pattern :234-240.
+   pattern :234-241.
 3. `crates/console-cli/src/backing_cli.rs` — the closed accessor set :57-93.
-4. `SPECIFICATION/non-functional-requirements.md:366-368` — the zero-Beads-knowledge
-   rule and the falsifiability requirement.
+4. `SPECIFICATION/non-functional-requirements.md` — the zero-Beads-knowledge rule at
+   `:368-369`, and the SEPARATE falsifiability requirement at `:376-377` ("each enforced
+   rule MUST be stated and checked falsifiably"). They are not one range; `:366-367` is
+   an unrelated source-adapter rule.
 5. `rust-toolchain.toml`, `Cargo.toml:21`, `.github/workflows/ci.yml:93-94`,
    `.fabro/workflows/implement-work-item/workflow.toml:106,117-120`.
 6. `AGENTS.md` — mutation protocol.
@@ -40,7 +51,7 @@ Filed 2026-07-19 as slice 3 of epic `-nxsfih`, which had never had a work-item o
 own. `-nxsfih` is now CLOSED (all three slices dispositioned). The full design below is
 also carried on `-p4bvrt` itself.
 
-`non-functional-requirements.md:366-368` enumerates "no crate invokes `bd` or embeds a
+`non-functional-requirements.md:368-369` enumerates "no crate invokes `bd` or embeds a
 Beads-native read path" as a rule the Architecture Tests MUST enforce, falsifiably.
 `run_checks` does not enforce it. The invariant HOLDS today — this is a latent guard
 gap, not a live violation — but it is the load-bearing invariant of the whole console
@@ -62,7 +73,7 @@ comment on `-nxsfih` (2026-07-19 16:24); read it before writing code. Summary:
 - Assert no product crate reads a Beads-native store (no `.beads` path construction, no
   Dolt/SQLite handle against a beads database).
 - **Refuse to pass vacuously** — if the walk finds no Rust files or `backing_cli.rs`
-  cannot be parsed, FAIL. Copy the `paths.is_empty()` guard at :234-240.
+  cannot be parsed, FAIL. Copy the `paths.is_empty()` guard at :234-241.
 - **State the honest limit in the check's doc comment.** `from_environment`
   (`backing_cli.rs:139`) calls `apply_program_overrides`, so env vars can swap a backing
   program at runtime. No static check covers that. The guard's honest promise is "the
@@ -73,9 +84,13 @@ Acceptance: red on a seeded `bd` in the default set, red on a seeded `.beads` re
 when the scan finds no files, green on unmodified master. Paired must-flag/must-not-flag
 tests per case.
 
-**Coordinate:** remote branch `fix/arch-check-suspect-by-default` touches this exact
-crate — verify whether it is still live before filing. PR #317 also appends to
-`run_checks`; merge it first.
+**Branch question RESOLVED 2026-07-19 — no coordination needed.** Remote branch
+`fix/arch-check-suspect-by-default` touches this crate but is fully landed and stale:
+its sole commit `8f3ee6f` is already in master by patch-id (`git cherry` reports `-`)
+and its PR #307 is MERGED. It is a deletion candidate, not in-flight work.
+
+**PR #317 is the real gate** — it also appends to `run_checks` in this same file. Merge
+it before starting.
 
 ### `-mcj` — no guard binds `rust-toolchain.toml` to the baked image's `RUST_VERSION`
 
@@ -113,12 +128,15 @@ is wired, this requirement is unmet, not waived." No propose-change needed.
 
 **Stale path in the item body, correct at grooming:** the source to port now lives at
 `livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py` (plus
-`_trailers`/`_modes`). `livespec/dev-tooling/checks/` holds no source, only
-`__pycache__`.
+`_trailers`/`_modes`), consumed by `livespec` as an installed package. Note
+`livespec/dev-tooling/checks/` still holds 9 other check sources — it is only
+`red_green_replay.py` that moved out of it. (An earlier note in this thread and a
+comment on the item wrongly said that directory was empty of source; disregard it.)
 
-**Drop the decorative `ready` LABEL.** The item sits at `backlog` STATUS, and the ranker
-keys on status — the label confers nothing and misleadingly implies an admission that
-has not happened. Evidence is on the item's own 2026-07-19 comment.
+**The decorative `ready` LABEL was already dropped 2026-07-19** — the item now reads
+`LABELS: origin:freeform`. Nothing to do; recorded here only because the label's history
+explains why older notes call this item "ready" when it sits at `backlog` STATUS. The
+ranker keys on status, so the label never conferred anything.
 
 **BLAST RADIUS — the reason this needs staged rollout.** Once landed, its commit-msg
 hook gates ALL later commits fleet-wide. `lefthook.yml` currently has NO `commit-msg`
@@ -137,7 +155,17 @@ trailer grammar evolves. Either pin the ported grammar version or add a parity f
 3. `-mvu22t` last, or behind a deliberate enable flag — it is the only item here that
    changes every future commit.
 4. `-mcj` slots anywhere; it is mostly new files plus comment corrections.
-5. Shares `justfile` with `plan/test-adequacy-gates/` — shallow, but coordinate.
+5. **Shared files with `plan/test-adequacy-gates/`: BOTH `justfile` AND
+   `.github/workflows/ci.yml`** (that thread adds CI jobs; `-mcj` here reconciles the
+   pin comment at `ci.yml:94`). The one genuinely line-adjacent hazard is the
+   `targets=(...)` array in `justfile` (~:151-167) — that thread edits `check-coverage`
+   at :195 while new guards here plausibly append to the array.
+
+   **Tie-break, so neither session waits on the other:** `plan/test-adequacy-gates/`
+   OWNS `justfile` and `ci.yml` for the duration of its region-gate work; this thread
+   rebases onto it. That ordering is not arbitrary — its region-coverage flip is a
+   repo-global gate that retroactively binds every open PR, including this thread's, so
+   it wants the low-water mark and should not be made to wait.
 6. Parallel-safe against event-identity, command-queue and operator-surface.
 
 ## Gates

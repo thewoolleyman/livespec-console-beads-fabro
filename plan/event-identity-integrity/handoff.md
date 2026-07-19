@@ -2,9 +2,11 @@
 
 **Epic anchor:** `livespec-console-beads-fabro-czcjh5`
 
-**Supersedes:** `plan/archive/impl-dispatch/handoff.md` (split 2026-07-19). That thread
-was a dispatch-queue view that accreted five execution vehicles; this thread inherits
-only its event-identity findings.
+**Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
+carries the routing table showing how these items landed here. Do NOT resume the
+archived `handoff.md` beside it.
+That thread was a dispatch-queue view that accreted five execution vehicles; this thread
+inherits only its event-identity findings.
 
 ## Charter
 
@@ -21,7 +23,7 @@ One mechanism, one thread: identity derivation in the adapters → the
 2. `crates/console-application/src/source_adapters.rs` — `stable_version` :1865-1876,
    `length_prefixed` :553-555, `source_stream_seq` :2024-2034,
    `attention_item_version` :2547-2561, `not_observed` stable id :1784-1803.
-3. `crates/console-eventstore/src/lib.rs` — unique index :49-50, `insert or ignore`
+3. `crates/console-eventstore/src/lib.rs` — unique index (statement opens :48), `insert or ignore`
    :486, duplicate short-circuit :744-752.
 4. `AGENTS.md` — credential wrapper, mutation protocol, `gh` 2.46.0 gotchas.
 
@@ -57,7 +59,9 @@ Two call sites still pass raw wire-arbitrary parts:
   trims or rejects control characters.
 - `attention_item_version` — `summary()` and `handoff().command()` are free text.
 
-Computed collisions (not speculation): rank `"a\x1f"` + status `"b"` and rank `"a"` +
+Computed collisions — the MECHANISM is what to trust here; the specific hash values
+depend on seven further sibling parts not reproduced in this file, so recompute rather
+than asserting them. rank `"a\x1f"` + status `"b"` and rank `"a"` +
 status `"\x1fb"` both yield version `5554410900120514701`. Attention: summary
 `"Approve\x1f"` + repo `"console"` collides with summary `"Approve"` + repo
 `"\x1fconsole"`.
@@ -76,8 +80,8 @@ original down event. Current behavior VIOLATES ratified text (Adapter Contract: 
 tally MUST reflect the LATEST poll outcome) — this is impl catching up to spec, not a
 spec change.
 
-**This item is `blocked: needs-human`.** The named decision is the epoch scheme. It
-cannot be groomed to ready until the maintainer picks one.
+**It needs a maintainer decision on the epoch scheme before it can groom to ready.**
+(Read its live status rather than trusting a value written here.)
 
 ## Sequencing
 
@@ -98,12 +102,14 @@ cannot be groomed to ready until the maintainer picks one.
 
 `crates/console-spec-check/src/lib.rs:76` `derive_gap_id` joins with the same raw
 `0x1f` — same abstract family, different contract. Its doc comment at :73 declares
-byte-identity with `livespec/dev-tooling/spec_clauses.py:108-119`, and a third vendored
-copy lives at
+byte-identity with a counterpart in SIBLING REPOS, checked out alongside this one under
+`/data/projects/` — `livespec/dev-tooling/spec_clauses.py:108-119`, plus a third vendored
+copy at
 `livespec-orchestrator-beads-fabro/.claude-plugin/scripts/_vendor/livespec_spec_clauses.py:108-119`.
+Neither path resolves inside this repo; `git ls-files` will not find them.
 Changing it re-keys every persisted `gap_id` and severs gap↔work-item associations
 fleet-wide. **Livespec core owns that decision; the console can never move first.**
-Filed in the livespec tenant as **`livespec-6bndap`** (low priority — "accepted risk"
+Filed in the livespec tenant as **`livespec-6bndap`** ("accepted risk"
 is a legitimate disposition there; the point of filing was that the hazard was recorded
 nowhere). Never put it in the same PR as `-ag0`.
 
