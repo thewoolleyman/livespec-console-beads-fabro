@@ -28,20 +28,33 @@ a pin-alignment assertion, so it belongs here.
 2. `crates/console-arch-check/src/main.rs` — `run_checks` :63-71 (exactly three
    families today: crate-graph, crate-sources, tmux-socket-scoping), vacuity-guard
    pattern :234-241.
-3. `crates/console-cli/src/backing_cli.rs` — the closed accessor set :57-93.
-4. `SPECIFICATION/non-functional-requirements.md` — the zero-Beads-knowledge rule at
+3. `justfile` — the `targets=(...)` array (~:151-167) that new guard targets append to;
+   contended with `plan/test-adequacy-gates/` (see §Sequencing).
+4. `lefthook.yml` — must GAIN a `commit-msg` section for `-mvu22t`; it has none today.
+5. `/data/projects/livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py`
+   (plus `_trailers`/`_modes`) — the actual port source for `-mvu22t`, in a SIBLING repo.
+6. `crates/console-cli/src/backing_cli.rs` — the closed accessor set :57-93.
+7. `SPECIFICATION/non-functional-requirements.md` — the zero-Beads-knowledge rule at
    `:368-369`, and the SEPARATE falsifiability requirement at `:376-377` ("each enforced
-   rule MUST be stated and checked falsifiably"). They are not one range; `:366-367` is
-   an unrelated source-adapter rule.
-5. `rust-toolchain.toml`, `Cargo.toml:21`, `.github/workflows/ci.yml:93-94`,
+   rule MUST be stated and checked falsifiably"). They are not one range: `:365-366` is
+   the source-adapter rule and `:367` is the adjacent "UI does not call
+   Beads/Fabro/LiveSpec/GitHub directly" rule — which is plausibly how the superseded
+   `:366-368` anchor arose in the first place.
+8. `rust-toolchain.toml`, `Cargo.toml:21`, `.github/workflows/ci.yml:93-94`,
    `.fabro/workflows/implement-work-item/workflow.toml:106,117-120`.
-6. `AGENTS.md` — mutation protocol.
+9. `AGENTS.md` — mutation protocol.
 
 ## Status is read live, never stored here
 
 ```
 /livespec-orchestrator-beads-fabro:list-work-items --json
 ```
+
+## Nothing here is dispatchable yet
+
+All three children sit at `backlog`; none is `ready`, so the Dispatcher and `next` will
+return nothing. **The first action is taking the admission valve to the maintainer**, not
+running a drain. (Read status live — see below — rather than trusting this sentence.)
 
 ## The work
 
@@ -89,8 +102,16 @@ tests per case.
 its sole commit `8f3ee6f` is already in master by patch-id (`git cherry` reports `-`)
 and its PR #307 is MERGED. It is a deletion candidate, not in-flight work.
 
-**PR #317 is the real gate** — it also appends to `run_checks` in this same file. Merge
-it before starting.
+**PR #317 is the real gate — but not for the reason originally recorded here.** It does
+NOT touch `run_checks`. Verified against `gh pr diff 317`: its hunks land in
+`check_crate_sources` (:231, equal-count), `check_tmux_socket_scoping` (:261),
+`rust_files_for_tmux_scan`, the visitor, and ~109 new lines in `mod tests` (:1607).
+`run_checks` (:63-71) and the vacuity guard (:234-241) are untouched AND unshifted, so
+every anchor this handoff cites survives the merge either way.
+
+Merge it first regardless: it is a large conflict surface in the same ~1,700-line file
+you are about to extend. Just do not expect a conflict at `run_checks` — there is none,
+and planning for one would be planning against a fiction.
 
 ### `-mcj` — no guard binds `rust-toolchain.toml` to the baked image's `RUST_VERSION`
 
@@ -126,6 +147,12 @@ Verified GENUINE: no `red_green_replay` reference exists in `justfile`, hooks, o
 `crates/`. The spec is ALREADY ratified — NFR §"Red-Green-Replay" says "Until that check
 is wired, this requirement is unmet, not waived." No propose-change needed.
 
+**STALE ANCHORS IN THE RECORDS THIS HANDOFF SENDS YOU TO.** `-p4bvrt`'s description and
+the `-nxsfih` 2026-07-19 16:24 design comment both cite
+`non-functional-requirements.md:366-368` (superseded — correct is `:368-369` for the rule
+and `:376-377` for falsifiability) and `main.rs:234-240` (correct is `:234-241`). The
+designs are sound; only those anchors are off. Do not re-derive from them.
+
 **Stale path in the item body, correct at grooming:** the source to port now lives at
 `livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py` (plus
 `_trailers`/`_modes`), consumed by `livespec` as an installed package. Note
@@ -135,8 +162,8 @@ comment on the item wrongly said that directory was empty of source; disregard i
 
 **The decorative `ready` LABEL was already dropped 2026-07-19** — the item now reads
 `LABELS: origin:freeform`. Nothing to do; recorded here only because the label's history
-explains why older notes call this item "ready" when it sits at `backlog` STATUS. The
-ranker keys on status, so the label never conferred anything.
+explains why older notes call this item "ready". The ranker keys on STATUS, not labels,
+so the label never conferred anything.
 
 **BLAST RADIUS — the reason this needs staged rollout.** Once landed, its commit-msg
 hook gates ALL later commits fleet-wide. `lefthook.yml` currently has NO `commit-msg`
@@ -148,8 +175,9 @@ trailer grammar evolves. Either pin the ported grammar version or add a parity f
 
 ## Sequencing
 
-1. **Merge PR #317 first** — it appends to `run_checks` in the same file the
-   zero-Beads guard must extend.
+1. **Merge PR #317 first** — a large conflict surface in the same file (it rewrites
+   `check_tmux_socket_scoping` and adds ~109 test lines), though NOT at `run_checks`,
+   which it leaves untouched and unshifted. See the note under `-p4bvrt`.
 2. ~~`-nxsfih` closes only after its slice-3 child exists~~ — DONE 2026-07-19: `-p4bvrt`
    was filed first, then `-nxsfih` closed, in that order.
 3. `-mvu22t` last, or behind a deliberate enable flag — it is the only item here that
