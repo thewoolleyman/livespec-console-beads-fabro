@@ -110,9 +110,9 @@ the `CopyFabroAttach`/`OpenFabroAttach` scaffold is DEAD — the actions vec is 
 It copies `fabro attach <run-id>`, a tmux attach, not a driver invocation. Inert
 scaffolding that could be mistaken for a shipped feature, not a starting point.
 
-**STILL UNCORRECTED, and the one body that needs editing:** `-vc7lmq` retains the same
-"a starting point to generalize" framing plus its pre-drift anchors. Its correction
-exists only as a comment. Fix the body when this thread next touches it.
+`-vc7lmq` carried the same "a starting point to generalize" framing and was rewritten
+2026-07-19 as well. **All four design inputs now have accurate bodies — read them as
+they stand and strike nothing.**
 
 Carries an explicit RESEARCH TASK: survey how lazygit / k9s / tig / gitui structure
 external-command handoff, including tmux-aware variants.
@@ -123,8 +123,10 @@ The immediate defect has been SPLIT OUT of this item into its own freeform bug,
 **`livespec-console-beads-fabro-qwjfsw`**, and must not wait on this design. What
 remains here is the valid-commands detail-pane contract, which is spec-governed.
 
-Refresh its stale anchors during grooming: `fabro_run_id` is now :5496 (not :5290),
-`build_attention_detail` :5363 (not :5157), `build_needs_attention_detail` :5059.
+Its body was rewritten 2026-07-19: scope narrowed to the redesign half, all anchors
+refreshed against master (`fabro_run_id` :5496, `build_attention_detail` :5363,
+`latest_timeline` :5503-5525, `build_needs_attention_detail` :5059), and the misleading
+"starting point to generalize" framing removed. Nothing to correct.
 
 **Cross-thread obligation (mirrored from `plan/command-queue-semantics/`):** whoever
 fixes the attach command must retire the test at `crates/console-cli/src/lib.rs:2312`
