@@ -304,7 +304,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 /// The Status line sits at the very bottom of the pane, BELOW the Help modal's
 /// 3-row bottom margin, so it stays visible and tmux-capturable while the modal
 /// is open — which is how case (3) observes the overlay's hints replacing the
-/// pane's. The tokens asserted are each footer-only on their screen: `move-status`
+/// pane's. The tokens asserted are each footer-only on their screen: `enter drill`
 /// (Lanes hint, hyphenated — distinct from the modal body's "move ... to a
 /// status"), `edit row` (Settings hint), and `close help` (Help-overlay hint).
 #[test]
@@ -329,9 +329,13 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     // moving the selection switches the active view).
     console.send_keys(&["Down", "Down"])?;
     let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    // `enter drill` rather than `move-status`: this screen is the lane
+    // OVERVIEW, which selects a LANE and not a work-item, so every per-item key
+    // (move-status, the valves, the policy dials) is inert here and the hint
+    // line correctly does not advertise any of them.
     assert!(
-        lanes.contains("move-status"),
-        "the Lanes pane hints must surface its distinctive move-status key:\n{lanes}"
+        lanes.contains("enter drill"),
+        "the Lanes pane hints must surface its distinctive drill key:\n{lanes}"
     );
     assert!(
         !lanes.contains("edit row"),
@@ -346,7 +350,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
         "an open overlay must replace the pane hints with the overlay's hints:\n{help}"
     );
     assert!(
-        !help.contains("move-status"),
+        !help.contains("enter drill"),
         "the Lanes pane hints must be gone while the Help overlay owns the Status line:\n{help}"
     );
 
@@ -354,7 +358,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     console.send_keys(&["Escape"])?;
     let restored = wait_until_absent(&console, "esc to exit", RENDER_TIMEOUT)?;
     assert!(
-        restored.contains("move-status") && !restored.contains("close help"),
+        restored.contains("enter drill") && !restored.contains("close help"),
         "closing the overlay must restore the Lanes pane's hints:\n{restored}"
     );
 
@@ -367,8 +371,8 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
         "the Settings pane must render its own edit-key hints:\n{settings}"
     );
     assert!(
-        !settings.contains("move-status"),
-        "the Settings hints must differ from the Lanes hints (no move-status):\n{settings}"
+        !settings.contains("enter drill"),
+        "the Settings hints must differ from the Lanes hints (no lane drill):\n{settings}"
     );
 
     // Quit cleanly.

@@ -1353,6 +1353,21 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
         ("status", item.status().to_owned()),
         ("lane", item.lane().label().to_owned()),
         ("rank", item.rank().to_owned()),
+        (
+            "lane_reason",
+            item.lane_reason().map_or_else(
+                || ITEM_FIELD_ABSENT.to_owned(),
+                |reason| reason.label().to_owned(),
+            ),
+        ),
+        (
+            "admission_policy",
+            item.admission_policy().label().to_owned(),
+        ),
+        (
+            "acceptance_policy",
+            item.acceptance_policy().label().to_owned(),
+        ),
         ("origin", optional_field(detail.origin.as_deref())),
         ("gap_id", optional_field(detail.gap_id.as_deref())),
         ("assignee", optional_field(detail.assignee.as_deref())),
@@ -1369,9 +1384,24 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
             "spec_commitment_hint",
             optional_field(detail.spec_commitment_hint.as_deref()),
         ),
+        ("supersedes", optional_field(detail.supersedes.as_deref())),
+        (
+            "blocked_reason",
+            optional_field(detail.blocked_reason.as_deref()),
+        ),
+        (
+            "factory_safety",
+            optional_field(detail.factory_safety.as_deref()),
+        ),
     ] {
         lines.push(Line::from(format!("{label:<21}{value}")));
     }
+    push_text_block(
+        &mut lines,
+        "acceptance_criteria",
+        detail.acceptance_criteria.as_deref(),
+    );
+    push_text_block(&mut lines, "notes", detail.notes.as_deref());
     lines.push(Line::from(String::new()));
     lines.push(Line::from("description").style(Style::new().add_modifier(Modifier::BOLD)));
     // The markdown body is carried VERBATIM -- split only on its own newlines,
@@ -1384,6 +1414,22 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
         None => lines.push(Line::from(ITEM_FIELD_ABSENT)),
     }
     lines
+}
+
+/// Append a labelled free-text block for a possibly-multi-line record field.
+///
+/// The long free-text fields (`acceptance_criteria`, `notes`) get the same
+/// treatment as the description -- their own heading and their text carried
+/// verbatim -- because squeezing them onto a label-and-value row would truncate
+/// real operator content. An unset one still renders, as the absent placeholder,
+/// so it cannot be mistaken for a field the surface simply does not show.
+fn push_text_block(lines: &mut Vec<Line<'static>>, label: &str, value: Option<&str>) {
+    lines.push(Line::from(String::new()));
+    lines.push(Line::from(label.to_owned()).style(Style::new().add_modifier(Modifier::BOLD)));
+    match value {
+        Some(text) => lines.extend(text.lines().map(|line| Line::from(line.to_owned()))),
+        None => lines.push(Line::from(ITEM_FIELD_ABSENT)),
+    }
 }
 
 /// One optional record field as display text, or [`ITEM_FIELD_ABSENT`] when the
@@ -3884,7 +3930,10 @@ mod tests {
                 r#""captured_at":"2026-07-19T00:00:00Z","resolution":"completed","#,
                 r#""reason":"landed via PR #123","audit":"{{\"commits\":[\"abc123\"]}}","#,
                 r#""superseded_by":"console-newer","#,
-                r#""spec_commitment_hint":"scenario-23-work-item-drill-in"}}}}"#,
+                r#""spec_commitment_hint":"scenario-23-work-item-drill-in","#,
+                r#""acceptance_criteria":"it renders","notes":"an operator note","#,
+                r#""supersedes":"console-older","blocked_reason":"waiting on review","#,
+                r#""factory_safety":"safe"}}}}"#,
             ),
             Lane::Ready.label(),
             escaped,
@@ -3935,6 +3984,11 @@ mod tests {
             "abc123",
             "console-newer",
             "scenario-23-work-item-drill-in",
+            "it renders",
+            "an operator note",
+            "console-older",
+            "waiting on review",
+            "safe",
         ] {
             assert!(text.contains(expected), "record field missing: {expected}");
         }
@@ -3956,6 +4010,14 @@ mod tests {
             "audit",
             "superseded_by",
             "spec_commitment_hint",
+            "supersedes",
+            "blocked_reason",
+            "factory_safety",
+            "acceptance_criteria",
+            "notes",
+            "lane_reason",
+            "admission_policy",
+            "acceptance_policy",
             "description",
         ] {
             assert!(text.contains(label), "record label missing: {label}");
@@ -3985,6 +4047,23 @@ mod tests {
         let mut empty = Buffer::empty(area);
         render_work_item_detail(None, MODAL_ITEM, area, &mut empty, 0);
         assert!(buffer_to_text(&empty, area).contains("no longer on the board"));
+
+        // A BLOCKED item renders its lane reason rather than the placeholder --
+        // the one field on the record that comes from the lane assignment.
+        let blocked_model = lanes_model_content(LaneFocus::Lane(Lane::Blocked), TuiOverlay::None);
+        let blocked = blocked_model
+            .selected_lane_item()
+            .ok_or("the drilled-in Blocked lane has a selected item")?;
+        let mut blocked_buffer = Buffer::empty(area);
+        render_work_item_detail(
+            Some(blocked),
+            blocked.work_item_id(),
+            area,
+            &mut blocked_buffer,
+            0,
+        );
+        let blocked_text = buffer_to_text(&blocked_buffer, area);
+        assert!(blocked_text.contains("lane_reason") && blocked_text.contains("needs-human"));
 
         // A viewport too small to inset degrades without panicking.
         let tiny = Rect::new(0, 0, 2, 2);
