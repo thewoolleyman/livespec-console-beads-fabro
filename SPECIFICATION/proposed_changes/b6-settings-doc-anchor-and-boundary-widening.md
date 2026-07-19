@@ -89,7 +89,7 @@ This makes the v029 clauses' placement in contracts.md rule-backed. Net-zero on 
 --- FIX 5: SPECIFICATION/scenarios.md, Scenario 22 ---
 Scenario 22's gherkin still mirrors the UNPINNED clauses. Because gherkin lives inside a code fence, `extract_rules` skips it and these edits touch NO clause count or gap-id. Three verbatim replacements:
 
-(a) In case 1, REPLACE the two lines
+(a) In case 1, REPLACE the three lines
 
   Then it carries the project overview and a link to the docs/ tree's index
   And it carries no user-facing documentation sections of its own
@@ -101,12 +101,23 @@ with
   And it carries no user-facing documentation sections of its own
   And contributor-facing build, development, and quality-gate material may still appear there
 
-(b) REPLACE case 3 in full, from its `Scenario:` line through its final `And` line:
+(b) REPLACE case 3 in full. INDENTATION IS SIGNIFICANT AND LITERAL in both blocks below: the `Scenario:` line sits at column 0, and every `Given` / `When` / `Then` / `And` line is indented by exactly TWO spaces (matching the other cases in this gherkin block). It reads VERBATIM (SIX physical lines):
 
-  Scenario: The docs tree covers every required subject
-    ... Then each of those subjects is covered somewhere in the tree ...
+Scenario: The docs tree covers every required subject
+  Given the docs/ tree and its linked sub-documents
+  When a user looks for how to install the console, a general overview and quick start, the environment variables and CLI options and sub-commands, or the detailed behavior of a TUI pane
+  Then each of those subjects is covered somewhere in the tree
+  And the installation subject covers both the download-install path and use from a repository other than the console's own
+  And the detailed-usage subject carries a section per TUI pane
 
-with a case titled "The docs tree carries the four required sub-documents", whose Given is "the docs/ tree's index document", whose Then reads "each of those four subjects is covered by its own linked sub-document", and whose two And lines read "the installation sub-document covers both the download-install path and running the console against a repository other than its own" and "the detailed-usage sub-document carries a section per TUI pane".
+with VERBATIM (SIX physical lines; the `When` line is carried over UNCHANGED, which is what preserves the "those four subjects" antecedent in the new `Then`):
+
+Scenario: The docs tree carries the four required sub-documents
+  Given the docs/ tree's index document
+  When a user looks for how to install the console, a general overview and quick start, the environment variables and CLI options and sub-commands, or the detailed behavior of a TUI pane
+  Then each of those four subjects is covered by its own linked sub-document
+  And the installation sub-document covers both the download-install path and running the console against a repository other than its own
+  And the detailed-usage sub-document carries a section per TUI pane
 
 (c) In case 4, REPLACE the Then line
 
@@ -126,6 +137,6 @@ FOUR clause re-links, each replacing a stale gap-id in place. No entry is added 
 
 Each stale id is bound in exactly one entry; every other clause link MUST be left untouched.
 
-NO console-spec-check ground-truth change is owed. Every fix above is net-zero on clause counts, so `crates/console-spec-check/src/tests.rs` keeps `("contracts.md", 76)` / `total, 165` and MUST NOT be edited by this revision.
+NO console-spec-check ground-truth change is owed. Every fix above is net-zero on clause counts, so the count assertions in `crates/console-spec-check/src/tests.rs` MUST NOT change: the file keeps `("contracts.md", 76)` and `total, 165`. Its adjacent ground-truth comment trail MAY gain a narration line recording that this revision re-worded existing clauses without changing any count (v029's own comment set that precedent), but no assertion may move.
 
 The impl follow-up declared by the v029 propose-change (`user-docs-tree`) is UNCHANGED and still owed: building the `docs/` tree and repointing `console-completeness-check` at `docs/detailed-usage.md`. That work now has a concretely-named target to point at, which is the purpose of this correction.
