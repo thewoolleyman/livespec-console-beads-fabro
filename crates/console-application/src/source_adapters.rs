@@ -399,6 +399,86 @@ impl AcceptancePolicy {
     }
 }
 
+/// The descriptive half of the orchestrator's STANDARDIZED work-item record —
+/// everything the operator needs to tell what an item IS, as opposed to where it
+/// sits in the pipeline.
+///
+/// The lifecycle half (`lane`, `lane_reason`, `rank`, `status`, the two policies)
+/// stays on [`WorkItemSnapshot`] itself; this carries the rest of the shape
+/// `list-work-items --json` puts on the wire. It is a plain read-only data bag
+/// with public fields — the console renders it and never reasons over it, so the
+/// getter-per-field ceremony the lifecycle values carry would buy nothing.
+///
+/// Every field is optional because the orchestrator emits an explicit `null` for
+/// most of them on most records. An absent field renders as `—` rather than
+/// dropping the item: a leaner emission (or an older `list-work-items` revision
+/// that predates a field) MUST still round-trip, never fail the observation.
+///
+/// `depends_on` and `audit` arrive as structured JSON (a list of
+/// `{kind, work_item_id}` objects and an object of commits/files respectively);
+/// both are flattened to display strings at parse time so this record stays
+/// stringly-typed and round-trips through `payload_json` unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WorkItemDetail {
+    /// One-line human title.
+    pub title: Option<String>,
+    /// Free-form markdown body, carried verbatim (never re-wrapped or trimmed).
+    pub description: Option<String>,
+    /// The work-item type (`bug`, `task`, ...). Named `item_type` because `type`
+    /// is a Rust keyword; the wire key stays `type`.
+    pub item_type: Option<String>,
+    /// How the item entered the ledger (`freeform`, `gap`, ...).
+    pub origin: Option<String>,
+    /// The spec gap this item closes, when it is gap-tied.
+    pub gap_id: Option<String>,
+    /// Who or what owns the item (`fabro`, a human handle, ...).
+    pub assignee: Option<String>,
+    /// Work-items this one waits on, each flattened to its id.
+    pub depends_on: Vec<String>,
+    /// When the item was filed.
+    pub captured_at: Option<String>,
+    /// The terminal disposition (`completed`, ...).
+    pub resolution: Option<String>,
+    /// Free-text reason accompanying the current status.
+    pub reason: Option<String>,
+    /// The merge audit trail, flattened to a compact JSON string.
+    pub audit: Option<String>,
+    /// The item that superseded this one.
+    pub superseded_by: Option<String>,
+    /// The spec commitment this item is expected to satisfy.
+    pub spec_commitment_hint: Option<String>,
+}
+
+impl WorkItemDetail {
+    /// A stable digest of every descriptive field, folded into the snapshot's
+    /// identity hash so an edited title or description appends a FRESH
+    /// observation the lane projection picks up.
+    ///
+    /// Without this a description edit would never reach the console — the
+    /// operator would read a stale body forever, which is exactly the
+    /// shadow-state failure the lane design set out to kill.
+    fn digest(&self) -> String {
+        let joined = self.depends_on.join(",");
+        let parts: [&str; 13] = [
+            self.title.as_deref().unwrap_or_default(),
+            self.description.as_deref().unwrap_or_default(),
+            self.item_type.as_deref().unwrap_or_default(),
+            self.origin.as_deref().unwrap_or_default(),
+            self.gap_id.as_deref().unwrap_or_default(),
+            self.assignee.as_deref().unwrap_or_default(),
+            &joined,
+            self.captured_at.as_deref().unwrap_or_default(),
+            self.resolution.as_deref().unwrap_or_default(),
+            self.reason.as_deref().unwrap_or_default(),
+            self.audit.as_deref().unwrap_or_default(),
+            self.superseded_by.as_deref().unwrap_or_default(),
+            self.spec_commitment_hint.as_deref().unwrap_or_default(),
+        ];
+        stable_version(&parts).to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents work item snapshot data used by the console.
 pub struct WorkItemSnapshot {
@@ -411,6 +491,10 @@ pub struct WorkItemSnapshot {
     admission_policy: AdmissionPolicy,
     acceptance_policy: AcceptancePolicy,
     source_version: u64,
+    // Boxed so a snapshot stays pointer-sized in the descriptive half: the
+    // record is far larger than the lifecycle fields, and `WorkItemSnapshot` is
+    // carried by value inside enums and vectors all through the projections.
+    detail: Box<WorkItemDetail>,
 }
 
 impl WorkItemSnapshot {
@@ -440,7 +524,26 @@ impl WorkItemSnapshot {
             admission_policy,
             acceptance_policy,
             source_version,
+            detail: Box::default(),
         })
+    }
+
+    #[must_use]
+    /// This snapshot carrying the given descriptive record.
+    ///
+    /// Kept OFF [`Self::new`] deliberately: the constructor is already at the
+    /// argument limit, and every existing caller that only has lifecycle state
+    /// stays correct by construction, observing an empty detail rather than
+    /// being forced to invent one.
+    pub fn with_detail(mut self, detail: WorkItemDetail) -> Self {
+        self.detail = Box::new(detail);
+        self
+    }
+
+    #[must_use]
+    /// Return the descriptive record accompanying this snapshot.
+    pub fn detail(&self) -> &WorkItemDetail {
+        &self.detail
     }
 
     #[must_use]
@@ -529,6 +632,10 @@ struct WorkItemSnapshotPayload {
     #[serde(default)]
     acceptance_policy: AcceptancePolicy,
     source_version: u64,
+    /// Absent on any row written before the descriptive record was carried, so
+    /// an older ledger still replays (observing an empty detail, not a failure).
+    #[serde(default)]
+    detail: WorkItemDetail,
 }
 
 /// Serialize a work-item snapshot into its canonical persisted `payload_json`.
@@ -564,6 +671,15 @@ pub fn work_item_snapshot_payload_json(snapshot: &WorkItemSnapshot) -> String {
         snapshot.acceptance_policy.label().into(),
     );
     object.insert("source_version".to_owned(), snapshot.source_version.into());
+    // The descriptive record rides in a nested `detail` object. Serialized
+    // through `serde_json::to_value` over the same all-optional shape
+    // `WorkItemSnapshotPayload` reads back, so the round-trip is total; an
+    // unserializable value is impossible for a struct of strings, and the
+    // `unwrap_or` keeps that unreachable arm from needing a panic.
+    object.insert(
+        "detail".to_owned(),
+        serde_json::to_value(&snapshot.detail).unwrap_or(serde_json::Value::Null),
+    );
     serde_json::Value::Object(object).to_string()
 }
 
@@ -586,6 +702,7 @@ pub fn work_item_snapshot_from_payload_json(payload_json: &str) -> Option<WorkIt
         payload.acceptance_policy,
         payload.source_version,
     )
+    .map(|snapshot| snapshot.with_detail(payload.detail))
     .ok()
 }
 
@@ -1679,6 +1796,27 @@ fn stable_version(parts: &[&str]) -> u64 {
     hash | 1
 }
 
+/// Flatten one `depends_on` element into the id the operator reads.
+///
+/// The orchestrator emits `{"kind": "local", "work_item_id": "<id>"}`. `local`
+/// is the overwhelming default and adds nothing on screen, so only a
+/// NON-`local` kind is called out — a cross-repo dependency stays visible as
+/// such. An element in any other shape degrades to its own JSON text rather
+/// than being silently dropped: showing something unparsed is honest, showing
+/// nothing is not.
+fn flatten_dependency(value: &serde_json::Value) -> String {
+    let Some(id) = value
+        .get("work_item_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return value.to_string();
+    };
+    match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some(kind) if kind != "local" => format!("{id} ({kind})"),
+        _local_or_absent => id.to_owned(),
+    }
+}
+
 /// Normalize real orchestrator `list-work-items --json` output into one
 /// work-item snapshot per item, consuming each item's emitted `lane` and
 /// `lane_reason` directly rather than re-deriving a lane.
@@ -1705,6 +1843,41 @@ pub fn parse_orchestrator_observation(
         admission_policy: Option<AdmissionPolicy>,
         #[serde(default)]
         acceptance_policy: Option<AcceptancePolicy>,
+        // The descriptive half of the standardized record. Every field is
+        // `#[serde(default)]` so a leaner emission -- or an older
+        // `list-work-items` revision predating a field -- still parses into a
+        // record with that field absent, rather than tripping the fail-soft
+        // `continue` below and DROPPING the whole work-item from the board.
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default, rename = "type")]
+        item_type: Option<String>,
+        #[serde(default)]
+        origin: Option<String>,
+        #[serde(default)]
+        gap_id: Option<String>,
+        #[serde(default)]
+        assignee: Option<String>,
+        // Structured on the wire: a list of `{kind, work_item_id}` objects.
+        // Held as raw `Value`s and flattened below, so an unexpected element
+        // shape degrades to its own JSON text instead of failing the record.
+        #[serde(default)]
+        depends_on: Vec<serde_json::Value>,
+        #[serde(default)]
+        captured_at: Option<String>,
+        #[serde(default)]
+        resolution: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        // Structured on the wire: an object of commits / files_changed.
+        #[serde(default)]
+        audit: Option<serde_json::Value>,
+        #[serde(default)]
+        superseded_by: Option<String>,
+        #[serde(default)]
+        spec_commitment_hint: Option<String>,
     }
 
     let values: Vec<serde_json::Value> = serde_json::from_str(observed.stdout())
@@ -1727,9 +1900,28 @@ pub fn parse_orchestrator_observation(
         // admission / ai-then-human acceptance).
         let admission_policy = item.admission_policy.unwrap_or_default();
         let acceptance_policy = item.acceptance_policy.unwrap_or_default();
+        let detail = WorkItemDetail {
+            title: item.title,
+            description: item.description,
+            item_type: item.item_type,
+            origin: item.origin,
+            gap_id: item.gap_id,
+            assignee: item.assignee,
+            depends_on: item.depends_on.iter().map(flatten_dependency).collect(),
+            captured_at: item.captured_at,
+            resolution: item.resolution,
+            reason: item.reason,
+            audit: item.audit.map(|value| value.to_string()),
+            superseded_by: item.superseded_by,
+            spec_commitment_hint: item.spec_commitment_hint,
+        };
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
-        // observation the lane/attention projections can pick up.
+        // observation the lane/attention projections can pick up. The
+        // descriptive record joins them via its digest for the same reason: an
+        // edited title or description must reach the operator, not sit stale
+        // behind an unchanged lifecycle state.
+        let detail_digest = detail.digest();
         let version = source_stream_seq(&[
             observed.repo(),
             &item.id,
@@ -1739,6 +1931,7 @@ pub fn parse_orchestrator_observation(
             &item.status,
             admission_policy.label(),
             acceptance_policy.label(),
+            &detail_digest,
         ]);
         let snapshot = WorkItemSnapshot::new(
             observed.repo(),
@@ -1751,7 +1944,8 @@ pub fn parse_orchestrator_observation(
             acceptance_policy,
             version,
         )
-        .map_err(|_error| "invalid work-item".to_owned())?;
+        .map_err(|_error| "invalid work-item".to_owned())?
+        .with_detail(detail);
         events.extend(normalize_work_item_snapshot(&snapshot).events().to_vec());
         versions.push(version.to_string());
     }
@@ -2374,7 +2568,7 @@ mod tests {
         NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, ObservedSource,
         ObservedSourceAdapter, ParsedObservation, ProbeNeedsAttentionPort, PullSourcePort,
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
-        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
         attention_item_snapshot_from_payload_json, diff_needs_attention,
         materialize_attention_items, normalize_dispatcher_journal_entry,
         normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
@@ -3356,6 +3550,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Manual,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             source_version: 7,
+            detail: Box::default(),
         }
     }
 
@@ -3729,6 +3924,170 @@ mod tests {
 
     fn first_payload(parsed: &ParsedObservation) -> &SourcePayload {
         parsed.events[0].payload()
+    }
+
+    /// One `list-work-items --json` record with EVERY descriptive field
+    /// populated, in the shapes the orchestrator really emits: `depends_on` as
+    /// a list of `{kind, work_item_id}` objects and `audit` as an object.
+    const FULL_RECORD_STDOUT: &str = r#"[{
+        "id": "livespec-console-beads-fabro-full",
+        "lane": "ready",
+        "rank": "a3",
+        "status": "ready",
+        "title": "Render the whole record",
+        "description": "line one\nline two",
+        "type": "bug",
+        "origin": "freeform",
+        "gap_id": "gap-77",
+        "assignee": "fabro",
+        "depends_on": [
+            {"kind": "local", "work_item_id": "dep-local"},
+            {"kind": "cross-repo", "work_item_id": "dep-remote"},
+            {"unexpected": "shape"}
+        ],
+        "captured_at": "2026-07-19T00:00:00Z",
+        "resolution": "completed",
+        "reason": "landed via PR #123",
+        "audit": {"commits": ["abc123"]},
+        "superseded_by": "livespec-console-beads-fabro-newer",
+        "spec_commitment_hint": "scenario-23-work-item-drill-in"
+    }]"#;
+
+    fn only_snapshot(parsed: &ParsedObservation) -> &WorkItemSnapshot {
+        let snapshots: Vec<&WorkItemSnapshot> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot),
+                _other => None,
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 1, "fixture observes exactly one work-item");
+        snapshots[0]
+    }
+
+    #[test]
+    fn parse_orchestrator_carries_the_whole_standardized_record() -> Result<(), String> {
+        // The adapter used to keep only id/lane/rank/status/policies and let
+        // serde silently discard the rest, which is why nothing in the console
+        // could show a work-item's title or description. Every descriptive
+        // field must now survive the parse.
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            FULL_RECORD_STDOUT,
+        ))?;
+        let detail = only_snapshot(&parsed).detail();
+
+        assert_eq!(detail.title.as_deref(), Some("Render the whole record"));
+        // The markdown body is carried VERBATIM, newlines and all.
+        assert_eq!(detail.description.as_deref(), Some("line one\nline two"));
+        assert_eq!(detail.item_type.as_deref(), Some("bug"));
+        assert_eq!(detail.origin.as_deref(), Some("freeform"));
+        assert_eq!(detail.gap_id.as_deref(), Some("gap-77"));
+        assert_eq!(detail.assignee.as_deref(), Some("fabro"));
+        assert_eq!(detail.captured_at.as_deref(), Some("2026-07-19T00:00:00Z"));
+        assert_eq!(detail.resolution.as_deref(), Some("completed"));
+        assert_eq!(detail.reason.as_deref(), Some("landed via PR #123"));
+        assert_eq!(
+            detail.superseded_by.as_deref(),
+            Some("livespec-console-beads-fabro-newer")
+        );
+        assert_eq!(
+            detail.spec_commitment_hint.as_deref(),
+            Some("scenario-23-work-item-drill-in")
+        );
+        // `audit` arrives as an OBJECT and is flattened to its JSON text.
+        assert_eq!(detail.audit.as_deref(), Some(r#"{"commits":["abc123"]}"#));
+        // `depends_on` arrives as objects: a `local` kind shows the bare id, a
+        // cross-repo kind is called out, and an unrecognized element degrades to
+        // its own JSON rather than vanishing.
+        assert_eq!(
+            detail.depends_on,
+            vec![
+                "dep-local".to_owned(),
+                "dep-remote (cross-repo)".to_owned(),
+                r#"{"unexpected":"shape"}"#.to_owned(),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_detail_survives_the_payload_round_trip() -> Result<(), String> {
+        // The persisted wire format and the read-back must move in lockstep, or
+        // the record silently vanishes on replay from the ledger and the modal
+        // renders an empty shell.
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            FULL_RECORD_STDOUT,
+        ))?;
+        let snapshot = only_snapshot(&parsed);
+        let json = work_item_snapshot_payload_json(snapshot);
+        let restored =
+            work_item_snapshot_from_payload_json(&json).ok_or("payload did not round-trip")?;
+        assert_eq!(restored.detail(), snapshot.detail());
+        assert_eq!(&restored, snapshot);
+
+        // A payload written BEFORE the record was carried still replays, with an
+        // empty detail rather than a failed observation.
+        let legacy = r#"{"repo":"console","work_item_id":"console-legacy","lane":"ready","rank":"a1","status":"ready","source_version":3}"#;
+        let legacy_snapshot =
+            work_item_snapshot_from_payload_json(legacy).ok_or("legacy payload did not replay")?;
+        assert_eq!(legacy_snapshot.detail(), &WorkItemDetail::default());
+        Ok(())
+    }
+
+    #[test]
+    fn an_edited_description_appends_a_fresh_observation() -> Result<(), String> {
+        // The descriptive record joins the identity hash: without it an edited
+        // title or description would never reach the console, leaving the
+        // operator reading a stale body forever.
+        let edited = FULL_RECORD_STDOUT.replace("line one\\nline two", "an edited body");
+        let original = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            FULL_RECORD_STDOUT,
+        ))?;
+        let changed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            &edited,
+        ))?;
+        assert_ne!(
+            only_snapshot(&original).source_version(),
+            only_snapshot(&changed).source_version()
+        );
+        // The same record observed twice is idempotent -- an unchanged item must
+        // NOT churn a new version every poll.
+        let again = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            FULL_RECORD_STDOUT,
+        ))?;
+        assert_eq!(
+            only_snapshot(&original).source_version(),
+            only_snapshot(&again).source_version()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_record_missing_every_descriptive_field_still_observes() -> Result<(), String> {
+        // A leaner emission (or an older `list-work-items` predating a field)
+        // must still land the work-item on the board, carrying an empty record
+        // -- never trip the fail-soft skip and drop the item entirely.
+        let stdout = r#"[{"id":"livespec-console-beads-fabro-lean","lane":"ready"}]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            stdout,
+        ))?;
+        let snapshot = only_snapshot(&parsed);
+        assert_eq!(snapshot.work_item_id(), "livespec-console-beads-fabro-lean");
+        assert_eq!(snapshot.detail(), &WorkItemDetail::default());
+        Ok(())
     }
 
     #[test]

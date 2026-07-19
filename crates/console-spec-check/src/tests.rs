@@ -127,12 +127,15 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // detailed usage with a section per TUI pane; and the settings doc the
     // completeness check reads is the detailed-usage sub-document rather than
     // the top-level README. The Settings-surface-completeness re-anchor
-    // re-worded an existing clause without changing the count: 165 normative
-    // clauses, 15/76/22/52.
+    // re-worded an existing clause without changing the count. The work-item
+    // record drill-in then ADDED one contracts.md clause (the operator reads a
+    // selected work-item's full standardized record without leaving the
+    // console) and re-worded the Status-line clause in place: 166 normative
+    // clauses, 15/77/22/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 76),
+        ("contracts.md", 77),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
@@ -144,7 +147,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 165,
+        total, 166,
         "total normative clauses across the console spec"
     );
     Ok(())

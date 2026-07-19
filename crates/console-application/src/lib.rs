@@ -26,8 +26,9 @@ pub mod source_adapters;
 
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
-    SourceProbe, SourceProbeOutcome, WorkItemSnapshot, attention_item_snapshot_from_payload_json,
-    materialize_attention_items, work_item_snapshot_from_payload_json,
+    SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
+    attention_item_snapshot_from_payload_json, materialize_attention_items,
+    work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,6 +534,20 @@ pub enum TuiOverlay {
         /// changes, and clamped by the renderer to the section's wrapped height.
         scroll: usize,
     },
+    /// Work-item detail variant: the near-full-screen modal showing the FULL
+    /// standardized record of the selected work-item — its title, description,
+    /// and the rest of the descriptive shape the lane row has no room for.
+    ///
+    /// It carries only its scroll offset, never the item itself: like
+    /// [`ValveConfirm`](Self::ValveConfirm), the renderer reads the target from
+    /// the SAME selection `Enter` opened it on, so the modal can never drift
+    /// onto a different work-item than the one the operator picked.
+    WorkItemDetail {
+        /// Vertical scroll offset (the topmost visible wrapped row), clamped by
+        /// the renderer so a long description scrolls without running past its
+        /// last row.
+        scroll: usize,
+    },
     /// Valve-confirm variant: the confirm modal that stages one operator
     /// human-valve/policy-edit intent against the selected work-item. `Enter`
     /// submits the valve through the shared orchestrator action port; `up`/`down`
@@ -559,6 +574,22 @@ impl TuiOverlay {
             Self::None
             | Self::CommandModal { .. }
             | Self::ValveConfirm { .. }
+            | Self::WorkItemDetail { .. }
+            | Self::Help { .. } => None,
+        }
+    }
+
+    #[must_use]
+    /// Return the scroll offset when the overlay is the work-item detail modal,
+    /// or `None` for any other overlay.
+    pub const fn work_item_detail_scroll(&self) -> Option<usize> {
+        match self {
+            Self::WorkItemDetail { scroll } => Some(*scroll),
+            Self::None
+            | Self::Search { .. }
+            | Self::CommandPalette { .. }
+            | Self::CommandModal { .. }
+            | Self::ValveConfirm { .. }
             | Self::Help { .. } => None,
         }
     }
@@ -574,6 +605,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::ValveConfirm { .. }
+            | Self::WorkItemDetail { .. }
             | Self::Help { .. } => None,
         }
     }
@@ -588,6 +620,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::WorkItemDetail { .. }
             | Self::Help { .. } => None,
         }
     }
@@ -673,6 +706,17 @@ pub enum TuiInteraction {
     /// Scroll the modal Help right-hand text pane UP one row. Inert unless the
     /// Help overlay is open.
     HelpScrollUp,
+    /// Open the work-item detail modal on the currently selected work-item,
+    /// showing its full standardized record. Opens at the top of the record.
+    OpenWorkItemDetail,
+    /// Scroll the work-item detail modal DOWN by the given number of rows (`1`
+    /// for a line step, a page height for `PgDn`). Inert unless that modal is
+    /// open; the renderer clamps the offset to the record's wrapped height, so
+    /// the scroll never runs past the last row.
+    WorkItemDetailScrollDown(usize),
+    /// Scroll the work-item detail modal UP by the given number of rows,
+    /// saturating at the top. Inert unless that modal is open.
+    WorkItemDetailScrollUp(usize),
     /// Open the valve-confirm modal staging the given human-valve/policy-edit
     /// intent against the selected work-item.
     OpenValveConfirm(PendingValve),
@@ -1328,7 +1372,7 @@ impl TuiScreenModel {
         // Header-focus branch.
         match (&self.overlay, self.focus) {
             (TuiOverlay::None, FocusPane::Header) => HEADER_FOOTER_HINT,
-            (overlay, _) => footer_hint(self.active_view, overlay),
+            (overlay, _) => footer_hint(self.active_view, self.lane_focus, overlay),
         }
     }
 }
@@ -1349,13 +1393,18 @@ const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q
 /// string, so no context with available actions renders a blank line. The
 /// specific strings and bindings are an implementation detail; they stay in
 /// lock-step with the key handler and the modal Help sections.
-const fn footer_hint(active_view: TuiView, overlay: &TuiOverlay) -> &'static str {
+const fn footer_hint(
+    active_view: TuiView,
+    lane_focus: LaneFocus,
+    overlay: &TuiOverlay,
+) -> &'static str {
     match overlay {
-        TuiOverlay::None => pane_footer_hint(active_view),
+        TuiOverlay::None => pane_footer_hint(active_view, lane_focus),
         TuiOverlay::Search { .. } => "type to search | esc cancel",
         TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
         TuiOverlay::ValveConfirm { .. } => "up/down change | enter confirm | esc cancel",
+        TuiOverlay::WorkItemDetail { .. } => "up/down scroll | PgUp/PgDn page | esc close item",
         TuiOverlay::Help { .. } => "up/down section | PgUp/PgDn scroll | esc close help",
     }
 }
@@ -1365,16 +1414,29 @@ const fn footer_hint(active_view: TuiView, overlay: &TuiOverlay) -> &'static str
 /// share one hint set because their available actions are identical (select +
 /// move focus + search); the actionable panes (Attention, Lanes) surface their
 /// human-valve/status-move keys, and Settings surfaces its edit key.
-const fn pane_footer_hint(view: TuiView) -> &'static str {
+///
+/// `Lanes` is keyed on `lane_focus` because `Enter` does two DIFFERENT things
+/// there: on the lane overview it drills into a lane, and inside a drilled-in
+/// lane it opens the selected work-item's detail modal. Advertising the same
+/// `enter drill` in both places is precisely the lie this hint used to tell —
+/// the hint MUST name the action `Enter` actually performs in the current
+/// context, or the Status line is worse than blank.
+const fn pane_footer_hint(view: TuiView, lane_focus: LaneFocus) -> &'static str {
     match view {
         TuiView::Attention => {
             "up/down move | enter open | p/c/r approve/accept/reject | \
              m/n set-admission/acceptance | ? help | q quit"
         }
-        TuiView::Lanes => {
-            "up/down move | enter drill | s move-status | p/c/r approve/accept/reject | \
-             m/n set-admission/acceptance | ? help | q quit"
-        }
+        TuiView::Lanes => match lane_focus {
+            LaneFocus::Overview => {
+                "up/down move | enter drill | s move-status | p/c/r approve/accept/reject | \
+                 m/n set-admission/acceptance | ? help | q quit"
+            }
+            LaneFocus::Lane(_lane) => {
+                "up/down move | enter item | esc lane list | s move-status | \
+                 p/c/r approve/accept/reject | m/n set-admission/acceptance | ? help | q quit"
+            }
+        },
         TuiView::Settings => "up/down move | enter/space edit row | ? help | q quit",
         TuiView::Spec | TuiView::Events | TuiView::Repos => {
             "up/down move | left/right focus | / search | ? help | q quit"
@@ -2028,6 +2090,7 @@ pub struct LaneWorkItem {
     lane_reason: Option<LaneReason>,
     rank: String,
     status: String,
+    detail: WorkItemDetail,
 }
 
 impl LaneWorkItem {
@@ -2039,7 +2102,15 @@ impl LaneWorkItem {
             lane_reason: snapshot.lane_reason(),
             rank: snapshot.rank().to_owned(),
             status: snapshot.status().to_owned(),
+            detail: snapshot.detail().clone(),
         }
+    }
+
+    #[must_use]
+    /// The descriptive half of this item's standardized record — what the
+    /// work-item detail modal renders.
+    pub const fn detail(&self) -> &WorkItemDetail {
+        &self.detail
     }
 
     #[must_use]
@@ -2593,6 +2664,15 @@ pub fn reduce_tui_interaction(
         TuiInteraction::HelpScrollUp => state
             .clone()
             .with_overlay(help_scroll(state.overlay(), false)),
+        TuiInteraction::OpenWorkItemDetail => state
+            .clone()
+            .with_overlay(TuiOverlay::WorkItemDetail { scroll: 0 }),
+        TuiInteraction::WorkItemDetailScrollDown(rows) => state
+            .clone()
+            .with_overlay(work_item_detail_scroll(state.overlay(), rows, true)),
+        TuiInteraction::WorkItemDetailScrollUp(rows) => state
+            .clone()
+            .with_overlay(work_item_detail_scroll(state.overlay(), rows, false)),
         TuiInteraction::OpenValveConfirm(valve) => state
             .clone()
             .with_overlay(TuiOverlay::ValveConfirm { valve }),
@@ -2600,6 +2680,26 @@ pub fn reduce_tui_interaction(
             .clone()
             .with_overlay(cycle_valve_option(state.overlay(), forward)),
     }
+}
+
+/// Scroll the work-item detail modal by `rows` down (`down`) or up, leaving any
+/// other overlay unchanged (the interaction is inert unless that modal is open).
+///
+/// Down saturates here and is clamped by the renderer against the record's
+/// measured wrapped height — the same feed-back-the-measured-max discipline the
+/// Detail pane and the Help modal use — so the true bottom of a long
+/// description is reachable and no further.
+fn work_item_detail_scroll(overlay: &TuiOverlay, rows: usize, down: bool) -> TuiOverlay {
+    overlay.work_item_detail_scroll().map_or_else(
+        || overlay.clone(),
+        |scroll| TuiOverlay::WorkItemDetail {
+            scroll: if down {
+                scroll.saturating_add(rows)
+            } else {
+                scroll.saturating_sub(rows)
+            },
+        },
+    )
 }
 
 /// Rotate the valve-confirm modal's payload valve one step (forward or
@@ -4931,6 +5031,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => None,
     }
 }
@@ -4946,6 +5047,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -5051,7 +5153,8 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::ValveConfirm { .. } => overlay.clone(),
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
     }
 }
 
@@ -5076,7 +5179,8 @@ fn help_scroll(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::ValveConfirm { .. } => overlay.clone(),
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
     }
 }
 
@@ -5091,6 +5195,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -5106,6 +5211,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -5129,6 +5235,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -5144,6 +5251,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -6340,7 +6448,7 @@ mod tests {
         assert!(model.footer().contains("scroll") && model.footer().contains("leave"));
         assert_ne!(
             model.footer(),
-            footer_hint(model.active_view(), &TuiOverlay::None)
+            footer_hint(model.active_view(), model.lane_focus(), &TuiOverlay::None)
         );
 
         // An open overlay wins the hint line even while the header holds focus.
@@ -9851,16 +9959,27 @@ mod tests {
         // context-appropriate hint line -- never a blank one where actions are
         // available -- and the actionable panes surface their distinct keys.
         for view in TuiView::all() {
-            assert!(!footer_hint(*view, &TuiOverlay::None).trim().is_empty());
+            assert!(
+                !footer_hint(*view, LaneFocus::Overview, &TuiOverlay::None)
+                    .trim()
+                    .is_empty()
+            );
         }
         assert!(
-            footer_hint(TuiView::Attention, &TuiOverlay::None).contains("approve/accept/reject")
+            footer_hint(TuiView::Attention, LaneFocus::Overview, &TuiOverlay::None)
+                .contains("approve/accept/reject")
         );
-        assert!(footer_hint(TuiView::Lanes, &TuiOverlay::None).contains("move-status"));
-        assert!(footer_hint(TuiView::Settings, &TuiOverlay::None).contains("enter/space edit row"));
+        assert!(
+            footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None)
+                .contains("move-status")
+        );
+        assert!(
+            footer_hint(TuiView::Settings, LaneFocus::Overview, &TuiOverlay::None)
+                .contains("enter/space edit row")
+        );
         // The read-only nav views surface select + focus-move + search.
         for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
-            let hint = footer_hint(view, &TuiOverlay::None);
+            let hint = footer_hint(view, LaneFocus::Overview, &TuiOverlay::None);
             assert!(hint.contains("left/right focus") && hint.contains("search"));
         }
     }
@@ -9870,8 +9989,8 @@ mod tests {
         // Scenario 19 case 2: moving focus from Lanes to Settings changes the
         // hints to that pane's actions, and the two panes' hints DIFFER (their
         // action sets genuinely differ: status-move/valves vs. edit).
-        let lanes = footer_hint(TuiView::Lanes, &TuiOverlay::None);
-        let settings = footer_hint(TuiView::Settings, &TuiOverlay::None);
+        let lanes = footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None);
+        let settings = footer_hint(TuiView::Settings, LaneFocus::Overview, &TuiOverlay::None);
         assert_ne!(lanes, settings);
         assert!(lanes.contains("move-status") && !lanes.contains("edit row"));
         assert!(settings.contains("edit row") && !settings.contains("move-status"));
@@ -9883,9 +10002,10 @@ mod tests {
         // hints with that overlay's, and closing it (overlay back to None)
         // restores the pane's hints. Exercised against the Lanes pane so the
         // restore is observable via its distinctive `move-status` key.
-        let pane = footer_hint(TuiView::Lanes, &TuiOverlay::None);
+        let pane = footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None);
         let help = footer_hint(
             TuiView::Lanes,
+            LaneFocus::Overview,
             &TuiOverlay::Help {
                 selected_section: help_section_for_view(TuiView::Lanes),
                 scroll: 0,
@@ -9894,7 +10014,129 @@ mod tests {
         assert_ne!(pane, help);
         assert!(help.contains("close help") && !help.contains("move-status"));
         // Closing the overlay restores the underlying pane's hints verbatim.
-        assert_eq!(footer_hint(TuiView::Lanes, &TuiOverlay::None), pane);
+        assert_eq!(
+            footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None),
+            pane
+        );
+    }
+
+    #[test]
+    fn the_lane_board_carries_each_item_standardized_record() {
+        // The board is where the detail modal reads an item's record from, so
+        // the descriptive half must survive projection alongside the lifecycle
+        // half -- not be dropped between the snapshot and the lane column.
+        let payload = concat!(
+            r#"{"repo":"console","work_item_id":"console-rec","lane":"ready","#,
+            r#""lane_reason":null,"rank":"a1","status":"ready","source_version":1,"#,
+            r#""detail":{"title":"A readable title","description":"body text","#,
+            r#""item_type":"bug","depends_on":["console-dep"]}}"#,
+        );
+        let events = [ConsoleEvent::fixture(
+            "evt_rec",
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload.to_owned())];
+        let board = project_lane_board(&events);
+        let items = board
+            .column(Lane::Ready)
+            .map(super::LaneColumn::items)
+            .unwrap_or_default();
+        assert_eq!(items.len(), 1);
+        let detail = items[0].detail();
+        assert_eq!(detail.title.as_deref(), Some("A readable title"));
+        assert_eq!(detail.description.as_deref(), Some("body text"));
+        assert_eq!(detail.item_type.as_deref(), Some("bug"));
+        assert_eq!(detail.depends_on, vec!["console-dep".to_owned()]);
+    }
+
+    #[test]
+    fn the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane() {
+        // Enter drills into a LANE from the overview but opens an ITEM inside a
+        // drilled-in lane, so the hint must name a different action in each --
+        // advertising "enter drill" in both is the lie this surface fixes.
+        let overview = footer_hint(TuiView::Lanes, LaneFocus::Overview, &TuiOverlay::None);
+        let drilled = footer_hint(
+            TuiView::Lanes,
+            LaneFocus::Lane(Lane::Ready),
+            &TuiOverlay::None,
+        );
+        assert!(overview.contains("enter drill"));
+        assert!(drilled.contains("enter item") && !drilled.contains("enter drill"));
+        // The open modal owns the hint line and names its own keys.
+        let modal = footer_hint(
+            TuiView::Lanes,
+            LaneFocus::Lane(Lane::Ready),
+            &TuiOverlay::WorkItemDetail { scroll: 0 },
+        );
+        assert!(modal.contains("esc close item") && !modal.contains("enter drill"));
+    }
+
+    #[test]
+    fn the_open_item_modal_leaves_every_unrelated_interaction_inert() {
+        // The work-item detail modal is a READ-ONLY reading surface: every
+        // interaction that belongs to some OTHER overlay (text entry, command
+        // action selection, Help navigation) must pass over it without mutating
+        // it. Its own scroll interactions are covered alongside the modal.
+        let events: [ConsoleEvent; 0] = [];
+        let open = TuiInteractionState::new(0, TuiOverlay::WorkItemDetail { scroll: 4 });
+        let modal = TuiOverlay::WorkItemDetail { scroll: 4 };
+
+        for interaction in [
+            TuiInteraction::TypeChar('x'),
+            TuiInteraction::Backspace,
+            TuiInteraction::SelectNextAction,
+            TuiInteraction::SelectPreviousAction,
+            TuiInteraction::HelpSelectNextSection,
+            TuiInteraction::HelpSelectPreviousSection,
+            TuiInteraction::HelpScrollDown,
+            TuiInteraction::HelpScrollUp,
+            TuiInteraction::CycleValveOption(true),
+        ] {
+            let after = reduce_tui_interaction(&open, &events, interaction);
+            // Unchanged: the item modal owns none of these interactions.
+            assert_eq!(after.overlay(), &modal);
+        }
+
+        // Its OWN interactions do move it: down accumulates, up saturates at the
+        // top, and both are inert against any other overlay.
+        let down =
+            reduce_tui_interaction(&open, &events, TuiInteraction::WorkItemDetailScrollDown(3));
+        assert_eq!(down.overlay(), &TuiOverlay::WorkItemDetail { scroll: 7 });
+        let up = reduce_tui_interaction(&down, &events, TuiInteraction::WorkItemDetailScrollUp(99));
+        assert_eq!(up.overlay(), &TuiOverlay::WorkItemDetail { scroll: 0 });
+        let opened_fresh =
+            reduce_tui_interaction(&open, &events, TuiInteraction::OpenWorkItemDetail);
+        assert_eq!(
+            opened_fresh.overlay(),
+            &TuiOverlay::WorkItemDetail { scroll: 0 }
+        );
+
+        let elsewhere = TuiInteractionState::new(0, TuiOverlay::None);
+        for interaction in [
+            TuiInteraction::WorkItemDetailScrollDown(1),
+            TuiInteraction::WorkItemDetailScrollUp(1),
+        ] {
+            let after = reduce_tui_interaction(&elsewhere, &events, interaction);
+            assert_eq!(after.overlay(), &TuiOverlay::None);
+        }
+
+        // The overlay accessors that belong to other overlays report nothing for
+        // it, and its own scroll accessor reports the offset.
+        assert_eq!(TuiOverlay::None.work_item_detail_scroll(), None);
+        assert_eq!(
+            TuiOverlay::Help {
+                selected_section: 0,
+                scroll: 0
+            }
+            .work_item_detail_scroll(),
+            None
+        );
+        assert_eq!(modal.query(), None);
+        assert_eq!(modal.selected_action_index(), None);
+        assert_eq!(modal.valve_confirm(), None);
+        assert_eq!(modal.work_item_detail_scroll(), Some(4));
+        assert!(modal.is_open());
     }
 
     #[test]
@@ -9921,12 +10163,15 @@ mod tests {
             },
         ];
         for overlay in &overlays {
-            let hint = footer_hint(TuiView::Attention, overlay);
+            let hint = footer_hint(TuiView::Attention, LaneFocus::Overview, overlay);
             // Non-empty and mentions the overlay's exit key.
             assert!(!hint.trim().is_empty() && hint.contains("esc"));
             // The overlay owns the hints: they do NOT fall through to the
             // underlying Attention pane's keys.
-            assert_ne!(hint, footer_hint(TuiView::Attention, &TuiOverlay::None));
+            assert_ne!(
+                hint,
+                footer_hint(TuiView::Attention, LaneFocus::Overview, &TuiOverlay::None)
+            );
         }
     }
 

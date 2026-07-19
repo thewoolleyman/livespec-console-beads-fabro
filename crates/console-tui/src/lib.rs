@@ -420,6 +420,9 @@ fn confirm_operator_action(
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
+        // The work-item detail modal is READ-ONLY: `enter_input` yields no
+        // `Confirm` while it is open, so it never actually reaches here.
+        | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => resolve_selected_operator_action(&model, requested_by),
     };
     let effect = match outcome {
@@ -538,6 +541,9 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
         TuiOverlay::Help { .. } => TuiInteraction::HelpSelectPreviousSection,
+        // The item modal is a READING surface, so up/down scroll its body
+        // rather than moving a selection -- there is nothing to select in it.
+        TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
@@ -559,6 +565,7 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
         TuiOverlay::Help { .. } => TuiInteraction::HelpSelectNextSection,
+        TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
@@ -578,17 +585,19 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. } => Some(TuiTerminalInput::Confirm),
-        TuiOverlay::Search { .. } | TuiOverlay::Help { .. } => None,
+        TuiOverlay::Search { .. } | TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => {
+            None
+        }
         TuiOverlay::None => enter_content_input(model),
     }
 }
 
 /// Enter with no overlay open: from the Views nav it dives focus into the
 /// Content pane; in the Content pane it drills into the selected lane (lane
-/// overview), edits the selected Settings row, is inert in a drilled-in lane, or
-/// opens the command modal on the selected attention item for any other view; on
-/// the Detail pane it is inert (the command modal is opened from the Content
-/// pane).
+/// overview), opens the selected work-item's detail modal (drilled-in lane),
+/// edits the selected Settings row, or opens the command modal on the selected
+/// attention item for any other view; on the Detail pane it is inert (the
+/// command modal is opened from the Content pane).
 fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.focus() {
         FocusPane::Nav => Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent)),
@@ -598,7 +607,15 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                     LaneFocus::Overview => {
                         Some(TuiTerminalInput::Interaction(TuiInteraction::DrillIntoLane))
                     }
-                    LaneFocus::Lane(_lane) => None,
+                    // Inside a drilled-in lane Enter carries the drill one level
+                    // FURTHER IN -- from the lane's item list to the selected
+                    // item's own record. It was inert here, which left the
+                    // console with no surface at all for a work-item's title or
+                    // description; only a row with a real item behind it opens,
+                    // so an empty lane keeps Enter inert.
+                    LaneFocus::Lane(_lane) => model.selected_lane_item().map(|_item| {
+                        TuiTerminalInput::Interaction(TuiInteraction::OpenWorkItemDetail)
+                    }),
                 };
             }
             // A Settings row edit is an ordinary recorded write resolved on
@@ -737,7 +754,8 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     match overlay {
         TuiOverlay::None => Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp)),
         // Esc-only close: `?` while Help is open is inert (does NOT dismiss it).
-        TuiOverlay::Help { .. } => None,
+        // The item modal likewise closes on Esc, so `?` is inert over it too.
+        TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => None,
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
@@ -745,15 +763,21 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     }
 }
 
-/// `PageUp` / `PageDown`: while the modal Help overlay is open they scroll its
-/// right-hand text pane up/down; on every other surface they are inert. The
-/// right pane scrolls UP and DOWN only, so no horizontal counterpart exists.
+/// `PageUp` / `PageDown`: while the modal Help overlay or the work-item detail
+/// modal is open they page that surface's text up/down; everywhere else they are
+/// inert. Both surfaces scroll UP and DOWN only, so no horizontal counterpart
+/// exists.
 const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTerminalInput> {
     match overlay {
         TuiOverlay::Help { .. } => Some(TuiTerminalInput::Interaction(if down {
             TuiInteraction::HelpScrollDown
         } else {
             TuiInteraction::HelpScrollUp
+        })),
+        TuiOverlay::WorkItemDetail { .. } => Some(TuiTerminalInput::Interaction(if down {
+            TuiInteraction::WorkItemDetailScrollDown(ITEM_MODAL_PAGE_ROWS)
+        } else {
+            TuiInteraction::WorkItemDetailScrollUp(ITEM_MODAL_PAGE_ROWS)
         })),
         TuiOverlay::None
         | TuiOverlay::Search { .. }
@@ -762,6 +786,14 @@ const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::ValveConfirm { .. } => None,
     }
 }
+
+/// Rows one `PageUp`/`PageDown` moves the work-item detail modal.
+///
+/// A fixed step rather than the measured viewport height: the keymap is a pure
+/// function of the model (it never sees a `Rect`), and the renderer clamps the
+/// resulting offset to the record's real wrapped height anyway, so a step past
+/// the end lands exactly at the bottom.
+const ITEM_MODAL_PAGE_ROWS: usize = 10;
 
 const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     if matches!(overlay, TuiOverlay::None) {
@@ -1183,6 +1215,18 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
+        TuiOverlay::WorkItemDetail { scroll } => {
+            // Near-full-screen (the Help modal's inset), because the record it
+            // shows is long. Like the valve-confirm modal it reads its target
+            // from the SAME selection `Enter` opened it on, so the record on
+            // screen is always the row the operator picked.
+            render_work_item_detail(
+                model.selected_lane_item(),
+                help_overlay_rect(area),
+                buffer,
+                *scroll,
+            );
+        }
         TuiOverlay::Help {
             selected_section,
             scroll,
@@ -1215,6 +1259,123 @@ fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer
     Paragraph::new(lines)
         .block(Block::new().borders(Borders::ALL).title("Valve"))
         .render(area, buffer);
+}
+
+/// The placeholder rendered for a record field the orchestrator did not emit.
+///
+/// An absent field is shown as absent rather than hidden: a blank row would let
+/// the operator mistake "not set" for "not displayed", and the point of this
+/// modal is that the record on screen is the whole record.
+const ITEM_FIELD_ABSENT: &str = "—";
+
+/// Render the work-item detail modal: a near-full-screen bordered window over
+/// the main screen showing the FULL standardized record of `item` — the surface
+/// that makes a work-item's title and description readable inside the console at
+/// all.
+///
+/// `scroll` is the topmost visible wrapped row, clamped here to the record's
+/// wrapped height exactly as the Help pane clamps its own, so a long description
+/// scrolls to its true bottom and no further. `esc to close` sits on a reserved
+/// bottom row, always visible regardless of the scroll offset.
+fn render_work_item_detail(
+    item: Option<&LaneWorkItem>,
+    area: Rect,
+    buffer: &mut Buffer,
+    scroll: usize,
+) {
+    Clear.render(area, buffer);
+    let title = item.map_or_else(
+        || "Work item".to_owned(),
+        |item| format!("Work item: {}", item.work_item_id()),
+    );
+    let outer = Block::new().borders(Borders::ALL).title(title);
+    let inner = outer.inner(area);
+    outer.render(area, buffer);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let body = item.map_or_else(
+        || vec![Line::from("No work-item selected")],
+        work_item_detail_lines,
+    );
+    let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+    let max_scroll = paragraph
+        .line_count(rows[0].width)
+        .saturating_sub(usize::from(rows[0].height));
+    let offset = scroll.min(max_scroll);
+    paragraph
+        .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
+        .render(rows[0], buffer);
+    Paragraph::new(Line::from("up/down scroll | esc to close")).render(rows[1], buffer);
+}
+
+/// The full standardized work-item record as display lines.
+///
+/// Ordered so the operator reads identity first (title, id, repo), then the
+/// lifecycle placement the lane row already showed, then provenance, then the
+/// free-text body last — a long description must not push the one-line facts off
+/// the top of the modal. Every field renders, absent ones as
+/// [`ITEM_FIELD_ABSENT`], so the record on screen is the whole record.
+fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
+    let detail = item.detail();
+    let mut lines = vec![
+        Line::from(optional_field(detail.title.as_deref()))
+            .style(Style::new().add_modifier(Modifier::BOLD)),
+        Line::from(String::new()),
+    ];
+    let depends_on = if detail.depends_on.is_empty() {
+        ITEM_FIELD_ABSENT.to_owned()
+    } else {
+        detail.depends_on.join(", ")
+    };
+    for (label, value) in [
+        ("id", item.work_item_id().to_owned()),
+        ("repo", item.repo().to_owned()),
+        ("type", optional_field(detail.item_type.as_deref())),
+        ("status", item.status().to_owned()),
+        ("lane", item.lane().label().to_owned()),
+        ("rank", item.rank().to_owned()),
+        ("origin", optional_field(detail.origin.as_deref())),
+        ("gap_id", optional_field(detail.gap_id.as_deref())),
+        ("assignee", optional_field(detail.assignee.as_deref())),
+        ("depends_on", depends_on),
+        ("captured_at", optional_field(detail.captured_at.as_deref())),
+        ("resolution", optional_field(detail.resolution.as_deref())),
+        ("reason", optional_field(detail.reason.as_deref())),
+        ("audit", optional_field(detail.audit.as_deref())),
+        (
+            "superseded_by",
+            optional_field(detail.superseded_by.as_deref()),
+        ),
+        (
+            "spec_commitment_hint",
+            optional_field(detail.spec_commitment_hint.as_deref()),
+        ),
+    ] {
+        lines.push(Line::from(format!("{label:<21}{value}")));
+    }
+    lines.push(Line::from(String::new()));
+    lines.push(Line::from("description").style(Style::new().add_modifier(Modifier::BOLD)));
+    // The markdown body is carried VERBATIM -- split only on its own newlines,
+    // never re-wrapped or trimmed here (the paragraph's soft wrap handles width),
+    // so what the operator reads is what the ledger holds.
+    match detail.description.as_deref() {
+        Some(description) => {
+            lines.extend(description.lines().map(|line| Line::from(line.to_owned())));
+        }
+        None => lines.push(Line::from(ITEM_FIELD_ABSENT)),
+    }
+    lines
+}
+
+/// One optional record field as display text, or [`ITEM_FIELD_ABSENT`] when the
+/// orchestrator emitted no value.
+fn optional_field(value: Option<&str>) -> String {
+    value.map_or_else(|| ITEM_FIELD_ABSENT.to_owned(), str::to_owned)
 }
 
 /// The character frame (margin) the modal Help window leaves between its box and
@@ -1421,12 +1582,18 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
         ],
         TuiView::Lanes => vec![
             Line::from("Lanes -- the work-item lane board: every lane column beside the nav."),
-            Line::from("Enter drills into a lane for its full rank-ordered list."),
+            Line::from("Enter drills into a lane for its full rank-ordered list, then into"),
+            Line::from("the selected work-item for its full standardized record."),
             Line::from(""),
             Line::from("up / down    move the lane selection; in a drilled-in lane,"),
             Line::from("             select an individual work-item"),
-            Line::from("enter        drill into the selected lane"),
-            Line::from("esc          return a drilled-in lane to its overview"),
+            Line::from("enter        drill into the selected lane; in a drilled-in lane,"),
+            Line::from("             open the selected work-item's record (title, description,"),
+            Line::from("             type, origin, gap_id, assignee, depends_on, captured_at,"),
+            Line::from("             resolution / reason / audit / superseded_by, and the"),
+            Line::from("             spec commitment hint; up/down and PgUp/PgDn scroll it)"),
+            Line::from("esc          close the work-item record, then return a drilled-in"),
+            Line::from("             lane to its overview"),
             Line::from("s            move the selected work-item to a status it may be driven to"),
             Line::from(
                 "             (any pre-terminal status: backlog / ready / active / blocked;",
@@ -1877,11 +2044,13 @@ mod tests {
     use ratatui::text::Line;
 
     use super::{
-        DeferredTuiRuntimeEffectSink, TuiLiveSession, TuiRenderError, TuiRuntimeEffect,
-        TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_outcome_effect,
-        attention_item_line, buffer_to_text, detail_lines, effect_triggers_source_poll,
+        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, ITEM_MODAL_PAGE_ROWS, TuiLiveSession,
+        TuiRenderError, TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink,
+        TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_outcome_effect, attention_item_line,
+        buffer_to_text, detail_lines, effect_triggers_source_poll, help_lines_for_view,
         key_event_to_terminal_input, render_command_modal, render_detail, render_model,
-        render_summary_detail, render_to_text, settings_detail_lines, step_tui_runtime,
+        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
+        step_tui_runtime,
     };
 
     #[test]
@@ -2695,10 +2864,14 @@ mod tests {
         );
 
         let drilled = lanes_model_content(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
-        // Enter is inert while a lane is drilled in (no per-item action yet).
+        // Enter inside a drilled-in lane opens the selected work-item's record.
+        // It used to be inert here while the Status line still advertised
+        // "enter drill" -- the hint lied and there was no way to read an item.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &drilled),
-            None
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenWorkItemDetail
+            ))
         );
         // Esc returns to the overview from a drilled-in lane.
         assert_eq!(
@@ -3655,6 +3828,338 @@ mod tests {
             "orchestrator",
         )
         .with_payload_json(payload)
+    }
+
+    // -----------------------------------------------------------------------
+    // The work-item detail modal: the drill-in from a lane row to the FULL
+    // standardized record. Before it existed the console could not show an
+    // item's title or description anywhere, and the Status line advertised
+    // "enter drill" in a drilled-in lane where Enter was inert.
+    // -----------------------------------------------------------------------
+
+    /// The long description used to prove the modal body scrolls: enough
+    /// distinct lines to overflow the test viewport several times over.
+    fn scrolling_description() -> String {
+        (0..40)
+            .map(|index| format!("body line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A drilled-in Ready lane whose selected item carries EVERY standardized
+    /// record field, so a render assertion can prove each one reaches the
+    /// screen rather than being silently dropped in the plumbing.
+    fn fully_populated_item_model(description: &str) -> TuiScreenModel {
+        // Written as canonical `payload_json` text (this crate carries no JSON
+        // dependency), mirroring the orchestrator emission the board rebuilds
+        // from. `description` is escaped for the newlines the scroll test needs.
+        let escaped = description.replace('\n', "\\n");
+        let payload = format!(
+            concat!(
+                r#"{{"repo":"console","work_item_id":"console-full","#,
+                r#""lane":"{}","lane_reason":null,"rank":"a3","status":"ready","#,
+                r#""source_version":1,"detail":{{"#,
+                r#""title":"Render the whole record","description":"{}","#,
+                r#""item_type":"bug","origin":"freeform","gap_id":"gap-77","#,
+                r#""assignee":"fabro","#,
+                r#""depends_on":["console-dep-a","console-dep-b (cross-repo)"],"#,
+                r#""captured_at":"2026-07-19T00:00:00Z","resolution":"completed","#,
+                r#""reason":"landed via PR #123","audit":"{{\"commits\":[\"abc123\"]}}","#,
+                r#""superseded_by":"console-newer","#,
+                r#""spec_commitment_hint":"scenario-23-work-item-drill-in"}}}}"#,
+            ),
+            Lane::Ready.label(),
+            escaped,
+        );
+        let event = ConsoleEvent::fixture(
+            "evt_full",
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload);
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+            .with_focus(FocusPane::Content);
+        build_tui_model_for_state(&[event], &state)
+    }
+
+    #[test]
+    fn work_item_detail_modal_renders_every_standardized_record_field() -> Result<(), String> {
+        // The acceptance for the drill-in: with a fixture item whose every
+        // field is populated, each one is READABLE in the modal. The title and
+        // description especially -- the lane row shows neither, so before this
+        // surface the operator could not tell what an item even WAS without
+        // leaving the console.
+        let model = fully_populated_item_model("a short body");
+        let item = model
+            .selected_lane_item()
+            .ok_or("the drilled-in Ready lane has a selected item")?;
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buffer = Buffer::empty(area);
+        render_work_item_detail(Some(item), area, &mut buffer, 0);
+        let text = buffer_to_text(&buffer, area);
+
+        for expected in [
+            "Render the whole record",
+            "a short body",
+            "console-full",
+            "bug",
+            "ready",
+            "a3",
+            "freeform",
+            "gap-77",
+            "fabro",
+            "console-dep-a",
+            "console-dep-b (cross-repo)",
+            "2026-07-19T00:00:00Z",
+            "completed",
+            "landed via PR #123",
+            "abc123",
+            "console-newer",
+            "scenario-23-work-item-drill-in",
+        ] {
+            assert!(text.contains(expected), "record field missing: {expected}");
+        }
+        // Every field is LABELLED, so the operator can tell which is which.
+        for label in [
+            "id",
+            "repo",
+            "type",
+            "status",
+            "lane",
+            "rank",
+            "origin",
+            "gap_id",
+            "assignee",
+            "depends_on",
+            "captured_at",
+            "resolution",
+            "reason",
+            "audit",
+            "superseded_by",
+            "spec_commitment_hint",
+            "description",
+        ] {
+            assert!(text.contains(label), "record label missing: {label}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_detail_modal_shows_absent_fields_as_absent_and_handles_no_selection()
+    -> Result<(), String> {
+        // An unpopulated record renders placeholders rather than blank rows: the
+        // operator must be able to tell "not set" from "not displayed".
+        let model = lanes_model_content(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
+        let item = model
+            .selected_lane_item()
+            .ok_or("the drilled-in Ready lane has a selected item")?;
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buffer = Buffer::empty(area);
+        render_work_item_detail(Some(item), area, &mut buffer, 0);
+        let text = buffer_to_text(&buffer, area);
+        assert!(text.contains(ITEM_FIELD_ABSENT));
+        // The lifecycle fields the lane row already carried still render.
+        assert!(text.contains("console-ready-a") && text.contains("ready"));
+
+        // With nothing selected the modal says so instead of rendering an empty
+        // box that reads like a broken screen.
+        let mut empty = Buffer::empty(area);
+        render_work_item_detail(None, area, &mut empty, 0);
+        assert!(buffer_to_text(&empty, area).contains("No work-item selected"));
+
+        // A viewport too small to inset degrades without panicking.
+        let tiny = Rect::new(0, 0, 2, 2);
+        let mut tiny_buffer = Buffer::empty(tiny);
+        render_work_item_detail(Some(item), tiny, &mut tiny_buffer, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_detail_modal_scrolls_a_long_description_to_its_bottom() -> Result<(), String> {
+        // A long markdown body must be reachable: scrolling reveals the tail and
+        // clamps at the true bottom rather than running past it into blankness.
+        let model = fully_populated_item_model(&scrolling_description());
+        let item = model
+            .selected_lane_item()
+            .ok_or("the drilled-in Ready lane has a selected item")?;
+        let area = Rect::new(0, 0, 80, 20);
+
+        let mut top = Buffer::empty(area);
+        render_work_item_detail(Some(item), area, &mut top, 0);
+        let top_text = buffer_to_text(&top, area);
+        assert!(top_text.contains("Render the whole record"));
+        assert!(!top_text.contains("body line 39"));
+
+        // A far-past-the-end offset clamps to the last row: the tail is visible
+        // and the head has scrolled away.
+        let mut bottom = Buffer::empty(area);
+        render_work_item_detail(Some(item), area, &mut bottom, 10_000);
+        let bottom_text = buffer_to_text(&bottom, area);
+        assert!(bottom_text.contains("body line 39"));
+        assert!(!bottom_text.contains("Render the whole record"));
+        // The close hint stays on its reserved row at every offset.
+        assert!(top_text.contains("esc to close") && bottom_text.contains("esc to close"));
+        Ok(())
+    }
+
+    #[test]
+    fn enter_opens_the_item_modal_and_esc_closes_it_back_to_the_lane() {
+        // The full round trip the acceptance names: Enter opens the record, Esc
+        // closes it and lands back in the drilled-in lane (NOT out at the lane
+        // overview -- Esc unwinds exactly one level).
+        let events = lane_render_events();
+        let drilled = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &drilled);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenWorkItemDetail
+            ))
+        );
+
+        let opened = reduce_tui_interaction(&drilled, &events, TuiInteraction::OpenWorkItemDetail);
+        assert_eq!(opened.overlay(), &TuiOverlay::WorkItemDetail { scroll: 0 });
+
+        // Esc over the open modal closes the overlay...
+        let opened_model = build_tui_model_for_state(&events, &opened);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &opened_model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+        let closed = reduce_tui_interaction(&opened, &events, TuiInteraction::CloseOverlay);
+        assert_eq!(closed.overlay(), &TuiOverlay::None);
+        // ...and leaves the operator in the lane they drilled into.
+        assert_eq!(closed.lane_focus(), LaneFocus::Lane(Lane::Ready));
+    }
+
+    #[test]
+    fn item_modal_scroll_keys_move_the_offset_and_are_inert_elsewhere() {
+        let events = lane_render_events();
+        let opened = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::WorkItemDetail { scroll: 0 },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &opened);
+
+        // up/down step one row; PgUp/PgDn move a page.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::WorkItemDetailScrollDown(1)
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::WorkItemDetailScrollUp(1)
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageDown), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::WorkItemDetailScrollDown(ITEM_MODAL_PAGE_ROWS)
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageUp), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::WorkItemDetailScrollUp(ITEM_MODAL_PAGE_ROWS)
+            ))
+        );
+
+        // The modal is READ-ONLY: Enter and `?` do nothing over it, so neither
+        // fires an action nor dismisses it -- only Esc closes.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('?')), &model),
+            None
+        );
+
+        // Scrolling accumulates down and saturates at the top going up.
+        let down = reduce_tui_interaction(
+            &opened,
+            &events,
+            TuiInteraction::WorkItemDetailScrollDown(ITEM_MODAL_PAGE_ROWS),
+        );
+        assert_eq!(
+            down.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                scroll: ITEM_MODAL_PAGE_ROWS
+            }
+        );
+        let up =
+            reduce_tui_interaction(&down, &events, TuiInteraction::WorkItemDetailScrollUp(999));
+        assert_eq!(up.overlay(), &TuiOverlay::WorkItemDetail { scroll: 0 });
+
+        // The scroll interactions are inert against any other overlay.
+        let elsewhere = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let unchanged = reduce_tui_interaction(
+            &elsewhere,
+            &events,
+            TuiInteraction::WorkItemDetailScrollDown(1),
+        );
+        assert_eq!(unchanged.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn status_hint_stops_claiming_drill_where_enter_no_longer_drills() {
+        // The reported bug: the Status line advertised "enter drill" inside a
+        // drilled-in lane, where Enter did nothing at all. The hint must name
+        // the action Enter ACTUALLY performs in the current context.
+        let overview = lanes_model_content(LaneFocus::Overview, TuiOverlay::None);
+        assert!(overview.footer().contains("enter drill"));
+
+        let drilled = lanes_model_content(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
+        assert!(!drilled.footer().contains("enter drill"));
+        assert!(drilled.footer().contains("enter item"));
+
+        // The open modal owns the hint line and names its own keys.
+        let modal = lanes_model_content(
+            LaneFocus::Lane(Lane::Ready),
+            TuiOverlay::WorkItemDetail { scroll: 0 },
+        );
+        assert!(modal.footer().contains("esc close item"));
+        assert!(!modal.footer().contains("enter drill"));
+    }
+
+    #[test]
+    fn the_open_item_modal_draws_over_the_whole_screen() -> TuiRenderResult<()> {
+        // End-to-end through the real render path (not just the modal fn): with
+        // the overlay open the record is drawn ON TOP of the lane board, so the
+        // operator actually sees it on screen.
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::WorkItemDetail { scroll: 0 },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+        let text = render_to_text(&model, 100, 40)?;
+        assert!(text.contains("Work item: console-ready-a"));
+        assert!(text.contains("esc to close"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_lanes_help_section_documents_the_item_drill_in() {
+        // The Help text is required to stay in lock-step with the key handler.
+        let text = help_lines_for_view(TuiView::Lanes)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("open the selected work-item's record"));
+        assert!(text.contains("description"));
     }
 
     // -----------------------------------------------------------------------
