@@ -231,15 +231,15 @@ fn check_crate_sources(crate_name: &str, crate_dir: &Path) -> Vec<String> {
 /// validated rather than merely counted, and a walk that turns up no Rust files
 /// fails instead of passing vacuously.
 fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
-    let paths = rust_files_for_tmux_scan(root);
+    let (paths, mut findings) = rust_files_for_tmux_scan(root);
     if paths.is_empty() {
-        return vec![format!(
+        findings.push(format!(
             "tmux socket-scoping scan found no Rust files under {} — the scan root moved \
              or the walk is broken; refusing to pass without having read anything",
             root.display()
-        )];
+        ));
+        return findings;
     }
-    let mut findings = Vec::new();
     for path in paths {
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
@@ -261,18 +261,53 @@ fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
 /// `tmp` is maintainer-owned scratch that may hold unrelated checkouts. The
 /// list is a skip-list rather than a scan-list on purpose — a NEW source
 /// directory is covered by default instead of falling outside an enumeration.
-const TMUX_SCAN_SKIPPED_DIRS: &[&str] = &["target", ".git", "tmp"];
+/// `.venv` joins the skip-list now that an unreadable or symlinked path is
+/// REPORTED rather than silently passed: it is a `uv`-managed virtualenv holding
+/// no first-party Rust, it is gitignored, and it is materialized DURING
+/// `just check` (by `check-baseline`), so it legitimately carries interpreter
+/// symlinks (`bin/python3`, `lib64`) that would otherwise be reported on every
+/// run after the first.
+const TMUX_SCAN_SKIPPED_DIRS: &[&str] = &["target", ".git", "tmp", ".venv"];
 
-fn rust_files_for_tmux_scan(root: &Path) -> Vec<PathBuf> {
+/// Collect the Rust files the tmux rule scans, plus a finding for every part of
+/// the tree the walk could NOT read.
+///
+/// The skips themselves are correct — following symlinks risks a cycle or an
+/// escape from the repository, and an unreadable directory cannot be walked —
+/// but an earlier revision performed them SILENTLY. That fails open: symlink
+/// `crates/console-cli/tests` and the whole governed harness leaves the scan with
+/// no finding at all, while the zero-file guard stays quiet because the rest of
+/// the repository still yields `.rs` files. Reporting the skip keeps the rule
+/// suspect-by-default: coverage that cannot be established is a finding, not a
+/// pass.
+fn rust_files_for_tmux_scan(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
+    let mut findings = Vec::new();
     while let Some(path) = pending.pop() {
         // `symlink_metadata` does not follow links, so a symlinked directory
         // can never send the walk round a cycle or out of the repository.
         let Ok(metadata) = fs::symlink_metadata(&path) else {
+            // A missing ROOT is already reported, more clearly, by the zero-files
+            // guard in the caller; reporting it twice is noise. Anything else that
+            // cannot be stat'd is a genuine hole in the walk's coverage.
+            if path != root {
+                findings.push(format!(
+                    "tmux socket-scoping scan could not stat {} — the walk cannot \
+                     establish whether it holds tmux invocations",
+                    path.display()
+                ));
+            }
             continue;
         };
         if metadata.is_symlink() {
+            findings.push(format!(
+                "tmux socket-scoping scan skipped the symlink {} — following it \
+                 could leave the repository, so its contents are UNSCANNED; move \
+                 the real directory into the tree or add it to the skip-list \
+                 deliberately",
+                path.display()
+            ));
             continue;
         }
         if metadata.is_dir() {
@@ -284,6 +319,11 @@ fn rust_files_for_tmux_scan(root: &Path) -> Vec<PathBuf> {
                 continue;
             }
             let Ok(entries) = fs::read_dir(&path) else {
+                findings.push(format!(
+                    "tmux socket-scoping scan could not read the directory {} — its \
+                     contents are UNSCANNED, so the rule cannot claim coverage of them",
+                    path.display()
+                ));
                 continue;
             };
             for entry in entries.flatten() {
@@ -295,7 +335,7 @@ fn rust_files_for_tmux_scan(root: &Path) -> Vec<PathBuf> {
             files.push(path);
         }
     }
-    files
+    (files, findings)
 }
 
 fn check_tmux_socket_scoping_source(display: &str, source: &str) -> Vec<String> {
@@ -408,6 +448,41 @@ impl<'ast> Visit<'ast> for TmuxSocketScopeVisitor<'_> {
         self.scopes.pop();
     }
 
+    /// Descend into MACRO BODIES, which `syn` leaves as an opaque token stream.
+    ///
+    /// Without this the rule has a hole exactly where it is least affordable: the
+    /// file it governs is a TEST file, and wrapping a command in `assert!(...)` is
+    /// the default idiom there, so
+    /// `assert!(Command::new(&tmux).args(["-L", "default", "kill-server"]).status()?.success())`
+    /// would compile, hit the shared server, and be scanned by nothing. Re-parse
+    /// the tokens as a comma-separated expression list and visit each; a body that
+    /// mentions tmux but cannot be parsed is REPORTED rather than skipped, so an
+    /// unparsable macro cannot become a new way to hide.
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        let parsed = node.parse_body_with(
+            syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated,
+        );
+        match parsed {
+            Ok(arguments) => {
+                for argument in &arguments {
+                    self.apply_builder_statement(argument);
+                    syn::visit::visit_expr(self, argument);
+                }
+            }
+            Err(_) => {
+                if node.tokens.to_string().contains("tmux") {
+                    self.findings.push(format!(
+                        "{}: a macro body mentions tmux but does not parse as an \
+                         expression list, so its socket scoping cannot be verified — \
+                         build the command outside the macro where the check can see it",
+                        self.display
+                    ));
+                }
+            }
+        }
+        syn::visit::visit_macro(self, node);
+    }
+
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         if is_launcher(&node.method.to_string()) {
             match self.resolve(&node.receiver) {
@@ -435,10 +510,13 @@ impl<'ast> Visit<'ast> for TmuxSocketScopeVisitor<'_> {
     }
 }
 
-/// The three standard ways to launch a built `Command`. `spawn` matters as much
-/// as the other two: it is the natural choice for a long-lived tmux server.
+/// The standard ways to launch a built `Command`. `spawn` matters as much as
+/// `output`/`status`: it is the natural choice for a long-lived tmux server.
+/// `exec` (`std::os::unix::process::CommandExt`) replaces the current process
+/// image and never returns, so it launches just as surely as the others — an
+/// earlier revision omitted it, leaving a real launcher uninspected.
 fn is_launcher(method: &str) -> bool {
-    matches!(method, "output" | "status" | "spawn")
+    matches!(method, "output" | "status" | "spawn" | "exec")
 }
 
 /// What `Command::new(...)` was handed.
@@ -544,9 +622,28 @@ impl TmuxCommandInvocation {
         }
         match self.program {
             ProgramKind::Tmux => true,
-            ProgramKind::Other => false,
-            ProgramKind::Unknown => self.args_look_tmux_shaped(),
+            // A program that is definitively NOT tmux still reaches tmux when it
+            // is an interpreter and tmux is buried in an argument
+            // (`sh -c "tmux kill-server"`). An earlier revision exempted this arm
+            // unconditionally, so a resolved-but-wrong program was trusted MORE
+            // than an unresolvable one — the shape-shift this rule exists to deny.
+            ProgramKind::Other => self.args_mention_tmux(),
+            ProgramKind::Unknown => self.args_look_tmux_shaped() || self.args_mention_tmux(),
         }
+    }
+
+    /// Whether any argument LITERAL mentions tmux at all.
+    ///
+    /// Deliberately broader than [`args_look_tmux_shaped`](Self::args_look_tmux_shaped),
+    /// which recognizes tmux's own argument grammar: a shell wrapper's payload is
+    /// one opaque string (`"tmux kill-server"`) that matches no sub-command and no
+    /// `-L`/`-S` flag, yet is exactly the hazard. Substring matching is the point —
+    /// anything naming tmux in an argument must prove itself scoped.
+    fn args_mention_tmux(&self) -> bool {
+        self.args
+            .iter()
+            .flatten()
+            .any(|argument| argument.contains("tmux"))
     }
 
     /// `tmux -V` and `tmux -h` interrogate the binary itself and contact no
@@ -1605,6 +1702,109 @@ mod tests {
             }
         "#;
         assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // The four bypasses an independent adversarial review found AFTER the
+    // suspect-by-default pass. Each is paired must-flag / must-not-flag: the
+    // evading shape is caught, and the ordinary shape it resembles is not.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_tmux_command_wrapped_in_a_macro_is_flagged() {
+        // THE ONE MOST LIKELY TO HAPPEN BY ACCIDENT. `syn` leaves macro bodies as
+        // an opaque token stream, and the governed file is a TEST file where
+        // wrapping a command in `assert!` is the default idiom — so this compiled,
+        // hit the SHARED server, and was scanned by nothing.
+        let source = r#"
+            fn launch(tmux: &str) {
+                assert!(
+                    std::process::Command::new(tmux)
+                        .args(["-L", "default", "kill-server"])
+                        .status()
+                        .is_ok()
+                );
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert!(!findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_scoped_tmux_command_inside_a_macro_is_not_flagged() {
+        let source = r#"
+            fn launch(tmux: &str, socket: &str, scratch: &Path) {
+                assert!(
+                    std::process::Command::new(tmux)
+                        .env("TMUX_TMPDIR", scratch)
+                        .args(["-L", socket, "kill-server"])
+                        .status()
+                        .is_ok()
+                );
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_shell_wrapped_tmux_invocation_is_flagged() {
+        // A resolved, definitely-not-tmux program with tmux buried in an argument.
+        // The previous revision exempted this arm unconditionally, so it trusted a
+        // resolved-but-wrong program MORE than an unresolvable one.
+        let source = r#"
+            fn nuke() {
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("tmux kill-server")
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert!(!findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_shell_command_that_never_mentions_tmux_is_not_flagged() {
+        let source = r#"
+            fn list() {
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("gh pr list --json number")
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn an_unscoped_tmux_launched_via_exec_is_flagged() {
+        // `CommandExt::exec` replaces the process image and never returns — as real
+        // a launcher as `status`, and previously uninspected.
+        let source = r#"
+            fn nuke(tmux: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .args(["kill-server"])
+                    .exec();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert!(!findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn an_unparsable_macro_body_mentioning_tmux_is_flagged() {
+        // An unparsable macro body must not become a NEW way to hide: if it names
+        // tmux and cannot be read, that is a finding, not a pass.
+        let source = r"
+            fn launch() {
+                some_macro! { this is not => an expression list tmux kill-server }
+            }
+        ";
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert!(!findings.is_empty(), "{findings:?}");
+        assert!(findings[0].contains("macro body"), "{findings:?}");
     }
 
     #[test]
