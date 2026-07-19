@@ -17,7 +17,7 @@ consumption path, so it is fixed once, here, before the surface widens.
 1. This file.
 2. `crates/console-cli/src/lib.rs` — effect sink :337-345, `handle_pending_factory_commands`
    :1128, `handle_pending_work_item_commands` :1165, `handle_pending_config_commands`
-   :1233, `finalize_pending_command` :1431, `distinguish_repeatable_command` :1519-1529.
+   :1233, `finalize_pending_command` :1431, `distinguish_repeatable_command` :1519-1530.
 3. `crates/console-eventstore/src/lib.rs` — commands table :52+, status-update SQL
    :677-678.
 4. `SPECIFICATION/contracts.md` §"Command Handling" (:394) — the numbered handler list
@@ -52,7 +52,7 @@ here. As of the split it was green and awaiting maintainer review.
 
 It touches exactly one file, `crates/console-cli/src/lib.rs`: one production hunk at
 :1506-1523 (the tail of `command_append_from_tui_effect`, `distinguish_repeatable_command`
-at :1519-1530, plus a NEW `is_repeatable_command` fn) and a large test hunk (~254 net-new
+at :1519-1530, plus a NEW `is_repeatable_command` fn) and three test hunks (two are zero-net; ~254 net-new
 lines; the `+3381,276` in the diff header is the new-side span, not an added-line count).
 
 **It is NOT the same region `-ipwtll` edits, and a conflict is not guaranteed.** #316
