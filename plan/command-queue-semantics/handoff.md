@@ -28,14 +28,22 @@ consumption path, so it is fixed once, here, before the surface widens.
 
 ## Status is read live, never stored here
 
-This handoff stores NO queue and NO per-item status (the no-shadow-ledger rule):
+This handoff stores no work queue. Where it does name a status inline it is CONTEXT for
+a rationale, not a value to trust — every one may have changed since it was written:
 
 ```
 /livespec-orchestrator-beads-fabro:list-work-items --json
 /livespec-orchestrator-beads-fabro:next --json
 ```
 
-## The work
+## Nothing here is agent-dispatchable — every first act is the maintainer's
+
+Three maintainer acts, zero agent acts: review/merge PR #316; the admission valve on
+`-ipwtll`; and the contract-rider ruling below. `-ipwtll` sits at `pending-approval`, so
+here `approve` IS the right verb — it is defined (`contracts.md:442`) as exactly the
+`pending-approval -> ready` transition. (Read status live; do not trust this paragraph.)
+
+The numbered steps below are the ORDER OF EVENTS, not a to-do list for the reader.
 
 ### Step 1 (preferred, not blocking) — merge PR #316, which closes `-ble`
 
@@ -44,7 +52,8 @@ here. As of the split it was green and awaiting maintainer review.
 
 It touches exactly one file, `crates/console-cli/src/lib.rs`: one production hunk at
 :1506-1524 (the tail of `command_append_from_tui_effect`, `distinguish_repeatable_command`
-at :1519-1529, plus a NEW `is_repeatable_command` fn) and ~276 new test lines.
+at :1519-1530, plus a NEW `is_repeatable_command` fn) and a large test hunk (~254 net-new
+lines; the `+3381,276` in the diff header is the new-side span, not an added-line count).
 
 **It is NOT the same region `-ipwtll` edits, and a conflict is not guaranteed.** #316
 sits on the APPEND path; `-ipwtll` changes the CONSUME path — `handle_pending_*_commands`
@@ -108,7 +117,8 @@ artificial blocking.
 
 ## Gates
 
-- Maintainer review + merge of PR #316.
+- Maintainer review + merge of PR #316 — gates `-ble`'s CLOSURE only. It does NOT gate
+  `-ipwtll`, which can proceed and rebase (see Step 1).
 - Admission valve on `-ipwtll` (already at `pending-approval`).
 - Maintainer ruling on the contract-rider question above.
 

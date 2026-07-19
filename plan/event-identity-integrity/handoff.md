@@ -123,7 +123,14 @@ nowhere). Never put it in the same PR as `-ag0`.
 
 ## Gates
 
-- Admission valve per item (maintainer approve → `ready`).
+- Route out of the current status — and NOT `approve`, which is defined
+  (`contracts.md:442`) as the `pending-approval -> ready` transition only. Neither item is
+  at `pending-approval`:
+  - `-ag0` is `backlog` → maintainer **`move:<id>:ready`**.
+  - `-25rvmd` is `blocked` → **`resolve-blocked:<id>:ready|backlog`**, which the
+    orchestrator source-guards to a blocked item awaiting a human. It cannot move to
+    `ready` until the epoch decision below is made.
+  (Read status live; these are the routes as of the split.)
 - Maintainer decision on the `-25rvmd` epoch scheme before it can groom.
 - Maintainer scheduling window for the `-ag0` re-observation churn.
 - Normal PR review/merge.

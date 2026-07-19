@@ -50,11 +50,24 @@ a pin-alignment assertion, so it belongs here.
 /livespec-orchestrator-beads-fabro:list-work-items --json
 ```
 
-## Nothing here is dispatchable yet
+## Nothing here is agent-dispatchable — every first act is the maintainer's
 
-All three children sit at `backlog`; none is `ready`, so the Dispatcher and `next` will
-return nothing. **The first action is taking the admission valve to the maintainer**, not
-running a drain. (Read status live — see below — rather than trusting this sentence.)
+All three children sit at `backlog` (read live to confirm), so the Dispatcher and `next`
+return nothing. **There is no agent work in this thread today.**
+
+Get the route right — `backlog` is NOT the admission valve:
+- `approve` is defined (`contracts.md:442`) as the `pending-approval -> ready` transition
+  ONLY. None of these items is at `pending-approval`, so approve does not apply.
+- The orchestrator REFUSES `pending-approval` as a `move` target (`contracts.md:450-451`),
+  so there is no route INTO the valve either.
+- The actual route out of `backlog` is **`move:<work-item-id>:ready`** — a maintainer act.
+
+Per item, the honest first act:
+- `-p4bvrt` — maintainer `move:<id>:ready`, but merge PR #317 first (it reshapes the
+  guard this item copies).
+- `-mcj` — GROOM first. Its own body says the scope must be WIDENED to four pin copies;
+  moving it to `ready` as filed would dispatch an understated item.
+- `-mvu22t` — needs staged-rollout sign-off before it is safe to move at all.
 
 ## The work
 
@@ -86,7 +99,8 @@ comment on `-nxsfih` (2026-07-19 16:24); read it before writing code. Summary:
 - Assert no product crate reads a Beads-native store (no `.beads` path construction, no
   Dolt/SQLite handle against a beads database).
 - **Refuse to pass vacuously** — if the walk finds no Rust files or `backing_cli.rs`
-  cannot be parsed, FAIL. Copy the `paths.is_empty()` guard at :234-241 — but read it
+  cannot be parsed, FAIL. Copy the `paths.is_empty()` guard (`:234-241` on master,
+  `:234-242` after #317) — but read it
   AFTER merging PR #317, which rewrites it (see the gate note below). Copying the
   master shape would produce a guard inconsistent with its sibling.
 - **State the honest limit in the check's doc comment.** `from_environment`
@@ -98,6 +112,27 @@ comment on `-nxsfih` (2026-07-19 16:24); read it before writing code. Summary:
 Acceptance: red on a seeded `bd` in the default set, red on a seeded `.beads` read, red
 when the scan finds no files, green on unmodified master. Paired must-flag/must-not-flag
 tests per case.
+
+**RETRIEVING THE DESIGN.** `-p4bvrt` says to read the full design on the `-nxsfih`
+2026-07-19 16:24 comment before writing code. `-nxsfih` is CLOSED, so
+`list-work-items --json` will NOT surface it. Fetch it explicitly:
+
+```
+/data/projects/1password-env-wrapper/with-livespec-env.sh -- \
+  bd show livespec-console-beads-fabro-nxsfih
+```
+
+(The same design is also carried on `-p4bvrt` itself, so that record alone is sufficient
+if you prefer one call.)
+
+**STALE ANCHORS IN THE RECORDS THIS HANDOFF SENDS YOU TO.** Three records — `-p4bvrt`,
+the `-nxsfih` design comment, and `-mcj` — cite
+`non-functional-requirements.md:366-368` (superseded: the rule is `:368-369`,
+falsifiability is `:376-377`) and/or `main.rs:234-240` for the vacuity guard. The guard
+is `:234-241` on master and **drifts to `:234-242` after PR #317** (which adds a
+`return findings;` line). `-mcj`'s record additionally describes the guard in its
+PRE-#317 shape. The designs are sound; only these anchors are stale. Correction comments
+are on the records.
 
 **Branch question RESOLVED 2026-07-19 — no coordination needed.** Remote branch
 `fix/arch-check-suspect-by-default` touches this crate but is fully landed and stale:
@@ -154,12 +189,6 @@ Verified GENUINE: no `red_green_replay` reference exists in `justfile`, hooks, o
 `crates/`. The spec is ALREADY ratified — NFR §"Red-Green-Replay" says "Until that check
 is wired, this requirement is unmet, not waived." No propose-change needed.
 
-**STALE ANCHORS IN THE RECORDS THIS HANDOFF SENDS YOU TO.** `-p4bvrt`'s description and
-the `-nxsfih` 2026-07-19 16:24 design comment both cite
-`non-functional-requirements.md:366-368` (superseded — correct is `:368-369` for the rule
-and `:376-377` for falsifiability) and `main.rs:234-240` (correct is `:234-241`). The
-designs are sound; only those anchors are off. Do not re-derive from them.
-
 **Stale path in the item body, correct at grooming:** the source to port now lives at
 `livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py` (plus
 `_trailers`/`_modes`), consumed by `livespec` as an installed package. Note
@@ -206,9 +235,10 @@ trailer grammar evolves. Either pin the ported grammar version or add a parity f
 ## Gates
 
 - Maintainer review + merge of PR #317.
-- Admission valve per item.
+- Maintainer `move:<id>:ready` per item (NOT `approve` — see the dispatchability section;
+  these are `backlog`, not `pending-approval`).
 - Staged-rollout sign-off for the `-mvu22t` commit-msg hook.
-- Coordination check on `fix/arch-check-suspect-by-default` before filing the child.
+
 
 ## Dispatch
 
