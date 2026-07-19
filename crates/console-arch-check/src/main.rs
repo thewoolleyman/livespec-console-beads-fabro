@@ -66,6 +66,7 @@ fn run_checks(root: &Path) -> Vec<String> {
         let crate_dir = root.join("crates").join(crate_name);
         findings.extend(check_crate_sources(crate_name, &crate_dir));
     }
+    findings.extend(check_tmux_socket_scoping(root));
     findings
 }
 
@@ -214,6 +215,106 @@ fn check_crate_sources(crate_name: &str, crate_dir: &Path) -> Vec<String> {
     }
     findings
 }
+
+/// Rule: test/harness `tmux` invocations must always select a private socket
+/// with `-L` before issuing a tmux sub-command.
+fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
+    let tests_dir = root.join("crates/console-cli/tests");
+    let mut findings = Vec::new();
+    for path in rust_files_under(&tests_dir) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                findings.push(format!("could not read {}: {error}", path.display()));
+                continue;
+            }
+        };
+        findings.extend(check_tmux_socket_scoping_source(
+            &path.display().to_string(),
+            &source,
+        ));
+    }
+    findings
+}
+
+fn check_tmux_socket_scoping_source(display: &str, source: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    for invocation in tmux_command_invocations(source) {
+        if tmux_invocation_needs_socket_scope(invocation)
+            && !tmux_invocation_has_socket_scope(invocation)
+        {
+            findings.push(format!(
+                "{display}: tmux invocation must pass `-L <private-socket>` \
+                 before the tmux sub-command"
+            ));
+        }
+    }
+    findings
+}
+
+fn tmux_command_invocations(source: &str) -> Vec<&str> {
+    let mut invocations = Vec::new();
+    let mut cursor = source;
+    while let Some(start) = cursor.find("Command::new(") {
+        cursor = &cursor[start..];
+        if let Some(end) = command_invocation_end(cursor) {
+            invocations.push(&cursor[..end]);
+            cursor = &cursor[end..];
+        } else {
+            invocations.push(cursor);
+            break;
+        }
+    }
+    invocations
+}
+
+fn command_invocation_end(source: &str) -> Option<usize> {
+    let output_end = source
+        .find(".output()")
+        .map(|index| index + ".output()".len());
+    let status_end = source
+        .find(".status()")
+        .map(|index| index + ".status()".len());
+    match (output_end, status_end) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(end), None) | (None, Some(end)) => Some(end),
+        (None, None) => None,
+    }
+}
+
+fn tmux_invocation_needs_socket_scope(invocation: &str) -> bool {
+    command_new_mentions_tmux(invocation)
+        && TMUX_SUBCOMMANDS
+            .iter()
+            .any(|command| invocation.contains(command))
+}
+
+fn command_new_mentions_tmux(invocation: &str) -> bool {
+    invocation.contains("Command::new(&tmux")
+        || invocation.contains("Command::new(tmux")
+        || invocation.contains("Command::new(&self.tmux")
+        || invocation.contains("Command::new(\"tmux\"")
+}
+
+fn tmux_invocation_has_socket_scope(invocation: &str) -> bool {
+    let Some(socket_index) = invocation.find("\"-L\"") else {
+        return false;
+    };
+    let first_subcommand = TMUX_SUBCOMMANDS
+        .iter()
+        .filter_map(|command| invocation.find(command))
+        .min();
+    first_subcommand.is_some_and(|subcommand_index| socket_index < subcommand_index)
+}
+
+const TMUX_SUBCOMMANDS: &[&str] = &[
+    "\"capture-pane\"",
+    "\"kill-server\"",
+    "\"kill-session\"",
+    "\"list-sessions\"",
+    "\"new-session\"",
+    "\"send-keys\"",
+];
 
 /// A crate entrypoint is its `src/lib.rs` or `src/main.rs`.
 fn is_entrypoint(path: &Path) -> bool {
@@ -403,6 +504,15 @@ fn is_test_fn(attrs: &[syn::Attribute]) -> bool {
 
 fn rust_files(crate_dir: &Path) -> Vec<PathBuf> {
     let mut pending = vec![crate_dir.join("src")];
+    rust_files_from(&mut pending)
+}
+
+fn rust_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![dir.to_path_buf()];
+    rust_files_from(&mut pending)
+}
+
+fn rust_files_from(pending: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     let mut files = Vec::new();
     while let Some(path) = pending.pop() {
         let Ok(metadata) = fs::metadata(&path) else {
@@ -428,7 +538,7 @@ fn rust_files(crate_dir: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::{
         CrateNode, check_adapter_isolation, check_forbid_unsafe, check_layering,
-        check_type_placement, check_unwrap_expect,
+        check_tmux_socket_scoping_source, check_type_placement, check_unwrap_expect,
     };
 
     fn node(name: &str, workspace_deps: &[&str], external_deps: &[&str]) -> CrateNode {
@@ -590,5 +700,44 @@ mod tests {
         let file = syn::parse_file("mod fabro { } mod alpha { fn x() { super::fabro::y(); } }")?;
         assert!(check_adapter_isolation(&file, "crates/x/src/lib.rs").is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn tmux_invocation_without_private_socket_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .args(["new-session", "-d", "-s", "session"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("-L"));
+    }
+
+    #[test]
+    fn tmux_invocation_with_private_socket_before_command_is_allowed() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .args(["-L", socket, "new-session", "-d", "-s", "session"])
+                    .status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    #[test]
+    fn tmux_socket_after_subcommand_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .args(["new-session", "-L", socket, "-d", "-s", "session"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
     }
 }
