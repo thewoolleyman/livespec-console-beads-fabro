@@ -137,12 +137,15 @@ impl TmuxConsole {
         // A DEDICATED per-test tmux socket (never the maintainer-owned default
         // socket): it isolates the pane from every other client on the host so
         // the pinned `-x`/`-y` size is honored deterministically, and lets Drop
-        // kill-server the whole isolated server safely.
+        // kill-server the whole isolated server safely. TMUX_TMPDIR keeps the
+        // socket file itself inside the per-run scratch dir, so even host runs do
+        // not add entries to the maintainer-owned /tmp/tmux-<uid> directory.
         let socket = session.clone();
         // Best-effort clear of any stale session with this name before launch.
-        run_tmux(&tmux, &socket, &["kill-session", "-t", &session]);
+        run_tmux(&tmux, &socket, &scratch, &["kill-session", "-t", &session]);
 
         let status = Command::new(&tmux)
+            .env("TMUX_TMPDIR", &scratch)
             .args([
                 "-L",
                 &socket,
@@ -174,6 +177,7 @@ impl TmuxConsole {
     /// Return the current rendered pane contents.
     pub fn capture(&self) -> HarnessResult<String> {
         let output = Command::new(&self.tmux)
+            .env("TMUX_TMPDIR", &self.scratch)
             .args([
                 "-L",
                 &self.socket,
@@ -193,6 +197,7 @@ impl TmuxConsole {
     /// `"Enter"`, and `"q"` are interpreted as the corresponding keys.
     pub fn send_keys(&self, keys: &[&str]) -> HarnessResult<()> {
         let status = Command::new(&self.tmux)
+            .env("TMUX_TMPDIR", &self.scratch)
             .args(["-L", &self.socket, "send-keys", "-t", &self.session])
             .args(keys)
             .status()
@@ -266,15 +271,20 @@ impl Drop for TmuxConsole {
     fn drop(&mut self) {
         // The socket is dedicated to this instance, so kill-server tears the
         // whole isolated tmux server down (never the default socket).
-        run_tmux(&self.tmux, &self.socket, &["kill-server"]);
+        run_tmux(&self.tmux, &self.socket, &self.scratch, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
 
 /// Run a `tmux` sub-command on the instance's dedicated socket best-effort,
 /// ignoring the outcome.
-fn run_tmux(tmux: &Path, socket: &str, args: &[&str]) {
-    let _ = Command::new(tmux).arg("-L").arg(socket).args(args).output();
+fn run_tmux(tmux: &Path, socket: &str, tmux_tmpdir: &Path, args: &[&str]) {
+    let _ = Command::new(tmux)
+        .env("TMUX_TMPDIR", tmux_tmpdir)
+        .arg("-L")
+        .arg(socket)
+        .args(args)
+        .output();
 }
 
 /// Resolve the `tmux` binary: `LIVESPEC_CONSOLE_E2E_TMUX` override, then the
@@ -434,9 +444,10 @@ impl TmuxConsole {
 
         let session = format!("lc_e2e_{unique}");
         let socket = session.clone();
-        run_tmux(&tmux, &socket, &["kill-session", "-t", &session]);
+        run_tmux(&tmux, &socket, &scratch, &["kill-session", "-t", &session]);
 
         let status = Command::new(&tmux)
+            .env("TMUX_TMPDIR", &scratch)
             .args([
                 "-L",
                 &socket,
