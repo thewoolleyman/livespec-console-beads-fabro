@@ -118,10 +118,21 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // required operational help surfaces (the Status-line hints, the modal
     // Help overlay, and the Settings per-row inline help): 162 normative
     // clauses, 15/73/22/52.
+    // The B6 user-docs-tree revision added three contracts.md clauses under a
+    // new User-Documentation-Contract section: user-facing documentation lives
+    // under a `docs/` tree with the top-level README carrying no user-facing
+    // documentation of its own and `docs/README.md` an overview plus a
+    // relative-path table of contents; the tree covers installation, overview
+    // and quick start, environment variables / CLI options / sub-commands, and
+    // detailed usage with a section per TUI pane; and the settings doc the
+    // completeness check reads is the detailed-usage sub-document rather than
+    // the top-level README. The Settings-surface-completeness re-anchor
+    // re-worded an existing clause without changing the count: 165 normative
+    // clauses, 15/76/22/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 73),
+        ("contracts.md", 76),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
@@ -133,7 +144,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 162,
+        total, 165,
         "total normative clauses across the console spec"
     );
     Ok(())
