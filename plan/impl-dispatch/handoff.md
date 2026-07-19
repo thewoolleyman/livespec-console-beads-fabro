@@ -184,19 +184,26 @@ four keep their requirements in description prose, which is easy to skim past.
   status is `backlog` but it carries a `ready` *label*. One of the two is wrong;
   reconcile before trusting either.
 - `-7wy` (P2) — rewrite the section-sign (§) spec-citation in
-  `console-application` to file-level form. **SUBSTANCE ALREADY DONE, one AC
-  clause unverified — see the per-clause comment recorded on the item
-  2026-07-19.** The exact citation it targets (`lib.rs:1987`, formerly
-  `contracts.md §"Initial Adapters"; scenarios.md Scenario 12`) now reads
-  `(contracts.md; scenarios.md Scenario 12)`; `grep §` across `crates/` returns
-  ZERO. Rewritten incidentally by `2fac510` / `3a4d1df` (the B6 v030 revise), not
-  by this item being dispatched. UNVERIFIED: whether CORE master's
-  `doctor-no-spec-section-citation-in-code` passes — § citations remain in
-  `pyproject.toml`, `.mise.toml`, `.fabro/workflows/*.toml`,
-  `.github/workflows/*.yml` and `tests/heading-coverage.json`, and this repo has
-  **no `external_references` allowlist** in `.livespec.jsonc`. **If that check
-  scans config/CI files and not just `*.rs`, fixing `-tafkuw` will NOT unblock
-  the pin train — this bites next.** Settle it while working `-tafkuw`.
+  `console-application` to file-level form. **FULLY DELIVERED — all three AC
+  clauses verified 2026-07-19; recommend closing.** The citation it targets
+  (`lib.rs:1987`, formerly `contracts.md §"Initial Adapters"; scenarios.md
+  Scenario 12`) now reads `(contracts.md; scenarios.md Scenario 12)`. Delivered
+  incidentally by `2fac510` / `3a4d1df` (the B6 v030 revise), not by dispatch.
+  Clause 2 (CORE master's `doctor-no-spec-section-citation-in-code` passes) was
+  settled by reading the check itself
+  (`livespec/.claude-plugin/scripts/livespec/doctor/static/no_spec_section_citation_in_code.py`):
+  its walk-set is ONLY `*.py`, `*.rs` under `crates/**/src/`, and
+  `skills/*/SKILL.md`, and its marker is `§"` (section sign + double quote).
+  **`.toml`, `.yml` and `.json` are not scanned at all**, so the § citations in
+  `pyproject.toml` / `.mise.toml` / `.fabro/workflows/*.toml` /
+  `.github/workflows/*.yml` / `tests/heading-coverage.json` are out of scope by
+  construction, and the absent `external_references` allowlist is irrelevant to
+  this check. Console tree: zero marker hits under `crates/**/src/`; no `skills/`
+  directory; no first-party Python (the only marker-bearing `.py` are under
+  `.venv`, which is in `_EXCLUDED_TOP_LEVEL` at :95-97 and never walked).
+  **NOT a latent second blocker on the pin train** — `-tafkuw` is the only
+  console-side gate, consistent with `check-doctor-static` passing on bump PR
+  #287 while only `check-completeness` fails.
 - `-ble` (P2) — extend `distinguish_repeatable_command` idempotency-key fix from
   move-only to all repeatable operator actions (`set-admission`,
   `set-acceptance`, `set-override`, `resolve-blocked`, `reject`). **GENUINE —
