@@ -5180,20 +5180,23 @@ fn view_summary_items(active_view: TuiView, events: &[ConsoleEvent]) -> Vec<View
 }
 
 fn spec_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
+    // Operational counts only: each row's live count is its whole content, with
+    // no baked-in explanatory detail (B5 -- pane bodies carry operational
+    // content only; any explanation lives in the user documentation).
     vec![
         ViewSummaryItem::new(
             format!(
                 "LiveSpec next snapshots: {}",
                 count_events(events, EventType::LivespecNextSnapshotObserved)
             ),
-            "Spec lifecycle status is projected from LiveSpec adapter observations.".to_owned(),
+            String::new(),
         ),
         ViewSummaryItem::new(
             format!(
                 "Revise required: {}",
                 count_events(events, EventType::LivespecReviseRequired)
             ),
-            "Revise-required events stay visible in the Spec view until resolved.".to_owned(),
+            String::new(),
         ),
     ]
 }
@@ -5203,10 +5206,10 @@ fn events_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
         .last()
         .map_or_else(|| "none".to_owned(), latest_event_summary);
     vec![
-        ViewSummaryItem::new(
-            format!("Stored events: {}", events.len()),
-            "The event log is the canonical source for projections.".to_owned(),
-        ),
+        // The stored-event count is the whole operational content of this row;
+        // the latest-event row below carries the live latest-event summary.
+        // Neither carries baked-in explanatory prose (B5).
+        ViewSummaryItem::new(format!("Stored events: {}", events.len()), String::new()),
         ViewSummaryItem::new("Latest event".to_owned(), latest),
     ]
 }
@@ -6626,17 +6629,13 @@ mod tests {
     fn tui_non_attention_views_project_event_summaries() {
         let events = view_summary_events();
 
+        // Each non-attention view's lead row carries its operational count as the
+        // whole title; the Spec and Events count rows carry NO baked-in
+        // explanatory detail (B5 -- operational content only), while the Repos
+        // row's detail is the live repo roster (operational, retained).
         for (view, expected_title, expected_detail) in [
-            (
-                TuiView::Spec,
-                "LiveSpec next snapshots: 1",
-                "Spec lifecycle status is projected from LiveSpec adapter observations.",
-            ),
-            (
-                TuiView::Events,
-                "Stored events: 8",
-                "The event log is the canonical source for projections.",
-            ),
+            (TuiView::Spec, "LiveSpec next snapshots: 1", ""),
+            (TuiView::Events, "Stored events: 8", ""),
             (
                 TuiView::Repos,
                 "Repos observed: 2",
@@ -6650,6 +6649,21 @@ mod tests {
             assert_eq!(model.view_items()[0].title(), expected_title);
             assert_eq!(model.view_items()[0].detail(), expected_detail);
         }
+    }
+
+    #[test]
+    fn tui_events_view_latest_row_carries_operational_detail_only() {
+        let events = view_summary_events();
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        // The Events view's second row is the live latest-event summary: an
+        // operational detail (source event label / source / stream), never
+        // baked-in explanatory prose.
+        let latest = &model.view_items()[1];
+        assert_eq!(latest.title(), "Latest event");
+        assert!(!latest.detail().is_empty());
+        assert!(!latest.detail().contains("canonical source"));
     }
 
     #[test]
