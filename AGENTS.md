@@ -210,3 +210,39 @@ that directory from rustup's profile snippet, but the janitor's minimal env does
 not, so `.mise.toml` exposes it via `[env] _.path = ["~/.cargo/bin"]`. Removing
 that entry reintroduces `cargo: not found` (exit 127) in the janitor even when the
 PR merged green.
+
+## GitHub CLI: pinned to 2.46.0 — no `--json` on `gh pr checks`
+
+`gh --version` here is **2.46.0**. `gh pr checks` in that release has **no
+`--json` flag**: it exits non-zero with `unknown flag: --json` and writes nothing
+to stdout. Use the plain tab-separated form (name, status, duration, URL):
+
+```bash
+gh pr checks <n> 2>&1 | awk '{print $2}' | sort | uniq -c   # rollup
+gh pr checks <n> 2>&1 | grep -v " pass"                     # non-passing only
+```
+
+**This bites hardest inside a polling loop, and it fails silently.** A CI monitor
+built on `s=$(gh pr checks <n> --json name,bucket 2>/dev/null)` gets an empty `s`
+on every iteration, so its "are we done yet" guard never fires and it spins to
+timeout reporting "still pending" no matter what CI did. The `2>/dev/null` is
+what makes it undiagnosable: it discards the one line that explains the empty
+output. Two rules follow, and they generalize past this flag:
+
+- **Never silence stderr on a command a loop depends on.** A hard error and
+  "nothing has happened yet" produce identical stdout; only stderr distinguishes
+  them. Run the exact command once in the foreground before arming any Monitor.
+- **Never gate a poll loop on `gh pr checks`' exit status, and never add a
+  `|| echo '[]'` style fallback.** It exits non-zero *while checks are pending*
+  (a normal state, not an error), and the fallback swallows real output too. Gate
+  on parsed content, and require a non-empty result before evaluating any
+  all-done predicate — `jq 'all(...)'` over an empty array is `true`, which turns
+  a broken fetch into a false "all green".
+
+Separately, `gh pr edit --body` fails against this repo with a Projects-classic
+GraphQL deprecation error (`repository.pullRequest.projectCards`). Update PR
+bodies through REST instead:
+
+```bash
+gh api -X PATCH repos/<owner>/<repo>/pulls/<n> --input body.json   # {"body": "..."}
+```
