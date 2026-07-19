@@ -1,6 +1,12 @@
 # Autonomous-mode MVP — console plan handoff
 
-**Status:** the overall plan's fable-review LOOP is OPEN — C1 MUST NOT start
+> **CLOSED + ARCHIVED 2026-07-19.** This thread is finished; nothing below is a
+> live instruction. See §"Closing record" at the bottom for what happened to each
+> step and where the surviving work went. Everything from `## Read first` down to
+> `## Pointers` is preserved AS WRITTEN on 2026-07-10 and is **stale by design** —
+> read it as history, not as state.
+
+**Status (historical, 2026-07-10):** the overall plan's fable-review LOOP is OPEN — C1 MUST NOT start
 until the loop exits: a FRESH Fable session review finds nothing blocking AND
 the MAINTAINER certifies. The AUTHORITATIVE loop state (rounds run, fixes
 landed, certification) lives in `livespec/plan/autonomous-mode/handoff.md`;
@@ -74,3 +80,49 @@ then revise.
 - Discipline: worktree → PR → merge → cleanup; `mise exec -- git …`; never
   `--no-verify`; Rust product changes use Red-Green-Replay; spec H2 changes co-edit
   `tests/heading-coverage.json`; plan docs are `docs(plan):`.
+
+## Closing record (2026-07-19)
+
+The thread closed for TWO independent reasons: its three steps all landed, and
+the feature it is named for was retired underneath it.
+
+**Per-step disposition** (derived from the ledger + `SPECIFICATION/` at the time
+of closing, not from this document's stale body):
+
+| Step | Disposition |
+|---|---|
+| C1 — Step-0 spec fixes, one ratified revision | LANDED. Spec advanced v016 → **v028**; the `orchestrate run` citation drift is gone from `SPECIFICATION/`. |
+| C2 — command foundation (`pke3y3`) | **closed** on the ledger. |
+| C3 — autonomous feature (`rt4`) | **closed** on the ledger. |
+
+**Why the feature itself is gone.** Orchestrator step O2 retired Full autonomous
+mode — the dispatcher now DRAINS BY DEFAULT — and the console spec re-baselined
+around that. The old autonomous-mode Scenarios 9/10/11 are now dispatcher-
+*policy-settings* scenarios, and Scenario 16 is `Factory drain passes the
+Dispatcher no policy-arming argument`. There is no `autonomous_mode_set` command,
+no `.livespec.jsonc` arming toggle, and no header arming indicator anywhere in
+v028 — C3's operator surface was superseded rather than shipped as designed.
+
+**Where the work went.** The console's remaining MVP body moved to
+`plan/cockpit-ux-docs-release/` (deliverable #0 + B1–B5 DONE; B6/B7 docs, the B8
+release capstone remainder, the real-TUI E2E backfill, and maintainer-gated
+Stage-2 remain). Autonomous-mode Stage-2 acceptance is tracked overall at
+`livespec/plan/autonomous-mode/handoff.md`.
+
+**Loose ends that outlive this thread** — both continue as plain ledger items, no
+thread needed:
+- `livespec-console-beads-fabro-ipi` (backlog) — TUI needs-attention render path,
+  lane-derived → `attention_item.*` stream.
+- `livespec-console-beads-fabro-8aw` (backlog) — the four non-valve initial
+  commands, split out of `pke3y3` as this document's §Steps anticipated.
+
+**No epic anchor to close.** This thread predated the Planning-Lane epic-anchor
+rule and never had one, so archiving is the directory move alone.
+
+**Two corrections to the §Pointers above, for anyone reading this from history:**
+- The ledger read is `with-livespec-env.sh -- bd list --json`. A bare `bd list`
+  fails with `Access denied for user 'livespec-console-beads-fabro'` — the tenant
+  password only arrives through the wrapper.
+- Ledger item `livespec-console-beads-fabro-0tu` ("Remove baked-in explanatory doc
+  prose from the TUI panes") was still `backlog` at closing time but is in fact
+  DONE — B5 shipped it as Scenario 21 in PR #289. It wants a status correction.
