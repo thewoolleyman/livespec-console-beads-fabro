@@ -86,7 +86,9 @@ comment on `-nxsfih` (2026-07-19 16:24); read it before writing code. Summary:
 - Assert no product crate reads a Beads-native store (no `.beads` path construction, no
   Dolt/SQLite handle against a beads database).
 - **Refuse to pass vacuously** — if the walk finds no Rust files or `backing_cli.rs`
-  cannot be parsed, FAIL. Copy the `paths.is_empty()` guard at :234-241.
+  cannot be parsed, FAIL. Copy the `paths.is_empty()` guard at :234-241 — but read it
+  AFTER merging PR #317, which rewrites it (see the gate note below). Copying the
+  master shape would produce a guard inconsistent with its sibling.
 - **State the honest limit in the check's doc comment.** `from_environment`
   (`backing_cli.rs:139`) calls `apply_program_overrides`, so env vars can swap a backing
   program at runtime. No static check covers that. The guard's honest promise is "the
@@ -102,16 +104,21 @@ tests per case.
 its sole commit `8f3ee6f` is already in master by patch-id (`git cherry` reports `-`)
 and its PR #307 is MERGED. It is a deletion candidate, not in-flight work.
 
-**PR #317 is the real gate — but not for the reason originally recorded here.** It does
-NOT touch `run_checks`. Verified against `gh pr diff 317`: its hunks land in
-`check_crate_sources` (:231, equal-count), `check_tmux_socket_scoping` (:261),
-`rust_files_for_tmux_scan`, the visitor, and ~109 new lines in `mod tests` (:1607).
-`run_checks` (:63-71) and the vacuity guard (:234-241) are untouched AND unshifted, so
-every anchor this handoff cites survives the merge either way.
+**PR #317 IS the real gate, and it REWRITES THE GUARD THIS ITEM TELLS YOU TO COPY.**
+Read the diff body, not the hunk labels: git labels a hunk with the *preceding* function
+signature, so `@@ -231,15 @@ fn check_crate_sources` is misleading — those changed lines
+are inside `check_tmux_socket_scoping` and they ARE the `paths.is_empty()` vacuity guard
+at :234-241.
 
-Merge it first regardless: it is a large conflict surface in the same ~1,700-line file
-you are about to extend. Just do not expect a conflict at `run_checks` — there is none,
-and planning for one would be planning against a fiction.
+After #317 merges, the pattern changes shape:
+- `rust_files_for_tmux_scan` returns `(Vec<PathBuf>, Vec<String>)` instead of
+  `Vec<PathBuf>` — it now accumulates its own findings.
+- The guard becomes `findings.push(...)` followed by `return findings`, instead of
+  `return vec![format!(...)]`.
+
+**So copy the guard as it exists AFTER #317, not as described from master.** `run_checks`
+(:63-71) is genuinely untouched and unshifted (#317's first hunk starts at old :231), so
+that anchor holds either way.
 
 ### `-mcj` — no guard binds `rust-toolchain.toml` to the baked image's `RUST_VERSION`
 
@@ -175,9 +182,9 @@ trailer grammar evolves. Either pin the ported grammar version or add a parity f
 
 ## Sequencing
 
-1. **Merge PR #317 first** — a large conflict surface in the same file (it rewrites
-   `check_tmux_socket_scoping` and adds ~109 test lines), though NOT at `run_checks`,
-   which it leaves untouched and unshifted. See the note under `-p4bvrt`.
+1. **Merge PR #317 first — it rewrites the vacuity guard this thread copies** (and adds
+   ~109 test lines in the same file). `run_checks` itself is untouched and unshifted.
+   See the note under `-p4bvrt`; do not work from the master shape of the guard.
 2. ~~`-nxsfih` closes only after its slice-3 child exists~~ — DONE 2026-07-19: `-p4bvrt`
    was filed first, then `-nxsfih` closed, in that order.
 3. `-mvu22t` last, or behind a deliberate enable flag — it is the only item here that

@@ -23,8 +23,11 @@ It produces a **brainstorm, research, and a spec-amendment set**. It files NO
 implementation work-items up front. Impl items are DERIVED from spec gaps via
 `capture-impl-gaps` AFTER the propose-changes ratify.
 
-That ordering is not style. Epic `-0ak` and its seven children were CLOSED as "wrong
-vehicle" for filing impl work-items up front on spec-driven work. The parent thread
+That ordering is not style. Epic `-0ak` and its children were CLOSED as "wrong
+vehicle" (its close reason verbatim: "RETIRED — wrong vehicle.") for filing impl
+work-items up front on spec-driven work. The ledger shows EIGHT closed children
+(`8c1, 0tu, 5rw, clt, rjo, aoi, bdy, z62`); the epic's own description prose says seven,
+omitting `-0tu`. Trust the ledger. The parent thread
 being superseded here repeated the same mistake one level up: it held three
 SPEC-CHANGE-TIER problem statements inside a dispatch-queue frame whose ranker can
 never surface `backlog` items — a queue view over things that cannot queue, which is
@@ -112,8 +115,12 @@ It copies `fabro attach <run-id>`, a tmux attach, not a driver invocation. Inert
 scaffolding that could be mistaken for a shipped feature, not a starting point.
 
 `-vc7lmq` carried the same "a starting point to generalize" framing and was rewritten
-2026-07-19 as well. **All four design inputs now have accurate bodies — read them as
-they stand and strike nothing.**
+2026-07-19 as well. **No design input still carries a false CLAIM — do not re-strike
+substance.** Two ANCHORS in those bodies are still off by a line or two, and a
+correction comment records each: `-vc7lmq` cites `:5371` for the actions `Vec::new()`
+(it is `:5372`), and `-zweohm` cites `valve_open_input` as `:823-843` (it is `:823-838`)
+and `key_event_to_terminal_input` as `:459-531` (closes at `:532`). Prefer this
+handoff's Read-first chain, which has them right.
 
 Carries an explicit RESEARCH TASK: survey how lazygit / k9s / tig / gitui structure
 external-command handoff, including tmux-aware variants.
@@ -133,9 +140,14 @@ refreshed against master (`fabro_run_id` :5496, `build_attention_detail` :5363,
 fixes the attach command must retire the test at `crates/console-cli/src/lib.rs:2312`
 (`tui_command_projects_demo_attention_items`, which asserts the bogus
 `Attach: fabro attach evt_demo_1`). Retire it AFTER PR #316 merges — same file, though
-a different region, so the rebase is trivial either way. Two sibling tests in
-`console-application/src/lib.rs` (:7753 and :7669-7675) pin the same behaviour and go
-with it.
+a different region, so the rebase is trivial either way.
+
+One sibling assertion goes with it: `console-application/src/lib.rs:7673-7674`, inside
+the HELPER `assert_lane_attention_detail` (:7659 — not a `#[test]`; it is called from
+two real tests at :6115 and :6371), which pins `Some("fabro attach evt_pending")`.
+NOTE: `:7753` is NOT part of this — it asserts `fabro_run_id`'s fallback branch
+(`fabro_run_id(&fallback) == "evt_no_run"`) and never mentions an attach command. It
+will need revisiting only if `fabro_run_id`'s signature changes to `Option<String>`.
 
 ### `-ipi` — migrate the attention render path to the `attention_item.*` stream
 
@@ -147,8 +159,10 @@ The `attention_item.*` stream carries `handoff.command`, which is precisely the
 truthful replacement for the fabricated attach command — this migration and the
 detail-pane contract are one subject.
 
-Cross-tenant bookkeeping: prose-associated with core-tenant epic `livespec-yes5`.
-Closing `-ipi` silently strands that epic's bookkeeping — report back on close.
+Cross-tenant bookkeeping: NOTHING IS OWED. `livespec-yes5` is CLOSED (maintainer-directed
+wind-down 2026-07-08) and its close reason already discharges this explicitly — it records
+that the prose-linked carry-overs "PERSIST as standalone backlog items in their own
+tenants (NOT lost)", naming `-ipi` among them. There is no open epic to report back to.
 
 ## The groomed form for this thread (deliberate)
 
