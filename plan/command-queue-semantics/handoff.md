@@ -1,0 +1,102 @@
+# Command-queue semantics — exactly-once consumption in the console command spine
+
+**Epic anchor:** `livespec-console-beads-fabro-irdwyb`
+
+**Supersedes:** `plan/archive/impl-dispatch/handoff.md` (split 2026-07-19).
+
+## Charter
+
+Give the console's command queue correct single-consumer (exactly-once) semantics.
+Everything downstream — every present and future command handler — flows through this
+consumption path, so it is fixed once, here, before the surface widens.
+
+## Read first
+
+1. This file.
+2. `crates/console-cli/src/lib.rs` — effect sink :337-345, `handle_pending_factory_commands`
+   :1128, `handle_pending_work_item_commands` :1165, `handle_pending_config_commands`
+   :1233, `finalize_pending_command` :1431, `distinguish_repeatable_command` :1519-1529.
+3. `crates/console-eventstore/src/lib.rs` — commands table :52+, status-update SQL
+   :677-678.
+4. `SPECIFICATION/contracts.md` §"Command Handling".
+5. `AGENTS.md` — credential wrapper, mutation protocol.
+
+## Status is read live, never stored here
+
+This handoff stores NO queue and NO per-item status (the no-shadow-ledger rule):
+
+```
+/livespec-orchestrator-beads-fabro:list-work-items --json
+/livespec-orchestrator-beads-fabro:next --json
+```
+
+## The work
+
+### Step 1 (BLOCKING) — merge PR #316, which closes `-ble`
+
+PR #316 (`fix: distinguish every repeatable operator action, not only move`) is green
+and awaiting maintainer review. It touches exactly `crates/console-cli/src/lib.rs`
+`distinguish_repeatable_command` — the same region `-ipwtll` must edit. **Merge it
+before branching anything else in this thread**, or eat a guaranteed conflict.
+
+On merge, `-ble` closes. No further filing is needed for it.
+
+### Step 2 — `-ipwtll`: the command queue has no single-consumer semantics
+
+Verified GENUINE. `handle_pending_*_commands` (called from the effect sink at :338-344)
+carry no claim or lease semantics, so every console client executes every pending
+command. Two consoles open against one store double-execute.
+
+Fix direction: an atomic claim on the `commands` table (claim → execute → finalize),
+plus stale-`executing` recovery so a crashed consumer does not strand a row forever.
+
+Item sits at `pending-approval` — it needs the admission valve, not more analysis; its
+acceptance is already autonomously verifiable.
+
+**Recommended rider:** `contracts.md` §"Command Handling" shows a one-handler sequence
+but never states exactly-once consumption or an `executing` status. Since Behavioral
+Coverage requires every normative behavior to chain clause→scenario→test, ask the
+maintainer whether the new semantics get a one-paragraph contract amendment riding with
+the impl, or whether the existing sequence diagram is deemed to imply it.
+
+## Explicitly PARKED — `-8aw` is not in this thread
+
+`-8aw` (the four non-valve initial commands: factory pause/resume, dispatch, spec
+doctor) stays `backlog` and unclaimed. Reasons:
+
+- Its four commands ARE still ratified in current `contracts.md:412-415` — the item's
+  "per v017" citation is stale (spec is now v032) but its substance stands. Correct the
+  citation during grooming; do not act on it.
+- It is explicitly ungroomed ("regroom separately before building"; "to be groomed into
+  ready slices when a plan step claims them").
+- It reaches across `console-domain`, `console-application`, `console-cli` and
+  `console-tui`, so building it before the operator-surface contract settles would
+  double the surface later needing retrofit — and its four commands are themselves
+  operator verbs that the operator-surface redesign may enumerate.
+
+**Do not build `-8aw` until both this thread's claim semantics and the
+operator-surface spec amendment have landed.** `backlog` is the correct parking state:
+the ranker keys on STATUS, so a backlog item is inert by construction and needs no
+artificial blocking.
+
+## Sequencing
+
+- PR #316 → `-ipwtll` → (later, elsewhere) `-8aw`.
+- Parallel-safe against every other thread. This thread solely owns
+  `crates/console-eventstore/src/lib.rs`'s `commands` table; the event-identity thread
+  only reads the `events` index — different concern, no collision.
+- One shared-file caveat: the operator-surface thread must retire a test at
+  `crates/console-cli/src/lib.rs:2312`. It is in the test-module tail, far from :1519 —
+  trivial rebase either way, but retire it AFTER #316 merges.
+
+## Gates
+
+- Maintainer review + merge of PR #316.
+- Admission valve on `-ipwtll` (already at `pending-approval`).
+- Maintainer ruling on the contract-rider question above.
+
+## Dispatch
+
+Ready items go **factory-side** — the Dispatcher drains `ready`, or run
+`/livespec-orchestrator-beads-fabro:drive --action impl:<id>`. Do NOT implement inline
+in a planning session.
