@@ -1362,11 +1362,17 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
         ),
         (
             "admission_policy",
-            item.admission_policy().label().to_owned(),
+            policy_field(
+                detail.admission_policy.as_deref(),
+                item.admission_policy().label(),
+            ),
         ),
         (
             "acceptance_policy",
-            item.acceptance_policy().label().to_owned(),
+            policy_field(
+                detail.acceptance_policy.as_deref(),
+                item.acceptance_policy().label(),
+            ),
         ),
         ("origin", optional_field(detail.origin.as_deref())),
         ("gap_id", optional_field(detail.gap_id.as_deref())),
@@ -1430,6 +1436,24 @@ fn push_text_block(lines: &mut Vec<Line<'static>>, label: &str, value: Option<&s
         Some(text) => lines.extend(text.lines().map(|line| Line::from(line.to_owned()))),
         None => lines.push(Line::from(ITEM_FIELD_ABSENT)),
     }
+}
+
+/// A policy field as display text: the value the orchestrator EMITTED, or the
+/// absent placeholder plus the default the console falls back to.
+///
+/// The wire emits `null` for both policies on most records, and `null` does not
+/// mean the default -- the orchestrator resolves it from the nearest ancestor
+/// epic. The console cannot see that graph, so it must not print its own
+/// fallback as though it were the record's value: that would show an
+/// explicitly-set policy and an unset one identically, and would be flatly wrong
+/// for an item inheriting a non-default policy. The fallback is still worth
+/// showing, because it IS what this console acts on -- so it is shown, labelled
+/// as the console's own assumption rather than as the item's field.
+fn policy_field(emitted: Option<&str>, console_default: &str) -> String {
+    emitted.map_or_else(
+        || format!("{ITEM_FIELD_ABSENT} (not emitted; console assumes {console_default})"),
+        str::to_owned,
+    )
 }
 
 /// One optional record field as display text, or [`ITEM_FIELD_ABSENT`] when the
@@ -3933,7 +3957,7 @@ mod tests {
                 r#""spec_commitment_hint":"scenario-23-work-item-drill-in","#,
                 r#""acceptance_criteria":"it renders","notes":"an operator note","#,
                 r#""supersedes":"console-older","blocked_reason":"waiting on review","#,
-                r#""factory_safety":"safe"}}}}"#,
+                r#""factory_safety":"safe","admission_policy":"auto"}}}}"#,
             ),
             Lane::Ready.label(),
             escaped,
@@ -3989,9 +4013,19 @@ mod tests {
             "console-older",
             "waiting on review",
             "safe",
+            // The policy the orchestrator DID emit renders verbatim...
+            "auto",
         ] {
             assert!(text.contains(expected), "record field missing: {expected}");
         }
+        // ...and the one it did NOT emit is shown as unset, with the console's
+        // own fallback labelled as the console's rather than as the item's. A
+        // null policy does not mean the default -- the orchestrator resolves it
+        // from an ancestor epic the console cannot see -- so printing the
+        // fallback bare would make an explicitly-set policy and an unset one
+        // indistinguishable, and would be wrong for an inheriting item.
+        assert!(text.contains("not emitted; console assumes ai-then-human"));
+
         // Every field is LABELLED, so the operator can tell which is which.
         for label in [
             "id",
