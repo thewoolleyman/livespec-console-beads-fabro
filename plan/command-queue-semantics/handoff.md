@@ -37,12 +37,23 @@ This handoff stores NO queue and NO per-item status (the no-shadow-ledger rule):
 
 ## The work
 
-### Step 1 (BLOCKING) — merge PR #316, which closes `-ble`
+### Step 1 (preferred, not blocking) — merge PR #316, which closes `-ble`
 
 Read its live state first — `gh pr view 316` — rather than trusting a status written
-here. As of the split it was green and awaiting maintainer review. It touches exactly `crates/console-cli/src/lib.rs`
-`distinguish_repeatable_command` — the same region `-ipwtll` must edit. **Merge it
-before branching anything else in this thread**, or eat a guaranteed conflict.
+here. As of the split it was green and awaiting maintainer review.
+
+It touches exactly one file, `crates/console-cli/src/lib.rs`: one production hunk at
+:1506-1524 (the tail of `command_append_from_tui_effect`, `distinguish_repeatable_command`
+at :1519-1529, plus a NEW `is_repeatable_command` fn) and ~276 new test lines.
+
+**It is NOT the same region `-ipwtll` edits, and a conflict is not guaranteed.** #316
+sits on the APPEND path; `-ipwtll` changes the CONSUME path — `handle_pending_*_commands`
+(:1128, :1165, :1233) and `finalize_pending_command` (:1431). Different functions, ≥75
+lines apart.
+
+Merge it first anyway: same file, and it closes `-ble`, so sequencing keeps the rebase
+trivial. But do not treat that ordering as load-bearing — if the maintainer is slow to
+review, `-ipwtll` can proceed and rebase.
 
 On merge, `-ble` closes. No further filing is needed for it.
 
@@ -86,7 +97,8 @@ artificial blocking.
 
 ## Sequencing
 
-- PR #316 → `-ipwtll` → (later, elsewhere) `-8aw`.
+- PR #316 → `-ipwtll` → (later, elsewhere) `-8aw`. The first arrow is preference, not
+  necessity — different functions in one file (see Step 1).
 - Parallel-safe against every other thread. This thread solely owns
   `crates/console-eventstore/src/lib.rs`'s `commands` table; the event-identity thread
   only reads the `events` index — different concern, no collision.

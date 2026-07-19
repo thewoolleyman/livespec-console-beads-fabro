@@ -59,12 +59,20 @@ Two call sites still pass raw wire-arbitrary parts:
   trims or rejects control characters.
 - `attention_item_version` — `summary()` and `handoff().command()` are free text.
 
-Computed collisions — the MECHANISM is what to trust here; the specific hash values
-depend on seven further sibling parts not reproduced in this file, so recompute rather
-than asserting them. rank `"a\x1f"` + status `"b"` and rank `"a"` +
-status `"\x1fb"` both yield version `5554410900120514701`. Attention: summary
-`"Approve\x1f"` + repo `"console"` collides with summary `"Approve"` + repo
-`"\x1fconsole"`.
+Collisions — **the MECHANISM is the claim; no hash value is asserted here.** Because
+`stable_version` emits `part_bytes ++ 0x1f` per part, a trailing `0x1f` in part N is
+indistinguishable from a leading `0x1f` in part N+1, for ANY fixed values of the
+surrounding parts. So:
+- work-item snapshot: rank `"a\x1f"` + status `"b"` collides with rank `"a"` + status
+  `"\x1fb"` (adjacent parts in the `source_stream_seq` vector at :2024-2034).
+- attention: summary `"Approve\x1f"` + `source_ref().repo()` `"console"` collides with
+  summary `"Approve"` + `source_ref().repo()` `"\x1fconsole"`. NOTE these must be the
+  ADJACENT pair — `summary` at index 4 and `source_ref().repo()` at index 5 — not the
+  outer `repo` at index 0, which is not adjacent and would not collide.
+
+An earlier revision quoted specific 64-bit values. They were not reproducible from the
+inputs shown and have been removed; recompute against the live code if you want a
+concrete pair for a test.
 
 Impact: the colliding version lands in `source_event_id`, the unique index
 short-circuits the append, and the console shows the pre-edit record indefinitely —
