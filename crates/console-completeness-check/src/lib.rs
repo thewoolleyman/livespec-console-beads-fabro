@@ -6,7 +6,7 @@
 //! Every key the orchestrator declares as API-configurable (its published
 //! `config-manifest`) MUST appear, in lockstep, in three console places: a
 //! Settings-surface row, that row's inline help, and the console's settings doc
-//! (the `README.md`). This crate is the CONSUMER-side check (No-Circular-Dependency
+//! (`docs/detailed-usage.md`). This crate is the CONSUMER-side check (No-Circular-Dependency
 //! Directive): it reads the orchestrator's PUBLISHED declared-key surface and
 //! compares it against the console's own surfaces; nothing here reads orchestrator
 //! internals, and the declared-key list is read from the manifest, never hardcoded.
@@ -98,7 +98,7 @@ impl CompletenessReport {
     }
 
     #[must_use]
-    /// Declared keys absent from the README settings doc.
+    /// Declared keys absent from the settings doc.
     pub fn missing_doc(&self) -> &[String] {
         &self.missing_doc
     }
@@ -118,7 +118,7 @@ impl CompletenessReport {
         }
         for key in &self.missing_doc {
             lines.push(format!(
-                "declared key `{key}` is not documented in the README settings doc"
+                "declared key `{key}` is not documented in the settings doc"
             ));
         }
         lines
@@ -158,25 +158,33 @@ pub fn declared_keys(manifest_json: &str) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
-/// The README heading that opens the settings doc's Dispatcher-settings section.
+/// The console's settings doc, relative to the repository root.
+///
+/// The User Documentation Contract (`SPECIFICATION/contracts.md`) names this
+/// file: the settings doc MUST be `docs/detailed-usage.md` and MUST NOT be the
+/// top-level `README.md`. It superseded the earlier settings-doc-is-the-README
+/// anchor, which held only while the console had no `docs/` tree.
+pub const SETTINGS_DOC: &str = "docs/detailed-usage.md";
+
+/// The heading that opens the settings doc's Dispatcher-settings section.
 /// Substring-matched (level-agnostic) so a heading-level tweak does not silently
 /// unscope the check.
 const SETTINGS_SECTION_MARKER: &str = "Dispatcher settings";
 
-/// The slice of `readme` that is the Dispatcher-settings section: from its heading
+/// The slice of `settings_doc` that is the Dispatcher-settings section: from its heading
 /// line to the next heading of the same-or-higher level (or end of file). Empty
 /// when no such heading exists.
 ///
 /// Scoping the doc match to this section is deliberate: the six keys are also
-/// named in the keybinding table and prose ELSEWHERE in the README, so an
-/// unscoped whole-README substring match would false-pass a key that is mentioned
+/// named in the keybinding table and prose ELSEWHERE in the settings doc, so an
+/// unscoped whole-document substring match would false-pass a key that is mentioned
 /// incidentally but never documented as a setting.
 #[must_use]
-pub fn dispatcher_settings_section(readme: &str) -> &str {
+pub fn dispatcher_settings_section(settings_doc: &str) -> &str {
     let mut section_start: Option<usize> = None;
     let mut section_level = 0usize;
-    // Walk line by line via byte offsets so the returned slice borrows `readme`.
-    for (line_start, line) in line_spans(readme) {
+    // Walk line by line via byte offsets so the returned slice borrows `settings_doc`.
+    for (line_start, line) in line_spans(settings_doc) {
         let level = heading_level(line);
         let Some(start) = section_start else {
             if level > 0 && line.contains(SETTINGS_SECTION_MARKER) {
@@ -187,10 +195,10 @@ pub fn dispatcher_settings_section(readme: &str) -> &str {
         };
         // In the section: a heading of the same-or-higher level ends it.
         if level > 0 && level <= section_level {
-            return &readme[start..line_start];
+            return &settings_doc[start..line_start];
         }
     }
-    section_start.map_or("", |start| &readme[start..])
+    section_start.map_or("", |start| &settings_doc[start..])
 }
 
 /// The heading level of a line (count of leading `#`), or `0` when it is not an
@@ -226,13 +234,17 @@ fn line_spans(source: &str) -> Vec<(usize, &str)> {
 /// Evaluate the API-to-Settings-to-help-to-doc lockstep.
 ///
 /// For EACH declared key, require a console Settings row, non-empty inline help
-/// on that row, and a mention in the README settings doc's Dispatcher-settings
+/// on that row, and a mention in the settings doc's Dispatcher-settings
 /// section (see [`dispatcher_settings_section`]). A key missing any surface is
 /// named in the returned report.
 #[must_use]
-pub fn evaluate(declared: &[String], rows: &[SettingsRow], readme: &str) -> CompletenessReport {
+pub fn evaluate(
+    declared: &[String],
+    rows: &[SettingsRow],
+    settings_doc: &str,
+) -> CompletenessReport {
     let mut report = CompletenessReport::default();
-    let section = dispatcher_settings_section(readme);
+    let section = dispatcher_settings_section(settings_doc);
     for key in declared {
         match rows.iter().find(|row| row.key() == key) {
             None => report.missing_settings_row.push(key.clone()),
@@ -429,9 +441,9 @@ mod tests {
         SettingsRow::new(key.to_owned(), help.to_owned())
     }
 
-    /// A README whose Dispatcher-settings section documents the given keys, with a
+    /// A settings doc whose Dispatcher-settings section documents the given keys, with a
     /// trailing non-settings section so the section slice is bounded.
-    fn readme_with_section(keys: &[&str]) -> String {
+    fn settings_doc_with_section(keys: &[&str]) -> String {
         let mut documented = String::new();
         for key in keys {
             documented.push('`');
@@ -488,8 +500,8 @@ mod tests {
             row("auto_approve_ready", "auto-approve help"),
             row("wip_cap", "wip help"),
         ];
-        let readme = readme_with_section(&["auto_approve_ready", "wip_cap"]);
-        let report = evaluate(&declared, &rows, &readme);
+        let settings_doc = settings_doc_with_section(&["auto_approve_ready", "wip_cap"]);
+        let report = evaluate(&declared, &rows, &settings_doc);
         assert!(report.is_clean());
         assert!(report.diagnostics().is_empty());
     }
@@ -501,8 +513,8 @@ mod tests {
             "new_upstream_key".to_owned(),
         ];
         let rows = vec![row("auto_approve_ready", "help")];
-        let readme = readme_with_section(&["auto_approve_ready", "new_upstream_key"]);
-        let report = evaluate(&declared, &rows, &readme);
+        let settings_doc = settings_doc_with_section(&["auto_approve_ready", "new_upstream_key"]);
+        let report = evaluate(&declared, &rows, &settings_doc);
         assert!(!report.is_clean());
         assert_eq!(
             report.missing_settings_row(),
@@ -523,8 +535,8 @@ mod tests {
     fn evaluate_names_a_key_whose_row_has_no_inline_help() {
         let declared = vec!["wip_cap".to_owned()];
         let rows = vec![row("wip_cap", "   ")];
-        let readme = readme_with_section(&["wip_cap"]);
-        let report = evaluate(&declared, &rows, &readme);
+        let settings_doc = settings_doc_with_section(&["wip_cap"]);
+        let report = evaluate(&declared, &rows, &settings_doc);
         assert_eq!(report.missing_help(), ["wip_cap".to_owned()]);
         assert!(report.missing_settings_row().is_empty());
         assert!(
@@ -536,11 +548,11 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_names_a_key_missing_from_the_readme_settings_doc() {
+    fn evaluate_names_a_key_missing_from_the_settings_doc() {
         let declared = vec!["wip_cap".to_owned()];
         let rows = vec![row("wip_cap", "help")];
-        let readme = "### Dispatcher settings\n\nno keys documented here\n";
-        let report = evaluate(&declared, &rows, readme);
+        let settings_doc = "### Dispatcher settings\n\nno keys documented here\n";
+        let report = evaluate(&declared, &rows, settings_doc);
         assert_eq!(report.missing_doc(), ["wip_cap".to_owned()]);
         assert!(report.missing_settings_row().is_empty());
         assert!(report.missing_help().is_empty());
@@ -548,7 +560,7 @@ mod tests {
             report
                 .diagnostics()
                 .iter()
-                .any(|line| line.contains("wip_cap") && line.contains("README settings doc"))
+                .any(|line| line.contains("wip_cap") && line.contains("settings doc"))
         );
     }
 
@@ -559,15 +571,15 @@ mod tests {
         // missing from the doc.
         let declared = vec!["wip_cap".to_owned()];
         let rows = vec![row("wip_cap", "help")];
-        let readme = "### Keys\n\n`wip_cap` is mentioned here\n\n### Dispatcher settings\n\nno setting keys here\n";
-        let report = evaluate(&declared, &rows, readme);
+        let settings_doc = "### Keys\n\n`wip_cap` is mentioned here\n\n### Dispatcher settings\n\nno setting keys here\n";
+        let report = evaluate(&declared, &rows, settings_doc);
         assert_eq!(report.missing_doc(), ["wip_cap".to_owned()]);
     }
 
     #[test]
     fn dispatcher_settings_section_slices_to_the_next_same_level_heading() {
-        let readme = "### Dispatcher settings\n\nbody keys\n\n### Next\n\nafter\n";
-        let section = dispatcher_settings_section(readme);
+        let settings_doc = "### Dispatcher settings\n\nbody keys\n\n### Next\n\nafter\n";
+        let section = dispatcher_settings_section(settings_doc);
         assert!(section.contains("body keys"));
         assert!(!section.contains("after"));
     }
