@@ -11,10 +11,11 @@ archived `handoff.md` beside it.
 **This thread's work cannot start without maintainer brainstorm participation.** That
 is an absolute gate, not a step in a list.
 
-The two standalone defects named under §Sequencing (`-6hbfq6`, `-qwjfsw`) are
-explicitly OUTSIDE this gate — they are separate items that merely touch code this
-thread will later rewrite. Landing them is not "starting this thread", and this thread
-does not own them.
+The two standalone defects named under §Sequencing (`-6hbfq6`, `-qwjfsw`) are explicitly
+OUTSIDE this gate — landing them is not "starting this thread". Their ownership differs,
+though: `-6hbfq6` is not this epic's child at all, while `-qwjfsw` IS a child by
+inherited custody (it was split out of `-vc7lmq`), not by derivation from an unratified
+design.
 
 ## THIS IS A DESIGN THREAD, NOT A DELIVERY THREAD
 
@@ -46,8 +47,8 @@ session.
 4. `crates/console-cli/src/lib.rs` — the discarded attach effects at `:1501-1505`, cited
    below as evidence that the copy-command scaffold is inert.
 5. `crates/console-tui/src/lib.rs` — key dispatch `key_event_to_terminal_input`
-   :459-531, `valve_open_input` :823-843, `override_open_input` :845-864, Enter
-   drill-in :616-618, help sections :1666-1700.
+   :459-532, `valve_open_input` :823-838, `override_open_input` :845-860, Enter
+   drill-in :616-618, help sections :1667-1701.
 6. `crates/console-application/src/lib.rs` — `selected_move_status_valve` :1275-1284
    (the ONE state-aware verb; the model to generalize), `pane_footer_hint` :1467-1503,
    `attention_snapshots` :4886-4892, `build_needs_attention_detail` :5059-5073,
