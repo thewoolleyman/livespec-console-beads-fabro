@@ -30,7 +30,7 @@
       // master" discipline. Advanced off the `master` bootstrap placeholder
       // (which left CI hostage to core master's transient content); the
       // bump-pin fan-out rewrites this to each new release tag going forward.
-      "pinned": "v0.16.0"
+      "pinned": "v0.18.0"
     },
     "connection": {
       "tenant": "livespec-console-beads-fabro",
