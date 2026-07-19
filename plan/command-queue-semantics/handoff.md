@@ -51,14 +51,15 @@ Read its live state first — `gh pr view 316` — rather than trusting a status
 here. As of the split it was green and awaiting maintainer review.
 
 It touches exactly one file, `crates/console-cli/src/lib.rs`: one production hunk at
-:1506-1524 (the tail of `command_append_from_tui_effect`, `distinguish_repeatable_command`
+:1506-1523 (the tail of `command_append_from_tui_effect`, `distinguish_repeatable_command`
 at :1519-1530, plus a NEW `is_repeatable_command` fn) and a large test hunk (~254 net-new
 lines; the `+3381,276` in the diff header is the new-side span, not an added-line count).
 
 **It is NOT the same region `-ipwtll` edits, and a conflict is not guaranteed.** #316
 sits on the APPEND path; `-ipwtll` changes the CONSUME path — `handle_pending_*_commands`
-(:1128, :1165, :1233) and `finalize_pending_command` (:1431). Different functions, ≥75
-lines apart.
+(:1128, :1165, :1233) and `finalize_pending_command` (:1431). Different functions; ~45 lines of untouched code
+separate the nearest edges (`finalize_pending_command` ends :1464, #316's first changed
+line is old :1509).
 
 Merge it first anyway: same file, and it closes `-ble`, so sequencing keeps the rebase
 trivial. But do not treat that ordering as load-bearing — if the maintainer is slow to

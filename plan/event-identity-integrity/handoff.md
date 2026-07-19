@@ -21,7 +21,7 @@ One mechanism, one thread: identity derivation in the adapters → the
 
 1. This file.
 2. `crates/console-application/src/source_adapters.rs` — `stable_version` :1865-1876,
-   `length_prefixed` :553-555, `source_stream_seq` :2024-2034,
+   `length_prefixed` :553-555, `source_stream_seq` (fn at :2565; its work-item call-site parts vector at :2024-2034),
    `attention_item_version` :2547-2561, `not_observed` stable id :1784-1803.
 3. `crates/console-eventstore/src/lib.rs` — unique index (statement opens :48), `insert or ignore`
    :486, duplicate short-circuit :744-752.

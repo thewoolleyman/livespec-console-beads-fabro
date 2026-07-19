@@ -109,7 +109,7 @@ clipboard/xclip/pbcopy/OSC 52), no tmp-file prompt mechanism.
 **Its body was CORRECTED 2026-07-19 and is now accurate — do not re-strike.** It
 previously claimed "the existing Copy-attach-command effect generalizes." It does not:
 the `CopyFabroAttach`/`OpenFabroAttach` scaffold is DEAD — the actions vec is hardcoded
-`Vec::new()` (`console-application/src/lib.rs:5372`, `:5070`), a test asserts it empty
+`Vec::new()` (`console-application/src/lib.rs:5372`; and `:5071` in `build_needs_attention_detail`), a test asserts it empty
 (`:6291`), and the runtime effect is discarded (`console-cli/src/lib.rs:1501-1505`).
 It copies `fabro attach <run-id>`, a tmux attach, not a driver invocation. Inert
 scaffolding that could be mistaken for a shipped feature, not a starting point.
@@ -211,11 +211,13 @@ design conversation.
 3. Independent review per proposal.
 4. Maintainer ratification via `/livespec:revise` — the hard gate between design and
    any impl item existing.
-5. Post-ratification, each derived slice is admitted by the maintainer. Newly-filed slices land at `backlog`, so the route to `ready` is a maintainer
-   **`move:<id>:ready`** — `approve` applies only to items already at
-   `pending-approval` (`contracts.md:442`), and the orchestrator refuses
-   `pending-approval` as a `move` target (`:450-451`), so there is no route INTO
-   the valve.
+5. Post-ratification, each derived slice is admitted by the maintainer. WHICH VERB depends on where the slice lands, which the item's effective
+   `admission_policy` decides (`non-functional-requirements.md:170-173`) — do not assume.
+   If it lands at `pending-approval`, `approve` is the verb (`contracts.md:442` defines it
+   as exactly that transition). If it lands at `backlog`, `approve` does NOT apply and the
+   route is `move:<id>:ready`; note the orchestrator also refuses `pending-approval` as a
+   `move` target (`:450-451`), so there is no route INTO the valve from `backlog`. Read the
+   slice's actual status before asking the maintainer for a verb.
 
 ## Dispatch
 

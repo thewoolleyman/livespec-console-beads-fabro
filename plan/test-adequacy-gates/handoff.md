@@ -20,12 +20,12 @@ that produced the superseded thread.
 ## Read first
 
 1. This file.
-2. `SPECIFICATION/non-functional-requirements.md` §"Quality Gate" (:141-179) — the fuzz
+2. `SPECIFICATION/non-functional-requirements.md` §"Quality Gate" (heading :97; the merge-gate and nightly clauses at :141-179) — the fuzz
    and mutation jobs are ratified MUSTs; the nightly clause is there too. Read the LIVE
    file: the clause was ratified at v004 but REFRAMED at v007, and the spec is now v032.
-   v004's original text claims coverage is gated at "100% line AND 100% region", which
-   is the opposite of what ships — that stale sentence is precisely what slice (a)'s
-   rider must flip.
+   v004's original text claimed "100% line AND 100% region"; v007 reframed it, and the
+   sentence slice (a) must flip is the CURRENT v032 one at :112-114 ("100% line gates
+   today; 100% region is the stated next target"). v004 is history and unflippable.
 3. `justfile:195` (`--fail-under-lines 100` today) and the `check-fuzz-smoke` /
    `check-mutants-smoke` seeds at :285-291.
 4. `.github/workflows/ci.yml` — the `ci-green` aggregation at :248.
@@ -92,11 +92,13 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
 
 1. **Regroom approval on both items.** `groom` is drafting-only; the maintainer OWNS the
    cut and the acceptance. Neither item can move without it.
-2. Maintainer admits each resulting slice. Newly-filed slices land at `backlog`, so the route to `ready` is a maintainer
-   **`move:<id>:ready`** — `approve` applies only to items already at
-   `pending-approval` (`contracts.md:442`), and the orchestrator refuses
-   `pending-approval` as a `move` target (`:450-451`), so there is no route INTO
-   the valve.
+2. Maintainer admits each resulting slice. WHICH VERB depends on where the slice lands, which the item's effective
+   `admission_policy` decides (`non-functional-requirements.md:170-173`) — do not assume.
+   If it lands at `pending-approval`, `approve` is the verb (`contracts.md:442` defines it
+   as exactly that transition). If it lands at `backlog`, `approve` does NOT apply and the
+   route is `move:<id>:ready`; note the orchestrator also refuses `pending-approval` as a
+   `move` target (`:450-451`), so there is no route INTO the valve from `backlog`. Read the
+   slice's actual status before asking the maintainer for a verb.
 3. Maintainer provisions the CI beads credential for `-topr34` slice 1 — a hard
    host/ops gate.
 4. The `-txtzn5`(a) spec-reconciliation rider passes independent review + `/livespec:revise`
@@ -106,7 +108,7 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
 ## Keep this invariant
 
 `just check` does NOT run `check-e2e-tmux` — it is absent from the `targets=(...)` array
-at `justfile:151-167`, so ordinary gate runs never spawn tmux. (The related `#[ignore]`
+at `justfile:154-167`, so ordinary gate runs never spawn tmux. (The related `#[ignore]`
 note at `justfile:43-53` explains why the nextest matrix stays tmux-free; the array is
 the load-bearing part.) **Keep it that way.** Do not let a new coverage or soak target
 pull tmux into the default matrix.
