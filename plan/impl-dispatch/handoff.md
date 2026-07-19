@@ -172,18 +172,45 @@ four keep their requirements in description prose, which is easy to skim past.
 
 ### Gate 4 — plain backlog, dispatchable once admitted
 
-- `-mvu22t` (P1) — Rust Red-Green-Replay commit-msg enforcement. **Note the
-  inconsistency:** status is `backlog` but it carries a `ready` *label*. One of
-  the two is wrong; reconcile before trusting either.
+> **VERIFIED-GENUINE SWEEP, 2026-07-19.** Because the *queue* turned out to be
+> entirely phantom, each backlog item below was checked against the code to see
+> whether it too was already delivered. **`-ble`, `-mvu22t` and `-ipi` are REAL,
+> unaddressed work** — evidence per item. Do not over-generalize "the queue was
+> phantom" into "the backlog is phantom"; it is not.
+
+- `-mvu22t` (P1) — Rust Red-Green-Replay commit-msg enforcement. **GENUINE —
+  verified not done:** no `red_green_replay` / `red-green-replay` reference in
+  `justfile`, `.git/hooks/commit-msg`, or `crates/`. **Note the inconsistency:**
+  status is `backlog` but it carries a `ready` *label*. One of the two is wrong;
+  reconcile before trusting either.
 - `-7wy` (P2) — rewrite the section-sign (§) spec-citation in
-  `console-application` to file-level form. Wanted *before* the next core-pin
-  bump past v0.16.0. **See §"The pin train" — this is NOT what is blocking it.**
+  `console-application` to file-level form. **SUBSTANCE ALREADY DONE, one AC
+  clause unverified — see the per-clause comment recorded on the item
+  2026-07-19.** The exact citation it targets (`lib.rs:1987`, formerly
+  `contracts.md §"Initial Adapters"; scenarios.md Scenario 12`) now reads
+  `(contracts.md; scenarios.md Scenario 12)`; `grep §` across `crates/` returns
+  ZERO. Rewritten incidentally by `2fac510` / `3a4d1df` (the B6 v030 revise), not
+  by this item being dispatched. UNVERIFIED: whether CORE master's
+  `doctor-no-spec-section-citation-in-code` passes — § citations remain in
+  `pyproject.toml`, `.mise.toml`, `.fabro/workflows/*.toml`,
+  `.github/workflows/*.yml` and `tests/heading-coverage.json`, and this repo has
+  **no `external_references` allowlist** in `.livespec.jsonc`. **If that check
+  scans config/CI files and not just `*.rs`, fixing `-tafkuw` will NOT unblock
+  the pin train — this bites next.** Settle it while working `-tafkuw`.
 - `-ble` (P2) — extend `distinguish_repeatable_command` idempotency-key fix from
   move-only to all repeatable operator actions (`set-admission`,
-  `set-acceptance`, `set-override`, `resolve-blocked`, `reject`).
+  `set-acceptance`, `set-override`, `resolve-blocked`, `reject`). **GENUINE —
+  verified not done:** `distinguish_repeatable_command`
+  (`crates/console-cli/src/lib.rs:1519`) still early-returns unchanged unless
+  `*command.command_type() == CommandType::WorkItemMoveRequested` (:1520-1522),
+  exactly the move-only scoping the item describes.
 - `-ipi` (P3) — TUI needs-attention render path, lane-derived →
   `attention_item.*` stream. Carry-over from cross-repo epic `livespec-bj9x`,
-  now parented to the living `livespec-yes5` hardening epic.
+  now parented to the living `livespec-yes5` hardening epic. **GENUINE —
+  verified not done:** the lane-derived path survives, as CN1 intended —
+  `WorkItemSnapshot` / `WorkItemSnapshotObserved` still drive rendering at
+  `console-application/src/lib.rs:2034,2149,2301` and
+  `console-tui/src/lib.rs:3654`.
 - `-nxsfih` (epic) — console-cruft-cleanup plan-thread anchor; its thread is
   **archived** at `plan/archive/console-cruft-cleanup/` while the epic stays
   `backlog`. Reconcile or close.
@@ -309,6 +336,23 @@ standalone track. Verified 2026-07-19.
 None of these are in the console ledger, so `bd list` here will never show them.
 
 **Orchestrator (`livespec-orchestrator-beads-fabro`):**
+- **`bd-ib-lmi5`** (P1, bug, filed 2026-07-19 from this session) — **every
+  `set-config` write strips ALL `//` comments from the target repo's
+  `.livespec.jsonc` and alphabetizes its keys.** `_write_root`
+  (`commands/_drive_config.py:219-223`) does
+  `json.dumps(root, indent=2, sort_keys=True)` over a `_jsonc.parse()` dict;
+  `_jsonc` is parse-only and its docstring still asserts round-trip form "is not
+  required" — an assumption that writer violates. **The console's Settings
+  surface is the primary caller** (`DispatcherSettingsPort.write_setting()` rides
+  `set-config:<key>:<value>` through `drive.py`), so an operator editing any
+  Settings row silently destroys that repo's config rationale. Observed live in
+  THIS repo 2026-07-19: all 18 comment lines gone, including the `baseline`
+  profile rationale, both harness-exemption reasons, and the "pins track the
+  latest RELEASE" note explaining `compat.pinned`. Caught only because
+  `gh pr create` warned of an uncommitted change — `git commit -a` would have
+  committed the loss. Sandbox-reproduced against plugin `52a7826f258e`: 18
+  comments → 0, first key `"template"` → `"credential_wrapper"`, **data equal
+  `True`** — semantically invisible, so no existing check catches it.
 - **`bd-ib-9yi`** (`backlog`, bug) — **highest direct impact.** The post-merge
   janitor reports `failed:janitor-post-merge` on **every** console dispatch, even
   a clean green merge, because the orchestrator image carries no Rust toolchain.
