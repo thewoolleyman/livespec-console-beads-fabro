@@ -211,7 +211,11 @@ design conversation.
 3. Independent review per proposal.
 4. Maintainer ratification via `/livespec:revise` — the hard gate between design and
    any impl item existing.
-5. Post-ratification, each derived slice passes the normal admission valve.
+5. Post-ratification, each derived slice is admitted by the maintainer. Newly-filed slices land at `backlog`, so the route to `ready` is a maintainer
+   **`move:<id>:ready`** — `approve` applies only to items already at
+   `pending-approval` (`contracts.md:442`), and the orchestrator refuses
+   `pending-approval` as a `move` target (`:450-451`), so there is no route INTO
+   the valve.
 
 ## Dispatch
 

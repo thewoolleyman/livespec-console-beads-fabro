@@ -92,7 +92,11 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
 
 1. **Regroom approval on both items.** `groom` is drafting-only; the maintainer OWNS the
    cut and the acceptance. Neither item can move without it.
-2. Admission valve per resulting slice.
+2. Maintainer admits each resulting slice. Newly-filed slices land at `backlog`, so the route to `ready` is a maintainer
+   **`move:<id>:ready`** — `approve` applies only to items already at
+   `pending-approval` (`contracts.md:442`), and the orchestrator refuses
+   `pending-approval` as a `move` target (`:450-451`), so there is no route INTO
+   the valve.
 3. Maintainer provisions the CI beads credential for `-topr34` slice 1 — a hard
    host/ops gate.
 4. The `-txtzn5`(a) spec-reconciliation rider passes independent review + `/livespec:revise`
