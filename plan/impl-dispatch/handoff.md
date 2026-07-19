@@ -39,32 +39,38 @@ durable orientation note that goes stale between refreshes.
 > but the `livespec` tenant returned exactly 50 of 70 when surveyed, hiding 20
 > items. Pass `-n 0` for any cross-tenant read.
 
-## THE DISPATCH QUEUE (2026-07-19) — 17 open items
+## THE DISPATCH QUEUE — 14 open items, ZERO ready (as of 2026-07-19, post-reconciliation)
 
-**THE DISPATCH QUEUE IS ENTIRELY PHANTOM.** Every item in it is either already
-delivered or already superseded. There is no real dispatchable work here — only
-records that need reconciling. Details below; do not act on the lanes at face
-value.
+**The queue was entirely phantom, and has been reconciled.** Every item in it was
+either already delivered or already superseded; seven records were closed
+2026-07-19 (see §"Gate 1b"). `next.py` now returns **zero ready candidates** —
+which is the honest answer, where before it returned one redundant item while
+five delivered ones sat in `pending-approval` looking like gates.
 
-### The one `ready` item is REDUNDANT, not merely expensive
+Re-derive from the ledger before trusting any count here; other sessions file
+into this tenant continuously (four new items appeared during the refresh that
+produced this file).
 
-- **`-6sf`** (`ready`) — "Add console-domain crate docs", i.e. the **>60-minute
-  TTL exercise**: ~67 minutes of mandated `sleep` to prove the publish node
-  re-mints an expired GitHub-App installation token. The code change is one `//!`
-  doc comment.
+### CLOSED — the one `ready` item was REDUNDANT, not merely expensive
 
-  **That proof already exists, and is stronger than what `-6sf` would produce.**
+- **`-6sf`** — "Add console-domain crate docs", i.e. the **>60-minute TTL
+  exercise**: ~67 minutes of mandated `sleep` to prove the publish node re-mints
+  an expired GitHub-App installation token. **Closed as superseded 2026-07-19.**
+
+  Its proof already existed, and stronger:
   `livespec-orchestrator-beads-fabro:plan/fabro-token-refresh/handoff.md` records
-  **T1: a 92-minute run in THIS repo**, fresh token minted at +90 min, zero
+  **T1, a 92-minute run in THIS repo**, fresh token minted at +90 min, zero
   TTL-expiry errors, part-3 refresh-ahead firing mid-turn — explicitly "satisfies
   the epic's live-exercise acceptance (slice `.3`)" for epic `bd-ib-2nq`. 92 > 67,
   same repo, formally accepted.
 
   `-6sf` was created **2026-07-08**; the fix landed and was proven **2026-07-11**.
-  It is pre-fix residue. Running it would re-prove a solved problem at a cost of
-  an hour. (Root cause, for the record, was not a missing re-mint but `GH_TOKEN`
+  Pre-fix residue. (Root cause was not a missing re-mint but `GH_TOKEN`
   name-shadowing: Fabro re-mints only `GITHUB_TOKEN`, while the dispatcher overlay
-  projected a static `GH_TOKEN`.) **Close it as superseded.**
+  projected a static `GH_TOKEN`.) Its trivial code deliverable was also already
+  present — the crate-level `//!` doc at `crates/console-domain/src/lib.rs:1-2`,
+  added by `541d58b8` on 2026-07-10 — so the close dropped nothing. Closed as
+  *superseded* rather than *completed* because the item's own procedure never ran.
 
 Everything else is gated. The gates are the real content of this file:
 
@@ -91,10 +97,14 @@ Everything else is gated. The gates are the real content of this file:
   console and which targets the same `crates/console-cli/tests/support/mod.rs`.
   Reconcile the two rather than accepting one and stranding the other.
 
-### Gate 1b — STALE RECORDS: five `pending-approval` items are ALREADY DELIVERED
+### Gate 1b — RESOLVED 2026-07-19: five stale `pending-approval` records, now CLOSED
 
-**Do not walk these as admission valves. They would admit work that is already
-merged on master.** Verified against the code 2026-07-19:
+> **DONE — do not act on this section; it is kept as the audit trail.** All seven
+> records below were closed 2026-07-19 after an independent adversarial Codex
+> review verified each against the code. Nothing here is outstanding.
+
+They had been sitting in `pending-approval` for work already merged on master.
+Verified against the code 2026-07-19:
 
 | Item | Claim | Code evidence |
 |---|---|---|
@@ -112,16 +122,34 @@ Their parent epic **`-yvikqp`** is likewise still `backlog` with every child
 delivered. The upstream dependency `bd-ib-wx4lbd` (orchestrator O10) closed
 2026-07-16, so nothing was ever waiting on engineering.
 
-**Action: ledger reconciliation, not a valve walk.** Close W3–W7 + `-yvikqp` with
-verified-delivery close reasons (the pattern used for `-6tn` and `-0tu`). Note the
-ship-guard refuses `accept:` from `pending-approval` for items the factory never
-carried, so these want an admin close-as-completed, exactly as `-0tu` did.
+**OUTCOME (2026-07-19).** All five, plus parent epic `-yvikqp`, closed as
+completed, and `-6sf` closed as **superseded**. Each close note carries its
+delivering commit SHAs. Two corrections the Codex review contributed, worth
+keeping: W5's cap valves landed in a SECOND commit (`b4304af`, after `822d4a7`
+deferred them), and W5's "README IS the settings doc" clause is now literally
+false — B6 (`7df1ea2`) moved the settings doc to `docs/detailed-usage.md`, with
+the W6 check updated in lockstep (`SETTINGS_DOC`, `console-completeness-check/src/lib.rs:167`).
+That supersession is recorded in W5's close note so the AC text is not misread
+as unmet.
 
-**This is the third instance of the same failure mode in one week** (`-6tn`,
-`-0tu`, now ×5 + an epic). Delivered work is not getting its ledger record
-advanced. That pattern is worth a fix at the process level, not just another
-round of cleanup — otherwise the queue keeps accumulating phantom blockers that
-make the repo look gated when it is not.
+**Ledger-hygiene lesson, and it is not the one this section originally drew.**
+The first framing here was "delivered work is not getting its record advanced —
+fix it at the process level." That is true but incomplete. `-3rdmqu` (filed
+2026-07-19) documents the sharper failure: `-0tu` was closed as "met in full"
+when only ONE clause of a TWO-part acceptance criterion had been weighed — the
+closing session read the criteria and considered clause (a) while clause (b),
+the relocation to `docs/`, belonged to unfinished B6. **The risk is not just
+stale records; it is confident closes that overstate what was verified.**
+
+Applied here: W7 (`-yvikqp.1`) has SIX AC clauses and its close note cited
+evidence for three. Clauses 4-6 were audited post-close and all hold — help
+documents item-selection (`console-tui/src/lib.rs:1430`), the orchestrator-action
+test exists (`console-application/src/lib.rs:10803`), master CI green — and that
+audit is recorded as a comment on the item. The conclusion stood; the record had
+been thinner than the claim. **Anyone closing in this tenant should enumerate
+every AC clause and cite evidence per clause, not per item.** Note that only
+`-yvikqp.1` and `-6sf` carried structured `acceptance_criteria` at all; the other
+four keep their requirements in description prose, which is easy to skim past.
 
 ### Gate 2 — needs regroom before dispatch
 
@@ -383,6 +411,12 @@ gate list into the cockpit thread and archive this one.
 - Do not treat a `ready` lane as dispatch authorization on its own — `-6sf` is
   the standing counter-example: `ready`, and entirely redundant.
 - Before dispatching or valving ANY item here, check whether it is already
-  delivered. As of this refresh **every single queue item was phantom** — 5
-  `pending-approval` records for merged work, 1 `ready` record for a solved
-  problem. Lane state in this tenant has repeatedly lagged reality.
+  delivered. At the 2026-07-19 refresh **every single queue item was phantom** —
+  5 `pending-approval` records for merged work, 1 `ready` record for a solved
+  problem (all now closed). Lane state in this tenant has repeatedly lagged
+  reality.
+- When closing, cite evidence **per AC clause, not per item**. `-3rdmqu` records
+  a close that claimed "met in full" on a two-part criterion after weighing only
+  one part. Watch for items whose requirements live in description prose rather
+  than a structured `acceptance_criteria` field — four of the five W items did,
+  and prose clauses are easy to skim past.
