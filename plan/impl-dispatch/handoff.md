@@ -97,6 +97,17 @@ Everything else is gated. The gates are the real content of this file:
   console and which targets the same `crates/console-cli/tests/support/mod.rs`.
   Reconcile the two rather than accepting one and stranding the other.
 
+  **Update 2026-07-19 — the enforcement check has since been HARDENED, which
+  strengthens the case for accepting.** Commit `5bddff8` ("make the tmux
+  socket-scope check suspect-by-default", from the `fix/arch-check-suspect-by-default`
+  worktree) found the original check "peeled three CLOSED allow-lists and
+  inspected one argument position, so anything that displaced the hazard off an
+  enumerated shape or position passed clean instead of tripping the gate" — **six
+  demonstrated bypasses**, each now covered by a paired must-flag/must-not-flag
+  regression test. So the guard `-f2k` delivered was real but evadable, and is
+  now suspect-by-default. Worth confirming that hardening is included in whatever
+  is accepted, since `-f2k`'s own acceptance text predates it.
+
 ### Gate 1b — RESOLVED 2026-07-19: five stale `pending-approval` records, now CLOSED
 
 > **DONE — do not act on this section; it is kept as the audit trail.** All seven
@@ -455,15 +466,34 @@ complete, so this refresh kept the thread alive.
 
 But its distinct content has thinned. The real implementation program is
 `plan/cockpit-ux-docs-release/` (B6/B7/B8 + backfill + Stage-2). What remains
-uniquely here is the *queue-and-gates* view above — and on this refresh that view
-earned its keep by catching five `pending-approval` records for work already
-merged, an unfiled automation bug holding a dozen PRs, and a pushed branch with
-no PR. None of those are visible from the program plan. That is an argument for
-keeping a dispatch-queue view; it is not an argument that it must be *this*
-thread.
+uniquely here is the *queue-and-gates* view above.
+
+**Evidence from the 2026-07-19 refresh, since the question deserves data rather
+than a feeling.** That view found, in one pass, things visible from nowhere else:
+
+- **7 phantom ledger records** (W3–W7, epic `-yvikqp`, `-6sf`) — closed after
+  independent adversarial review. The queue had been advertising five delivered
+  features as maintainer gates.
+- **`bd-ib-lmi5`** (P1, filed) — `set-config` silently strips every `//` comment
+  from any repo's `.livespec.jsonc`. Found only because an unexplained
+  working-tree diff was chased instead of reverted-and-forgotten.
+- **A missing enforcement guard** — the NFR-mandated zero-Beads-knowledge rule
+  has no check, so a regression of the design's load-bearing invariant would pass
+  CI (see `-nxsfih` above).
+- **A false alarm this file itself raised**, withdrawn after reading the check
+  rather than reasoning about it (`-7wy`, clause 2).
+- **The pin-train root cause**, and a pushed branch with no PR.
+
+The pattern: this view's value is **adversarial** — it exists to disbelieve lane
+state. The program plan tracks what is being built; nothing else asks whether the
+ledger is *lying*. In a tenant where that has now happened seven times in a week,
+that is a real job.
 
 **Maintainer call:** keep this as the standing dispatch-queue view, or fold the
-gate list into the cockpit thread and archive this one.
+gate list into the cockpit thread and archive this one. If it is archived, the
+disbelieve-the-lanes habit needs a home somewhere — it is the part that paid for
+itself here, not the item inventory, which goes stale within the hour (this
+refresh's own B6 entry was wrong an hour after it was written).
 
 ## Guardrails
 
