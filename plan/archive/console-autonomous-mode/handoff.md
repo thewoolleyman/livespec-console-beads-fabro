@@ -124,5 +124,19 @@ rule and never had one, so archiving is the directory move alone.
   fails with `Access denied for user 'livespec-console-beads-fabro'` — the tenant
   password only arrives through the wrapper.
 - Ledger item `livespec-console-beads-fabro-0tu` ("Remove baked-in explanatory doc
-  prose from the TUI panes") was still `backlog` at closing time but is in fact
-  DONE — B5 shipped it as Scenario 21 in PR #289. It wants a status correction.
+  prose from the TUI panes") was still `backlog` at closing time. **⚠ CORRECTED
+  2026-07-19 — an earlier version of this line claimed it was "in fact DONE, B5
+  shipped it as Scenario 21 in PR #289". That claim was WRONG and this document
+  was the origin of a real error: acting on it, this session closed `0tu` as
+  `resolution:completed` with a close_reason asserting its criteria were "met in
+  full by B5".** `0tu`'s acceptance criteria are TWO-PART — (a) the prose no
+  longer renders, AND (b) "any useful explanation is relocated to `docs/*.md`".
+  The cockpit plan deliberately splits them: its B5 section reads "relocate any
+  genuinely-useful explanation into the docs tree (**B6**)". PR #289 delivered
+  only half (a); half (b) is B6's and was not complete at close time. The error
+  was weighing clause (a) and not clause (b). **`0tu` is therefore closed with an
+  overstated reason, and its disposition (leave-closed-and-amend vs. reopen) is
+  OPEN and owned by the `cockpit-ux-docs-release` track — tracked as
+  `livespec-console-beads-fabro-3rdmqu` (`blocked` / `needs-human`), which carries
+  the full account.** Do not treat `0tu`'s `resolution:completed` as evidence its
+  relocation half shipped.
