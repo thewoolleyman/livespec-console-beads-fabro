@@ -102,20 +102,37 @@ provider = "docker"
 
 [environments.livespec-ci.image]
 # GHCR-published family sandbox image (Dockerfile in livespec-dev-tooling).
-# Since the layered-image split this consumer pulls the `python-rust` layer
-# (base tools + uv + CPython + the Rust toolchain baked once — channel 1.92.0
-# + clippy + rustfmt, mirroring rust-toolchain.toml), so no per-run `rustup`
-# install is needed. Tag format:
-#   python-rust-sha-<short>  — per master-build (mutable; tracks HEAD)
-#   python-rust-v<X.Y.Z>     — per release tag (immutable)
+# Since the agent-layer split this consumer pulls the `python-rust-agent`
+# layer (base tools + uv + CPython + the Rust toolchain baked once — channel
+# 1.92.0 + clippy + rustfmt, mirroring rust-toolchain.toml — plus the agent
+# payload: bubblewrap and both ACP adapters), so no per-run `rustup` install
+# and no per-run adapter fetch are needed. Tag format:
+#   python-rust-agent-sha-<short>  — per master-build (mutable; tracks HEAD)
+#   python-rust-agent-v<X.Y.Z>     — per release tag (immutable)
+#
+# WHY `python-rust-agent` AND NOT `python-rust`: as of livespec-dev-tooling
+# v0.50.4 the agent payload (bubblewrap + both ACP adapters) was moved OUT of
+# the base layer into an `agent` layer stacked on top, because CI never uses it
+# and it was 316.6 MB of every CI job's image pull (livespec-dev-tooling-a46).
+# The bare `python-rust-` tag is now the SLIM, CI-facing image and carries NO
+# ACP adapters — which is exactly right for the ci.yml pins above, and wrong
+# here. A Fabro sandbox left on the slim tag does NOT fail loudly: a
+# version-less `npx -y` adapter command simply re-downloads the adapter at
+# runtime, silently reintroducing the per-run tax the baked image exists to
+# eliminate (Codex fails loudly instead, on missing bubblewrap). So this pin
+# MUST keep the `python-rust-agent-` prefix.
 #
 # PIN SURFACE NOTE: this docker image tag is covered by the shared `bump-pin`
 # autodiscovery — livespec-dev-tooling (>= v0.40.0) ships a
 # `fabro_sandbox_docker_image` pin format, so the release fan-out rewrites the
-# `docker = "...:python-rust-vX.Y.Z"` tag below in lockstep with the
-# livespec-dev-tooling pin — preserving the `python-rust-` layer prefix and
-# rewriting only the `vX.Y.Z` version (livespec-dev-tooling #358). No repo-local
-# consistency check is needed; the producer-side lockstep gate
+# `docker = "...:python-rust-agent-vX.Y.Z"` tag below in lockstep with the
+# livespec-dev-tooling pin — preserving the `python-rust-agent-` layer prefix and
+# rewriting only the `vX.Y.Z` version (livespec-dev-tooling #358). That
+# prefix-preservation keeps this pin on the agent layer from now on, but it is
+# ALSO why the one-time migration off the bare `python-rust-` prefix had to be
+# made by hand: the fan-out preserves whatever prefix it finds, so left alone it
+# would have held this pin on the slim CI image forever.
+# No repo-local consistency check is needed; the producer-side lockstep gate
 # (livespec_dev_tooling.fabro_image_pin_lockstep) guards the Dockerfile ARG pins
 # in livespec-dev-tooling and does not run in consumer repos.
 #
@@ -126,7 +143,7 @@ provider = "docker"
 # only `provider = "docker"` + `[image] docker = "..."` — never an
 # `[env]` table (the Dispatcher's per-dispatch overlay owns that block;
 # TOML forbids duplicate table declarations).
-docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.50.4"
+docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v0.50.4"
 
 [environments.livespec-ci.resources]
 cpu = 4
