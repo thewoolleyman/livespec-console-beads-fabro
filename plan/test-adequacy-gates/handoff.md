@@ -24,7 +24,8 @@ that produced the superseded thread.
    and mutation jobs are ratified MUSTs; the nightly clause is there too. Read the LIVE
    file: the clause was ratified at v004 but REFRAMED at v007, and the spec is now v032.
    v004's original text claimed "100% line AND 100% region"; v007 reframed it, and the
-   sentence slice (a) must flip is the CURRENT v032 one at :112-114 ("100% line gates
+   sentence slice (a) must flip is the CURRENT v032 one at :112-116 (its
+   load-bearing tail, "NOT yet a present gate", is at :116) ("100% line gates
    today; 100% region is the stated next target"). v004 is history and unflippable.
 3. `justfile:195` (`--fail-under-lines 100` today) and the `check-fuzz-smoke` /
    `check-mutants-smoke` seeds at :285-291.
@@ -78,7 +79,7 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
    constraint binds all other threads regardless of file layout — it is the one
    sequencing fact in this thread that other sessions need to know.
 3. Shares `justfile` and `.github/workflows/ci.yml` with `plan/repo-invariant-guards/`.
-   The line-adjacent hazard is the `targets=(...)` array at `justfile:151-167` (that
+   The line-adjacent hazard is the `targets=(...)` array at `justfile:154-167` (that
    thread may append guard targets) versus `check-coverage` at `:195` (edited here).
 
    **Tie-break, agreed in both handoffs: THIS thread owns `justfile` and `ci.yml` for

@@ -32,7 +32,8 @@ a pin-alignment assertion, so it belongs here.
    contended with `plan/test-adequacy-gates/` (see §Sequencing).
 4. `lefthook.yml` — must GAIN a `commit-msg` section for `-mvu22t`; it has none today.
 5. `/data/projects/livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py`
-   (plus `_trailers`/`_modes`) — the actual port source for `-mvu22t`, in a SIBLING repo.
+   (plus its `_red_green_replay_trailers.py` /
+   `_red_green_replay_modes.py` siblings) — the actual port source for `-mvu22t`, in a SIBLING repo.
 6. `crates/console-cli/src/backing_cli.rs` — the closed accessor set :57-93.
 7. `SPECIFICATION/non-functional-requirements.md` — the zero-Beads-knowledge rule at
    `:368-369`, and the SEPARATE falsifiability requirement at `:376-377` ("each enforced
@@ -65,8 +66,8 @@ Get the route right — `backlog` is NOT the admission valve:
 Per item, the honest first act:
 - `-p4bvrt` — maintainer `move:<id>:ready`, but merge PR #317 first (it reshapes the
   guard this item copies).
-- `-mcj` — GROOM first. Its own body says the scope must be WIDENED to four pin copies;
-  moving it to `ready` as filed would dispatch an understated item.
+- `-mcj` — maintainer `move:<id>:ready`. It needs NO groom: its scope was already widened
+  in the record (see its section below), and it carries no `needs-regroom` label.
 - `-mvu22t` — needs staged-rollout sign-off before it is safe to move at all.
 
 ## The work
@@ -132,14 +133,17 @@ falsifiability is `:376-377`) and/or `main.rs:234-240` for the vacuity guard. Th
 is `:234-241` on master and **drifts to `:234-242` after PR #317** (which adds a
 `return findings;` line). `-mcj`'s record additionally describes the guard in its
 PRE-#317 shape. The designs are sound; only these anchors are stale. Correction comments
-are on the records.
+exist on `-p4bvrt` and `-nxsfih`; **`-mcj` has none** — its only comment is the
+scope-widening one, so treat its `:234-240` citation as uncorrected-in-place.
 
 **Branch question RESOLVED — there is no branch.** `fix/arch-check-suspect-by-default`
 was deleted on the remote when PR #307 merged (`git ls-remote --heads origin` does not
 list it; the API returns 404). What survives in some checkouts is a STALE LOCAL
 REMOTE-TRACKING REF, `remotes/origin/fix/...`, which `git remote prune origin` clears.
-Its work is in master — commit `8f3ee6f` is present by patch-id (`git cherry` reports
-`-`), landing as squash commit `5bddff8`. Nothing to coordinate with, and nothing to
+Its work is in master: `8f3ee6f` and PR #307's squash commit `5bddff8` share a patch-id.
+(That was established while the tracking ref still existed; with the ref pruned there is
+nothing left to run `git cherry` against, so treat it as a recorded finding rather than a
+command to re-run.) Nothing to coordinate with, and nothing to
 delete on the remote.
 
 **PR #317 IS the real gate, and it REWRITES THE GUARD THIS ITEM TELLS YOU TO COPY.**
@@ -195,8 +199,8 @@ Verified GENUINE: no `red_green_replay` reference exists in `justfile`, hooks, o
 is wired, this requirement is unmet, not waived." No propose-change needed.
 
 **Stale path in the item body, correct at grooming:** the source to port now lives at
-`livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py` (plus
-`_trailers`/`_modes`), consumed by `livespec` as an installed package. Note
+`livespec-dev-tooling/livespec_dev_tooling/checks/red_green_replay.py` (plus its
+`_red_green_replay_trailers.py` / `_red_green_replay_modes.py` siblings), consumed by `livespec` as an installed package. Note
 `livespec/dev-tooling/checks/` still holds 9 other check sources — it is only
 `red_green_replay.py` that moved out of it. (An earlier note in this thread and a
 comment on the item wrongly said that directory was empty of source; disregard it.)
