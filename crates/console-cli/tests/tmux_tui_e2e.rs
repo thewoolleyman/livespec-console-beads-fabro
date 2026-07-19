@@ -377,6 +377,143 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     Ok(())
 }
 
+/// Scenario 20 / B3 — the focusable, horizontally scrollable top/header pane,
+/// driven live through a real `tmux` pane against the SHIPPED binary.
+///
+/// Covers every clause of Scenario 20. At a NARROW pinned width the header
+/// content is clipped, so the shrink-to-fit default drops its low-value left
+/// field `fleet: livespec` to preserve the priority fields. Focusing the pane
+/// (via `Tab`, which cycles focus across every pane including the top/header
+/// pane) switches to the FULL, un-degraded header line at offset 0 — so
+/// `fleet: livespec` reappears at the left while the right-hand `attention:`
+/// field is now clipped off the right edge. Scrolling right reveals that clipped
+/// content (and pushes `fleet: livespec` off the left), scrolling left returns
+/// to the left edge, and moving focus away snaps the pane back to its
+/// shrink-to-fit, left-justified default. A separate wide-viewport launch proves
+/// no horizontal scroll is needed when the whole header already fits.
+///
+/// The focus indicator is the `[focus]` tag on the header block title
+/// (`LiveSpec Console [focus]`), the same marker every other focused pane
+/// carries. Column arithmetic is avoided: the right/left presses saturate the
+/// scroll clamp, so the assertions turn only on which named field is visible at
+/// the two extremes, not on an exact offset.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
+    let repo = RepoFixture::new("e2e-top-pane", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    // A NARROW pane so the header content is clipped and must be scrolled: at 56
+    // columns the fit header drops `fleet: livespec` (a low-value left field) and
+    // the full line's `attention:` field sits off the right edge.
+    let console = TmuxConsole::launch_sized(&repo, NARROW_COLS, support::DEFAULT_ROWS)?;
+
+    // Default (blurred): the shrink-to-fit, left-justified header. It has dropped
+    // the low-value `fleet: livespec` field to fit the narrow width, and its
+    // block title carries NO focus marker.
+    let header_needle = format!("repo: {}", repo.tenant());
+    let start = console.wait_for_settled(&header_needle, RENDER_TIMEOUT)?;
+    assert!(
+        !start.contains("LiveSpec Console [focus]"),
+        "the top/header pane must not be focused by default:\n{start}"
+    );
+    assert!(
+        !start.contains("fleet: livespec"),
+        "the narrow shrink-to-fit header must drop the low-value fleet field:\n{start}"
+    );
+
+    // --- case 1: the top/header pane joins the focus cycle ---
+    // Tab cycles focus Nav -> Content -> Detail -> Header (the Attention view has
+    // a Detail pane, so the top/header pane is the third Tab from the default
+    // Views nav). Focusing it marks the block title `[focus]` and switches to the
+    // FULL header line at offset 0: `fleet: livespec` is visible at the left,
+    // while the right-hand `attention:` field is clipped off the right edge.
+    console.send_keys(&["Tab", "Tab", "Tab"])?;
+    let focused = console.wait_for_settled("LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    assert!(
+        focused.contains("fleet: livespec"),
+        "the focused header shows the full, un-degraded line (fleet at the left):\n{focused}"
+    );
+    assert!(
+        !focused.contains("attention:"),
+        "at the left edge the right-hand header fields are clipped off-screen:\n{focused}"
+    );
+
+    // --- case 2: horizontal scroll reveals content clipped at the current width ---
+    // Many Right presses saturate the scroll clamp, panning to the right edge:
+    // the previously-clipped `attention:` field becomes visible, and the left
+    // `fleet: livespec` field scrolls off the left (content beyond the width is
+    // reachable by scrolling).
+    console.send_keys(&[
+        "Right", "Right", "Right", "Right", "Right", "Right", "Right", "Right",
+    ])?;
+    let scrolled = console.wait_for_settled("attention:", RENDER_TIMEOUT)?;
+    assert!(
+        scrolled.contains("LiveSpec Console [focus]"),
+        "the top/header pane stays focused while scrolling:\n{scrolled}"
+    );
+    assert!(
+        scrolled.contains("attention:") && !scrolled.contains("fleet: livespec"),
+        "scrolling right reveals the clipped `attention:` field and pans past `fleet`:\n{scrolled}"
+    );
+
+    // Scrolling left returns to the left edge (content reachable both directions).
+    console.send_keys(&[
+        "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left",
+    ])?;
+    let back_left = console.wait_for_settled("fleet: livespec", RENDER_TIMEOUT)?;
+    assert!(
+        back_left.contains("fleet: livespec") && !back_left.contains("attention:"),
+        "scrolling left returns to the left edge (fleet visible, attention clipped):\n{back_left}"
+    );
+
+    // --- case 3: moving focus away returns the pane to its left-justified default ---
+    // Tab moves focus off the header (Header -> Nav); the pane snaps back to the
+    // shrink-to-fit default (fleet dropped again) and loses its `[focus]` marker.
+    console.send_keys(&["Tab"])?;
+    let blurred = wait_until_absent(&console, "LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    assert!(
+        !blurred.contains("fleet: livespec"),
+        "on blur the pane returns to its shrink-to-fit default (fleet dropped):\n{blurred}"
+    );
+    assert!(
+        blurred.contains(&header_needle),
+        "the repo tenant persists after blur:\n{blurred}"
+    );
+
+    // Quit cleanly.
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+
+    // --- case 4: a wide-enough viewport needs no horizontal scroll ---
+    // At the default wide width the whole header fits, so the scroll clamp is
+    // zero: focusing the pane shows every field at once (both the left `fleet`
+    // and the right `attention:`), and a Right press cannot pan past a header
+    // that is already fully visible.
+    let wide_repo = RepoFixture::new("e2e-top-wide", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let wide = TmuxConsole::launch_sized(&wide_repo, support::DEFAULT_COLS, support::DEFAULT_ROWS)?;
+    wide.wait_for_settled(&format!("repo: {}", wide_repo.tenant()), RENDER_TIMEOUT)?;
+    wide.send_keys(&["Tab", "Tab", "Tab"])?;
+    let wide_focused = wide.wait_for_settled("LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    assert!(
+        wide_focused.contains("fleet: livespec") && wide_focused.contains("attention:"),
+        "a wide viewport shows the whole header at once, no scrolling needed:\n{wide_focused}"
+    );
+    wide.send_keys(&["Right"])?;
+    let wide_still = wide.wait_for_settled("LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    assert!(
+        wide_still.contains("fleet: livespec") && wide_still.contains("attention:"),
+        "Right cannot pan a header that already fits (scroll clamp is zero):\n{wide_still}"
+    );
+    wide.send_keys(&["q"])?;
+    wide.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+
+    Ok(())
+}
+
+/// The pinned pane width for the narrow top/header-pane scroll scenes: small
+/// enough that the header's `attention:` field is clipped off the right edge and
+/// the shrink-to-fit default drops the low-value `fleet: livespec` field.
+const NARROW_COLS: u16 = 56;
+
 /// Assert the modal Help window is inset by a 3-character border on every side
 /// of whatever viewport `tmux` gave the pane. `tmux` honors the pinned height
 /// but sizes the width to the outer terminal, so the corner columns are derived
