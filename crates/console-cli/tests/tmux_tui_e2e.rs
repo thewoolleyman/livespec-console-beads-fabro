@@ -320,8 +320,15 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
         "the Status line box must be present:\n{attention}"
     );
     assert!(
-        attention.contains("approve/accept/reject") && attention.contains("? help"),
+        attention.contains("enter open") && attention.contains("? help"),
         "the Attention pane must render its non-empty, context-specific hints:\n{attention}"
+    );
+    // This fixture's inbox is EMPTY, so the per-item valve keys act on nothing.
+    // Proving they are ABSENT here is the real-TUI check on the hint-honesty
+    // rule: a key that cannot act must not be advertised.
+    assert!(
+        !attention.contains("approve/accept/reject"),
+        "an empty Attention inbox must not advertise its per-item valve keys:\n{attention}"
     );
 
     // --- case 2 (part A): switch focus to the Lanes pane; its hints appear ---
