@@ -1490,8 +1490,16 @@ const fn pane_footer_hint(
                  p/c/r approve/accept/reject | m/n set-admission/acceptance | ? help | q quit"
             }
             // An EMPTY drilled-in lane: nothing is selected, so `enter` opens
-            // nothing and every per-item key is inert.
-            LaneFocus::Lane(_lane) => "up/down move | esc lane list | ? help | q quit",
+            // nothing, every per-item key is inert, AND up/down have no row to
+            // move over. Only stepping back out does anything.
+            //
+            // Navigation is suppressed here and NOT on an empty Attention pane
+            // because only here does "no selected work-item" mean "no rows":
+            // `selected_lane_item` is `None` exactly when the drilled-in lane
+            // holds nothing, whereas Attention's detail can be absent for other
+            // reasons, and hiding a key that does work is a worse error than
+            // showing one that idles.
+            LaneFocus::Lane(_lane) => "esc lane list | ? help | q quit",
         },
         TuiView::Settings => "up/down move | enter/space edit row | ? help | q quit",
         TuiView::Spec | TuiView::Events | TuiView::Repos => {
@@ -10217,6 +10225,8 @@ mod tests {
         );
         assert!(!empty.contains("enter item") && !empty.contains("enter drill"));
         assert!(!empty.contains("move-status") && !empty.contains("approve/accept/reject"));
+        // Nothing to move over either, so the navigation key goes too.
+        assert!(!empty.contains("up/down move"));
         assert!(empty.contains("esc lane list"));
 
         // Attention drops its per-item valves when the inbox is empty.

@@ -458,6 +458,20 @@ pub struct WorkItemDetail {
     pub blocked_reason: Option<String>,
     /// The item's factory-safety marking.
     pub factory_safety: Option<String>,
+    /// The admission policy AS EMITTED, kept separate from the collapsed enum
+    /// the action paths use.
+    ///
+    /// The wire emits `null` for this on most records, and `null` does NOT mean
+    /// `manual`: the orchestrator resolves it from the nearest ancestor epic,
+    /// else a safe default. The lane board needs SOME value, so the snapshot
+    /// collapses `null` to the enum default -- but rendering that collapsed
+    /// value as the record's own field would show a synthesized answer as
+    /// though the orchestrator had emitted it, and would make an explicitly-set
+    /// `manual` indistinguishable from an unset one. The display path reads
+    /// this instead, so what the operator sees is what the wire carried.
+    pub admission_policy: Option<String>,
+    /// The acceptance policy AS EMITTED. See [`Self::admission_policy`].
+    pub acceptance_policy: Option<String>,
 }
 
 impl WorkItemDetail {
@@ -468,16 +482,32 @@ impl WorkItemDetail {
     /// Without this a description edit would never reach the console — the
     /// operator would read a stale body forever, which is exactly the
     /// shadow-state failure the lane design set out to kill.
+    ///
+    /// Every field is LENGTH-PREFIXED before hashing rather than merely
+    /// separated. [`stable_version`] delimits its parts with a `0x1f` byte,
+    /// which is injective only while no part can CONTAIN that byte — true of
+    /// the lifecycle ids and labels it was built for, and false here, where the
+    /// fields are arbitrary operator markdown and embedded JSON. Without the
+    /// prefix, `title: "a"` + `description: "b\x1f"` and `title: "a\x1fb"` +
+    /// `description: ""` hash identically, so a real edit between those two
+    /// states would NOT bump the version and the console would show the stale
+    /// record forever — the very failure this digest exists to prevent.
     fn digest(&self) -> String {
-        let joined = self.depends_on.join(",");
-        let parts: [&str; 18] = [
+        // Same treatment inside `depends_on`: joining on a bare `,` would let
+        // `["a,b"]` and `["a", "b"]` collide.
+        let dependencies = self
+            .depends_on
+            .iter()
+            .map(|dependency| length_prefixed(dependency))
+            .collect::<String>();
+        let parts: [&str; 20] = [
             self.title.as_deref().unwrap_or_default(),
             self.description.as_deref().unwrap_or_default(),
             self.item_type.as_deref().unwrap_or_default(),
             self.origin.as_deref().unwrap_or_default(),
             self.gap_id.as_deref().unwrap_or_default(),
             self.assignee.as_deref().unwrap_or_default(),
-            &joined,
+            &dependencies,
             self.captured_at.as_deref().unwrap_or_default(),
             self.resolution.as_deref().unwrap_or_default(),
             self.reason.as_deref().unwrap_or_default(),
@@ -489,9 +519,21 @@ impl WorkItemDetail {
             self.supersedes.as_deref().unwrap_or_default(),
             self.blocked_reason.as_deref().unwrap_or_default(),
             self.factory_safety.as_deref().unwrap_or_default(),
+            self.admission_policy.as_deref().unwrap_or_default(),
+            self.acceptance_policy.as_deref().unwrap_or_default(),
         ];
-        stable_version(&parts).to_string()
+        let encoded = parts
+            .iter()
+            .map(|part| length_prefixed(part))
+            .collect::<String>();
+        stable_version(&[&encoded]).to_string()
     }
+}
+
+/// `value` prefixed by its byte length, so a concatenation of these is
+/// unambiguous whatever bytes the values themselves contain.
+fn length_prefixed(value: &str) -> String {
+    format!("{}:{value}", value.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1951,6 +1993,8 @@ pub fn parse_orchestrator_observation(
             supersedes: record_text(&raw, "supersedes"),
             blocked_reason: record_text(&raw, "blocked_reason"),
             factory_safety: record_text(&raw, "factory_safety"),
+            admission_policy: record_text(&raw, "admission_policy"),
+            acceptance_policy: record_text(&raw, "acceptance_policy"),
         };
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
@@ -4168,6 +4212,92 @@ mod tests {
         assert_eq!(detail.title.as_deref(), Some(r#"{"nested":"object"}"#));
         assert_eq!(detail.audit.as_deref(), Some("[1,2]"));
         assert_eq!(detail.description.as_deref(), Some("true"));
+        Ok(())
+    }
+
+    #[test]
+    fn field_content_cannot_imitate_a_digest_field_boundary() {
+        // `stable_version` delimits parts with a `0x1f` byte, which is injective
+        // only while no part CONTAINS one. Descriptive fields are arbitrary
+        // operator markdown and embedded JSON, so they can. Length-prefixing
+        // makes the encoding unambiguous; without it these two records -- a real
+        // edit apart -- hash identically, the version does not bump, and the
+        // console shows the stale record forever.
+        let shifted_separator = WorkItemDetail {
+            title: Some("a".to_owned()),
+            description: Some("b\u{1f}".to_owned()),
+            ..WorkItemDetail::default()
+        };
+        let absorbed_separator = WorkItemDetail {
+            title: Some("a\u{1f}b".to_owned()),
+            description: Some(String::new()),
+            ..WorkItemDetail::default()
+        };
+        assert_ne!(shifted_separator.digest(), absorbed_separator.digest());
+
+        // Same hazard inside `depends_on`, where a bare `,` join would let one
+        // comma-bearing id imitate two ids.
+        let one_id = WorkItemDetail {
+            depends_on: vec!["a,b".to_owned()],
+            ..WorkItemDetail::default()
+        };
+        let two_ids = WorkItemDetail {
+            depends_on: vec!["a".to_owned(), "b".to_owned()],
+            ..WorkItemDetail::default()
+        };
+        assert_ne!(one_id.digest(), two_ids.digest());
+
+        // The digest is still a pure function of content: an equal record
+        // rebuilt from the same values agrees.
+        let rebuilt = WorkItemDetail {
+            title: Some("a".to_owned()),
+            description: Some("b\u{1f}".to_owned()),
+            ..WorkItemDetail::default()
+        };
+        assert_eq!(shifted_separator.digest(), rebuilt.digest());
+    }
+
+    #[test]
+    fn an_explicit_policy_stays_distinguishable_from_an_unset_one() -> Result<(), String> {
+        // The snapshot COLLAPSES a null policy to the enum default because the
+        // lane board needs an effective value. The record must not: a `null`
+        // means the orchestrator resolves the policy from an ancestor epic, so
+        // collapsing it in the record too would render an explicitly-`manual`
+        // item and an unset one identically -- and would be wrong for an item
+        // inheriting a non-default policy.
+        let stdout = r#"[
+            {"id":"livespec-console-beads-fabro-set","lane":"ready","admission_policy":"manual","acceptance_policy":"ai-only"},
+            {"id":"livespec-console-beads-fabro-unset","lane":"ready","admission_policy":null}
+        ]"#;
+        let parsed = parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            stdout,
+        ))?;
+        let snapshots: Vec<&WorkItemSnapshot> = parsed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload() {
+                SourcePayload::WorkItemSnapshot(snapshot) => Some(snapshot),
+                _other => None,
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 2);
+
+        // Explicitly set: carried verbatim in the record.
+        assert_eq!(
+            snapshots[0].detail().admission_policy.as_deref(),
+            Some("manual")
+        );
+        assert_eq!(
+            snapshots[0].detail().acceptance_policy.as_deref(),
+            Some("ai-only")
+        );
+        // Unset: absent in the record even though the SNAPSHOT collapses it to
+        // the same `manual` the first item set explicitly.
+        assert_eq!(snapshots[1].detail().admission_policy, None);
+        assert_eq!(snapshots[1].detail().acceptance_policy, None);
+        assert_eq!(snapshots[1].admission_policy(), AdmissionPolicy::Manual);
         Ok(())
     }
 
