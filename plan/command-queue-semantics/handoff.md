@@ -2,7 +2,9 @@
 
 **Epic anchor:** `livespec-console-beads-fabro-irdwyb`
 
-**Supersedes:** `plan/archive/impl-dispatch/handoff.md` (split 2026-07-19).
+**Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
+carries the routing table showing how these items landed here. Do NOT resume the
+archived `handoff.md` beside it.
 
 ## Charter
 
@@ -18,8 +20,11 @@ consumption path, so it is fixed once, here, before the surface widens.
    :1233, `finalize_pending_command` :1431, `distinguish_repeatable_command` :1519-1529.
 3. `crates/console-eventstore/src/lib.rs` — commands table :52+, status-update SQL
    :677-678.
-4. `SPECIFICATION/contracts.md` §"Command Handling".
-5. `AGENTS.md` — credential wrapper, mutation protocol.
+4. `SPECIFICATION/contracts.md` §"Command Handling" (:394) — the numbered handler list
+   and the `flowchart LR` at :465-484.
+5. `SPECIFICATION/non-functional-requirements.md` §"Behavioral Coverage" (:210-220) —
+   the clause→scenario→test chain rule the contract rider below depends on.
+6. `AGENTS.md` — credential wrapper, mutation protocol.
 
 ## Status is read live, never stored here
 
@@ -34,8 +39,8 @@ This handoff stores NO queue and NO per-item status (the no-shadow-ledger rule):
 
 ### Step 1 (BLOCKING) — merge PR #316, which closes `-ble`
 
-PR #316 (`fix: distinguish every repeatable operator action, not only move`) is green
-and awaiting maintainer review. It touches exactly `crates/console-cli/src/lib.rs`
+Read its live state first — `gh pr view 316` — rather than trusting a status written
+here. As of the split it was green and awaiting maintainer review. It touches exactly `crates/console-cli/src/lib.rs`
 `distinguish_repeatable_command` — the same region `-ipwtll` must edit. **Merge it
 before branching anything else in this thread**, or eat a guaranteed conflict.
 
@@ -85,8 +90,8 @@ artificial blocking.
 - Parallel-safe against every other thread. This thread solely owns
   `crates/console-eventstore/src/lib.rs`'s `commands` table; the event-identity thread
   only reads the `events` index — different concern, no collision.
-- One shared-file caveat: the operator-surface thread must retire a test at
-  `crates/console-cli/src/lib.rs:2312`. It is in the test-module tail, far from :1519 —
+- One shared-file caveat, ALSO recorded in `plan/operator-surface-redesign/`: that
+  thread must retire a test at `crates/console-cli/src/lib.rs:2312`. It is in the test-module tail, far from :1519 —
   trivial rebase either way, but retire it AFTER #316 merges.
 
 ## Gates

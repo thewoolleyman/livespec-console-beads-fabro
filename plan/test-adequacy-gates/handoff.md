@@ -2,7 +2,9 @@
 
 **Epic anchor:** `livespec-console-beads-fabro-4jb3kl`
 
-**Supersedes:** `plan/archive/impl-dispatch/handoff.md` (split 2026-07-19).
+**Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
+carries the routing table showing how these items landed here. Do NOT resume the
+archived `handoff.md` beside it.
 
 ## Charter
 
@@ -18,8 +20,12 @@ that produced the superseded thread.
 ## Read first
 
 1. This file.
-2. `SPECIFICATION/non-functional-requirements.md` §"Quality Gate" (v004) — the fuzz and
-   mutation jobs are ratified MUSTs; the nightly clause is there too.
+2. `SPECIFICATION/non-functional-requirements.md` §"Quality Gate" (:141-179) — the fuzz
+   and mutation jobs are ratified MUSTs; the nightly clause is there too. Read the LIVE
+   file: the clause was ratified at v004 but REFRAMED at v007, and the spec is now v032.
+   v004's original text claims coverage is gated at "100% line AND 100% region", which
+   is the opposite of what ships — that stale sentence is precisely what slice (a)'s
+   rider must flip.
 3. `justfile:195` (`--fail-under-lines 100` today) and the `check-fuzz-smoke` /
    `check-mutants-smoke` seeds at :285-291.
 4. `.github/workflows/ci.yml` — the `ci-green` aggregation at :248.
@@ -71,9 +77,14 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
    **low-water mark of open PRs**, or accept topping up in-flight branches. This
    constraint binds all other threads regardless of file layout — it is the one
    sequencing fact in this thread that other sessions need to know.
-3. This thread shares `justfile` and `.github/workflows/ci.yml` with
-   `plan/repo-invariant-guards/`. Different recipes and different jobs, so conflicts are
-   shallow, but coordinate rather than branching both simultaneously.
+3. Shares `justfile` and `.github/workflows/ci.yml` with `plan/repo-invariant-guards/`.
+   The line-adjacent hazard is the `targets=(...)` array at `justfile:151-167` (that
+   thread may append guard targets) versus `check-coverage` at `:195` (edited here).
+
+   **Tie-break, agreed in both handoffs: THIS thread owns `justfile` and `ci.yml` for
+   the duration of the region-gate work, and `repo-invariant-guards` rebases onto it.**
+   Rationale: the region-coverage flip retroactively binds every open PR including
+   theirs, so it needs the low-water mark and must not be made to wait.
 4. Parallel-safe against event-identity, command-queue, and operator-surface — no shared
    files.
 
@@ -90,9 +101,11 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
 
 ## Keep this invariant
 
-`just check` does NOT run `check-e2e-tmux` — it is not in the target list, so ordinary
-gate runs never spawn tmux (documented at `justfile:43-53`). **Keep it that way.** Do
-not let a new coverage or soak target pull tmux into the default matrix.
+`just check` does NOT run `check-e2e-tmux` — it is absent from the `targets=(...)` array
+at `justfile:151-167`, so ordinary gate runs never spawn tmux. (The related `#[ignore]`
+note at `justfile:43-53` explains why the nextest matrix stays tmux-free; the array is
+the load-bearing part.) **Keep it that way.** Do not let a new coverage or soak target
+pull tmux into the default matrix.
 
 ## Dispatch
 
