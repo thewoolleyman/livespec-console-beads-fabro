@@ -1215,13 +1215,20 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 buffer,
             );
         }
-        TuiOverlay::WorkItemDetail { scroll } => {
+        TuiOverlay::WorkItemDetail {
+            work_item_id,
+            scroll,
+        } => {
             // Near-full-screen (the Help modal's inset), because the record it
-            // shows is long. Like the valve-confirm modal it reads its target
-            // from the SAME selection `Enter` opened it on, so the record on
-            // screen is always the row the operator picked.
+            // shows is long. It resolves the record by the id PINNED when the
+            // modal opened, NOT by the lane selection index: ingestion keeps
+            // appending while the modal is open, and a re-ranked or
+            // newly-inserted sibling would otherwise slide a different
+            // work-item under the same index and silently swap the record the
+            // operator is reading.
             render_work_item_detail(
-                model.selected_lane_item(),
+                model.work_item_by_id(work_item_id),
+                work_item_id,
                 help_overlay_rect(area),
                 buffer,
                 *scroll,
@@ -1279,15 +1286,15 @@ const ITEM_FIELD_ABSENT: &str = "—";
 /// bottom row, always visible regardless of the scroll offset.
 fn render_work_item_detail(
     item: Option<&LaneWorkItem>,
+    work_item_id: &str,
     area: Rect,
     buffer: &mut Buffer,
     scroll: usize,
 ) {
     Clear.render(area, buffer);
-    let title = item.map_or_else(
-        || "Work item".to_owned(),
-        |item| format!("Work item: {}", item.work_item_id()),
-    );
+    // The title always names the PINNED id, so it stays correct even in the
+    // window where the item has left the board and no record resolves.
+    let title = format!("Work item: {work_item_id}");
     let outer = Block::new().borders(Borders::ALL).title(title);
     let inner = outer.inner(area);
     outer.render(area, buffer);
@@ -1299,7 +1306,14 @@ fn render_work_item_detail(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
     let body = item.map_or_else(
-        || vec![Line::from("No work-item selected")],
+        || {
+            // Honest, not blank: the item was on the board when the modal
+            // opened and is not now, so say THAT rather than substituting a
+            // neighbouring record or rendering an empty box.
+            vec![Line::from(format!(
+                "{work_item_id} is no longer on the board (it may have been re-observed or removed)"
+            ))]
+        },
         work_item_detail_lines,
     );
     let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
@@ -2030,9 +2044,9 @@ mod tests {
     use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
-        DispatcherSettingsRead, FocusPane, LaneFocus, OperatorAction, OperatorActionOutcome,
-        OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
+        DispatcherSettingsRead, FocusPane, LaneFocus, LaneWorkItem, OperatorAction,
+        OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
         build_tui_model_for_state, header_help_section, help_section_for_view,
         reduce_tui_interaction,
     };
@@ -3837,6 +3851,10 @@ mod tests {
     // "enter drill" in a drilled-in lane where Enter was inert.
     // -----------------------------------------------------------------------
 
+    /// The work-item the modal fixtures pin: the first item of the Ready lane
+    /// in `lane_render_events`, which is what `Enter` opens there.
+    const MODAL_ITEM: &str = "console-ready-a";
+
     /// The long description used to prove the modal body scrolls: enough
     /// distinct lines to overflow the test viewport several times over.
     fn scrolling_description() -> String {
@@ -3896,7 +3914,7 @@ mod tests {
             .ok_or("the drilled-in Ready lane has a selected item")?;
         let area = Rect::new(0, 0, 100, 40);
         let mut buffer = Buffer::empty(area);
-        render_work_item_detail(Some(item), area, &mut buffer, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), area, &mut buffer, 0);
         let text = buffer_to_text(&buffer, area);
 
         for expected in [
@@ -3956,7 +3974,7 @@ mod tests {
             .ok_or("the drilled-in Ready lane has a selected item")?;
         let area = Rect::new(0, 0, 80, 30);
         let mut buffer = Buffer::empty(area);
-        render_work_item_detail(Some(item), area, &mut buffer, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), area, &mut buffer, 0);
         let text = buffer_to_text(&buffer, area);
         assert!(text.contains(ITEM_FIELD_ABSENT));
         // The lifecycle fields the lane row already carried still render.
@@ -3965,13 +3983,13 @@ mod tests {
         // With nothing selected the modal says so instead of rendering an empty
         // box that reads like a broken screen.
         let mut empty = Buffer::empty(area);
-        render_work_item_detail(None, area, &mut empty, 0);
-        assert!(buffer_to_text(&empty, area).contains("No work-item selected"));
+        render_work_item_detail(None, MODAL_ITEM, area, &mut empty, 0);
+        assert!(buffer_to_text(&empty, area).contains("no longer on the board"));
 
         // A viewport too small to inset degrades without panicking.
         let tiny = Rect::new(0, 0, 2, 2);
         let mut tiny_buffer = Buffer::empty(tiny);
-        render_work_item_detail(Some(item), tiny, &mut tiny_buffer, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), tiny, &mut tiny_buffer, 0);
         Ok(())
     }
 
@@ -3986,7 +4004,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 20);
 
         let mut top = Buffer::empty(area);
-        render_work_item_detail(Some(item), area, &mut top, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), area, &mut top, 0);
         let top_text = buffer_to_text(&top, area);
         assert!(top_text.contains("Render the whole record"));
         assert!(!top_text.contains("body line 39"));
@@ -3994,7 +4012,7 @@ mod tests {
         // A far-past-the-end offset clamps to the last row: the tail is visible
         // and the head has scrolled away.
         let mut bottom = Buffer::empty(area);
-        render_work_item_detail(Some(item), area, &mut bottom, 10_000);
+        render_work_item_detail(Some(item), item.work_item_id(), area, &mut bottom, 10_000);
         let bottom_text = buffer_to_text(&bottom, area);
         assert!(bottom_text.contains("body line 39"));
         assert!(!bottom_text.contains("Render the whole record"));
@@ -4021,7 +4039,13 @@ mod tests {
         );
 
         let opened = reduce_tui_interaction(&drilled, &events, TuiInteraction::OpenWorkItemDetail);
-        assert_eq!(opened.overlay(), &TuiOverlay::WorkItemDetail { scroll: 0 });
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0
+            }
+        );
 
         // Esc over the open modal closes the overlay...
         let opened_model = build_tui_model_for_state(&events, &opened);
@@ -4041,7 +4065,10 @@ mod tests {
         let opened = TuiInteractionState::for_view(
             TuiView::Lanes,
             0,
-            TuiOverlay::WorkItemDetail { scroll: 0 },
+            TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0,
+            },
         )
         .with_lane_focus(LaneFocus::Lane(Lane::Ready))
         .with_focus(FocusPane::Content);
@@ -4093,12 +4120,19 @@ mod tests {
         assert_eq!(
             down.overlay(),
             &TuiOverlay::WorkItemDetail {
-                scroll: ITEM_MODAL_PAGE_ROWS
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: ITEM_MODAL_PAGE_ROWS,
             }
         );
         let up =
             reduce_tui_interaction(&down, &events, TuiInteraction::WorkItemDetailScrollUp(999));
-        assert_eq!(up.overlay(), &TuiOverlay::WorkItemDetail { scroll: 0 });
+        assert_eq!(
+            up.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0
+            }
+        );
 
         // The scroll interactions are inert against any other overlay.
         let elsewhere = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
@@ -4125,7 +4159,10 @@ mod tests {
         // The open modal owns the hint line and names its own keys.
         let modal = lanes_model_content(
             LaneFocus::Lane(Lane::Ready),
-            TuiOverlay::WorkItemDetail { scroll: 0 },
+            TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0,
+            },
         );
         assert!(modal.footer().contains("esc close item"));
         assert!(!modal.footer().contains("enter drill"));
@@ -4139,7 +4176,10 @@ mod tests {
         let state = TuiInteractionState::for_view(
             TuiView::Lanes,
             0,
-            TuiOverlay::WorkItemDetail { scroll: 0 },
+            TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0,
+            },
         )
         .with_lane_focus(LaneFocus::Lane(Lane::Ready))
         .with_focus(FocusPane::Content);
@@ -4148,6 +4188,66 @@ mod tests {
         assert!(text.contains("Work item: console-ready-a"));
         assert!(text.contains("esc to close"));
         Ok(())
+    }
+
+    #[test]
+    fn an_open_item_modal_keeps_its_own_item_when_the_lane_re_ranks_beneath_it()
+    -> TuiRenderResult<()> {
+        // The modal stays open across source refreshes, and ingestion keeps
+        // appending. If it re-resolved its record from the lane SELECTION INDEX,
+        // a sibling re-ranked above the pinned item would slide a DIFFERENT
+        // work-item under that index and silently swap the record the operator
+        // is reading -- with nothing on screen to say so. It resolves by the id
+        // pinned at open instead, so the record cannot drift.
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_focus(FocusPane::Content);
+
+        // A newcomer ranked ABOVE the pinned item takes over index 0.
+        let mut events = lane_render_events().to_vec();
+        events.push(lane_event(
+            "evt_jump",
+            "console-ready-jumped-ahead",
+            Lane::Ready,
+            None,
+            // Sorts ahead of the fixture's "a0" (prefix), so it really does
+            // take over index 0 rather than tie-breaking behind it by id.
+            "a",
+            "ready",
+        ));
+        let model = build_tui_model_for_state(&events, &state);
+        // The fixture really does move a DIFFERENT item under the selection --
+        // without this the rest of the test would pass vacuously.
+        assert_eq!(
+            model.selected_lane_item().map(LaneWorkItem::work_item_id),
+            Some("console-ready-jumped-ahead")
+        );
+
+        let text = render_to_text(&model, 100, 40)?;
+        // Still the item it was opened on, NOT the one that took over the index.
+        assert!(text.contains(&format!("Work item: {MODAL_ITEM}")));
+        assert!(!text.contains("Work item: console-ready-jumped-ahead"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_item_that_leaves_the_board_is_reported_not_silently_replaced() {
+        // Once the pinned item is gone entirely there is no record to show. Say
+        // so, naming the item, rather than rendering a neighbour's record or an
+        // empty box that reads as a broken screen.
+        let area = Rect::new(0, 0, 90, 20);
+        let mut buffer = Buffer::empty(area);
+        render_work_item_detail(None, "console-vanished", area, &mut buffer, 0);
+        let text = buffer_to_text(&buffer, area);
+        assert!(text.contains("Work item: console-vanished"));
+        assert!(text.contains("no longer on the board"));
     }
 
     #[test]
