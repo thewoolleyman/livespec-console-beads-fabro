@@ -17,6 +17,34 @@ from a **random PWD like `/tmp`**, against two repos. The docs walkthrough is
 validated by an **agent walking it on a DUMMY item, driving a REAL TUI in a tmux
 pane, for two repos**.
 
+## STATUS (updated 2026-07-19) — deliverable #0 + B1–B5 DONE; B6/B7/B8-remainder + backfill + Stage-2 REMAIN
+
+The foundational tmux real-TUI E2E harness (#0) and the full **B1–B5** cockpit-UX
+behavior set are LANDED on console master. What remains is the B6/B7 docs tree,
+the B8 release capstone's live-download two-repo test + README de-gate, the
+real-TUI E2E backfill, and (separately, maintainer-gated) autonomous-mode Stage-2.
+
+| Item | State | Ref |
+|---|---|---|
+| #0 tmux real-TUI E2E harness | ✅ DONE | PR #262 (+ dedicated-socket width fix in #286) |
+| B1 source-availability honesty (Scenario 13) | ✅ DONE | PR #268 |
+| B2 Status-line context hints (Scenario 19, v026) | ✅ DONE | PR #278 |
+| B3 top/header-pane focus + h-scroll (Scenario 20, v027) | ✅ DONE | PR #286 (`4e8598f`) |
+| B4 navigable modal Help (Scenario 18, v025) | ✅ DONE | PR #267 |
+| B5 panes operational-content-only (Scenario 21, v028) | ✅ DONE | propose #280 → revise #288 → impl #289 (`1bfdb41d`) |
+| **B6** user-docs → `docs/` tree (4 sub-docs) | ⬜ NOT STARTED | §"B6" below |
+| **B7** key-by-key lifecycle walkthrough doc | ⬜ NOT STARTED | §"B7" below |
+| **B8** release capstone | ◑ PARTIAL — release pipeline + v0.2.0 asset shipped (PR #243); the `/tmp` two-repo download-run + README de-gate REMAIN | §"B8" below |
+| **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
+| **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`) |
+
+### Open follow-up work items (console beads ledger)
+- **`livespec-console-beads-fabro-25rvmd`** (P2, blocked) — B1 transition-epoch source-availability tally (re-down-after-recovery dedups in a persistent cross-run store).
+- **`livespec-console-beads-fabro-ble`** (P2, backlog) — extend `distinguish_repeatable_command` idempotency-key fix to ALL repeatable operator actions (currently move-only).
+- **`livespec-console-beads-fabro-7wy`** (P2, open) — rewrite the section-sign (§) spec-citation in `console-application/src/lib.rs` to file-level form before the next core-pin bump past v0.16.0 (CORE master's stricter `doctor-no-spec-section-citation-in-code` flags it; the console's pinned core release does not).
+
+The B6/B7/B8 deliverables live in THIS plan by design — the freeform work-item vehicle for them was RETIRED (see §"RETIRED"); concrete follow-up bugs live as the work items above. Four stale worktrees (`docs-console-tui-usage`, `console-release-pipeline`, `cap-test-parallelism`, `phase3-selfhosted-cutover`) — leftover from ALREADY-MERGED PRs (#165 / #243 / #266 / #250) — were reaped 2026-07-19; they were NOT holding in-progress B6/B7/B8 work. A fifth, `ci-concurrency-group`, was LEFT untouched: its head (`79305bc`, the merged E2E-targetdir fix) is in master but it carries UNCOMMITTED CI work (`.github/workflows/ci.yml` + a `Cargo.lock` drift) — another session's in-progress/abandoned CI-infra worktree, not part of this cockpit track.
+
 ## KEY FINDING — the real TUI has ZERO automated coverage today
 `run_interactive_tui` (raw-mode / alternate-screen) in
 `crates/console-tui/src/lib.rs` is `#[cfg(all(not(test), not(coverage)))]` —
@@ -160,16 +188,29 @@ Epic `livespec-console-beads-fabro-0ak` + children `-5rw` (sources), `-rjo`
 — superseded by this spec-driven program. Their descriptions/acceptance are folded
 into B1–B8 above.
 
-## RESUME ORDER (fresh session)
-1. **Build deliverable #0** — the tmux real-TUI E2E harness (decide placement/lang;
-   ensure CI has tmux); prove it by asserting one existing known-good behavior (e.g.
-   the valve path from Scenario 11) end-to-end via tmux, for two repos.
-2. **B1 sources** — root-cause + propose-change refining Scenario 13 + tmux E2E +
-   fix. (Good first behavior: concrete, maps to an existing scenario.)
-3. Then **B2 → B3 → B5 → B4** (sequenced TUI), interleaving **backfill** E2E tests.
-4. **B6/B7 docs** after the TUI settles; **B8 release pipeline** in parallel.
-5. Every step spec-first, Fable-reviewed, tmux-E2E-driven, two-repo live-verified.
+## RESUME ORDER (fresh session) — updated 2026-07-19
+Deliverable #0 + **B1–B5 are DONE** (see §"STATUS"). Remaining, in order:
+1. **B6 user-docs → `docs/` tree** — move ALL user docs out of the README into
+   `docs/` (`installing.md` / `overview-quickstart.md` / `cli-options.md` /
+   `detailed-usage.md` with a sub-section PER pane); README links to
+   `docs/README.md` (overview + TOC only). Author NOW that B2–B5 are shipped so
+   the docs match the TUI. Spec-anchor the "user docs live in `docs/`, README is
+   a pointer" invariant if worth enforcing.
+2. **B7 key-by-key lifecycle walkthrough** (a `docs/*.md` section) — acceptance:
+   an agent walks it on a DUMMY item, driving a REAL TUI in a tmux pane,
+   end-to-end, NO doc/behavior mismatch, for TWO repos.
+3. **B8 release capstone (remainder only)** — the release pipeline + v0.2.0 asset
+   already shipped (PR #243). What REMAINS is the pre-delivery acceptance:
+   `gh release download` the PUBLISHED asset (NOT a source build), run it from a
+   random PWD like `/tmp/<rand>` against TWO different repos, then DE-GATE the
+   README / `docs/installing.md` download instructions.
+4. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
+   with the above (the harness now exists and is a trustworthy CI gate).
+5. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
+   in `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`). Drive
+   multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
+   `acceptance`, with the maintainer's final accept via the TUI.
 
-Related but SEPARATE: the autonomous-mode MVP Stage-2 acceptance
-(`livespec/plan/autonomous-mode/handoff.md`, `livespec-bvuy4w`) is still maintainer-
-gated and independent of this program.
+Each behavior: `/livespec:propose-change` → independent Fable review →
+`/livespec:revise` → tmux E2E (RED) → implement (GREEN) → two-repo live-verify.
+Console repo mutation protocol (worktree → PR → merge) + `just check` throughout.
