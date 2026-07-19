@@ -141,9 +141,12 @@ run from this repo's root, or `bd` silently operates on the wrong tenant.
 launched under the wrapper"; the wrapper applies per command. The canonical
 invocation is `with-livespec-env.sh -- <command>`, e.g.
 
-    /data/projects/1password-env-wrapper/with-livespec-env.sh -- bd list
+    /data/projects/1password-env-wrapper/with-livespec-env.sh -- bd list -n 0
 
-which injects the bare `BEADS_DOLT_PASSWORD` for that one command. The same holds
+which injects the bare `BEADS_DOLT_PASSWORD` for that one command. **The `-n 0` is
+not optional decoration:** `bd list` silently truncates at 50 rows, `--json`
+included, with nothing in the output saying the set was cut — so a read without it
+under-reports the ledger and can make an existing item look absent. The same holds
 for the orchestrator `capture-work-item` / `list-work-items` / `next` skills: run
 the `bd`/python commands they drive under the wrapper. An **"Access denied" / "no
 beads database found" failure almost always means you ran OUTSIDE the wrapper**
@@ -152,6 +155,15 @@ Never hand-hunt the secret or reach around the seam with raw `mysql` / `dolt` /
 `sudo`, and never rely on a `!`-prefixed one-off in a Claude prompt (it does not
 persist env into later tool-call shells). A `CALL DOLT_BACKUP … command denied`
 warning is correct-by-design (tenant users lack SUPER) — ignore it.
+
+**Budget your wrapper calls.** Each one is an `op run` against a 1Password daily
+quota that is shared **account-wide across every tenant**, not per-repo — a session
+that spends it blocks `git push` and every ledger write fleet-wide, for other
+sessions too. Batch: make one `bd list --json -n 0` and parse the cached result
+locally as often as needed, and loop multi-item work inside a single wrapper
+invocation rather than wrapping each command. Do not narrate into the ledger.
+Detail: `livespec/.ai/agent-disciplines.md` §"Ledger-write economy under a shared
+secret wrapper".
 
 ## Repository mutation protocol
 
