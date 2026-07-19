@@ -13,7 +13,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -216,12 +216,31 @@ fn check_crate_sources(crate_name: &str, crate_dir: &Path) -> Vec<String> {
     findings
 }
 
-/// Rule: test/harness `tmux` invocations must always select a private socket
-/// with `-L` before issuing a tmux sub-command.
+/// Rule: every `tmux` invocation in the workspace must run on a PRIVATE socket
+/// — `TMUX_TMPDIR=<per-run-scratch>` plus `-L <private-label>` among the server
+/// options that precede the tmux sub-command.
+///
+/// The rule is SUSPECT-BY-DEFAULT, and deliberately so. An earlier revision
+/// peeled three CLOSED allow-lists (a six-entry sub-command list, a
+/// literal-`"tmux"` program test, a single scanned directory) and inspected one
+/// argument position, so anything that displaced the hazard off an enumerated
+/// shape — an unlisted sub-command, a renamed binding, a non-chained builder, a
+/// moved directory — silently disabled the rule instead of tripping it. Here a
+/// tmux invocation needs scope unless it is PROVABLY harmless, an unresolvable
+/// tmux-shaped builder is reported rather than dismissed, argument VALUES are
+/// validated rather than merely counted, and a walk that turns up no Rust files
+/// fails instead of passing vacuously.
 fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
-    let tests_dir = root.join("crates/console-cli/tests");
+    let paths = rust_files_for_tmux_scan(root);
+    if paths.is_empty() {
+        return vec![format!(
+            "tmux socket-scoping scan found no Rust files under {} — the scan root moved \
+             or the walk is broken; refusing to pass without having read anything",
+            root.display()
+        )];
+    }
     let mut findings = Vec::new();
-    for path in rust_files_under(&tests_dir) {
+    for path in paths {
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
             Err(error) => {
@@ -237,6 +256,48 @@ fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
     findings
 }
 
+/// Directory names the tmux scan never descends into: `target` holds build
+/// artifacts and vendored third-party sources, `.git` holds object storage, and
+/// `tmp` is maintainer-owned scratch that may hold unrelated checkouts. The
+/// list is a skip-list rather than a scan-list on purpose — a NEW source
+/// directory is covered by default instead of falling outside an enumeration.
+const TMUX_SCAN_SKIPPED_DIRS: &[&str] = &["target", ".git", "tmp"];
+
+fn rust_files_for_tmux_scan(root: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(path) = pending.pop() {
+        // `symlink_metadata` does not follow links, so a symlinked directory
+        // can never send the walk round a cycle or out of the repository.
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let skipped = path != root
+                && path
+                    .file_name()
+                    .is_some_and(|name| TMUX_SCAN_SKIPPED_DIRS.iter().any(|entry| name == *entry));
+            if skipped {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                pending.push(entry.path());
+            }
+            continue;
+        }
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    files
+}
+
 fn check_tmux_socket_scoping_source(display: &str, source: &str) -> Vec<String> {
     let file = match syn::parse_file(source) {
         Ok(file) => file,
@@ -245,6 +306,7 @@ fn check_tmux_socket_scoping_source(display: &str, source: &str) -> Vec<String> 
     let mut visitor = TmuxSocketScopeVisitor {
         display,
         findings: Vec::new(),
+        scopes: Vec::new(),
     };
     visitor.visit_file(&file);
     visitor.findings
@@ -253,51 +315,170 @@ fn check_tmux_socket_scoping_source(display: &str, source: &str) -> Vec<String> 
 struct TmuxSocketScopeVisitor<'a> {
     display: &'a str,
     findings: Vec<String>,
+    /// Lexical scopes of `let` bindings holding a `Command` builder, so the
+    /// ordinary non-chained idiom (`let mut cmd = Command::new(tmux);
+    /// cmd.args(...); cmd.status();`) is analyzed exactly like the chained form
+    /// rather than being invisible to the check.
+    scopes: Vec<BTreeMap<String, TmuxCommandInvocation>>,
+}
+
+impl TmuxSocketScopeVisitor<'_> {
+    fn lookup(&self, name: &str) -> Option<&TmuxCommandInvocation> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// Rebuild the `Command` an expression denotes, following both an inline
+    /// `Command::new(...)` chain and a chain rooted at a `let`-bound builder.
+    /// `None` means "this is not a command builder I can follow".
+    fn resolve(&self, expr: &syn::Expr) -> Option<TmuxCommandInvocation> {
+        match strip_wrappers(expr) {
+            syn::Expr::MethodCall(method_call) => {
+                let mut invocation = self.resolve(&method_call.receiver)?;
+                invocation.record_method_call(method_call);
+                Some(invocation)
+            }
+            syn::Expr::Call(call) if is_command_new_call(call) => {
+                Some(TmuxCommandInvocation::new(call.args.first()))
+            }
+            other => bare_ident(other).and_then(|name| self.lookup(&name).cloned()),
+        }
+    }
+
+    /// Fold a statement-level builder chain (`cmd.args(...);`) back into the
+    /// binding it mutates, so a launcher called on that binding later in the
+    /// block sees the accumulated arguments. Chains that END in a launcher are
+    /// left alone — `visit_expr_method_call` evaluates those against the
+    /// binding as it stands.
+    fn apply_builder_statement(&mut self, expr: &syn::Expr) {
+        let mut chain = Vec::new();
+        let mut cursor = strip_wrappers(expr);
+        while let syn::Expr::MethodCall(method_call) = cursor {
+            chain.push(method_call);
+            cursor = strip_wrappers(&method_call.receiver);
+        }
+        if chain
+            .first()
+            .is_some_and(|outermost| is_launcher(&outermost.method.to_string()))
+        {
+            return;
+        }
+        let Some(name) = bare_ident(cursor) else {
+            return;
+        };
+        // `chain` runs outermost-first; replay it in source order.
+        for method_call in chain.iter().rev() {
+            if let Some(scope) = self
+                .scopes
+                .iter_mut()
+                .rev()
+                .find(|scope| scope.contains_key(&name))
+                && let Some(invocation) = scope.get_mut(&name)
+            {
+                invocation.record_method_call(method_call);
+            }
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for TmuxSocketScopeVisitor<'_> {
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        self.scopes.push(BTreeMap::new());
+        for statement in &node.stmts {
+            match statement {
+                syn::Stmt::Local(local) => {
+                    if let Some(init) = &local.init {
+                        self.apply_builder_statement(&init.expr);
+                        syn::visit::visit_stmt(self, statement);
+                        // Bind AFTER visiting, so `let cmd = cmd.arg(..)` reads
+                        // the old binding on the right-hand side first.
+                        if let Some(name) = local_binding_ident(local)
+                            && let Some(invocation) = self.resolve(&init.expr)
+                            && let Some(scope) = self.scopes.last_mut()
+                        {
+                            scope.insert(name, invocation);
+                        }
+                        continue;
+                    }
+                }
+                syn::Stmt::Expr(expr, _) => self.apply_builder_statement(expr),
+                syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+            }
+            syn::visit::visit_stmt(self, statement);
+        }
+        self.scopes.pop();
+    }
+
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        let method = node.method.to_string();
-        if (method == "output" || method == "status")
-            && let Some(invocation) = TmuxCommandInvocation::from_receiver(&node.receiver)
-            && invocation.needs_socket_scope()
-            && !invocation.has_private_socket_scope()
-        {
-            self.findings.push(format!(
-                "{}: tmux invocation must set `TMUX_TMPDIR=<per-run-scratch>` \
-                 and pass `-L <private-socket>` before the tmux sub-command",
-                self.display
-            ));
+        if is_launcher(&node.method.to_string()) {
+            match self.resolve(&node.receiver) {
+                Some(invocation) => {
+                    if let Some(reason) = invocation.socket_scope_violation() {
+                        self.findings.push(format!("{}: {reason}", self.display));
+                    }
+                }
+                // An unfollowable builder is only interesting when it NAMES
+                // tmux; that keeps a renamed helper (`tmux_command().status()`)
+                // suspect without dragging in every unrelated subprocess.
+                None => {
+                    if expr_names_tmux(&node.receiver) {
+                        self.findings.push(format!(
+                            "{}: tmux-shaped command builder cannot be resolved to a \
+                             `Command::new(...)` chain, so its socket scoping cannot be \
+                             verified — build the command where the check can see it",
+                            self.display
+                        ));
+                    }
+                }
+            }
         }
         syn::visit::visit_expr_method_call(self, node);
     }
 }
 
-#[derive(Default)]
+/// The three standard ways to launch a built `Command`. `spawn` matters as much
+/// as the other two: it is the natural choice for a long-lived tmux server.
+fn is_launcher(method: &str) -> bool {
+    matches!(method, "output" | "status" | "spawn")
+}
+
+/// What `Command::new(...)` was handed.
+#[derive(Clone, Copy)]
+enum ProgramKind {
+    /// Definitely tmux — a literal naming it, or an expression whose name says
+    /// so (`tmux_bin`, `resolve_tmux()`, `paths.tmux_path`).
+    Tmux,
+    /// Definitely something else: a literal naming another program.
+    Other,
+    /// An expression this check cannot read. Suspect as soon as the arguments
+    /// look tmux-shaped, rather than assumed innocent.
+    Unknown,
+}
+
+/// How `TMUX_TMPDIR` was set on the command under analysis.
+#[derive(Clone)]
+enum TmuxTmpdir {
+    /// Never set, so the socket file lands in the shared default namespace.
+    Unset,
+    /// Set from an expression this check cannot read — which is exactly what a
+    /// genuine per-run scratch path looks like in source, so it is accepted.
+    Runtime,
+    /// Set from a literal, whose VALUE is validated.
+    Literal(String),
+}
+
+#[derive(Clone)]
 struct TmuxCommandInvocation {
-    program_is_tmux: bool,
-    has_tmux_tmpdir: bool,
+    program: ProgramKind,
+    tmux_tmpdir: TmuxTmpdir,
     args: Vec<Option<String>>,
 }
 
 impl TmuxCommandInvocation {
-    fn from_receiver(receiver: &syn::Expr) -> Option<Self> {
-        Self::collect(receiver)
-    }
-
-    fn collect(expr: &syn::Expr) -> Option<Self> {
-        match expr {
-            syn::Expr::MethodCall(method_call) => {
-                let mut invocation = Self::collect(&method_call.receiver)?;
-                invocation.record_method_call(method_call);
-                Some(invocation)
-            }
-            syn::Expr::Call(call) if is_command_new_call(call) => Some(Self {
-                program_is_tmux: call.args.first().is_some_and(expr_mentions_tmux),
-                has_tmux_tmpdir: false,
-                args: Vec::new(),
-            }),
-            _ => None,
+    fn new(program: Option<&syn::Expr>) -> Self {
+        Self {
+            program: program.map_or(ProgramKind::Unknown, classify_program),
+            tmux_tmpdir: TmuxTmpdir::Unset,
+            args: Vec::new(),
         }
     }
 
@@ -315,48 +496,207 @@ impl TmuxCommandInvocation {
                 }
             }
             "env" => {
-                if method_call
-                    .args
-                    .first()
-                    .and_then(string_literal)
-                    .is_some_and(|name| name == "TMUX_TMPDIR")
-                {
-                    self.has_tmux_tmpdir = true;
+                if names_tmux_tmpdir(method_call.args.first()) {
+                    self.tmux_tmpdir = method_call
+                        .args
+                        .get(1)
+                        .and_then(string_literal)
+                        .map_or(TmuxTmpdir::Runtime, TmuxTmpdir::Literal);
                 }
             }
+            "env_remove" => {
+                if names_tmux_tmpdir(method_call.args.first()) {
+                    self.tmux_tmpdir = TmuxTmpdir::Unset;
+                }
+            }
+            "env_clear" => self.tmux_tmpdir = TmuxTmpdir::Unset,
             _ => {}
         }
     }
 
+    /// Why this invocation breaks the private-socket rule, or `None` when it is
+    /// in the clear. Every reason is reported together so one finding names
+    /// everything wrong with the invocation.
+    fn socket_scope_violation(&self) -> Option<String> {
+        if !self.needs_socket_scope() {
+            return None;
+        }
+        let reasons: Vec<String> = [self.tmux_tmpdir_violation(), self.socket_label_violation()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if reasons.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "tmux invocation must run on a private socket: {}",
+            reasons.join("; ")
+        ))
+    }
+
+    /// Whether the rule applies. A definite tmux program ALWAYS needs scope
+    /// unless the whole invocation is provably harmless — an unrecognized
+    /// sub-command can never mean "the rule does not apply". An unresolved
+    /// program needs scope the moment its arguments look tmux-shaped.
     fn needs_socket_scope(&self) -> bool {
-        self.program_is_tmux
-            && (self
-                .args
-                .iter()
-                .flatten()
-                .any(|argument| is_tmux_subcommand(argument))
-                || self.args.iter().any(Option::is_none))
+        if self.is_provably_safe_query() {
+            return false;
+        }
+        match self.program {
+            ProgramKind::Tmux => true,
+            ProgramKind::Other => false,
+            ProgramKind::Unknown => self.args_look_tmux_shaped(),
+        }
     }
 
-    fn has_private_socket_scope(&self) -> bool {
-        self.has_tmux_tmpdir && self.has_socket_before_subcommand()
+    /// `tmux -V` and `tmux -h` interrogate the binary itself and contact no
+    /// server, so they need no socket. This is the ONLY exemption, and it is
+    /// shaped as a deny-list of provably-safe forms: EVERY argument must be a
+    /// literal drawn from the safe set, so nothing can exempt itself by being
+    /// unrecognized.
+    fn is_provably_safe_query(&self) -> bool {
+        !self.args.is_empty()
+            && self.args.iter().all(|argument| {
+                argument
+                    .as_deref()
+                    .is_some_and(|value| matches!(value, "-V" | "--version" | "-h" | "--help"))
+            })
     }
 
-    fn has_socket_before_subcommand(&self) -> bool {
-        let Some(socket_index) = self
-            .args
+    /// Evidence that an otherwise-unreadable program is tmux: a known tmux
+    /// sub-command, a socket flag, or a `TMUX_TMPDIR` override. Keyed on
+    /// EXPLICIT tmux tokens only — a merely non-literal argument is not
+    /// evidence, so an ordinary `Command::new(program).args(&args)` is left
+    /// alone.
+    fn args_look_tmux_shaped(&self) -> bool {
+        !matches!(self.tmux_tmpdir, TmuxTmpdir::Unset)
+            || self.args.iter().flatten().any(|argument| {
+                is_known_tmux_subcommand(argument) || argument == "-L" || argument == "-S"
+            })
+    }
+
+    fn tmux_tmpdir_violation(&self) -> Option<String> {
+        match &self.tmux_tmpdir {
+            TmuxTmpdir::Unset => Some(
+                "`TMUX_TMPDIR` is not set to a per-run scratch directory, so the socket \
+                 file lands in the shared default tmux namespace"
+                    .to_owned(),
+            ),
+            // The check reads source only, so for a runtime value it can say no
+            // more than "it is set".
+            TmuxTmpdir::Runtime => None,
+            TmuxTmpdir::Literal(value) => (!is_private_tmux_tmpdir(value)).then(|| {
+                format!("`TMUX_TMPDIR={value}` resolves into the shared default tmux namespace")
+            }),
+        }
+    }
+
+    fn socket_label_violation(&self) -> Option<String> {
+        let section_end = self.server_option_section_end();
+        let Some(flag_index) = self.args[..section_end]
             .iter()
             .position(|argument| argument.as_deref() == Some("-L"))
         else {
-            return false;
+            return Some(
+                "no `-L <private-socket>` appears among the server options preceding the \
+                 tmux sub-command"
+                    .to_owned(),
+            );
         };
-        let first_subcommand_or_forwarded_args = self
-            .args
-            .iter()
-            .position(|argument| argument.as_deref().is_none_or(is_tmux_subcommand));
-        first_subcommand_or_forwarded_args
-            .is_some_and(|subcommand_index| socket_index < subcommand_index)
+        match self.args.get(flag_index + 1) {
+            None => Some("`-L` is not followed by a socket name".to_owned()),
+            // A non-literal label is the per-run generated name this rule wants.
+            Some(None) => None,
+            Some(Some(label)) if is_private_socket_label(label) => None,
+            Some(Some(label)) => Some(format!(
+                "`-L {label}` selects the shared default tmux socket"
+            )),
+        }
     }
+
+    /// A tmux command line is `tmux [server-options] <sub-command> [...]`, and
+    /// `-L` only scopes the socket while it sits in that LEADING option
+    /// section. Walk the section and return the index just past it. Anything
+    /// not shaped like a flag ends it, so the answer never depends on
+    /// recognizing which sub-command follows.
+    fn server_option_section_end(&self) -> usize {
+        let mut index = 0;
+        while index < self.args.len() {
+            // A non-literal argument could be anything, the sub-command
+            // included, so the option section is treated as over.
+            let Some(argument) = self.args[index].as_deref() else {
+                return index;
+            };
+            if !argument.starts_with('-') {
+                return index;
+            }
+            index += 1;
+            if TMUX_VALUE_TAKING_SERVER_FLAGS.contains(&argument) {
+                index += 1;
+            }
+        }
+        index
+    }
+}
+
+/// tmux server options that consume the argument after them, so the walk over
+/// the leading option section does not mistake a flag's VALUE for the
+/// sub-command.
+const TMUX_VALUE_TAKING_SERVER_FLAGS: &[&str] = &["-L", "-S", "-f", "-c", "-T"];
+
+fn names_tmux_tmpdir(argument: Option<&syn::Expr>) -> bool {
+    argument
+        .and_then(string_literal)
+        .is_some_and(|name| name == "TMUX_TMPDIR")
+}
+
+/// tmux's own default socket is literally named `default`, so `-L default`
+/// lands on exactly the shared server this rule exists to protect. An empty
+/// label is rejected for the same reason: tmux falls back to the default.
+fn is_private_socket_label(label: &str) -> bool {
+    let label = label.trim();
+    !label.is_empty() && label != "default"
+}
+
+/// Whether a LITERAL `TMUX_TMPDIR` value points somewhere private.
+///
+/// tmux puts its sockets in `$TMUX_TMPDIR/tmux-<uid>/`, defaulting
+/// `TMUX_TMPDIR` to `/tmp`. So `TMUX_TMPDIR=/tmp` reproduces the shared default
+/// namespace exactly, and a value already pointing INTO a `tmux-<uid>`
+/// directory joins one. The test is purely lexical — the check never touches
+/// the filesystem — so a value it cannot place (relative, or empty) is rejected
+/// as unverifiable rather than assumed safe.
+fn is_private_tmux_tmpdir(value: &str) -> bool {
+    let Some(segments) = normalized_absolute_segments(value) else {
+        return false;
+    };
+    if segments.is_empty() || segments.iter().any(|segment| segment.starts_with("tmux-")) {
+        return false;
+    }
+    !matches!(
+        segments.as_slice(),
+        ["tmp"] | ["var", "tmp"] | ["dev", "shm"]
+    )
+}
+
+/// Lexically normalize an ABSOLUTE path into its segments, resolving `.` and
+/// `..` without consulting the filesystem. `None` for a relative path, which
+/// this check cannot place.
+fn normalized_absolute_segments(value: &str) -> Option<Vec<&str>> {
+    if !value.starts_with('/') {
+        return None;
+    }
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in value.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    Some(segments)
 }
 
 fn is_command_new_call(call: &syn::ExprCall) -> bool {
@@ -377,52 +717,177 @@ fn is_command_new_call(call: &syn::ExprCall) -> bool {
     last == "new" && previous == "Command"
 }
 
-fn expr_mentions_tmux(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Lit(_) => string_literal(expr).is_some_and(|value| value == "tmux"),
+/// Classify the expression handed to `Command::new(...)`.
+///
+/// A rename or an indirection must never silently disable the rule, so anything
+/// whose NAME says tmux counts as tmux, and anything unreadable is `Unknown`
+/// (suspect once its arguments look tmux-shaped) rather than dismissed.
+fn classify_program(expr: &syn::Expr) -> ProgramKind {
+    match strip_wrappers(expr) {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(literal),
+            ..
+        }) => {
+            let value = literal.value();
+            let basename = value.rsplit('/').next().unwrap_or(value.as_str());
+            if name_mentions_tmux(basename) {
+                ProgramKind::Tmux
+            } else {
+                ProgramKind::Other
+            }
+        }
         syn::Expr::Path(path) => path
             .path
             .segments
             .last()
-            .is_some_and(|segment| segment.ident == "tmux"),
-        syn::Expr::Reference(reference) => expr_mentions_tmux(&reference.expr),
-        syn::Expr::Field(field) => {
-            matches!(&field.member, syn::Member::Named(ident) if ident == "tmux")
+            .map_or(ProgramKind::Unknown, |segment| {
+                tmux_or_unknown(&segment.ident.to_string())
+            }),
+        syn::Expr::Field(field) => match &field.member {
+            syn::Member::Named(ident) => tmux_or_unknown(&ident.to_string()),
+            syn::Member::Unnamed(_) => ProgramKind::Unknown,
+        },
+        syn::Expr::MethodCall(method_call) => {
+            if name_mentions_tmux(&method_call.method.to_string()) {
+                ProgramKind::Tmux
+            } else {
+                classify_program(&method_call.receiver)
+            }
         }
-        _ => false,
+        syn::Expr::Call(call) => classify_program(&call.func),
+        syn::Expr::Index(index) => classify_program(&index.expr),
+        _ => ProgramKind::Unknown,
     }
 }
 
-fn string_literals(expr: &syn::Expr) -> Vec<Option<String>> {
-    match expr {
-        syn::Expr::Array(array) => array.elems.iter().map(string_literal).collect(),
-        syn::Expr::Tuple(tuple) => tuple.elems.iter().map(string_literal).collect(),
-        _ => vec![string_literal(expr)],
+fn tmux_or_unknown(name: &str) -> ProgramKind {
+    if name_mentions_tmux(name) {
+        ProgramKind::Tmux
+    } else {
+        ProgramKind::Unknown
     }
 }
 
-fn string_literal(expr: &syn::Expr) -> Option<String> {
+/// Case-insensitive `tmux` substring test over a name, so `tmux`, `tmux_bin`,
+/// `resolve_tmux`, and `TMUX_PATH` all read as tmux.
+fn name_mentions_tmux(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("tmux")
+}
+
+/// Whether an expression NAMES tmux anywhere — in any identifier or string
+/// literal it contains. Decides that an unfollowable command builder is suspect
+/// rather than ignorable.
+fn expr_names_tmux(expr: &syn::Expr) -> bool {
+    let mut visitor = TmuxMentionVisitor { found: false };
+    visitor.visit_expr(expr);
+    visitor.found
+}
+
+struct TmuxMentionVisitor {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for TmuxMentionVisitor {
+    fn visit_ident(&mut self, node: &'ast syn::Ident) {
+        if name_mentions_tmux(&node.to_string()) {
+            self.found = true;
+        }
+    }
+
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        if name_mentions_tmux(&node.value()) {
+            self.found = true;
+        }
+    }
+}
+
+/// Peel the wrappers that do not change which command an expression denotes, so
+/// `(&mut cmd)`, `cmd.status()?`, and their combinations resolve like the bare
+/// form.
+fn strip_wrappers(expr: &syn::Expr) -> &syn::Expr {
     match expr {
-        syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(lit),
-            ..
-        }) => Some(lit.value()),
-        syn::Expr::Reference(reference) => string_literal(&reference.expr),
+        syn::Expr::Paren(paren) => strip_wrappers(&paren.expr),
+        syn::Expr::Group(group) => strip_wrappers(&group.expr),
+        syn::Expr::Reference(reference) => strip_wrappers(&reference.expr),
+        syn::Expr::Try(try_expr) => strip_wrappers(&try_expr.expr),
+        other => other,
+    }
+}
+
+/// The name of a single-segment path expression — that is, a plain local
+/// binding such as `cmd`.
+fn bare_ident(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = strip_wrappers(expr) else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    path.path
+        .segments
+        .first()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn local_binding_ident(local: &syn::Local) -> Option<String> {
+    match &local.pat {
+        syn::Pat::Ident(pattern) => Some(pattern.ident.to_string()),
+        syn::Pat::Type(pattern) => match pattern.pat.as_ref() {
+            syn::Pat::Ident(inner) => Some(inner.ident.to_string()),
+            _ => None,
+        },
         _ => None,
     }
 }
 
-fn is_tmux_subcommand(argument: &str) -> bool {
-    TMUX_SUBCOMMANDS.contains(&argument)
+fn string_literals(expr: &syn::Expr) -> Vec<Option<String>> {
+    match strip_wrappers(expr) {
+        syn::Expr::Array(array) => array.elems.iter().map(string_literal).collect(),
+        syn::Expr::Tuple(tuple) => tuple.elems.iter().map(string_literal).collect(),
+        other => vec![string_literal(other)],
+    }
 }
 
-const TMUX_SUBCOMMANDS: &[&str] = &[
+fn string_literal(expr: &syn::Expr) -> Option<String> {
+    match strip_wrappers(expr) {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(literal),
+            ..
+        }) => Some(literal.value()),
+        _ => None,
+    }
+}
+
+fn is_known_tmux_subcommand(argument: &str) -> bool {
+    KNOWN_TMUX_SUBCOMMANDS.contains(&argument)
+}
+
+/// A sample of tmux sub-commands, used ONLY as positive evidence that an
+/// otherwise-unreadable program is tmux. tmux ships roughly 170 of these, so
+/// this list is necessarily incomplete — which is now harmless, because nothing
+/// keys "the rule does not apply" off it. Adding an entry can only widen
+/// coverage; omitting one can no longer create a bypass.
+const KNOWN_TMUX_SUBCOMMANDS: &[&str] = &[
+    "attach-session",
     "capture-pane",
+    "display-message",
+    "has-session",
+    "kill-pane",
     "kill-server",
     "kill-session",
+    "kill-window",
+    "list-panes",
     "list-sessions",
+    "list-windows",
     "new-session",
+    "new-window",
+    "run-shell",
+    "select-pane",
     "send-keys",
+    "set-option",
+    "show-options",
+    "source-file",
+    "split-window",
 ];
 
 /// A crate entrypoint is its `src/lib.rs` or `src/main.rs`.
@@ -616,11 +1081,6 @@ fn rust_files(crate_dir: &Path) -> Vec<PathBuf> {
     rust_files_from(&mut pending)
 }
 
-fn rust_files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut pending = vec![dir.to_path_buf()];
-    rust_files_from(&mut pending)
-}
-
 fn rust_files_from(pending: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     let mut files = Vec::new();
     while let Some(path) = pending.pop() {
@@ -645,9 +1105,12 @@ fn rust_files_from(pending: &mut Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
         CrateNode, check_adapter_isolation, check_forbid_unsafe, check_layering,
-        check_tmux_socket_scoping_source, check_type_placement, check_unwrap_expect,
+        check_tmux_socket_scoping, check_tmux_socket_scoping_source, check_type_placement,
+        check_unwrap_expect,
     };
 
     fn node(name: &str, workspace_deps: &[&str], external_deps: &[&str]) -> CrateNode {
@@ -889,5 +1352,381 @@ mod tests {
         "#;
         let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
         assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Suspect-by-default regressions.
+    //
+    // Each case below passed the earlier allow-list-driven check clean. They
+    // are paired: a form that MUST be flagged, and the corresponding correct
+    // form that MUST NOT be, so tightening the rule cannot drift into flagging
+    // code that is already right.
+    // -----------------------------------------------------------------------
+
+    /// The live harness shape, pinned. `crates/console-cli/tests/support/mod.rs`
+    /// is CORRECT, and every tightening here must leave it unflagged.
+    #[test]
+    fn the_real_harness_invocation_shape_is_not_flagged() {
+        let source = r#"
+            fn run_tmux(tmux: &Path, socket: &str, tmux_tmpdir: &Path, args: &[&str]) {
+                let _ = Command::new(tmux)
+                    .env("TMUX_TMPDIR", tmux_tmpdir)
+                    .arg("-L")
+                    .arg(socket)
+                    .args(args)
+                    .output();
+            }
+            fn launch(tmux: &Path, scratch: &Path, socket: &str, session: &str) {
+                let _ = Command::new(&tmux)
+                    .env("TMUX_TMPDIR", &scratch)
+                    .args(["-L", socket, "new-session", "-d", "-s", session])
+                    .arg("launcher")
+                    .status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    // Defect 1 — an unenumerated sub-command used to disable the rule entirely.
+
+    #[test]
+    fn run_shell_subcommand_without_private_socket_is_flagged() {
+        // The original bypass: `run-shell` was outside the six-entry
+        // sub-command list, so this all-literal command was never checked at
+        // all — and it kills the host's shared server.
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .args(["run-shell", "tmux kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("-L"));
+    }
+
+    #[test]
+    fn a_subcommand_this_check_has_never_heard_of_is_still_flagged() {
+        // `choose-tree` is in no list anywhere in this file. An unrecognized
+        // sub-command must mean "still checked", not "rule does not apply".
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux).args(["choose-tree"]).status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn an_unenumerated_subcommand_with_a_private_socket_is_allowed() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", scratch)
+                    .args(["-L", socket, "run-shell", "echo hi"])
+                    .status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    #[test]
+    fn a_tmux_version_query_needs_no_socket() {
+        let source = r#"
+            fn version(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux).arg("-V").output();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    // Defect 2 — argument VALUES were never validated, only key names and
+    // positions.
+
+    #[test]
+    fn the_default_socket_label_is_flagged() {
+        // The exact shape of the original incident: both the key name and the
+        // `-L` position were satisfied, so the old check passed it clean, yet
+        // it resolves to /tmp/tmux-<uid>/default — the shared server.
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", "/tmp")
+                    .args(["-L", "default", "kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("default"), "{findings:?}");
+        assert!(findings[0].contains("TMUX_TMPDIR"), "{findings:?}");
+    }
+
+    #[test]
+    fn a_tmux_tmpdir_of_tmp_is_flagged_even_with_a_private_label() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", "/tmp")
+                    .args(["-L", "lc_e2e_7", "kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("TMUX_TMPDIR"), "{findings:?}");
+    }
+
+    #[test]
+    fn a_tmux_tmpdir_pointing_into_a_default_namespace_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", "/tmp/tmux-1000")
+                    .args(["-L", "lc_e2e_7", "kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn a_tmux_tmpdir_that_traverses_back_to_tmp_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", "/tmp/scratch/..")
+                    .args(["-L", "lc_e2e_7", "kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn literal_private_scratch_and_label_values_are_allowed() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", "/tmp/lc-e2e-4242")
+                    .args(["-L", "lc_e2e_4242", "kill-server"])
+                    .status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    #[test]
+    fn clearing_the_environment_after_setting_tmux_tmpdir_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", scratch)
+                    .env_clear()
+                    .args(["-L", socket, "kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("TMUX_TMPDIR"), "{findings:?}");
+    }
+
+    #[test]
+    fn an_s_flag_socket_path_does_not_satisfy_the_rule() {
+        // `-S` names a socket PATH; pointing it at the default namespace is the
+        // same hazard, and it is not the `-L` private label the rule requires.
+        let source = r#"
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", scratch)
+                    .args(["-S", "/tmp/tmux-1000/default", "kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("-L"), "{findings:?}");
+    }
+
+    // Defect 3 — detection failed open on a rename or an indirection.
+
+    #[test]
+    fn a_renamed_tmux_binding_is_flagged() {
+        let source = r#"
+            fn launch(state: &State) {
+                let _ = std::process::Command::new(&state.tmux_bin)
+                    .args(["kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn a_resolver_call_returning_tmux_is_flagged() {
+        let source = r#"
+            fn launch() {
+                let _ = std::process::Command::new(resolve_tmux())
+                    .args(["kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn a_tmux_path_field_is_flagged() {
+        let source = r#"
+            fn launch(paths: &Paths) {
+                let _ = std::process::Command::new(paths.tmux_path)
+                    .args(["kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn a_renamed_tmux_binding_with_a_private_socket_is_allowed() {
+        let source = r#"
+            fn launch(state: &State, scratch: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(&state.tmux_bin)
+                    .env("TMUX_TMPDIR", scratch)
+                    .args(["-L", socket, "kill-server"])
+                    .status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    #[test]
+    fn an_unresolvable_tmux_shaped_builder_is_flagged() {
+        let source = r"
+            fn launch(harness: &Harness) {
+                let _ = harness.tmux_command().status();
+            }
+        ";
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("cannot be resolved"), "{findings:?}");
+    }
+
+    #[test]
+    fn ordinary_non_tmux_commands_are_not_flagged() {
+        // These mirror the real non-tmux call sites in the workspace
+        // (`crates/console-cli/tests/finding_e_python_exec.rs` and the backing
+        // CLI spawn in `crates/console-cli/src/main.rs`). An unreadable program
+        // expression with no tmux evidence must stay clean, or the check trains
+        // people to work around it.
+        let source = r#"
+            fn run(script: &str, program: &str, args: &[&str], builder: &Builder) {
+                let _ = std::process::Command::new(script).arg("--json").output();
+                let _ = std::process::Command::new(program).args(args).output();
+                let _ = std::process::Command::new("gh").args(["pr", "list"]).output();
+                let _ = builder.git_command().status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_program_with_a_tmux_subcommand_is_flagged() {
+        let source = r#"
+            fn launch(program: &str) {
+                let _ = std::process::Command::new(program)
+                    .args(["kill-server"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    // Defect 4 — the standard non-chained builder idiom was never analyzed.
+
+    #[test]
+    fn a_non_chained_command_builder_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let mut command = std::process::Command::new(tmux);
+                command.args(["-L", "default", "kill-server"]);
+                let _ = command.status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("default"), "{findings:?}");
+    }
+
+    #[test]
+    fn a_non_chained_command_builder_with_a_private_socket_is_allowed() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path, socket: &str) {
+                let mut command = std::process::Command::new(tmux);
+                command.env("TMUX_TMPDIR", scratch);
+                command.args(["-L", socket]);
+                command.args(["kill-server"]);
+                let _ = command.status();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    // Defect 5 — `.spawn()` was not inspected.
+
+    #[test]
+    fn a_spawned_tmux_invocation_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .args(["new-session", "-d", "-s", "session"])
+                    .spawn();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn a_spawned_tmux_invocation_with_a_private_socket_is_allowed() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", scratch)
+                    .args(["-L", socket, "new-session", "-d"])
+                    .spawn();
+            }
+        "#;
+        assert!(check_tmux_socket_scoping_source("support/mod.rs", source).is_empty());
+    }
+
+    // Defect 6 — the walk failed open when its directory moved.
+
+    #[test]
+    fn a_scan_that_reads_no_rust_files_is_flagged() {
+        // Renaming the scanned directory used to green the check while it read
+        // zero files. This mirrors the justfile's zero-test guard on the E2E
+        // suite: having read nothing is a failure, never a pass.
+        let findings =
+            check_tmux_socket_scoping(Path::new("/nonexistent/console-arch-check/moved-scan-root"));
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("no Rust files"), "{findings:?}");
+    }
+
+    #[test]
+    fn a_scan_of_a_real_root_reads_files_and_passes() {
+        // The positive control for the guard above: a real root yields Rust
+        // files (so the zero-file finding does NOT fire) and this crate's own
+        // sources are clean.
+        let findings = check_tmux_socket_scoping(Path::new(env!("CARGO_MANIFEST_DIR")));
+        assert!(findings.is_empty(), "{findings:?}");
     }
 }
