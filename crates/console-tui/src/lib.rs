@@ -23,8 +23,8 @@ use console_application::{
     FocusPane, HELP_SECTION_COUNT, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
     OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
     TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-    ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows, reduce_tui_interaction,
-    resolve_command_palette_action, resolve_dispatcher_setting_edit,
+    ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
+    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
     resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
@@ -153,11 +153,13 @@ fn run_terminal_loop(
         // back into the state, so the next ScrollDetailDown clamps to the true
         // wrapped bottom (the SAME count the scrollbar is sized from) rather than
         // a width-agnostic logical line count (Finding G).
-        let mut detail_max_scroll = 0usize;
+        let mut extents = RenderScrollExtents::ZERO;
         terminal.draw(|frame| {
-            detail_max_scroll = render_model(&model, frame.area(), frame.buffer_mut());
+            extents = render_model(&model, frame.area(), frame.buffer_mut());
         })?;
-        state = state.with_detail_max_scroll(detail_max_scroll);
+        state = state
+            .with_detail_max_scroll(extents.detail_max_scroll)
+            .with_header_max_scroll(extents.header_max_scroll);
         let tick = process_input_tick(&mut state, &events, requested_by, &mut effects, session)?;
         if matches!(tick, LoopTick::Quit) {
             return Ok(effects);
@@ -460,8 +462,8 @@ pub fn key_event_to_terminal_input(
         return Some(TuiTerminalInput::Quit);
     }
     match event.code {
-        KeyCode::Up => Some(TuiTerminalInput::Interaction(up_interaction(model))),
-        KeyCode::Down => Some(TuiTerminalInput::Interaction(down_interaction(model))),
+        KeyCode::Up => up_interaction(model).map(TuiTerminalInput::Interaction),
+        KeyCode::Down => down_interaction(model).map(TuiTerminalInput::Interaction),
         KeyCode::Esc => Some(TuiTerminalInput::Interaction(esc_interaction(model))),
         KeyCode::Enter => enter_input(model),
         KeyCode::Backspace => Some(TuiTerminalInput::Interaction(TuiInteraction::Backspace)),
@@ -504,12 +506,12 @@ pub fn key_event_to_terminal_input(
         KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
+        KeyCode::Tab => tab_input(model, true),
+        KeyCode::BackTab => tab_input(model, false),
         KeyCode::PageUp => help_scroll_input(overlay, false),
         KeyCode::PageDown => help_scroll_input(overlay, true),
         KeyCode::Home
         | KeyCode::End
-        | KeyCode::Tab
-        | KeyCode::BackTab
         | KeyCode::Delete
         | KeyCode::Insert
         | KeyCode::F(_)
@@ -531,8 +533,8 @@ pub fn key_event_to_terminal_input(
 /// within the focused pane (move the Views selection on the nav, the content
 /// selection in the content list, or scroll the Detail pane up); behind any
 /// other overlay it is the harmless content move.
-const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
-    match model.overlay() {
+const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
+    Some(match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
         TuiOverlay::Help { .. } => TuiInteraction::HelpSelectPreviousSection,
@@ -540,17 +542,20 @@ const fn up_interaction(model: &TuiScreenModel) -> TuiInteraction {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
             FocusPane::Detail => TuiInteraction::ScrollDetailUp,
+            // The focused Header pane scrolls only horizontally (left/right);
+            // up/down are inert on it.
+            FocusPane::Header => return None,
         },
         TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => {
             TuiInteraction::SelectPrevious
         }
-    }
+    })
 }
 
 /// Down: the mirror of [`up_interaction`] (behind Help it moves the left-menu
 /// section selection DOWN).
-const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
-    match model.overlay() {
+const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
+    Some(match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
         TuiOverlay::Help { .. } => TuiInteraction::HelpSelectNextSection,
@@ -558,9 +563,11 @@ const fn down_interaction(model: &TuiScreenModel) -> TuiInteraction {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
             FocusPane::Detail => TuiInteraction::ScrollDetailDown,
+            // The focused Header pane scrolls only horizontally; up/down inert.
+            FocusPane::Header => return None,
         },
         TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => TuiInteraction::SelectNext,
-    }
+    })
 }
 
 /// Enter: confirm a command modal / valve-confirm modal; behind a text/help
@@ -603,7 +610,9 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                 TuiInteraction::OpenCommandModal,
             ))
         }
-        FocusPane::Detail => None,
+        // Enter is inert on the Detail pane and the focused Header pane (the
+        // header scrolls, it does not open).
+        FocusPane::Detail | FocusPane::Header => None,
     }
 }
 
@@ -619,6 +628,9 @@ fn esc_interaction(model: &TuiScreenModel) -> TuiInteraction {
         FocusPane::Detail => TuiInteraction::FocusContent,
         FocusPane::Content => content_back_interaction(model),
         FocusPane::Nav => TuiInteraction::CloseOverlay,
+        // Esc leaves the focused Header pane, returning to the Views nav (and
+        // resetting the header scroll via `with_focus`).
+        FocusPane::Header => TuiInteraction::FocusNav,
     }
 }
 
@@ -645,6 +657,9 @@ fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         FocusPane::Nav => return None,
         FocusPane::Content => content_back_interaction(model),
         FocusPane::Detail => TuiInteraction::FocusContent,
+        // On the focused Header pane, left/right scroll horizontally instead of
+        // walking the body panes.
+        FocusPane::Header => TuiInteraction::ScrollHeaderLeft,
     };
     Some(TuiTerminalInput::Interaction(interaction))
 }
@@ -669,6 +684,9 @@ const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         }
         // Rightmost reachable pane: right clamps here.
         FocusPane::Detail => return None,
+        // On the focused Header pane, left/right scroll horizontally instead of
+        // walking the body panes.
+        FocusPane::Header => TuiInteraction::ScrollHeaderRight,
     };
     Some(TuiTerminalInput::Interaction(interaction))
 }
@@ -678,6 +696,21 @@ const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 /// rightmost focus step at Content on the Lanes view.
 const fn view_has_detail_pane(model: &TuiScreenModel) -> bool {
     !matches!(model.active_view(), TuiView::Lanes)
+}
+
+/// `Tab` / `BackTab`: behind an overlay it is inert (the overlay owns navigation);
+/// otherwise it cycles focus one pane forward (`Tab`) or backward (`BackTab`)
+/// around the pane ring, which — unlike the spatial `left`/`right` body walk —
+/// INCLUDES the top/header pane, so the header can be focused like any other pane.
+const fn tab_input(model: &TuiScreenModel, forward: bool) -> Option<TuiTerminalInput> {
+    if model.overlay().is_open() {
+        return None;
+    }
+    Some(TuiTerminalInput::Interaction(if forward {
+        TuiInteraction::FocusNextPane
+    } else {
+        TuiInteraction::FocusPreviousPane
+    }))
 }
 
 const fn slash_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -832,16 +865,45 @@ pub fn render_to_text(model: &TuiScreenModel, width: u16, height: u16) -> TuiRen
     Ok(buffer_to_text(&buffer, area))
 }
 
-/// Render the whole screen.
+/// The per-frame scroll extents a full [`render_model`] pass measures.
 ///
-/// Returns the Detail pane's maximum scroll offset — the wrapped-aware largest
-/// offset that keeps the pane's last row visible, or `0` for a view without a
-/// Detail pane — so the interactive loop can clamp the persisted scroll state to
-/// what actually fits, using the SAME wrapped line count the scrollbar is sized
-/// from.
-pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
+/// The interactive loop feeds them back into the interaction state so the next
+/// scroll press clamps to the true content edge at the CURRENT viewport size.
+/// Mirrors how the Detail pane's `detail_max_scroll` is measured-and-fed-back,
+/// now also carrying the Header pane's horizontal `header_max_scroll`.
+pub struct RenderScrollExtents {
+    /// The Detail pane's maximum vertical scroll offset — the wrapped-aware
+    /// largest offset that keeps the pane's last row visible, or `0` for a view
+    /// without a Detail pane (the SAME wrapped line count the scrollbar is sized
+    /// from).
+    pub detail_max_scroll: usize,
+    /// The Header pane's maximum horizontal scroll offset — the header's display
+    /// width beyond the pane's inner width — or `0` unless the Header pane is
+    /// focused and its full line overflows the current viewport width.
+    pub header_max_scroll: usize,
+}
+
+impl RenderScrollExtents {
+    /// The zero extents returned when there is nothing to render (an empty area),
+    /// so neither pane's scroll clamp advances off a frame that drew nothing.
+    const ZERO: Self = Self {
+        detail_max_scroll: 0,
+        header_max_scroll: 0,
+    };
+}
+
+/// Render the whole screen and return the per-frame [`RenderScrollExtents`].
+///
+/// The extents are the Detail pane's maximum vertical scroll and the Header
+/// pane's maximum horizontal scroll — so the interactive loop can clamp the
+/// persisted scroll state to what actually fits at the current viewport size.
+pub fn render_model(
+    model: &TuiScreenModel,
+    area: Rect,
+    buffer: &mut Buffer,
+) -> RenderScrollExtents {
     if area.is_empty() {
-        return 0;
+        return RenderScrollExtents::ZERO;
     }
     // The Status line is a bordered box like the header: height 3 leaves exactly
     // ONE inner content row for the context-specific shortcut hints (a height-2
@@ -858,21 +920,52 @@ pub fn render_model(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> 
             Constraint::Length(3),
         ])
         .split(area);
-    render_header(model, vertical[0], buffer);
+    let header_max_scroll = render_header(model, vertical[0], buffer);
     let detail_max_scroll = render_body(model, vertical[1], buffer);
     render_footer(model, vertical[2], buffer);
     render_overlay(model, area, buffer);
-    detail_max_scroll
+    RenderScrollExtents {
+        detail_max_scroll,
+        header_max_scroll,
+    }
 }
 
-fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
-    // Fit the header to the space inside the block's left/right borders so a
-    // narrow terminal degrades the header gracefully (see `header_line`) rather
-    // than letting a long field clip the ones after it.
+/// Render the top Header pane and return its maximum horizontal scroll offset
+/// (`0` unless the pane is focused AND the full header overflows the pane's inner
+/// width).
+///
+/// A BLURRED header keeps the shrink-to-fit default (`header_line`), which
+/// degrades gracefully on a narrow viewport — dropping low-value fields rather
+/// than letting a long field clip the ones after it — so B1's cockpit-blind
+/// "sources unavailable" tell always survives. A FOCUSED header instead renders
+/// the FULL, un-degraded header line panned by the pane's horizontal scroll
+/// offset, so content clipped at the current width is reachable by scrolling
+/// left/right; its block title carries the `[focus]` marker every other focused
+/// pane uses.
+fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
     let inner_width = usize::from(area.width.saturating_sub(2));
-    Paragraph::new(model.header_line(inner_width))
-        .block(Block::new().borders(Borders::ALL).title("LiveSpec Console"))
+    let focused = model.focus() == FocusPane::Header;
+    let title = focus_title("LiveSpec Console", focused);
+    if !focused {
+        Paragraph::new(model.header_line(inner_width))
+            .block(Block::new().borders(Borders::ALL).title(title))
+            .render(area, buffer);
+        return 0;
+    }
+    // Focused: pan the FULL, un-degraded line. The max scroll is the header's
+    // display width beyond the pane's inner width; clamp the offset to it so a
+    // stale scroll (for example after a resize) never pans past the right edge,
+    // and return the max so the interactive loop feeds it back and the reducer's
+    // scroll-right clamp agrees with what is actually clipped at this width.
+    let full = model.header();
+    let full_width = full.chars().count();
+    let max_scroll = full_width.saturating_sub(inner_width);
+    let offset = model.header_scroll().min(max_scroll);
+    let visible: String = full.chars().skip(offset).take(inner_width).collect();
+    Paragraph::new(visible)
+        .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
+    max_scroll
 }
 
 /// Render the body panes and return the Detail pane's maximum scroll offset
@@ -1211,8 +1304,12 @@ fn render_help_menu(area: Rect, buffer: &mut Buffer, selected_section: usize) {
 }
 
 /// The stable label for Help menu section `section`: `0` is `Global actions`;
-/// `1..` are the focusable panes in `TuiView::all()` order.
+/// the middle sections are the focusable view panes in `TuiView::all()` order;
+/// the LAST section is the top/header pane.
 fn help_section_label(section: usize) -> &'static str {
+    if section == header_help_section() {
+        return "Header";
+    }
     section
         .checked_sub(1)
         .and_then(|view_index| TuiView::all().get(view_index))
@@ -1240,12 +1337,34 @@ fn render_help_section_text(
 }
 
 /// The help lines for menu section `section`: section `0` is the `Global
-/// actions` keybinding reference; `1..` are the per-pane sections.
+/// actions` keybinding reference; the middle sections are the per-view panes; the
+/// LAST section is the top/header pane.
 fn help_section_lines(section: usize) -> Vec<Line<'static>> {
+    if section == header_help_section() {
+        return header_help_lines();
+    }
     section
         .checked_sub(1)
         .and_then(|view_index| TuiView::all().get(view_index).copied())
         .map_or_else(global_help_lines, help_lines_for_view)
+}
+
+/// The top/header pane's help section: what the pane shows plus the keys usable
+/// while it is focused. Kept in lock-step with the key handler and Scenario 20.
+fn header_help_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from("Header -- the top status line: fleet / mode / repo / view / attention,"),
+        Line::from("plus a source-health tell when any backing source is unavailable."),
+        Line::from(""),
+        Line::from("On a narrow viewport the blurred header shrinks to fit, dropping its"),
+        Line::from("low-value fields; focus it to read the FULL line and scroll it sideways."),
+        Line::from(""),
+        Line::from("tab / shift-tab  cycle focus onto (and off) the header, like any pane"),
+        Line::from("left / right     scroll the focused header horizontally to reveal"),
+        Line::from("                 content clipped at the current width"),
+        Line::from("esc              leave the header (returns to the Views nav)"),
+        Line::from("On blur the header snaps back to its left-justified default."),
+    ]
 }
 
 /// The `Global actions` section: the navigation and command keys available from
@@ -1255,7 +1374,9 @@ fn global_help_lines() -> Vec<Line<'static>> {
         Line::from("Global actions -- available from every view:"),
         Line::from(""),
         Line::from("up / down    navigate the focused pane; in this help, the section menu"),
-        Line::from("left / right move focus across panes (Views -> Content -> Detail), clamped"),
+        Line::from("left / right move focus across the body panes (Views -> Content -> Detail),"),
+        Line::from("             clamped; on the focused header, scroll it horizontally instead"),
+        Line::from("tab / s-tab  cycle focus across every pane, including the top header"),
         Line::from("enter        dive from the nav into content, or open the selected item"),
         Line::from(
             "esc          step focus back (Detail -> Content -> nav; drilled lane -> overview)",
@@ -1737,7 +1858,8 @@ mod tests {
         DispatcherSettingsRead, FocusPane, LaneFocus, OperatorAction, OperatorActionOutcome,
         OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry, TuiInteraction,
         TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, help_section_for_view, reduce_tui_interaction,
+        build_tui_model_for_state, header_help_section, help_section_for_view,
+        reduce_tui_interaction,
     };
 
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1909,6 +2031,195 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Enter), &model),
             None
         );
+    }
+
+    #[test]
+    fn keymap_maps_header_pane_focus_scroll_leave_and_inert_keys() {
+        // On the focused top/header pane: left/right scroll it horizontally,
+        // up/down are inert, Enter is inert, and Esc leaves the header (returning
+        // to the Views nav). Tab is the ring cycle, tested separately.
+        let model = attention_model_in(TuiOverlay::None, FocusPane::Header);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::ScrollHeaderLeft
+            ))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Right), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::ScrollHeaderRight
+            ))
+        );
+        assert_eq!(key_event_to_terminal_input(key(KeyCode::Up), &model), None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &model),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
+        );
+    }
+
+    #[test]
+    fn keymap_tab_cycles_the_focus_ring_and_is_inert_behind_an_overlay() {
+        // Tab / BackTab drive the focus ring (which includes the header); behind
+        // an open overlay they are inert (the overlay owns navigation).
+        let model = attention_model(TuiOverlay::None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Tab), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNextPane))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::BackTab), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::FocusPreviousPane
+            ))
+        );
+        let overlaid = attention_model(TuiOverlay::Search {
+            query: String::new(),
+        });
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Tab), &overlaid),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::BackTab), &overlaid),
+            None
+        );
+    }
+
+    /// The header content row of a rendered frame (row 0 is the top border, row 1
+    /// is the header's inner content), so header assertions never false-match on
+    /// body text lower in the frame.
+    fn header_row(frame: &str) -> String {
+        frame.lines().nth(1).unwrap_or_default().to_owned()
+    }
+
+    #[test]
+    fn render_header_focused_pans_the_full_line_and_blurred_shrinks_to_fit() {
+        // Scenario 20: a FOCUSED header renders the full, un-degraded line panned
+        // by its scroll offset and carries the `[focus]` title marker; a BLURRED
+        // header keeps the shrink-to-fit default (dropping low-value fields on a
+        // narrow viewport) with no marker.
+        let base = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("e2e-top-pane".to_owned());
+
+        // Focused, narrow, left edge: the left field shows, the right is clipped.
+        let left = render_to_text(
+            &build_tui_model_for_state(&demo_events(), &base.clone().with_focus(FocusPane::Header)),
+            56,
+            12,
+        )
+        .unwrap_or_default();
+        assert!(left.contains("LiveSpec Console [focus]"), "{left}");
+        let left_header = header_row(&left);
+        assert!(left_header.contains("fleet: livespec"), "{left_header}");
+        assert!(!left_header.contains("attention:"), "{left_header}");
+
+        // Focused, narrow, scrolled far right (clamped to the measured max): the
+        // previously-clipped right field is revealed, the left field panned off.
+        let right = render_to_text(
+            &build_tui_model_for_state(
+                &demo_events(),
+                &base
+                    .clone()
+                    .with_focus(FocusPane::Header)
+                    .with_header_scroll(100),
+            ),
+            56,
+            12,
+        )
+        .unwrap_or_default();
+        let right_header = header_row(&right);
+        assert!(right_header.contains("attention:"), "{right_header}");
+        assert!(!right_header.contains("fleet: livespec"), "{right_header}");
+
+        // Blurred, narrow: no `[focus]` marker; shrink-to-fit drops the fleet
+        // field but keeps the repo field.
+        let blurred = render_to_text(
+            &build_tui_model_for_state(&demo_events(), &base.with_focus(FocusPane::Nav)),
+            56,
+            12,
+        )
+        .unwrap_or_default();
+        // The header title carries no focus marker (the Views nav is focused
+        // instead, so `[focus]` appears on ITS title, not the header's).
+        assert!(!blurred.contains("LiveSpec Console [focus]"), "{blurred}");
+        let blurred_header = header_row(&blurred);
+        assert!(!blurred_header.contains("fleet: livespec"));
+        assert!(blurred_header.contains("repo: e2e-top-pane"));
+    }
+
+    #[test]
+    fn render_model_reports_the_header_scroll_extent_only_when_focused_and_clipped() {
+        // The render measures the focused header's overflow and returns it so the
+        // loop can feed it back: positive when a focused header overflows, zero
+        // when it fits, zero when blurred, and zero for an empty area.
+        let events = demo_events();
+        let focused = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("e2e-top-pane".to_owned())
+            .with_focus(FocusPane::Header);
+
+        let narrow = Rect::new(0, 0, 56, 12);
+        let mut narrow_buffer = Buffer::empty(narrow);
+        let narrow_extents = render_model(
+            &build_tui_model_for_state(&events, &focused),
+            narrow,
+            &mut narrow_buffer,
+        );
+        assert!(narrow_extents.header_max_scroll > 0);
+
+        let wide = Rect::new(0, 0, 160, 12);
+        let mut wide_buffer = Buffer::empty(wide);
+        let wide_extents = render_model(
+            &build_tui_model_for_state(&events, &focused),
+            wide,
+            &mut wide_buffer,
+        );
+        assert_eq!(wide_extents.header_max_scroll, 0);
+
+        let blurred = focused.with_focus(FocusPane::Nav);
+        let mut blurred_buffer = Buffer::empty(narrow);
+        let blurred_extents = render_model(
+            &build_tui_model_for_state(&events, &blurred),
+            narrow,
+            &mut blurred_buffer,
+        );
+        assert_eq!(blurred_extents.header_max_scroll, 0);
+
+        // Empty area: the ZERO extents path (neither pane advances off a frame
+        // that drew nothing).
+        let empty_area = Rect::new(0, 0, 0, 0);
+        let mut empty_buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let zero = render_model(
+            &build_tui_model_for_state(&events, &blurred),
+            empty_area,
+            &mut empty_buffer,
+        );
+        assert_eq!(zero.header_max_scroll, 0);
+        assert_eq!(zero.detail_max_scroll, 0);
+    }
+
+    #[test]
+    fn help_overlay_renders_the_header_pane_section() {
+        // `?` on the focused header opens Help auto-focused to the header section,
+        // which lists a "Header" menu row and renders the header pane's help body.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_overlay(TuiOverlay::Help {
+                selected_section: header_help_section(),
+                scroll: 0,
+            })
+            .with_focus(FocusPane::Header);
+        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 24)
+            .unwrap_or_default();
+        assert!(frame.contains("Header"));
+        assert!(frame.contains("scroll the focused header"));
     }
 
     /// Drive one key through the full input -> reduce -> state loop, returning the

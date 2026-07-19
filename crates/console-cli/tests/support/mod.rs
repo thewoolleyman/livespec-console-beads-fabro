@@ -93,6 +93,7 @@ impl RepoFixture {
 pub struct TmuxConsole {
     tmux: PathBuf,
     session: String,
+    socket: String,
     scratch: PathBuf,
     store_path: PathBuf,
 }
@@ -133,11 +134,18 @@ impl TmuxConsole {
         let launcher = write_launcher(&scratch, &binary, repo, &store_path, &stub)?;
 
         let session = format!("lc_e2e_{unique}");
+        // A DEDICATED per-test tmux socket (never the maintainer-owned default
+        // socket): it isolates the pane from every other client on the host so
+        // the pinned `-x`/`-y` size is honored deterministically, and lets Drop
+        // kill-server the whole isolated server safely.
+        let socket = session.clone();
         // Best-effort clear of any stale session with this name before launch.
-        run_tmux(&tmux, &["kill-session", "-t", &session]);
+        run_tmux(&tmux, &socket, &["kill-session", "-t", &session]);
 
         let status = Command::new(&tmux)
             .args([
+                "-L",
+                &socket,
                 "new-session",
                 "-d",
                 "-s",
@@ -157,6 +165,7 @@ impl TmuxConsole {
         Ok(Self {
             tmux,
             session,
+            socket,
             scratch,
             store_path,
         })
@@ -165,7 +174,14 @@ impl TmuxConsole {
     /// Return the current rendered pane contents.
     pub fn capture(&self) -> HarnessResult<String> {
         let output = Command::new(&self.tmux)
-            .args(["capture-pane", "-p", "-t", &self.session])
+            .args([
+                "-L",
+                &self.socket,
+                "capture-pane",
+                "-p",
+                "-t",
+                &self.session,
+            ])
             .output()
             .map_err(|error| format!("tmux capture-pane failed: {error}"))?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -177,7 +193,7 @@ impl TmuxConsole {
     /// `"Enter"`, and `"q"` are interpreted as the corresponding keys.
     pub fn send_keys(&self, keys: &[&str]) -> HarnessResult<()> {
         let status = Command::new(&self.tmux)
-            .args(["send-keys", "-t", &self.session])
+            .args(["-L", &self.socket, "send-keys", "-t", &self.session])
             .args(keys)
             .status()
             .map_err(|error| format!("tmux send-keys failed: {error}"))?;
@@ -248,14 +264,17 @@ impl TmuxConsole {
 
 impl Drop for TmuxConsole {
     fn drop(&mut self) {
-        run_tmux(&self.tmux, &["kill-session", "-t", &self.session]);
+        // The socket is dedicated to this instance, so kill-server tears the
+        // whole isolated tmux server down (never the default socket).
+        run_tmux(&self.tmux, &self.socket, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
 
-/// Run a `tmux` sub-command best-effort, ignoring the outcome.
-fn run_tmux(tmux: &Path, args: &[&str]) {
-    let _ = Command::new(tmux).args(args).output();
+/// Run a `tmux` sub-command on the instance's dedicated socket best-effort,
+/// ignoring the outcome.
+fn run_tmux(tmux: &Path, socket: &str, args: &[&str]) {
+    let _ = Command::new(tmux).arg("-L").arg(socket).args(args).output();
 }
 
 /// Resolve the `tmux` binary: `LIVESPEC_CONSOLE_E2E_TMUX` override, then the
@@ -414,10 +433,13 @@ impl TmuxConsole {
             write_launcher_with_env(&scratch, &binary, repo, &store_path, &stub, extra_env)?;
 
         let session = format!("lc_e2e_{unique}");
-        run_tmux(&tmux, &["kill-session", "-t", &session]);
+        let socket = session.clone();
+        run_tmux(&tmux, &socket, &["kill-session", "-t", &session]);
 
         let status = Command::new(&tmux)
             .args([
+                "-L",
+                &socket,
                 "new-session",
                 "-d",
                 "-s",
@@ -437,6 +459,7 @@ impl TmuxConsole {
         Ok(Self {
             tmux,
             session,
+            socket,
             scratch,
             store_path,
         })

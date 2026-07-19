@@ -147,14 +147,18 @@ pub enum LaneFocus {
 
 /// Which pane the arrow keys drive.
 ///
-/// The cockpit body is three side-by-side panes: the left **Views** navigation
+/// The cockpit body is three side-by-side panes — the left **Views** navigation
 /// menu, the middle **Content** pane (the active view's list), and the right
-/// **Detail** pane (the selected item's details). `left`/`right` walk focus
-/// between the panes, clamped at the ends (`right` stops on Detail, `left` stops
-/// on Nav); `up`/`down` act WITHIN the focused pane — moving the Views selection,
-/// the Content selection, or scrolling the Detail pane. Focus starts on the Views
+/// **Detail** pane (the selected item's details) — above which sits the
+/// **Header** pane (the top status line). `left`/`right` walk focus spatially
+/// between the body panes, clamped at the ends (`right` stops on Detail, `left`
+/// stops on Nav); `up`/`down` act WITHIN the focused pane — moving the Views
+/// selection, the Content selection, or scrolling the Detail pane. `Tab`/`BackTab`
+/// cycle focus across EVERY pane including the Header. Focus starts on the Views
 /// nav so `up`/`down` walk the vertical Views menu intuitively. The `Lanes` view
-/// has no Detail pane, so `right` clamps at Content there.
+/// has no Detail pane, so `right` clamps at Content there and the focus cycle
+/// skips the Detail pane. While the Header holds focus, `left`/`right` scroll it
+/// horizontally rather than walking the body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
     /// The left Views navigation menu (the default focus).
@@ -163,6 +167,9 @@ pub enum FocusPane {
     Content,
     /// The right Detail pane (the selected item's details; scrollable).
     Detail,
+    /// The top Header pane (the status line; focusable and horizontally
+    /// scrollable so content clipped on a narrow viewport is reachable).
+    Header,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -626,6 +633,22 @@ pub enum TuiInteraction {
     /// Move focus from the Content pane to the right Detail pane (the `right`
     /// step-in from the content list, on a view that has a Detail pane).
     FocusDetail,
+    /// Cycle focus to the NEXT pane in the ring (the `Tab` binding), wrapping
+    /// Nav -> Content -> Detail -> Header -> Nav. The ring skips the Detail pane
+    /// on a view that has none (`Lanes`), so it reads Nav -> Content -> Header there.
+    FocusNextPane,
+    /// Cycle focus to the PREVIOUS pane in the ring (the `BackTab`/`Shift-Tab`
+    /// binding), the reverse of [`FocusNextPane`](Self::FocusNextPane).
+    FocusPreviousPane,
+    /// Scroll the focused Header pane one step to the RIGHT (the `right` key while
+    /// the Header pane holds focus), revealing header content clipped off the
+    /// right edge. Clamped to the render-measured maximum so it stops at the true
+    /// right edge; inert once the whole header already fits.
+    ScrollHeaderRight,
+    /// Scroll the focused Header pane one step to the LEFT (the `left` key while
+    /// the Header pane holds focus), back toward its left-justified default.
+    /// Saturates at the left edge (offset `0`).
+    ScrollHeaderLeft,
     /// Scroll the focused Detail pane's content down one line (the `down` key
     /// while the Detail pane holds focus), revealing content clipped below.
     ScrollDetailDown,
@@ -669,6 +692,8 @@ pub struct TuiInteractionState {
     focus: FocusPane,
     detail_scroll: usize,
     detail_max_scroll: usize,
+    header_scroll: usize,
+    header_max_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
     selected_setting_index: usize,
@@ -688,6 +713,8 @@ impl TuiInteractionState {
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
+            header_scroll: 0,
+            header_max_scroll: 0,
             overlay,
             selected_repo: String::new(),
             selected_setting_index: 0,
@@ -711,6 +738,8 @@ impl TuiInteractionState {
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
+            header_scroll: 0,
+            header_max_scroll: 0,
             overlay,
             selected_repo: String::new(),
             selected_setting_index: 0,
@@ -727,9 +756,19 @@ impl TuiInteractionState {
     }
 
     /// Replace which pane the arrow keys drive, preserving every other field.
+    ///
+    /// This is the single seam every focus change flows through, so it also
+    /// resets the Header pane's horizontal scroll to its left-justified default
+    /// whenever focus moves to a NON-Header pane (blur). That keeps the
+    /// snap-back-on-blur invariant centralized: a focus change back to the
+    /// Header always starts at offset `0`, and blur never leaves the header
+    /// stuck mid-scroll (per Scenario 20 / the TUI Contract).
     #[must_use]
     pub const fn with_focus(mut self, focus: FocusPane) -> Self {
         self.focus = focus;
+        if !matches!(focus, FocusPane::Header) {
+            self.header_scroll = 0;
+        }
         self
     }
 
@@ -752,6 +791,28 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn with_detail_max_scroll(mut self, detail_max_scroll: usize) -> Self {
         self.detail_max_scroll = detail_max_scroll;
+        self
+    }
+
+    /// Replace the Header pane's horizontal scroll offset (the leftmost visible
+    /// header column while the Header pane holds focus), preserving every other
+    /// field. Reset to `0` on blur (see [`with_focus`](Self::with_focus)).
+    #[must_use]
+    pub const fn with_header_scroll(mut self, header_scroll: usize) -> Self {
+        self.header_scroll = header_scroll;
+        self
+    }
+
+    /// Replace the Header pane's maximum horizontal scroll offset — the largest
+    /// leftmost-column offset at which the header line's last column is still
+    /// visible — preserving every other field. The renderer measures it from the
+    /// full header width minus the pane's inner width and the interactive loop
+    /// feeds it back each frame, mirroring `with_detail_max_scroll`, so the
+    /// scroll-right clamp reaches the true right edge at the current viewport
+    /// width rather than a width-agnostic guess.
+    #[must_use]
+    pub const fn with_header_max_scroll(mut self, header_max_scroll: usize) -> Self {
+        self.header_max_scroll = header_max_scroll;
         self
     }
 
@@ -847,6 +908,22 @@ impl TuiInteractionState {
     /// wrapped line count.
     pub const fn detail_max_scroll(&self) -> usize {
         self.detail_max_scroll
+    }
+
+    #[must_use]
+    /// Return the Header pane's horizontal scroll offset (the leftmost visible
+    /// header column while the Header pane holds focus).
+    pub const fn header_scroll(&self) -> usize {
+        self.header_scroll
+    }
+
+    #[must_use]
+    /// Return the Header pane's maximum horizontal scroll offset as measured by
+    /// the last render (see [`with_header_max_scroll`](Self::with_header_max_scroll)).
+    /// The scroll-right reducer clamps to this so the scroll range agrees with the
+    /// header content actually clipped at the current viewport width.
+    pub const fn header_max_scroll(&self) -> usize {
+        self.header_max_scroll
     }
 
     #[must_use]
@@ -1020,6 +1097,7 @@ pub struct TuiScreenModel {
     selected_lane_item_index: Option<usize>,
     focus: FocusPane,
     detail_scroll: usize,
+    header_scroll: usize,
     overlay: TuiOverlay,
     selected_repo: String,
     selected_setting_index: Option<usize>,
@@ -1150,6 +1228,14 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// The Header pane's horizontal scroll offset (the leftmost visible header
+    /// column) for the renderer to pan the focused header by. `0` (left-justified)
+    /// whenever the Header pane is not focused.
+    pub const fn header_scroll(&self) -> usize {
+        self.header_scroll
+    }
+
+    #[must_use]
     /// Return the stored value.
     pub const fn overlay(&self) -> &TuiOverlay {
         &self.overlay
@@ -1235,9 +1321,22 @@ impl TuiScreenModel {
     /// the overlay closes). It is never empty, so no context in which shortcut
     /// actions are available shows a blank hint line. See [`footer_hint`].
     pub const fn footer(&self) -> &str {
-        footer_hint(self.active_view, &self.overlay)
+        // The Header pane is not view-keyed, so its focused hints come from
+        // `focus` rather than `active_view`: while it holds focus (and no overlay
+        // owns the line), the hints describe its horizontal-scroll keys. An open
+        // overlay still owns the hint line first, so it is matched ahead of the
+        // Header-focus branch.
+        match (&self.overlay, self.focus) {
+            (TuiOverlay::None, FocusPane::Header) => HEADER_FOOTER_HINT,
+            (overlay, _) => footer_hint(self.active_view, overlay),
+        }
     }
 }
+
+/// The Status-line shortcut hints shown while the Header pane holds focus with no
+/// overlay open: the horizontal-scroll and leave keys that act on the focused
+/// header. Non-empty and context-specific, like every other focused-pane hint.
+const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q quit";
 
 /// The context-specific Status-line shortcut hints for a focused pane
 /// (`active_view`) and any open `overlay`, per the TUI Contract / Scenario 19.
@@ -2142,6 +2241,7 @@ pub fn build_tui_model_for_state(
         selected_lane_item_index,
         focus: state.focus(),
         detail_scroll: state.detail_scroll(),
+        header_scroll: state.header_scroll(),
         overlay,
         selected_repo: state.selected_repo().to_owned(),
         selected_setting_index,
@@ -2345,6 +2445,58 @@ fn fit_header_line(
     line
 }
 
+/// Columns the focused Header pane pans per `left`/`right` press. Larger than a
+/// single column so a modestly-overflowing header is traversed end-to-end in a
+/// few presses (a one-line status header has no need for column-fine control);
+/// the render-measured clamp still stops exactly at the true right edge, and the
+/// left step saturates at the left-justified default. The specific step is an
+/// implementation detail per the TUI Contract (§"TUI Contract").
+const HEADER_SCROLL_STEP: usize = 8;
+
+/// The pane the focus ring lands on AFTER `current` when cycling forward (the
+/// `Tab` binding). The ring is Nav -> Content -> Detail -> Header -> Nav, but a
+/// view with no Detail pane (`Lanes`) skips it, so the ring is Nav -> Content ->
+/// Header -> Nav there.
+const fn next_focus_pane(current: FocusPane, active_view: TuiView) -> FocusPane {
+    match current {
+        FocusPane::Nav => FocusPane::Content,
+        FocusPane::Content => {
+            if view_has_detail_pane(active_view) {
+                FocusPane::Detail
+            } else {
+                FocusPane::Header
+            }
+        }
+        FocusPane::Detail => FocusPane::Header,
+        FocusPane::Header => FocusPane::Nav,
+    }
+}
+
+/// The pane the focus ring lands on BEFORE `current` when cycling backward (the
+/// `BackTab`/`Shift-Tab` binding) — the reverse of [`next_focus_pane`].
+const fn previous_focus_pane(current: FocusPane, active_view: TuiView) -> FocusPane {
+    match current {
+        FocusPane::Nav => FocusPane::Header,
+        FocusPane::Content => FocusPane::Nav,
+        FocusPane::Detail => FocusPane::Content,
+        FocusPane::Header => {
+            if view_has_detail_pane(active_view) {
+                FocusPane::Detail
+            } else {
+                FocusPane::Content
+            }
+        }
+    }
+}
+
+/// Whether `active_view` renders a right-hand Detail pane (every view except
+/// `Lanes`, which spans the full body width beside the nav). The focus ring and
+/// the spatial `right` walk both clamp against this so neither lands on a Detail
+/// pane the view does not draw.
+const fn view_has_detail_pane(active_view: TuiView) -> bool {
+    !matches!(active_view, TuiView::Lanes)
+}
+
 #[must_use]
 /// Return the reduce tui interaction value.
 pub fn reduce_tui_interaction(
@@ -2393,6 +2545,24 @@ pub fn reduce_tui_interaction(
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
         TuiInteraction::FocusDetail => state.clone().with_focus(FocusPane::Detail),
+        TuiInteraction::FocusNextPane => state
+            .clone()
+            .with_focus(next_focus_pane(state.focus(), state.active_view())),
+        TuiInteraction::FocusPreviousPane => state
+            .clone()
+            .with_focus(previous_focus_pane(state.focus(), state.active_view())),
+        TuiInteraction::ScrollHeaderRight => {
+            // Clamp to the render-measured maximum (the full header width minus
+            // the pane's inner width), fed back each frame exactly like the Detail
+            // pane's vertical clamp, so the right edge reached is the true clip
+            // point at the current viewport width.
+            state.clone().with_header_scroll(
+                (state.header_scroll() + HEADER_SCROLL_STEP).min(state.header_max_scroll()),
+            )
+        }
+        TuiInteraction::ScrollHeaderLeft => state
+            .clone()
+            .with_header_scroll(state.header_scroll().saturating_sub(HEADER_SCROLL_STEP)),
         TuiInteraction::ScrollDetailDown => {
             // Clamp to the render-measured wrapped max scroll (the largest offset
             // that keeps the pane's last wrapped row visible), NOT a width-agnostic
@@ -2408,7 +2578,7 @@ pub fn reduce_tui_interaction(
             .clone()
             .with_detail_scroll(state.detail_scroll().saturating_sub(1)),
         TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help {
-            selected_section: help_section_for_view(state.active_view()),
+            selected_section: help_section_for_focus(state.focus(), state.active_view()),
             scroll: 0,
         }),
         TuiInteraction::HelpSelectNextSection => state
@@ -4816,10 +4986,20 @@ fn view_index(active_view: TuiView) -> usize {
 
 /// The number of sections the modal Help menu carries.
 ///
-/// One `Global actions` section plus one section per focusable pane
-/// (`TuiView`) -- the count the menu enumerates and the navigation clamp
-/// bounds against.
-pub const HELP_SECTION_COUNT: usize = 1 + TuiView::all().len();
+/// One `Global actions` section, one section per focusable view pane
+/// (`TuiView`), plus a final section for the top/header pane -- the count the
+/// menu enumerates and the navigation clamp bounds against.
+pub const HELP_SECTION_COUNT: usize = 1 + TuiView::all().len() + 1;
+
+/// The Help-menu section index for the top/header pane: the LAST section.
+///
+/// It comes after `Global actions` and every view pane. Pressing `?` while the
+/// Header pane holds focus auto-focuses Help here (per the TUI Contract: one
+/// section per focusable pane, `?` opens auto-focused to THAT pane's section).
+#[must_use]
+pub const fn header_help_section() -> usize {
+    HELP_SECTION_COUNT - 1
+}
 
 /// The Help-menu section index that pane/view `view` auto-focuses.
 ///
@@ -4830,6 +5010,22 @@ pub const HELP_SECTION_COUNT: usize = 1 + TuiView::all().len();
 #[must_use]
 pub fn help_section_for_view(view: TuiView) -> usize {
     view_index(view) + 1
+}
+
+/// The Help-menu section index that the currently focused pane auto-focuses.
+///
+/// It is the top/header pane's own section when the Header holds focus,
+/// otherwise the active view's section. Threads focus through `OpenHelp` so `?`
+/// opens on the focused pane's section even when that pane is the header (which
+/// is not view-keyed).
+#[must_use]
+pub fn help_section_for_focus(focus: FocusPane, active_view: TuiView) -> usize {
+    match focus {
+        FocusPane::Header => header_help_section(),
+        FocusPane::Nav | FocusPane::Content | FocusPane::Detail => {
+            help_section_for_view(active_view)
+        }
+    }
 }
 
 /// Move the modal Help menu selection one section forward (`down`) or backward
@@ -5173,9 +5369,9 @@ mod tests {
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HELP_SECTION_COUNT,
-        JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
-        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
+        HELP_SECTION_COUNT, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem,
+        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
         TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
         build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count, footer_hint,
@@ -5184,11 +5380,11 @@ mod tests {
         handle_work_item_move_command, handle_work_item_reject_command,
         handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
-        help_section_for_view, project_attention, project_lane_board, reduce_tui_interaction,
-        resolve_command_palette_action, resolve_dispatcher_setting_edit,
-        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
-        work_item_override_outcome,
+        header_help_section, help_section_for_focus, help_section_for_view, project_attention,
+        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
+        validate_operator_action, work_item_override_outcome,
     };
 
     #[test]
@@ -6014,6 +6210,171 @@ mod tests {
     }
 
     #[test]
+    fn tab_cycles_focus_through_every_pane_including_the_header() {
+        // Scenario 20 case 1: `Tab` cycles focus around the whole pane ring —
+        // Nav -> Content -> Detail -> Header -> Nav — so the top/header pane is
+        // focusable like any other pane. `BackTab` walks the ring in reverse.
+        let events = fabro_gate_events();
+        let ring = [
+            FocusPane::Nav,
+            FocusPane::Content,
+            FocusPane::Detail,
+            FocusPane::Header,
+        ];
+        // Forward: Tab three times from Nav lands on the Header, then wraps to Nav.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        for expected in ring.iter().skip(1).chain(std::iter::once(&ring[0])) {
+            state = reduce_tui_interaction(&state, &events, TuiInteraction::FocusNextPane);
+            assert_eq!(state.focus(), *expected);
+            assert_eq!(
+                build_tui_model_for_state(&events, &state).focus(),
+                *expected
+            );
+        }
+        // Backward: BackTab from Nav walks the ring in reverse (Nav -> Header -> ...).
+        let mut back = TuiInteractionState::new(0, TuiOverlay::None);
+        for expected in ring
+            .iter()
+            .rev()
+            .chain(std::iter::once(&ring[ring.len() - 1]))
+        {
+            back = reduce_tui_interaction(&back, &events, TuiInteraction::FocusPreviousPane);
+            assert_eq!(back.focus(), *expected);
+        }
+    }
+
+    #[test]
+    fn tab_focus_ring_skips_the_detail_pane_on_a_view_without_one() {
+        // The `Lanes` view draws no Detail pane, so the focus ring skips it:
+        // Nav -> Content -> Header -> Nav (and the reverse).
+        let events = fabro_gate_events();
+        let mut state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        for expected in [
+            FocusPane::Content,
+            FocusPane::Header,
+            FocusPane::Nav,
+            FocusPane::Content,
+        ] {
+            state = reduce_tui_interaction(&state, &events, TuiInteraction::FocusNextPane);
+            assert_eq!(state.focus(), expected);
+        }
+        // Reverse from Nav: Nav -> Header -> Content -> Nav, still skipping Detail.
+        let mut back = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        for expected in [FocusPane::Header, FocusPane::Content, FocusPane::Nav] {
+            back = reduce_tui_interaction(&back, &events, TuiInteraction::FocusPreviousPane);
+            assert_eq!(back.focus(), expected);
+        }
+    }
+
+    #[test]
+    fn header_scroll_clamps_right_to_the_measured_max_and_saturates_left() {
+        // Scenario 20 case 2: the render measures the header's overflow and the
+        // loop feeds it back; ScrollHeaderRight advances by the fixed step and
+        // clamps at that measured maximum, ScrollHeaderLeft saturates at the left
+        // edge — so the clipped right-hand content is reachable and the pane can
+        // return to its left-justified default.
+        let events = fabro_gate_events();
+        let max = 20usize;
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Header)
+            .with_header_max_scroll(max);
+
+        // One Right press advances by exactly the fixed step.
+        let one = reduce_tui_interaction(&state, &events, TuiInteraction::ScrollHeaderRight);
+        assert_eq!(one.header_scroll(), HEADER_SCROLL_STEP);
+        assert_eq!(
+            build_tui_model_for_state(&events, &one).header_scroll(),
+            HEADER_SCROLL_STEP
+        );
+
+        // Pressing Right past the end clamps at the render-measured max.
+        let presses = max / HEADER_SCROLL_STEP + 3;
+        let mut scrolled = state;
+        for _ in 0..presses {
+            scrolled =
+                reduce_tui_interaction(&scrolled, &events, TuiInteraction::ScrollHeaderRight);
+        }
+        assert_eq!(scrolled.header_scroll(), max);
+        assert_eq!(scrolled.header_max_scroll(), max);
+
+        // Pressing Left past the start saturates at the left edge (offset 0).
+        let mut unscrolled = scrolled;
+        for _ in 0..presses {
+            unscrolled =
+                reduce_tui_interaction(&unscrolled, &events, TuiInteraction::ScrollHeaderLeft);
+        }
+        assert_eq!(unscrolled.header_scroll(), 0);
+    }
+
+    #[test]
+    fn blur_resets_the_header_scroll_but_focusing_the_header_preserves_it() {
+        // Scenario 20 case 3: `with_focus` is the single seam that snaps the
+        // header back to its left-justified default on blur — a focus change to
+        // ANY non-header pane zeroes the scroll — while a move that keeps the
+        // header focused leaves the offset untouched.
+        let scrolled = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Header)
+            .with_header_scroll(12);
+        assert_eq!(scrolled.header_scroll(), 12);
+        for pane in [FocusPane::Nav, FocusPane::Content, FocusPane::Detail] {
+            assert_eq!(scrolled.clone().with_focus(pane).header_scroll(), 0);
+        }
+        // A Header -> Header move keeps the offset (the reset guards on NON-header).
+        assert_eq!(scrolled.with_focus(FocusPane::Header).header_scroll(), 12);
+    }
+
+    #[test]
+    fn footer_shows_the_header_scroll_hints_while_the_header_is_focused() {
+        // Scenario 19 seam extended for the header: a focused header (no overlay)
+        // shows its own horizontal-scroll hints, distinct from any view pane's;
+        // an open overlay still owns the hint line ahead of the header.
+        let events = fabro_gate_events();
+        let focused = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Header);
+        let model = build_tui_model_for_state(&events, &focused);
+        assert!(model.footer().contains("scroll") && model.footer().contains("leave"));
+        assert_ne!(
+            model.footer(),
+            footer_hint(model.active_view(), &TuiOverlay::None)
+        );
+
+        // An open overlay wins the hint line even while the header holds focus.
+        let with_help = focused.with_overlay(TuiOverlay::Help {
+            selected_section: 0,
+            scroll: 0,
+        });
+        let help_model = build_tui_model_for_state(&events, &with_help);
+        assert!(help_model.footer().contains("close help"));
+    }
+
+    #[test]
+    fn open_help_from_the_focused_header_opens_the_header_section() {
+        // Scenario 20 / B4 consistency: `?` while the header is focused opens Help
+        // auto-focused to the header section, which is the LAST section (after
+        // Global actions and every view pane).
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Header);
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenHelp);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::Help {
+                selected_section: header_help_section(),
+                scroll: 0,
+            }
+        );
+        assert_eq!(header_help_section(), HELP_SECTION_COUNT - 1);
+        // help_section_for_focus routes the header to its section and every other
+        // pane to the active view's section.
+        assert_eq!(
+            help_section_for_focus(FocusPane::Header, TuiView::Attention),
+            header_help_section()
+        );
+        assert_eq!(
+            help_section_for_focus(FocusPane::Content, TuiView::Settings),
+            help_section_for_view(TuiView::Settings)
+        );
+    }
+
+    #[test]
     fn tui_interaction_scrolls_the_detail_pane_and_clamps() {
         let events = fabro_gate_events();
         // The renderer measures the Detail pane's wrapped max scroll and the loop
@@ -6112,13 +6473,14 @@ mod tests {
     #[test]
     fn open_help_auto_focuses_the_active_pane_section() {
         // `?` from the Settings pane opens auto-focused to the Settings section;
-        // from Lanes, the Lanes section. Section order mirrors the nav, so the
-        // Settings section is the last one and Lanes is the fourth.
+        // from Lanes, the Lanes section. Section order mirrors the nav; Settings
+        // is the last VIEW section (the top/header pane owns the final section
+        // after it, so this is `HELP_SECTION_COUNT - 2`, not `- 1`).
         let events = fabro_gate_events();
         for (view, expected_section) in [
             (TuiView::Attention, 1),
             (TuiView::Lanes, 3),
-            (TuiView::Settings, HELP_SECTION_COUNT - 1),
+            (TuiView::Settings, help_section_for_view(TuiView::Settings)),
         ] {
             let state = TuiInteractionState::for_view(view, 0, TuiOverlay::None);
             let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenHelp);
@@ -6631,6 +6993,7 @@ mod tests {
             selected_lane_item_index: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
+            header_scroll: 0,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },
@@ -6882,6 +7245,7 @@ mod tests {
             selected_lane_item_index: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
+            header_scroll: 0,
             overlay: TuiOverlay::CommandModal {
                 selected_action_index: 0,
             },

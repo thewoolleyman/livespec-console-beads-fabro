@@ -861,8 +861,8 @@
   {
     "scenario": "Scenario 20 -- Operator focuses and horizontally scrolls the top/header pane on a narrow viewport",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Pending top-of-pyramid acceptance test for the focusable, horizontally scrollable top/header pane: the top/header pane joins the pane focus cycle; while focused, horizontal scroll reveals content clipped at the current viewport width; on blur the pane returns to its default left-justified position; and a wide-enough viewport needs no horizontal scroll. Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. Owed by the tui-top-pane-focus-hscroll impl follow-up; the new §\"TUI Contract\" top/header-pane focus + horizontal-scroll clause binds here.",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_top_pane_focus_hscroll",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_top_pane_focus_hscroll`) driving the shipped binary through a real tmux pane: on a narrow (56-col) viewport the blurred header shrinks to fit (dropping the low-value `fleet: livespec` field, no `[focus]` marker); three Tabs cycle focus onto the top/header pane (Nav -> Content -> Detail -> Header), whose block title gains `[focus]` and whose FULL header line renders at offset 0 (fleet visible at the left, `attention:` clipped off the right); scrolling right saturates the render-measured clamp to the right edge (revealing `attention:`, panning `fleet` off-screen) and scrolling left returns to the left edge; blur (Tab off the header) snaps the pane back to its shrink-to-fit, left-justified default; and a wide launch shows the whole header with a zero scroll clamp. The focus-ring cycle, header-scroll clamp/reset, focused-vs-blurred render, `footer()` header hints, and the `?`-to-header-section behavior are unit-covered in console-application and console-tui; this E2E covers the shipped raw-mode render/loop path end to end.",
     "clauses": [
       {
         "gap_id": "gap-lepclyx4",
