@@ -110,10 +110,18 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // cycle, scroll horizontally to reveal content clipped at the current
     // viewport width while focused, and snap back to its left-justified default
     // on blur: 161 normative clauses, 15/72/22/52.
+    // The B5 panes-no-doc-prose revision added one contracts.md
+    // TUI-Contract clause requiring the panes to render operational content
+    // only -- the live data and state an operator acts on -- and never carry
+    // baked-in explanatory or documentation prose describing what the console
+    // is, how a projection is derived, or how a view behaves, beyond the
+    // required operational help surfaces (the Status-line hints, the modal
+    // Help overlay, and the Settings per-row inline help): 162 normative
+    // clauses, 15/73/22/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 72),
+        ("contracts.md", 73),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
@@ -125,7 +133,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 161,
+        total, 162,
         "total normative clauses across the console spec"
     );
     Ok(())
