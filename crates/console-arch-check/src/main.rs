@@ -238,82 +238,191 @@ fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
 }
 
 fn check_tmux_socket_scoping_source(display: &str, source: &str) -> Vec<String> {
-    let mut findings = Vec::new();
-    for invocation in tmux_command_invocations(source) {
-        if tmux_invocation_needs_socket_scope(invocation)
-            && !tmux_invocation_has_socket_scope(invocation)
+    let file = match syn::parse_file(source) {
+        Ok(file) => file,
+        Err(error) => return vec![format!("could not parse {display}: {error}")],
+    };
+    let mut visitor = TmuxSocketScopeVisitor {
+        display,
+        findings: Vec::new(),
+    };
+    visitor.visit_file(&file);
+    visitor.findings
+}
+
+struct TmuxSocketScopeVisitor<'a> {
+    display: &'a str,
+    findings: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for TmuxSocketScopeVisitor<'_> {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let method = node.method.to_string();
+        if (method == "output" || method == "status")
+            && let Some(invocation) = TmuxCommandInvocation::from_receiver(&node.receiver)
+            && invocation.needs_socket_scope()
+            && !invocation.has_private_socket_scope()
         {
-            findings.push(format!(
-                "{display}: tmux invocation must pass `-L <private-socket>` \
-                 before the tmux sub-command"
+            self.findings.push(format!(
+                "{}: tmux invocation must set `TMUX_TMPDIR=<per-run-scratch>` \
+                 and pass `-L <private-socket>` before the tmux sub-command",
+                self.display
             ));
         }
+        syn::visit::visit_expr_method_call(self, node);
     }
-    findings
 }
 
-fn tmux_command_invocations(source: &str) -> Vec<&str> {
-    let mut invocations = Vec::new();
-    let mut cursor = source;
-    while let Some(start) = cursor.find("Command::new(") {
-        cursor = &cursor[start..];
-        if let Some(end) = command_invocation_end(cursor) {
-            invocations.push(&cursor[..end]);
-            cursor = &cursor[end..];
-        } else {
-            invocations.push(cursor);
-            break;
+#[derive(Default)]
+struct TmuxCommandInvocation {
+    program_is_tmux: bool,
+    has_tmux_tmpdir: bool,
+    args: Vec<Option<String>>,
+}
+
+impl TmuxCommandInvocation {
+    fn from_receiver(receiver: &syn::Expr) -> Option<Self> {
+        Self::collect(receiver)
+    }
+
+    fn collect(expr: &syn::Expr) -> Option<Self> {
+        match expr {
+            syn::Expr::MethodCall(method_call) => {
+                let mut invocation = Self::collect(&method_call.receiver)?;
+                invocation.record_method_call(method_call);
+                Some(invocation)
+            }
+            syn::Expr::Call(call) if is_command_new_call(call) => Some(Self {
+                program_is_tmux: call.args.first().is_some_and(expr_mentions_tmux),
+                has_tmux_tmpdir: false,
+                args: Vec::new(),
+            }),
+            _ => None,
         }
     }
-    invocations
-}
 
-fn command_invocation_end(source: &str) -> Option<usize> {
-    let output_end = source
-        .find(".output()")
-        .map(|index| index + ".output()".len());
-    let status_end = source
-        .find(".status()")
-        .map(|index| index + ".status()".len());
-    match (output_end, status_end) {
-        (Some(left), Some(right)) => Some(left.min(right)),
-        (Some(end), None) | (None, Some(end)) => Some(end),
-        (None, None) => None,
+    fn record_method_call(&mut self, method_call: &syn::ExprMethodCall) {
+        let method = method_call.method.to_string();
+        match method.as_str() {
+            "arg" => {
+                if let Some(argument) = method_call.args.first() {
+                    self.args.push(string_literal(argument));
+                }
+            }
+            "args" => {
+                if let Some(argument) = method_call.args.first() {
+                    self.args.extend(string_literals(argument));
+                }
+            }
+            "env" => {
+                if method_call
+                    .args
+                    .first()
+                    .and_then(string_literal)
+                    .is_some_and(|name| name == "TMUX_TMPDIR")
+                {
+                    self.has_tmux_tmpdir = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn needs_socket_scope(&self) -> bool {
+        self.program_is_tmux
+            && (self
+                .args
+                .iter()
+                .flatten()
+                .any(|argument| is_tmux_subcommand(argument))
+                || self.args.iter().any(Option::is_none))
+    }
+
+    fn has_private_socket_scope(&self) -> bool {
+        self.has_tmux_tmpdir && self.has_socket_before_subcommand()
+    }
+
+    fn has_socket_before_subcommand(&self) -> bool {
+        let Some(socket_index) = self
+            .args
+            .iter()
+            .position(|argument| argument.as_deref() == Some("-L"))
+        else {
+            return false;
+        };
+        let first_subcommand_or_forwarded_args = self
+            .args
+            .iter()
+            .position(|argument| argument.as_deref().is_none_or(is_tmux_subcommand));
+        first_subcommand_or_forwarded_args
+            .is_some_and(|subcommand_index| socket_index < subcommand_index)
     }
 }
 
-fn tmux_invocation_needs_socket_scope(invocation: &str) -> bool {
-    command_new_mentions_tmux(invocation)
-        && TMUX_SUBCOMMANDS
-            .iter()
-            .any(|command| invocation.contains(command))
-}
-
-fn command_new_mentions_tmux(invocation: &str) -> bool {
-    invocation.contains("Command::new(&tmux")
-        || invocation.contains("Command::new(tmux")
-        || invocation.contains("Command::new(&self.tmux")
-        || invocation.contains("Command::new(\"tmux\"")
-}
-
-fn tmux_invocation_has_socket_scope(invocation: &str) -> bool {
-    let Some(socket_index) = invocation.find("\"-L\"") else {
+fn is_command_new_call(call: &syn::ExprCall) -> bool {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
         return false;
     };
-    let first_subcommand = TMUX_SUBCOMMANDS
+    let mut segments = path
+        .path
+        .segments
         .iter()
-        .filter_map(|command| invocation.find(command))
-        .min();
-    first_subcommand.is_some_and(|subcommand_index| socket_index < subcommand_index)
+        .map(|segment| segment.ident.to_string());
+    let Some(last) = segments.next_back() else {
+        return false;
+    };
+    let Some(previous) = segments.next_back() else {
+        return false;
+    };
+    last == "new" && previous == "Command"
+}
+
+fn expr_mentions_tmux(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Lit(_) => string_literal(expr).is_some_and(|value| value == "tmux"),
+        syn::Expr::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "tmux"),
+        syn::Expr::Reference(reference) => expr_mentions_tmux(&reference.expr),
+        syn::Expr::Field(field) => {
+            matches!(&field.member, syn::Member::Named(ident) if ident == "tmux")
+        }
+        _ => false,
+    }
+}
+
+fn string_literals(expr: &syn::Expr) -> Vec<Option<String>> {
+    match expr {
+        syn::Expr::Array(array) => array.elems.iter().map(string_literal).collect(),
+        syn::Expr::Tuple(tuple) => tuple.elems.iter().map(string_literal).collect(),
+        _ => vec![string_literal(expr)],
+    }
+}
+
+fn string_literal(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(lit),
+            ..
+        }) => Some(lit.value()),
+        syn::Expr::Reference(reference) => string_literal(&reference.expr),
+        _ => None,
+    }
+}
+
+fn is_tmux_subcommand(argument: &str) -> bool {
+    TMUX_SUBCOMMANDS.contains(&argument)
 }
 
 const TMUX_SUBCOMMANDS: &[&str] = &[
-    "\"capture-pane\"",
-    "\"kill-server\"",
-    "\"kill-session\"",
-    "\"list-sessions\"",
-    "\"new-session\"",
-    "\"send-keys\"",
+    "capture-pane",
+    "kill-server",
+    "kill-session",
+    "list-sessions",
+    "new-session",
+    "send-keys",
 ];
 
 /// A crate entrypoint is its `src/lib.rs` or `src/main.rs`.
@@ -719,8 +828,9 @@ mod tests {
     #[test]
     fn tmux_invocation_with_private_socket_before_command_is_allowed() {
         let source = r#"
-            fn launch(tmux: &std::path::Path, socket: &str) {
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path, socket: &str) {
                 let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", scratch)
                     .args(["-L", socket, "new-session", "-d", "-s", "session"])
                     .status();
             }
@@ -729,10 +839,50 @@ mod tests {
     }
 
     #[test]
-    fn tmux_socket_after_subcommand_is_flagged() {
+    fn tmux_socket_without_private_tmpdir_is_flagged() {
         let source = r#"
             fn launch(tmux: &std::path::Path, socket: &str) {
                 let _ = std::process::Command::new(tmux)
+                    .args(["-L", socket, "new-session", "-d", "-s", "session"])
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("TMUX_TMPDIR"));
+    }
+
+    #[test]
+    fn tmux_arg_subcommand_without_private_socket_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path) {
+                let _ = std::process::Command::new(tmux)
+                    .arg("new-session")
+                    .arg("-d")
+                    .status();
+            }
+        "#;
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn tmux_forwarded_args_without_private_socket_are_flagged() {
+        let source = r"
+            fn run_tmux(tmux: &std::path::Path, args: &[&str]) {
+                let _ = std::process::Command::new(tmux).args(args).output();
+            }
+        ";
+        let findings = check_tmux_socket_scoping_source("support/mod.rs", source);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn tmux_socket_after_subcommand_is_flagged() {
+        let source = r#"
+            fn launch(tmux: &std::path::Path, scratch: &std::path::Path, socket: &str) {
+                let _ = std::process::Command::new(tmux)
+                    .env("TMUX_TMPDIR", scratch)
                     .args(["new-session", "-L", socket, "-d", "-s", "session"])
                     .status();
             }
