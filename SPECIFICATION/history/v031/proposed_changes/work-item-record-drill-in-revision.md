@@ -1,0 +1,16 @@
+---
+proposal: work-item-record-drill-in.md
+decision: accept
+revised_at: 2026-07-19T11:23:33Z
+author_human: thewoolleyman <chad@thewoolleyman.com>
+author_llm: claude-opus-4-8
+---
+
+## Decision and Rationale
+
+Accept. Closes a hole in the console's whole premise: the cockpit could not show a work-item's title or description anywhere. Drilled-in lane rows rendered only id / repo / rank / status (+ lane reason), so an operator looking at a bare work-item id had to leave the console for `bd` or the ledger to learn what the item WAS. The data was being discarded three layers below the renderer -- `parse_orchestrator_observation` deserialized seven fields and let serde drop the rest, even though `list-work-items --json` already puts the entire standardized record on the wire -- and no clause required otherwise, which is why every existing mechanical check was blind to it. FIX 3 ADDS one contracts.md clause requiring that the operator can read a selected work-item's full standardized record without leaving the console: reachable from the drilled-in lane list; every standardized field rendered; an unemitted field rendered as explicitly ABSENT rather than omitted, so an unset field is distinguishable from an undisplayed one; the description carried as emitted; the surface scrolling when the record is taller than the viewport. It also pins the consumption direction this spec already establishes for lane state -- the standardized shape is OWNED by livespec-orchestrator-beads-fabro and consumed verbatim, so the console must not re-derive or reformat a field, and must not drop a work-item from the board because an unrecognized descriptive field is absent or unparseable. FIX 2 AMENDS the Status-line hints clause in place: the Lanes hint read `enter drill` in BOTH sub-views while Enter was explicitly inert inside a drilled-in lane, so the hint named an action the key did not take and the operator could not tell a broken key from a mis-documented one. The prior clause required hints 'appropriate to the currently-focused pane' and a sub-view is not a pane, so the lie was conformant; the added sentence forbids advertising a binding the key does not perform in that context. FIX 1 extends the Lanes view prose with the second drill level so the view's own description matches the new clause. Scenario 23 is added with six cases. Clause counts move 15/76/22/52 = 165 to 15/77/22/52 = 166 (one clause ADDED, one re-worded in place), so crates/console-spec-check/src/tests.rs ground-truth assertions are updated in lockstep. One clause re-link is performed in tests/heading-coverage.json because the Status-line clause text changed (gap-2hiwqz3g -> gap-iicnbdqd, bound in exactly one entry), and a new entry registers Scenario 23 against gap-lu5ergzl; both new ids were derived by console-spec-check over the final landed text. RATIFICATION PROVENANCE, recorded plainly: the maintainer delegated the human acceptance leg for work-item mwzrby to the agent for this change, with two independent LLM reviews (Fable adversarial, Codex) standing in for the human review. No human read this text before ratification. `just check` is green end to end, including 100% line coverage and behavioral coverage (0 unlinked, 0 untested).
+
+## Resulting Changes
+
+- contracts.md
+- scenarios.md
