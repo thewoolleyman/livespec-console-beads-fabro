@@ -4040,19 +4040,18 @@ mod tests {
         // `null` especially, because a bare `#[serde(default)]` rescues only a
         // missing key, so treating it as a hard error would silently drop an
         // otherwise-good work-item from the board on replay.
-        for (label, tail) in [
-            ("absent", ""),
-            ("null", r#","detail":null"#),
-            ("empty", r#","detail":{}"#),
-        ] {
-            let payload = format!(
-                r#"{{"repo":"console","work_item_id":"console-legacy","lane":"ready","rank":"a1","status":"ready","source_version":3{tail}}}"#
-            );
-            let replayed = work_item_snapshot_from_payload_json(&payload)
-                .ok_or_else(|| format!("{label} detail payload did not replay"))?;
-            assert_eq!(replayed.detail(), &WorkItemDetail::default(), "{label}");
-            assert_eq!(replayed.work_item_id(), "console-legacy", "{label}");
-        }
+        let replayed: Vec<Option<(String, WorkItemDetail)>> = ["", r#","detail":null"#, r#","detail":{}"#]
+            .iter()
+            .map(|tail| {
+                let payload = format!(
+                    r#"{{"repo":"console","work_item_id":"console-legacy","lane":"ready","rank":"a1","status":"ready","source_version":3{tail}}}"#
+                );
+                work_item_snapshot_from_payload_json(&payload)
+                    .map(|snapshot| (snapshot.work_item_id().to_owned(), snapshot.detail().clone()))
+            })
+            .collect();
+        let expected = Some(("console-legacy".to_owned(), WorkItemDetail::default()));
+        assert_eq!(replayed, vec![expected.clone(), expected.clone(), expected]);
         Ok(())
     }
 

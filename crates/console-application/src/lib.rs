@@ -543,6 +543,14 @@ pub enum TuiOverlay {
     /// the SAME selection `Enter` opened it on, so the modal can never drift
     /// onto a different work-item than the one the operator picked.
     WorkItemDetail {
+        /// The work-item the modal was opened on, PINNED at open time.
+        ///
+        /// The modal resolves its record by this id, never by the lane
+        /// selection index: ingestion keeps appending while the modal is open,
+        /// and a re-ranked or newly-inserted sibling would otherwise slide a
+        /// DIFFERENT work-item under the same index and silently swap the
+        /// record the operator is reading.
+        work_item_id: String,
         /// Vertical scroll offset (the topmost visible wrapped row), clamped by
         /// the renderer so a long description scrolls without running past its
         /// last row.
@@ -584,7 +592,7 @@ impl TuiOverlay {
     /// or `None` for any other overlay.
     pub const fn work_item_detail_scroll(&self) -> Option<usize> {
         match self {
-            Self::WorkItemDetail { scroll } => Some(*scroll),
+            Self::WorkItemDetail { scroll, .. } => Some(*scroll),
             Self::None
             | Self::Search { .. }
             | Self::CommandPalette { .. }
@@ -1215,6 +1223,23 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_lane_item_index(&self) -> Option<usize> {
         self.selected_lane_item_index
+    }
+
+    #[must_use]
+    /// The board's work-item with this id, in whatever lane currently holds it.
+    ///
+    /// Resolves by IDENTITY rather than by lane + selection index, so a surface
+    /// that stays open across a source refresh (the work-item detail modal)
+    /// keeps showing the item it was opened on even when ingestion re-ranks the
+    /// lane, inserts a sibling above it, or moves the item to another lane.
+    /// Returns `None` once the item leaves the board entirely, which the caller
+    /// MUST surface rather than silently substituting a neighbour.
+    pub fn work_item_by_id(&self, work_item_id: &str) -> Option<&LaneWorkItem> {
+        self.lane_board
+            .columns()
+            .iter()
+            .flat_map(LaneColumn::items)
+            .find(|item| item.work_item_id() == work_item_id)
     }
 
     /// The selected work-item within a drilled-in lane, or `None` when the
@@ -2664,9 +2689,9 @@ pub fn reduce_tui_interaction(
         TuiInteraction::HelpScrollUp => state
             .clone()
             .with_overlay(help_scroll(state.overlay(), false)),
-        TuiInteraction::OpenWorkItemDetail => state
-            .clone()
-            .with_overlay(TuiOverlay::WorkItemDetail { scroll: 0 }),
+        TuiInteraction::OpenWorkItemDetail => {
+            state.clone().with_overlay(open_work_item_detail(&model))
+        }
         TuiInteraction::WorkItemDetailScrollDown(rows) => state
             .clone()
             .with_overlay(work_item_detail_scroll(state.overlay(), rows, true)),
@@ -2682,6 +2707,23 @@ pub fn reduce_tui_interaction(
     }
 }
 
+/// The overlay `OpenWorkItemDetail` resolves to: the work-item detail modal
+/// PINNED to the selected item's id, or no overlay at all when nothing is
+/// selected.
+///
+/// Pinning the id here (rather than letting the renderer re-read the lane
+/// selection each frame) is what keeps the open modal on the item it was opened
+/// on while ingestion keeps re-ranking the lane underneath it. With no selection
+/// there is no honest record to show, so the modal does not open at all.
+fn open_work_item_detail(model: &TuiScreenModel) -> TuiOverlay {
+    model
+        .selected_lane_item()
+        .map_or(TuiOverlay::None, |item| TuiOverlay::WorkItemDetail {
+            work_item_id: item.work_item_id().to_owned(),
+            scroll: 0,
+        })
+}
+
 /// Scroll the work-item detail modal by `rows` down (`down`) or up, leaving any
 /// other overlay unchanged (the interaction is inert unless that modal is open).
 ///
@@ -2690,16 +2732,23 @@ pub fn reduce_tui_interaction(
 /// Detail pane and the Help modal use — so the true bottom of a long
 /// description is reachable and no further.
 fn work_item_detail_scroll(overlay: &TuiOverlay, rows: usize, down: bool) -> TuiOverlay {
-    overlay.work_item_detail_scroll().map_or_else(
-        || overlay.clone(),
-        |scroll| TuiOverlay::WorkItemDetail {
-            scroll: if down {
-                scroll.saturating_add(rows)
-            } else {
-                scroll.saturating_sub(rows)
-            },
+    let TuiOverlay::WorkItemDetail {
+        work_item_id,
+        scroll,
+    } = overlay
+    else {
+        return overlay.clone();
+    };
+    TuiOverlay::WorkItemDetail {
+        // The pinned id rides through every scroll step: scrolling must never
+        // re-resolve WHICH work-item is on screen.
+        work_item_id: work_item_id.clone(),
+        scroll: if down {
+            scroll.saturating_add(rows)
+        } else {
+            scroll.saturating_sub(rows)
         },
-    )
+    }
 }
 
 /// Rotate the valve-confirm modal's payload valve one step (forward or
@@ -10052,6 +10101,7 @@ mod tests {
 
     #[test]
     fn the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane() {
+        const MODAL_ITEM: &str = "console-pinned";
         // Enter drills into a LANE from the overview but opens an ITEM inside a
         // drilled-in lane, so the hint must name a different action in each --
         // advertising "enter drill" in both is the lie this surface fixes.
@@ -10067,20 +10117,35 @@ mod tests {
         let modal = footer_hint(
             TuiView::Lanes,
             LaneFocus::Lane(Lane::Ready),
-            &TuiOverlay::WorkItemDetail { scroll: 0 },
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0,
+            },
         );
         assert!(modal.contains("esc close item") && !modal.contains("enter drill"));
     }
 
     #[test]
     fn the_open_item_modal_leaves_every_unrelated_interaction_inert() {
+        // Any id: this test drives the overlay reducer directly, with no board
+        // behind it, so the pinned id only has to ride through unchanged.
+        const MODAL_ITEM: &str = "console-pinned";
         // The work-item detail modal is a READ-ONLY reading surface: every
         // interaction that belongs to some OTHER overlay (text entry, command
         // action selection, Help navigation) must pass over it without mutating
         // it. Its own scroll interactions are covered alongside the modal.
         let events: [ConsoleEvent; 0] = [];
-        let open = TuiInteractionState::new(0, TuiOverlay::WorkItemDetail { scroll: 4 });
-        let modal = TuiOverlay::WorkItemDetail { scroll: 4 };
+        let open = TuiInteractionState::new(
+            0,
+            TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 4,
+            },
+        );
+        let modal = TuiOverlay::WorkItemDetail {
+            work_item_id: MODAL_ITEM.to_owned(),
+            scroll: 4,
+        };
 
         for interaction in [
             TuiInteraction::TypeChar('x'),
@@ -10102,15 +10167,27 @@ mod tests {
         // top, and both are inert against any other overlay.
         let down =
             reduce_tui_interaction(&open, &events, TuiInteraction::WorkItemDetailScrollDown(3));
-        assert_eq!(down.overlay(), &TuiOverlay::WorkItemDetail { scroll: 7 });
+        assert_eq!(
+            down.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 7
+            }
+        );
         let up = reduce_tui_interaction(&down, &events, TuiInteraction::WorkItemDetailScrollUp(99));
-        assert_eq!(up.overlay(), &TuiOverlay::WorkItemDetail { scroll: 0 });
+        assert_eq!(
+            up.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0
+            }
+        );
+        // Opening with NO work-item selected opens nothing: the modal exists to
+        // show one item's record, so there is no honest thing to show without
+        // one, and a blank modal would read as a broken screen.
         let opened_fresh =
             reduce_tui_interaction(&open, &events, TuiInteraction::OpenWorkItemDetail);
-        assert_eq!(
-            opened_fresh.overlay(),
-            &TuiOverlay::WorkItemDetail { scroll: 0 }
-        );
+        assert_eq!(opened_fresh.overlay(), &TuiOverlay::None);
 
         let elsewhere = TuiInteractionState::new(0, TuiOverlay::None);
         for interaction in [
