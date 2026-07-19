@@ -95,7 +95,7 @@ Generalize from `s` (move-status), which already consults
 `status_move_targets(lane)` and returns `None` when a lane has no drivable target.
 
 **Do NOT read "groom is absent" as "no code exists."** The item itself carries the
-nuance: `RejectMode::Regroom` (`console-application/src/lib.rs:3372-3396`; variant at :3378,
+nuance: `RejectMode::Regroom` (`console-application/src/lib.rs:3372-3396`; variant at :3379,
 `as_str` arm at :3394) is live
 production code reachable via `r`, emitting `reject:<id>:regroom` (Scenario 11,
 `scenarios.md:354`). It is a REJECT mode — semantically the opposite of grooming a
