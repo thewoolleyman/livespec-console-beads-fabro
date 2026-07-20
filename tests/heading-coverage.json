@@ -769,8 +769,8 @@
   {
     "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Pending top-of-pyramid integration test for the journal-read leg: the console reflects each orchestrator auto-disposition through its own event path and surfaces each escalation as a needs-attention item, re-deriving neither. Tier: top-of-pyramid integration, under crates/console-cli/tests/. Owed by the Dispatcher-journal settings-attribution code child.",
+    "test": "crates/console-cli/tests/scenario_15_orchestrator_auto_dispositions.rs::scenario_15_orchestrator_auto_dispositions_reflect_and_surface_escalations",
+    "reason": "Top-of-pyramid integration test drives serve_report through the real JournalAutonomousDecisionsPort against a producer-generated, SHA-256-stamped auto-disposition JSONL fixture covering auto-approve, ai-auto-accept, ai-fail-auto-rework, ship-on-cap, and cap-exceeded-escalation. It asserts the console reads tmp/fabro-dispatch-journal.jsonl, reflects the four auto-dispositions through factory.autonomous_decision_reflected commands carrying governing_settings, and surfaces the cap-exceeded escalation as a needs-attention item from the journal read leg.",
     "clauses": [
       {
         "gap_id": "gap-34qvabhn",

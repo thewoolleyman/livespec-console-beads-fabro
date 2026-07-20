@@ -39,12 +39,12 @@ use console_application::{
     handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
     project_attention,
     source_adapters::{
-        AdapterError, AdapterIngestionSummary, NeedsAttentionReadOutcome,
-        NeedsAttentionSnapshotPort, NormalizeObservation, NormalizedSourceEvent,
-        ObservedSourceAdapter, PullSourcePort, SourceAdapterKind, SourceCheckpointPort,
-        SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
-        attention_item_payload_json, attention_resolved_payload_json, diff_needs_attention,
-        materialize_attention_items, not_observed_finding_payload_json,
+        AdapterError, AdapterIngestionSummary, AttentionHandoff, AttentionItemSnapshot,
+        AttentionSourceRef, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
+        NormalizeObservation, NormalizedSourceEvent, ObservedSourceAdapter, PullSourcePort,
+        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
+        SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
+        diff_needs_attention, materialize_attention_items, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
         parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
         work_item_snapshot_payload_json,
@@ -630,7 +630,7 @@ fn backfill_source_adapters(
 /// [`BackingCliResolution::dispatcher_journal_path`] before reading, so the
 /// dispatch source keeps reading the right tenant's journal regardless of the
 /// process working directory.
-pub const DISPATCHER_JOURNAL_PATH: &str = "tmp/dispatcher-journal.jsonl";
+pub const DISPATCHER_JOURNAL_PATH: &str = "tmp/fabro-dispatch-journal.jsonl";
 
 /// A live source adapter paired with its adapter id, as references.
 pub type SourceAdapterRef<'a> = (&'a str, &'a dyn PullSourcePort);
@@ -1285,8 +1285,8 @@ fn config_command_from_stored(
     Ok(Some((command, stored_command.payload_json().to_owned())))
 }
 
-/// Observe the plane's published per-decision autonomous audit and reflect each
-/// auto-resolution so a resolved item leaves the needs-attention inbox.
+/// Observe the plane's published per-decision autonomous audit, reflect each
+/// auto-resolution, and surface each escalation as needs-attention.
 ///
 /// The reflection rides the console's own command-plus-outcome-event path. For
 /// every auto-resolution the plane's engine made, the console records a
@@ -1294,12 +1294,12 @@ fn config_command_from_stored(
 /// work-item, gate, and decision) and its outcome events -- a `CommandAccepted`
 /// plus an `attention_item.resolved` for that item's human-gate needs-attention
 /// id -- so the item leaves the inbox and the audit trail is complete. Every
-/// truly-unresolvable escalation is LEFT untouched: the console neither drops
-/// nor fabricates it, so it stays surfaced by the normal inbox. The console
+/// escalation is surfaced as a journal-backed needs-attention item. The console
 /// resolves NO gate itself; it only reflects the engine's already-journaled
-/// decisions, and never races the engine. Reflection is idempotent across runs
-/// -- each decision's command id is content-stable, so a re-observed decision is
-/// a duplicate no-op. Returns the count of NEW reflections recorded this run.
+/// dispositions, and never races the engine. Reflection is idempotent across
+/// runs -- each decision's command id is content-stable, so a re-observed
+/// decision is a duplicate no-op. Returns the count of NEW reflections or
+/// escalation attention items recorded this run.
 ///
 /// # Errors
 /// Returns a console runtime error when the store cannot persist the reflection
@@ -1311,10 +1311,15 @@ pub fn observe_and_reflect_autonomous_decisions(
 ) -> ConsoleRuntimeResult<usize> {
     let audit = decisions_port.read_autonomous_decisions();
     let mut reflected = 0;
-    // Only auto-resolutions are reflected; escalations are truly-unresolvable and
-    // are LEFT as needs-attention items (not dropped, not fabricated).
+    // Auto-resolutions are reflected as completed commands; escalations become
+    // journal-backed needs-attention items from this same published surface.
     for decision in audit.auto_resolutions() {
         if reflect_autonomous_decision(store, observed_at, decision)? {
+            reflected += 1;
+        }
+    }
+    for decision in audit.escalations() {
+        if surface_autonomous_escalation(store, observed_at, decision)? {
             reflected += 1;
         }
     }
@@ -1370,6 +1375,57 @@ fn reflect_autonomous_decision(
     Ok(true)
 }
 
+fn surface_autonomous_escalation(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    decision: &AutonomousDecision,
+) -> ConsoleRuntimeResult<bool> {
+    let item = autonomous_escalation_attention_item(decision);
+    let source_event_id = format!(
+        "auto-disposition-escalation:{}:{}:{}",
+        decision.work_item_id(),
+        decision.disposition(),
+        decision.governing_settings().join("+")
+    );
+    let event = ConsoleEvent::new(
+        format!("evt:{source_event_id}"),
+        1,
+        "orchestrator-journal".to_owned(),
+        EventType::AttentionItemAppeared,
+        "orchestrator-journal".to_owned(),
+        format!("attention_item:orchestrator-journal:{}", item.id()),
+        1,
+    )
+    .with_payload_json(attention_item_payload_json(&item));
+    let append = event_append_from_console_event(&event, observed_at);
+    Ok(store.append_event(&append)?.status() == AppendStatus::Inserted)
+}
+
+fn autonomous_escalation_attention_item(decision: &AutonomousDecision) -> AttentionItemSnapshot {
+    let work_item_id = decision.work_item_id();
+    let action_id = format!("resolve-blocked:{work_item_id}");
+    AttentionItemSnapshot::new(
+        &format!("valve:resolve-blocked:{work_item_id}"),
+        "human-valve",
+        "high",
+        &format!(
+            "{} requires operator attention for {}",
+            decision.disposition(),
+            work_item_id
+        ),
+        AttentionSourceRef::new(
+            "orchestrator-journal",
+            Some(work_item_id),
+            Some(DISPATCHER_JOURNAL_PATH),
+        ),
+        AttentionHandoff::new(
+            "drive",
+            Some(&action_id),
+            &format!("drive --action {action_id}"),
+        ),
+    )
+}
+
 /// The content-stable reflection command for one auto-resolution. Keyed by gate
 /// and work-item so a re-observed decision re-appends as a duplicate no-op
 /// (idempotent across the append-only journal's re-reads).
@@ -1398,6 +1454,8 @@ fn autonomous_reflection_payload_json(decision: &AutonomousDecision) -> String {
         "work_item_id": decision.work_item_id(),
         "gate": decision.gate(),
         "decision": decision.decision(),
+        "disposition": decision.disposition(),
+        "governing_settings": decision.governing_settings(),
     })
     .to_string()
 }
@@ -3359,14 +3417,16 @@ mod tests {
         ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
         assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
 
-        // The plane's engine has now auto-resolved wi-1's approve gate.
+        // The plane's engine has now auto-approved wi-1.
         let decisions = SimulatedDecisionsPort::returning(AutonomousAudit::new(
-            vec![AutonomousDecision::new(
-                "wi-1",
-                "approve",
-                "auto-approve",
-                "auto-resolved",
-            )],
+            vec![
+                AutonomousDecision::from_auto_disposition(
+                    "wi-1",
+                    "auto-approve",
+                    vec!["auto_approve_ready".to_owned()],
+                )
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?,
+            ],
             Vec::new(),
         ));
         let mut factory_port = SimulatedFactoryDrainPort;
@@ -5084,7 +5144,7 @@ mod tests {
         let journal = resolution.dispatcher_journal_path();
         assert_eq!(
             journal,
-            repo.join("tmp/dispatcher-journal.jsonl")
+            repo.join("tmp/fabro-dispatch-journal.jsonl")
                 .display()
                 .to_string()
         );
@@ -5670,33 +5730,42 @@ mod tests {
         ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:00Z")?;
         assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
 
-        // The plane's engine auto-resolved wi-1's approve gate and escalated wi-2.
+        // The plane's engine auto-approved wi-1 and escalated wi-2 from the
+        // journal read surface.
         let audit = AutonomousAudit::new(
-            vec![AutonomousDecision::new(
-                "wi-1",
-                "approve",
-                "auto-approve",
-                "auto-resolved",
-            )],
-            vec![AutonomousDecision::new(
-                "wi-2",
-                "acceptance",
-                "escalate",
-                "escalated",
-            )],
+            vec![
+                AutonomousDecision::from_auto_disposition(
+                    "wi-1",
+                    "auto-approve",
+                    vec!["auto_approve_ready".to_owned()],
+                )
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?,
+            ],
+            vec![
+                AutonomousDecision::from_auto_disposition(
+                    "wi-2",
+                    "cap-exceeded-escalation",
+                    vec!["acceptance_rework_cap".to_owned()],
+                )
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?,
+            ],
         );
         let decisions = SimulatedDecisionsPort::returning(audit);
 
         let now = "2026-07-11T00:00:01Z";
         let reflected = observe_and_reflect_autonomous_decisions(&mut store, now, &decisions)?;
 
-        // The auto-resolved item left the inbox; the escalated one stays.
-        assert_eq!(reflected, 1);
+        // The auto-approved item left the inbox; the escalation is surfaced as
+        // a journal-backed needs-attention item.
+        assert_eq!(reflected, 2);
         let remaining: Vec<String> = project_attention(&store.list_console_events()?)
             .iter()
             .map(|item| item.id().to_owned())
             .collect();
-        assert_eq!(remaining, ["valve:accept:wi-2"]);
+        assert_eq!(
+            remaining,
+            ["valve:accept:wi-2", "valve:resolve-blocked:wi-2"]
+        );
 
         // The reflection rode a command-plus-outcome-event path: a completed
         // `factory.autonomous_decision_reflected` command plus the resolved event.
@@ -5720,7 +5789,7 @@ mod tests {
         let later = "2026-07-11T00:00:02Z";
         let again = observe_and_reflect_autonomous_decisions(&mut store, later, &decisions)?;
         assert_eq!(again, 0);
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
         Ok(())
     }
 

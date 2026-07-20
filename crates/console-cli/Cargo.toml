@@ -25,3 +25,6 @@ time = { version = "0.3.37", default-features = false, features = [
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+sha2 = "0.10"

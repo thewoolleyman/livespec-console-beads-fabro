@@ -4585,38 +4585,43 @@ impl ConfigCommandOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Full autonomous mode — observing the orchestrator plane's auto-resolutions.
+// Full autonomous mode — observing the orchestrator plane's auto-dispositions.
 // ---------------------------------------------------------------------------
 
 /// The journal `stage` marker the orchestrator plane writes for one per-decision
-/// autonomous-mode audit record; the console reads only records carrying it and
+/// auto-disposition audit record; the console reads only records carrying it and
 /// ignores every other journal stage (arming, calibration, dispatch).
-const AUTONOMOUS_DECISION_STAGE: &str = "autonomous-decision";
+const AUTO_DISPOSITION_STAGE: &str = "auto-disposition";
 
-/// The `auto-resolved` disposition: the plane's engine resolved the decision.
-const AUTONOMOUS_DISPOSITION_AUTO_RESOLVED: &str = "auto-resolved";
-/// The `escalated` disposition: the plane left the decision truly-unresolvable.
-const AUTONOMOUS_DISPOSITION_ESCALATED: &str = "escalated";
+/// The current auto-disposition vocabulary published by the orchestrator.
+const AUTO_DISPOSITION_AUTO_APPROVE: &str = "auto-approve";
+const AUTO_DISPOSITION_AI_AUTO_ACCEPT: &str = "ai-auto-accept";
+const AUTO_DISPOSITION_AI_FAIL_AUTO_REWORK: &str = "ai-fail-auto-rework";
+const AUTO_DISPOSITION_SHIP_ON_CAP: &str = "ship-on-cap";
+const AUTO_DISPOSITION_CAP_EXCEEDED_ESCALATION: &str = "cap-exceeded-escalation";
 
-/// The three collapsible gates a decision can carry, exactly as the plane's
-/// published record contract enumerates them.
+/// The three collapsible gates the console's internal reflection command/event
+/// path uses for compatibility with existing event logs.
 const AUTONOMOUS_GATE_APPROVE: &str = "approve";
 const AUTONOMOUS_GATE_ACCEPTANCE: &str = "acceptance";
 const AUTONOMOUS_GATE_NEEDS_HUMAN: &str = "needs-human";
 
-/// One per-decision autonomous-mode audit entry read back off the orchestrator
+/// One per-decision auto-disposition audit entry read back off the orchestrator
 /// plane's published Dispatcher journal.
 ///
-/// `work_item_id` names the disposed item; `gate` is the collapsed gate
-/// (`approve` / `acceptance` / `needs-human`); `decision` is what the plane's
-/// engine decided; `disposition` is `auto-resolved` or `escalated`. The console
-/// consumes this record verbatim -- it never re-derives a plane's decision.
+/// `work_item_id` names the disposed item; `disposition` is one of the
+/// orchestrator's published auto-disposition values; `governing_settings` names
+/// the settings that governed it. `gate` and `decision` are the console's
+/// internal reflection projection for the existing command/event path. The
+/// console consumes the journal record verbatim -- it never re-derives a plane's
+/// disposition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutonomousDecision {
     work_item_id: String,
     gate: String,
     decision: String,
     disposition: String,
+    governing_settings: Vec<String>,
 }
 
 impl AutonomousDecision {
@@ -4628,7 +4633,25 @@ impl AutonomousDecision {
             gate: gate.to_owned(),
             decision: decision.to_owned(),
             disposition: disposition.to_owned(),
+            governing_settings: Vec::new(),
         }
+    }
+
+    #[must_use]
+    /// Construct a journal-backed value from the orchestrator's live schema.
+    pub fn from_auto_disposition(
+        work_item_id: &str,
+        disposition: &str,
+        governing_settings: Vec<String>,
+    ) -> Option<Self> {
+        let gate = auto_disposition_reflection_gate(disposition)?;
+        Some(Self {
+            work_item_id: work_item_id.to_owned(),
+            gate: gate.to_owned(),
+            decision: disposition.to_owned(),
+            disposition: disposition.to_owned(),
+            governing_settings,
+        })
     }
 
     #[must_use]
@@ -4653,6 +4676,19 @@ impl AutonomousDecision {
     /// Return the disposition value.
     pub fn disposition(&self) -> &str {
         &self.disposition
+    }
+
+    #[must_use]
+    /// Return the governing settings recorded by the orchestrator.
+    pub fn governing_settings(&self) -> &[String] {
+        &self.governing_settings
+    }
+
+    #[must_use]
+    /// Return true when this journal record is an escalation the console must
+    /// surface as needs-attention.
+    pub fn is_escalation(&self) -> bool {
+        self.disposition == AUTO_DISPOSITION_CAP_EXCEEDED_ESCALATION
     }
 }
 
@@ -4697,12 +4733,12 @@ impl AutonomousAudit {
 /// Read the published autonomous per-decision audit view from a Dispatcher
 /// journal document (its JSONL text).
 ///
-/// Fail-open, mirroring the orchestrator plane's published `read_autonomous_decisions`
-/// reader: a malformed line -- bad JSON, a non-object, a record missing a
-/// required field, or an out-of-range gate/disposition -- is skipped rather than
-/// raising, and only `autonomous-decision` stage records are considered. Records
-/// split into auto-resolutions and escalations by disposition, preserving
-/// journal order within each bucket.
+/// Fail-open, mirroring the orchestrator plane's published read surface reader:
+/// a malformed line -- bad JSON, a non-object, a record missing a required
+/// field, or an out-of-range disposition -- is skipped rather than raising, and
+/// only `auto-disposition` stage records are considered. Records split into
+/// auto-resolutions and escalations by disposition, preserving journal order
+/// within each bucket.
 #[must_use]
 pub fn read_autonomous_decisions_from_journal(journal_text: &str) -> AutonomousAudit {
     let mut auto_resolutions = Vec::new();
@@ -4711,7 +4747,7 @@ pub fn read_autonomous_decisions_from_journal(journal_text: &str) -> AutonomousA
         let Some(decision) = autonomous_decision_from_line(line) else {
             continue;
         };
-        if decision.disposition() == AUTONOMOUS_DISPOSITION_ESCALATED {
+        if decision.is_escalation() {
             escalations.push(decision);
         } else {
             auto_resolutions.push(decision);
@@ -4721,36 +4757,41 @@ pub fn read_autonomous_decisions_from_journal(journal_text: &str) -> AutonomousA
 }
 
 /// Parse one journal line into an [`AutonomousDecision`], or `None` when it is
-/// not a valid `autonomous-decision` record (malformed JSON, a non-object, a
+/// not a valid `auto-disposition` record (malformed JSON, a non-object, a
 /// different stage, or an absent/out-of-range required field).
 fn autonomous_decision_from_line(line: &str) -> Option<AutonomousDecision> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     let object = value.as_object()?;
-    if object.get("stage").and_then(serde_json::Value::as_str)? != AUTONOMOUS_DECISION_STAGE {
+    if object.get("stage").and_then(serde_json::Value::as_str)? != AUTO_DISPOSITION_STAGE {
         return None;
     }
     let work_item_id = object
         .get("work_item_id")
         .and_then(serde_json::Value::as_str)?;
-    let gate = object.get("gate").and_then(serde_json::Value::as_str)?;
-    let decision = object.get("decision").and_then(serde_json::Value::as_str)?;
     let disposition = object
         .get("disposition")
         .and_then(serde_json::Value::as_str)?;
-    let gate_known = gate == AUTONOMOUS_GATE_APPROVE
-        || gate == AUTONOMOUS_GATE_ACCEPTANCE
-        || gate == AUTONOMOUS_GATE_NEEDS_HUMAN;
-    let disposition_known = disposition == AUTONOMOUS_DISPOSITION_AUTO_RESOLVED
-        || disposition == AUTONOMOUS_DISPOSITION_ESCALATED;
-    if !gate_known || !disposition_known {
-        return None;
+    let governing_settings = object
+        .get("governing_settings")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .map(serde_json::Value::as_str)
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    AutonomousDecision::from_auto_disposition(work_item_id, disposition, governing_settings)
+}
+
+fn auto_disposition_reflection_gate(disposition: &str) -> Option<&'static str> {
+    match disposition {
+        AUTO_DISPOSITION_AUTO_APPROVE => Some(AUTONOMOUS_GATE_APPROVE),
+        AUTO_DISPOSITION_AI_AUTO_ACCEPT
+        | AUTO_DISPOSITION_AI_FAIL_AUTO_REWORK
+        | AUTO_DISPOSITION_SHIP_ON_CAP => Some(AUTONOMOUS_GATE_ACCEPTANCE),
+        AUTO_DISPOSITION_CAP_EXCEEDED_ESCALATION => Some(AUTONOMOUS_GATE_NEEDS_HUMAN),
+        _other => None,
     }
-    Some(AutonomousDecision::new(
-        work_item_id,
-        gate,
-        decision,
-        disposition,
-    ))
 }
 
 /// The needs-attention item id the console resolves to reflect an auto-resolution
@@ -4788,7 +4829,7 @@ pub trait AutonomousDecisionsPort {
 /// Dispatcher journal file through a [`SourceProbe`].
 ///
 /// The journal is the plane's PUBLISHED per-decision audit surface; the console
-/// reads the `autonomous-decision` stage records from it fail-open. An unreadable
+/// reads the `auto-disposition` stage records from it fail-open. An unreadable
 /// or absent journal yields an empty audit, never a fabricated decision.
 pub struct JournalAutonomousDecisionsPort<'a> {
     probe: &'a dyn SourceProbe,
@@ -8304,39 +8345,62 @@ mod tests {
         assert_eq!(*probe.observed_args.borrow(), ["loop", "--budget", "50"]);
     }
 
-    // A journal line for one auto-resolved / escalated decision, in the exact
-    // wire shape the orchestrator plane's published record contract emits.
+    // A journal line for one auto-disposition, in the exact wire shape the
+    // orchestrator plane's published record contract emits.
     fn autonomous_journal_line(
         work_item_id: &str,
-        gate: &str,
-        decision: &str,
         disposition: &str,
+        governing_settings: &[&str],
     ) -> String {
-        format!(
-            r#"{{"stage":"autonomous-decision","work_item_id":"{work_item_id}","gate":"{gate}","decision":"{decision}","disposition":"{disposition}"}}"#
-        )
+        serde_json::json!({
+            "stage": "auto-disposition",
+            "work_item_id": work_item_id,
+            "disposition": disposition,
+            "governing_settings": governing_settings,
+        })
+        .to_string()
     }
 
     #[test]
     fn read_autonomous_decisions_splits_buckets_and_preserves_order() {
         let journal = [
-            autonomous_journal_line("wi-1", "approve", "auto-approve", "auto-resolved"),
-            autonomous_journal_line("wi-2", "acceptance", "ai-accept", "auto-resolved"),
-            autonomous_journal_line("wi-3", "needs-human", "escalate", "escalated"),
+            autonomous_journal_line("wi-1", "auto-approve", &["auto_approve_ready"]),
+            autonomous_journal_line("wi-2", "ai-auto-accept", &["acceptance_mode"]),
+            autonomous_journal_line(
+                "wi-3",
+                "ai-fail-auto-rework",
+                &["acceptance_mode", "acceptance_rework_cap"],
+            ),
+            autonomous_journal_line("wi-4", "ship-on-cap", &["merge_on_review_cap"]),
+            autonomous_journal_line("wi-5", "cap-exceeded-escalation", &["review_fix_cap"]),
         ]
         .join("\n");
 
         let audit = super::read_autonomous_decisions_from_journal(&journal);
 
-        assert_eq!(audit.auto_resolutions().len(), 2);
+        assert_eq!(audit.auto_resolutions().len(), 4);
         assert_eq!(audit.auto_resolutions()[0].work_item_id(), "wi-1");
         assert_eq!(audit.auto_resolutions()[0].gate(), "approve");
         assert_eq!(audit.auto_resolutions()[0].decision(), "auto-approve");
-        assert_eq!(audit.auto_resolutions()[0].disposition(), "auto-resolved");
+        assert_eq!(audit.auto_resolutions()[0].disposition(), "auto-approve");
+        assert_eq!(
+            audit.auto_resolutions()[0].governing_settings(),
+            ["auto_approve_ready"]
+        );
         assert_eq!(audit.auto_resolutions()[1].work_item_id(), "wi-2");
+        assert_eq!(audit.auto_resolutions()[1].gate(), "acceptance");
+        assert_eq!(
+            audit.auto_resolutions()[2].disposition(),
+            "ai-fail-auto-rework"
+        );
+        assert_eq!(audit.auto_resolutions()[3].disposition(), "ship-on-cap");
         assert_eq!(audit.escalations().len(), 1);
-        assert_eq!(audit.escalations()[0].work_item_id(), "wi-3");
-        assert_eq!(audit.escalations()[0].disposition(), "escalated");
+        assert_eq!(audit.escalations()[0].work_item_id(), "wi-5");
+        assert_eq!(
+            audit.escalations()[0].disposition(),
+            "cap-exceeded-escalation"
+        );
+        assert_eq!(audit.escalations()[0].gate(), "needs-human");
     }
 
     #[test]
@@ -8345,17 +8409,18 @@ mod tests {
             "not json".to_owned(),
             "[1,2,3]".to_owned(),
             r#"{"stage":"calibration","work_item_id":"wi-x"}"#.to_owned(),
-            r#"{"stage":"autonomous-decision","work_item_id":"wi-y","gate":"bogus","decision":"d","disposition":"auto-resolved"}"#.to_owned(),
-            r#"{"stage":"autonomous-decision","work_item_id":"wi-z","gate":"approve","decision":"d","disposition":"unknown"}"#.to_owned(),
-            r#"{"stage":"autonomous-decision","gate":"approve","decision":"d","disposition":"auto-resolved"}"#.to_owned(),
-            autonomous_journal_line("wi-ok", "approve", "auto-approve", "auto-resolved"),
+            r#"{"stage":"autonomous-decision","work_item_id":"wi-old","gate":"approve","decision":"d","disposition":"auto-resolved"}"#.to_owned(),
+            r#"{"stage":"auto-disposition","work_item_id":"wi-z","disposition":"unknown","governing_settings":["acceptance_mode"]}"#.to_owned(),
+            r#"{"stage":"auto-disposition","work_item_id":"wi-y","disposition":"auto-approve"}"#.to_owned(),
+            r#"{"stage":"auto-disposition","disposition":"auto-approve","governing_settings":["auto_approve_ready"]}"#.to_owned(),
+            autonomous_journal_line("wi-ok", "auto-approve", &["auto_approve_ready"]),
         ]
         .join("\n");
 
         let audit = super::read_autonomous_decisions_from_journal(&journal);
 
-        // Only the single well-formed record survives; every malformed or
-        // foreign-stage line is skipped fail-open.
+        // Only the single well-formed live-schema record survives; every
+        // malformed, retired-schema, or foreign-stage line is skipped fail-open.
         assert_eq!(audit.auto_resolutions().len(), 1);
         assert_eq!(audit.auto_resolutions()[0].work_item_id(), "wi-ok");
         assert!(audit.escalations().is_empty());
@@ -8393,7 +8458,7 @@ mod tests {
     fn journal_autonomous_decisions_port_reads_and_fails_open() {
         let observed = StubDrainProbe {
             outcome: SourceProbeOutcome::observed(
-                &autonomous_journal_line("wi-1", "approve", "auto-approve", "auto-resolved"),
+                &autonomous_journal_line("wi-1", "auto-approve", &["auto_approve_ready"]),
                 true,
             ),
         };

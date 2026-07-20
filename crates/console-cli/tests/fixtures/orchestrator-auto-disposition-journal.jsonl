@@ -1,0 +1,5 @@
+{"stage": "auto-disposition", "work_item_id": "bd-ib-1", "disposition": "auto-approve", "governing_settings": ["auto_approve_ready"]}
+{"stage": "auto-disposition", "work_item_id": "bd-ib-2", "disposition": "ai-auto-accept", "governing_settings": ["acceptance_mode"]}
+{"stage": "auto-disposition", "work_item_id": "bd-ib-3", "disposition": "ai-fail-auto-rework", "governing_settings": ["acceptance_mode", "acceptance_rework_cap"]}
+{"stage": "auto-disposition", "work_item_id": "bd-ib-4", "disposition": "ship-on-cap", "governing_settings": ["merge_on_review_cap", "review_fix_cap"]}
+{"stage": "auto-disposition", "work_item_id": "bd-ib-5", "disposition": "cap-exceeded-escalation", "governing_settings": ["acceptance_rework_cap"]}
