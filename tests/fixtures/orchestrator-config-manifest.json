@@ -1,6 +1,6 @@
 {
   "action_id": "config-manifest",
-  "captured_at_pin": "v0.16.0",
+  "captured_key_set_digest": "39798fa70c4eb21ae8408608601edc2ca3fccb2463d9c25027d2f78e331f54e6",
   "kind": "config-manifest",
   "manifest": {
     "keys": [

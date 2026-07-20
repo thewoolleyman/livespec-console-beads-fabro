@@ -13,17 +13,17 @@
 //!
 //! The published-key surface is read from a COMMITTED capture of the orchestrator's
 //! `config-manifest` (hermetic — `just check`/CI run offline, no live orchestrator).
-//! A capture goes stale when the orchestrator pin advances, so the capture is
-//! PIN-STAMPED: it records the orchestrator release it was taken at, and the check
-//! FAILS when that stamp differs from the project's current `.livespec.jsonc`
-//! `compat.pinned`. That turns the auto-merging pin-bump into a RED gate the moment
-//! the pin moves — the capture must be refreshed (which then surfaces any new
-//! declared key) before the bump can merge.
+//! A capture goes stale when its declared key set changes without being refreshed,
+//! so the capture is DIGEST-STAMPED with the declared key set. The check FAILS
+//! when that stamp differs from the fixture's current declared-key digest. A core
+//! pin bump alone does not invalidate the capture; a true key-set change still
+//! fails closed until `just refresh-config-manifest` re-captures the live surface.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 use console_application::DispatcherSettingRow;
+use sha2::{Digest, Sha256};
 
 /// One console Settings-surface row reduced to what the completeness check needs:
 /// the orchestrator `dispatcher.*` key it surfaces and its inline help text.
@@ -139,6 +139,10 @@ impl CompletenessReport {
 pub fn declared_keys(manifest_json: &str) -> Result<Vec<String>, String> {
     let value: serde_json::Value = serde_json::from_str(manifest_json)
         .map_err(|error| format!("config-manifest is not valid JSON: {error}"))?;
+    declared_keys_from_value(&value)
+}
+
+fn declared_keys_from_value(value: &serde_json::Value) -> Result<Vec<String>, String> {
     let entries = value
         .get("manifest")
         .and_then(|manifest| manifest.get("keys"))
@@ -260,34 +264,33 @@ pub fn evaluate(
 
 /// A stale-capture finding.
 ///
-/// The orchestrator release the config-manifest fixture was captured at (`found`)
-/// differs from the release the project currently pins (`expected`,
-/// `.livespec.jsonc` `compat.pinned`).
+/// The key-set digest stamped into the config-manifest fixture (`found`) differs
+/// from the digest of the key set the fixture currently declares (`expected`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PinMismatch {
+pub struct KeySetDigestMismatch {
     expected: String,
     found: String,
 }
 
-impl PinMismatch {
+impl KeySetDigestMismatch {
     #[must_use]
-    /// The orchestrator release `.livespec.jsonc` currently pins.
+    /// The digest of the key set the fixture currently declares.
     pub fn expected(&self) -> &str {
         &self.expected
     }
 
     #[must_use]
-    /// The orchestrator release the fixture capture was stamped at.
+    /// The key-set digest stamped into the fixture capture.
     pub fn found(&self) -> &str {
         &self.found
     }
 
     #[must_use]
-    /// The operator-facing diagnostic naming both pins and the remediation.
+    /// The operator-facing diagnostic naming both digests and the remediation.
     pub fn diagnostic(&self) -> String {
         format!(
-            "the config-manifest capture was taken at orchestrator pin `{}` but \
-             `.livespec.jsonc` now pins `{}` -- the capture is stale; run \
+            "the config-manifest capture was stamped with key-set digest `{}` but \
+             the fixture now declares key-set digest `{}` -- the capture is stale; run \
              `just refresh-config-manifest`",
             self.found, self.expected
         )
@@ -343,90 +346,111 @@ pub fn strip_jsonc_comments(source: &str) -> String {
     out
 }
 
-/// Read the orchestrator release the project pins from `.livespec.jsonc`
-/// (`livespec-orchestrator-beads-fabro.compat.pinned`).
+/// Compute the stable digest for an orchestrator config-manifest's declared key
+/// set.
+///
+/// The digest is order-independent because it represents the set of declared
+/// keys, not the manifest's emission order. Each key is length-framed before
+/// hashing to avoid ambiguity between adjacent strings.
 ///
 /// # Errors
-/// Returns an error string when the JSONC does not parse or the pin key is absent.
-pub fn read_pinned(livespec_jsonc: &str) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&strip_jsonc_comments(livespec_jsonc))
-        .map_err(|error| format!(".livespec.jsonc is not valid JSONC: {error}"))?;
-    value
-        .get("livespec-orchestrator-beads-fabro")
-        .and_then(|orchestrator| orchestrator.get("compat"))
-        .and_then(|compat| compat.get("pinned"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ".livespec.jsonc has no `livespec-orchestrator-beads-fabro.compat.pinned`".to_owned()
-        })
+/// Returns an error string when the manifest's declared keys cannot be read.
+pub fn declared_key_set_digest(manifest_json: &str) -> Result<String, String> {
+    let keys = declared_keys(manifest_json)?;
+    Ok(digest_declared_keys(keys))
 }
 
-/// Read the orchestrator pin a config-manifest fixture was captured at from its
-/// top-level `captured_at_pin` field.
+fn digest_declared_keys(mut keys: Vec<String>) -> String {
+    keys.sort_unstable();
+
+    let mut hasher = Sha256::new();
+    for key in keys {
+        hasher.update(key.len().to_be_bytes());
+        hasher.update(key.as_bytes());
+    }
+    let digest = hasher.finalize();
+    hex_lower(&digest)
+}
+
+/// Read the declared-key digest a config-manifest fixture was captured with from
+/// its top-level `captured_key_set_digest` field.
 ///
 /// # Errors
-/// Returns an error string when the JSON does not parse or the field is absent —
+/// Returns an error string when the JSON does not parse or the field is absent --
 /// an unstamped fixture is treated as stale (refresh it).
-pub fn captured_at_pin(manifest_json: &str) -> Result<String, String> {
+pub fn captured_key_set_digest(manifest_json: &str) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(manifest_json)
         .map_err(|error| format!("config-manifest is not valid JSON: {error}"))?;
     value
-        .get("captured_at_pin")
+        .get("captured_key_set_digest")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| {
-            "config-manifest capture has no `captured_at_pin` field; run \
+            "config-manifest capture has no `captured_key_set_digest` field; run \
              `just refresh-config-manifest`"
                 .to_owned()
         })
 }
 
-/// Compare the project's current orchestrator pin against the fixture's stamp.
+/// Compare the fixture's stamped key-set digest against its declared key set.
 ///
 /// `Ok(None)` when they match, `Ok(Some(mismatch))` when the capture is stale.
 ///
 /// # Errors
-/// Returns an error string when either pin cannot be read.
-pub fn check_pin(livespec_jsonc: &str, manifest_json: &str) -> Result<Option<PinMismatch>, String> {
-    let expected = read_pinned(livespec_jsonc)?;
-    let found = captured_at_pin(manifest_json)?;
+/// Returns an error string when either digest cannot be read.
+pub fn check_key_set_digest(manifest_json: &str) -> Result<Option<KeySetDigestMismatch>, String> {
+    let expected = declared_key_set_digest(manifest_json)?;
+    let found = captured_key_set_digest(manifest_json)?;
     if expected == found {
         Ok(None)
     } else {
-        Ok(Some(PinMismatch { expected, found }))
+        Ok(Some(KeySetDigestMismatch { expected, found }))
     }
 }
 
-/// Stamp `pinned` into a fresh `config-manifest` output.
+/// Stamp the declared-key digest into a fresh `config-manifest` output.
 ///
-/// Inserts a top-level `captured_at_pin` field and returns the pretty-printed
-/// JSON to write as the committed fixture. Used by `just refresh-config-manifest`.
+/// Inserts a top-level `captured_key_set_digest` field and returns the
+/// pretty-printed JSON to write as the committed fixture. Used by
+/// `just refresh-config-manifest`.
 ///
 /// # Errors
 /// Returns an error string when the drive output is not valid JSON or is not a
-/// JSON object.
-pub fn stamp_manifest(drive_output_json: &str, pinned: &str) -> Result<String, String> {
+/// JSON object, or when its declared keys cannot be read.
+pub fn stamp_manifest(drive_output_json: &str) -> Result<String, String> {
     let mut value: serde_json::Value = serde_json::from_str(drive_output_json)
         .map_err(|error| format!("config-manifest output is not valid JSON: {error}"))?;
     let object = value
         .as_object_mut()
         .ok_or_else(|| "config-manifest output is not a JSON object".to_owned())?;
+    let digest = digest_declared_keys(declared_keys_from_value(&serde_json::Value::Object(
+        object.clone(),
+    ))?);
     let _previous = object.insert(
-        "captured_at_pin".to_owned(),
-        serde_json::Value::String(pinned.to_owned()),
+        "captured_key_set_digest".to_owned(),
+        serde_json::Value::String(digest),
     );
     // Serializing a `serde_json::Value` back to text is infallible in practice;
     // fall back to an empty string rather than carry an untestable error branch.
     Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
 }
 
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletenessReport, PinMismatch, SettingsRow, captured_at_pin, check_pin,
-        console_settings_rows, declared_keys, dispatcher_settings_section, evaluate, read_pinned,
-        stamp_manifest, strip_jsonc_comments,
+        CompletenessReport, KeySetDigestMismatch, SettingsRow, captured_key_set_digest,
+        check_key_set_digest, console_settings_rows, declared_key_set_digest, declared_keys,
+        dispatcher_settings_section, evaluate, stamp_manifest, strip_jsonc_comments,
     };
 
     fn manifest(keys: &[&str]) -> String {
@@ -631,66 +655,80 @@ mod tests {
     }
 
     #[test]
-    fn read_pinned_extracts_the_orchestrator_pin_from_jsonc() {
-        let jsonc = "{\n  // comment\n  \"livespec-orchestrator-beads-fabro\": {\n    \"compat\": { \"pinned\": \"v0.16.0\" }\n  }\n}";
-        assert_eq!(read_pinned(jsonc), Ok("v0.16.0".to_owned()));
-        assert!(read_pinned("{not jsonc").is_err());
-        assert!(read_pinned("{\"livespec-orchestrator-beads-fabro\": {}}").is_err());
-    }
-
-    #[test]
-    fn captured_at_pin_reads_the_stamp_or_errors_when_absent() {
+    fn declared_key_set_digest_is_order_independent() {
         assert_eq!(
-            captured_at_pin("{\"captured_at_pin\": \"v0.16.0\"}"),
-            Ok("v0.16.0".to_owned())
+            declared_key_set_digest(&manifest(&["auto_approve_ready", "wip_cap"])),
+            declared_key_set_digest(&manifest(&["wip_cap", "auto_approve_ready"]))
         );
-        assert!(captured_at_pin("{\"manifest\": {}}").is_err());
-        assert!(captured_at_pin("{not json").is_err());
+        assert_ne!(
+            declared_key_set_digest(&manifest(&["auto_approve_ready", "wip_cap"])),
+            declared_key_set_digest(&manifest(&["auto_approve_ready", "new_key"]))
+        );
     }
 
     #[test]
-    fn check_pin_is_none_on_match_and_some_on_drift() {
-        let jsonc =
+    fn captured_key_set_digest_reads_the_stamp_or_errors_when_absent() {
+        assert_eq!(
+            captured_key_set_digest("{\"captured_key_set_digest\": \"abc123\"}"),
+            Ok("abc123".to_owned())
+        );
+        assert!(captured_key_set_digest("{\"manifest\": {}}").is_err());
+        assert!(captured_key_set_digest("{not json").is_err());
+    }
+
+    #[test]
+    fn check_key_set_digest_ignores_core_pin_only_changes() {
+        let drive_output = manifest(&["auto_approve_ready", "wip_cap"]);
+        let stamped = stamp_manifest(&drive_output).unwrap_or_default();
+        assert_eq!(check_key_set_digest(&stamped), Ok(None));
+
+        let old_pin =
             "{\"livespec-orchestrator-beads-fabro\": {\"compat\": {\"pinned\": \"v0.16.0\"}}}";
-        assert_eq!(
-            check_pin(jsonc, "{\"captured_at_pin\": \"v0.16.0\"}"),
-            Ok(None)
-        );
-        let drift = check_pin(jsonc, "{\"captured_at_pin\": \"v0.15.0\"}");
+        let new_pin =
+            "{\"livespec-orchestrator-beads-fabro\": {\"compat\": {\"pinned\": \"v0.17.0\"}}}";
+        assert!(strip_jsonc_comments(old_pin).contains("v0.16.0"));
+        assert!(strip_jsonc_comments(new_pin).contains("v0.17.0"));
+        assert_eq!(check_key_set_digest(&stamped), Ok(None));
+    }
+
+    #[test]
+    fn check_key_set_digest_fails_closed_on_genuine_key_set_change() {
+        let stamped = stamp_manifest(&manifest(&["auto_approve_ready", "wip_cap"]))
+            .unwrap_or_default()
+            .replace("wip_cap", "new_upstream_key");
+        let drift = check_key_set_digest(&stamped);
         let mismatch = drift.unwrap_or(None);
-        let mismatch = mismatch.unwrap_or(PinMismatch {
+        let mismatch = mismatch.unwrap_or(KeySetDigestMismatch {
             expected: String::new(),
             found: String::new(),
         });
-        assert_eq!(mismatch.expected(), "v0.16.0");
-        assert_eq!(mismatch.found(), "v0.15.0");
+        assert_ne!(mismatch.expected(), mismatch.found());
         assert!(
-            mismatch.diagnostic().contains("v0.15.0")
-                && mismatch.diagnostic().contains("v0.16.0")
+            mismatch.diagnostic().contains("key-set digest")
                 && mismatch
                     .diagnostic()
                     .contains("just refresh-config-manifest")
         );
         // A read error propagates.
-        assert!(check_pin("{bad", "{\"captured_at_pin\": \"v0.16.0\"}").is_err());
+        assert!(check_key_set_digest("{bad").is_err());
     }
 
     #[test]
-    fn stamp_manifest_inserts_the_pin_and_rejects_non_objects() {
-        let stamped = stamp_manifest("{\"kind\": \"config-manifest\"}", "v0.16.0");
+    fn stamp_manifest_inserts_the_key_set_digest_and_rejects_non_objects() {
+        let drive_output =
+            "{\"kind\": \"config-manifest\", \"manifest\": {\"keys\": [{\"key\": \"wip_cap\"}]}}";
+        let stamped = stamp_manifest(drive_output);
         let text = stamped.unwrap_or_default();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-        assert_eq!(
-            value
-                .get("captured_at_pin")
-                .and_then(serde_json::Value::as_str),
-            Some("v0.16.0")
-        );
+        let captured = value
+            .get("captured_key_set_digest")
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(captured.map(str::len), Some(64));
         assert_eq!(
             value.get("kind").and_then(serde_json::Value::as_str),
             Some("config-manifest")
         );
-        assert!(stamp_manifest("[1, 2]", "v0.16.0").is_err());
-        assert!(stamp_manifest("{not json", "v0.16.0").is_err());
+        assert!(stamp_manifest("[1, 2]").is_err());
+        assert!(stamp_manifest("{not json").is_err());
     }
 }
