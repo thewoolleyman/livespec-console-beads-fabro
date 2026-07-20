@@ -144,6 +144,12 @@ three preview items:
 overview before it steps back to the Views menu. An empty lane reads
 `No work-items in this lane`.
 
+With an item selected, `Enter` opens its **full record** — every field the
+orchestrator emits for that item, not just the row's summary. `Esc` closes it.
+`Enter` therefore means two different things in this view: *drill into a lane*
+on the overview, and *open the selected item's record* once you are inside one.
+The Status line says which one applies.
+
 Drilling in matters: the `s` **move-to-status** valve needs the item's current
 lane to know which statuses it may be driven to, so it works **only** on a
 drilled-in lane selection, and is inert in the Attention view.
@@ -191,19 +197,31 @@ close, so it always describes the current context rather than a fixed summary.
 | Context | Hint |
 |---|---|
 | Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
-| Attention | `up/down move \| enter open \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
-| Lanes | `up/down move \| enter drill \| s move-status \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
+| Attention, an item selected | `up/down move \| enter open \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
+| Attention, empty inbox | `enter open \| ? help \| q quit` |
+| Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
+| Lanes, drilled in with an item selected | `up/down move \| enter item \| esc lane list \| s move-status \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
+| Lanes, drilled into an empty lane | `esc lane list \| ? help \| q quit` |
 | Settings | `up/down move \| enter/space edit row \| ? help \| q quit` |
 | Spec, Events, Repos | `up/down move \| left/right focus \| / search \| ? help \| q quit` |
 | Search open | `type to search \| esc cancel` |
 | Command palette open | `type a drain command \| esc cancel` |
 | Command modal open | `up/down select action \| enter run \| esc cancel` |
 | Valve confirm open | `up/down change \| enter confirm \| esc cancel` |
+| Work-item record open | `up/down scroll \| PgUp/PgDn page \| esc close item` |
 | Help open | `up/down section \| PgUp/PgDn scroll \| esc close help` |
 
+**The Status line never advertises a key that would do nothing.** The per-item
+valves act on a *selected work-item*, so they are absent on the lane overview
+(which selects a lane, not an item) and in an empty drilled-in lane. `up`/`down`
+drop out too when there are no rows to move over. `Enter` is the exception in
+the Attention view: it opens the command modal unconditionally, so it stays
+listed even when the inbox is empty.
+
 An open overlay's hint wins over the focused pane's. The pane hints key on the
-active **view**, so Views, content, and Detail focus within one view share a
-hint.
+active **view** plus what is selected in it — not on which of the body panes
+holds focus — so Views, content, and Detail focus within the same view and the
+same selection share a hint.
 
 The Status band deliberately sits *below* the Help modal's bottom margin, so
 its hints stay readable while the modal is open.
