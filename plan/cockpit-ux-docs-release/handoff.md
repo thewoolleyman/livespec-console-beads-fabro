@@ -17,13 +17,13 @@ from a **random PWD like `/tmp`**, against two repos. The docs walkthrough is
 validated by an **agent walking it on a DUMMY item, driving a REAL TUI in a tmux
 pane, for two repos**.
 
-## STATUS (updated 2026-07-20) — deliverable #0 + B1–B6 DONE; B7/B8-remainder + backfill + Stage-2 REMAIN
+## STATUS (updated 2026-07-20) — deliverable #0 + B1–B7 DONE; B8-remainder + backfill + Stage-2 REMAIN
 
 The foundational tmux real-TUI E2E harness (#0), the full **B1–B5** cockpit-UX
-behavior set, and **B6** (the `docs/` tree) are LANDED on console master. What
-remains is the B7 walkthrough, the B8 release capstone's live-download two-repo
-test + README de-gate, the real-TUI E2E backfill, and (separately,
-maintainer-gated) autonomous-mode Stage-2.
+behavior set, **B6** (the `docs/` tree) and **B7** (the lifecycle walkthrough)
+are LANDED on console master. What remains is the B8 release capstone's
+live-download two-repo test + install-doc de-gate, the real-TUI E2E backfill,
+and (separately, maintainer-gated) autonomous-mode Stage-2.
 
 | Item | State | Ref |
 |---|---|---|
@@ -34,7 +34,7 @@ maintainer-gated) autonomous-mode Stage-2.
 | B4 navigable modal Help (Scenario 18, v025) | ✅ DONE | PR #267 |
 | B5 panes operational-content-only (Scenario 21, v028) | ✅ DONE | propose #280 → revise #288 → impl #289 (`1bfdb41d`) |
 | B6 user-docs → `docs/` tree (4 sub-docs) | ✅ DONE | spec: v029 (`8839d63`) + corrections **v030** (PR #297, `2fac510`); impl: PR #300 (`7df1ea2`) |
-| **B7** key-by-key lifecycle walkthrough doc | ⬜ NOT STARTED | §"B7" below |
+| B7 key-by-key lifecycle walkthrough doc | ✅ DONE | PR #327 (`b8ff009`) — `docs/lifecycle-walkthrough.md` + two-repo tmux E2E acceptance |
 | **B8** release capstone | ◑ PARTIAL — release pipeline + v0.2.0 asset shipped (PR #243); the `/tmp` two-repo download-run + README de-gate REMAIN | §"B8" below |
 | **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
 | **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`) |
@@ -259,20 +259,59 @@ TWO takeaways for future spec work in this repo:
    trusting a STATUS row, spot-check the filesystem (`git ls-tree origin/master
    --name-only docs/`) rather than the row.
 
+## B7 POSTSCRIPT (2026-07-20) — the harness gap, and a drift gate
+
+B7 is DONE: `docs/lifecycle-walkthrough.md` (linked from the docs TOC) plus
+`tmux_tui_e2e_lifecycle_walkthrough_two_repos`, which walks the documented
+keystrokes against the REAL TUI for two repos on every CI run.
+
+**The harness could not test a lifecycle at all, and this is reusable.** Every
+backing CLI in the tmux harness is stubbed to print `{}` — correct for the
+cockpit-chrome scenes, but `{}` is not even a legal `list-work-items --json`
+payload (the parser wants an array), so every E2E ran against an EMPTY board by
+construction and no test asserted on a work-item.
+`crates/console-cli/tests/support/lifecycle.rs` adds a stateful fixture that
+serves a work-item, accepts the drive actions the TUI issues (`approve:<id>`,
+`accept:<id>`, `move:<id>:<target>`), mutates the lane, and answers the bare
+`config` read so Settings is populated. Hermetic — no tenant, no network.
+**The E2E BACKFILL below should use it**; the Scenario 5/9/11/13 scenes need
+exactly this.
+
+**The ship-guard is load-bearing for any operator documentation.** `move`
+refuses `acceptance`, `done`, and `pending-approval`, so `active` ->
+`acceptance` is the FACTORY's step and no keystroke performs it. The walkthrough
+documents who drives what; the E2E models the factory step with
+`factory_move()` rather than pretending an operator key exists. Do not write
+operator docs that imply otherwise.
+
+**B6's docs drifted within ONE DAY of landing.** `185426b` ("stop advertising
+inert keys") made the Status hints state-dependent, and the B6 table silently
+became wrong in four places (one `Lanes` row was really three, `Attention` was
+two, `enter drill` became `enter item` inside a lane, and a new work-item record
+overlay arrived with its own hint). Nothing failed, because prose is not
+executable. All corrected, and
+`crates/console-cli/tests/docs_status_hint_lockstep.rs` now binds every hint the
+doc quotes to a string literal in the module that renders it — the same lockstep
+idea as `console-completeness-check`, negative-tested by injecting the exact
+drift that occurred.
+
+**The generalizable lesson: bind docs mechanically or they rot at the team's
+commit rate.** With several sessions on this repo, that is fast. When B8
+de-gates the download instructions in `docs/installing.md`, give them the same
+treatment — a test that fails if the documented asset name stops matching what
+the release actually publishes.
+
 ## RESUME ORDER (fresh session) — updated 2026-07-20
-Deliverable #0 + **B1–B6 are DONE** (see §"STATUS" and §"B6 POSTSCRIPT").
-Remaining, in order:
-1. **B7 key-by-key lifecycle walkthrough** (a `docs/*.md` section) — acceptance:
-   an agent walks it on a DUMMY item, driving a REAL TUI in a tmux pane,
-   end-to-end, NO doc/behavior mismatch, for TWO repos.
-2. **B8 release capstone (remainder only)** — the release pipeline + v0.2.0 asset
+Deliverable #0 + **B1–B7 are DONE** (see §"STATUS", §"B6 POSTSCRIPT", and
+§"B7 POSTSCRIPT"). Remaining, in order:
+1. **B8 release capstone (remainder only)** — the release pipeline + v0.2.0 asset
    already shipped (PR #243). What REMAINS is the pre-delivery acceptance:
    `gh release download` the PUBLISHED asset (NOT a source build), run it from a
    random PWD like `/tmp/<rand>` against TWO different repos, then DE-GATE the
    README / `docs/installing.md` download instructions.
-3. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
+2. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
    with the above (the harness now exists and is a trustworthy CI gate).
-4. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
+3. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
    in `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`). Drive
    multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
    `acceptance`, with the maintainer's final accept via the TUI.
