@@ -140,7 +140,22 @@ fn scenario_15_orchestrator_auto_dispositions_reflect_and_surface_escalations()
         .map(|item| item.id().to_owned())
         .collect();
 
-    assert_eq!(inbox, ["valve:resolve-blocked:bd-ib-5"]);
+    assert_eq!(inbox, ["valve:set-admission:bd-ib-5"]);
+
+    let _second_report = serve_report(
+        &mut store,
+        "2026-07-20T00:00:01Z",
+        &[],
+        &mut drain,
+        &mut work_item,
+        &decisions,
+        &needs_attention,
+    )?;
+    let second_inbox: Vec<String> = project_attention(&store.list_console_events()?)
+        .iter()
+        .map(|item| item.id().to_owned())
+        .collect();
+    assert_eq!(second_inbox, ["valve:set-admission:bd-ib-5"]);
 
     let commands = store.list_commands()?;
     let reflection_commands = commands
