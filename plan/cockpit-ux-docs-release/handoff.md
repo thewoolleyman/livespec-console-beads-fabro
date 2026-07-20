@@ -17,12 +17,13 @@ from a **random PWD like `/tmp`**, against two repos. The docs walkthrough is
 validated by an **agent walking it on a DUMMY item, driving a REAL TUI in a tmux
 pane, for two repos**.
 
-## STATUS (updated 2026-07-19) — deliverable #0 + B1–B5 DONE; B6/B7/B8-remainder + backfill + Stage-2 REMAIN
+## STATUS (updated 2026-07-20) — deliverable #0 + B1–B6 DONE; B7/B8-remainder + backfill + Stage-2 REMAIN
 
-The foundational tmux real-TUI E2E harness (#0) and the full **B1–B5** cockpit-UX
-behavior set are LANDED on console master. What remains is the B6/B7 docs tree,
-the B8 release capstone's live-download two-repo test + README de-gate, the
-real-TUI E2E backfill, and (separately, maintainer-gated) autonomous-mode Stage-2.
+The foundational tmux real-TUI E2E harness (#0), the full **B1–B5** cockpit-UX
+behavior set, and **B6** (the `docs/` tree) are LANDED on console master. What
+remains is the B7 walkthrough, the B8 release capstone's live-download two-repo
+test + README de-gate, the real-TUI E2E backfill, and (separately,
+maintainer-gated) autonomous-mode Stage-2.
 
 | Item | State | Ref |
 |---|---|---|
@@ -32,7 +33,7 @@ real-TUI E2E backfill, and (separately, maintainer-gated) autonomous-mode Stage-
 | B3 top/header-pane focus + h-scroll (Scenario 20, v027) | ✅ DONE | PR #286 (`4e8598f`) |
 | B4 navigable modal Help (Scenario 18, v025) | ✅ DONE | PR #267 |
 | B5 panes operational-content-only (Scenario 21, v028) | ✅ DONE | propose #280 → revise #288 → impl #289 (`1bfdb41d`) |
-| **B6** user-docs → `docs/` tree (4 sub-docs) | ◑ SPEC LEG STARTED — anchor RATIFIED **v029** (`8839d63`, propose `bc11030`); a corrections proposal sits UNMERGED on branch `b6-spec-review-fixes` (`0b6ef76`, pushed, **no PR open**). `docs/` tree itself NOT yet created. | §"B6" below |
+| B6 user-docs → `docs/` tree (4 sub-docs) | ✅ DONE | spec: v029 (`8839d63`) + corrections **v030** (PR #297, `2fac510`); impl: PR #300 (`7df1ea2`) |
 | **B7** key-by-key lifecycle walkthrough doc | ⬜ NOT STARTED | §"B7" below |
 | **B8** release capstone | ◑ PARTIAL — release pipeline + v0.2.0 asset shipped (PR #243); the `/tmp` two-repo download-run + README de-gate REMAIN | §"B8" below |
 | **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
@@ -54,13 +55,11 @@ impl-dispatch handoff.
 ### Open follow-up work items (console beads ledger)
 - **`livespec-console-beads-fabro-25rvmd`** (P2, blocked) — B1 transition-epoch source-availability tally (re-down-after-recovery dedups in a persistent cross-run store).
 - **`livespec-console-beads-fabro-ble`** (P2, backlog) — extend `distinguish_repeatable_command` idempotency-key fix to ALL repeatable operator actions (currently move-only).
-- **`livespec-console-beads-fabro-7wy`** (P2, open) — rewrite the section-sign (§) spec-citation in `console-application/src/lib.rs` to file-level form before the next core-pin bump past v0.16.0 (CORE master's stricter `doctor-no-spec-section-citation-in-code` flags it; the console's pinned core release does not).
+- ~~**`livespec-console-beads-fabro-7wy`**~~ — **RESOLVED** in the v030 PR (#297). The revise CLI's gating post-step doctor flagged it, so it was fixed rather than deferred; there were THREE such citations, not one (`console-application/src/lib.rs:1987` and `:2453`, `source_adapters.rs:1865`), all now file-level. `grep -rn '§' crates --include='*.rs'` returns nothing and `doctor-no-spec-section-citation-in-code` passes. **Close the ledger record if still open.**
 
-The B6/B7/B8 deliverables live in THIS plan by design — the freeform work-item vehicle for them was RETIRED (see §"RETIRED"); concrete follow-up bugs live as the work items above. Four stale worktrees (`docs-console-tui-usage`, `console-release-pipeline`, `cap-test-parallelism`, `phase3-selfhosted-cutover`) — leftover from ALREADY-MERGED PRs (#165 / #243 / #266 / #250) — were reaped 2026-07-19; they were NOT holding in-progress B6/B7/B8 work. **Added since this audit (2026-07-19):** worktree `b6-spec-review-fixes` holds
-`0b6ef76` "docs(spec): propose B6 corrections — pin the settings-doc anchor,
-widen the Boundary" — clean, one commit ahead of master, **pushed to origin but
-with NO open PR**. Pick it up before starting B6 from scratch; do not re-derive
-it. A fifth, `ci-concurrency-group`, was LEFT untouched: its head (`79305bc`, the merged E2E-targetdir fix) is in master but it carries UNCOMMITTED CI work (`.github/workflows/ci.yml` + a `Cargo.lock` drift) — another session's in-progress/abandoned CI-infra worktree, not part of this cockpit track.
+The B6/B7/B8 deliverables live in THIS plan by design — the freeform work-item vehicle for them was RETIRED (see §"RETIRED"); concrete follow-up bugs live as the work items above. Four stale worktrees (`docs-console-tui-usage`, `console-release-pipeline`, `cap-test-parallelism`, `phase3-selfhosted-cutover`) — leftover from ALREADY-MERGED PRs (#165 / #243 / #266 / #250) — were reaped 2026-07-19; they were NOT holding in-progress B6/B7/B8 work. (A prior revision of this file flagged worktree `b6-spec-review-fixes` as holding
+un-PR'd B6 corrections; that work is now MERGED as v030 via PR #297 and the
+worktree is reaped — nothing to pick up.) A fifth, `ci-concurrency-group`, was LEFT untouched: its head (`79305bc`, the merged E2E-targetdir fix) is in master but it carries UNCOMMITTED CI work (`.github/workflows/ci.yml` + a `Cargo.lock` drift) — another session's in-progress/abandoned CI-infra worktree, not part of this cockpit track.
 
 ## KEY FINDING — the real TUI has ZERO automated coverage today
 `run_interactive_tui` (raw-mode / alternate-screen) in
@@ -205,25 +204,75 @@ Epic `livespec-console-beads-fabro-0ak` + children `-5rw` (sources), `-rjo`
 — superseded by this spec-driven program. Their descriptions/acceptance are folded
 into B1–B8 above.
 
-## RESUME ORDER (fresh session) — updated 2026-07-19
-Deliverable #0 + **B1–B5 are DONE** (see §"STATUS"). Remaining, in order:
-1. **B6 user-docs → `docs/` tree** — move ALL user docs out of the README into
-   `docs/` (`installing.md` / `overview-quickstart.md` / `cli-options.md` /
-   `detailed-usage.md` with a sub-section PER pane); README links to
-   `docs/README.md` (overview + TOC only). Author NOW that B2–B5 are shipped so
-   the docs match the TUI. Spec-anchor the "user docs live in `docs/`, README is
-   a pointer" invariant if worth enforcing.
-2. **B7 key-by-key lifecycle walkthrough** (a `docs/*.md` section) — acceptance:
+## B6 POSTSCRIPT (2026-07-20) — what landed, and one process lesson
+
+B6 is DONE. On master: the `docs/` tree (`docs/README.md` index +
+`installing.md` / `overview-quickstart.md` / `cli-options.md` /
+`detailed-usage.md`), the README cut 297 → 104 lines to overview + pointer +
+contributor material, the settings-completeness gate repointed from `README.md`
+to `docs/detailed-usage.md` via a new `pub SETTINGS_DOC`, and Scenario 22 bound
+by `crates/console-completeness-check/tests/scenario_22_user_docs_tree.rs`
+(8 cases).
+
+**The docs are a REWRITE, not a move — do not trust the pre-B6 README for any
+behavioral claim.** A source audit found 16 places it contradicted the shipped
+binary: the help key does not toggle Help (inert while open, Esc-only close);
+Help is a navigable 8-section modal, not a per-view overlay; there are FOUR
+focusable panes, not two; left/right never change the view; the header
+degradation order is mode → fleet → source-name elision → view → attention, with
+`repo` and the source COUNT never dropped; the drain program takes a `loop`
+sub-command and the repo PATH; the drive program's `--repo` carries a FILESYSTEM
+PATH from `LIVESPEC_CONSOLE_REPO_PATH`, not the id from `LIVESPEC_CONSOLE_REPO`
+(which itself defaults to the CWD basename); six env vars were undocumented;
+`serve --preview` runs the store-backed report, not the demo render;
+`arch-check` was missing; `events tail` has a hard-coded limit of 20. All are
+corrected against source in `docs/`.
+
+**Ledger item `-0tu` is now genuinely satisfied.** Its second clause ("useful
+explanation relocated to docs/*.md") was unmet when it was closed as "met in
+full" by B5 alone; the three sentences B5 stripped from the pane bodies now live
+in `docs/detailed-usage.md`. The `console-autonomous-mode` session was asked to
+correct that close reason (leave closed; record that B5 delivered removal and B6
+delivered relocation) — **verify it did.**
+
+**Process lesson — the v029/v030 split.** The B6 propose-change was merged and
+ratified as v029 by a DIFFERENT session (`autonomous-mode`, cwd
+`/data/projects/livespec`, via a subagent named `b6-revise`) roughly 15 minutes
+before this session's independent-review fixes landed on the proposal branch.
+v029 therefore ratified an un-reviewed draft carrying two substantive defects:
+the completeness gate had no spec-anchored path to read (clause 2 called
+sub-document identity an implementation detail while clause 3 anchored the gate
+to "the detailed-usage sub-document", never naming a file), and the
+maintainer's chosen NFR-Boundary widening was absent. v030 (PR #297) corrected
+both.
+
+TWO takeaways for future spec work in this repo:
+1. **Ratify IN-BRANCH.** The revise CLI only needs `--spec-target` pointed at a
+   worktree; the proposal does NOT have to reach master first. Landing propose +
+   revise as ONE atomic PR closes the window in which another session can merge
+   a half-reviewed proposal. The merge-then-revise round-trip is what produced
+   v029's defects.
+2. **Multiple sessions operate on this repo concurrently**, and they are
+   distinguishable ONLY by the `Claude-Session` commit trailer — the GitHub
+   actor is identical for all of them. This file's B6 row was itself stale for
+   ~30 minutes because another session audited the repo mid-flight. Before
+   trusting a STATUS row, spot-check the filesystem (`git ls-tree origin/master
+   --name-only docs/`) rather than the row.
+
+## RESUME ORDER (fresh session) — updated 2026-07-20
+Deliverable #0 + **B1–B6 are DONE** (see §"STATUS" and §"B6 POSTSCRIPT").
+Remaining, in order:
+1. **B7 key-by-key lifecycle walkthrough** (a `docs/*.md` section) — acceptance:
    an agent walks it on a DUMMY item, driving a REAL TUI in a tmux pane,
    end-to-end, NO doc/behavior mismatch, for TWO repos.
-3. **B8 release capstone (remainder only)** — the release pipeline + v0.2.0 asset
+2. **B8 release capstone (remainder only)** — the release pipeline + v0.2.0 asset
    already shipped (PR #243). What REMAINS is the pre-delivery acceptance:
    `gh release download` the PUBLISHED asset (NOT a source build), run it from a
    random PWD like `/tmp/<rand>` against TWO different repos, then DE-GATE the
    README / `docs/installing.md` download instructions.
-4. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
+3. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
    with the above (the harness now exists and is a trustworthy CI gate).
-5. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
+4. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
    in `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`). Drive
    multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
    `acceptance`, with the maintainer's final accept via the TUI.
