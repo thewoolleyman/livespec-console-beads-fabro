@@ -51,6 +51,11 @@ static NONCE: AtomicU32 = AtomicU32::new(0);
 /// fails the test loudly instead of panicking inside the harness.
 pub type HarnessResult<T> = Result<T, String>;
 
+/// A stateful backing-CLI fixture for lifecycle scenarios (B7). The `{}` stub
+/// this module installs by default cannot serve a work-item, so the walkthrough
+/// scenarios use `lifecycle::LifecycleFixture` to supply one.
+pub mod lifecycle;
+
 /// Identifies the repo/tenant a harness run observes.
 ///
 /// `tenant` is what the header renders after `repo:`; `repo_path` becomes the

@@ -21,6 +21,8 @@ orchestrator's `drive` API.
   variable the console reads, with defaults.
 - [Detailed usage](detailed-usage.md) — a section per pane, the full
   keybinding reference, the Help modal, and the dispatcher settings.
+- [Lifecycle walkthrough](lifecycle-walkthrough.md) — one work-item from
+  waiting-for-a-human to shipped, key by key.
 
 Contributor-facing material — building the workspace, the quality gate, and
 the Beads runtime prerequisites — lives in the repository's top-level
