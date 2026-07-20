@@ -185,8 +185,8 @@ pub trait CommandAppendStore {
 
     /// The count of commands already appended — a monotonic sequence (commands
     /// are append-only) used to make each repeatable operator action (a broad
-    /// MOVE) a distinct command so it always lands (see
-    /// [`command_append_from_tui_effect`]).
+    /// MOVE, a fleet DRAIN) a distinct command so it always lands (see
+    /// [`is_repeatable_command`] and [`command_append_from_tui_effect`]).
     fn command_count(&self) -> EventStoreResult<usize>;
 }
 
@@ -209,8 +209,8 @@ pub fn persist_tui_runtime_effects(
     let mut outcomes = Vec::new();
     for effect in effects {
         // Read the monotonic command count BEFORE each append so a repeatable
-        // move gets a distinct key (an earlier append in this batch bumps the
-        // count for the next).
+        // action (move, drain) gets a distinct key (an earlier append in this
+        // batch bumps the count for the next).
         let sequence = store.command_count()?;
         let Some(append) = command_append_from_tui_effect(effect, requested_at, sequence) else {
             continue;
@@ -1478,13 +1478,21 @@ fn command_append_from_tui_effect(
     sequence: usize,
 ) -> Option<CommandAppend> {
     match effect {
-        TuiRuntimeEffect::PersistCommand(command) => Some(CommandAppend::new(
-            command.clone(),
-            requested_at.to_owned(),
-            Some(command.aggregate_id().to_owned()),
-            command_correlation_id(command),
-            "{}".to_owned(),
-        )),
+        TuiRuntimeEffect::PersistCommand(command) => {
+            // The payload-LESS commands ride this arm, and a payload-less
+            // command's identity has no operator-varied field at all — so a
+            // repeatable one (the fleet drain) can only be distinguished here.
+            // The once-per-item valves (approve/accept) also ride this arm and
+            // are left untouched by the guard inside.
+            let command = distinguish_repeatable_command(command, sequence);
+            Some(CommandAppend::new(
+                command.clone(),
+                requested_at.to_owned(),
+                Some(command.aggregate_id().to_owned()),
+                command_correlation_id(&command),
+                "{}".to_owned(),
+            ))
+        }
         TuiRuntimeEffect::PersistCommandWithPayload {
             command,
             payload_json,
@@ -1506,18 +1514,50 @@ fn command_append_from_tui_effect(
     }
 }
 
-/// A broad MOVE is a REPEATABLE action: the operator may move one item any number
-/// of times, to different targets and back to a prior target. Its command carries
-/// a STATIC identity keyed only by the work-item (`cmd_work_item_move_requested_<id>`
-/// / `<id>:work_item.move_requested`), so the second move of an item would dedupe
-/// against the first and silently no-op. Fold the monotonic append `sequence` into
-/// BOTH the `command_id` and `idempotency_key` so every distinct move lands, while
-/// an exact re-persist at the same sequence still dedupes. The SEMANTIC
-/// once-per-item transitions (approve `pending-approval -> ready`, accept
-/// `acceptance -> done`) KEEP their static key — approving an item twice SHOULD be
-/// an idempotent no-op — so only the broad move is distinguished here.
+/// Whether an operator action is REPEATABLE — issuable any number of times, and
+/// expected to take effect on every issue rather than be absorbed as a no-op.
+///
+/// The split is SEMANTIC, so it is enumerated rather than derived from the
+/// envelope's shape:
+///
+/// * A broad MOVE is repeatable per work-item — the operator may move one item
+///   any number of times, to different targets and back to a prior target. Its
+///   command carries a STATIC identity keyed only by the work-item
+///   (`cmd_work_item_move_requested_<id>` / `<id>:work_item.move_requested`), so
+///   the second move of an item would dedupe against the first.
+/// * A factory DRAIN is repeatable fleet-wide — draining the ready queue is a
+///   gesture the operator repeats whenever the queue refills. Its aggregate is
+///   the fleet (`fleet:livespec`), not an item, and it is PAYLOAD-LESS, so its
+///   key (`fleet:livespec:factory.drain_requested:budget=1:parallel=1`) is
+///   constant for all time: without a distinguisher, exactly ONE drain is ever
+///   possible per console store, and every later `:drain` silently enqueues
+///   nothing. Being payload-less is precisely WHY the distinguisher is needed —
+///   there is no payload for the key to vary on.
+///
+/// The once-per-item transitions are deliberately EXCLUDED and keep their static
+/// key: approve (`pending-approval -> ready`) and accept (`acceptance -> done`)
+/// are idempotent by design, so a double keypress SHOULD be absorbed rather than
+/// fire the valve twice.
+const fn is_repeatable_command(command_type: CommandType) -> bool {
+    matches!(
+        command_type,
+        CommandType::WorkItemMoveRequested | CommandType::FactoryDrainRequested
+    )
+}
+
+/// Give a REPEATABLE command a per-append identity so every distinct issue lands.
+///
+/// Fold the monotonic append `sequence` into BOTH the `command_id` and the
+/// `idempotency_key` so every distinct issue is a distinct command, while an
+/// exact re-persist AT THE SAME sequence still dedupes — the store's replay
+/// safety is preserved. A sequence-distinguished key also means an already-spent
+/// terminal row (a drain left at `status: failed`) can never block a later issue,
+/// so recovery needs no store surgery.
+///
+/// See [`is_repeatable_command`] for which actions are repeatable and why the
+/// once-per-item valves are excluded.
 fn distinguish_repeatable_command(command: &CommandEnvelope, sequence: usize) -> CommandEnvelope {
-    if *command.command_type() != CommandType::WorkItemMoveRequested {
+    if !is_repeatable_command(*command.command_type()) {
         return command.clone();
     }
     CommandEnvelope::new(
@@ -2018,14 +2058,14 @@ mod tests {
         StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
         backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
-        demo_events, doctor_report, events_tail_report, factory_command_from_stored,
-        handle_pending_config_commands, handle_pending_factory_commands,
-        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
-        live_source_adapters, load_tui_events_from_store, observe_and_reflect_autonomous_decisions,
-        persist_tui_runtime_effects, python_normalized_invocation, refresh_sources,
-        render_tui_preview, resolve_console_repo, run, run_store_backed_tui_session,
-        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
-        work_item_command_from_stored,
+        demo_events, distinguish_repeatable_command, doctor_report, events_tail_report,
+        factory_command_from_stored, handle_pending_config_commands,
+        handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
+        initial_source_seed, live_source_adapters, load_tui_events_from_store,
+        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects,
+        python_normalized_invocation, refresh_sources, render_tui_preview, resolve_console_repo,
+        run, run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
+        source_polls_from_seed, work_item_command_from_stored,
     };
 
     #[test]
@@ -2828,20 +2868,23 @@ mod tests {
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].status(), CommandAppendStatus::Inserted);
+        // The drain is REPEATABLE, so it persists under a sequence-distinguished
+        // identity (`_0` / `:0` at the first append into an empty command log)
+        // rather than the static key it was authored with.
         assert_eq!(
             outcomes[0].command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1"
+            "cmd_factory_drain_requested_budget_1_parallel_1_0"
         );
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0].command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1"
+            "cmd_factory_drain_requested_budget_1_parallel_1_0"
         );
         assert_eq!(commands[0].command_type(), "factory.drain_requested");
         assert_eq!(commands[0].aggregate_id(), Some("fleet:livespec"));
         assert_eq!(
             commands[0].idempotency_key(),
-            "fleet:livespec:factory.drain_requested:budget=1:parallel=1"
+            "fleet:livespec:factory.drain_requested:budget=1:parallel=1:0"
         );
         assert_eq!(commands[0].requested_by(), "operator");
         assert_eq!(commands[0].status(), "pending");
@@ -3434,6 +3477,205 @@ mod tests {
         Ok(())
     }
 
+    /// Build the `factory.drain_requested` effect the `:drain` command palette
+    /// produces, by driving the pure runtime's Confirm on a staged palette query —
+    /// the same key → palette → Confirm → effect path the interactive loop drives.
+    fn drain_effect(events: &[ConsoleEvent]) -> TuiRuntimeEffect {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: "drain".to_owned(),
+            },
+        );
+        console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
+            .effect()
+            .clone()
+    }
+
+    /// Seed one Ready-lane work-item so the drain policy ACCEPTS the drain — with
+    /// an empty Ready lane every drain is policy-rejected before it ever reaches
+    /// the Dispatcher port, which would make a repeatability assertion vacuous.
+    fn seed_ready_work_item(store: &mut SqliteEventStore) -> Result<(), ConsoleRuntimeError> {
+        let source = sequenced_work_item_source(&[("wi-ready", Lane::Ready, "ready", 1)]);
+        let sources: Vec<SourceAdapterRef<'_>> =
+            vec![("orchestrator:livespec-console-beads-fabro", &source)];
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        refresh_sources(store, "2026-07-19T00:00:00Z", &sources, &needs_attention)?;
+        Ok(())
+    }
+
+    /// Drive `count` `:drain` gestures through a store-backed sink and report the
+    /// drains the Dispatcher port observed alongside the drain commands that
+    /// actually landed in the store. The two together are what separates a drain
+    /// that LANDS from one the static-key dedupe swallowed: a deduped command
+    /// neither appends a row nor reaches the port.
+    fn drive_drains(
+        store: &mut SqliteEventStore,
+        count: usize,
+    ) -> Result<(Vec<String>, usize), ConsoleRuntimeError> {
+        let events = store.list_console_events()?;
+        let effect = drain_effect(&events);
+        let mut factory_port = RecordingFactoryDrainPort::default();
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions = empty_decisions_port();
+        let requester = poll_requester();
+        {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                store,
+                "2026-07-19T00:00:01Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &requester,
+            );
+            for _gesture in 0..count {
+                let applied = sink
+                    .handle_runtime_effect(&effect)
+                    .ok()
+                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
+                assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+            }
+        }
+        let drain_commands = store
+            .list_commands()?
+            .iter()
+            .filter(|command| {
+                command.command_type() == CommandType::FactoryDrainRequested.contract_name()
+            })
+            .count();
+        Ok((factory_port.observed_aggregate_ids, drain_commands))
+    }
+
+    #[test]
+    fn store_backed_repeated_drains_all_land_and_reach_the_drain_port()
+    -> Result<(), ConsoleRuntimeError> {
+        // The reported bug: the console could perform exactly ONE factory drain
+        // per store, EVER. The drain command is payload-less and its aggregate is
+        // the FLEET (`fleet:livespec`), so its key
+        // (`fleet:livespec:factory.drain_requested:budget=1:parallel=1`) was
+        // constant for all time; `insert or ignore` against the `unique`
+        // idempotency_key made every later `:drain` a silent no-op that appended
+        // no row and never reached the Dispatcher. Folding the monotonic append
+        // sequence into the key makes each gesture a distinct command.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        seed_ready_work_item(&mut store)?;
+
+        let (observed, drain_commands) = drive_drains(&mut store, 2)?;
+
+        assert_eq!(observed, ["fleet:livespec", "fleet:livespec"]);
+        assert_eq!(drain_commands, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_drain_lands_despite_a_spent_terminal_drain_row()
+    -> Result<(), ConsoleRuntimeError> {
+        // The RECOVERY property, and the difference between "fixed going forward"
+        // and "this store is still bricked". `find_existing_command_id` matches on
+        // idempotency_key with NO status filter, so under the static key a drain
+        // already spent at a TERMINAL status (`failed`) blocked every future drain
+        // just as firmly as a pending one would — the operator's only signal being
+        // to read the SQLite store directly. A sequence-distinguished key cannot
+        // collide with that legacy row, so an existing store recovers with no
+        // store surgery.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        seed_ready_work_item(&mut store)?;
+        let spent = CommandEnvelope::new(
+            "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+            CommandType::FactoryDrainRequested,
+            "fleet:livespec".to_owned(),
+            "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+            "operator".to_owned(),
+        );
+        store.append_command(&CommandAppend::new(
+            spent.clone(),
+            "2026-07-18T00:00:00Z".to_owned(),
+            Some(spent.aggregate_id().to_owned()),
+            "corr_spent_drain".to_owned(),
+            "{}".to_owned(),
+        ))?;
+        let terminal_update = store.update_command_status(
+            spent.command_id(),
+            "failed",
+            "2026-07-18T00:00:01Z",
+            Some(r#"{"event_count":3}"#),
+            Some("{}"),
+        );
+        assert!(terminal_update.is_ok());
+
+        let (observed, drain_commands) = drive_drains(&mut store, 1)?;
+
+        // The new drain reached the Dispatcher...
+        assert_eq!(observed, ["fleet:livespec"]);
+        // ...as a SECOND row beside the spent one, which is left untouched.
+        assert_eq!(drain_commands, 2);
+        let spent_status = store
+            .list_commands()?
+            .into_iter()
+            .find(|command| command.command_id() == spent.command_id())
+            .map(|command| command.status().to_owned());
+        assert_eq!(spent_status.as_deref(), Some("failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn distinguish_repeatable_command_distinguishes_drain_and_leaves_the_valves_alone() {
+        // The pure-function contract, tested directly rather than through the
+        // effect pipeline: which actions get a per-append identity, and that an
+        // exact re-persist at the SAME sequence still dedupes so replay safety
+        // survives.
+        let drain = CommandEnvelope::new(
+            "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+            CommandType::FactoryDrainRequested,
+            "fleet:livespec".to_owned(),
+            "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+            "operator".to_owned(),
+        );
+        let distinguished = distinguish_repeatable_command(&drain, 7);
+        assert_eq!(
+            distinguished.command_id(),
+            "cmd_factory_drain_requested_budget_1_parallel_1_7"
+        );
+        assert_eq!(
+            distinguished.idempotency_key(),
+            "fleet:livespec:factory.drain_requested:budget=1:parallel=1:7"
+        );
+        // Replay safety: the same command at the same sequence is byte-identical,
+        // so an exact re-persist still dedupes against its own earlier row.
+        assert_eq!(
+            distinguish_repeatable_command(&drain, 7).idempotency_key(),
+            distinguished.idempotency_key()
+        );
+
+        // The once-per-item valves are NOT widened into: approving or accepting an
+        // item twice SHOULD be absorbed as an idempotent no-op, so both keep their
+        // static key.
+        for (command_id, command_type, idempotency_key) in [
+            (
+                "cmd_work_item_approve_requested_wi-1",
+                CommandType::WorkItemApproveRequested,
+                "wi-1:work_item.approve_requested",
+            ),
+            (
+                "cmd_work_item_accept_requested_wi-1",
+                CommandType::WorkItemAcceptRequested,
+                "wi-1:work_item.accept_requested",
+            ),
+        ] {
+            let once_only = CommandEnvelope::new(
+                command_id.to_owned(),
+                command_type,
+                "wi-1".to_owned(),
+                idempotency_key.to_owned(),
+                "operator".to_owned(),
+            );
+            let unchanged = distinguish_repeatable_command(&once_only, 7);
+            assert_eq!(unchanged.command_id(), command_id);
+            assert_eq!(unchanged.idempotency_key(), idempotency_key);
+        }
+    }
+
     #[test]
     fn store_backed_tui_session_reports_runner_errors() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
@@ -3609,17 +3851,19 @@ mod tests {
         let events = store.list_console_events()?;
 
         assert_eq!(outcomes.len(), 1);
+        // Sequence-distinguished on persist (the drain is repeatable), so the
+        // handled command carries the `_0` identity, not the authored static one.
         assert_eq!(
             outcomes[0],
             super::PendingCommandOutcome::new(
-                "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+                "cmd_factory_drain_requested_budget_1_parallel_1_0".to_owned(),
                 "completed".to_owned(),
                 3,
             )
         );
         assert_eq!(
             outcomes[0].command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1"
+            "cmd_factory_drain_requested_budget_1_parallel_1_0"
         );
         assert_eq!(outcomes[0].command_status(), "completed");
         assert_eq!(outcomes[0].appended_event_count(), 3);
@@ -3775,8 +4019,10 @@ mod tests {
             "operator".to_owned(),
         ))];
         persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        // The persisted id is sequence-distinguished (`_0`), so drive the status
+        // update against THAT id rather than the authored static one.
         let update = store.update_command_status(
-            "cmd_factory_drain_requested_budget_1_parallel_1",
+            "cmd_factory_drain_requested_budget_1_parallel_1_0",
             "completed",
             "2026-06-23T00:00:03Z",
             Some("{}"),
@@ -5288,6 +5534,26 @@ mod tests {
             if request.parallel() == 0 {
                 return Err(ApplicationError::FactoryDrainPortFailed);
             }
+            Ok(FactoryDrainPortOutcome::completed(1))
+        }
+    }
+
+    /// Test double standing in for the real Dispatcher drain port. Unlike
+    /// [`SimulatedFactoryDrainPort`] it RECORDS every drain it was asked to run,
+    /// which is what distinguishes a drain that actually reached the Dispatcher
+    /// from one the command store silently deduped away before it ever got here.
+    #[derive(Default)]
+    struct RecordingFactoryDrainPort {
+        observed_aggregate_ids: Vec<String>,
+    }
+
+    impl FactoryDrainPort for RecordingFactoryDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            request: &FactoryDrainRequest,
+        ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
+            self.observed_aggregate_ids
+                .push(request.aggregate_id().to_owned());
             Ok(FactoryDrainPortOutcome::completed(1))
         }
     }
