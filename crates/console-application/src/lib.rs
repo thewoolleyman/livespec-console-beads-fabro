@@ -718,13 +718,19 @@ pub enum TuiInteraction {
     /// showing its full standardized record. Opens at the top of the record.
     OpenWorkItemDetail,
     /// Scroll the work-item detail modal DOWN by the given number of rows (`1`
-    /// for a line step, a page height for `PgDn`). Inert unless that modal is
-    /// open; the renderer clamps the offset to the record's wrapped height, so
-    /// the scroll never runs past the last row.
+    /// for a line step). Inert unless that modal is open; the offset clamps to
+    /// the record's render-measured wrapped height, so the scroll never runs past
+    /// the last row.
     WorkItemDetailScrollDown(usize),
     /// Scroll the work-item detail modal UP by the given number of rows,
     /// saturating at the top. Inert unless that modal is open.
     WorkItemDetailScrollUp(usize),
+    /// Scroll the work-item detail modal DOWN by one render-measured page. Inert
+    /// unless that modal is open.
+    WorkItemDetailPageDown,
+    /// Scroll the work-item detail modal UP by one render-measured page. Inert
+    /// unless that modal is open.
+    WorkItemDetailPageUp,
     /// Open the valve-confirm modal staging the given human-valve/policy-edit
     /// intent against the selected work-item.
     OpenValveConfirm(PendingValve),
@@ -746,6 +752,8 @@ pub struct TuiInteractionState {
     detail_max_scroll: usize,
     header_scroll: usize,
     header_max_scroll: usize,
+    work_item_detail_max_scroll: usize,
+    work_item_detail_page_rows: usize,
     overlay: TuiOverlay,
     selected_repo: String,
     selected_setting_index: usize,
@@ -767,6 +775,8 @@ impl TuiInteractionState {
             detail_max_scroll: 0,
             header_scroll: 0,
             header_max_scroll: 0,
+            work_item_detail_max_scroll: 0,
+            work_item_detail_page_rows: 1,
             overlay,
             selected_repo: String::new(),
             selected_setting_index: 0,
@@ -792,6 +802,8 @@ impl TuiInteractionState {
             detail_max_scroll: 0,
             header_scroll: 0,
             header_max_scroll: 0,
+            work_item_detail_max_scroll: 0,
+            work_item_detail_page_rows: 1,
             overlay,
             selected_repo: String::new(),
             selected_setting_index: 0,
@@ -865,6 +877,22 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn with_header_max_scroll(mut self, header_max_scroll: usize) -> Self {
         self.header_max_scroll = header_max_scroll;
+        self
+    }
+
+    /// Replace the work-item detail modal's render-measured vertical extents,
+    /// preserving every other field. The TUI renderer measures both the maximum
+    /// scroll offset and the visible body height from the modal's current wrapped
+    /// content rectangle, then feeds them back before the next key press so
+    /// `PgUp`/`PgDn` move by exactly one visible page.
+    #[must_use]
+    pub const fn with_work_item_detail_scroll_extents(
+        mut self,
+        max_scroll: usize,
+        page_rows: usize,
+    ) -> Self {
+        self.work_item_detail_max_scroll = max_scroll;
+        self.work_item_detail_page_rows = page_rows;
         self
     }
 
@@ -976,6 +1004,21 @@ impl TuiInteractionState {
     /// header content actually clipped at the current viewport width.
     pub const fn header_max_scroll(&self) -> usize {
         self.header_max_scroll
+    }
+
+    #[must_use]
+    /// Return the work-item detail modal's maximum scroll offset measured by the
+    /// last render.
+    pub const fn work_item_detail_max_scroll(&self) -> usize {
+        self.work_item_detail_max_scroll
+    }
+
+    #[must_use]
+    /// Return the work-item detail modal's visible body rows measured by the
+    /// last render. It is at least one row so a page key remains a real movement
+    /// before the first measured frame.
+    pub const fn work_item_detail_page_rows(&self) -> usize {
+        self.work_item_detail_page_rows
     }
 
     #[must_use]
@@ -2741,12 +2784,14 @@ pub fn reduce_tui_interaction(
         TuiInteraction::OpenWorkItemDetail => {
             state.clone().with_overlay(open_work_item_detail(&model))
         }
-        TuiInteraction::WorkItemDetailScrollDown(rows) => state
-            .clone()
-            .with_overlay(work_item_detail_scroll(state.overlay(), rows, true)),
-        TuiInteraction::WorkItemDetailScrollUp(rows) => state
-            .clone()
-            .with_overlay(work_item_detail_scroll(state.overlay(), rows, false)),
+        TuiInteraction::WorkItemDetailScrollDown(rows) => {
+            work_item_detail_scroll_state(state, rows, true)
+        }
+        TuiInteraction::WorkItemDetailScrollUp(rows) => {
+            work_item_detail_scroll_state(state, rows, false)
+        }
+        TuiInteraction::WorkItemDetailPageDown => work_item_detail_page_scroll_state(state, true),
+        TuiInteraction::WorkItemDetailPageUp => work_item_detail_page_scroll_state(state, false),
         TuiInteraction::OpenValveConfirm(valve) => state
             .clone()
             .with_overlay(TuiOverlay::ValveConfirm { valve }),
@@ -2754,6 +2799,26 @@ pub fn reduce_tui_interaction(
             .clone()
             .with_overlay(cycle_valve_option(state.overlay(), forward)),
     }
+}
+
+fn work_item_detail_scroll_state(
+    state: &TuiInteractionState,
+    rows: usize,
+    down: bool,
+) -> TuiInteractionState {
+    state.clone().with_overlay(work_item_detail_scroll(
+        state.overlay(),
+        rows,
+        down,
+        state.work_item_detail_max_scroll(),
+    ))
+}
+
+fn work_item_detail_page_scroll_state(
+    state: &TuiInteractionState,
+    down: bool,
+) -> TuiInteractionState {
+    work_item_detail_scroll_state(state, state.work_item_detail_page_rows(), down)
 }
 
 /// The overlay `OpenWorkItemDetail` resolves to: the work-item detail modal
@@ -2776,11 +2841,15 @@ fn open_work_item_detail(model: &TuiScreenModel) -> TuiOverlay {
 /// Scroll the work-item detail modal by `rows` down (`down`) or up, leaving any
 /// other overlay unchanged (the interaction is inert unless that modal is open).
 ///
-/// Down saturates here and is clamped by the renderer against the record's
-/// measured wrapped height — the same feed-back-the-measured-max discipline the
-/// Detail pane and the Help modal use — so the true bottom of a long
-/// description is reachable and no further.
-fn work_item_detail_scroll(overlay: &TuiOverlay, rows: usize, down: bool) -> TuiOverlay {
+/// Down clamps to the record's measured wrapped height — the same
+/// feed-back-the-measured-max discipline the Detail pane uses — so a page or line
+/// step cannot skip beyond the true bottom of a long description.
+fn work_item_detail_scroll(
+    overlay: &TuiOverlay,
+    rows: usize,
+    down: bool,
+    max_scroll: usize,
+) -> TuiOverlay {
     let TuiOverlay::WorkItemDetail {
         work_item_id,
         scroll,
@@ -2793,7 +2862,7 @@ fn work_item_detail_scroll(overlay: &TuiOverlay, rows: usize, down: bool) -> Tui
         // re-resolve WHICH work-item is on screen.
         work_item_id: work_item_id.clone(),
         scroll: if down {
-            scroll.saturating_add(rows)
+            scroll.saturating_add(rows).min(max_scroll)
         } else {
             scroll.saturating_sub(rows)
         },
@@ -10259,7 +10328,8 @@ mod tests {
                 work_item_id: MODAL_ITEM.to_owned(),
                 scroll: 4,
             },
-        );
+        )
+        .with_work_item_detail_scroll_extents(10, 3);
         let modal = TuiOverlay::WorkItemDetail {
             work_item_id: MODAL_ITEM.to_owned(),
             scroll: 4,
@@ -10290,6 +10360,34 @@ mod tests {
             &TuiOverlay::WorkItemDetail {
                 work_item_id: MODAL_ITEM.to_owned(),
                 scroll: 7
+            }
+        );
+        let paged = reduce_tui_interaction(&open, &events, TuiInteraction::WorkItemDetailPageDown);
+        assert_eq!(
+            paged.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 7
+            }
+        );
+        let page_up = reduce_tui_interaction(&paged, &events, TuiInteraction::WorkItemDetailPageUp);
+        assert_eq!(
+            page_up.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 4
+            }
+        );
+        let clamped = reduce_tui_interaction(
+            &open.clone().with_work_item_detail_scroll_extents(6, 40),
+            &events,
+            TuiInteraction::WorkItemDetailPageDown,
+        );
+        assert_eq!(
+            clamped.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 6
             }
         );
         let up = reduce_tui_interaction(&down, &events, TuiInteraction::WorkItemDetailScrollUp(99));
