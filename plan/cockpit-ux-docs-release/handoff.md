@@ -37,14 +37,14 @@ and (separately, maintainer-gated) autonomous-mode Stage-2.
 | B7 key-by-key lifecycle walkthrough doc | ✅ DONE | PR #327 (`b8ff009`) — `docs/lifecycle-walkthrough.md` + two-repo tmux E2E acceptance |
 | **B8** release capstone | ◑ PARTIAL — release pipeline + v0.2.0 asset shipped (PR #243); the `/tmp` two-repo download-run + README de-gate REMAIN | §"B8" below |
 | **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
-| **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`) |
+| **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`) |
 
 ### Ledger reconciliation owed (found 2026-07-19 — see `plan/impl-dispatch/handoff.md`)
 Five `pending-approval` items — **W3 `-636m46` / W4 `-j3ts23` / W5 `-2ctzhm` /
 W6 `-zmunjo` / W7 `-yvikqp.1`** — plus their parent epic **`-yvikqp`**
 (`backlog`) are **already DELIVERED and merged**, verified against the code. They
 are stale records, NOT admission gates; do not walk them as valves. This matches
-`livespec/plan/autonomous-mode/handoff.md` cont.22 ("genuinely DONE:
+`livespec/plan/archive/autonomous-mode/handoff.md` cont.22 ("genuinely DONE:
 W3/W4/W5-valves/W6/W7"). Close as completed, per the `-0tu` / `-6tn` pattern.
 
 Also: **12 stacked pin-bump PRs are all red** on `check-completeness` because the
@@ -312,7 +312,7 @@ Deliverable #0 + **B1–B7 are DONE** (see §"STATUS", §"B6 POSTSCRIPT", and
 2. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
    with the above (the harness now exists and is a trustworthy CI gate).
 3. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
-   in `livespec/plan/autonomous-mode/handoff.md` (+ `livespec-bvuy4w`). Drive
+   in `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`). Drive
    multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
    `acceptance`, with the maintainer's final accept via the TUI.
 
