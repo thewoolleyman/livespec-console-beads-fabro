@@ -30,7 +30,8 @@ and reachability defects around the edges.
 ## Binding constraints on any fix (locked core contract)
 
 From `plan/archive/work-item-lifecycle-redesign/research/locked-core-contract.md`
-and `research/decision-log.md` — these bound every slice this thread files:
+and `plan/archive/work-item-lifecycle-redesign/research/decision-log.md` —
+these bound every slice this thread files:
 
 - **Zero Beads knowledge** — the console's only external interface is the
   orchestrator CLI; every lifecycle transition the operator "drives" is a
@@ -68,3 +69,9 @@ and `research/decision-log.md` — these bound every slice this thread files:
 - Palette drain: `TuiOverlay::CommandPalette`, hint "type a drain command".
 - Groom: zero production occurrences (only test-fixture strings) — the
   operator-surface-redesign handoff's own finding, re-confirmed.
+- Valve→shipped walkthrough: `docs/lifecycle-walkthrough.md` (B7, landed
+  2026-07-20 — hours after this thread opened) documents Steps 1–8 from
+  the approve valve to done, with a hermetic stateful tmux fixture
+  (`crates/console-cli/tests/support/lifecycle.rs`) that mirrors the drive
+  grammar. It begins where the groom chasm ends; its fixture is reusable
+  for this thread's Stage-3 E2E of the upstream legs.
