@@ -18,8 +18,13 @@ thread exists to own exactly that.
 2. **Cockpit deliverable B7** (`plan/cockpit-ux-docs-release/handoff.md`
    §B7): a key-by-key walkthrough doc of "running a work-item through the
    ENTIRE livespec lifecycle via the TUI", acceptance = an agent walks it on
-   a dummy item, real TUI in tmux, end-to-end, two repos. **Status: NOT
-   STARTED.**
+   a dummy item, real TUI in tmux, end-to-end, two repos. **Status: DONE
+   2026-07-20** (`docs/lifecycle-walkthrough.md`, PR #327, commit
+   `b8ff009` — landed hours after this thread opened) — but its walk
+   starts at "see what is waiting" (the approve valve) and runs against a
+   hermetic stub fixture (`crates/console-cli/tests/support/lifecycle.rs`); the
+   groom-from-backlog leg and any real-stack walk remain undone, which is
+   precisely this thread's scope.
 3. **Cockpit Stage-2 acceptance** (same handoff, §Stage-2): "Drive multiple
    REAL fleet items end-to-end SOLELY through the live TUI, parking in
    `acceptance`, with the maintainer's final accept via the TUI."
@@ -57,7 +62,11 @@ thread exists to own exactly that.
   maintainer-brainstorm entry gate** ("no impl items until ratification"),
   additionally sequenced behind a cross-repo orchestrator valid-verb
   vocabulary ratification. It has not started.
-- The **end-to-end walkthrough** is B7 — not started.
+- The **end-to-end walkthrough** (B7) shipped 2026-07-20 — valve→shipped
+  only, on a hermetic fixture; its own harness commit concedes the earlier
+  E2Es "ran against an EMPTY board by construction". The walk STARTS where
+  the groom chasm ends, confirming the fracture pattern rather than
+  closing it.
 - The **end-to-end acceptance** is Stage-2 — maintainer-gated, last.
 - The **autonomous** variant is retired for good (orchestrator drains by
   default; that part is NOT coming back and is out of scope here).

@@ -37,6 +37,10 @@ missing **delivery/integration owner**.
    — the invariants every slice must obey (zero Beads knowledge; commands
    only through the orchestrator surface; lane consumed never re-derived;
    attention as pure derivation; no console→driver dependency).
+5. `docs/lifecycle-walkthrough.md` — B7, landed 2026-07-20: the key-by-key
+   walk from the approve valve to shipped, with its hermetic stateful
+   fixture. The happy path's downstream legs, already documented; this
+   thread adds the upstream (groom) legs and the real-stack walk.
 
 ## Status composition (no shadow queue)
 
@@ -80,16 +84,23 @@ thread's hard rule), under whichever epic the brainstorm rules
 custodially correct, and dispatched via the factory path (Dispatcher
 drain / `drive` `impl:<id>`).
 
-**Stage 3 — validation.** The MVP acceptance: a single-repo, key-by-key
-happy-path walk of a dummy work-item through the REAL TUI in tmux —
-operationally a one-repo dry run of cockpit deliverable B7. Coordinate
-with `plan/cockpit-ux-docs-release/` (B7 keeps the walkthrough DOC and
-two-repo acceptance; this thread only needs the walk to succeed once).
-When the walk passes, this epic closes; Stage-2/two-repo remain cockpit's.
+**Stage 3 — validation.** The MVP acceptance, in two parts. (a) Extend
+`docs/lifecycle-walkthrough.md` UPSTREAM: today it starts at the approve
+valve (B7, landed 2026-07-20); after Stage 2 it gains the missing first
+legs — find a backlog item, open its record, groom it via the LLM-driver
+handoff — reusing B7's stateful tmux fixture for the E2E. (b) Execute the
+FULL walk once against the REAL stack (live tenant + Dispatcher, one repo,
+a dummy work-item) — something B7's hermetic acceptance deliberately does
+not do. Doc custody stays with `plan/cockpit-ux-docs-release/`; this
+thread owns only the new legs and the one real-stack pass. When (b)
+passes, this epic closes; cockpit's Stage-2 (multiple real items, two
+repos) remains cockpit's.
 
 ## Next action
 
-Open this handoff. Then: in the console TUI, admit the Stage-0 items at
+Open this handoff. Then: launch the console TUI with `just tui` from the
+repo root (builds the release binary and serves under the family env
+wrapper), and admit the Stage-0 items at
 the approve valve (`p`): `-7rcps4`, `-276inb`, `-sreeqc`, and route
 `-qwjfsw` to admission; let the Dispatcher drain them (factory path — do
 NOT implement in-session). In parallel, schedule the Stage-1 maintainer
