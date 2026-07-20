@@ -794,7 +794,10 @@ pub fn ingest_needs_attention(
     observed_at: &str,
 ) -> ConsoleRuntimeResult<usize> {
     let existing = store.list_console_events()?;
-    let prior = materialize_attention_items(&existing);
+    let prior: Vec<_> = materialize_attention_items(&existing)
+        .into_iter()
+        .filter(|item| item.source_ref().repo() == needs_attention.repo)
+        .collect();
     let next = match needs_attention.port.read_snapshot() {
         NeedsAttentionReadOutcome::Observed(items) => items,
         NeedsAttentionReadOutcome::Unavailable(_reason) => return Ok(0),
@@ -1294,7 +1297,7 @@ fn config_command_from_stored(
 /// work-item, gate, and decision) and its outcome events -- a `CommandAccepted`
 /// plus an `attention_item.resolved` for that item's human-gate needs-attention
 /// id -- so the item leaves the inbox and the audit trail is complete. Every
-/// escalation is surfaced as a journal-backed needs-attention item. The console
+/// escalation is surfaced as the work-item needs-human valve item. The console
 /// resolves NO gate itself; it only reflects the engine's already-journaled
 /// dispositions, and never races the engine. Reflection is idempotent across
 /// runs -- each decision's command id is content-stable, so a re-observed
@@ -1312,7 +1315,7 @@ pub fn observe_and_reflect_autonomous_decisions(
     let audit = decisions_port.read_autonomous_decisions();
     let mut reflected = 0;
     // Auto-resolutions are reflected as completed commands; escalations become
-    // journal-backed needs-attention items from this same published surface.
+    // needs-human valve items from this same published surface.
     for decision in audit.auto_resolutions() {
         if reflect_autonomous_decision(store, observed_at, decision)? {
             reflected += 1;
@@ -1403,9 +1406,9 @@ fn surface_autonomous_escalation(
 
 fn autonomous_escalation_attention_item(decision: &AutonomousDecision) -> AttentionItemSnapshot {
     let work_item_id = decision.work_item_id();
-    let action_id = format!("resolve-blocked:{work_item_id}");
+    let action_id = format!("set-admission:{work_item_id}");
     AttentionItemSnapshot::new(
-        &format!("valve:resolve-blocked:{work_item_id}"),
+        &format!("valve:set-admission:{work_item_id}"),
         "human-valve",
         "high",
         &format!(
@@ -5717,18 +5720,17 @@ mod tests {
     }
 
     #[test]
-    fn observe_and_reflect_resolves_auto_resolutions_and_leaves_escalations()
+    fn observe_and_reflect_resolves_auto_resolutions_and_surfaces_escalations()
     -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
-        // Seed the inbox with two human-gate valve items -- one the plane will
-        // auto-resolve, one it will escalate -- keyed exactly as the orchestrator
-        // plane keys them (`valve:<verb>:<work-item-id>`).
+        // Seed the inbox with the human-gate valve item the plane will
+        // auto-resolve. The cap-exceeded escalation is sourced only from the
+        // journal read leg.
         let approve_item = attention_item_fixture("valve:approve:wi-1", "Approve wi-1");
-        let accept_item = attention_item_fixture("valve:accept:wi-2", "Accept wi-2");
-        let port = ScriptedNeedsAttentionPort::observing(vec![approve_item, accept_item]);
+        let port = ScriptedNeedsAttentionPort::observing(vec![approve_item]);
         let needs_attention = NeedsAttentionIngest::new(&port, "fleet");
         ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:00Z")?;
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
 
         // The plane's engine auto-approved wi-1 and escalated wi-2 from the
         // journal read surface.
@@ -5755,17 +5757,14 @@ mod tests {
         let now = "2026-07-11T00:00:01Z";
         let reflected = observe_and_reflect_autonomous_decisions(&mut store, now, &decisions)?;
 
-        // The auto-approved item left the inbox; the escalation is surfaced as
-        // a journal-backed needs-attention item.
+        // The auto-approved item left the inbox; the escalation is surfaced
+        // using the needs-human valve identity.
         assert_eq!(reflected, 2);
         let remaining: Vec<String> = project_attention(&store.list_console_events()?)
             .iter()
             .map(|item| item.id().to_owned())
             .collect();
-        assert_eq!(
-            remaining,
-            ["valve:accept:wi-2", "valve:resolve-blocked:wi-2"]
-        );
+        assert_eq!(remaining, ["valve:set-admission:wi-2"]);
 
         // The reflection rode a command-plus-outcome-event path: a completed
         // `factory.autonomous_decision_reflected` command plus the resolved event.
@@ -5789,7 +5788,7 @@ mod tests {
         let later = "2026-07-11T00:00:02Z";
         let again = observe_and_reflect_autonomous_decisions(&mut store, later, &decisions)?;
         assert_eq!(again, 0);
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
+        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
         Ok(())
     }
 
