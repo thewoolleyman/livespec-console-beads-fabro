@@ -584,6 +584,7 @@ dependencies = [
  "console-eventstore",
  "console-tui",
  "serde_json",
+ "sha2",
  "time",
 ]
 
