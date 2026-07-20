@@ -159,7 +159,11 @@ fn run_terminal_loop(
         })?;
         state = state
             .with_detail_max_scroll(extents.detail_max_scroll)
-            .with_header_max_scroll(extents.header_max_scroll);
+            .with_header_max_scroll(extents.header_max_scroll)
+            .with_work_item_detail_scroll_extents(
+                extents.work_item_detail_max_scroll,
+                extents.work_item_detail_page_rows,
+            );
         let tick = process_input_tick(&mut state, &events, requested_by, &mut effects, session)?;
         if matches!(tick, LoopTick::Quit) {
             return Ok(effects);
@@ -775,9 +779,9 @@ const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
             TuiInteraction::HelpScrollUp
         })),
         TuiOverlay::WorkItemDetail { .. } => Some(TuiTerminalInput::Interaction(if down {
-            TuiInteraction::WorkItemDetailScrollDown(ITEM_MODAL_PAGE_ROWS)
+            TuiInteraction::WorkItemDetailPageDown
         } else {
-            TuiInteraction::WorkItemDetailScrollUp(ITEM_MODAL_PAGE_ROWS)
+            TuiInteraction::WorkItemDetailPageUp
         })),
         TuiOverlay::None
         | TuiOverlay::Search { .. }
@@ -786,14 +790,6 @@ const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::ValveConfirm { .. } => None,
     }
 }
-
-/// Rows one `PageUp`/`PageDown` moves the work-item detail modal.
-///
-/// A fixed step rather than the measured viewport height: the keymap is a pure
-/// function of the model (it never sees a `Rect`), and the renderer clamps the
-/// resulting offset to the record's real wrapped height anyway, so a step past
-/// the end lands exactly at the bottom.
-const ITEM_MODAL_PAGE_ROWS: usize = 10;
 
 const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     if matches!(overlay, TuiOverlay::None) {
@@ -913,6 +909,12 @@ pub struct RenderScrollExtents {
     /// width beyond the pane's inner width — or `0` unless the Header pane is
     /// focused and its full line overflows the current viewport width.
     pub header_max_scroll: usize,
+    /// The work-item detail modal's maximum vertical scroll offset measured from
+    /// its wrapped body, or `0` when that modal is not open.
+    pub work_item_detail_max_scroll: usize,
+    /// The work-item detail modal's visible content rows, or `1` when that modal
+    /// is not open or is too small to measure.
+    pub work_item_detail_page_rows: usize,
 }
 
 impl RenderScrollExtents {
@@ -921,6 +923,8 @@ impl RenderScrollExtents {
     const ZERO: Self = Self {
         detail_max_scroll: 0,
         header_max_scroll: 0,
+        work_item_detail_max_scroll: 0,
+        work_item_detail_page_rows: 1,
     };
 }
 
@@ -955,10 +959,12 @@ pub fn render_model(
     let header_max_scroll = render_header(model, vertical[0], buffer);
     let detail_max_scroll = render_body(model, vertical[1], buffer);
     render_footer(model, vertical[2], buffer);
-    render_overlay(model, area, buffer);
+    let work_item_detail_extents = render_overlay(model, area, buffer);
     RenderScrollExtents {
         detail_max_scroll,
         header_max_scroll,
+        work_item_detail_max_scroll: work_item_detail_extents.max_scroll,
+        work_item_detail_page_rows: work_item_detail_extents.page_rows,
     }
 }
 
@@ -1182,14 +1188,20 @@ fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+fn render_overlay(
+    model: &TuiScreenModel,
+    area: Rect,
+    buffer: &mut Buffer,
+) -> WorkItemDetailScrollExtents {
     match model.overlay() {
-        TuiOverlay::None => {}
+        TuiOverlay::None => WorkItemDetailScrollExtents::ZERO,
         TuiOverlay::Search { query } => {
             render_prompt_overlay("Search", format!("/{query}"), area, buffer);
+            WorkItemDetailScrollExtents::ZERO
         }
         TuiOverlay::CommandPalette { query } => {
             render_prompt_overlay("Command Palette", format!(":{query}"), area, buffer);
+            WorkItemDetailScrollExtents::ZERO
         }
         TuiOverlay::CommandModal {
             selected_action_index,
@@ -1200,6 +1212,7 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 overlay_rect(area),
                 buffer,
             );
+            WorkItemDetailScrollExtents::ZERO
         }
         TuiOverlay::ValveConfirm { valve } => {
             // The modal's consent target MUST read from the SAME source `Enter`
@@ -1214,6 +1227,7 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 overlay_rect(area),
                 buffer,
             );
+            WorkItemDetailScrollExtents::ZERO
         }
         TuiOverlay::WorkItemDetail {
             work_item_id,
@@ -1232,12 +1246,15 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
                 help_overlay_rect(area),
                 buffer,
                 *scroll,
-            );
+            )
         }
         TuiOverlay::Help {
             selected_section,
             scroll,
-        } => render_help_overlay(help_overlay_rect(area), buffer, *selected_section, *scroll),
+        } => {
+            render_help_overlay(help_overlay_rect(area), buffer, *selected_section, *scroll);
+            WorkItemDetailScrollExtents::ZERO
+        }
     }
 }
 
@@ -1290,7 +1307,7 @@ fn render_work_item_detail(
     area: Rect,
     buffer: &mut Buffer,
     scroll: usize,
-) {
+) -> WorkItemDetailScrollExtents {
     Clear.render(area, buffer);
     // The title always names the PINNED id, so it stays correct even in the
     // window where the item has left the board and no record resolves.
@@ -1299,7 +1316,7 @@ fn render_work_item_detail(
     let inner = outer.inner(area);
     outer.render(area, buffer);
     if inner.width == 0 || inner.height == 0 {
-        return;
+        return WorkItemDetailScrollExtents::ZERO;
     }
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1325,6 +1342,23 @@ fn render_work_item_detail(
         .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
         .render(rows[0], buffer);
     Paragraph::new(Line::from("up/down scroll | esc to close")).render(rows[1], buffer);
+    WorkItemDetailScrollExtents {
+        max_scroll,
+        page_rows: usize::from(rows[0].height).max(1),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkItemDetailScrollExtents {
+    max_scroll: usize,
+    page_rows: usize,
+}
+
+impl WorkItemDetailScrollExtents {
+    const ZERO: Self = Self {
+        max_scroll: 0,
+        page_rows: 1,
+    };
 }
 
 /// The full standardized work-item record as display lines.
@@ -2128,13 +2162,12 @@ mod tests {
     use ratatui::text::Line;
 
     use super::{
-        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, ITEM_MODAL_PAGE_ROWS, TuiLiveSession,
-        TuiRenderError, TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink,
-        TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_outcome_effect, attention_item_line,
-        buffer_to_text, detail_lines, effect_triggers_source_poll, help_lines_for_view,
-        key_event_to_terminal_input, render_command_modal, render_detail, render_model,
-        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        step_tui_runtime,
+        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
+        TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
+        TuiTerminalInput, action_outcome_effect, attention_item_line, buffer_to_text, detail_lines,
+        effect_triggers_source_poll, help_lines_for_view, key_event_to_terminal_input,
+        render_command_modal, render_detail, render_model, render_summary_detail, render_to_text,
+        render_work_item_detail, settings_detail_lines, step_tui_runtime,
     };
 
     #[test]
@@ -3937,7 +3970,7 @@ mod tests {
     /// A drilled-in Ready lane whose selected item carries EVERY standardized
     /// record field, so a render assertion can prove each one reaches the
     /// screen rather than being silently dropped in the plumbing.
-    fn fully_populated_item_model(description: &str) -> TuiScreenModel {
+    fn fully_populated_item_events(description: &str) -> [ConsoleEvent; 1] {
         // Written as canonical `payload_json` text (this crate carries no JSON
         // dependency), mirroring the orchestrator emission the board rebuilds
         // from. `description` is escaped for the newlines the scroll test needs.
@@ -3962,16 +3995,20 @@ mod tests {
             Lane::Ready.label(),
             escaped,
         );
-        let event = ConsoleEvent::fixture(
+        [ConsoleEvent::fixture(
             "evt_full",
             EventType::WorkItemSnapshotObserved,
             "orchestrator",
         )
-        .with_payload_json(payload);
+        .with_payload_json(payload)]
+    }
+
+    fn fully_populated_item_model(description: &str) -> TuiScreenModel {
+        let events = fully_populated_item_events(description);
         let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
             .with_lane_focus(LaneFocus::Lane(Lane::Ready))
             .with_focus(FocusPane::Content);
-        build_tui_model_for_state(&[event], &state)
+        build_tui_model_for_state(&events, &state)
     }
 
     #[test]
@@ -4203,13 +4240,13 @@ mod tests {
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::PageDown), &model),
             Some(TuiTerminalInput::Interaction(
-                TuiInteraction::WorkItemDetailScrollDown(ITEM_MODAL_PAGE_ROWS)
+                TuiInteraction::WorkItemDetailPageDown
             ))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::PageUp), &model),
             Some(TuiTerminalInput::Interaction(
-                TuiInteraction::WorkItemDetailScrollUp(ITEM_MODAL_PAGE_ROWS)
+                TuiInteraction::WorkItemDetailPageUp
             ))
         );
 
@@ -4225,16 +4262,17 @@ mod tests {
         );
 
         // Scrolling accumulates down and saturates at the top going up.
+        let measured = opened.with_work_item_detail_scroll_extents(20, 6);
         let down = reduce_tui_interaction(
-            &opened,
+            &measured,
             &events,
-            TuiInteraction::WorkItemDetailScrollDown(ITEM_MODAL_PAGE_ROWS),
+            TuiInteraction::WorkItemDetailScrollDown(1),
         );
         assert_eq!(
             down.overlay(),
             &TuiOverlay::WorkItemDetail {
                 work_item_id: MODAL_ITEM.to_owned(),
-                scroll: ITEM_MODAL_PAGE_ROWS,
+                scroll: 1,
             }
         );
         let up =
@@ -4255,6 +4293,115 @@ mod tests {
             TuiInteraction::WorkItemDetailScrollDown(1),
         );
         assert_eq!(unchanged.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn item_modal_page_keys_use_the_render_measured_viewport_height() {
+        for page_rows_u16 in [3_u16, 40] {
+            let long_description = (0..90)
+                .map(|index| format!("page marker {index:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let events = fully_populated_item_events(&long_description);
+            let state = TuiInteractionState::for_view(
+                TuiView::Lanes,
+                0,
+                TuiOverlay::WorkItemDetail {
+                    work_item_id: "console-full".to_owned(),
+                    scroll: 0,
+                },
+            );
+            let page_rows = usize::from(page_rows_u16);
+            let area = Rect::new(0, 0, 120, page_rows_u16 + 9);
+            let mut buffer = Buffer::empty(area);
+            let extents = render_model(
+                &build_tui_model_for_state(&events, &state),
+                area,
+                &mut buffer,
+            );
+            assert_eq!(extents.work_item_detail_page_rows, page_rows);
+            assert!(extents.work_item_detail_max_scroll >= page_rows);
+            let state = state.with_work_item_detail_scroll_extents(
+                extents.work_item_detail_max_scroll,
+                extents.work_item_detail_page_rows,
+            );
+
+            let down =
+                reduce_tui_interaction(&state, &events, TuiInteraction::WorkItemDetailPageDown);
+            assert_eq!(down.overlay().work_item_detail_scroll(), Some(page_rows));
+
+            let near_bottom = state.clone().with_overlay(TuiOverlay::WorkItemDetail {
+                work_item_id: "console-full".to_owned(),
+                scroll: extents
+                    .work_item_detail_max_scroll
+                    .saturating_sub(page_rows / 2),
+            });
+            let clamped = reduce_tui_interaction(
+                &near_bottom,
+                &events,
+                TuiInteraction::WorkItemDetailPageDown,
+            );
+            assert_eq!(
+                clamped.overlay().work_item_detail_scroll(),
+                Some(extents.work_item_detail_max_scroll),
+            );
+
+            let up = reduce_tui_interaction(&down, &events, TuiInteraction::WorkItemDetailPageUp);
+            assert_eq!(up.overlay().work_item_detail_scroll(), Some(0));
+        }
+    }
+
+    #[test]
+    fn item_modal_paging_sweep_displays_every_description_line() {
+        for page_rows_u16 in [3_u16, 40] {
+            let description = (0..90)
+                .map(|index| format!("sweep marker {index:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut state = TuiInteractionState::for_view(
+                TuiView::Lanes,
+                0,
+                TuiOverlay::WorkItemDetail {
+                    work_item_id: "console-full".to_owned(),
+                    scroll: 0,
+                },
+            );
+            let area = Rect::new(0, 0, 120, page_rows_u16 + 9);
+            let mut seen = Vec::new();
+
+            loop {
+                let events = fully_populated_item_events(&description);
+                let model = build_tui_model_for_state(&events, &state);
+                let mut buffer = Buffer::empty(area);
+                let extents = render_model(&model, area, &mut buffer);
+                let text = buffer_to_text(&buffer, area);
+                for index in 0..90 {
+                    let marker = format!("sweep marker {index:02}");
+                    if text.contains(&marker) && !seen.contains(&index) {
+                        seen.push(index);
+                    }
+                }
+                state = state.with_work_item_detail_scroll_extents(
+                    extents.work_item_detail_max_scroll,
+                    extents.work_item_detail_page_rows,
+                );
+                let next = reduce_tui_interaction(
+                    &state,
+                    &lane_render_events(),
+                    TuiInteraction::WorkItemDetailPageDown,
+                );
+                if next.overlay().work_item_detail_scroll()
+                    == state.overlay().work_item_detail_scroll()
+                {
+                    break;
+                }
+                state = next;
+            }
+
+            for index in 0..90 {
+                assert!(seen.contains(&index));
+            }
+        }
     }
 
     #[test]
