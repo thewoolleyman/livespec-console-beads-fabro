@@ -117,9 +117,9 @@ fn run_store_backed_command(
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
     let observed_at = current_requested_at()?;
-    let probe = SystemSourceProbe;
     let repo = console_repo();
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
+    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
     let journal_path = resolution.dispatcher_journal_path();
     let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
@@ -162,9 +162,9 @@ fn run_interactive_store_tui() -> Result<(), String> {
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
     let observed_at = current_requested_at()?;
-    let probe = SystemSourceProbe;
     let repo = console_repo();
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
+    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
     let journal_path = resolution.dispatcher_journal_path();
     let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
@@ -244,8 +244,8 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
     let Ok(mut store) = SqliteEventStore::open(&path) else {
         return;
     };
-    let probe = SystemSourceProbe;
     let repo = console_repo();
+    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
     let journal_path = resolution.dispatcher_journal_path();
     let Ok(adapters) = livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
@@ -304,7 +304,18 @@ fn source_refs<'a>(
 /// Host-backed probe: run a stable CLI or read a file. The honest source of all
 /// live observations; unreachable sources degrade to not-observed findings.
 #[cfg(all(not(test), not(coverage)))]
-struct SystemSourceProbe;
+struct SystemSourceProbe {
+    cwd: PathBuf,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl SystemSourceProbe {
+    fn new(cwd: &Path) -> Self {
+        Self {
+            cwd: cwd.to_path_buf(),
+        }
+    }
+}
 
 #[cfg(all(not(test), not(coverage)))]
 impl SourceProbe for SystemSourceProbe {
@@ -320,6 +331,7 @@ impl SourceProbe for SystemSourceProbe {
         // nulls stdin rather than inheriting it).
         match std::process::Command::new(resolved_program)
             .args(&resolved_args)
+            .current_dir(&self.cwd)
             .stdin(std::process::Stdio::null())
             .output()
         {
