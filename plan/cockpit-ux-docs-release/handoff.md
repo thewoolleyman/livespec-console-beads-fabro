@@ -104,6 +104,35 @@ A reusable test harness that:
 This harness is a prerequisite for the E2E test of EVERY behavior below and for the
 backfill.
 
+> **⚠ UNMET as of 2026-07-21 — the harness runs but does NOT BLOCK A MERGE.**
+> `check-e2e-tmux` is a real CI job and it does run on every PR. It is not
+> merge-blocking, and the plan's "first-class, always-run gate" requirement
+> above is therefore only half-satisfied. Two independent reasons:
+>
+> 1. **Branch protection requires exactly one check: `ci-green`**
+>    (`gh api repos/.../branches/master/protection --jq
+>    '.required_status_checks.contexts'` → `["ci-green"]`).
+> 2. **`ci-green` does not depend on the E2E.**
+>    `.github/workflows/ci.yml` ~line 250 declares
+>    `needs: [check, check-doctor-static]` — `check-e2e-tmux` is absent, so a
+>    red E2E leaves `ci-green` GREEN.
+>
+> Measured consequence, not a hypothetical: `2cd1f28` left
+> `tmux_tui_e2e_status_line_context_hints` red, and PRs **#360, #361, #362,
+> #365** each merged with `check-e2e-tmux = FAILURE` and `ci-green = SUCCESS`.
+> (#348–#357 predate the break and were genuinely green.) Master's CI sat red
+> for that whole span. Fixed in #367 — but the GATE gap remains open.
+>
+> **The one-line fix is to add `check-e2e-tmux` to `ci-green`'s `needs`.** It
+> is deliberately NOT applied here: it makes the E2E merge-blocking for every
+> session on this repo, which is a maintainer policy call, not a docs fix. Note
+> the tmux scenes need tmux and a release binary, so making them blocking also
+> makes every merge depend on that job's reliability.
+>
+> Until then: **`ci-green` is not evidence the E2E passed.** Read
+> `check-e2e-tmux` directly, or run `just check-e2e-tmux` locally — `just
+> check` does not include it (see §"VERIFICATION DISCIPLINE").
+
 ## THE BEHAVIORS (each → propose-change → scenario → tmux E2E → impl)
 
 ### B1 — Sources: all but the console's own appear unavailable  (refines Scenario 13)
