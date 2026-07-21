@@ -310,8 +310,10 @@ construction and no test asserted on a work-item.
 serves a work-item, accepts the drive actions the TUI issues (`approve:<id>`,
 `accept:<id>`, `move:<id>:<target>`), mutates the lane, and answers the bare
 `config` read so Settings is populated. Hermetic — no tenant, no network.
-**The E2E BACKFILL below should use it**; the Scenario 5/9/11/13 scenes need
-exactly this.
+**The E2E BACKFILL below should use it**; the Scenario **5/9/11** scenes need
+exactly this. (Scenario 13 is already covered and is NOT a backfill target —
+see §"BACKFILL" for the correction, and for why 5 and 11 are re-homed to
+`plan/console-happy-path-mvp/`.)
 
 **The ship-guard is load-bearing for any operator documentation.** `move`
 refuses `acceptance`, `done`, and `pending-approval`, so `active` ->
@@ -429,8 +431,10 @@ resolvers) survive. `BackingCliResolution` ALREADY honors
 the child working directory is the one consumer that was missed, and the fix
 is default-identity because the env var already defaults to the CWD.
 
-**Filed as `livespec-console-beads-fabro-bamsy3`** (bug, DoR verdict
-`ready`). The maintainer resolved the design question on 2026-07-21:
+**Filed as `livespec-console-beads-fabro-bamsy3`** (bug, DoR verdict `ready`
+AT FILING — it has since been FIXED and sits in `acceptance`; see §"RESUME
+ORDER" item 1 for the fix and its verification). The maintainer resolved the
+design question on 2026-07-21:
 `REPO_PATH` SHOULD be sufficient for full observation, so the acceptance is
 autonomously verifiable. Note `SystemSourceProbe` is
 `#[cfg(all(not(test), not(coverage)))]` — compiled out of every test build —
