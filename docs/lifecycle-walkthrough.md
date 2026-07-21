@@ -60,7 +60,12 @@ and, in the middle pane:
 ```
 
 The **Detail** pane on the right names the item — `Repo:`, `Work item:`,
-`Fabro run:`, `Attach:`, and a `Timeline:` of the events that produced it.
+`Fabro run:`, and a `Timeline:` of the events that produced it.
+
+> At this stage `Fabro run:` normally reads `-` and there is no `Attach:`
+> line. That line appears only once a Fabro run is attached to the item, which
+> a `pending-approval` item has not reached yet. Its absence here is expected,
+> not a missing observation.
 
 > If `attention: 0` and the list is empty, the factory does not need you. That
 > is the normal resting state.

@@ -92,13 +92,21 @@ available action in brackets where it has one:
 > Blocked: <reason>
 ```
 
-Selecting a row fills the **Detail** pane with `Repo:`, `Work item:`,
-`Fabro run:`, and `Attach:` lines, an `Actions:` line when the item has any,
-and a `Timeline:` of the events that produced it. With nothing selected the
-Detail pane reads `No attention item selected`.
+Selecting a row fills the **Detail** pane with `Repo:`, `Work item:`, and
+`Fabro run:` lines, and a `Timeline:` of the events that produced it. With
+nothing selected the Detail pane reads `No attention item selected`.
 
-`Enter` on a row opens the command modal for that item, offering
-`Open Fabro attach` and `Copy Fabro attach`.
+An `Attach:` line appears **only when a Fabro run is attached** to that item —
+that is, when a human-gate observation matches its repo and work-item. Without
+one, `Fabro run:` reads `-` and no `Attach:` line is rendered at all. An item
+that has not reached Fabro yet, such as one sitting at `pending-approval`,
+normally has neither.
+
+`Enter` on a row opens the command modal for that item. **The modal is
+currently empty** — the console builds no operator actions for attention
+items, so the box opens with a border and no rows. `Esc` closes it. The
+`Open Fabro attach` and `Copy Fabro attach` actions exist in the code but are
+never offered; do not plan a workflow around them.
 
 `/` opens search, which filters this list — a lowercased substring match over
 the summary, id, kind, repo, work-item, and path. An empty query matches
@@ -131,14 +139,19 @@ three preview items:
 
 ```
 > ready (4)
-    - <id> [<status>] (<reason>)
+    - <id> [<status>]  <title>(<reason>)
 ```
 
 `Enter` on a lane drills into it, giving one row per work-item:
 
 ```
-> <id>  <repo>  rank <rank>  [<status>] (<reason>)
+> <id>  rank <rank>  [<status>]  <title>  repo <repo>(<reason>)
 ```
+
+Both rows carry the work-item's **title**; an item whose record has none reads
+`(untitled)`. In the drill-in row the repo sits *after* the title, prefixed
+with a literal `repo `, so that a narrow pane clips the repo rather than the
+title. `(<reason>)` is a suffix present only when the lane supplies one.
 
 `↑`/`↓` then select an individual item, and `Esc` steps back out to the
 overview before it steps back to the Views menu. An empty lane reads
@@ -244,7 +257,7 @@ its hints stay readable while the modal is open.
 | Focus | `↑`/`↓` | `←` | `→` | `Enter` | `Esc` |
 |---|---|---|---|---|---|
 | Views | previous / next view | — | focus content | focus content | — |
-| content | move the selection | drilled lane → overview, else focus Views | focus Detail | drill into a lane, edit a Settings row, or open the item's command modal | as `←` |
+| content | move the selection | drilled lane → overview, else focus Views | focus Detail | in Lanes: drill into a lane, or open the selected item's record once inside one; in Settings: edit the row; elsewhere: open the item's command modal | as `←` |
 | Detail | scroll | focus content | — | — | focus content |
 | header | — | scroll left | scroll right | — | focus Views |
 
