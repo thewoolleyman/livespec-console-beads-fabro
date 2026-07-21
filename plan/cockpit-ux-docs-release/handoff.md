@@ -17,19 +17,38 @@ from a **random PWD like `/tmp`**, against two repos. The docs walkthrough is
 validated by an **agent walking it on a DUMMY item, driving a REAL TUI in a tmux
 pane, for two repos**.
 
-## STATUS (updated 2026-07-21) — deliverable #0 + B1–B8 ALL DONE; nothing docs/release-shaped remains
+## STATUS (updated 2026-07-21) — deliverable #0 + B1–B8 ALL DONE; doc custody is ONGOING
 
 The foundational tmux real-TUI E2E harness (#0) and the ENTIRE **B1–B8**
 program are LANDED on console master. This thread's mission — cockpit UX,
 user-docs, release pipeline — is DELIVERED.
 
-**This thread is a candidate for archival.** What is still open is either
-already split out as a standalone work-item (`bamsy3`), better owned by
-`plan/console-happy-path-mvp/` (the Scenario 5/11 E2E backfill), or dead
-(Stage-2). The one thing genuinely still resident here is doc custody — which
-an audit later the same day showed is ACTIVE, not passive (see §"DOC CUSTODY
-IS ACTIVE").
-See §"RESUME ORDER" for the disposition of each and what archival would need.
+**This thread is a candidate for archival, but not a trivial one.** The
+programme work is finished: what remains is split out (`bamsy3` — since FIXED
+and awaiting its accept valve), better owned elsewhere (the Scenario 5/11 E2E
+backfill → `plan/console-happy-path-mvp/`), or dead (Stage-2). See
+§"RESUME ORDER" for each.
+
+**An earlier revision of this line said "nothing docs-shaped remains." That was
+wrong within hours.** The same session then found and fixed nine doc claims
+contradicted by source, documented a ratified scenario nobody had written up,
+and shipped one doc regression of its own. Doc custody is CONTINUOUS work at
+this repo's commit rate — see §"DOC CUSTODY IS ACTIVE". Whoever inherits
+this thread inherits a recurring audit, and archiving without naming that
+obligation loses it.
+
+### Reading order (this file is ~780 lines)
+
+Skip to what you need; the postscripts are self-contained.
+
+| If you are… | Read |
+|---|---|
+| picking up the next task | §"RESUME ORDER" (end of file) |
+| about to trust a green build | §"VERIFICATION DISCIPLINE" — four false greens, plus the tmux E2E gate that does NOT block a merge |
+| touching `docs/` | §"DOC CUSTODY IS ACTIVE" — what rotted, what is already gated, and what a fresh audit can skip |
+| wondering why a claim is worded oddly | §"DOCS-ROT POSTSCRIPT" and §"B8 POSTSCRIPT" |
+| doing spec work here | §"B6 POSTSCRIPT" — ratify IN-BRANCH; several sessions run on this repo concurrently |
+| new to the programme | §"OPERATING DIRECTIVE", then §"THE BEHAVIORS" |
 
 | Item | State | Ref |
 |---|---|---|
@@ -726,7 +745,7 @@ Worth internalizing before the next push:
   printed, and the branch pushed with NO commit on it. Use `git commit -F <file>`
   for any message containing shell metacharacters, and verify with `git log`.
 
-## RESUME ORDER (fresh session) — updated 2026-07-20
+## RESUME ORDER (fresh session) — updated 2026-07-21
 Deliverable #0 + **B1–B8 are DONE** (see §"STATUS", §"B6 POSTSCRIPT",
 §"B7 POSTSCRIPT", and §"B8 POSTSCRIPT"). §"B8 ENTRY NOTE" above is now
 HISTORICAL — its three questions were answered and the run is complete; keep
