@@ -199,9 +199,17 @@ jobs:
   # provisions it so the gate is self-sufficient regardless of the image (baking
   # tmux into the fabro-sandbox image is the follow-up that lets this step drop).
   #
-  # NOT YET in `ci-green.needs`: kept advisory on this first landing so it does
-  # not gate merges until it has proven stable in this environment. Promote it to
-  # a required gate by adding `check-e2e-tmux` to `ci-green.needs` below.
+  # MERGE-BLOCKING since 2026-07-21: it is in `ci-green.needs` below. It landed
+  # advisory, to prove stable here first, and that grace period ended badly —
+  # `2cd1f28` left `tmux_tui_e2e_status_line_context_hints` red and PRs #360,
+  # #361, #362 and #365 each merged with `check-e2e-tmux = FAILURE` while
+  # `ci-green` reported SUCCESS. Master's CI sat red for that whole span,
+  # because an advisory check is one nobody is required to read.
+  #
+  # The cost of promoting it is real and accepted: every merge on this repo now
+  # depends on a job that needs `tmux` (provisioned below) and a release binary.
+  # If that dependency makes the job flaky, fix the job — reverting to advisory
+  # reopens the exact gap above.
   check-e2e-tmux:
     name: check-e2e-tmux
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
@@ -245,9 +253,16 @@ jobs:
   # added. Pure GitHub-expression gate (no external action, no direct
   # tool invocation): `always()` runs it even when a dependency failed,
   # and the step fails the job iff any dependency failed or was cancelled.
+  #
+  # "needs every check-bearing job" is an INVARIANT TO MAINTAIN, not a
+  # property that holds automatically — it was false for the whole span
+  # `check-e2e-tmux` sat advisory, and this comment asserted it anyway.
+  # This workflow defines exactly three check-bearing jobs and all three
+  # are listed. Adding a fourth without adding it here silently reopens
+  # the gap.
   ci-green:
     name: ci-green
-    needs: [check, check-doctor-static]
+    needs: [check, check-doctor-static, check-e2e-tmux]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
