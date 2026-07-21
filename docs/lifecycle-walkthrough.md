@@ -86,6 +86,15 @@ up/down move | enter open | p/c/r approve/accept/reject | m/n set-admission/acce
 Use `↑` / `↓` here if you have more than one item; the walkthrough acts on the
 selected row.
 
+> **Select a valve row, not just any row.** A real inbox mixes work-item valve
+> rows (`valve:approve:<id>`, `valve:accept:<id>`) with rows that name no
+> work-item — plan threads, hygiene findings, spec-revise items. Only the
+> former can be driven, so the per-item keys are inert on the others and the
+> Status line shortens to `? help | q quit`. If the line above is not what you
+> see, you are on a row this walkthrough cannot act on: move to one whose
+> Detail pane shows a `Work item:` value. This is expected behavior, not a
+> stuck console.
+
 ## Step 3 — Open the approve valve
 
 Press:
