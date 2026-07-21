@@ -617,6 +617,18 @@ missed the first; one render missed the second. For a claim that splits by
 CASE, render each case. Where a doc describes what a pane SHOWS, drive the
 pane — every branch of it.
 
+**Acted on: BOTH halves of the split are now pinned.**
+`tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item` asserts a
+needs-attention row HAS `Attach:` with `Fabro run: -`;
+`tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run` asserts a
+`pending-approval` work-item row has NO `Attach:`. Each was inverted and
+re-run: inverting the first reproduces the original #356 error, inverting the
+second reproduces the #371 regression, and each inversion FAILS. The absence
+assertions are paired with proof the row rendered, so an empty inbox cannot
+satisfy them vacuously. A future edit can no longer flip either half without
+CI saying so — which is the only durable answer to a claim that shipped wrong
+twice.
+
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
 (gated by `docs_status_hint_lockstep`), the `s` move-to-status transition
