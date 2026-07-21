@@ -321,15 +321,28 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
         "the Status line box must be present:\n{attention}"
     );
     assert!(
-        attention.contains("enter open") && attention.contains("? help"),
+        attention.contains("? help") && attention.contains("q quit"),
         "the Attention pane must render its non-empty, context-specific hints:\n{attention}"
     );
-    // This fixture's inbox is EMPTY, so the per-item valve keys act on nothing.
-    // Proving they are ABSENT here is the real-TUI check on the hint-honesty
-    // rule: a key that cannot act must not be advertised.
+    // This fixture's inbox is EMPTY, so NO work-item is selected: the per-item
+    // valve keys and the record drill-in alike act on nothing. Proving they are
+    // ABSENT here is the real-TUI check on the hint-honesty rule -- a key that
+    // cannot act must not be advertised.
+    //
+    // `enter open` belongs in that list. It was asserted PRESENT here until
+    // `2cd1f28` bound Enter to the selected row's work-item record, which an
+    // empty inbox does not have; the hint correctly stopped advertising it and
+    // this assertion was not updated, which is what made `check-e2e-tmux` red
+    // on master. Asserting its ABSENCE is both the current truth and the
+    // stronger check.
     assert!(
         !attention.contains("approve/accept/reject"),
         "an empty Attention inbox must not advertise its per-item valve keys:\n{attention}"
+    );
+    assert!(
+        !attention.contains("enter open"),
+        "an empty Attention inbox has no selected work-item, so it must not advertise the \
+         record drill-in:\n{attention}"
     );
 
     // --- case 2 (part A): switch focus to the Lanes pane; its hints appear ---
