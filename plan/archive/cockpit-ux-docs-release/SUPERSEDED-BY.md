@@ -42,19 +42,34 @@ maintainer:
 | B1–B8 deliverables | Shipped; `docs/` tree, `SPECIFICATION/` Scenarios 18–22, the tmux harness |
 | `-25rvmd`, `-ble` follow-ups | Already live work-items in the ledger |
 | Stage-2 (autonomous-mode MVP acceptance) | **DEAD** — mode retired for good; do not resume |
-| Ledger reconciliation (5 stale `pending-approval` + 12 red pin-bump PRs) | **STILL UNFILED and still unowned** — see below |
+| Ledger reconciliation — the 5 W-items + epic | **ALREADY DONE** — verified `done` in the ledger 2026-07-21; the handoff's "owed" claim was itself stale (see below) |
+| Ledger reconciliation — 12 red pin-bump PRs | **STILL UNFILED and still unowned** — see below |
 | Verification discipline, doc-rot case studies, gate-design lessons | Retained here; they are why this file is kept |
 
 ## What is NOT discharged
 
-**The ledger reconciliation was never this thread's work and is still nobody's.**
-Five `pending-approval` records (W3 `-636m46`, W4 `-j3ts23`, W5 `-2ctzhm`,
-W6 `-zmunjo`, W7 `-yvikqp.1`) plus parent epic `-yvikqp` are already delivered
-and merged — stale records, NOT admission gates, so do not walk them as valves.
-Separately, 12 stacked pin-bump PRs are red on `check-completeness` because the
-bump automation rewrites `.livespec.jsonc` `compat.pinned` without refreshing
-`tests/fixtures/orchestrator-config-manifest.json`. Archiving this thread does
-not resolve either; both need an owner.
+**The five W-items are a false alarm — they are already `done`.** The handoff's
+§"Ledger reconciliation owed" listed W3 `-636m46`, W4 `-j3ts23`, W5 `-2ctzhm`,
+W6 `-zmunjo`, W7 `-yvikqp.1` and epic `-yvikqp` as stale `pending-approval` /
+`backlog` records needing a close. On 2026-07-21 every one of them read `done`
+in the ledger (`list-work-items --json`). Whether they were closed after the
+handoff's last edit or the handoff was simply wrong, the reconciliation it
+called "owed" is COMPLETE. Do not re-open them and do not walk them as valves.
+
+**What genuinely remains: the 12 red pin-bump PRs.** They are red on
+`check-completeness` because the bump automation rewrites `.livespec.jsonc`
+`compat.pinned` without refreshing
+`tests/fixtures/orchestrator-config-manifest.json`. Unfiled, unowned. Archiving
+this thread does not resolve it.
+
+**A separate live matter, NOT this thread's:** the console ledger currently
+carries genuinely-open `pending-approval` items (e.g. `-6hbfq6`, `-ipwtll`, and
+two filed 2026-07-21 from the happy-path real-stack walk, `-u3w3er` / `-ectqye`).
+Their approve valve is entangled with the contested `auto_approve_ready`
+setting — under the committed `true`, the valve returns `invalid-source-state`
+(which is precisely what `-ectqye` reports). That is a happy-path / admission
+matter, recorded here only so a reader does not conflate it with the settled
+W-item reconciliation above.
 
 ## The two lessons worth carrying out of here
 
