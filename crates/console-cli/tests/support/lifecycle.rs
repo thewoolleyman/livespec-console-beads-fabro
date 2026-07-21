@@ -173,6 +173,14 @@ fn work_items_body(state: &Path) -> String {
 }
 
 /// `needs-attention --json`: a valve item only while a human is genuinely owed.
+///
+/// The item's `source_ref.repo` MUST be the REAL ingesting repo (the harness
+/// exports `LIVESPEC_CONSOLE_REPO`, so the script expands it at run time):
+/// `ingest_needs_attention` scopes the resolvable prior set to
+/// `source_ref.repo == <ingesting repo>`, so an item carrying anything else can
+/// APPEAR but can never be RESOLVED — the walkthrough's `attention: 0` waits
+/// would then time out forever. (The pre-repo-scoping ingest resolved every
+/// absent item regardless of repo, which masked exactly this mismatch.)
 fn needs_attention_body(state: &Path) -> String {
     format!(
         "#!/usr/bin/env bash\n\
@@ -182,11 +190,12 @@ fn needs_attention_body(state: &Path) -> String {
          \x20 acceptance) verb=accept ;;\n\
          \x20 *) printf '{{\"attention\":[]}}\\n'; exit 0 ;;\n\
          esac\n\
+         repo=\"${{LIVESPEC_CONSOLE_REPO:-}}\"\n\
          printf '{{\"attention\":[{{\"id\":\"valve:%s:{item}\",\"kind\":\"human-valve\",\
          \"urgency\":\"high\",\"summary\":\"%s work-item {item}\",\
-         \"source_ref\":{{\"repo\":\"$LIVESPEC_CONSOLE_REPO\",\"work_item\":\"{item}\"}},\
+         \"source_ref\":{{\"repo\":\"%s\",\"work_item\":\"{item}\"}},\
          \"handoff\":{{\"kind\":\"%s\",\"action_id\":\"%s:{item}\",\"command\":\"%s:{item}\"}}}}]}}\\n' \
-         \"$verb\" \"$verb\" \"$verb\" \"$verb\" \"$verb\"\n\
+         \"$verb\" \"$verb\" \"$repo\" \"$verb\" \"$verb\" \"$verb\"\n\
          exit 0\n",
         state = shell_quote(state),
         item = ITEM_ID,
