@@ -17,13 +17,17 @@ from a **random PWD like `/tmp`**, against two repos. The docs walkthrough is
 validated by an **agent walking it on a DUMMY item, driving a REAL TUI in a tmux
 pane, for two repos**.
 
-## STATUS (updated 2026-07-20) — deliverable #0 + B1–B7 DONE; B8-remainder + backfill + Stage-2 REMAIN
+## STATUS (updated 2026-07-21) — deliverable #0 + B1–B8 ALL DONE; nothing docs/release-shaped remains
 
-The foundational tmux real-TUI E2E harness (#0), the full **B1–B5** cockpit-UX
-behavior set, **B6** (the `docs/` tree) and **B7** (the lifecycle walkthrough)
-are LANDED on console master. What remains is the B8 release capstone's
-live-download two-repo test + install-doc de-gate, the real-TUI E2E backfill,
-and (separately, maintainer-gated) autonomous-mode Stage-2.
+The foundational tmux real-TUI E2E harness (#0) and the ENTIRE **B1–B8**
+program are LANDED on console master. This thread's mission — cockpit UX,
+user-docs, release pipeline — is DELIVERED.
+
+**This thread is a candidate for archival.** What is still open is either
+already split out as a standalone work-item (`bamsy3`), better owned by
+`plan/console-happy-path-mvp/` (the Scenario 5/11 E2E backfill), or dead
+(Stage-2). The one thing genuinely still resident here is PASSIVE doc custody.
+See §"RESUME ORDER" for the disposition of each and what archival would need.
 
 | Item | State | Ref |
 |---|---|---|
@@ -36,8 +40,8 @@ and (separately, maintainer-gated) autonomous-mode Stage-2.
 | B6 user-docs → `docs/` tree (4 sub-docs) | ✅ DONE | spec: v029 (`8839d63`) + corrections **v030** (PR #297, `2fac510`); impl: PR #300 (`7df1ea2`) |
 | B7 key-by-key lifecycle walkthrough doc | ✅ DONE | PR #327 (`b8ff009`) — `docs/lifecycle-walkthrough.md` + two-repo tmux E2E acceptance |
 | B8 release capstone | ✅ DONE | acceptance run 2026-07-21 (§"B8 POSTSCRIPT"); pipeline + v0.2.0 asset PR #243 |
-| **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
-| **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`) |
+| **Backfill** real-TUI tmux E2E, Scenarios **5/9/11** (13 already covered) | ⬜ NOT STARTED — **RE-HOME, not this thread's work** | §"BACKFILL" below |
+| ~~**Stage-2** autonomous-mode MVP acceptance~~ | ❌ **STRUCK 2026-07-21 — DEAD** (thread archived; mode retired) | §"RESUME ORDER" below |
 
 ### Ledger reconciliation owed (found 2026-07-19 — see `plan/impl-dispatch/handoff.md`)
 Five `pending-approval` items — **W3 `-636m46` / W4 `-j3ts23` / W5 `-2ctzhm` /
@@ -55,7 +59,8 @@ impl-dispatch handoff.
 ### Open follow-up work items (console beads ledger)
 - **`livespec-console-beads-fabro-25rvmd`** (P2, blocked) — B1 transition-epoch source-availability tally (re-down-after-recovery dedups in a persistent cross-run store).
 - **`livespec-console-beads-fabro-ble`** (P2, backlog) — extend `distinguish_repeatable_command` idempotency-key fix to ALL repeatable operator actions (currently move-only).
-- ~~**`livespec-console-beads-fabro-7wy`**~~ — **RESOLVED** in the v030 PR (#297). The revise CLI's gating post-step doctor flagged it, so it was fixed rather than deferred; there were THREE such citations, not one (`console-application/src/lib.rs:1987` and `:2453`, `source_adapters.rs:1865`), all now file-level. `grep -rn '§' crates --include='*.rs'` returns nothing and `doctor-no-spec-section-citation-in-code` passes. **Close the ledger record if still open.**
+- ~~**`livespec-console-beads-fabro-bamsy3`**~~ — **FIXED** by `7110eca`; sits in `acceptance` awaiting the human accept valve. Independently re-verified against its filed reproduction (see §"RESUME ORDER" item 1).
+- ~~**`livespec-console-beads-fabro-7wy`**~~ — **RESOLVED** in the v030 PR (#297). **Ledger status confirmed `done` on 2026-07-21** — the "close the record if still open" instruction below is SATISFIED; no action remains. The revise CLI's gating post-step doctor flagged it, so it was fixed rather than deferred; there were THREE such citations, not one (`console-application/src/lib.rs:1987` and `:2453`, `source_adapters.rs:1865`), all now file-level. `grep -rn '§' crates --include='*.rs'` returns nothing and `doctor-no-spec-section-citation-in-code` passes. **Close the ledger record if still open.**
 
 The B6/B7/B8 deliverables live in THIS plan by design — the freeform work-item vehicle for them was RETIRED (see §"RETIRED"); concrete follow-up bugs live as the work items above. Four stale worktrees (`docs-console-tui-usage`, `console-release-pipeline`, `cap-test-parallelism`, `phase3-selfhosted-cutover`) — leftover from ALREADY-MERGED PRs (#165 / #243 / #266 / #250) — were reaped 2026-07-19; they were NOT holding in-progress B6/B7/B8 work. (A prior revision of this file flagged worktree `b6-spec-review-fixes` as holding
 un-PR'd B6 corrections; that work is now MERGED as v030 via PR #297 and the
@@ -175,10 +180,39 @@ artifact must run live from /tmp against two repos.
 
 ## BACKFILL — existing TUI behavior lacking real-TUI E2E coverage
 Once the harness (#0) exists, backfill real-TUI tmux E2E tests for the existing
-scenarios that today have ONLY scripted-runner coverage — at minimum Scenario 5
-(TUI-first workflow), 9 (autonomous enable), 11 (valve/policy — the valve path this
-session proved manually), 13 (source availability). Each existing scenario that
-asserts TUI-visible behavior needs a tmux E2E test.
+scenarios that today have ONLY scripted-runner coverage. Each existing scenario
+that asserts TUI-visible behavior needs a tmux E2E test.
+
+**Corrected 2026-07-21 — this section carried three errors.** Verified against
+`SPECIFICATION/scenarios.md` and `git show origin/master:crates/console-cli/
+tests/tmux_tui_e2e.rs`:
+
+1. **Scenario 13 is ALREADY COVERED** — B1 landed
+   `tmux_tui_e2e_all_reachable_sources_are_idle_not_unavailable` and
+   `tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned`. Drop it
+   from the target list; the remainder is **5 / 9 / 11**.
+2. **Scenario 9 is NOT "autonomous enable."** The spec
+   (`SPECIFICATION/scenarios.md:241`) reads *"Operator sets a dispatcher policy
+   setting from the console."* It is unrelated to autonomous mode and is
+   therefore UNAFFECTED by that mode's retirement. The old shorthand here sent
+   at least one session looking for a connection that does not exist.
+3. **This backfill is probably not THIS thread's work** — see below.
+
+### Ownership: 5 and 11 belong with `console-happy-path-mvp`
+This thread is cockpit-UX + user-docs + release-pipeline. Test-coverage
+backfill for pre-existing TUI behavior rode along only because deliverable #0
+happened to build the harness here.
+
+`plan/console-happy-path-mvp/` is the natural owner of **Scenario 5**
+(TUI-first operator workflow) and **Scenario 11** (human valve + policy-edit):
+it is the declared delivery/integration owner of the happy path, it walks those
+exact flows, and its Stage-3 already reuses B7's stateful tmux fixture
+(`crates/console-cli/tests/support/lifecycle.rs`) — the same fixture these
+scenes need. **Scenario 9** has no thread affinity and is a standalone
+work-item, not plan work.
+
+Re-home before starting; do not begin the backfill under this thread by
+default.
 
 ## FIX ORDER + conflict analysis
 - **#0 harness first** — everything depends on it.
@@ -409,6 +443,40 @@ Negative-tested by injecting both real drift modes (musl retarget; binary
 rename); each turns the gate red. The live half was verified once, by this
 run.
 
+## DOCS-ROT POSTSCRIPT (2026-07-21) — my own docs were false in four hours
+
+The B7 postscript warned that prose rots at the team's commit rate. It did so
+again, faster than any previous instance, and to the very docs written to
+document a bug.
+
+The B8 run found the cross-repo gap, filed it as `bamsy3`, and landed
+`docs/installing.md` wording that told users the working directory was
+**load-bearing** — with a measured table showing cross-repo observation
+returning nothing. Within hours the factory drained `bamsy3` and shipped
+`7110eca`, which sets each backing CLI's working directory to the selected
+repo. The documented limitation ceased to exist, and the doc became a
+confident, evidence-backed statement of something false.
+
+Corrected here: `docs/installing.md` now documents the working cross-repo
+invocation and carries a scoped note that `v0.2.0` — the currently published
+asset — still requires `cd`. That distinction matters because the de-gate
+notice points readers at `v0.2.0`, so the doc must describe TWO behaviors at
+once until the next release.
+
+**The transferable lesson is narrower than "bind docs mechanically."** The
+`docs_status_hint_lockstep` and `docs_release_asset_lockstep` gates bind doc
+claims to SOURCE — they cannot catch this, because nothing in the repo was
+inconsistent: the doc accurately described `v0.2.0` while the source moved on.
+**Any doc claim scoped to a RELEASED artifact acquires a second lifetime,
+independent of master.** When you document a limitation, also note what would
+retire it — otherwise the fix silently invalidates the prose and no gate
+fires.
+
+Practical rule for this repo: a doc sentence describing behavior that a filed
+work-item would change should name that work-item. `bamsy3` existed and was
+`ready` when the false wording was written; a one-line "until `bamsy3` lands"
+would have made the rot self-announcing.
+
 ## VERIFICATION DISCIPLINE (2026-07-21) — four false greens in one session
 
 Every one was caught only by reading actual OUTPUT, never by trusting a status.
@@ -433,22 +501,45 @@ Deliverable #0 + **B1–B8 are DONE** (see §"STATUS", §"B6 POSTSCRIPT",
 §"B7 POSTSCRIPT", and §"B8 POSTSCRIPT"). §"B8 ENTRY NOTE" above is now
 HISTORICAL — its three questions were answered and the run is complete; keep
 it only for the reasoning. Remaining, in order:
-1. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — the
-   harness exists and is a trustworthy CI gate. Use
-   `crates/console-cli/tests/support/lifecycle.rs` for any scene needing a real
-   work-item; the default `{}` stub CANNOT serve one (see §"B7 POSTSCRIPT").
-   Fully hermetic, fully unblocked — this is the next item.
-2. **`livespec-console-beads-fabro-bamsy3`** (bug, `ready`) — the console
-   observes only the repo it is RUN FROM, because backing CLIs inherit its CWD
-   instead of `LIVESPEC_CONSOLE_REPO_PATH`. Root-caused to
-   `main.rs:321`; fix is default-identity. The design question is RESOLVED
-   (the env var should be sufficient), so this is straightforward impl work —
-   verified via the tmux harness, since the probe is compiled out of test
-   builds. See §"B8 POSTSCRIPT".
-3. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
-   in `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`). Drive
-   multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
-   `acceptance`, with the maintainer's final accept via the TUI.
+**Nothing docs- or release-shaped remains in this thread.** What is left is
+either owned elsewhere or already split out as a standalone work-item:
+
+1. **`livespec-console-beads-fabro-bamsy3`** — ✅ **FIXED by the factory the
+   same day**, now in `acceptance` awaiting the human accept valve. Landed as
+   `7110eca` "fix: run backing CLIs from selected repo"
+   (`.current_dir(&self.cwd)`, `main.rs:334`). Nothing to do here beyond the
+   accept decision — it never needed a plan thread.
+
+   **Independently verified 2026-07-21** against the exact reproduction filed
+   with the bug: from `/tmp/<rand>` (not a git repo) with
+   `LIVESPEC_CONSOLE_REPO_PATH` pointed at orchestrator-beads-fabro, the
+   rebuilt master binary reports **0 `not_observed`** (was 5/5 on `v0.2.0`,
+   3/5 on pre-fix master) and reaches the `bd-ib-*` tenant. Against the
+   acceptance wording — "observes the same source set as one launched from
+   inside that repo" — the two runs are **identical**: 620 backfill events,
+   649 events, 21 attention items either way.
+2. **Backfill Scenarios 5 / 9 / 11** — RE-HOME, do not start here. 5 and 11 to
+   `plan/console-happy-path-mvp/`; 9 as a standalone work-item. See §"BACKFILL"
+   for why, and for the three errors that section used to carry.
+3. **Doc custody** — the only standing responsibility left, and it is PASSIVE.
+   `plan/console-happy-path-mvp/handoff.md` explicitly defers to this thread
+   for it ("Doc custody stays with `plan/cockpit-ux-docs-release/`"). Folding
+   custody into that thread is what would make THIS thread archivable.
+
+**~~Stage-2~~ (autonomous-mode MVP acceptance) — STRUCK 2026-07-21, DEAD.**
+Its tracking thread no longer exists at
+`livespec/plan/autonomous-mode-acceptance/` — it is ARCHIVED at
+`livespec/plan/archive/autonomous-mode-acceptance/` — and autonomous mode is
+retired for good (four independent sources, incl. `.livespec.jsonc:47` and
+`plan/console-happy-path-mvp/research/why-it-never-happened.md:71`). Do not
+resume it.
+
+> **Cross-thread inconsistency, UNRESOLVED.**
+> `plan/console-happy-path-mvp/handoff.md:95` still reads *"cockpit's Stage-2
+> (multiple real items, two repos) remains cockpit's"*, treating Stage-2 as
+> live. That contradicts the strike above. Whichever thread is archived first,
+> that line needs correcting or the contradiction outlives both. NOT edited
+> here — it is another thread's handoff.
 
 Each behavior: `/livespec:propose-change` → independent Fable review →
 `/livespec:revise` → tmux E2E (RED) → implement (GREEN) → two-repo live-verify.

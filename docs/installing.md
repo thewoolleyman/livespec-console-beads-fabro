@@ -31,10 +31,9 @@ Only linux `x86_64` is published today.
 > **Acceptance-verified on linux `x86_64` only, for the download path.** The
 > published `v0.2.0` asset was downloaded with the commands above, checksum-
 > verified, and run from an arbitrary working directory outside any git
-> repository, against two different repositories, with each launched from
-> inside its own checkout (see [Running against a different
-> repository](#running-against-a-different-repository)). That is the extent of
-> what has been exercised: one host, one architecture, the `serve` read path.
+> repository, against two different repositories — each launched from inside
+> its own checkout, which `v0.2.0` required. That is the extent of what has
+> been exercised: one host, one architecture, the `serve` read path.
 > Other platforms have no published asset and no acceptance run — use the
 > source build below.
 
@@ -90,36 +89,40 @@ select what it operates on:
 | `LIVESPEC_CONSOLE_REPO_PATH` | the repository **filesystem path** — supplies `--repo` to the drive and drain programs, and roots the dispatcher journal | the current working directory |
 | `LIVESPEC_CONSOLE_REPO` | the repository **id** — drives the header and keys the attention stream | the current directory's basename |
 
-**Run the console from inside the repository you want to observe.** This is
-the supported invocation, and the one the acceptance run exercised:
+Running from inside the target repository sets both correctly by default:
 
 ```bash
 cd /path/to/some-other-repo
 /usr/local/bin/with-livespec-env.sh -- livespec-console-beads-fabro serve
 ```
 
-Both settings then default correctly from the working directory.
+To operate on another repository **without changing directory**, set both
+explicitly — the path and the id are separate knobs, and setting only the id
+leaves the drive program pointed at your current directory:
 
-### Why the working directory is load-bearing
+```bash
+/usr/local/bin/with-livespec-env.sh -- env \
+  LIVESPEC_CONSOLE_REPO_PATH=/path/to/some-other-repo \
+  LIVESPEC_CONSOLE_REPO=some-other-repo \
+  livespec-console-beads-fabro serve
+```
 
-Setting `LIVESPEC_CONSOLE_REPO_PATH` is **not** a substitute for changing
-directory. The Beads tenant is resolved from the working directory's
-`.beads/`, and the orchestrator plugin root is discovered relative to the
-working directory too — so a console started outside a repository reaches
-neither, whatever the environment says. It still launches and still exits
-cleanly, because every unreachable source degrades to a *not observed*
-finding rather than crashing; the panes are simply empty and the header names
-what is unavailable.
+Note the `-- env` form: the credential wrapper drops variables set in front of
+it. See [below](#passing-environment-variables-through-the-credential-wrapper).
 
-Measured on the `v0.2.0` asset against
-`/data/projects/livespec-orchestrator-beads-fabro`:
+The console runs each backing CLI **with its working directory set to the
+selected repository**, so the Beads tenant and the orchestrator plugin root
+resolve against that repository rather than against your shell's current
+directory. Both invocations above observe the same sources — verified against
+`/data/projects/livespec-orchestrator-beads-fabro` from a directory outside
+any git repository: identical event, backfill, and attention counts either
+way, with zero sources reported *not observed*.
 
-| Launched from | Sources observed |
-|---|---|
-| inside the repository | live work items, PRs, and attention items |
-| any other directory, with `LIVESPEC_CONSOLE_REPO_PATH` set | none — all five sources *not observed* |
-
-An empty cockpit from the second form is this limitation, not an outage.
+> **Requires a build newer than `v0.2.0`.** In `v0.2.0` the backing CLIs
+> inherited the console's own working directory, so the second form above
+> launched cleanly but observed **nothing** — every source degraded to a
+> *not observed* finding and the panes were empty. If you are on the `v0.2.0`
+> asset, `cd` into the target repository instead.
 
 ### Passing environment variables through the credential wrapper
 
