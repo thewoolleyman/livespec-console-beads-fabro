@@ -861,7 +861,7 @@ fn tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned() -> HarnessRes
 // --- B7 key-by-key lifecycle walkthrough -----------------------------------
 //
 // The acceptance for the walkthrough doc (B7 in
-// `plan/cockpit-ux-docs-release/handoff.md`): an agent walks the DOCUMENTED
+// `plan/archive/cockpit-ux-docs-release/handoff.md`): an agent walks the DOCUMENTED
 // steps on a dummy work-item, driving the REAL TUI in a tmux pane, end to end,
 // for TWO repos, with no doc/behavior mismatch. This test IS that agent — every
 // assertion below quotes what `docs/lifecycle-walkthrough.md` tells an operator

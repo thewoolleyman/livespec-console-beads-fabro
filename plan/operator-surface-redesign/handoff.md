@@ -203,7 +203,7 @@ design conversation.
    conversation, not three.
 5. Impl slices are strictly sequenced within one session. This thread owns the hottest
    region of `console-application/src/lib.rs` (11,464 lines, 7 items contend for it)
-   and of `console-tui/src/lib.rs` — the cockpit program had to SEQUENCE its four TUI behaviours one worktree at a time for exactly this reason (see `plan/cockpit-ux-docs-release/handoff.md:188`).
+   and of `console-tui/src/lib.rs` — the cockpit program had to SEQUENCE its four TUI behaviours one worktree at a time for exactly this reason (see `plan/archive/cockpit-ux-docs-release/handoff.md`, 'FIX ORDER + conflict analysis').
 
 ## Gates
 

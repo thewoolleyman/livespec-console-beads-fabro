@@ -1,5 +1,25 @@
 # Console cockpit UX + user-docs + release-pipeline — SPEC-DRIVEN program (livespec-console-beads-fabro)
 
+> **ARCHIVED 2026-07-21. Read `SUPERSEDED-BY.md` in this directory FIRST.**
+> Do not resume this thread and do not extend this file. Its programme
+> (deliverable #0 + B1–B8) is delivered; its four open decisions are settled;
+> doc custody moved to `plan/console-happy-path-mvp/` § "Doc custody".
+>
+> This file is retained for its REASONING, which is not derivable from the
+> code: § "VERIFICATION DISCIPLINE", § "DOC CUSTODY IS ACTIVE", and
+> § "DOCS-ROT POSTSCRIPT". Three sections carry inline correction banners
+> where later evidence disproved them — treat any unbannered claim as true
+> only as of 2026-07-21.
+>
+> **The § "READ FIRST" warning immediately below is OBSOLETE.** It described a
+> transient collision between two sessions in the primary checkout on
+> 2026-07-21, and its instruction to read
+> `git show origin/master:plan/cockpit-ux-docs-release/handoff.md` now names a
+> path that no longer exists — this file lives at
+> `plan/archive/cockpit-ux-docs-release/handoff.md`. Kept only because the
+> lesson it teaches (work from a worktree at `origin/master`; never audit
+> source from a stale tree) is the repo's standing mutation protocol.
+
 ## ⚠ READ FIRST — the primary checkout may be STALE (2026-07-21)
 
 `/data/projects/livespec-console-beads-fabro` sits at **`7110eca`**, many
@@ -154,6 +174,13 @@ A reusable test harness that:
 This harness is a prerequisite for the E2E test of EVERY behavior below and for the
 backfill.
 
+> **✅ RESOLVED 2026-07-21 (archival session) — the maintainer approved the
+> promotion, and `check-e2e-tmux` is now in `ci-green`'s `needs`.** The
+> requirement below is met: the harness is a first-class, merge-blocking gate.
+> The cost named below was explicitly accepted — every merge now depends on a
+> job requiring tmux and a release binary. Everything after this line is
+> retained as the ANALYSIS that justified the change, not as live state.
+>
 > **⚠ UNMET as of 2026-07-21 — the harness runs but does NOT BLOCK A MERGE.**
 > `check-e2e-tmux` is a real CI job and it does run on every PR. It is not
 > merge-blocking, and the plan's "first-class, always-run gate" requirement
@@ -797,6 +824,37 @@ Worth internalizing before the next push:
   for any message containing shell metacharacters, and verify with `git log`.
 
 ## RELEASE 0.3.0 IS PENDING — expect a red gate, and here is the checklist
+
+> **⚠ CORRECTED 2026-07-21 (archival session) — this section's TIMING claim was
+> wrong, and following its checklist literally would have left the PR red.**
+>
+> It says the red "should arrive AFTER the release, not before". It arrives
+> BEFORE. `docs_release_version_lockstep` reads
+> `.release-please-manifest.json`, which the release PR ITSELF bumps, so PR
+> #265 was already red — one failure out of 639 — and `ci-green` therefore
+> BLOCKED the merge. The release could not land until the claims were
+> re-read. A standalone pre-bump on master would also have been red (master's
+> manifest still said `0.2.0`), so the update had to ride ON the release
+> branch. Done: commit `0cf0d4a` on
+> `release-please--branches--master--components--livespec-console-beads-fabro`.
+>
+> The three-claim disposition below was otherwise CORRECT and was followed:
+> (1) and (2) stay historical at `v0.2.0`; (3) was deleted, not renumbered.
+>
+> **The checklist also missed the gate's SECOND assertion**, and obeying only
+> the three claims would have turned the PR red a different way.
+> `the_install_doc_still_carries_the_claims_this_gate_pins` requires the doc
+> to MENTION `v<pin>`. With (1) and (2) pinned to `v0.2.0` and (3) deleted,
+> bumping to `0.3.0` leaves zero `v0.3.0` mentions and the pin guards nothing.
+> Verified by removing the mention and watching that test fail, naming
+> `v0.3.0`. Resolved by giving the acceptance notice a paragraph stating that
+> the download globs now fetch `v0.3.0` and that no asset after `v0.2.0` has
+> been through an acceptance run — true, and worth saying regardless.
+>
+> **The transferable lesson is the one this file already teaches, applied to
+> itself: a checklist written from a gate's DOC COMMENT is not the same as one
+> written from its ASSERTIONS.** The comment enumerated three claims; the file
+> contained two tests. Read the test body.
 
 `gh pr list` shows **PR #265, `chore(master): release 0.3.0`**, open as of
 2026-07-21. Its changelog already carries `run backing CLIs from selected repo
