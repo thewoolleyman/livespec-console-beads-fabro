@@ -102,15 +102,47 @@ one, `Fabro run:` reads `-` and no `Attach:` line is rendered at all. An item
 that has not reached Fabro yet, such as one sitting at `pending-approval`,
 normally has neither.
 
-`Enter` on a row opens the command modal for that item. **The modal is
-currently empty** — the console builds no operator actions for attention
-items, so the box opens with a border and no rows. `Esc` closes it. The
-`Open Fabro attach` and `Copy Fabro attach` actions exist in the code but are
-never offered; do not plan a workflow around them.
+`Enter` on a row opens **the source work-item's full record**, the same modal a
+drilled-in lane row opens. `Esc` closes it. A row that names no work-item —
+a plan thread or a hygiene finding, for example — has nothing to open, so
+`Enter` is inert there and the Status line stops offering it.
 
 `/` opens search, which filters this list — a lowercased substring match over
 the summary, id, kind, repo, work-item, and path. An empty query matches
 everything.
+
+#### Rows that appear and disappear on their own
+
+The inbox is not driven only by you. The console reads the orchestrator's
+published Dispatcher journal, and each **auto-disposition** it finds there
+moves the inbox without any keystroke:
+
+| Journal disposition | Effect on the inbox | Governed by |
+|---|---|---|
+| `auto-approve` | the item's `approve` valve row **is resolved and leaves** | `auto_approve_ready` |
+| `ai-auto-accept` | the item's `accept` valve row **is resolved and leaves** | `acceptance_mode` |
+| `ai-fail-auto-rework` | as above — resolved on the `accept` valve | `acceptance_mode` |
+| `ship-on-cap` | as above — resolved on the `accept` valve | `merge_on_review_cap` |
+| `cap-exceeded-escalation` | a needs-human row **appears** | `review_fix_cap` |
+
+So a row vanishing from Attention is normal: the factory disposed of it under
+a setting, and the console reflected that. Equally, a row you never triggered
+may appear — that is the orchestrator escalating something no setting was
+allowed to auto-dispose. Only `cap-exceeded-escalation` arrives this way;
+the other four only ever remove.
+
+The console **observes** these; it never re-derives them. The journal names
+both the disposition and the settings that governed it, and the console takes
+both verbatim — which is why the table's right-hand column is the
+orchestrator's claim, not the console's inference. Reflection is idempotent,
+so a decision already reflected on an earlier run is skipped rather than
+double-counted, and a journal line the console cannot parse — malformed, or
+carrying a disposition outside the five above — is **skipped silently** rather
+than surfaced as a phantom row.
+
+The governing settings themselves are described under
+[Dispatcher settings](#dispatcher-settings); this section is only about what
+they do to the inbox.
 
 ### Spec pane
 
@@ -257,7 +289,7 @@ its hints stay readable while the modal is open.
 | Focus | `↑`/`↓` | `←` | `→` | `Enter` | `Esc` |
 |---|---|---|---|---|---|
 | Views | previous / next view | — | focus content | focus content | — |
-| content | move the selection | drilled lane → overview, else focus Views | focus Detail | in Lanes: drill into a lane, or open the selected item's record once inside one; in Settings: edit the row; elsewhere: open the item's command modal | as `←` |
+| content | move the selection | drilled lane → overview, else focus Views | focus Detail | in Lanes: drill into a lane, or open the selected item's record once inside one; in Attention: open the selected row's work-item record; in Settings: edit the row; elsewhere: inert | as `←` |
 | Detail | scroll | focus content | — | — | focus content |
 | header | — | scroll left | scroll right | — | focus Views |
 
