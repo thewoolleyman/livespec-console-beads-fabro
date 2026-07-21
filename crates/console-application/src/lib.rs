@@ -27,8 +27,8 @@ pub mod source_adapters;
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
     SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
-    attention_item_snapshot_from_payload_json, materialize_attention_items,
-    work_item_snapshot_from_payload_json,
+    attention_item_snapshot_from_payload_json, fabro_run_snapshot_from_payload_json,
+    materialize_attention_items, work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1114,7 +1114,7 @@ pub struct AttentionDetail {
     repo: String,
     work_item: String,
     fabro_run: String,
-    attach_command: String,
+    attach_command: Option<String>,
     timeline: Vec<TimelineEntry>,
     actions: Vec<OperatorAction>,
 }
@@ -1126,7 +1126,7 @@ impl AttentionDetail {
         repo: String,
         work_item: String,
         fabro_run: String,
-        attach_command: String,
+        attach_command: Option<String>,
         timeline: Vec<TimelineEntry>,
         actions: Vec<OperatorAction>,
     ) -> Self {
@@ -1160,8 +1160,8 @@ impl AttentionDetail {
 
     #[must_use]
     /// Return the attach command value.
-    pub fn attach_command(&self) -> &str {
-        &self.attach_command
+    pub fn attach_command(&self) -> Option<&str> {
+        self.attach_command.as_deref()
     }
 
     #[must_use]
@@ -2997,10 +2997,16 @@ pub fn resolve_selected_operator_action(
         .ok_or(ApplicationError::NoSelectedOperatorAction)?;
     Ok(match action {
         OperatorAction::OpenFabroAttach => {
-            OperatorActionOutcome::OpenAttachCommand(detail.attach_command().to_owned())
+            let command = detail
+                .attach_command()
+                .ok_or(ApplicationError::NoSelectedOperatorAction)?;
+            OperatorActionOutcome::OpenAttachCommand(command.to_owned())
         }
         OperatorAction::CopyFabroAttach => {
-            OperatorActionOutcome::CopyAttachCommand(detail.attach_command().to_owned())
+            let command = detail
+                .attach_command()
+                .ok_or(ApplicationError::NoSelectedOperatorAction)?;
+            OperatorActionOutcome::CopyAttachCommand(command.to_owned())
         }
     })
 }
@@ -5176,7 +5182,7 @@ fn build_needs_attention_detail(item: &AttentionItemSnapshot) -> AttentionDetail
         source_ref.repo().to_owned(),
         subject.to_owned(),
         "-".to_owned(),
-        item.handoff().command().to_owned(),
+        Some(item.handoff().command().to_owned()),
         Vec::new(),
         Vec::new(),
     )
@@ -5472,12 +5478,15 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
 
 fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) -> AttentionDetail {
     let event = &entry.event;
-    let fabro_run = fabro_run_id(event);
+    let fabro_run = fabro_run_id_for_attention(entry, events);
+    let attach_command = fabro_run
+        .as_deref()
+        .map(|run_id| format!("fabro attach {run_id}"));
     AttentionDetail::new(
         entry.snapshot.repo().to_owned(),
         entry.snapshot.work_item_id().to_owned(),
-        fabro_run.clone(),
-        format!("fabro attach {fabro_run}"),
+        fabro_run.unwrap_or_else(|| "-".to_owned()),
+        attach_command,
         latest_timeline(events, event.stream_id(), 3),
         Vec::new(),
     )
@@ -5603,11 +5612,28 @@ fn attention_stream_repo(stream_id: &str) -> String {
         .map_or_else(|| "-".to_owned(), ToOwned::to_owned)
 }
 
-fn fabro_run_id(event: &ConsoleEvent) -> String {
-    event
-        .source()
-        .strip_prefix("fabro:")
-        .map_or_else(|| event.event_id().to_owned(), str::to_owned)
+fn fabro_run_id(event: &ConsoleEvent) -> Option<String> {
+    fabro_run_snapshot_from_payload_json(event.payload_json())
+        .map(|snapshot| snapshot.run_id().to_owned())
+}
+
+fn fabro_run_id_for_attention(
+    entry: &AttentionSnapshot,
+    events: &[ConsoleEvent],
+) -> Option<String> {
+    events.iter().rev().find_map(|event| {
+        if *event.event_type() != EventType::FabroHumanGateObserved {
+            return None;
+        }
+        let snapshot = fabro_run_snapshot_from_payload_json(event.payload_json())?;
+        if snapshot.repo() == entry.snapshot.repo()
+            && snapshot.work_item_id() == entry.snapshot.work_item_id()
+        {
+            fabro_run_id(event)
+        } else {
+            None
+        }
+    })
 }
 
 fn latest_timeline(
@@ -6396,7 +6422,7 @@ mod tests {
         assert_eq!(detail.repo(), orchestrator);
         assert_eq!(detail.work_item(), "bd-ib-ss7rkr");
         assert_eq!(detail.fabro_run(), "-");
-        assert_eq!(detail.attach_command(), "drive-cmd");
+        assert_eq!(detail.attach_command(), Some("drive-cmd"));
         assert!(detail.timeline().is_empty());
         assert!(detail.actions().is_empty());
 
@@ -7568,7 +7594,7 @@ mod tests {
                 "repo".to_owned(),
                 "work-item".to_owned(),
                 "run".to_owned(),
-                "fabro attach run".to_owned(),
+                Some("fabro attach run".to_owned()),
                 vec![],
                 vec![
                     OperatorAction::OpenFabroAttach,
@@ -7651,6 +7677,62 @@ mod tests {
         assert_eq!(state.overlay(), &TuiOverlay::None);
     }
 
+    #[test]
+    fn attention_detail_omits_attach_for_orchestrator_only_snapshot() {
+        let events = [
+            lane_event(
+                "evt_blocked",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            fabro_run_event("evt_other_gate", "console", "other-work", "run_other", 2),
+        ];
+
+        let model = build_tui_model(&events, 0);
+
+        assert_eq!(
+            model.detail().map(super::AttentionDetail::fabro_run),
+            Some("-")
+        );
+        assert_eq!(
+            model
+                .detail()
+                .and_then(super::AttentionDetail::attach_command),
+            None
+        );
+    }
+
+    #[test]
+    fn attention_detail_renders_attach_for_matching_fabro_payload() {
+        let events = [
+            lane_event(
+                "evt_blocked",
+                "console-blocked",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            fabro_run_event("evt_gate", "console", "console-blocked", "run_17", 2),
+        ];
+
+        let model = build_tui_model(&events, 0);
+
+        assert_eq!(
+            model.detail().map(super::AttentionDetail::fabro_run),
+            Some("run_17")
+        );
+        assert_eq!(
+            model
+                .detail()
+                .and_then(super::AttentionDetail::attach_command),
+            Some("fabro attach run_17")
+        );
+    }
+
     fn fabro_gate_events() -> [ConsoleEvent; 4] {
         [
             ConsoleEvent::new(
@@ -7687,6 +7769,31 @@ mod tests {
                 "blocked",
             ),
         ]
+    }
+
+    fn fabro_run_event(
+        event_id: &str,
+        repo: &str,
+        work_item_id: &str,
+        run_id: &str,
+        source_version: u64,
+    ) -> ConsoleEvent {
+        let mut payload = serde_json::Map::new();
+        payload.insert("repo".to_owned(), repo.to_owned().into());
+        payload.insert("work_item_id".to_owned(), work_item_id.to_owned().into());
+        payload.insert("run_id".to_owned(), run_id.to_owned().into());
+        payload.insert("state".to_owned(), "human-gate".into());
+        payload.insert("source_version".to_owned(), source_version.into());
+        ConsoleEvent::new(
+            event_id.to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::FabroHumanGateObserved,
+            "fabro".to_owned(),
+            format!("repo:{repo}"),
+            source_version,
+        )
+        .with_payload_json(serde_json::Value::Object(payload).to_string())
     }
 
     fn view_summary_events() -> [ConsoleEvent; 8] {
@@ -7777,11 +7884,13 @@ mod tests {
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::fabro_run),
-            Some("evt_pending")
+            Some("-")
         );
         assert_eq!(
-            model.detail().map(super::AttentionDetail::attach_command),
-            Some("fabro attach evt_pending")
+            model
+                .detail()
+                .and_then(super::AttentionDetail::attach_command),
+            None
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
@@ -7832,14 +7941,12 @@ mod tests {
     }
 
     #[test]
-    fn source_reference_helpers_derive_repo_and_fabro_run() {
-        let gate = ConsoleEvent::new(
-            "evt_gate".to_owned(),
-            1,
-            "factory".to_owned(),
-            EventType::FabroHumanGateObserved,
-            "fabro:run_17".to_owned(),
-            "repo:livespec-console-beads-fabro".to_owned(),
+    fn source_reference_helpers_derive_repo_and_fabro_run_from_payload() {
+        let gate = fabro_run_event(
+            "evt_gate",
+            "livespec-console-beads-fabro",
+            "livespec-console-beads-fabro-y45jhj",
+            "run_17",
             2,
         );
         let fallback =
@@ -7859,8 +7966,8 @@ mod tests {
             super::repo_id(&plain_stream),
             "livespec-console-beads-fabro"
         );
-        assert_eq!(super::fabro_run_id(&gate), "run_17");
-        assert_eq!(super::fabro_run_id(&fallback), "evt_no_run");
+        assert_eq!(super::fabro_run_id(&gate), Some("run_17".to_owned()));
+        assert_eq!(super::fabro_run_id(&fallback), None);
     }
 
     #[test]
@@ -8013,7 +8120,7 @@ mod tests {
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::fabro_run),
-            Some("evt_2")
+            Some("-")
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
