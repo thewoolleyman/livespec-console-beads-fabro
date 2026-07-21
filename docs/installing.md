@@ -28,12 +28,15 @@ mv livespec-console-beads-fabro-*-x86_64-unknown-linux-gnu \
 Or fetch the binary for your platform from the repository's Releases page.
 Only linux `x86_64` is published today.
 
-> **Not yet acceptance-verified.** The release pipeline and its published
-> asset exist, but the pre-delivery acceptance run — downloading the published
-> asset, running it from an arbitrary working directory, and exercising it
-> against two different repositories — has not been completed. Until it has,
-> prefer the source build below if you hit anything unexpected, and report the
-> failure.
+> **Acceptance-verified on linux `x86_64` only, for the download path.** The
+> published `v0.2.0` asset was downloaded with the commands above, checksum-
+> verified, and run from an arbitrary working directory outside any git
+> repository, against two different repositories, with each launched from
+> inside its own checkout (see [Running against a different
+> repository](#running-against-a-different-repository)). That is the extent of
+> what has been exercised: one host, one architecture, the `serve` read path.
+> Other platforms have no published asset and no acceptance run — use the
+> source build below.
 
 ## Build from source
 
@@ -87,22 +90,56 @@ select what it operates on:
 | `LIVESPEC_CONSOLE_REPO_PATH` | the repository **filesystem path** — supplies `--repo` to the drive and drain programs, and roots the dispatcher journal | the current working directory |
 | `LIVESPEC_CONSOLE_REPO` | the repository **id** — drives the header and keys the attention stream | the current directory's basename |
 
-Running from inside the target repository sets both correctly by default:
+**Run the console from inside the repository you want to observe.** This is
+the supported invocation, and the one the acceptance run exercised:
 
 ```bash
 cd /path/to/some-other-repo
 /usr/local/bin/with-livespec-env.sh -- livespec-console-beads-fabro serve
 ```
 
-To operate on another repository without changing directory, set both
-explicitly — the path and the id are separate knobs, and setting only the id
-leaves the drive program pointed at your current directory:
+Both settings then default correctly from the working directory.
+
+### Why the working directory is load-bearing
+
+Setting `LIVESPEC_CONSOLE_REPO_PATH` is **not** a substitute for changing
+directory. The Beads tenant is resolved from the working directory's
+`.beads/`, and the orchestrator plugin root is discovered relative to the
+working directory too — so a console started outside a repository reaches
+neither, whatever the environment says. It still launches and still exits
+cleanly, because every unreachable source degrades to a *not observed*
+finding rather than crashing; the panes are simply empty and the header names
+what is unavailable.
+
+Measured on the `v0.2.0` asset against
+`/data/projects/livespec-orchestrator-beads-fabro`:
+
+| Launched from | Sources observed |
+|---|---|
+| inside the repository | live work items, PRs, and attention items |
+| any other directory, with `LIVESPEC_CONSOLE_REPO_PATH` set | none — all five sources *not observed* |
+
+An empty cockpit from the second form is this limitation, not an outage.
+
+### Passing environment variables through the credential wrapper
+
+`with-livespec-env.sh` executes its command in a **clean environment**, so
+variables set in front of the wrapper are dropped before the console ever
+sees them:
 
 ```bash
-LIVESPEC_CONSOLE_REPO_PATH=/path/to/some-other-repo \
-LIVESPEC_CONSOLE_REPO=some-other-repo \
+# WRONG — the wrapper strips this; the console never sees it
+LIVESPEC_CONSOLE_STORE_PATH=/tmp/store.sqlite \
   /usr/local/bin/with-livespec-env.sh -- livespec-console-beads-fabro serve
+
+# RIGHT — set the variable inside the wrapper's environment
+/usr/local/bin/with-livespec-env.sh -- env \
+  LIVESPEC_CONSOLE_STORE_PATH=/tmp/store.sqlite \
+  livespec-console-beads-fabro serve
 ```
+
+This applies to every `LIVESPEC_CONSOLE_*` variable in
+[CLI options](cli-options.md), not just the ones shown here.
 
 Give each repository its own event store if you want their histories kept
 apart — see `LIVESPEC_CONSOLE_STORE_PATH` in

@@ -35,7 +35,7 @@ and (separately, maintainer-gated) autonomous-mode Stage-2.
 | B5 panes operational-content-only (Scenario 21, v028) | ✅ DONE | propose #280 → revise #288 → impl #289 (`1bfdb41d`) |
 | B6 user-docs → `docs/` tree (4 sub-docs) | ✅ DONE | spec: v029 (`8839d63`) + corrections **v030** (PR #297, `2fac510`); impl: PR #300 (`7df1ea2`) |
 | B7 key-by-key lifecycle walkthrough doc | ✅ DONE | PR #327 (`b8ff009`) — `docs/lifecycle-walkthrough.md` + two-repo tmux E2E acceptance |
-| **B8** release capstone | ◑ PARTIAL — release pipeline + v0.2.0 asset shipped (PR #243); the `/tmp` two-repo download-run + README de-gate REMAIN | §"B8" below |
+| B8 release capstone | ✅ DONE | acceptance run 2026-07-21 (§"B8 POSTSCRIPT"); pipeline + v0.2.0 asset PR #243 |
 | **Backfill** real-TUI tmux E2E for existing Scenarios 5/9/11/13 | ⬜ NOT STARTED | §"BACKFILL" below |
 | **Stage-2** autonomous-mode MVP acceptance (maintainer-gated) | ⬜ NOT STARTED | `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`) |
 
@@ -341,6 +341,54 @@ stops matching what the release publishes. Note `docs/installing.md` currently
 names the asset by GLOB (`livespec-console-beads-fabro-*-x86_64-unknown-linux-gnu`),
 so such a test should assert the glob still matches a real published asset name.
 
+## B8 POSTSCRIPT (2026-07-21) — DONE, and it found two doc bugs
+
+The acceptance run happened, read-only, per the maintainer's answers to the
+three §"B8 ENTRY NOTE" questions (read-only; console +
+orchestrator-beads-fabro; de-gate scoped to what was proven).
+
+**What was verified.** The published `v0.2.0` asset was downloaded with the
+documented `gh release download` globs into `/tmp/b8-accept-<rand>`,
+`sha256sum -c` OK, and confirmed distinct from the local source build
+(`49ec6d06…` vs `686a403a…`) so there is no doubt which binary ran. It runs
+from a PWD that is not a git repository, exit 0, and against both repos with
+correct per-repo tenant scoping — console surfaced PR #317 and
+`livespec-console-beads-fabro-e8y`; orchestrator-beads-fabro surfaced 637
+events, 21 attention items, `bd-ib-98c.*`. `docs/installing.md` is de-gated
+with wording scoped to exactly that: linux x86_64, one host, the `serve` read
+path.
+
+**Doc bug 1 — the credential wrapper strips ALL caller env vars.**
+`with-livespec-env.sh` execs in a clean environment, so the
+`VAR=x /usr/local/bin/with-livespec-env.sh -- <binary>` form the doc showed
+could never work; sentinel vars vanish. The working form is
+`with-livespec-env.sh -- env VAR=x <binary>`. This path had never been
+exercised: `just tui` sets no env vars, it relies on CWD.
+
+**Doc bug 2 — "operate on another repository without changing directory"
+does not observe anything.** A PWD×PATH control matrix showed PWD is what
+matters and PATH is irrelevant. From any non-repo PWD with
+`LIVESPEC_CONSOLE_REPO_PATH` set, the v0.2.0 asset reports **5/5 sources
+`not_observed`**; from inside the repo, real data. The Beads tenant resolves
+from the working directory's `.beads/` and the orchestrator plugin root is
+discovered relative to CWD, so neither is reachable from `/tmp`.
+
+**This is NOT a stale-release artifact — it is unfixed on master.** The
+current master source build recovers only `dispatcher` and `fabro` (3/5 still
+dark); the orchestrator source, the one a cockpit exists for, still needs
+CWD, and zero work-items or attention items surface either way. Filed as a
+console work item; `docs/installing.md` now documents the cd-into-repo
+requirement rather than the broken form.
+
+**The install glob now has the mechanical binding B7 asked for.**
+`crates/console-cli/tests/docs_release_asset_lockstep.rs` reconstructs the
+asset name from `release-binary.yml`'s own `target=`/`asset=` shell
+assignments and asserts every documented `--pattern` glob matches it.
+Deliberately hermetic — no GitHub API call, so an outage cannot redden CI.
+Negative-tested by injecting both real drift modes (musl retarget; binary
+rename); each turns the gate red. The live half was verified once, by this
+run.
+
 ## VERIFICATION DISCIPLINE (2026-07-21) — four false greens in one session
 
 Every one was caught only by reading actual OUTPUT, never by trusting a status.
@@ -361,21 +409,20 @@ Worth internalizing before the next push:
   for any message containing shell metacharacters, and verify with `git log`.
 
 ## RESUME ORDER (fresh session) — updated 2026-07-20
-Deliverable #0 + **B1–B7 are DONE** (see §"STATUS", §"B6 POSTSCRIPT", and
-§"B7 POSTSCRIPT"). Remaining, in order:
-1. **B8 release capstone (remainder only)** — the release pipeline + v0.2.0 asset
-   already shipped (PR #243). What REMAINS is the pre-delivery acceptance:
-   `gh release download` the PUBLISHED asset (NOT a source build), run it from a
-   random PWD like `/tmp/<rand>` against TWO different repos, then DE-GATE the
-   `docs/installing.md` download instructions. **READ §"B8 ENTRY NOTE" FIRST** —
-   this item is not hermetic and its scope is an open maintainer question.
-   If you would rather stay hermetic, take item 2 first; it is fully unblocked
-   and has no such gate.
-2. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
-   with the above (the harness now exists and is a trustworthy CI gate). Use
+Deliverable #0 + **B1–B8 are DONE** (see §"STATUS", §"B6 POSTSCRIPT",
+§"B7 POSTSCRIPT", and §"B8 POSTSCRIPT"). §"B8 ENTRY NOTE" above is now
+HISTORICAL — its three questions were answered and the run is complete; keep
+it only for the reasoning. Remaining, in order:
+1. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — the
+   harness exists and is a trustworthy CI gate. Use
    `crates/console-cli/tests/support/lifecycle.rs` for any scene needing a real
    work-item; the default `{}` stub CANNOT serve one (see §"B7 POSTSCRIPT").
-   Fully hermetic — this is the lower-risk item if B8's scope is unresolved.
+   Fully hermetic, fully unblocked — this is the next item.
+2. **Cross-repo observation gap** (filed during B8) — the console only observes
+   the repo it is RUN FROM; `LIVESPEC_CONSOLE_REPO_PATH` does not move tenant
+   or plugin-root discovery. Unfixed on master. Docs now describe the
+   cd-into-repo requirement; whether the env var SHOULD be sufficient is a
+   product decision, not just a bug (see §"B8 POSTSCRIPT").
 3. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
    in `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`). Drive
    multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
