@@ -96,23 +96,32 @@ Selecting a row fills the **Detail** pane with `Repo:`, `Work item:`, and
 `Fabro run:` lines, and a `Timeline:` of the events that produced it. With
 nothing selected the Detail pane reads `No attention item selected`.
 
-What those lines hold depends on where the row came from, and the two sources
-differ more than they look:
+What those lines hold depends on which kind of row it is — and the kind is
+**not** decided by which source emitted it. The inbox merges work-item rows with
+needs-attention rows, and where both describe the same work-item the
+needs-attention one is dropped in favour of the richer work-item row.
 
-- **Rows from the needs-attention program** — the `valve:<verb>:<id>` rows, plan
-  threads, hygiene findings, spec-revise items. `Fabro run:` is **always** `-`,
-  and `Attach:` is **always** present, carrying that row's handoff command
-  (for example `open:plan/<topic>`). `Work item:` shows the row's work-item if
-  its source reference names one, otherwise the path, otherwise the row id — so
-  a plan-thread row displays a *path* on the `Work item:` line.
-- **Rows projected from a work-item snapshot.** `Fabro run:` names the run when
-  one is observed and reads `-` otherwise, and `Attach:` appears **only when a
-  Fabro run is attached** — when a human-gate observation matches that row's
-  repo and work-item. An item that has not reached Fabro yet has neither.
+- **Work-item rows** — a work-item resting on a human step: `pending-approval`
+  under `manual` admission, `blocked`/`needs-human`, or `acceptance` whose
+  policy carries a human leg. `Fabro run:` names the run when one is observed
+  and reads `-` otherwise, and `Attach:` appears **only when a Fabro run is
+  attached** — when a human-gate observation matches the row's repo and
+  work-item. An item that has not reached Fabro has neither, so a
+  `pending-approval` row normally shows `Fabro run: -` and **no** `Attach:`
+  line. A `Timeline:` of the events that produced it follows.
+- **Needs-attention rows** — everything the needs-attention program reports that
+  no work-item row already claims: plan threads, hygiene findings, spec-revise
+  items, and any `valve:<verb>:<id>` row whose work-item is not itself flagged.
+  `Fabro run:` is **always** `-`, and `Attach:` is **always** present, carrying
+  that row's handoff command (for example `open:plan/<topic>`). `Work item:`
+  shows the row's work-item if its source reference names one, otherwise the
+  path, otherwise the row id — so a plan-thread row displays a *path* there.
 
-The practical consequence: `Attach:` being present is **not** evidence that a
-Fabro run exists. On a needs-attention row it is just the handoff command, and
-`Fabro run: -` sits directly above it.
+The practical consequence runs both ways. `Attach:` present is **not** evidence
+a Fabro run exists — on a needs-attention row it is just the handoff command,
+with `Fabro run: -` directly above it. And `Attach:` absent on a valve row is
+**not** a missing observation — it means that row is the richer work-item
+projection, which shows the line only for a real Fabro attach.
 
 `Enter` on a row opens **the source work-item's full record**, the same modal a
 drilled-in lane row opens. `Esc` closes it. A row that names no work-item —

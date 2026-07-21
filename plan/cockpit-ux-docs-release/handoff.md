@@ -594,10 +594,28 @@ human-gate observation. Every `valve:*`, `plan:*`, and `hygiene:*` row takes the
 first path — so on the rows an operator meets most, `Attach:` present is NOT
 evidence of a Fabro run. Corrected in both docs.
 
-The lesson is narrow and worth keeping: **reading one code path and generalizing
-is how a confident, wrong doc gets written.** Two source audits and four gates
-did not catch this; rendering the actual screen did, immediately. Where a doc
-describes what a pane SHOWS, drive the pane.
+**Then the SAME mistake was made again, in the correction.** Having rendered a
+plan-thread row and seen `Attach:` present, PR #371 generalized to "every row
+from the needs-attention program has it" — and rewrote the walkthrough note,
+which had been CORRECT, to say `Attach:` shows at `pending-approval`. Rendering
+that screen too (a throwaway probe, not committed) showed `Fabro run: -` and NO
+`Attach:` line. Both were corrected again.
+
+The missing piece was `unified_attention_entries`: the inbox MERGES work-item
+rows with needs-attention rows and DE-DUPLICATES, dropping a needs-attention
+row whose work-item a work-item row already claims. So the kind of row is not
+decided by which source emitted it. A `valve:approve:<id>` row for a
+`manual`-admission `pending-approval` item is absorbed into the richer
+work-item projection — conditional `Attach:` — while a plan thread, having no
+work-item to be claimed by, stays a needs-attention row with `Attach:` always
+present.
+
+The lesson, twice earned: **reading one code path and generalizing is how a
+confident, wrong doc gets written — and rendering ONE screen and generalizing
+is the same error wearing better evidence.** Two source audits and four gates
+missed the first; one render missed the second. For a claim that splits by
+CASE, render each case. Where a doc describes what a pane SHOWS, drive the
+pane — every branch of it.
 
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
