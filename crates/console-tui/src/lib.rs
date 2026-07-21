@@ -598,10 +598,10 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 
 /// Enter with no overlay open: from the Views nav it dives focus into the
 /// Content pane; in the Content pane it drills into the selected lane (lane
-/// overview), opens the selected work-item's detail modal (drilled-in lane),
-/// edits the selected Settings row, or opens the command modal on the selected
-/// attention item for any other view; on the Detail pane it is inert (the
-/// command modal is opened from the Content pane).
+/// overview), opens the selected work-item's detail modal (Attention or a
+/// drilled-in lane), edits the selected Settings row, or opens the command modal
+/// only through explicit interactions that have actions to offer; on the Detail
+/// pane it is inert.
 fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.focus() {
         FocusPane::Nav => Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent)),
@@ -622,14 +622,17 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                     }),
                 };
             }
+            if model.active_view() == TuiView::Attention {
+                return model.selected_work_item_id().map(|_work_item_id| {
+                    TuiTerminalInput::Interaction(TuiInteraction::OpenWorkItemDetail)
+                });
+            }
             // A Settings row edit is an ordinary recorded write resolved on
-            // `Confirm`; every other view opens the command modal.
+            // `Confirm`; the read-only summary views have no Enter action.
             if model.active_view() == TuiView::Settings {
                 return Some(TuiTerminalInput::Confirm);
             }
-            Some(TuiTerminalInput::Interaction(
-                TuiInteraction::OpenCommandModal,
-            ))
+            None
         }
         // Enter is inert on the Detail pane and the focused Header pane (the
         // header scrolls, it does not open).
@@ -1785,10 +1788,12 @@ fn render_command_modal(
     area: Rect,
     buffer: &mut Buffer,
 ) {
+    let actions = detail.map(AttentionDetail::actions).unwrap_or_default();
+    if actions.is_empty() {
+        return;
+    }
     Clear.render(area, buffer);
-    let items = detail
-        .map(AttentionDetail::actions)
-        .unwrap_or_default()
+    let items = actions
         .iter()
         .enumerate()
         .map(|(index, action)| action_item_line(index, *action, selected_action_index));
@@ -2270,8 +2275,8 @@ mod tests {
     #[test]
     fn keymap_maps_content_focus_navigation_and_modal_opening() {
         // In the Content pane: up/down move the content selection, Enter opens
-        // the command modal on the selected attention item, Right steps focus
-        // into the Detail pane, and Left/Esc step focus back to the Views nav.
+        // the selected attention item's record, Right steps focus into the
+        // Detail pane, and Left/Esc step focus back to the Views nav.
         let model = attention_model_in(TuiOverlay::None, FocusPane::Content);
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &model),
@@ -2286,13 +2291,24 @@ mod tests {
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &model),
             Some(TuiTerminalInput::Interaction(
-                TuiInteraction::OpenCommandModal
+                TuiInteraction::OpenWorkItemDetail
             ))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Right), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusDetail))
         );
+        for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
+            let model = build_tui_model_for_state(
+                &demo_events(),
+                &TuiInteractionState::for_view(view, 0, TuiOverlay::None)
+                    .with_focus(FocusPane::Content),
+            );
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Enter), &model),
+                None
+            );
+        }
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
@@ -3818,7 +3834,7 @@ mod tests {
     }
 
     #[test]
-    fn render_to_text_draws_command_modal_overlay() {
+    fn render_to_text_suppresses_command_modal_overlay_without_actions() {
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::CommandModal {
@@ -3832,7 +3848,7 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Command Modal")),
+                .map(|rendered| !rendered.contains("Command Modal")),
             Ok(true)
         );
         assert_eq!(
@@ -3845,6 +3861,36 @@ mod tests {
             output
                 .as_ref()
                 .map(|rendered| !rendered.contains("Copy Fabro attach")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_suppresses_empty_command_modal_overlay() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+        assert_eq!(
+            model.detail().map(AttentionDetail::actions),
+            Some([].as_slice())
+        );
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| !rendered.contains("Command Modal")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|rendered| !rendered.contains("enter run")),
             Ok(true)
         );
     }
@@ -4280,6 +4326,39 @@ mod tests {
         assert_eq!(closed.overlay(), &TuiOverlay::None);
         // ...and leaves the operator in the lane they drilled into.
         assert_eq!(closed.lane_focus(), LaneFocus::Lane(Lane::Ready));
+    }
+
+    #[test]
+    fn attention_enter_opens_the_item_modal_and_esc_preserves_selection() {
+        let events = lane_render_events();
+        let state = TuiInteractionState::for_view(TuiView::Attention, 1, TuiOverlay::None)
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenWorkItemDetail
+            ))
+        );
+
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenWorkItemDetail);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: "console-blocked".to_owned(),
+                scroll: 0
+            }
+        );
+
+        let opened_model = build_tui_model_for_state(&events, &opened);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &opened_model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+        let closed = reduce_tui_interaction(&opened, &events, TuiInteraction::CloseOverlay);
+        assert_eq!(closed.overlay(), &TuiOverlay::None);
+        assert_eq!(closed.selected_attention_index(), 1);
+        assert_eq!(closed.active_view(), TuiView::Attention);
     }
 
     #[test]
