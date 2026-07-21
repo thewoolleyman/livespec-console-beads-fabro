@@ -26,7 +26,9 @@ user-docs, release pipeline — is DELIVERED.
 **This thread is a candidate for archival.** What is still open is either
 already split out as a standalone work-item (`bamsy3`), better owned by
 `plan/console-happy-path-mvp/` (the Scenario 5/11 E2E backfill), or dead
-(Stage-2). The one thing genuinely still resident here is PASSIVE doc custody.
+(Stage-2). The one thing genuinely still resident here is doc custody — which
+an audit later the same day showed is ACTIVE, not passive (see §"DOC CUSTODY
+IS ACTIVE").
 See §"RESUME ORDER" for the disposition of each and what archival would need.
 
 | Item | State | Ref |
@@ -443,6 +445,54 @@ Negative-tested by injecting both real drift modes (musl retarget; binary
 rename); each turns the gate red. The live half was verified once, by this
 run.
 
+## DOC CUSTODY IS ACTIVE (2026-07-21) — an audit, and a claim this file got wrong
+
+An earlier revision of this file called the remaining doc custody **passive**,
+and used that to argue the thread was nearly archivable. A `docs/` audit run
+hours later disproved it. Recording the correction here because the archive
+decision turns on it.
+
+**Five doc claims were contradicted by current source** (all fixed, PR #356):
+
+| Claim | Reality | Cause |
+|---|---|---|
+| `Enter` offers `Open Fabro attach` / `Copy Fabro attach` | modal opens EMPTY | wrong since authoring |
+| Detail pane always shows `Attach:` | conditional on a matching Fabro run | `fd6c622` |
+| lane overview row `- <id> [<status>] (<reason>)` | gained a `<title>` field | `2120e62` |
+| lane drill-in row, repo second | repo moved after title, `repo ` prefix | `2120e62` |
+| key table: `Enter` opens command modal in a lane | opens the work-item record | `e724b9c` |
+
+**The first one is the instructive one.** It was false the day `docs/` was
+written — both production `AttentionDetail::new` call sites have always passed
+`Vec::new()` for actions, verified back at `7df1ea2`. So the B6 rewrite, which
+was itself an audit that corrected 16 README errors, introduced a new one. An
+audit is not a permanent fix; it is a snapshot.
+
+**Rate of rot, measured twice now.** B7 found the Status hints drifted within
+ONE DAY of B6 landing. This audit found five more within a day of B7. With
+several sessions committing to this repo, doc drift is continuous, so custody
+means *periodically re-auditing*, not *owning a finished artifact*.
+
+**What NOT to re-audit.** These were checked against source and found clean —
+skip them next time unless their area changes: every Status-line hint
+(gated by `docs_status_hint_lockstep`), the `s` move-to-status transition
+table, the header degrade ladder, global key inertness under overlays, the
+8-section Help modal, the attention row format, the whole-record modal claim,
+and every TUI claim in `overview-quickstart.md` and `cli-options.md`.
+
+**Two known-silent items, deliberately left.** Neither is a false claim, so
+neither met this pass's bar: (1) the record modal's own footer prints
+`up/down scroll | esc to close` while `PgUp`/`PgDn` also page it — an
+inconsistency INSIDE the source, not doc drift, and the Status band documents
+the paging correctly; (2) `5938212`'s auto-disposition vocabulary
+(`auto-approve` / `ai-auto-accept` / `ai-fail-auto-rework` / `ship-on-cap` /
+`cap-exceeded-escalation`) appears in no doc.
+
+**One product question raised, NOT filed** — the empty command modal is
+arguably dead code: two `OperatorAction` variants, a `label()` impl, and a
+resolver arm reachable only from tests. Wire it up or delete it is a product
+call; the docs now describe reality either way.
+
 ## DOCS-ROT POSTSCRIPT (2026-07-21) — my own docs were false in four hours
 
 The B7 postscript warned that prose rots at the team's commit rate. It did so
@@ -521,10 +571,13 @@ either owned elsewhere or already split out as a standalone work-item:
 2. **Backfill Scenarios 5 / 9 / 11** — RE-HOME, do not start here. 5 and 11 to
    `plan/console-happy-path-mvp/`; 9 as a standalone work-item. See §"BACKFILL"
    for why, and for the three errors that section used to carry.
-3. **Doc custody** — the only standing responsibility left, and it is PASSIVE.
+3. **Doc custody** — the only standing responsibility left, and it is
+   **ACTIVE, recurring work** — see §"DOC CUSTODY IS ACTIVE" for the evidence
+   that corrected an earlier claim in this very file.
    `plan/console-happy-path-mvp/handoff.md` explicitly defers to this thread
-   for it ("Doc custody stays with `plan/cockpit-ux-docs-release/`"). Folding
-   custody into that thread is what would make THIS thread archivable.
+   for it ("Doc custody stays with `plan/cockpit-ux-docs-release/`"). Whoever
+   ends up holding it inherits a periodic audit, not a dormant label — that is
+   the thing to weigh before archiving this thread.
 
 **~~Stage-2~~ (autonomous-mode MVP acceptance) — STRUCK 2026-07-21, DEAD.**
 Its tracking thread no longer exists at
