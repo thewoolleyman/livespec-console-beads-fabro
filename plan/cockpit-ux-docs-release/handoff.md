@@ -556,11 +556,31 @@ branches on must be NAMED in that cell. Verified by replaying the real
 regression (delete the Attention clause, the gate fails naming `Attention`).
 One-directional like its siblings: it catches a view silently gaining or
 losing an `Enter` binding, and it CANNOT catch a cell that describes a named
-view's behavior wrongly — prose is still prose. Three doc gates now exist
-(`docs_status_hint_lockstep`, `docs_release_asset_lockstep` +
-`docs_release_version_lockstep`, and this one); the honest summary is that
-they pin the STRUCTURE of the doc's claims, and a periodic human audit is
-still what catches wrong prose.
+view's behavior wrongly — prose is still prose.
+
+### The doc-gate inventory (verified running in CI 2026-07-21)
+
+| Gate | Binds |
+|---|---|
+| `docs_status_hint_lockstep` | every Status hint the doc quotes exists in the module that renders it |
+| `docs_enter_key_lockstep` | every `TuiView` binding `Enter` is named in the by-focus key table |
+| `docs_release_asset_lockstep` | the documented `gh release download` globs match what `release-binary.yml` publishes |
+| `docs_release_version_lockstep` | `docs/installing.md`'s version-scoped claims were re-read against the current release |
+| `tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item` | a needs-attention row HAS `Attach:`, and hides the per-item keys |
+| `tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run` | a `pending-approval` work-item row has NO `Attach:` |
+
+The four `docs_*` gates were confirmed **executing and passing in CI**, not just
+locally: 18 cases across them, `PASS` on every one, zero skipped, read out of
+the `check-nextest` job log. The two tmux scenes run in `check-e2e-tmux` —
+which is green but, per §"DELIVERABLE #0", does NOT block a merge.
+
+**The honest summary is that these pin the STRUCTURE of the doc's claims.** They
+fire when a hint, a key binding, an asset name, a release version, or a
+Detail-pane line moves out from under the prose. They do NOT verify that prose
+describing a named behavior is CORRECT — §"DOC CUSTODY IS ACTIVE" records two
+cases where every gate stayed green while the description rotted. A periodic
+human audit is still what catches wrong prose; the gates only stop the same
+thing regressing twice.
 
 **A CONCRETE instance of what the gates cannot catch — worth reading before
 trusting a green build.** A second audit pass found that `6262f66` ("drill
