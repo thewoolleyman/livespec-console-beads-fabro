@@ -301,6 +301,65 @@ de-gates the download instructions in `docs/installing.md`, give them the same
 treatment — a test that fails if the documented asset name stops matching what
 the release actually publishes.
 
+## B8 ENTRY NOTE (2026-07-21) — an UNRESOLVED scope question, ask before running
+
+**B8 is the first item in this plan that is not hermetic, and its scope was
+never settled. Get a maintainer answer before running it.**
+
+Everything through B7 ran against stub CLIs, scratch stores, and no credential
+wrapper. B8 is the opposite BY DESIGN: the point is exercising the real
+downloaded artifact against real repos, which means live Beads/Dolt tenants and
+the credential wrapper. That is a different risk class from anything else in
+this plan, so it does not inherit the "just do it" latitude the earlier items had.
+
+Three specifics a fresh session should raise rather than assume:
+
+1. **Read-only or mutating?** The directive says "exercise `serve`/`serve
+   --preview` against TWO DIFFERENT repos" but never says read-only. A console
+   pointed at a live tenant CAN issue drive actions (every valve rides the
+   `drive` program). Confirm the intent is observation, not mutation, before
+   pointing the binary at a real tenant.
+2. **Which two repos?** The fleet has several (`livespec`,
+   `livespec-orchestrator-beads-fabro`, `fabro`, this console). See
+   `.ai/fleet-repo-naming.md` — never use the bare "beads-fabro" form, and
+   target repos by full `/data/projects/<full-name>` path.
+3. **De-gating claims more than one run proves.** Removing the
+   "not yet acceptance-verified" notice from `docs/installing.md` asserts the
+   download path works for USERS — on their machines. A local run proves it on
+   THIS host, architecture, and PATH. Scope the de-gated wording to what was
+   actually verified (linux x86_64, downloaded asset, runs from an arbitrary
+   PWD) rather than a blanket "this works".
+
+RECOMMENDED shape, if the maintainer approves: download the published asset,
+run it read-only (`serve --preview`) from `/tmp/<rand>` against two repos,
+report exactly what that proves AND what it does not, then de-gate with scoped
+wording. Per the directive, a green CI build is explicitly NOT acceptance.
+
+Then give the install instructions the same mechanical binding the Status hints
+got (see §"B7 POSTSCRIPT"): a test that fails when the documented asset name
+stops matching what the release publishes. Note `docs/installing.md` currently
+names the asset by GLOB (`livespec-console-beads-fabro-*-x86_64-unknown-linux-gnu`),
+so such a test should assert the glob still matches a real published asset name.
+
+## VERIFICATION DISCIPLINE (2026-07-21) — four false greens in one session
+
+Every one was caught only by reading actual OUTPUT, never by trusting a status.
+Worth internalizing before the next push:
+
+- **A piped exit code is the pipe's.** `just check | tail` reports `tail`'s
+  success. `just check > log 2>&1; echo "EXIT=$?"` is the honest form — the
+  gate once "passed" this way while `check-format` and `check-clippy` were red.
+- **`cargo test` is not `just check`.** All 8 tmux E2E scenes passed green while
+  clippy was failing the build. Only `just check` gates a merge.
+- **A negative test can pass for the wrong reason.** Removing one settings-doc
+  table row left the gate GREEN — correctly, since the section's prose also
+  named the key. Only removing EVERY mention proved the repoint worked. A
+  negative test that passes has proven nothing until you know why it failed.
+- **A commit can silently not happen.** zsh glob-expanded `?` and `<prog>` in an
+  inline `-m` message; the commit aborted, the subsequent `echo PUSHED` still
+  printed, and the branch pushed with NO commit on it. Use `git commit -F <file>`
+  for any message containing shell metacharacters, and verify with `git log`.
+
 ## RESUME ORDER (fresh session) — updated 2026-07-20
 Deliverable #0 + **B1–B7 are DONE** (see §"STATUS", §"B6 POSTSCRIPT", and
 §"B7 POSTSCRIPT"). Remaining, in order:
@@ -308,9 +367,15 @@ Deliverable #0 + **B1–B7 are DONE** (see §"STATUS", §"B6 POSTSCRIPT", and
    already shipped (PR #243). What REMAINS is the pre-delivery acceptance:
    `gh release download` the PUBLISHED asset (NOT a source build), run it from a
    random PWD like `/tmp/<rand>` against TWO different repos, then DE-GATE the
-   README / `docs/installing.md` download instructions.
+   `docs/installing.md` download instructions. **READ §"B8 ENTRY NOTE" FIRST** —
+   this item is not hermetic and its scope is an open maintainer question.
+   If you would rather stay hermetic, take item 2 first; it is fully unblocked
+   and has no such gate.
 2. **Backfill real-TUI tmux E2E** for existing Scenarios 5/9/11/13 — interleave
-   with the above (the harness now exists and is a trustworthy CI gate).
+   with the above (the harness now exists and is a trustworthy CI gate). Use
+   `crates/console-cli/tests/support/lifecycle.rs` for any scene needing a real
+   work-item; the default `{}` stub CANNOT serve one (see §"B7 POSTSCRIPT").
+   Fully hermetic — this is the lower-risk item if B8's scope is unresolved.
 3. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
    in `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`). Drive
    multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
