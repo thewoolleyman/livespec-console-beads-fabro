@@ -96,11 +96,23 @@ Selecting a row fills the **Detail** pane with `Repo:`, `Work item:`, and
 `Fabro run:` lines, and a `Timeline:` of the events that produced it. With
 nothing selected the Detail pane reads `No attention item selected`.
 
-An `Attach:` line appears **only when a Fabro run is attached** to that item —
-that is, when a human-gate observation matches its repo and work-item. Without
-one, `Fabro run:` reads `-` and no `Attach:` line is rendered at all. An item
-that has not reached Fabro yet, such as one sitting at `pending-approval`,
-normally has neither.
+What those lines hold depends on where the row came from, and the two sources
+differ more than they look:
+
+- **Rows from the needs-attention program** — the `valve:<verb>:<id>` rows, plan
+  threads, hygiene findings, spec-revise items. `Fabro run:` is **always** `-`,
+  and `Attach:` is **always** present, carrying that row's handoff command
+  (for example `open:plan/<topic>`). `Work item:` shows the row's work-item if
+  its source reference names one, otherwise the path, otherwise the row id — so
+  a plan-thread row displays a *path* on the `Work item:` line.
+- **Rows projected from a work-item snapshot.** `Fabro run:` names the run when
+  one is observed and reads `-` otherwise, and `Attach:` appears **only when a
+  Fabro run is attached** — when a human-gate observation matches that row's
+  repo and work-item. An item that has not reached Fabro yet has neither.
+
+The practical consequence: `Attach:` being present is **not** evidence that a
+Fabro run exists. On a needs-attention row it is just the handoff command, and
+`Fabro run: -` sits directly above it.
 
 `Enter` on a row opens **the source work-item's full record**, the same modal a
 drilled-in lane row opens. `Esc` closes it. A row that names no work-item —

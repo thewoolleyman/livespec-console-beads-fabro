@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use console_domain::EventType;
 use console_eventstore::SqliteEventStore;
+use support::attention_rows::{PathBackedAttentionFixture, ROW_SUMMARY};
 use support::lifecycle::{ITEM_ID, LifecycleFixture};
 use support::{HarnessResult, RepoFixture, TmuxConsole};
 
@@ -1004,6 +1005,88 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
         actions,
         vec![format!("approve:{ITEM_ID}"), format!("accept:{ITEM_ID}")],
         "the walk must issue exactly the documented approve/accept actions for {tenant}"
+    );
+    Ok(())
+}
+
+/// B2 hint-honesty on a POPULATED inbox whose selected row names no work-item.
+///
+/// # The gap this closes
+///
+/// Scenario 19's rule is that the Status line never advertises a key that would
+/// do nothing. Every other tmux scene exercises it against an EMPTY inbox,
+/// because the harness's default stubs emit `{}`. That leaves the more
+/// interesting half untested: a POPULATED inbox sitting on a row that carries no
+/// work-item — a plan thread, a hygiene finding, a spec-revise row — where the
+/// per-item valves and the record drill-in are equally inert.
+///
+/// That state is not hypothetical. The orchestrator inbox observed during the B8
+/// acceptance run held 21 items, most of them of exactly this kind, so it is the
+/// state an operator meets FIRST on a real repo.
+///
+/// It is also the state whose DESCRIPTION rotted: `6262f66` moved the flag from
+/// the always-present detail projection to `AttentionItem::work_item_id`,
+/// broadening "no work-item" from "empty inbox" to "empty inbox OR a row without
+/// one" — and every prose description of the condition went stale while
+/// `docs_status_hint_lockstep` stayed green, because the hint STRINGS never
+/// moved. A gate on the value cannot catch a change in the condition; this scene
+/// is the gate on the condition.
+///
+/// # Why the populated-inbox assertions come FIRST
+///
+/// An empty inbox produces the SAME hint line as the state under test. If the
+/// stub's JSON were malformed the row would not render, the inbox would be
+/// empty, and every hint assertion below would pass for entirely the wrong
+/// reason. Asserting the row IS on screen, and that the header counts it, is
+/// what makes the rest of this test mean anything.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<()> {
+    let fixture = PathBackedAttentionFixture::new("hint-honesty")?;
+    let repo = RepoFixture::new(
+        "e2e-hint-honesty",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    );
+    let env = fixture.env();
+    let borrowed: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
+
+    let screen = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+
+    // --- the inbox is genuinely POPULATED (see the doc comment) --------------
+    assert!(
+        screen.contains("attention: 1"),
+        "the header must count the path-backed row -- without it every hint \
+         assertion below would pass for the empty-inbox reason:\n{screen}"
+    );
+    assert!(
+        screen.contains(ROW_SUMMARY),
+        "the path-backed row must RENDER in the Attention pane:\n{screen}"
+    );
+
+    // --- and the row carries no work-item, so the per-item keys stay hidden ---
+    assert!(
+        !screen.contains("approve/accept/reject"),
+        "a row naming no work-item must not advertise the per-item valves, even \
+         though the inbox is populated:\n{screen}"
+    );
+    assert!(
+        !screen.contains("m/n set-admission/acceptance"),
+        "a row naming no work-item must not advertise the policy dials:\n{screen}"
+    );
+    assert!(
+        !screen.contains("enter open"),
+        "a row naming no work-item has no record to open, so `enter open` must \
+         be absent:\n{screen}"
+    );
+
+    // --- the honest remainder is still offered ------------------------------
+    assert!(
+        screen.contains("? help") && screen.contains("q quit"),
+        "the always-available keys must still be advertised:\n{screen}"
     );
     Ok(())
 }

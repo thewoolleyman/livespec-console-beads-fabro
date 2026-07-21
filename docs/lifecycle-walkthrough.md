@@ -62,10 +62,12 @@ and, in the middle pane:
 The **Detail** pane on the right names the item — `Repo:`, `Work item:`,
 `Fabro run:`, and a `Timeline:` of the events that produced it.
 
-> At this stage `Fabro run:` normally reads `-` and there is no `Attach:`
-> line. That line appears only once a Fabro run is attached to the item, which
-> a `pending-approval` item has not reached yet. Its absence here is expected,
-> not a missing observation.
+> This row comes from the needs-attention program, so `Fabro run:` reads `-`
+> and an `Attach:` line **is** present, carrying the row's handoff command
+> (`approve:<work-item-id>` at this stage). `Attach:` here is the handoff, not
+> evidence of a Fabro run — the two sit one line apart and are unrelated for
+> this kind of row. See
+> [Detailed usage](detailed-usage.md#attention-pane) for the other kind.
 
 > If `attention: 0` and the list is empty, the factory does not need you. That
 > is the normal resting state.
