@@ -611,6 +611,16 @@ Worth internalizing before the next push:
   gate once "passed" this way while `check-format` and `check-clippy` were red.
 - **`cargo test` is not `just check`.** All 8 tmux E2E scenes passed green while
   clippy was failing the build. Only `just check` gates a merge.
+- **…and `just check` is not the whole gate either.** Its `targets=(…)` array
+  (justfile ~line 154) lists TWELVE targets and does NOT include
+  `check-e2e-tmux`; the tmux scenes report `ignored, requires tmux and a
+  release binary` under it. CI runs `check-e2e-tmux` as a SEPARATE job, so a
+  local `just check` → `EXIT=0` says nothing about the real-TUI E2E. Run
+  `just check-e2e-tmux` explicitly when touching anything the tmux scenes
+  assert on, or rely on the PR's own `check-e2e-tmux` check. Verified
+  2026-07-21. This is the third variant of the same trap in one session, after
+  the piped exit code and `cargo test`: **the honest question is never "did my
+  command pass", it is "which gates did my command actually run".**
 - **A negative test can pass for the wrong reason.** Removing one settings-doc
   table row left the gate GREEN — correctly, since the section's prose also
   named the key. Only removing EVERY mention proved the repoint worked. A
