@@ -578,6 +578,27 @@ row yields `selected_work_item_id() == Some(..)`, a path-backed row yields
 corrected docs describe tested behavior, not an inference from reading the
 code — worth knowing before trusting them.
 
+**THE REAL TUI CAUGHT A DOC ERROR THAT SOURCE-READING MISSED.** Closing the
+B2 hint-honesty E2E gap (a POPULATED inbox on a row naming no work-item — the
+state no other tmux scene reached, since the default stubs emit `{}`) rendered
+the Detail pane for such a row and showed `Fabro run: -` sitting directly above
+a PRESENT `Attach: open:plan/...`. Both the PR #356 `detailed-usage.md` claim
+and the PR #360 walkthrough note asserted the opposite: that `Attach:` appears
+only when a Fabro run is attached.
+
+Both were wrong because there are TWO detail builders and I had read only one.
+`build_needs_attention_detail` hardcodes `Fabro run: "-"` and ALWAYS sets
+`Attach:` to the row's handoff command; `build_attention_detail` is the one
+where `Fabro run:` names a run and `Attach:` is conditional on a matching
+human-gate observation. Every `valve:*`, `plan:*`, and `hygiene:*` row takes the
+first path — so on the rows an operator meets most, `Attach:` present is NOT
+evidence of a Fabro run. Corrected in both docs.
+
+The lesson is narrow and worth keeping: **reading one code path and generalizing
+is how a confident, wrong doc gets written.** Two source audits and four gates
+did not catch this; rendering the actual screen did, immediately. Where a doc
+describes what a pane SHOWS, drive the pane.
+
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
 (gated by `docs_status_hint_lockstep`), the `s` move-to-status transition
