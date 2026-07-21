@@ -3806,6 +3806,7 @@ mod tests {
         let model = attention_model(TuiOverlay::None);
         let item = AttentionItem::new(
             "work-item".to_owned(),
+            Some("work-item".to_owned()),
             "Needs review".to_owned(),
             "source".to_owned(),
             "repo".to_owned(),
