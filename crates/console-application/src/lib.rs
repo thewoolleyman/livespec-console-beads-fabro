@@ -1440,6 +1440,13 @@ impl TuiScreenModel {
         // Header-focus branch.
         match (&self.overlay, self.focus) {
             (TuiOverlay::None, FocusPane::Header) => HEADER_FOOTER_HINT,
+            (TuiOverlay::CommandModal { .. }, _) if self.selected_operator_action().is_none() => {
+                pane_footer_hint(
+                    self.active_view,
+                    self.lane_focus,
+                    self.selected_work_item_id().is_some(),
+                )
+            }
             (overlay, _) => footer_hint(
                 self.active_view,
                 self.lane_focus,
@@ -1490,10 +1497,8 @@ const fn footer_hint(
 /// BOTH panes that carry work-items: `selected_lane_item` is `None` only when
 /// the drilled-in lane is empty, and Attention's detail comes from
 /// `selected_index`, which returns `None` only for an empty list. The rule is
-/// therefore uniform across them -- with no rows, the per-item keys and the
-/// up/down navigation are alike inert, and none is advertised. `enter` is the
-/// exception on Attention: it opens the command modal unconditionally, so it
-/// still does something and is still listed.
+/// therefore uniform across them -- with no rows, the per-item keys, record
+/// drill-in, and up/down navigation are alike inert, and none is advertised.
 ///
 /// Keyed on `lane_focus` and `has_selected_work_item`, not on the view alone,
 /// because both change which keys actually do anything. `Enter` means "drill
@@ -1518,11 +1523,9 @@ const fn pane_footer_hint(
                 "up/down move | enter open | p/c/r approve/accept/reject | \
                  m/n set-admission/acceptance | ? help | q quit"
             } else {
-                // An EMPTY inbox: the per-item valves act on nothing, and
-                // up/down have no row to move over either. `enter` stays --
-                // it opens the command modal unconditionally, so it is not
-                // inert, unlike the keys dropped here.
-                "enter open | ? help | q quit"
+                // An EMPTY inbox: the per-item valves, record drill-in, and
+                // up/down navigation act on nothing, so none is advertised.
+                "? help | q quit"
             }
         }
         TuiView::Lanes => match lane_focus {
@@ -2712,9 +2715,7 @@ pub fn reduce_tui_interaction(
                 query: String::new(),
             })
         }
-        TuiInteraction::OpenCommandModal => state.clone().with_overlay(TuiOverlay::CommandModal {
-            selected_action_index: 0,
-        }),
+        TuiInteraction::OpenCommandModal => state.clone().with_overlay(open_command_modal(&model)),
         TuiInteraction::CloseOverlay => state.clone().with_overlay(TuiOverlay::None),
         TuiInteraction::TypeChar(value) => state
             .clone()
@@ -2821,20 +2822,38 @@ fn work_item_detail_page_scroll_state(
     work_item_detail_scroll_state(state, state.work_item_detail_page_rows(), down)
 }
 
+/// The command modal resolves only when the current detail exposes at least one
+/// runnable local action. With no action there is nothing honest to select or
+/// run, so the modal remains closed.
+fn open_command_modal(model: &TuiScreenModel) -> TuiOverlay {
+    if model
+        .detail()
+        .is_some_and(|detail| !detail.actions().is_empty())
+    {
+        TuiOverlay::CommandModal {
+            selected_action_index: 0,
+        }
+    } else {
+        TuiOverlay::None
+    }
+}
+
 /// The overlay `OpenWorkItemDetail` resolves to: the work-item detail modal
 /// PINNED to the selected item's id, or no overlay at all when nothing is
 /// selected.
 ///
-/// Pinning the id here (rather than letting the renderer re-read the lane
-/// selection each frame) is what keeps the open modal on the item it was opened
-/// on while ingestion keeps re-ranking the lane underneath it. With no selection
-/// there is no honest record to show, so the modal does not open at all.
+/// Pinning the id here (rather than letting the renderer re-read the selection
+/// each frame) is what keeps the open modal on the item it was opened on while
+/// ingestion keeps re-ranking the lists underneath it. With no selection there
+/// is no honest record to show, so the modal does not open at all.
 fn open_work_item_detail(model: &TuiScreenModel) -> TuiOverlay {
     model
-        .selected_lane_item()
-        .map_or(TuiOverlay::None, |item| TuiOverlay::WorkItemDetail {
-            work_item_id: item.work_item_id().to_owned(),
-            scroll: 0,
+        .selected_work_item_id()
+        .map_or(TuiOverlay::None, |work_item_id| {
+            TuiOverlay::WorkItemDetail {
+                work_item_id: work_item_id.to_owned(),
+                scroll: 0,
+            }
         })
 }
 
@@ -6237,9 +6256,8 @@ mod tests {
         // context-specific hints -- non-empty and appropriate to the focused
         // pane, never the old single static string (Scenario 19 / TUI Contract).
         // This fixture's inbox is EMPTY ("attention: 0"), so the per-item valve
-        // keys act on nothing -- and neither does up/down, with no row to move
-        // over. Only `enter` survives: it opens the command modal regardless.
-        assert_eq!(model.footer(), "enter open | ? help | q quit");
+        // keys, record drill-in, and up/down navigation act on nothing.
+        assert_eq!(model.footer(), "? help | q quit");
     }
 
     #[test]
@@ -7225,24 +7243,20 @@ mod tests {
     }
 
     #[test]
-    fn tui_command_modal_selects_attention_action() {
+    fn tui_command_modal_stays_closed_without_attention_actions() {
         let events = fabro_gate_events();
         let state = reduce_tui_interaction(
             &TuiInteractionState::new(0, TuiOverlay::None),
             &events,
             TuiInteraction::OpenCommandModal,
         );
-        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
+
+        assert_eq!(state.overlay(), &TuiOverlay::None);
+
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextAction);
         let model = build_tui_model_for_state(&events, &state);
 
-        assert_eq!(state.overlay().selected_action_index(), Some(0));
-        assert_eq!(model.selected_operator_action(), None);
-
-        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPreviousAction);
-        let model = build_tui_model_for_state(&events, &state);
-
-        assert_eq!(state.overlay().selected_action_index(), Some(0));
+        assert_eq!(state.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
     }
 
@@ -10470,7 +10484,7 @@ mod tests {
             &TuiOverlay::None,
         );
         assert!(!attention_empty.contains("approve/accept/reject"));
-        assert!(attention_empty.contains("enter open"));
+        assert!(!attention_empty.contains("enter open"));
         // The open modal owns the hint line and names its own keys.
         let modal = footer_hint(
             TuiView::Lanes,
@@ -11446,6 +11460,132 @@ mod tests {
             );
             assert_eq!(model.selected_work_item_id(), None);
         }
+    }
+
+    #[test]
+    fn open_work_item_detail_uses_attention_selection() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::for_view(TuiView::Attention, 2, TuiOverlay::None)
+            .with_focus(FocusPane::Content);
+
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenWorkItemDetail);
+
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: "console-blocked".to_owned(),
+                scroll: 0
+            }
+        );
+        let closed = reduce_tui_interaction(&opened, &events, TuiInteraction::CloseOverlay);
+        assert_eq!(closed.overlay(), &TuiOverlay::None);
+        assert_eq!(closed.selected_attention_index(), 2);
+        assert_eq!(closed.active_view(), TuiView::Attention);
+    }
+
+    #[test]
+    fn command_modal_does_not_open_without_actions() {
+        let events = [lane_event(
+            "evt_1",
+            "console-blocked",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            "a1",
+            "blocked",
+        )];
+        let state = TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None)
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(
+            model.detail().map(AttentionDetail::actions),
+            Some([].as_slice())
+        );
+
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenCommandModal);
+
+        assert_eq!(opened.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
+    fn command_modal_action_selection_moves_and_clamps() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            Some("fabro attach run".to_owned()),
+            vec![],
+            vec![
+                OperatorAction::OpenFabroAttach,
+                OperatorAction::CopyFabroAttach,
+            ],
+        );
+        let at_first = TuiOverlay::CommandModal {
+            selected_action_index: 0,
+        };
+        let at_second = TuiOverlay::CommandModal {
+            selected_action_index: 1,
+        };
+
+        assert_eq!(super::move_action_down(&at_first, Some(&detail)), at_second);
+        assert_eq!(
+            super::move_action_down(&at_second, Some(&detail)),
+            at_second
+        );
+        assert_eq!(super::move_action_up(&at_second), at_first);
+        assert_eq!(super::move_action_up(&at_first), at_first);
+    }
+
+    #[test]
+    fn command_modal_opens_when_actions_exist() {
+        let model = TuiScreenModel {
+            active_view: TuiView::Attention,
+            navigation: TuiView::all().to_vec(),
+            attention_items: vec![],
+            selected_attention_index: Some(0),
+            detail: Some(AttentionDetail::new(
+                "repo".to_owned(),
+                "work-item".to_owned(),
+                "run".to_owned(),
+                Some("fabro attach run".to_owned()),
+                vec![],
+                vec![
+                    OperatorAction::OpenFabroAttach,
+                    OperatorAction::CopyFabroAttach,
+                ],
+            )),
+            view_items: vec![],
+            lane_board: project_lane_board(&[]),
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: Some(0),
+            selected_lane_item_index: None,
+            focus: FocusPane::Content,
+            detail_scroll: 0,
+            header_scroll: 0,
+            overlay: TuiOverlay::None,
+            selected_repo: String::new(),
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            unavailable_sources: vec![],
+            header: String::new(),
+        };
+
+        let overlay = super::open_command_modal(&model);
+
+        assert_eq!(
+            overlay,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0
+            }
+        );
+        let opened_model = TuiScreenModel { overlay, ..model };
+        assert_eq!(
+            opened_model.selected_operator_action(),
+            Some(OperatorAction::OpenFabroAttach)
+        );
+        assert_eq!(
+            opened_model.footer(),
+            "up/down select action | enter run | esc cancel"
+        );
     }
 
     #[test]

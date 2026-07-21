@@ -198,7 +198,7 @@ close, so it always describes the current context rather than a fixed summary.
 |---|---|
 | Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
 | Attention, an item selected | `up/down move \| enter open \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
-| Attention, empty inbox | `enter open \| ? help \| q quit` |
+| Attention, empty inbox | `? help \| q quit` |
 | Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
 | Lanes, drilled in with an item selected | `up/down move \| enter item \| esc lane list \| s move-status \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
 | Lanes, drilled into an empty lane | `esc lane list \| ? help \| q quit` |
@@ -213,10 +213,10 @@ close, so it always describes the current context rather than a fixed summary.
 
 **The Status line never advertises a key that would do nothing.** The per-item
 valves act on a *selected work-item*, so they are absent on the lane overview
-(which selects a lane, not an item) and in an empty drilled-in lane. `up`/`down`
-drop out too when there are no rows to move over. `Enter` is the exception in
-the Attention view: it opens the command modal unconditionally, so it stays
-listed even when the inbox is empty.
+(which selects a lane, not an item), in an empty drilled-in lane, and in an
+empty Attention inbox. `up`/`down` drop out too when there are no rows to move
+over. `Enter` opens a selected work-item's record from Attention or a drilled-in
+lane, so it is absent when there is no selected work-item.
 
 An open overlay's hint wins over the focused pane's. The pane hints key on the
 active **view** plus what is selected in it — not on which of the body panes
