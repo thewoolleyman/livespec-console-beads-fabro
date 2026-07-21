@@ -2100,8 +2100,10 @@ fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
         Line::from(format!("Repo: {}", detail.repo())),
         Line::from(format!("Work item: {}", detail.work_item())),
         Line::from(format!("Fabro run: {}", detail.fabro_run())),
-        Line::from(format!("Attach: {}", detail.attach_command())),
     ];
+    if let Some(command) = detail.attach_command() {
+        lines.push(Line::from(format!("Attach: {command}")));
+    }
     if !detail.actions().is_empty() {
         lines.push(Line::from(format!(
             "Actions: {}",
@@ -2630,7 +2632,7 @@ mod tests {
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            "fabro attach run".to_owned(),
+            Some("fabro attach run".to_owned()),
             timeline,
             vec![],
         );
@@ -2681,7 +2683,7 @@ mod tests {
             "livespec-orchestrator-beads-fabro".to_owned(),
             "bd-ib-ss7rkr".to_owned(),
             "fabro-run-5137117035853731187".to_owned(),
-            "fabro attach fabro-run-5137117035853731187".to_owned(),
+            Some("fabro attach fabro-run-5137117035853731187".to_owned()),
             timeline,
             vec![],
         );
@@ -3677,7 +3679,7 @@ mod tests {
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            "fabro attach run".to_owned(),
+            Some("fabro attach run".to_owned()),
             vec![],
             vec![
                 OperatorAction::OpenFabroAttach,
@@ -3695,12 +3697,33 @@ mod tests {
     }
 
     #[test]
+    fn detail_lines_omit_attach_when_absent() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "-".to_owned(),
+            None,
+            vec![],
+            vec![],
+        );
+
+        let rendered = detail_lines(&detail)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Fabro run: -"));
+        assert!(!rendered.contains("Attach:"));
+    }
+
+    #[test]
     fn detail_lines_include_attach_actions_when_present() {
         let detail = AttentionDetail::new(
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            "fabro attach run".to_owned(),
+            Some("fabro attach run".to_owned()),
             vec![],
             vec![
                 OperatorAction::OpenFabroAttach,

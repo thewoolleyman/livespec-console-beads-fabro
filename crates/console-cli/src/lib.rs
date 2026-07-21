@@ -44,10 +44,10 @@ use console_application::{
         NormalizeObservation, NormalizedSourceEvent, ObservedSourceAdapter, PullSourcePort,
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
-        diff_needs_attention, materialize_attention_items, not_observed_finding_payload_json,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
-        work_item_snapshot_payload_json,
+        diff_needs_attention, fabro_run_snapshot_payload_json, materialize_attention_items,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
+        run_adapter_poll, work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1882,9 +1882,11 @@ fn event_append_from_normalized_source_event(
 
 /// The persisted `payload_json` for a normalized observation. Work-item
 /// snapshots are serialized in full so the lane board can rebuild from them; a
-/// not-observed finding carries its human-readable reason so the operator can
-/// DURABLY see WHY a source is unavailable (Adapter Contract honesty rule);
-/// other source payloads carry no projection state yet and persist as `{}`.
+/// not-observed findings carry their human-readable reason so the operator can
+/// DURABLY see WHY a source is unavailable (Adapter Contract honesty rule).
+/// Work-item, attention-item, and Fabro-run payloads persist the projection
+/// fields their replay paths need; source payloads with no replay state persist
+/// as `{}`.
 fn normalized_payload_json(payload: &SourcePayload) -> String {
     match payload {
         SourcePayload::WorkItemSnapshot(snapshot) => work_item_snapshot_payload_json(snapshot),
@@ -1893,9 +1895,9 @@ fn normalized_payload_json(payload: &SourcePayload) -> String {
         }
         SourcePayload::AttentionItemResolved(id) => attention_resolved_payload_json(id),
         SourcePayload::NotObservedFinding(finding) => not_observed_finding_payload_json(finding),
+        SourcePayload::FabroRunSnapshot(snapshot) => fabro_run_snapshot_payload_json(snapshot),
         SourcePayload::CompletenessFinding(_)
         | SourcePayload::DispatcherJournalEntry(_)
-        | SourcePayload::FabroRunSnapshot(_)
         | SourcePayload::GithubPullRequestSnapshot(_)
         | SourcePayload::LivespecNextSnapshot(_)
         | SourcePayload::ObservedIdle => "{}".to_owned(),
@@ -2409,8 +2411,9 @@ mod tests {
         assert!(output.message().contains("> Attention"));
         assert!(output.message().contains("> Blocked: needs-human"));
         assert!(output.message().contains("Repo: console"));
-        assert!(output.message().contains("Fabro run: evt_demo_1"));
-        assert!(output.message().contains("Attach: fabro attach evt_demo_1"));
+        assert!(output.message().contains("Fabro run: -"));
+        assert!(!output.message().contains("Attach: fabro attach evt_demo_1"));
+        assert!(!output.message().contains("Attach:"));
         assert!(!output.message().contains("Actions:"));
     }
 

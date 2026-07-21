@@ -927,7 +927,8 @@ impl DispatcherJournalEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 /// Variants for fabro run state state or outcome values.
 pub enum FabroRunState {
     /// Human gate variant.
@@ -947,6 +948,15 @@ impl FabroRunState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents fabro run snapshot data used by the console.
 pub struct FabroRunSnapshot {
+    repo: String,
+    work_item_id: String,
+    run_id: String,
+    state: FabroRunState,
+    source_version: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct FabroRunSnapshotPayload {
     repo: String,
     work_item_id: String,
     run_id: String,
@@ -1004,6 +1014,35 @@ impl FabroRunSnapshot {
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
+}
+
+/// Serialize a Fabro run snapshot into its canonical persisted `payload_json`.
+#[must_use]
+pub fn fabro_run_snapshot_payload_json(snapshot: &FabroRunSnapshot) -> String {
+    let mut object = serde_json::Map::new();
+    object.insert("repo".to_owned(), snapshot.repo.clone().into());
+    object.insert(
+        "work_item_id".to_owned(),
+        snapshot.work_item_id.clone().into(),
+    );
+    object.insert("run_id".to_owned(), snapshot.run_id.clone().into());
+    object.insert("state".to_owned(), snapshot.state.label().into());
+    object.insert("source_version".to_owned(), snapshot.source_version.into());
+    serde_json::Value::Object(object).to_string()
+}
+
+/// Rebuild a Fabro run snapshot from a persisted `payload_json`.
+#[must_use]
+pub fn fabro_run_snapshot_from_payload_json(payload_json: &str) -> Option<FabroRunSnapshot> {
+    let payload: FabroRunSnapshotPayload = serde_json::from_str(payload_json).ok()?;
+    FabroRunSnapshot::new(
+        &payload.repo,
+        &payload.work_item_id,
+        &payload.run_id,
+        payload.state,
+        payload.source_version,
+    )
+    .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1359,22 +1398,24 @@ fn dispatcher_journal_event(entry: DispatcherJournalEntry) -> NormalizedSourceEv
 }
 
 fn fabro_run_event(snapshot: FabroRunSnapshot) -> NormalizedSourceEvent {
-    NormalizedSourceEvent::new(
-        ConsoleEvent::new(
-            format!(
-                "evt:fabro:{}:{}:{}:{}",
-                snapshot.repo(),
-                snapshot.work_item_id(),
-                snapshot.run_id(),
-                snapshot.source_version()
-            ),
-            1,
-            "factory".to_owned(),
-            EventType::FabroHumanGateObserved,
-            SourceAdapterKind::Fabro.source_name().to_owned(),
-            repo_stream(snapshot.repo()),
-            snapshot.source_version(),
+    let event = ConsoleEvent::new(
+        format!(
+            "evt:fabro:{}:{}:{}:{}",
+            snapshot.repo(),
+            snapshot.work_item_id(),
+            snapshot.run_id(),
+            snapshot.source_version()
         ),
+        1,
+        "factory".to_owned(),
+        EventType::FabroHumanGateObserved,
+        SourceAdapterKind::Fabro.source_name().to_owned(),
+        repo_stream(snapshot.repo()),
+        snapshot.source_version(),
+    )
+    .with_payload_json(fabro_run_snapshot_payload_json(&snapshot));
+    NormalizedSourceEvent::new(
+        event,
         format!(
             "fabro:{}:{}:{}:{}",
             snapshot.repo(),
@@ -2669,13 +2710,13 @@ mod tests {
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
         attention_item_snapshot_from_payload_json, diff_needs_attention,
-        materialize_attention_items, normalize_dispatcher_journal_entry,
-        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
-        normalize_livespec_next_snapshot, normalize_work_item_snapshot,
-        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
-        parse_orchestrator_observation, run_adapter_poll, work_item_snapshot_from_payload_json,
-        work_item_snapshot_payload_json,
+        fabro_run_snapshot_payload_json, materialize_attention_items,
+        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+        normalize_work_item_snapshot, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
+        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[test]
@@ -3857,7 +3898,8 @@ mod tests {
                 "fabro".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
                 10,
-            ),
+            )
+            .with_payload_json(fabro_run_snapshot_payload_json(&fabro_snapshot_fixture())),
             "fabro:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:run_1:10"
                 .to_owned(),
             SourcePayload::FabroRunSnapshot(fabro_snapshot_fixture()),
