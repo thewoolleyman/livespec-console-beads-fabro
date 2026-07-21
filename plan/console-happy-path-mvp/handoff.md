@@ -16,12 +16,66 @@ backlog work-item** is taken — every keystroke in the TUI — through
 Impl-side lanes only. **Out of scope:** spec-side lifecycle actions in the
 walked path (propose-change etc.), autonomous mode (retired for good —
 dispatcher drains by default), and multi-repo coverage (B7's two-repo doc
-acceptance stays with `plan/cockpit-ux-docs-release/`).
+acceptance is DELIVERED and archived at
+`plan/archive/cockpit-ux-docs-release/`).
 
 This requirement predates this thread and was never delivered because it
 fractured across three re-scopes and ended custody-less — the full trace,
 with citations, is `research/why-it-never-happened.md`. This thread is the
 missing **delivery/integration owner**.
+
+## Doc custody
+
+**Inherited 2026-07-21** when `plan/cockpit-ux-docs-release/` was archived
+to `plan/archive/cockpit-ux-docs-release/`. That thread wrote the `docs/`
+tree and would not archive until this obligation had somewhere live to
+sit. It is now here. **It is recurring work, not a dormant label** — if
+this section is deleted without a successor, the obligation is lost, which
+is the specific outcome archival was conditioned on avoiding.
+
+**What it is: periodically re-audit `docs/` against source.** Not a
+one-time cleanup. Measured rate of rot, three times:
+
+- B6's docs were wrong within ONE DAY of landing (`185426b`).
+- B7's fixes were wrong within a day (five claims, PR #356).
+- One of those had been false since the day it was written — the B6
+  rewrite was ITSELF an audit that corrected 16 README errors, and it
+  introduced a new one.
+
+Several sessions commit to this repo concurrently, which is why prose rots
+this fast. **An audit is a snapshot, not a fix.**
+
+**Six gates already run in CI** — do not re-derive them:
+`docs_status_hint_lockstep`, `docs_enter_key_lockstep`,
+`docs_release_asset_lockstep`, `docs_release_version_lockstep`, and two
+tmux scenes pinning the Detail-pane `Attach:` split. They pin the
+STRUCTURE of claims — a hint, key binding, asset name, release version, or
+detail line moving out from under the prose. **They do NOT verify that
+prose describing a named behavior is correct**, and there are two recorded
+cases of every gate staying green while the description rotted.
+
+**What a fresh audit can SKIP** (checked clean, unless their area
+changes): every Status-line hint, the `s` move-to-status transition table,
+the header degrade ladder, global key inertness under overlays, the
+8-section Help modal, the attention row format, the whole-record modal
+claim, and every TUI claim in `overview-quickstart.md` and
+`cli-options.md`.
+
+**Known-silent, deliberately left:** the record modal's footer prints
+`up/down scroll | esc to close` while `PgUp`/`PgDn` also page it. That is
+an inconsistency inside the source, not doc drift — a small TUI-text fix
+or a work-item, not a docs pass.
+
+**One class no source-binding gate can catch:** a claim scoped to a
+RELEASED artifact has a second lifetime independent of master. The doc can
+accurately describe `v0.2.0` while master moves on, with nothing in the
+repo inconsistent. `docs_release_version_lockstep` exists for exactly this
+and forces a re-read on every release. Practical rule: **a doc sentence
+describing behavior a filed work-item would change should name that
+work-item**, so the fix makes the prose self-announcing.
+
+The archived handoff's § "DOC CUSTODY IS ACTIVE" and § "DOCS-ROT
+POSTSCRIPT" carry the full case studies. Read them before the first audit.
 
 ## Read-first chain
 
@@ -91,10 +145,16 @@ legs — find a backlog item, open its record, groom it via the LLM-driver
 handoff — reusing B7's stateful tmux fixture for the E2E. (b) Execute the
 FULL walk once against the REAL stack (live tenant + Dispatcher, one repo,
 a dummy work-item) — something B7's hermetic acceptance deliberately does
-not do. Doc custody stays with `plan/cockpit-ux-docs-release/`; this
-thread owns only the new legs and the one real-stack pass. When (b)
-passes, this epic closes; cockpit's Stage-2 (multiple real items, two
-repos) remains cockpit's.
+not do. This thread owns the new legs and the one real-stack pass. When
+(b) passes, this epic closes.
+
+**Corrected 2026-07-21.** This paragraph used to say "doc custody stays
+with `plan/cockpit-ux-docs-release/`" and that "cockpit's Stage-2
+(multiple real items, two repos) remains cockpit's". Both are now wrong.
+That thread is ARCHIVED (`plan/archive/cockpit-ux-docs-release/`) and doc
+custody moved HERE — see § "Doc custody" below. Stage-2 was STRUCK as
+dead before the archival: it was autonomous-mode MVP acceptance, and that
+mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 

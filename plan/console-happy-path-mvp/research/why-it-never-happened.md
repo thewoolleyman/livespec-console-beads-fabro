@@ -15,7 +15,7 @@ thread exists to own exactly that.
    drive common orchestration actions before the GUI exists**." The current
    (v032) executable steps only cover *inspection* — the "drive actions"
    ambition lives in the Feature narrative, not in any executable step.
-2. **Cockpit deliverable B7** (`plan/cockpit-ux-docs-release/handoff.md`
+2. **Cockpit deliverable B7** (`plan/archive/cockpit-ux-docs-release/handoff.md`
    §B7): a key-by-key walkthrough doc of "running a work-item through the
    ENTIRE livespec lifecycle via the TUI", acceptance = an agent walks it on
    a dummy item, real TUI in tmux, end-to-end, two repos. **Status: DONE
@@ -53,7 +53,7 @@ thread exists to own exactly that.
    design inputs (`-zweohm`, `-l4p3ce`, `-vc7lmq`, `-ipi`) →
    `plan/operator-surface-redesign/` (epic `-6msemd`); command spine
    (`-ipwtll`, `-ble`, `-8aw` parked) → `plan/command-queue-semantics/`
-   (epic `-irdwyb`); B7/backfill → `plan/cockpit-ux-docs-release/`.
+   (epic `-irdwyb`); B7/backfill → `plan/archive/cockpit-ux-docs-release/`.
 
 ## Net disposition (as of 2026-07-20)
 

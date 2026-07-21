@@ -57,7 +57,7 @@ these bound every slice this thread files:
 | Modal paging (`-7rcps4`), Attention record-modal reachability (`-276inb`) | Freestanding bugs (filed from exploratory test 2026-07-19/20) | Stage-0: admit + dispatch now |
 | Command-queue exactly-once (`-ipwtll`, epic `-irdwyb`) | `plan/command-queue-semantics/` | Parallel hardening; NOT on the single-operator MVP critical path |
 | Help-overlay navigation (`-6hbfq6`) | Freestanding | Nice-to-have; not on the happy path |
-| B7 walkthrough doc + Stage-2 acceptance | `plan/cockpit-ux-docs-release/` | This thread's Stage-3 validation IS a single-repo B7 dry run; coordinate rather than duplicate — B7 keeps the two-repo doc acceptance |
+| B7 walkthrough doc + Stage-2 acceptance | ~~`plan/cockpit-ux-docs-release/`~~ — **DELIVERED and ARCHIVED 2026-07-21** (`plan/archive/cockpit-ux-docs-release/`) | B7 shipped `docs/lifecycle-walkthrough.md` with its two-repo tmux acceptance; nothing to coordinate with. Its **Stage-2 was STRUCK as dead** (autonomous-mode MVP acceptance; that mode is retired for good), so there is no successor to defer to. This thread's Stage-3 real-stack pass is now the only remaining validation. Doc custody transferred HERE — see the handoff's § "Doc custody" |
 
 ## Existing-surface inventory (evidence)
 
