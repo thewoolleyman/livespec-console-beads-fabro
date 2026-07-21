@@ -489,6 +489,19 @@ The practical read: a doc claim worth keeping accurate is worth a lockstep
 assertion, because a conscientious author updating the same file will still
 miss the ungated half. Do not treat "someone will notice" as a control.
 
+**Acted on: `crates/console-cli/tests/docs_enter_key_lockstep.rs`.** The
+by-focus `Enter` cell was the most-drifted claim in `docs/` — twice in one day
+— so it is now bound to source: every `TuiView` variant `enter_content_input`
+branches on must be NAMED in that cell. Verified by replaying the real
+regression (delete the Attention clause, the gate fails naming `Attention`).
+One-directional like its siblings: it catches a view silently gaining or
+losing an `Enter` binding, and it CANNOT catch a cell that describes a named
+view's behavior wrongly — prose is still prose. Three doc gates now exist
+(`docs_status_hint_lockstep`, `docs_release_asset_lockstep` +
+`docs_release_version_lockstep`, and this one); the honest summary is that
+they pin the STRUCTURE of the doc's claims, and a periodic human audit is
+still what catches wrong prose.
+
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
 (gated by `docs_status_hint_lockstep`), the `s` move-to-status transition
