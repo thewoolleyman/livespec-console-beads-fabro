@@ -23,7 +23,7 @@ rust-version = "1.92"
 # simple + generic updater in release-please-config.json). Every member
 # crate inherits it via `version.workspace = true`. Keep the annotation on
 # the same line as the version literal.
-version = "0.2.0" # x-release-please-version
+version = "0.3.0" # x-release-please-version
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
