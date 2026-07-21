@@ -1152,27 +1152,37 @@ fn lane_item_line(item: &LaneWorkItem, selected: bool) -> ListItem<'static> {
     })
 }
 
-/// A compact overview-line for one work-item: id, status, and (when blocked)
-/// its lane reason.
+/// A compact overview-line for one work-item: id, status, title, and (when
+/// blocked) its lane reason.
 fn lane_item_summary(item: &LaneWorkItem) -> String {
     format!(
-        "    - {} [{}]{}",
+        "    - {} [{}]  {}{}",
         item.work_item_id(),
         item.status(),
+        lane_item_title(item),
         lane_reason_suffix(item)
     )
 }
 
-/// A full drill-in line for one work-item: id, repo, rank, status, and reason.
+/// A full drill-in line for one work-item: id, rank, status, title, repo, and
+/// reason. Repo sits after the human title so narrow panes keep the triage
+/// fields operators scan first: id, rank, status, and title.
 fn lane_item_detail_text(item: &LaneWorkItem) -> String {
     format!(
-        "{}  {}  rank {}  [{}]{}",
+        "{}  rank {}  [{}]  {}  repo {}{}",
         item.work_item_id(),
-        item.repo(),
         item.rank(),
         item.status(),
+        lane_item_title(item),
+        item.repo(),
         lane_reason_suffix(item)
     )
+}
+
+/// The title rendered in lane rows, or a stable placeholder for legacy
+/// snapshots that predate standardized work-item details.
+fn lane_item_title(item: &LaneWorkItem) -> &str {
+    item.detail().title.as_deref().unwrap_or("(untitled)")
 }
 
 /// The ` (reason)` suffix for a blocked work-item, or empty when none.
@@ -3519,18 +3529,18 @@ mod tests {
         assert_eq!(output.as_ref().map(|r| r.contains("blocked (1)")), Ok(true));
         // The selected lane row (index 2 == ready) is marked.
         assert_eq!(output.as_ref().map(|r| r.contains("> ready (2)")), Ok(true));
-        // Top rank-ordered items are previewed under their lane, with the
-        // blocked item carrying its lane reason.
+        // Top rank-ordered items are previewed under their lane with titles;
+        // the blocked item still carries its lane reason.
         assert_eq!(
-            output
-                .as_ref()
-                .map(|r| r.contains("- console-ready-a [ready]")),
+            output.as_ref().map(|r| {
+                r.contains("- console-ready-a [ready]  Fix the paging bug in the backlog lane")
+            }),
             Ok(true)
         );
         assert_eq!(
-            output
-                .as_ref()
-                .map(|r| r.contains("- console-blocked [blocked] (needs-human)")),
+            output.as_ref().map(|r| {
+                r.contains("- console-blocked [blocked]  Unblock factory acceptance (needs-human)")
+            }),
             Ok(true)
         );
     }
@@ -3544,19 +3554,49 @@ mod tests {
         let output = render_to_text(&model, 96, 24);
 
         assert_eq!(output.as_ref().map(|r| r.contains("Lane: ready")), Ok(true));
-        // The drill-in shows repo + rank alongside the id; the first item is the
-        // selected per-item cursor, marked with `>`.
+        // The drill-in keeps id/rank/status intact and adds the title before
+        // the lower-priority repo field; the first item is the selected
+        // per-item cursor, marked with `>`.
         assert_eq!(
-            output
-                .as_ref()
-                .map(|r| r.contains("> console-ready-a  console  rank a0  [ready]")),
+            output.as_ref().map(|r| {
+                r.contains(
+                    "> console-ready-a  rank a0  [ready]  Fix the paging bug in the backlog lane",
+                )
+            }),
             Ok(true)
         );
         assert_eq!(
+            output.as_ref().map(|r| {
+                r.contains("console-ready-b  rank a1  [ready]  Wire the status valve")
+            }),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_keeps_lane_item_identity_visible_at_narrow_width() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+
+        let output = render_to_text(&model, 64, 12);
+
+        assert_eq!(
             output
                 .as_ref()
-                .map(|r| r.contains("console-ready-b  console  rank a1  [ready]")),
+                .map(|r| r.contains("> console-ready-a  rank a0  [ready]")),
             Ok(true)
+        );
+        assert_eq!(output.as_ref().map(|r| r.contains("Fix")), Ok(true));
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| { r.contains("Fix the paging bug in the backlog lane") }),
+            Ok(false)
+        );
+        assert_eq!(
+            output.as_ref().map(|r| r.contains("repo console")),
+            Ok(false)
         );
     }
 
@@ -3946,6 +3986,15 @@ mod tests {
 
     // Build a snapshot-observation event by writing the canonical `payload_json`
     // directly, mirroring the orchestrator emission the lane board rebuilds from.
+    fn lane_event_title(work_item_id: &str) -> &str {
+        match work_item_id {
+            "console-ready-a" => "Fix the paging bug in the backlog lane",
+            "console-ready-b" => "Wire the status valve",
+            "console-blocked" => "Unblock factory acceptance",
+            _ => "Routine lane fixture item",
+        }
+    }
+
     fn lane_event(
         event_id: &str,
         work_item_id: &str,
@@ -3958,8 +4007,9 @@ mod tests {
             || "null".to_owned(),
             |reason| format!("\"{}\"", reason.label()),
         );
+        let title = lane_event_title(work_item_id);
         let payload = format!(
-            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","source_version":1}}"#,
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"{}","lane_reason":{reason_json},"rank":"{rank}","status":"{status}","detail":{{"title":"{title}"}},"source_version":1}}"#,
             lane.label()
         );
         ConsoleEvent::fixture(
