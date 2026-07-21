@@ -51,19 +51,32 @@ const MANIFEST: &str = ".release-please-manifest.json";
 /// When this test fails, a new version has been released. Re-read each claim
 /// below IN THE DOC before bumping this constant:
 ///
-/// 1. **The acceptance notice** ("the published `vX` asset was downloaded …").
-///    HISTORICAL — records which asset the B8 acceptance run actually
+/// 1. **The acceptance notice** ("the published `v0.2.0` asset was downloaded
+///    …"). HISTORICAL — records which asset the B8 acceptance run actually
 ///    exercised. Do NOT retarget it at the new release; a newer asset has not
 ///    been through that run. Re-scope it only if a fresh acceptance run
 ///    happens.
-/// 2. **The "each launched from inside its own checkout, which `vX` required"
-///    clause.** Also historical, and tied to (1).
-/// 3. **The "Requires a build newer than `vX`" caveat** on the cross-repo
-///    invocation. This one EXPIRES: once a release contains `7110eca` ("run
-///    backing CLIs from selected repo"), the published asset no longer needs
-///    the `cd` workaround and the caveat should be DELETED, not renumbered.
-///    Check with `git log <new-tag> --oneline | grep 'run backing CLIs'`.
-const DOCS_REVIEWED_AGAINST: &str = "0.2.0";
+/// 2. **The "each launched from inside its own checkout, which `v0.2.0`
+///    required" clause.** Also historical, and tied to (1).
+/// 3. **The "current release" paragraph** naming the release the download
+///    globs actually fetch, and stating that no asset after `v0.2.0` has been
+///    through an acceptance run. This one is RETARGETED on every release —
+///    point it at the new version, and re-check whether the claim that it is
+///    "a superset of the acceptance-run build" still holds (it fails if a
+///    release ever REMOVES behavior the acceptance run exercised). If a fresh
+///    acceptance run does happen, this paragraph is what collapses back into
+///    (1) and (2).
+///
+/// The `v0.2.0` "Requires a build newer than" caveat was claim (3) through
+/// the `0.2.0` pin and is GONE — `0.3.0` shipped `7110eca` ("run backing CLIs
+/// from selected repo"), which retired it. It is recorded here because
+/// deleting an expired caveat is the outcome this gate exists to force, and a
+/// future reader will otherwise wonder whether it was lost by accident.
+///
+/// Note the companion test below requires the doc to MENTION `v<pin>`, so a
+/// bump that leaves only historical `v0.2.0` claims in place will fail it —
+/// claim (3) is what keeps the pin anchored to live text.
+const DOCS_REVIEWED_AGAINST: &str = "0.3.0";
 
 fn repo_root() -> std::io::Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))

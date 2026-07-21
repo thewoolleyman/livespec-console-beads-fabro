@@ -36,6 +36,14 @@ Only linux `x86_64` is published today.
 > been exercised: one host, one architecture, the `serve` read path.
 > Other platforms have no published asset and no acceptance run — use the
 > source build below.
+>
+> **The acceptance run has not been repeated since.** The globs above fetch
+> the CURRENT release, `v0.3.0`, which is a superset of the acceptance-run
+> build — it carries the cross-repo fix described under
+> [Running against a different repository](#running-against-a-different-repository),
+> so it does not need the `cd` that `v0.2.0` did. That fix is
+> covered by the test suite, not by a download-and-run acceptance exercise;
+> no published asset after `v0.2.0` has been through one.
 
 ## Build from source
 
@@ -117,12 +125,6 @@ directory. Both invocations above observe the same sources — verified against
 `/data/projects/livespec-orchestrator-beads-fabro` from a directory outside
 any git repository: identical event, backfill, and attention counts either
 way, with zero sources reported *not observed*.
-
-> **Requires a build newer than `v0.2.0`.** In `v0.2.0` the backing CLIs
-> inherited the console's own working directory, so the second form above
-> launched cleanly but observed **nothing** — every source degraded to a
-> *not observed* finding and the panes were empty. If you are on the `v0.2.0`
-> asset, `cd` into the target repository instead.
 
 ### Passing environment variables through the credential wrapper
 
