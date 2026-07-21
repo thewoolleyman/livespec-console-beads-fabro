@@ -745,6 +745,42 @@ Worth internalizing before the next push:
   printed, and the branch pushed with NO commit on it. Use `git commit -F <file>`
   for any message containing shell metacharacters, and verify with `git log`.
 
+## RELEASE 0.3.0 IS PENDING — expect a red gate, and here is the checklist
+
+`gh pr list` shows **PR #265, `chore(master): release 0.3.0`**, open as of
+2026-07-21. Its changelog already carries `run backing CLIs from selected repo
+([7110eca])` — the cross-repo fix. Merging it WILL turn CI red on
+`crates/console-cli/tests/docs_release_version_lockstep.rs`. That is the gate
+working, not a regression: it pins the release the version-scoped claims in
+`docs/installing.md` were last read against, and release-please just moved that
+release.
+
+**Do NOT pre-bump the pin to silence it.** Between now and the release the
+published asset is still `v0.2.0`, so the caveats are CURRENTLY TRUE; bumping
+early would make the docs describe an artifact nobody can download yet. The
+red build is the prompt to act, and it should arrive AFTER the release, not
+before.
+
+When it fires, work the three claims the gate's own doc comment enumerates:
+
+1. **The acceptance notice** ("the published `v0.2.0` asset was downloaded…").
+   HISTORICAL — it records which asset the B8 acceptance run actually
+   exercised. Do NOT retarget it at `0.3.0`; that asset has not been through
+   an acceptance run. Re-scope only if someone repeats the run.
+2. **"each launched from inside its own checkout, which `v0.2.0` required."**
+   Also historical, tied to (1). Leave it.
+3. **"Requires a build newer than `v0.2.0`"** on the cross-repo invocation.
+   This one **EXPIRES** — `0.3.0` contains `7110eca`, so the published asset no
+   longer needs the `cd` workaround. **DELETE the caveat**, do not renumber it
+   to `v0.3.0`.
+
+Then set `DOCS_REVIEWED_AGAINST = "0.3.0"` and re-run `just check`.
+
+A fresh acceptance run against the `0.3.0` asset would ALSO let (1) and (2) be
+retargeted, and would be the honest way to widen the de-gate — but it is the
+same non-hermetic, maintainer-gated exercise §"B8 ENTRY NOTE" describes, so
+treat it as a separate decision rather than a cleanup step.
+
 ## RESUME ORDER (fresh session) — updated 2026-07-21
 Deliverable #0 + **B1–B8 are DONE** (see §"STATUS", §"B6 POSTSCRIPT",
 §"B7 POSTSCRIPT", and §"B8 POSTSCRIPT"). §"B8 ENTRY NOTE" above is now
