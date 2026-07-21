@@ -376,9 +376,29 @@ discovered relative to CWD, so neither is reachable from `/tmp`.
 **This is NOT a stale-release artifact — it is unfixed on master.** The
 current master source build recovers only `dispatcher` and `fabro` (3/5 still
 dark); the orchestrator source, the one a cockpit exists for, still needs
-CWD, and zero work-items or attention items surface either way. Filed as a
-console work item; `docs/installing.md` now documents the cd-into-repo
-requirement rather than the broken form.
+CWD, and zero work-items or attention items surface either way.
+`docs/installing.md` now documents the cd-into-repo requirement rather than
+the broken form.
+
+Root cause is one omission at a single chokepoint:
+`SystemSourceProbe::run_command` (`crates/console-cli/src/main.rs:321`) spawns
+every backing CLI without ever calling `.current_dir(...)` — that call appears
+NOWHERE in the workspace — so children inherit the console's own CWD. The
+Beads tenant resolves from the child's CWD `.beads/`, `gh` infers its repo
+from CWD, and `livespec` reads the spec tree from CWD: exactly the three
+sources that go dark, while `dispatcher` and `fabro` (absolute-path
+resolvers) survive. `BackingCliResolution` ALREADY honors
+`LIVESPEC_CONSOLE_REPO_PATH` for plugin-root discovery
+(`backing_cli.rs:260-262`) and for drive/drain `--repo` (`main.rs:135-144`) —
+the child working directory is the one consumer that was missed, and the fix
+is default-identity because the env var already defaults to the CWD.
+
+**Filed as `livespec-console-beads-fabro-bamsy3`** (bug, DoR verdict
+`ready`). The maintainer resolved the design question on 2026-07-21:
+`REPO_PATH` SHOULD be sufficient for full observation, so the acceptance is
+autonomously verifiable. Note `SystemSourceProbe` is
+`#[cfg(all(not(test), not(coverage)))]` — compiled out of every test build —
+so the tmux E2E harness is the only verification path.
 
 **The install glob now has the mechanical binding B7 asked for.**
 `crates/console-cli/tests/docs_release_asset_lockstep.rs` reconstructs the
@@ -418,11 +438,13 @@ it only for the reasoning. Remaining, in order:
    `crates/console-cli/tests/support/lifecycle.rs` for any scene needing a real
    work-item; the default `{}` stub CANNOT serve one (see §"B7 POSTSCRIPT").
    Fully hermetic, fully unblocked — this is the next item.
-2. **Cross-repo observation gap** (filed during B8) — the console only observes
-   the repo it is RUN FROM; `LIVESPEC_CONSOLE_REPO_PATH` does not move tenant
-   or plugin-root discovery. Unfixed on master. Docs now describe the
-   cd-into-repo requirement; whether the env var SHOULD be sufficient is a
-   product decision, not just a bug (see §"B8 POSTSCRIPT").
+2. **`livespec-console-beads-fabro-bamsy3`** (bug, `ready`) — the console
+   observes only the repo it is RUN FROM, because backing CLIs inherit its CWD
+   instead of `LIVESPEC_CONSOLE_REPO_PATH`. Root-caused to
+   `main.rs:321`; fix is default-identity. The design question is RESOLVED
+   (the env var should be sufficient), so this is straightforward impl work —
+   verified via the tmux harness, since the probe is compiled out of test
+   builds. See §"B8 POSTSCRIPT".
 3. **Stage-2** (autonomous-mode MVP acceptance) — LAST, MAINTAINER-GATED; tracked
    in `livespec/plan/autonomous-mode-acceptance/handoff.md` (+ `livespec-j4odoz`). Drive
    multiple REAL fleet items end-to-end SOLELY through the live TUI, parking in
