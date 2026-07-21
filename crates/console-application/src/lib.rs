@@ -35,6 +35,7 @@ use source_adapters::{
 /// Represents attention item data used by the console.
 pub struct AttentionItem {
     id: String,
+    work_item_id: Option<String>,
     title: String,
     source: String,
     source_reference: String,
@@ -46,6 +47,7 @@ impl AttentionItem {
     /// Construct a new value from its required fields.
     pub const fn new(
         id: String,
+        work_item_id: Option<String>,
         title: String,
         source: String,
         source_reference: String,
@@ -53,6 +55,7 @@ impl AttentionItem {
     ) -> Self {
         Self {
             id,
+            work_item_id,
             title,
             source,
             source_reference,
@@ -64,6 +67,12 @@ impl AttentionItem {
     /// Return the id value.
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    #[must_use]
+    /// Return the work-item id this attention row can drill into, when known.
+    pub fn work_item_id(&self) -> Option<&str> {
+        self.work_item_id.as_deref()
     }
 
     #[must_use]
@@ -1304,7 +1313,10 @@ impl TuiScreenModel {
     #[must_use]
     pub fn selected_work_item_id(&self) -> Option<&str> {
         match self.active_view {
-            TuiView::Attention => self.detail.as_ref().map(AttentionDetail::work_item),
+            TuiView::Attention => self
+                .selected_attention_index
+                .and_then(|index| self.attention_items.get(index))
+                .and_then(AttentionItem::work_item_id),
             TuiView::Lanes => self.selected_lane_item().map(LaneWorkItem::work_item_id),
             TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
         }
@@ -2166,6 +2178,7 @@ fn attention_item_from_snapshot(item: &AttentionItemSnapshot) -> AttentionItem {
     let source_reference = attention_source_reference(item.source_ref());
     AttentionItem::new(
         item.id().to_owned(),
+        item.source_ref().work_item().map(ToOwned::to_owned),
         item.summary().to_owned(),
         item.kind().to_owned(),
         source_reference,
@@ -5107,6 +5120,7 @@ impl AttentionEntry {
         match self {
             Self::WorkItem(entry) => AttentionItem::new(
                 entry.snapshot.work_item_id().to_owned(),
+                Some(entry.snapshot.work_item_id().to_owned()),
                 attention_title(&entry.snapshot),
                 entry.event.source().to_owned(),
                 entry.snapshot.repo().to_owned(),
@@ -11481,6 +11495,76 @@ mod tests {
         assert_eq!(closed.overlay(), &TuiOverlay::None);
         assert_eq!(closed.selected_attention_index(), 2);
         assert_eq!(closed.active_view(), TuiView::Attention);
+    }
+
+    #[test]
+    fn attention_selection_drills_only_when_source_work_item_is_known() {
+        let mut events = vec![lane_event(
+            "evt_known_record",
+            "wi-act",
+            Lane::Active,
+            None,
+            "a",
+            "active",
+        )];
+        let work_item_backed = AttentionItemSnapshot::new(
+            "attention-human-gate-1",
+            "human-valve",
+            "high",
+            "Ready item needs a human gate",
+            AttentionSourceRef::new("console", Some("wi-act"), None),
+            AttentionHandoff::new("approve", None, "approve:wi-act"),
+        );
+        let path_backed = AttentionItemSnapshot::new(
+            "attention-z-doc-1",
+            "spec-hygiene",
+            "medium",
+            "Spec document needs review",
+            AttentionSourceRef::new("console", None, Some("SPECIFICATION/spec.md")),
+            AttentionHandoff::new("inspect", None, "inspect:SPECIFICATION/spec.md"),
+        );
+        events.push(attention_appeared(
+            "evt_attention_work_item",
+            &work_item_backed,
+        ));
+        events.push(attention_appeared("evt_attention_path", &path_backed));
+
+        let work_item_model = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None),
+        );
+        assert_eq!(
+            work_item_model.attention_items()[0].id(),
+            "attention-human-gate-1"
+        );
+        assert_eq!(work_item_model.selected_work_item_id(), Some("wi-act"));
+
+        let opened = reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenWorkItemDetail,
+        );
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::WorkItemDetail {
+                work_item_id: "wi-act".to_owned(),
+                scroll: 0
+            }
+        );
+
+        let path_model = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Attention, 1, TuiOverlay::None),
+        );
+        assert_eq!(path_model.attention_items()[1].id(), "attention-z-doc-1");
+        assert_eq!(path_model.selected_work_item_id(), None);
+
+        let inert = reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Attention, 1, TuiOverlay::None),
+            &events,
+            TuiInteraction::OpenWorkItemDetail,
+        );
+        assert_eq!(inert.overlay(), &TuiOverlay::None);
     }
 
     #[test]
