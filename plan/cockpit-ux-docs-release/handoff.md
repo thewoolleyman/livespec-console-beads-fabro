@@ -1,5 +1,36 @@
 # Console cockpit UX + user-docs + release-pipeline — SPEC-DRIVEN program (livespec-console-beads-fabro)
 
+## ⚠ READ FIRST — the primary checkout may be STALE (2026-07-21)
+
+`/data/projects/livespec-console-beads-fabro` sits at **`7110eca`**, many
+commits behind `origin/master`, and **cannot fast-forward**: another session
+(`plan/console-happy-path-mvp/`) has an UNCOMMITTED `.livespec.jsonc` edit —
+restoring `auto_approve_ready: false` / `acceptance_mode: "ai-then-human"` —
+which collides with the pin bumps on master. `git pull --ff-only` aborts.
+
+**That is not this thread's file to resolve.** Do not stash, commit, revert, or
+`checkout` it. It is in-flight work belonging to another session.
+
+Consequences you must handle before trusting anything:
+
+1. **This handoff may have been copied in from `origin/master` rather than
+   checked out.** The version at `7110eca` is ~455 lines; the real one is
+   ~854. If what you are reading has no §"RELEASE 0.3.0 IS PENDING" section,
+   you are on the stale copy — read
+   `git show origin/master:plan/cockpit-ux-docs-release/handoff.md` instead.
+2. **Every other file in the primary checkout is stale too.** Do not audit,
+   grep, or quote source from it. This cost real time in the last session:
+   `AttentionItem` was read WITHOUT its `work_item_id` field and briefly looked
+   like a regression. **Work from a worktree at `origin/master`**
+   (`git worktree add -b <topic> <path> origin/master`), which is also the
+   repo's mutation protocol anyway.
+3. `git status` in the primary checkout will show `plan/` and `.livespec.jsonc`
+   as dirty. The `plan/` entry is this file, materialized from master; the
+   other is not yours.
+
+Clears itself once that session lands or drops its change; re-check with
+`git -C /data/projects/livespec-console-beads-fabro status --short`.
+
 ## OPERATING DIRECTIVE (maintainer-declared 2026-07-13)
 **Everything in this program is SPEC-DRIVEN.** Each behavior below is a
 `/livespec:propose-change` against THIS repo's `SPECIFICATION/` (a **scenario**,
@@ -806,8 +837,33 @@ Deliverable #0 + **B1–B8 are DONE** (see §"STATUS", §"B6 POSTSCRIPT",
 §"B7 POSTSCRIPT", and §"B8 POSTSCRIPT"). §"B8 ENTRY NOTE" above is now
 HISTORICAL — its three questions were answered and the run is complete; keep
 it only for the reasoning. Remaining, in order:
-**Nothing docs- or release-shaped remains in this thread.** What is left is
-either owned elsewhere or already split out as a standalone work-item:
+**No PROGRAMME work remains — B1–B8 are delivered.** Doc custody does remain,
+and it is recurring (item 3); the rest is owned elsewhere or already split out
+as a standalone work-item.
+
+### Blocked on a human decision — a fresh session should ASK, not act
+
+None of these is yours to settle unilaterally; all are stated with the
+trade-off so the maintainer can answer quickly.
+
+- **Make the tmux E2E merge-blocking?** One line — add `check-e2e-tmux` to
+  `ci-green`'s `needs` in `.github/workflows/ci.yml`. Scope verified bounded to
+  that single job. Cost: every merge on this repo then depends on a job needing
+  tmux + a release binary. See §"DELIVERABLE #0".
+- **Archive this thread?** Folding it into `plan/console-happy-path-mvp/`
+  requires carrying the doc-audit obligation explicitly, or it is lost. See
+  §"DOC CUSTODY IS ACTIVE".
+- **Accept `bamsy3`?** It sits in `acceptance`, independently verified working
+  (item 1). Needs the human accept valve.
+- **Ledger reconciliation** — five stale `pending-approval` records plus 12 red
+  pin-bump PRs, still unfiled. See the §"STATUS" sub-section; NOT touched by
+  this thread.
+- **Release 0.3.0 (PR #265)** — merging it reds the version gate BY DESIGN.
+  §"RELEASE 0.3.0 IS PENDING" has the checklist. Do not pre-bump the pin.
+
+### Actionable without asking
+
+
 
 1. **`livespec-console-beads-fabro-bamsy3`** — ✅ **FIXED by the factory the
    same day**, now in `acceptance` awaiting the human accept valve. Landed as
