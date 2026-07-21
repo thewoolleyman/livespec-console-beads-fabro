@@ -473,6 +473,22 @@ ONE DAY of B6 landing. This audit found five more within a day of B7. With
 several sessions committing to this repo, doc drift is continuous, so custody
 means *periodically re-auditing*, not *owning a finished artifact*.
 
+**Direct evidence that gating works and prose does not — from a single
+commit.** Hours after the audit fixes landed, another session shipped
+`2cd1f28` ("fix: open attention work-item records"), which changed `Enter` in
+the Attention view from *open the command modal* to *open the selected row's
+work-item record*. That commit **did** update the Status-hint lines in
+`docs/detailed-usage.md` — because `docs_status_hint_lockstep` fails the build
+otherwise — and **did not** update the Attention-pane prose or the by-focus key
+table, which are not gated. Both were left asserting the old behavior; both had
+been corrected only hours earlier by PR #356. Same file, same commit, same
+session: the gated half moved, the ungated half rotted. Fixed again in the
+auto-dispositions PR.
+
+The practical read: a doc claim worth keeping accurate is worth a lockstep
+assertion, because a conscientious author updating the same file will still
+miss the ungated half. Do not treat "someone will notice" as a control.
+
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
 (gated by `docs_status_hint_lockstep`), the `s` move-to-status transition
@@ -480,18 +496,32 @@ table, the header degrade ladder, global key inertness under overlays, the
 8-section Help modal, the attention row format, the whole-record modal claim,
 and every TUI claim in `overview-quickstart.md` and `cli-options.md`.
 
-**Two known-silent items, deliberately left.** Neither is a false claim, so
-neither met this pass's bar: (1) the record modal's own footer prints
-`up/down scroll | esc to close` while `PgUp`/`PgDn` also page it — an
-inconsistency INSIDE the source, not doc drift, and the Status band documents
-the paging correctly; (2) `5938212`'s auto-disposition vocabulary
-(`auto-approve` / `ai-auto-accept` / `ai-fail-auto-rework` / `ship-on-cap` /
-`cap-exceeded-escalation`) appears in no doc.
+**One known-silent item still deliberately left.** The record modal's own
+footer prints `up/down scroll | esc to close` while `PgUp`/`PgDn` also page it
+— an inconsistency INSIDE the source, not doc drift, and the Status band
+documents the paging correctly. Not a false doc claim, so it stays out of
+scope for a docs pass; it is a small TUI-text fix or a work-item, not a
+rewrite.
 
-**One product question raised, NOT filed** — the empty command modal is
-arguably dead code: two `OperatorAction` variants, a `label()` impl, and a
-resolver arm reachable only from tests. Wire it up or delete it is a product
-call; the docs now describe reality either way.
+**The other silent item is now DOCUMENTED.** `5938212`'s auto-disposition
+vocabulary was a gap in a RATIFIED scenario — `SPECIFICATION/scenarios.md`
+Scenario 15 ("Orchestrator auto-dispositions and escalations reach the
+operator") is spec'd, implemented, and tested by
+`scenario_15_orchestrator_auto_dispositions.rs`, yet no user doc mentioned it.
+`docs/detailed-usage.md` now carries an Attention sub-section covering all
+five dispositions, which four RESOLVE an inbox row and which one MAKES one
+APPEAR, that the console observes rather than re-derives (the journal supplies
+the governing setting verbatim), that reflection is idempotent, and that an
+unparseable or out-of-vocabulary line is skipped silently rather than surfaced
+as a phantom row. Worth knowing an operator could previously watch a row
+vanish with nothing in the docs explaining why.
+
+**The empty-command-modal product question ANSWERED ITSELF.** It was raised
+but not filed; another session shipped `2cd1f28` hours later, making `Enter`
+in Attention open the selected row's work-item record and early-returning the
+command modal when it has no actions. The dead surface is gone. This is a
+reason to keep raising such questions in the handoff even when not filing
+them — a second session picked it up from there.
 
 ## DOCS-ROT POSTSCRIPT (2026-07-21) — my own docs were false in four hours
 
