@@ -132,6 +132,14 @@ backfill.
 > Until then: **`ci-green` is not evidence the E2E passed.** Read
 > `check-e2e-tmux` directly, or run `just check-e2e-tmux` locally — `just
 > check` does not include it (see §"VERIFICATION DISCIPLINE").
+>
+> **The gap is bounded to the E2E — the rest of CI is sound.** Checked so the
+> next reader does not have to re-derive it: `ci.yml` defines exactly three
+> real jobs (`check`, `check-doctor-static`, `check-e2e-tmux`), and the
+> `check` job's matrix plus the standalone `check-doctor-static` job cover the
+> SAME twelve targets `just check` runs — verified by set-differencing both
+> lists in both directions, empty each way. So this is one specific job left
+> out of one `needs:` array, not a general weakness in the gate.
 
 ## THE BEHAVIORS (each → propose-change → scenario → tmux E2E → impl)
 
@@ -561,6 +569,14 @@ The general shape: **a gate that pins a VALUE does not pin the CONDITION under
 which the value applies.** When a predicate's meaning broadens, every gate can
 stay green while every description of it goes stale. Only reading the source
 finds this.
+
+The BEHAVIOR itself is test-backed, which is why only the prose rotted:
+`attention_selection_drills_only_when_source_work_item_is_known`
+(`console-application/src/lib.rs`, added by `6262f66`) asserts a work-item-backed
+row yields `selected_work_item_id() == Some(..)`, a path-backed row yields
+`None`, and the overlay stays `TuiOverlay::None` on the latter. So the
+corrected docs describe tested behavior, not an inference from reading the
+code — worth knowing before trusting them.
 
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
