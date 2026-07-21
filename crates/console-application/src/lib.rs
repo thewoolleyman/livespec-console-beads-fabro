@@ -1505,12 +1505,22 @@ const fn footer_hint(
 /// The Status-line hints for a focused pane `view` with no overlay open: the
 /// keys that act on that pane RIGHT NOW.
 ///
-/// `has_selected_work_item` is `false` EXACTLY when the pane has no rows, in
-/// BOTH panes that carry work-items: `selected_lane_item` is `None` only when
-/// the drilled-in lane is empty, and Attention's detail comes from
-/// `selected_index`, which returns `None` only for an empty list. The rule is
-/// therefore uniform across them -- with no rows, the per-item keys, record
-/// drill-in, and up/down navigation are alike inert, and none is advertised.
+/// `has_selected_work_item` is `false` whenever no WORK-ITEM is selected, which
+/// is NOT the same as "the pane has no rows" -- the two panes differ:
+///
+/// - In a drilled-in lane, `selected_lane_item` is `None` only when the lane is
+///   empty, so there the two coincide.
+/// - In Attention they do NOT. The value comes from `AttentionItem::work_item_id`,
+///   which is `None` for any row whose source reference names no work-item --
+///   a plan thread, a hygiene finding, a spec-revise item. A POPULATED inbox
+///   sitting on such a row therefore has no selected work-item, and the
+///   per-item keys and record drill-in are correctly not advertised.
+///
+/// The uniform rule is about the WORK-ITEM, not about rows: with none selected,
+/// the per-item keys and record drill-in are alike inert, and none is
+/// advertised. (Before the attention rows carried their own source work-item,
+/// this value came from the always-present detail projection, and "no rows" and
+/// "no work-item" really were the same condition. They are not any more.)
 ///
 /// Keyed on `lane_focus` and `has_selected_work_item`, not on the view alone,
 /// because both change which keys actually do anything. `Enter` means "drill
@@ -1535,8 +1545,11 @@ const fn pane_footer_hint(
                 "up/down move | enter open | p/c/r approve/accept/reject | \
                  m/n set-admission/acceptance | ? help | q quit"
             } else {
-                // An EMPTY inbox: the per-item valves, record drill-in, and
-                // up/down navigation act on nothing, so none is advertised.
+                // NO work-item selected -- an empty inbox, OR a populated one
+                // sitting on a row that names no work-item (a plan thread, a
+                // hygiene finding, a spec-revise item). Either way the per-item
+                // valves and the record drill-in act on nothing, so none is
+                // advertised.
                 "? help | q quit"
             }
         }

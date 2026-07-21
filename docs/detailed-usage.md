@@ -242,8 +242,8 @@ close, so it always describes the current context rather than a fixed summary.
 | Context | Hint |
 |---|---|
 | Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
-| Attention, an item selected | `up/down move \| enter open \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
-| Attention, empty inbox | `? help \| q quit` |
+| Attention, a work-item-backed row selected | `up/down move \| enter open \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
+| Attention, no work-item selected | `? help \| q quit` |
 | Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
 | Lanes, drilled in with an item selected | `up/down move \| enter item \| esc lane list \| s move-status \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
 | Lanes, drilled into an empty lane | `esc lane list \| ? help \| q quit` |
@@ -258,10 +258,12 @@ close, so it always describes the current context rather than a fixed summary.
 
 **The Status line never advertises a key that would do nothing.** The per-item
 valves act on a *selected work-item*, so they are absent on the lane overview
-(which selects a lane, not an item), in an empty drilled-in lane, and in an
-empty Attention inbox. `up`/`down` drop out too when there are no rows to move
-over. `Enter` opens a selected work-item's record from Attention or a drilled-in
-lane, so it is absent when there is no selected work-item.
+(which selects a lane, not an item), in an empty drilled-in lane, and whenever
+Attention has no work-item-backed row selected — an empty inbox, **or a
+populated one sitting on a row that names no work-item**. `up`/`down` drop out
+too when there are no rows to move over. `Enter` opens a selected work-item's
+record from Attention or a drilled-in lane, so it is absent when there is no
+selected work-item.
 
 An open overlay's hint wins over the focused pane's. The pane hints key on the
 active **view** plus what is selected in it — not on which of the body panes
@@ -297,8 +299,18 @@ its hints stay readable while the modal is open.
 
 These act on the **selected work-item** — the selected row in **Attention**,
 or the selected item in a **drilled-in lane**. They are inert when no
-work-item is selected, which includes the whole of the Spec, Events, Repos,
-and Settings views.
+work-item is selected, which is the whole of the Spec, Events, Repos, and
+Settings views, the lane overview (which selects a lane, not an item), and an
+empty drilled-in lane.
+
+**Not every Attention row carries a work-item.** A row is valve-eligible only
+when its source reference names one — the `valve:<verb>:<work-item>` rows do.
+A plan-thread row (`plan:<topic>`), a hygiene finding
+(`hygiene:stale-worktree:<path>`), and a spec-revise row
+(`spec:revise:<path>`) name a path or a topic instead, so the valves are inert
+on them even though the inbox is populated and the row is selected. The Status
+line is the reliable tell: it drops the valve keys exactly when they would do
+nothing.
 
 | Key | Valve |
 |---|---|

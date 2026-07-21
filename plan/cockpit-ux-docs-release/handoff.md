@@ -506,6 +506,33 @@ view's behavior wrongly — prose is still prose. Three doc gates now exist
 they pin the STRUCTURE of the doc's claims, and a periodic human audit is
 still what catches wrong prose.
 
+**A CONCRETE instance of what the gates cannot catch — worth reading before
+trusting a green build.** A second audit pass found that `6262f66` ("drill
+attention rows by source work item") changed WHEN the Attention hint arms
+apply without changing either hint STRING. `has_selected_work_item` used to
+come from the always-present detail projection, so for Attention it was false
+only on an empty inbox; it now comes from `AttentionItem::work_item_id`, which
+is `None` for any row whose source reference names no work-item — a plan
+thread, a hygiene finding, a spec-revise row. A POPULATED inbox sitting on
+such a row now has no selected work-item.
+
+`docs_status_hint_lockstep` stayed green throughout, correctly: it binds the
+hint strings, and those did not move. What went wrong was every DESCRIPTION of
+the condition — the doc's hint-table row label ("Attention, empty inbox"), the
+doc's prose, the `pane_footer_hint` contract comment (which asserted
+`has_selected_work_item` is false "EXACTLY when the pane has no rows", and
+justified it with reasoning that `6262f66` falsified), and the inline
+else-branch comment ("An EMPTY inbox"). All four corrected.
+
+Operator impact, which is why this mattered: select a plan-thread row in a
+populated inbox and the valve keys vanish from the Status line, while the docs
+said that only happens on an empty inbox. That reads as a bug and is not one.
+
+The general shape: **a gate that pins a VALUE does not pin the CONDITION under
+which the value applies.** When a predicate's meaning broadens, every gate can
+stay green while every description of it goes stale. Only reading the source
+finds this.
+
 **What NOT to re-audit.** These were checked against source and found clean —
 skip them next time unless their area changes: every Status-line hint
 (gated by `docs_status_hint_lockstep`), the `s` move-to-status transition
