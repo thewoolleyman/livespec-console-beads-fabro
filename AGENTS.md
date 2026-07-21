@@ -156,6 +156,28 @@ Never hand-hunt the secret or reach around the seam with raw `mysql` / `dolt` /
 persist env into later tool-call shells). A `CALL DOLT_BACKUP … command denied`
 warning is correct-by-design (tenant users lack SUPER) — ignore it.
 
+**The wrapper execs in a CLEAN environment — set variables INSIDE it, not in
+front of it.** Anything exported ahead of `with-livespec-env.sh` is dropped
+before the wrapped program runs, and this is not limited to `LIVESPEC_*`:
+sentinel variables of any name vanish. The failure is SILENT — the program
+runs, exits 0, and behaves as though you never set the variable.
+
+    # WRONG — silently dropped, no error, exit 0
+    LIVESPEC_CONSOLE_REPO_PATH=/data/projects/foo \
+      with-livespec-env.sh -- livespec-console-beads-fabro serve
+
+    # RIGHT — set it inside the wrapper's environment
+    with-livespec-env.sh -- env \
+      LIVESPEC_CONSOLE_REPO_PATH=/data/projects/foo \
+      livespec-console-beads-fabro serve
+
+The wrapper also supplies only a minimal system `PATH`
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`), so anything
+in `~/.local/bin` (e.g. `fabro`) is NOT on `PATH` inside it — pass an absolute
+path for such programs. Found during the B8 release acceptance (2026-07-21),
+where a console pointed at another repo appeared to ignore its env override;
+`docs/installing.md` carries the user-facing form of the same rule.
+
 **Budget your wrapper calls.** Each one is an `op run` against a 1Password daily
 quota that is shared **account-wide across every tenant**, not per-repo — a session
 that spends it blocks `git push` and every ledger write fleet-wide, for other
