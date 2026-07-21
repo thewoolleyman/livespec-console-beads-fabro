@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "console-application"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console-domain",
  "proptest",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "console-arch-check"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cargo_metadata",
  "syn",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "console-completeness-check"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console-application",
  "serde_json",
@@ -160,14 +160,14 @@ dependencies = [
 
 [[package]]
 name = "console-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "console-eventstore"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console-application",
  "console-domain",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "console-spec-check"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "sha2",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "console-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console-application",
  "console-domain",
@@ -577,7 +577,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "livespec-console-beads-fabro"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console-application",
  "console-domain",
