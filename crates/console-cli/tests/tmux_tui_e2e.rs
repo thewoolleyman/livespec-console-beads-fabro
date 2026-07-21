@@ -1088,5 +1088,86 @@ fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<(
         screen.contains("? help") && screen.contains("q quit"),
         "the always-available keys must still be advertised:\n{screen}"
     );
+
+    // --- the Detail pane, needs-attention half of the documented split ------
+    // `docs/detailed-usage.md` splits the Detail pane by ROW KIND, and this is
+    // the kind that keeps `Attach:`. Paired with
+    // `tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run`,
+    // which asserts the OTHER half; the two together are what make the doc's
+    // case-split executable. Asserting only one half is what let the claim
+    // ship wrong twice — see that test's comment.
+    assert!(
+        screen.contains("Fabro run: -"),
+        "a needs-attention row always reads `Fabro run: -`:\n{screen}"
+    );
+    assert!(
+        screen.contains("Attach:"),
+        "a needs-attention row always carries `Attach:` (its handoff command), \
+         even with no Fabro run:\n{screen}"
+    );
+    Ok(())
+}
+
+/// The work-item half of the Detail-pane split documented in
+/// `docs/detailed-usage.md`.
+///
+/// # Why this test exists at all
+///
+/// The `Attach:` claim shipped WRONG TWICE. First it was documented as
+/// unconditional; then, after a plan-thread row was rendered and seen to carry
+/// `Attach:`, it was "corrected" to say every needs-attention row has one — and
+/// that correction overwrote a walkthrough note which had been right, because a
+/// `valve:approve:<id>` row on a `manual` `pending-approval` item does NOT
+/// behave like a plan-thread row.
+///
+/// The reason is `unified_attention_entries`: the inbox merges work-item rows
+/// with needs-attention rows and DE-DUPLICATES, dropping a needs-attention row
+/// whose work-item a work-item row already claims. So the row kind is not
+/// decided by which source emitted it, and no single screen reveals the split.
+/// Rendering one case and generalizing is what failed — twice — so both cases
+/// are now pinned.
+///
+/// This half asserts the ABSENCE of `Attach:`, which is only meaningful
+/// alongside proof that the row rendered at all; an empty inbox would satisfy
+/// the absence trivially.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run() -> HarnessResult<()> {
+    let fixture = LifecycleFixture::new("detail-split", "pending-approval")?;
+    let repo = RepoFixture::new(
+        "e2e-detail-split",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    );
+    let env = fixture.env();
+    let borrowed: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
+
+    let screen = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+
+    // --- the row is really there (see the doc comment) ----------------------
+    assert!(
+        screen.contains("attention: 1"),
+        "the pending-approval work-item must reach the inbox -- without it the \
+         `Attach:` absence below proves nothing:\n{screen}"
+    );
+    assert!(
+        screen.contains(&format!("Work item: {ITEM_ID}")),
+        "the Detail pane must name the work-item behind the row:\n{screen}"
+    );
+
+    // --- and it is the WORK-ITEM projection, not the needs-attention row ----
+    assert!(
+        screen.contains("Fabro run: -"),
+        "no Fabro run is observed for this item, so the line reads `-`:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Attach:"),
+        "the work-item projection shows `Attach:` only for a real Fabro attach, \
+         so a pending-approval item with no run must have NO such line -- this \
+         is the assertion whose absence let the docs ship wrong twice:\n{screen}"
+    );
     Ok(())
 }
