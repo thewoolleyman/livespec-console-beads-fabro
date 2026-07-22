@@ -43,24 +43,41 @@ maintainer:
 | `-25rvmd`, `-ble` follow-ups | Already live work-items in the ledger |
 | Stage-2 (autonomous-mode MVP acceptance) | **DEAD** — mode retired for good; do not resume |
 | Ledger reconciliation — the 5 W-items + epic | **ALREADY DONE** — verified `done` in the ledger 2026-07-21; the handoff's "owed" claim was itself stale (see below) |
-| Ledger reconciliation — 12 red pin-bump PRs | **STILL UNFILED and still unowned** — see below |
+| Ledger reconciliation — 12 red pin-bump PRs | **ALREADY RESOLVED** — collapsed by merged PR #359, and the blamed mechanism does not exist (the completeness gate is pin-insensitive by design); see below |
 | Verification discipline, doc-rot case studies, gate-design lessons | Retained here; they are why this file is kept |
 
 ## What is NOT discharged
 
-**The five W-items are a false alarm — they are already `done`.** The handoff's
-§"Ledger reconciliation owed" listed W3 `-636m46`, W4 `-j3ts23`, W5 `-2ctzhm`,
-W6 `-zmunjo`, W7 `-yvikqp.1` and epic `-yvikqp` as stale `pending-approval` /
-`backlog` records needing a close. On 2026-07-21 every one of them read `done`
-in the ledger (`list-work-items --json`). Whether they were closed after the
-handoff's last edit or the handoff was simply wrong, the reconciliation it
-called "owed" is COMPLETE. Do not re-open them and do not walk them as valves.
+**Nothing, as it turns out — the whole "Ledger reconciliation owed" section was
+stale on BOTH halves.** Verified 2026-07-21 (an earlier draft of this file
+repeated the handoff's claims before checking them; corrected here).
 
-**What genuinely remains: the 12 red pin-bump PRs.** They are red on
-`check-completeness` because the bump automation rewrites `.livespec.jsonc`
-`compat.pinned` without refreshing
-`tests/fixtures/orchestrator-config-manifest.json`. Unfiled, unowned. Archiving
-this thread does not resolve it.
+**Half 1 — the five W-items are already `done`.** The handoff listed W3
+`-636m46`, W4 `-j3ts23`, W5 `-2ctzhm`, W6 `-zmunjo`, W7 `-yvikqp.1` and epic
+`-yvikqp` as stale `pending-approval` / `backlog` records needing a close.
+Every one reads `done` in the ledger (`list-work-items --json`). Whether they
+were closed after the handoff's last edit or it was simply wrong, the
+reconciliation it called "owed" is COMPLETE. Do not re-open them.
+
+**Half 2 — the "12 red pin-bump PRs" are gone AND the mechanism the handoff
+blamed does not exist.** Two independent checks:
+- No pin-bump PR is open (4 open PRs total, none a bump). PR **#359** ("collapse
+  the superseded bump-PR train", merged) resolved them, and master CI is green
+  on the current tip.
+- The handoff's ROOT CAUSE was wrong. It claimed a pin bump reddens
+  `check-completeness` because the bump automation rewrites `.livespec.jsonc`
+  `compat.pinned` without refreshing the config-manifest fixture. But the gate
+  is DELIBERATELY pin-insensitive: `crates/console-completeness-check/src/lib.rs`
+  module comment (~:19) states "a pin bump alone does not invalidate the
+  capture; a true key-set change still" does, and the test
+  `check_key_set_digest_ignores_core_pin_only_changes` (`lib.rs:680`) asserts a
+  `v0.16.0 → v0.17.0` pin change leaves the key-set digest unchanged. The digest
+  is over the orchestrator KEY SET, not the pins, so a pin bump cannot redden
+  this gate by construction. There is no automation gap to file.
+
+This is the same pattern as the handoff's other stale claims (the release-gate
+timing, the W-items): a "still owed" assertion that a five-minute verification
+dissolves. **Read the ledger and the source, not the handoff's summary of them.**
 
 **A separate live matter, NOT this thread's:** the console ledger currently
 carries genuinely-open `pending-approval` items (e.g. `-6hbfq6`, `-ipwtll`, and
