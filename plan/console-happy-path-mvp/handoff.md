@@ -82,32 +82,31 @@ POSTSCRIPT" carry the full case studies. Read them before the first audit.
 Keep this short — one dated line per pass, so the next auditor sees what was
 last verified against source and can skip it unless its area moved.
 
-- **2026-07-21 (archival session).** Full pass over `docs/detailed-usage.md`
-  against current master (`ab6e567`). **Clean — no drift found.** Verified at
-  source: the focus ring (`Nav → Content → Detail → Header`, Lanes skips
-  Detail — tested at `console-application/src/lib.rs:6605`), header horizontal
-  scroll step (`HEADER_SCROLL_STEP = 8`, `:2671`), the six Views and the
-  seven-lane canonical order (`Lane::all()`, `source_adapters.rs:292`, tested
-  `:6149`), all five auto-disposition vocab strings, the six dispatcher
-  settings (`DispatcherSetting::all()`, `:4229`), the Spec-pane prose (correct
-  B5→B6 relocation, not drift), the Attach:/Fabro-run split (gate-covered),
-  and the Help modal. Also confirmed no doc falsely claims a failed valve
-  surfaces an error to the operator — consistent with `-ectqye`'s finding that
-  no such surface exists. No source has landed on master since the prior audit
-  (`907736d`/`1c1b07f`), so `overview-quickstart.md` and `cli-options.md`
-  were NOT re-read this pass (handoff marks them clean; area unchanged).
-  `docs/lifecycle-walkthrough.md` was also read end-to-end and is clean: its
-  keystrokes are pinned by `tmux_tui_e2e_lifecycle_walkthrough_two_repos`, and
-  its prose (the ship-guard, the corrected Attach:/Fabro-run note, the
-  valve-row-vs-non-work-item guidance) matches the verified
-  `detailed-usage.md` and source. One refinement to the archived handoff's
-  "known-silent" record-modal-footer item: paging **is** surfaced on screen —
-  the Status band hint (`console-application/src/lib.rs:1500`) reads
-  `up/down scroll | PgUp/PgDn page | esc close item`; only the modal's OWN
-  terse internal footer (`console-tui/src/lib.rs:1357`,
-  `up/down scroll | esc to close`) omits `PgUp/PgDn`. So it is a cosmetic
-  internal-footer terseness, not a case of undocumented paging — left as the
-  handoff author left it (a possible small work-item, not fixed inline).
+- **2026-07-21 (archival session).** Full pass over **all five operator docs**
+  against current master (`ab6e567`) — `detailed-usage.md`,
+  `lifecycle-walkthrough.md`, `cli-options.md`, `overview-quickstart.md`,
+  `installing.md`. **Clean — no drift found.** (No source landed since the
+  prior audit `907736d`/`1c1b07f`, but I re-verified rather than trusting the
+  "checked clean" list — which this pass confirms was accurate, in contrast to
+  the handoff's stale reconciliation claims.) Sampled at source, not skimmed:
+  focus ring (`Nav → Content → Detail → Header`, Lanes skips Detail, tested
+  `console-application/src/lib.rs:6605`); `HEADER_SCROLL_STEP = 8` (`:2671`);
+  six Views + seven-lane order (`Lane::all()` `source_adapters.rs:292`, tested
+  `:6149`); five auto-disposition strings; six dispatcher settings
+  (`DispatcherSetting::all()` `:4229`); exactly eleven `LIVESPEC_CONSOLE_*` env
+  vars (matches the doc's tables); `events tail` limit `20` (`lib.rs:2016`);
+  drain invoked `loop --repo` (`main.rs:139`); poll cadences 2 s
+  (`main.rs:57`) / 250 ms keyboard (`console-tui/src/lib.rs:208`); reject
+  warned dangerous (`lib.rs:211`); `:` palette → `drain` (tested
+  `console-tui/src/lib.rs:3177`). The Spec-pane prose is the correct B5→B6
+  relocation, not drift; the Attach:/Fabro-run split and the walkthrough
+  keystrokes are gate-/E2E-pinned. Confirmed no doc claims a failed valve
+  surfaces an operator error — consistent with `-ectqye`. One refinement to the
+  archived handoff's "known-silent" record-modal-footer item: paging **is**
+  on screen — the Status band hint (`lib.rs:1500`) shows
+  `PgUp/PgDn page`; only the modal's own terse internal footer
+  (`console-tui/src/lib.rs:1357`) omits it. Cosmetic terseness, not
+  undocumented paging; left as-is.
 
 ## Read-first chain
 
