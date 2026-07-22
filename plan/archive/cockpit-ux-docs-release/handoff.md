@@ -116,6 +116,18 @@ Skip to what you need; the postscripts are self-contained.
 | ~~**Stage-2** autonomous-mode MVP acceptance~~ | ❌ **STRUCK 2026-07-21 — DEAD** (thread archived; mode retired) | §"RESUME ORDER" below |
 
 ### Ledger reconciliation owed (found 2026-07-19 — see `plan/impl-dispatch/handoff.md`)
+
+> **⚠ FULLY RESOLVED 2026-07-21 (archival session) — nothing in this section is
+> still owed. Verified; see `SUPERSEDED-BY.md` § "What is NOT discharged".**
+> The five W-items + epic all read `done` in the ledger (the "close as
+> completed" below already happened). The "12 red pin-bump PRs" are gone —
+> collapsed by merged PR #359, master CI green on the current tip — AND the
+> root cause below is wrong: `console-completeness-check` is deliberately
+> pin-insensitive (`crates/console-completeness-check/src/lib.rs` module
+> comment ~:19; test `check_key_set_digest_ignores_core_pin_only_changes`
+> `:680`), so a pin bump cannot redden it by construction. The rest of this
+> section is retained as the original (mistaken) record.
+
 Five `pending-approval` items — **W3 `-636m46` / W4 `-j3ts23` / W5 `-2ctzhm` /
 W6 `-zmunjo` / W7 `-yvikqp.1`** — plus their parent epic **`-yvikqp`**
 (`backlog`) are **already DELIVERED and merged**, verified against the code. They
