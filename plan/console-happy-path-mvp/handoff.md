@@ -96,6 +96,18 @@ last verified against source and can skip it unless its area moved.
   no such surface exists. No source has landed on master since the prior audit
   (`907736d`/`1c1b07f`), so `overview-quickstart.md` and `cli-options.md`
   were NOT re-read this pass (handoff marks them clean; area unchanged).
+  `docs/lifecycle-walkthrough.md` was also read end-to-end and is clean: its
+  keystrokes are pinned by `tmux_tui_e2e_lifecycle_walkthrough_two_repos`, and
+  its prose (the ship-guard, the corrected Attach:/Fabro-run note, the
+  valve-row-vs-non-work-item guidance) matches the verified
+  `detailed-usage.md` and source. One refinement to the archived handoff's
+  "known-silent" record-modal-footer item: paging **is** surfaced on screen —
+  the Status band hint (`console-application/src/lib.rs:1500`) reads
+  `up/down scroll | PgUp/PgDn page | esc close item`; only the modal's OWN
+  terse internal footer (`console-tui/src/lib.rs:1357`,
+  `up/down scroll | esc to close`) omits `PgUp/PgDn`. So it is a cosmetic
+  internal-footer terseness, not a case of undocumented paging — left as the
+  handoff author left it (a possible small work-item, not fixed inline).
 
 ## Read-first chain
 
