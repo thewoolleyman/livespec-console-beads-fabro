@@ -77,6 +77,26 @@ work-item**, so the fix makes the prose self-announcing.
 The archived handoff's § "DOC CUSTODY IS ACTIVE" and § "DOCS-ROT
 POSTSCRIPT" carry the full case studies. Read them before the first audit.
 
+### Audit log
+
+Keep this short — one dated line per pass, so the next auditor sees what was
+last verified against source and can skip it unless its area moved.
+
+- **2026-07-21 (archival session).** Full pass over `docs/detailed-usage.md`
+  against current master (`ab6e567`). **Clean — no drift found.** Verified at
+  source: the focus ring (`Nav → Content → Detail → Header`, Lanes skips
+  Detail — tested at `console-application/src/lib.rs:6605`), header horizontal
+  scroll step (`HEADER_SCROLL_STEP = 8`, `:2671`), the six Views and the
+  seven-lane canonical order (`Lane::all()`, `source_adapters.rs:292`, tested
+  `:6149`), all five auto-disposition vocab strings, the six dispatcher
+  settings (`DispatcherSetting::all()`, `:4229`), the Spec-pane prose (correct
+  B5→B6 relocation, not drift), the Attach:/Fabro-run split (gate-covered),
+  and the Help modal. Also confirmed no doc falsely claims a failed valve
+  surfaces an error to the operator — consistent with `-ectqye`'s finding that
+  no such surface exists. No source has landed on master since the prior audit
+  (`907736d`/`1c1b07f`), so `overview-quickstart.md` and `cli-options.md`
+  were NOT re-read this pass (handoff marks them clean; area unchanged).
+
 ## Read-first chain
 
 1. `plan/console-happy-path-mvp/research/why-it-never-happened.md` — why
