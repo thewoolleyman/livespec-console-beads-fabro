@@ -913,5 +913,45 @@
         "scenario": "Scenario 23 -- Operator reads a work-item's full record without leaving the console"
       }
     ]
+  },
+  {
+    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/src/lib.rs::two_factory_executors_claim_one_pending_command_once",
+    "reason": "Top-of-pyramid command-queue coverage in console-cli: two file-backed SQLite connections consume the same pending factory command, the winning executor claims pending -> executing before invoking the Dispatcher port, a reentrant loser observes no pending command and executes no port call, the side-effect counter remains exactly one, and the winning command finalizes to completed. The sibling stale_executing_factory_command_is_failed_without_reexecution seeds an old executing claim and proves recovery marks it failed without invoking the port.",
+    "clauses": [
+      {
+        "gap_id": "gap-2aohdo5p",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-iuqhvg72",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-ng6mae2y",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-pvyu7j3v",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-zaarr7zd",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-xrds3dpi",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-7wnnjb4f",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-tc636ivq",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      }
+    ]
   }
 ]

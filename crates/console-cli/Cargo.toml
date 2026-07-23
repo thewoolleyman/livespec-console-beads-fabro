@@ -20,6 +20,7 @@ console-tui = { path = "../console-tui" }
 serde_json = "1"
 time = { version = "0.3.37", default-features = false, features = [
   "formatting",
+  "parsing",
   "std",
 ] }
 
