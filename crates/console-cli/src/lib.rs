@@ -19,6 +19,8 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+
 #[cfg(test)]
 use console_application::source_adapters::{
     AcceptancePolicy, AdapterPoll, AdapterPollRequest, AdmissionPolicy, DispatcherJournalEntry,
@@ -1078,8 +1080,14 @@ pub trait FactoryCommandStore {
     /// List canonical console events in event-store order.
     fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>>;
 
+    /// Append a command and return whether it was inserted or deduplicated.
+    fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome>;
+
     /// Append a command-handling event and return the append outcome.
     fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome>;
+
+    /// Atomically claim one pending command for this consumer.
+    fn claim_command(&mut self, command_id: &str, claimed_at: &str) -> EventStoreResult<bool>;
 
     /// Update a command status and optional result/error payloads.
     ///
@@ -1093,6 +1101,24 @@ pub trait FactoryCommandStore {
         result_json: Option<&str>,
         error_json: Option<&str>,
     ) -> EventStoreResult<CommandStatusUpdateOutcome>;
+
+    /// Finalize one command still owned by an executing consumer.
+    fn finalize_executing_command_status(
+        &mut self,
+        command_id: &str,
+        status: &str,
+        updated_at: &str,
+        result_json: Option<&str>,
+        error_json: Option<&str>,
+    ) -> EventStoreResult<CommandStatusUpdateOutcome>;
+
+    /// Mark stale executing commands failed for operator-visible recovery.
+    fn fail_stale_executing_commands(
+        &mut self,
+        stale_before: &str,
+        recovered_at: &str,
+        error_json: &str,
+    ) -> EventStoreResult<usize>;
 }
 
 impl FactoryCommandStore for SqliteEventStore {
@@ -1104,8 +1130,16 @@ impl FactoryCommandStore for SqliteEventStore {
         Self::list_console_events(self)
     }
 
+    fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome> {
+        Self::append_command(self, append)
+    }
+
     fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
         Self::append_event(self, append)
+    }
+
+    fn claim_command(&mut self, command_id: &str, claimed_at: &str) -> EventStoreResult<bool> {
+        Self::claim_command(self, command_id, claimed_at)
     }
 
     fn update_command_status(
@@ -1125,6 +1159,66 @@ impl FactoryCommandStore for SqliteEventStore {
             error_json,
         )
     }
+
+    fn finalize_executing_command_status(
+        &mut self,
+        command_id: &str,
+        status: &str,
+        updated_at: &str,
+        result_json: Option<&str>,
+        error_json: Option<&str>,
+    ) -> EventStoreResult<CommandStatusUpdateOutcome> {
+        Self::finalize_executing_command_status(
+            self,
+            command_id,
+            status,
+            updated_at,
+            result_json,
+            error_json,
+        )
+    }
+
+    fn fail_stale_executing_commands(
+        &mut self,
+        stale_before: &str,
+        recovered_at: &str,
+        error_json: &str,
+    ) -> EventStoreResult<usize> {
+        Self::fail_stale_executing_commands(self, stale_before, recovered_at, error_json)
+    }
+}
+
+const STALE_EXECUTING_COMMAND_RECOVERY_AFTER_HOURS: i64 = 24;
+const STALE_EXECUTING_COMMAND_ERROR_JSON: &str =
+    r#"{"reason":"stale executing command recovered as failed"}"#;
+
+fn recover_stale_executing_commands(
+    store: &mut dyn FactoryCommandStore,
+    handled_at: &str,
+) -> ConsoleRuntimeResult<usize> {
+    let Ok(now) = OffsetDateTime::parse(handled_at, &Rfc3339) else {
+        return Ok(0);
+    };
+    let fallback_stale_before = handled_at.to_owned();
+    let stale_before = (now - Duration::hours(STALE_EXECUTING_COMMAND_RECOVERY_AFTER_HOURS))
+        .format(&Rfc3339)
+        .map_or(fallback_stale_before, std::convert::identity);
+    match store.fail_stale_executing_commands(
+        &stale_before,
+        handled_at,
+        STALE_EXECUTING_COMMAND_ERROR_JSON,
+    ) {
+        Ok(recovered) => Ok(recovered),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn claim_pending_command(
+    store: &mut dyn FactoryCommandStore,
+    command: &CommandEnvelope,
+    claimed_at: &str,
+) -> ConsoleRuntimeResult<bool> {
+    Ok(store.claim_command(command.command_id(), claimed_at)?)
 }
 
 /// Handle pending factory commands.
@@ -1133,6 +1227,7 @@ pub fn handle_pending_factory_commands(
     handled_at: &str,
     port: &mut dyn FactoryDrainPort,
 ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let _recovered = recover_stale_executing_commands(store, handled_at)?;
     let policy_events = store.list_console_events()?;
     let policy = FactoryDrainPolicy::from_events(&policy_events);
     let mut outcomes = Vec::new();
@@ -1143,6 +1238,9 @@ pub fn handle_pending_factory_commands(
         let Some(command) = factory_command_from_stored(&stored_command)? else {
             continue;
         };
+        if !claim_pending_command(store, &command, handled_at)? {
+            continue;
+        }
         let command_outcome = handle_factory_drain_command(&command, &policy, port)?;
         outcomes.push(finalize_pending_command(
             store,
@@ -1170,6 +1268,7 @@ pub fn handle_pending_work_item_commands(
     handled_at: &str,
     port: &mut dyn OrchestratorActionPort,
 ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let _recovered = recover_stale_executing_commands(store, handled_at)?;
     let mut outcomes = Vec::new();
     for stored_command in store.list_commands()? {
         if stored_command.status() != "pending" {
@@ -1178,6 +1277,9 @@ pub fn handle_pending_work_item_commands(
         let Some(pending) = work_item_command_from_stored(&stored_command)? else {
             continue;
         };
+        if !claim_pending_command(store, pending.command(), handled_at)? {
+            continue;
+        }
         let command_outcome = match &pending {
             PendingWorkItemCommand::Approve(command) => {
                 handle_work_item_approve_command(command, port)?
@@ -1238,6 +1340,7 @@ pub fn handle_pending_config_commands(
     handled_at: &str,
     action_port: &mut dyn OrchestratorActionPort,
 ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let _recovered = recover_stale_executing_commands(store, handled_at)?;
     let mut settings_port = DispatcherSettingsPort::new(action_port);
     let mut outcomes = Vec::new();
     for stored_command in store.list_commands()? {
@@ -1247,6 +1350,9 @@ pub fn handle_pending_config_commands(
         let Some((command, payload_json)) = config_command_from_stored(&stored_command)? else {
             continue;
         };
+        if !claim_pending_command(store, &command, handled_at)? {
+            continue;
+        }
         let command_outcome = handle_config_dispatcher_setting_set_command(
             &command,
             &payload_json,
@@ -1308,7 +1414,7 @@ fn config_command_from_stored(
 /// Returns a console runtime error when the store cannot persist the reflection
 /// command or its outcome events.
 pub fn observe_and_reflect_autonomous_decisions(
-    store: &mut SqliteEventStore,
+    store: &mut dyn FactoryCommandStore,
     observed_at: &str,
     decisions_port: &dyn AutonomousDecisionsPort,
 ) -> ConsoleRuntimeResult<usize> {
@@ -1335,7 +1441,7 @@ pub fn observe_and_reflect_autonomous_decisions(
 /// reflection was recorded -- false when the decision was already reflected, or
 /// when its gate maps to no needs-attention item.
 fn reflect_autonomous_decision(
-    store: &mut SqliteEventStore,
+    store: &mut dyn FactoryCommandStore,
     observed_at: &str,
     decision: &AutonomousDecision,
 ) -> ConsoleRuntimeResult<bool> {
@@ -1354,6 +1460,9 @@ fn reflect_autonomous_decision(
     );
     if store.append_command(&append)?.status() == CommandAppendStatus::Duplicate {
         // Already reflected on a prior run -- an idempotent no-op.
+        return Ok(false);
+    }
+    if !store.claim_command(command.command_id(), observed_at)? {
         return Ok(false);
     }
     let events = [
@@ -1379,7 +1488,7 @@ fn reflect_autonomous_decision(
 }
 
 fn surface_autonomous_escalation(
-    store: &mut SqliteEventStore,
+    store: &mut dyn FactoryCommandStore,
     observed_at: &str,
     decision: &AutonomousDecision,
 ) -> ConsoleRuntimeResult<bool> {
@@ -1509,7 +1618,7 @@ fn finalize_pending_command(
     } else {
         None
     };
-    let status_update = store.update_command_status(
+    let status_update = store.finalize_executing_command_status(
         command.command_id(),
         command_status,
         handled_at,
@@ -2081,10 +2190,14 @@ fn help_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::effect_sink_io_error;
+
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::error::Error;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use console_application::{
@@ -3882,6 +3995,37 @@ mod tests {
     }
 
     #[test]
+    fn effect_sink_io_error_formats_debug_context() {
+        let error = effect_sink_io_error(EventStoreError::InvalidSequence);
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "InvalidSequence");
+    }
+
+    #[test]
+    fn sqlite_factory_command_store_forwards_unguarded_status_updates()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [factory_drain_effect()];
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        let command_id = store.list_commands()?[0].command_id().to_owned();
+
+        let result_json = Some(r#"{"event_count":0}"#);
+        let updated = FactoryCommandStore::update_command_status(
+            &mut store,
+            &command_id,
+            "completed",
+            "2026-06-23T00:00:03Z",
+            result_json,
+            None,
+        );
+
+        assert!(matches!(updated, Ok(outcome) if outcome.status() == "completed"));
+        assert_eq!(store.list_commands()?[0].status(), "completed");
+        Ok(())
+    }
+
+    #[test]
     fn command_status_update_runtime_result_maps_success_and_failure() {
         let success = command_status_update_runtime_result(Ok(CommandStatusUpdateOutcome::new(
             "cmd_1".to_owned(),
@@ -3900,6 +4044,80 @@ mod tests {
                 EventStoreError::InvalidSequence
             ))
         ));
+    }
+
+    #[test]
+    fn two_factory_executors_claim_one_pending_command_once() -> Result<(), ConsoleRuntimeError> {
+        struct ReentrantFactoryDrainPort {
+            loser_store: Rc<RefCell<SqliteEventStore>>,
+            calls: Rc<std::cell::Cell<usize>>,
+        }
+
+        impl FactoryDrainPort for ReentrantFactoryDrainPort {
+            fn drain_ready_queue(
+                &mut self,
+                _request: &FactoryDrainRequest,
+            ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
+                self.calls.set(self.calls.get() + 1);
+                let mut nested_port = RecordingFactoryDrainPort::default();
+                let nested = handle_pending_factory_commands(
+                    &mut *self.loser_store.borrow_mut(),
+                    "2026-06-23T00:00:03Z",
+                    &mut nested_port,
+                );
+                assert!(matches!(nested, Ok(ref outcomes) if outcomes.is_empty()));
+                assert_eq!(nested_port.observed_aggregate_ids, Vec::<String>::new());
+                Ok(FactoryDrainPortOutcome::completed(1))
+            }
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-command-claim-{}-{}.sqlite",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?
+                .as_nanos()
+        ));
+        let _ignored = fs::remove_file(&path);
+        let mut winner_store = SqliteEventStore::open(&path)?;
+        let effects = [factory_drain_effect()];
+        persist_tui_runtime_effects(&mut winner_store, &effects, "2026-06-23T00:00:02Z")?;
+        append_ready_work_item(&mut winner_store, "2026-06-23T00:00:02Z")?;
+        let loser_store = Rc::new(RefCell::new(SqliteEventStore::open(&path)?));
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let mut port = ReentrantFactoryDrainPort {
+            loser_store,
+            calls: Rc::clone(&calls),
+        };
+
+        let outcomes =
+            handle_pending_factory_commands(&mut winner_store, "2026-06-23T00:00:03Z", &mut port)?;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(winner_store.list_commands()?[0].status(), "completed");
+        let _ignored = fs::remove_file(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_executing_factory_command_is_failed_without_reexecution()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [factory_drain_effect()];
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        let command_id = store.list_commands()?[0].command_id().to_owned();
+        assert!(store.claim_command(&command_id, "2026-06-22T00:00:00Z")?);
+        let mut port = RecordingFactoryDrainPort::default();
+
+        let outcomes =
+            handle_pending_factory_commands(&mut store, "2026-06-23T01:00:01Z", &mut port)?;
+
+        assert!(outcomes.is_empty());
+        assert_eq!(port.observed_aggregate_ids, Vec::<String>::new());
+        assert_eq!(store.list_commands()?[0].status(), "failed");
+        Ok(())
     }
 
     #[test]
@@ -4106,6 +4324,50 @@ mod tests {
     }
 
     #[test]
+    fn pending_factory_command_handler_ignores_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::FactoryClaimMiss);
+        let mut port = RecordingFactoryDrainPort::default();
+
+        let outcomes =
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+
+        assert_eq!(outcomes, []);
+        assert_eq!(port.observed_aggregate_ids, Vec::<String>::new());
+        assert_eq!(store.appended_event_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_factory_commands_return_stale_recovery_errors() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::RecoveryFails);
+        let mut port = RecordingFactoryDrainPort::default();
+
+        let outcome =
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::EventStore(
+                EventStoreError::InvalidSequence
+            ))
+        ));
+        assert_eq!(port.observed_aggregate_ids, Vec::<String>::new());
+    }
+
+    #[test]
+    fn pending_factory_commands_skip_stale_recovery_for_unparseable_time()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::NonFactoryPending);
+        let mut port = RecordingFactoryDrainPort::default();
+
+        let outcomes = handle_pending_factory_commands(&mut store, "not-rfc3339", &mut port)?;
+
+        assert_eq!(outcomes, []);
+        assert_eq!(store.appended_event_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn pending_factory_command_handler_skips_pending_non_factory_commands()
     -> Result<(), ConsoleRuntimeError> {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::NonFactoryPending);
@@ -4155,6 +4417,34 @@ mod tests {
             result,
             Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_1"
         ));
+    }
+
+    #[test]
+    fn pending_work_item_commands_ignore_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemClaimMiss);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes, []);
+        assert_eq!(port.observed_action_ids, Vec::<String>::new());
+        assert_eq!(store.appended_event_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_config_commands_ignore_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigClaimMiss);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcomes =
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+
+        assert_eq!(outcomes, []);
+        assert_eq!(port.observed_action_ids, Vec::<String>::new());
+        assert_eq!(store.appended_event_count, 0);
+        Ok(())
     }
 
     #[test]
@@ -5796,6 +6086,29 @@ mod tests {
     }
 
     #[test]
+    fn observe_and_reflect_ignores_a_lost_reflection_claim() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::AutonomousReflectionClaimMiss);
+        let decision = AutonomousDecision::from_auto_disposition(
+            "wi-1",
+            "auto-approve",
+            vec!["auto_approve_ready".to_owned()],
+        );
+        assert!(decision.is_some());
+        let audit = AutonomousAudit::new(decision.into_iter().collect(), Vec::new());
+        let decisions = SimulatedDecisionsPort::returning(audit);
+
+        let reflected = observe_and_reflect_autonomous_decisions(
+            &mut store,
+            "2026-07-11T00:00:01Z",
+            &decisions,
+        );
+
+        assert!(matches!(reflected, Ok(0)));
+        assert_eq!(store.appended_event_count, 0);
+    }
+
+    #[test]
     fn observe_and_reflect_skips_a_decision_with_no_reflectable_item()
     -> Result<(), ConsoleRuntimeError> {
         let mut store = SqliteEventStore::open_in_memory()?;
@@ -5946,13 +6259,18 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptedStoreMode {
         AppendFails,
+        AutonomousReflectionClaimMiss,
         Completes,
         ConfigAppendFails,
+        ConfigClaimMiss,
+        FactoryClaimMiss,
         ListFails,
         MissingAggregate,
         NonFactoryPending,
+        RecoveryFails,
         StatusUpdateFails,
         WorkItemAppendFails,
+        WorkItemClaimMiss,
     }
 
     struct ScriptedFactoryCommandStore {
@@ -6001,7 +6319,10 @@ mod tests {
                     "pending".to_owned(),
                 )];
             }
-            if self.mode == ScriptedStoreMode::WorkItemAppendFails {
+            if matches!(
+                self.mode,
+                ScriptedStoreMode::WorkItemAppendFails | ScriptedStoreMode::WorkItemClaimMiss
+            ) {
                 return vec![StoredCommand::new(
                     "cmd_approve".to_owned(),
                     "work_item".to_owned(),
@@ -6012,7 +6333,10 @@ mod tests {
                     "pending".to_owned(),
                 )];
             }
-            if self.mode == ScriptedStoreMode::ConfigAppendFails {
+            if matches!(
+                self.mode,
+                ScriptedStoreMode::ConfigAppendFails | ScriptedStoreMode::ConfigClaimMiss
+            ) {
                 return vec![StoredCommand::new(
                     "cmd_setting".to_owned(),
                     "configuration".to_owned(),
@@ -6055,6 +6379,16 @@ mod tests {
             )])
         }
 
+        fn append_command(
+            &mut self,
+            append: &CommandAppend,
+        ) -> EventStoreResult<CommandAppendOutcome> {
+            Ok(CommandAppendOutcome::new(
+                append.command().command_id().to_owned(),
+                CommandAppendStatus::Inserted,
+            ))
+        }
+
         fn append_event(&mut self, _append: &EventAppend) -> EventStoreResult<AppendOutcome> {
             if matches!(
                 self.mode,
@@ -6066,6 +6400,20 @@ mod tests {
             }
             self.appended_event_count += 1;
             Ok(AppendOutcome::new(1, AppendStatus::Inserted))
+        }
+
+        fn claim_command(
+            &mut self,
+            _command_id: &str,
+            _claimed_at: &str,
+        ) -> EventStoreResult<bool> {
+            Ok(!matches!(
+                self.mode,
+                ScriptedStoreMode::ConfigClaimMiss
+                    | ScriptedStoreMode::FactoryClaimMiss
+                    | ScriptedStoreMode::AutonomousReflectionClaimMiss
+                    | ScriptedStoreMode::WorkItemClaimMiss
+            ))
         }
 
         fn update_command_status(
@@ -6083,6 +6431,29 @@ mod tests {
                 "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
                 "completed".to_owned(),
             ))
+        }
+
+        fn finalize_executing_command_status(
+            &mut self,
+            command_id: &str,
+            status: &str,
+            updated_at: &str,
+            result_json: Option<&str>,
+            error_json: Option<&str>,
+        ) -> EventStoreResult<CommandStatusUpdateOutcome> {
+            self.update_command_status(command_id, status, updated_at, result_json, error_json)
+        }
+
+        fn fail_stale_executing_commands(
+            &mut self,
+            _stale_before: &str,
+            _recovered_at: &str,
+            _error_json: &str,
+        ) -> EventStoreResult<usize> {
+            if self.mode == ScriptedStoreMode::RecoveryFails {
+                return Err(EventStoreError::InvalidSequence);
+            }
+            Ok(0)
         }
     }
 }

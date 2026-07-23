@@ -462,9 +462,29 @@ fabricate success. Snooze/acknowledge remain killed (design record decision
 16): there is no local-dismiss command; "not now" is defer/re-rank via the
 orchestrator.
 
+The persisted command queue is a SINGLE-CONSUMER queue: every pending command
+MUST be executed by exactly one console client -- that command's CONSUMER -- no
+matter how many clients open the same store. Before running a command's handler,
+the consumer MUST atomically claim the command by transitioning its status
+`pending` -> `executing`; a client whose claim takes no effect -- another
+consumer already owns the row -- MUST NOT execute that command. On completion
+the owning consumer MUST finalize the claimed command from `executing` to a
+terminal status (`completed`, `failed`, `rejected`, or `not_wired` -- the
+honesty rule's not-wired terminal outcome remains a legal finalization of a
+claimed command). A command stranded at `executing` by a consumer that crashed
+before finalizing MUST NOT stay stranded forever: once the claim is
+recognizably stale, the command MUST be re-offered for consumption or driven to
+a terminal status by reconciliation. Staleness recognition MUST be
+conservative -- a claim MUST NOT be treated as stale while its owning consumer
+is still executing the command, so recovery never steals a live claim and
+re-introduces the double-execution this section forbids.
+
 ```mermaid
 flowchart LR
   Requested["command requested"]
+  Claim["atomic claim: pending -> executing"]
+  Lost["another consumer owns it -- do nothing"]
+  Stale["stale executing claim (crashed consumer)"]
   Policy["context policy validation"]
   Rejected["command rejected event"]
   Accepted["command accepted event"]
@@ -473,7 +493,11 @@ flowchart LR
   Failed["failure event"]
   Reconcile["reconciliation observes external result"]
 
-  Requested --> Policy
+  Requested --> Claim
+  Claim -->|"won"| Policy
+  Claim -->|"lost"| Lost
+  Claim -.->|"crash before finalize"| Stale
+  Stale -.->|"recovery"| Requested
   Policy -->|"invalid"| Rejected
   Policy -->|"valid"| Accepted
   Accepted --> SideEffect

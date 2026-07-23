@@ -939,3 +939,27 @@ Scenario: A hint omits the per-item keys where no work-item is selected
   Then no per-item key is advertised
   And the same holds inside a drilled-in lane that is empty
 ```
+
+## Scenario 24 -- Two consoles consume one command queue exactly once
+
+```gherkin
+Feature: Exactly-once command consumption
+  As an operator
+  I want each enqueued command to execute exactly once no matter how many consoles I have open
+  So that a second console never double-fires valves, drains, or policy edits
+
+Scenario: Two consoles race for one pending command; exactly one executes it
+  Given one console event store holding a pending command
+  And two console clients consuming pending commands against that store
+  When both clients run a consumption pass over the same pending command
+  Then exactly one client wins the atomic claim, moving the command from pending to executing
+  And only the winning client executes the handler and appends outcome events
+  And the winning client finalizes the command from executing to a terminal status
+  And the losing client executes nothing and appends nothing for that command
+
+Scenario: A crashed consumer's executing claim is recovered
+  Given a command left at executing by a consumer that crashed before finalizing
+  When stale-claim recovery recognizes the claim as stale
+  Then the command is re-offered for consumption or driven to a terminal status by reconciliation
+  And no command stays stranded at executing forever
+```

@@ -663,6 +663,25 @@ impl SqliteEventStore {
         Ok(commands)
     }
 
+    /// Atomically claim a pending command for one consumer.
+    ///
+    /// Returns `true` only for the consumer that moved the command from
+    /// `pending` to `executing`; duplicate consumers receive `false` and must
+    /// not execute the command's side effect.
+    pub fn claim_command(&mut self, command_id: &str, claimed_at: &str) -> EventStoreResult<bool> {
+        let sql = r"
+            update commands
+            set status = 'executing',
+                updated_at = ?2
+            where command_id = ?1
+              and status = 'pending'
+            ";
+        let claimed = self
+            .connection
+            .execute(sql, params![command_id, claimed_at])?;
+        Ok(claimed == 1)
+    }
+
     /// Return the update command status value.
     pub fn update_command_status(
         &mut self,
@@ -690,6 +709,58 @@ impl SqliteEventStore {
             command_id.to_owned(),
             status.to_owned(),
         ))
+    }
+
+    /// Finalize a command owned by an executing consumer.
+    pub fn finalize_executing_command_status(
+        &mut self,
+        command_id: &str,
+        status: &str,
+        updated_at: &str,
+        result_json: Option<&str>,
+        error_json: Option<&str>,
+    ) -> EventStoreResult<CommandStatusUpdateOutcome> {
+        let sql = r"
+            update commands
+            set status = ?2,
+                result_json = ?3,
+                error_json = ?4,
+                updated_at = ?5
+            where command_id = ?1
+              and status = 'executing'
+            ";
+        let updated = self.connection.execute(
+            sql,
+            params![command_id, status, result_json, error_json, updated_at],
+        )?;
+        if updated == 0 {
+            return Err(EventStoreError::CommandNotFound(command_id.to_owned()));
+        }
+        Ok(CommandStatusUpdateOutcome::new(
+            command_id.to_owned(),
+            status.to_owned(),
+        ))
+    }
+
+    /// Mark stale executing commands as failed for operator-visible recovery.
+    pub fn fail_stale_executing_commands(
+        &mut self,
+        stale_before: &str,
+        recovered_at: &str,
+        error_json: &str,
+    ) -> EventStoreResult<usize> {
+        let sql = r"
+            update commands
+            set status = 'failed',
+                error_json = ?3,
+                updated_at = ?2
+            where status = 'executing'
+              and updated_at < ?1
+            ";
+        let updated = self
+            .connection
+            .execute(sql, params![stale_before, recovered_at, error_json])?;
+        Ok(updated)
     }
 
     /// Load checkpoint from the backing store.
@@ -1151,6 +1222,89 @@ mod tests {
     }
 
     #[test]
+    fn command_claim_wins_once_and_ignores_duplicate_consumers() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        store.append_command(&append)?;
+
+        assert!(store.claim_command("cmd_1", "2026-06-23T00:00:02Z")?);
+        assert!(!store.claim_command("cmd_1", "2026-06-23T00:00:03Z")?);
+
+        let commands = store.list_commands()?;
+        assert_eq!(commands[0].status(), "executing");
+        Ok(())
+    }
+
+    #[test]
+    fn executing_command_finalization_requires_an_owned_claim() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        store.append_command(&append)?;
+
+        let unclaimed = store.finalize_executing_command_status(
+            "cmd_1",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            Some(r#"{"event_count":0}"#),
+            None,
+        );
+        assert!(matches!(unclaimed, Err(EventStoreError::CommandNotFound(id)) if id == "cmd_1"));
+
+        assert!(store.claim_command("cmd_1", "2026-06-23T00:00:02Z")?);
+        let result_json = Some(r#"{"event_count":0}"#);
+        let claimed = store.finalize_executing_command_status(
+            "cmd_1",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            result_json,
+            None,
+        );
+
+        assert!(matches!(claimed, Ok(outcome) if outcome.status() == "completed"));
+        assert_eq!(store.list_commands()?[0].status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn stale_executing_commands_fail_only_before_the_cutoff() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let stale = command_append(
+            "cmd_stale",
+            "idem_stale",
+            CommandType::FactoryDrainRequested,
+        );
+        let fresh = command_append(
+            "cmd_fresh",
+            "idem_fresh",
+            CommandType::FactoryDrainRequested,
+        );
+        store.append_command(&stale)?;
+        store.append_command(&fresh)?;
+        assert!(store.claim_command("cmd_stale", "2026-06-22T00:00:00Z")?);
+        assert!(store.claim_command("cmd_fresh", "2026-06-23T00:00:00Z")?);
+
+        let cutoff = "2026-06-22T12:00:00Z";
+        let recovered_at = "2026-06-23T12:00:00Z";
+        let error_json = r#"{"reason":"stale"}"#;
+        let recovered = store.fail_stale_executing_commands(cutoff, recovered_at, error_json)?;
+        let commands = store.list_commands()?;
+
+        let stale_status = commands
+            .iter()
+            .find(|command| command.command_id() == "cmd_stale")
+            .map(StoredCommand::status);
+        let fresh_status = commands
+            .iter()
+            .find(|command| command.command_id() == "cmd_fresh")
+            .map(StoredCommand::status);
+
+        assert_eq!(recovered, 1);
+        assert_eq!(stale_status, Some("failed"));
+        assert_eq!(fresh_status, Some("executing"));
+        Ok(())
+    }
+
+    #[test]
     fn command_status_update_marks_existing_command() -> Result<(), EventStoreError> {
         let mut store = SqliteEventStore::open_in_memory()?;
         let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
@@ -1174,6 +1328,23 @@ mod tests {
             Ok("completed")
         ));
         assert_eq!(commands[0].status(), "completed");
+        Ok(())
+    }
+
+    #[test]
+    fn executing_command_finalization_reports_sqlite_failure() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.connection.execute_batch("drop table commands")?;
+
+        let outcome = store.finalize_executing_command_status(
+            "cmd_1",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            Some(r#"{"event_count":0}"#),
+            None,
+        );
+
+        assert!(matches!(outcome, Err(EventStoreError::Sqlite(_error))));
         Ok(())
     }
 
