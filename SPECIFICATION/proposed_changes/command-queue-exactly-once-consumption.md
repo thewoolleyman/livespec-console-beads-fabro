@@ -1,7 +1,7 @@
 ---
 topic: command-queue-exactly-once-consumption
 author: claude-opus-4-8
-created_at: 2026-07-23T02:23:25Z
+created_at: 2026-07-23T02:31:57Z
 ---
 
 ## Proposal: Exactly-once command consumption via an atomic executing claim
@@ -23,9 +23,9 @@ Work-item livespec-console-beads-fabro-ipwtll fixes a verified defect: the pendi
 
 **1. `SPECIFICATION/contracts.md` §"Command Handling" — add a "Single-consumer consumption" subsection** (after the initial-commands mapping prose, immediately before the `flowchart LR` diagram):
 
-> The persisted command queue is a SINGLE-CONSUMER queue. Every pending command MUST be executed by exactly one consumer, no matter how many console clients open the same store. Before running a command's handler, a consumer MUST atomically claim the command by transitioning its status `pending` -> `executing`; a consumer whose claim takes no effect — another consumer already owns the row — MUST NOT execute that command. On completion the owning consumer MUST finalize the claimed command from `executing` to a terminal status (`succeeded`, `failed`, or `rejected`).
+> The persisted command queue is a SINGLE-CONSUMER queue: every pending command MUST be executed by exactly one console client — that command's CONSUMER — no matter how many clients open the same store. Before running a command's handler, the consumer MUST atomically claim the command by transitioning its status `pending` -> `executing`; a client whose claim takes no effect — another consumer already owns the row — MUST NOT execute that command. On completion the owning consumer MUST finalize the claimed command from `executing` to a terminal status (`completed`, `failed`, `rejected`, or `not_wired` — the honesty rule's not-wired terminal outcome remains a legal finalization of a claimed command).
 >
-> A command stranded at `executing` by a consumer that crashed before finalizing MUST NOT stay stranded forever: once the claim is recognizably stale, the command MUST be re-offered for consumption (or driven to a terminal status by reconciliation). Stale-claim recovery governs the CONSUMPTION gap — claim taken, no finalization; handler rule 5's reconciliation/backfill continues to govern the SIDE-EFFECT gap — external side effect performed, outcome append missing. The two recovery paths compose; neither replaces the other.
+> A command stranded at `executing` by a consumer that crashed before finalizing MUST NOT stay stranded forever: once the claim is recognizably stale, the command MUST be re-offered for consumption (or driven to a terminal status by reconciliation). Staleness recognition MUST be conservative — a claim MUST NOT be treated as stale while its owning consumer is still executing the command, so recovery never steals a live claim and re-introduces the double-execution this section forbids; the concrete staleness mechanism (lease expiry, heartbeat, liveness probe) is the implementation's choice, the no-live-steal invariant is not. Stale-claim recovery governs the CONSUMPTION gap — claim taken, no finalization; handler rule 5's reconciliation/backfill continues to govern the SIDE-EFFECT gap — external side effect performed, outcome append missing. The two recovery paths compose; neither replaces the other.
 
 **2. Same section — extend the `flowchart LR`** so the diagram shows the claim ahead of policy validation and the stale-claim recovery loop:
 
