@@ -23,6 +23,8 @@ orchestrator's `drive` API.
   keybinding reference, the Help modal, and the dispatcher settings.
 - [Lifecycle walkthrough](lifecycle-walkthrough.md) — one work-item from
   waiting-for-a-human to shipped, key by key.
+- [Factory confirmations](factory-confirmations.md) — dated operational
+  confirmations for sandbox and release-path acceptance checks.
 
 Contributor-facing material — building the workspace, the quality gate, and
 the Beads runtime prerequisites — lives in the repository's top-level
