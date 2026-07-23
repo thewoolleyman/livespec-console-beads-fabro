@@ -27,10 +27,30 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   with 2–4 concrete options and a clearly-marked **"(Recommended)"** first
   option — never as a freeform prose question. Put load-bearing framing inside
   the question / option text.
+  - **Batch pending decisions into ONE call** (up to 4 questions) rather than
+    serial round-trips; the maintainer answers them together and expects
+    everything approved to then be executed end-to-end, with each outcome
+    VERIFIED (not assumed) before it is reported.
+  - **An "Other" free-text answer may redirect the question's premise, not
+    pick among your options — re-verify the redirected target before acting.**
+    Observed 2026-07-22: a question about which items to review was answered
+    by naming five specific "stale pending-approval records" from a handoff;
+    the ledger showed all five already `done`. The right response was fresh
+    verification and a report back, not executing the literal instruction.
 - **Don't stop to ask what you should just do.** Execute the agreed plan and the
   obvious next steps yourself; reserve questions for genuinely maintainer-owned
   choices you cannot resolve from the request, the code, or sensible defaults —
   and even then lead with a recommendation.
+- **Overseer tracks: never sit silently idle.** Long-running sessions on this
+  host run under an overseer daemon, one track per plan thread, with a state
+  file at `tmp/overseer/<thread>/.overseer-state` (untracked). When every
+  remaining action is genuinely human-gated, write
+  `blocked: <one-line reason listing the concrete pending decisions>` to that
+  file so the operator is alerted out-of-band; remove the file when working
+  again. On an overseer nudge, FIRST refresh repo + ledger state (both move
+  under concurrent sessions — plan-handoff status claims have measurably
+  rotted within hours), then do real in-scope work if any exists, and only
+  then write the blocked marker.
 - **Durable agent memory lives in-repo.** Persist durable agent guidance and
   learned preferences in this file (or a file it references), NOT in ephemeral
   per-session agent memory. The repo's hook that blocks `~/.claude` memory writes
