@@ -33,7 +33,7 @@ jobs:
     # CI_RUNNER_LABELS repo variable to '["ubuntu-latest"]').
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.52.3
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.52.4
     env:
       # The image installs the pinned tools under /root (build-time HOME), but
       # container-hooks run steps with a DIFFERENT HOME — so mise's default data
@@ -149,7 +149,7 @@ jobs:
     # PUBLIC clone INSIDE the container (no host mount — containment preserved).
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.52.3
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.52.4
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -214,7 +214,7 @@ jobs:
     name: check-e2e-tmux
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["self-hosted","local-ci"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.52.3
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v0.52.4
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
