@@ -15,16 +15,20 @@ consumption path, so it is fixed once, here, before the surface widens.
 ## Read first
 
 1. This file.
-2. `crates/console-cli/src/lib.rs` — effect sink :337-345, `handle_pending_factory_commands`
-   :1128, `handle_pending_work_item_commands` :1165, `handle_pending_config_commands`
-   :1233, `finalize_pending_command` :1431, `distinguish_repeatable_command` :1519-1530.
+2. `crates/console-cli/src/lib.rs` — `handle_pending_factory_commands` :1131,
+   `handle_pending_work_item_commands` :1168, `handle_pending_config_commands` :1236,
+   `finalize_pending_command` :1492, `is_repeatable_command` :1602,
+   `distinguish_repeatable_command` :1620 (anchors refreshed 2026-07-23 on master).
 3. `crates/console-eventstore/src/lib.rs` — commands table :52+, status-update SQL
-   :677-678.
+   :678. Terminal command statuses are `completed` / `failed` / `rejected` /
+   `not_wired` — NOT "succeeded"; the flowchart's "success event" node misleads.
 4. `SPECIFICATION/contracts.md` §"Command Handling" (:394) — the numbered handler list
-   and the `flowchart LR` at :465-484.
+   and the `flowchart LR` at :465+.
 5. `SPECIFICATION/non-functional-requirements.md` §"Behavioral Coverage" (:210-220) —
    the clause→scenario→test chain rule the contract rider below depends on.
-6. `AGENTS.md` — credential wrapper, mutation protocol.
+6. `SPECIFICATION/proposed_changes/command-queue-exactly-once-consumption.md` — the
+   FILED contract rider (pending; see Step 2).
+7. `AGENTS.md` — credential wrapper, mutation protocol.
 
 ## Status is read live, never stored here
 
@@ -36,12 +40,20 @@ a rationale, not a value to trust — every one may have changed since it was wr
 /livespec-orchestrator-beads-fabro:next --json
 ```
 
-## Nothing here is agent-dispatchable — every first act is the maintainer's
+CAUTION (learned 2026-07-23): "read live" means the credential-wrapped ledger CLIs
+above, run so they see current state — a `list-work-items` read through a stale,
+behind-origin primary checkout reported `-ipwtll` at `pending-approval` when the live
+ledger had it at `ready`. When the primary checkout is behind or dirty, trust `drive`'s
+own source-state errors over a local listing.
 
-Three maintainer acts, zero agent acts: review/merge PR #316; the admission valve on
-`-ipwtll`; and the contract-rider ruling below. `-ipwtll` sits at `pending-approval`, so
-here `approve` IS the right verb — it is defined (`contracts.md:442`) as exactly the
-`pending-approval -> ready` transition. (Read status live; do not trust this paragraph.)
+## Two of the three maintainer acts cleared 2026-07-23; one remains
+
+Of the split's three maintainer acts: (1) review/merge PR #316 — STILL OPEN, the one
+remaining act; (2) the admission valve on `-ipwtll` — CLEARED, item read `ready` from
+the live ledger; (3) the contract-rider ruling — RESOLVED: the maintainer ruled
+"amend, riding with the impl", and the rider is FILED and pending in-tree (Step 2).
+A fourth, future maintainer act replaces (3): the revise-pass accept/reject of the
+filed rider. (Read status live; do not trust this paragraph.)
 
 The numbered steps below are the ORDER OF EVENTS, not a to-do list for the reader.
 
@@ -57,13 +69,16 @@ lines; the `+3381,276` in the diff header is the new-side span, not an added-lin
 
 **It is NOT the same region `-ipwtll` edits, and a conflict is not guaranteed.** #316
 sits on the APPEND path; `-ipwtll` changes the CONSUME path — `handle_pending_*_commands`
-(:1128, :1165, :1233) and `finalize_pending_command` (:1431). Different functions; ~45 lines of untouched code
-separate the nearest edges (`finalize_pending_command` ends :1464, #316's first changed
-line is old :1509).
+(:1131, :1168, :1236) and `finalize_pending_command` (:1492). Different functions.
 
-Merge it first anyway: same file, and it closes `-ble`, so sequencing keeps the rebase
-trivial. But do not treat that ordering as load-bearing — if the maintainer is slow to
-review, `-ipwtll` can proceed and rebase.
+**Rebased 2026-07-23.** The predicted-trivial rebase turned SEMANTIC: master's
+`4241fc3` (maintainer-authored, Jul 20) independently grew its own
+`is_repeatable_command` (move + factory drain, with the payload-less `PersistCommand`
+arm now calling `distinguish_repeatable_command` too), while #316 widened the
+payload-carrying set and claimed drain "never reaches this function" — no longer true.
+Resolved as the UNION: all ten `CommandType`s minus the two once-per-item valves
+(approve/accept), master's drain semantics and tests preserved verbatim. Head is
+`2e1fb83`; all checks green post-rebase; only maintainer review is missing.
 
 On merge, `-ble` closes. No further filing is needed for it.
 
@@ -75,15 +90,23 @@ command. Two consoles open against one store double-execute.
 
 Fix direction: an atomic claim on the `commands` table (claim → execute → finalize),
 plus stale-`executing` recovery so a crashed consumer does not strand a row forever.
+Terminal statuses are `completed`/`failed`/`rejected`/`not_wired` (NOT "succeeded").
 
-Item sits at `pending-approval` — it needs the admission valve, not more analysis; its
-acceptance is already autonomously verifiable.
+Valve CLEARED 2026-07-23 — item read `ready` from the live ledger; it is
+Dispatcher-drainable now.
 
-**Recommended rider:** `contracts.md` §"Command Handling" shows a one-handler sequence
-but never states exactly-once consumption or an `executing` status. Since Behavioral
-Coverage requires every normative behavior to chain clause→scenario→test, ask the
-maintainer whether the new semantics get a one-paragraph contract amendment riding with
-the impl, or whether the existing sequence diagram is deemed to imply it.
+**Rider RESOLVED and FILED (2026-07-23):** the maintainer ruled "amend, riding with
+the impl". The proposal is pending in-tree at
+`SPECIFICATION/proposed_changes/command-queue-exactly-once-consumption.md` (landed via
+PR #393 + a doctor-driven amendment). It adds the single-consumer subsection to
+§"Command Handling" (atomic `pending -> executing` claim, terminal finalize including
+`not_wired`, stale-claim recovery with a normative NO-LIVE-STEAL invariant), extends
+the section flowchart, and adds `scenarios.md` Scenario 24. BINDING CONSTRAINT the
+proposal itself states: the revise pass MUST accept it atomically with (a)
+`tests/heading-coverage.json` entries linking the new clauses' gap-ids to Scenario 24
+and (b) `-ipwtll`'s top-of-pyramid test — accept earlier and the behavioral-coverage
+gate breaks. Practically: run the revise acceptance as part of (or immediately behind)
+the `-ipwtll` implementation PR.
 
 ## Explicitly PARKED — `-8aw` is not in this thread
 
@@ -120,8 +143,12 @@ artificial blocking.
 
 - Maintainer review + merge of PR #316 — gates `-ble`'s CLOSURE only. It does NOT gate
   `-ipwtll`, which can proceed and rebase (see Step 1).
-- Admission valve on `-ipwtll` (already at `pending-approval`).
-- Maintainer ruling on the contract-rider question above.
+- ~~Admission valve on `-ipwtll`~~ — CLEARED 2026-07-23 (item `ready`).
+- ~~Maintainer ruling on the contract-rider question~~ — RESOLVED 2026-07-23: amend,
+  riding with the impl; rider filed and pending in-tree (Step 2).
+- NEW: revise-pass accept/reject of the filed rider — maintainer act, exercised
+  atomically with the `-ipwtll` impl's coverage entries and test (Step 2's binding
+  constraint).
 
 ## Dispatch
 
