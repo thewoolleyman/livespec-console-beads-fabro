@@ -46,14 +46,20 @@ behind-origin primary checkout reported `-ipwtll` at `pending-approval` when the
 ledger had it at `ready`. When the primary checkout is behind or dirty, trust `drive`'s
 own source-state errors over a local listing.
 
-## Two of the three maintainer acts cleared 2026-07-23; one remains
+## All agent work is DONE (2026-07-23, second pass); four maintainer acts remain
 
-Of the split's three maintainer acts: (1) review/merge PR #316 — STILL OPEN, the one
-remaining act; (2) the admission valve on `-ipwtll` — CLEARED, item read `ready` from
-the live ledger; (3) the contract-rider ruling — RESOLVED: the maintainer ruled
-"amend, riding with the impl", and the rider is FILED and pending in-tree (Step 2).
-A fourth, future maintainer act replaces (3): the revise-pass accept/reject of the
-filed rider. (Read status live; do not trust this paragraph.)
+1. Review/merge PR #399 — the `-ipwtll` implementation (see Step 2's dispatch
+   record). Green, CLEAN, no auto-merge armed.
+2. Review/merge PR #316 — closes `-ble`.
+   **Order is free: a combined-tree certification (`git merge-tree` of the two
+   heads, then lib tests + coverage gate on the merged tree) passed 130/130 with
+   the gate clean — the branches compose with ZERO conflicts in either order.**
+3. Next `/livespec:revise` — disposition the pending rider proposal, which #399
+   APPLIES verbatim (accept-as-applied; see Step 2).
+4. `fabro attach 01KY6HC0CJ` → answer `[A]` — release the parked factory
+   container (non-gating, no rush).
+
+(Read status live; do not trust this paragraph.)
 
 The numbered steps below are the ORDER OF EVENTS, not a to-do list for the reader.
 
@@ -107,6 +113,30 @@ proposal itself states: the revise pass MUST accept it atomically with (a)
 and (b) `-ipwtll`'s top-of-pyramid test — accept earlier and the behavioral-coverage
 gate breaks. Practically: run the revise acceptance as part of (or immediately behind)
 the `-ipwtll` implementation PR.
+
+**Gate tolerance, verified in `console-spec-check` source (2026-07-23):** the
+coverage gate walks LIVE files only — orphan registry entries (gap-ids matching no
+live clause) and registry rows for not-yet-live scenarios are silently ignored
+(`evaluate` + `missing_tests`, `crates/console-spec-check/src/lib.rs:445-520`). So
+impl-first is gate-green; rider-first breaks. One trap: gap-ids hash the clause's
+EXACT line text (line-wrap-sensitive), so registry entries must be computed from the
+amendment's post-application wrapping — same-PR landing is safest.
+
+**DISPATCHED, FAILED AT PUBLISH, RESCUED — now PR #399 (2026-07-23):** the factory
+run (`01KY6HC0CJNYM7V5DV6PZGJ2T4`) implemented everything and went locally green
+in-sandbox — including applying the pending rider proposal VERBATIM to
+`contracts.md`/`scenarios.md`, writing the `heading-coverage.json` entries, and a
+janitor-cut `SPECIFICATION/history/v035/` out-of-band revision record. Its publish
+push was rejected by a factory INFRA defect, not code: the engine's pre-clone push of
+the source checkout was hook-refused, it silently fell back to a synthetic snapshot
+base (exists nowhere on origin), and the disjoint-history push tripped GitHub's
+workflows-scope wall on the first `.github/workflows/*` file. Filed as
+`bd-ib-pums` (P2) in the orchestrator tenant. The work product was replayed from
+`fabro dump` stage artifacts (implement + janitor + review_fix diffs) onto real
+master — clean apply, 123/123 tests, coverage gate clean — and published as PR #399
+with full provenance. The run container is parked `human_input_required`; answer
+`[A]` (abandon) after #399 merges. Consequence for the revise pass: the pending
+proposal is now APPLIED by #399 — disposition it accept-as-applied, not re-apply.
 
 ## Explicitly PARKED — `-8aw` is not in this thread
 
