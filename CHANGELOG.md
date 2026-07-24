@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.3.0...v0.3.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* distinguish every repeatable operator action, not only move ([940647b](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/940647b99ed72f645bde65bb9e75e81acc13d15e))
+* give the command queue single-consumer claim semantics ([2665cad](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/2665cade7e215bad316275a08cabedd5e74d9b56))
+
 ## [0.3.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.2.0...v0.3.0) (2026-07-21)
 
 
