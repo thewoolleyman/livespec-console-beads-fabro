@@ -137,23 +137,56 @@ set IS the tracked set:
 - **tracks** (collected pieces, custody unchanged): `-zweohm` (groom /
   state-valid verbs), `-l4p3ce` (LLM handoff MVP), `-vc7lmq`
   (valid-commands detail), `-qwjfsw` (bogus attach), `-7rcps4` (modal
-  paging), `-276inb` (attention record modal).
+  paging), `-276inb` (attention record modal), and — filed BY this
+  thread's 2026-07-21 real-stack walk — `-ectqye` (silent valve failures;
+  FLAGGED at the 2026-07-23 valve review, amendment owed, see
+  `research/valve-review-amendments.md`) and `-u3w3er` (unretryable
+  failed approve/accept).
 - **parent-child**: `-sreeqc` (lane rows show no title).
 
-Deliberately NOT tied: `-irdwyb`/`-ipwtll` (exactly-once command spine —
-multi-client hardening, parallel, not needed for a single-operator MVP);
-`-6hbfq6` (help-overlay navigation — nice-to-have, off the happy path);
-`-8aw` (per-item dispatch commands — the queue-level palette drain
-suffices for MVP; stays PARKED per `plan/command-queue-semantics/`).
+**Adjacent, custody elsewhere, load-bearing for the dispatch leg** (filed
+2026-07-20 by another session; none were named here before 2026-07-25,
+which hid why the drain leg could not complete): `-6ma` (aborted dispatch
+strands items in `active`, unretryable), `-8i9` (dispatch sandbox ignores
+the repo's Fabro override), `-m36` (TUI drain is once-per-store on a
+static idempotency key — THIS tenant's single drain is already spent),
+`-htp` (drain shells the dispatcher inline on the UI thread), `-9ts`
+(drain discards the operator's budget, hardcodes `--budget 50`). All P1,
+all `backlog`/unadmitted as of 2026-07-25, so the ranker never surfaces
+them. The TUI-drain leg of the walk cannot be discharged until `-m36`
+lands; un-stranding goes through `-6ma`.
+
+Deliberately NOT tied: `-irdwyb` (exactly-once command spine —
+multi-client hardening, parallel, not needed for a single-operator MVP;
+its sibling `-ipwtll` is CLOSED — `done` 2026-07-23); `-8aw` (per-item
+dispatch commands — the queue-level palette drain suffices for MVP; stays
+PARKED per `plan/archive/command-queue-semantics/`). `-6hbfq6`
+(help-overlay navigation) was admitted to `ready` by the 2026-07-23 valve
+review — still off the happy path, custody unchanged.
+
+**Measured 2026-07-25 (dated snapshot — re-measure before trusting):**
+`-276inb`, `-sreeqc`, `-qwjfsw`, `-ogpok4` sit `active`/`fabro` with no
+implementation artifacts since the 2026-07-21 drain — the `-6ma` strand
+signature. `-bamsy3` and `-ipwtll` completed (`done`) after the sandbox
+repair; PR #408 proved the factory pipeline live end-to-end on
+2026-07-23, so the pipeline works TODAY — the strands and the spent TUI
+drain are what remain broken. `-u3w3er` and `-6hbfq6` sit `ready` with no
+working TUI drain to pick them up.
 
 ## The track
 
-**Stage 0 — truthfulness/usability, no design gate.** `-7rcps4`, `-276inb`,
-`-sreeqc` sit DoR-passed at `pending-approval`; `-qwjfsw` (custody
-`-6msemd`, but factory-safe as scoped) needs admission from `backlog`.
-Operator admits at the TUI valve (`p`); implementation is **factory-side**:
-the Dispatcher drains admitted `ready` items (or `drive` with
-`impl:<id>`) — never in-session.
+**Stage 0 — truthfulness/usability, no design gate. Landed 2026-07-21 —
+with an honesty ledger.** All items were admitted and a drain issued; the
+full session evidence is `research/real-stack-walk-findings.md`. What
+actually counts as walked: `-276inb` was admitted at the TUI valve (`p`)
+cleanly; `-qwjfsw` was routed `backlog → ready` at the TUI `s` valve
+cleanly; **`-sreeqc`'s TUI approve leg is OPEN** — its first valve press
+failed silently (now `-ectqye`) and every retry was swallowed (now
+`-u3w3er`), so it was admitted via `drive.py` as a workaround, which
+advances the ledger but does NOT exercise the surface this thread exists
+to prove. **The dispatch leg is NOT discharged**: "admitted → ready →
+drain issued" ended in the `-6ma` strand (see § "Status composition"
+snapshot). `-7rcps4` was already `done` before the walk.
 
 **Stage 1 — the minimal-verb brainstorm (critical path).** Satisfy
 `plan/operator-surface-redesign/`'s maintainer entry gate with a
@@ -189,11 +222,35 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
-Open this handoff. Then: launch the console TUI with `just tui` from the
-repo root (builds the release binary and serves under the family env
-wrapper), and admit the Stage-0 items at
-the approve valve (`p`): `-7rcps4`, `-276inb`, `-sreeqc`, and route
-`-qwjfsw` to admission; let the Dispatcher drain them (factory path — do
-NOT implement in-session). In parallel, schedule the Stage-1 maintainer
-brainstorm by resuming the `plan` operation on `operator-surface-redesign`
-with this handoff's Stage-1 agenda as the brainstorm input.
+This thread runs **under supervision** since 2026-07-25 — read
+`plan/console-happy-path-mvp/supervisor-handoff.md` FIRST, and re-measure
+everything per its § "Reactivating a parked thread" (fetch + lanes + new
+items + cockpit binary age) before trusting any claim here.
+
+Then, in order:
+
+1. **The sequencing decision is with the maintainer** (prepared
+   2026-07-25, surfaced via the supervisor): whether a Stage-0.5 dispatch
+   repair (admit `-6ma`/`-m36`/`-htp`/`-9ts`, un-strand the four
+   2026-07-21 strands, re-attempt the TUI-drain leg once `-m36` lands)
+   runs ahead of everything, or brainstorm-first / a narrowed MVP wins.
+   Do not self-decide; do not dispatch repairs before it returns.
+2. **Stage-1 brainstorm is LIVE, decisions 1–5 taken** — recorded with
+   their verification in `research/verb-vocabulary-brainstorm.md`. Open:
+   point 6 (acceptance-lane `s` targets), the driver-door firing scope,
+   and the `-ectqye` amendment approach — batched to the maintainer
+   2026-07-25. The output routes as an ORCHESTRATOR-side propose-change
+   first (`livespec-orchestrator-beads-fabro` owns the per-state
+   valid-verb vocabulary and has not authored it yet — verified
+   2026-07-25 against that repo's SPECIFICATION); the console side is
+   presentation, consumed after ratification.
+3. **Amend `-ectqye`** per the valve-review FLAG
+   (`research/valve-review-amendments.md`): populate
+   `acceptance_criteria`, name the error surface concretely or split the
+   item store-side/TUI-side, and point the fix at drive's
+   already-captured `--json` stdout — never re-plumb stderr through
+   `SourceProbe`.
+4. **Cockpit hygiene before any further walk**: kill the stale `serve`
+   (the 2026-07-21 binary polled for four days), relaunch `just tui`
+   fresh, and check for a stray second client first (`ps` for `serve` —
+   the single-operator MVP assumes exactly ONE live client).
