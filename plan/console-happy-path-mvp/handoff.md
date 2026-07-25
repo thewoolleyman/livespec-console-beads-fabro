@@ -122,7 +122,12 @@ last verified against source and can skip it unless its area moved.
   on the ledger, not here: `-276inb`'s subject was delivered via
   `2cd1f28`+`6262f66` while the item sat stranded, and `940647b` is
   pre-implementation context for `-u3w3er` — see each item's 2026-07-26
-  `bd` comment.
+  `bd` comment. **Mechanism corrected later the same day:**
+  `2cd1f28`+`6262f66` are PR #358 — `-276inb`'s OWN dispatched run, not
+  another route; the run merged and died at post-merge bookkeeping (see
+  `research/strand-capture-2026-07-21/`). The disposition (close on
+  recovery, never re-dispatch) stands; a correcting `bd` comment was
+  appended to the item.
 
 ## Read-first chain
 
@@ -160,17 +165,42 @@ set IS the tracked set:
   failed approve/accept).
 - **parent-child**: `-sreeqc` (lane rows show no title).
 
-**Adjacent, custody elsewhere, load-bearing for the dispatch leg** (filed
-2026-07-20 by another session; none were named here before 2026-07-25,
-which hid why the drain leg could not complete): `-6ma` (aborted dispatch
-strands items in `active`, unretryable), `-8i9` (dispatch sandbox ignores
-the repo's Fabro override), `-m36` (TUI drain is once-per-store on a
-static idempotency key — THIS tenant's single drain is already spent),
-`-htp` (drain shells the dispatcher inline on the UI thread), `-9ts`
-(drain discards the operator's budget, hardcodes `--budget 50`). All P1,
-all `backlog`/unadmitted as of 2026-07-25, so the ranker never surfaces
-them. The TUI-drain leg of the walk cannot be discharged until `-m36`
-lands; un-stranding goes through `-6ma`.
+**Adjacent, custody elsewhere** (filed 2026-07-20 by another session).
+**CORRECTED 2026-07-26** — the 2026-07-25 version of this block relayed
+the five filed titles as present-tense fact; per-item verification
+against master and the dispatch journal found two already fixed and one
+mis-framed. Verified state:
+
+- `-m36` (drain once-per-store): **FIXED 2026-07-20 by `4241fc3`** —
+  `FactoryDrainRequested` is in `is_repeatable_command`
+  (`crates/console-cli/src/lib.rs:1713-1725`); the 2026-07-21 drain's
+  attempt-suffixed command id confirms it live. Ledger item stale-open;
+  closing it is a prepared maintainer decision.
+- `-8i9` (bundled workflow ignores the repo's Fabro override): **FIXED
+  by 2026-07-21** — every `dispatch-id` journal entry from the
+  2026-07-21 and 2026-07-23 runs records the REPO's own
+  `workflow_toml`, and three Rust-compiling PRs went green and merged.
+  Ledger item stale-open; closing prepared likewise.
+- `-9ts` (budget discarded, `--budget 50` hardcoded): **LIVE** —
+  `drain_ready_queue` ignores `_request` and pushes
+  `OPERATOR_DRAIN_BUDGET` (`console-application/src/lib.rs:1849,1869`).
+  Over-dispatches; does not block.
+- `-htp` (drain inline on the UI thread): **LIVE** — the drain call
+  site (`lib.rs:3363`) runs synchronously in effect handling; the one
+  `thread::spawn` in console-cli (`main.rs:207`) is the source poller,
+  not the drain. Freezes the cockpit; does not block.
+- `-6ma` (strands): the MECHANISM is real — stale `active` LEDGER rows
+  shrink WIP capacity (`_dispatcher_admission.py` counts
+  `status == "active"`), with nothing running behind them. Leaving a
+  dead run in `active` is DESIGNED (human recovery; the Dispatcher
+  never auto-resumes); the gap is that `active` conflates "executing"
+  with "awaiting a human", uncounted by any attention surface. Being
+  SUPERSEDED by a maintainer-directed epic in
+  `livespec-orchestrator-beads-fabro`; `-6ma` closes against that epic
+  id when it arrives — do not close it before then.
+
+Nothing here blocks a dispatch. The dispatch leg is not dead and there
+is no "Stage-0.5 dispatch repair" project.
 
 Deliberately NOT tied: `-irdwyb` (exactly-once command spine —
 multi-client hardening, parallel, not needed for a single-operator MVP;
@@ -180,14 +210,19 @@ PARKED per `plan/archive/command-queue-semantics/`). `-6hbfq6`
 (help-overlay navigation) was admitted to `ready` by the 2026-07-23 valve
 review — still off the happy path, custody unchanged.
 
-**Measured 2026-07-25 (dated snapshot — re-measure before trusting):**
-`-276inb`, `-sreeqc`, `-qwjfsw`, `-ogpok4` sit `active`/`fabro` with no
-implementation artifacts since the 2026-07-21 drain — the `-6ma` strand
-signature. `-bamsy3` and `-ipwtll` completed (`done`) after the sandbox
-repair; PR #408 proved the factory pipeline live end-to-end on
-2026-07-23, so the pipeline works TODAY — the strands and the spent TUI
-drain are what remain broken. `-u3w3er` and `-6hbfq6` sit `ready` with no
-working TUI drain to pick them up.
+**Measured 2026-07-26 (dated snapshot — re-measure before trusting;
+supersedes the wrong 2026-07-25 snapshot):** `-276inb`, `-sreeqc`,
+`-qwjfsw`, `-ogpok4` sit `active`/`fabro` — but NOT artifact-less: **all
+four of their PRs MERGED on 2026-07-21** (#352, #354, #358, #359; the
+implementations have been on master since). Each run died AFTER its
+merge, at the engine's `pull-primary` stage, because this thread's own
+uncommitted primary-checkout edits blocked the fast-forward — full
+verbatim evidence in `research/strand-capture-2026-07-21/`. The rows are
+post-merge bookkeeping residue awaiting HUMAN recovery (janitor,
+ledger-complete, acceptance), gated on supervisor authorization — do
+NOT move them, and do NOT re-dispatch them. `-u3w3er` and `-6hbfq6` sit
+`ready`; the drain is functional (`-m36` fixed), so dispatching them is
+an operator choice, not a blocked path.
 
 ## The track
 
@@ -200,9 +235,15 @@ cleanly; **`-sreeqc`'s TUI approve leg is OPEN** — its first valve press
 failed silently (now `-ectqye`) and every retry was swallowed (now
 `-u3w3er`), so it was admitted via `drive.py` as a workaround, which
 advances the ledger but does NOT exercise the surface this thread exists
-to prove. **The dispatch leg is NOT discharged**: "admitted → ready →
-drain issued" ended in the `-6ma` strand (see § "Status composition"
-snapshot). `-7rcps4` was already `done` before the walk.
+to prove. **The dispatch leg (corrected 2026-07-26): the drain
+dispatched all five picked items and every implementation MERGED** —
+four of the five runs then died at post-merge bookkeeping
+(`pull-primary` blocked by this session's own uncommitted primary-
+checkout edits; see § "Status composition" snapshot and
+`research/strand-capture-2026-07-21/`), so their ledger rows never
+reached acceptance. The leg is discharged through merge; the
+acceptance legs remain open pending strand recovery. `-7rcps4` was
+already `done` before the walk.
 
 **Stage 1 — the minimal-verb brainstorm (critical path).** Satisfy
 `plan/operator-surface-redesign/`'s maintainer entry gate with a
@@ -245,12 +286,18 @@ items + cockpit binary age) before trusting any claim here.
 
 Then, in order:
 
-1. **The sequencing decision is with the maintainer** (prepared
-   2026-07-25, surfaced via the supervisor): whether a Stage-0.5 dispatch
-   repair (admit `-6ma`/`-m36`/`-htp`/`-9ts`, un-strand the four
-   2026-07-21 strands, re-attempt the TUI-drain leg once `-m36` lands)
-   runs ahead of everything, or brainstorm-first / a narrowed MVP wins.
-   Do not self-decide; do not dispatch repairs before it returns.
+1. **Strand recovery, gated on supervisor authorization.** The
+   2026-07-25 "Stage-0.5 dispatch repair" sequencing question is VOID —
+   its premise (dispatch leg dead) was wrong; see the corrected
+   § "Status composition". What actually remains: the four `active`
+   rows are merged-work bookkeeping residue whose verbatim capture is
+   `research/strand-capture-2026-07-21/`; the supervisor authorizes
+   un-stranding only after that capture landed on master. Recovery per
+   item is verify-merged-PR → settle the skipped post-merge bookkeeping
+   → route through acceptance. NEVER re-dispatch them. `-6ma` closes
+   only against its superseding orchestrator-repo epic id, relayed by
+   the supervisor; `-m36`/`-8i9` closures are prepared maintainer
+   decisions (both fixed on master — see the corrected block above).
 2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
    (2026-07-21..25) — recorded with their verification in
    `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the
