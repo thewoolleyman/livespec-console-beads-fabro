@@ -74,21 +74,46 @@ thread's own backlog.
    `active` item never reaches the in-flight run. A rework bounce
    re-reads them at the next dispatch, from a dial-valid lane.
 
-## Open points (batched to the maintainer 2026-07-25)
-
-6. **Acceptance-lane `s` targets.** Code offers
+6. **Acceptance-lane `s` targets — `backlog` + `blocked` only** (decided
+   2026-07-25, relayed via supervisor). Code offered
    `acceptance → backlog/ready/active/blocked/done` (`lib.rs:483-489`),
-   contradicting the walkthrough's ship-guard prose ("done is reached
-   only by accept" — currently aspirational; `docs/detailed-usage.md`'s
-   table matches the code). Applying decided principles: `done` drops
-   (accept is the only ship door), `active` drops (dispatch-only). Open:
-   whether `ready` also drops (reject/rework as the only journaled
-   re-queue) leaving `backlog`+`blocked`, or stays as an unjournaled
-   re-queue.
-7. **Driver-door firing scope** (from point 3): any `ready` item, or
-   factory-unsafe only.
-8. **`-ectqye` amendment approach** (valve-review FLAG): one item with
-   the surface named concretely, or split store-side/TUI-side.
+   contradicting the walkthrough's ship-guard prose. `done` drops (accept
+   is the only ship door), `active` drops (dispatch-only), and `ready`
+   drops too — reject(rework) is the only journaled re-queue. `s` from
+   `acceptance` means deliberate de-scope (`backlog`) or park
+   (`blocked`). The walkthrough's ship-guard prose becomes true rather
+   than aspirational; `docs/detailed-usage.md`'s move table changes with
+   the impl.
+
+7. **Driver-door firing scope — factory-unsafe items only** (decided
+   2026-07-25, relayed via supervisor; predicate verified at source
+   2026-07-25). The driver door fires on exactly the items the
+   Dispatcher's **host-only refusal at dispatch admission** already
+   refuses to sandbox: `_dispatcher_admission.py:82-86` runs every
+   selection candidate through `host_only_refusal`;
+   `_dispatcher_host_only.py` defines `is_host_only_item` as
+   `factory_safety is not None`, and its refusal text says "Host-route it
+   to a host sub-agent instead; the item remains open for that route" —
+   the orchestrator already anticipates this exact route. No
+   dispatcher/driver race by construction. (Naming correction: this gate
+   is the dispatch-admission host-only refusal, NOT the "janitor gate" —
+   the janitor is the post-merge check family.) Any-ready firing needs a
+   claim mechanism and defers to the redesign thread.
+
+## `-ectqye` routing (decided 2026-07-25: reconcile with `-k0w` first)
+
+The maintainer rejected both amendment cuts as filed and directed
+reconciliation with `livespec-console-beads-fabro-k0w` (filed 2026-07-20,
+a day before `-ectqye`, P2 `backlog`, from the factory-drain path) before
+any split. Verified 2026-07-25: `-k0w` indeed covers both halves — no
+operator surface for failed commands AND `error_json` empty at the store
+— plus silent SUCCESS, and carries the code analysis (`footer_hint` is a
+`const fn` with no message slot; surfacing outcomes is a multi-layer
+feature). The honest seam between the two records is **store-side vs
+UI-side, not drain-path vs valve-path** — both paths share the same two
+broken layers, so a drain/valve seam would duplicate the shared
+mechanism across both items. Custody proposal handed to the supervisor;
+nothing filed until it returns.
 
 ## Also verified during the brainstorm
 

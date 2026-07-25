@@ -235,19 +235,21 @@ Then, in order:
    2026-07-21 strands, re-attempt the TUI-drain leg once `-m36` lands)
    runs ahead of everything, or brainstorm-first / a narrowed MVP wins.
    Do not self-decide; do not dispatch repairs before it returns.
-2. **Stage-1 brainstorm is LIVE, decisions 1–5 taken** — recorded with
-   their verification in `research/verb-vocabulary-brainstorm.md`. Open:
-   point 6 (acceptance-lane `s` targets), the driver-door firing scope,
-   and the `-ectqye` amendment approach — batched to the maintainer
-   2026-07-25. The output routes as an ORCHESTRATOR-side propose-change
-   first (`livespec-orchestrator-beads-fabro` owns the per-state
-   valid-verb vocabulary and has not authored it yet — verified
-   2026-07-25 against that repo's SPECIFICATION); the console side is
-   presentation, consumed after ratification.
-3. **Amend `-ectqye`** per the valve-review FLAG
-   (`research/valve-review-amendments.md`): populate
-   `acceptance_criteria`, name the error surface concretely or split the
-   item store-side/TUI-side, and point the fix at drive's
+2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
+   (2026-07-21..25) — recorded with their verification in
+   `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the
+   `-l4p3ce` handoff-transport design, then drafting the amendment set.
+   The output routes as an ORCHESTRATOR-side propose-change first
+   (`livespec-orchestrator-beads-fabro` owns the per-state valid-verb
+   vocabulary and has not authored it yet — verified 2026-07-25 against
+   that repo's SPECIFICATION); the console side is presentation,
+   consumed after ratification.
+3. **`-ectqye` routing decided 2026-07-25: reconcile with `-k0w` before
+   any amendment or split** — `-k0w` (filed 2026-07-20, factory-drain
+   path) already covers both halves of the defect. The store/UI custody
+   proposal is with the supervisor (see the research note's § "`-ectqye`
+   routing"); nothing is filed until it returns. The valve-review FLAG's
+   technical guidance stands: the diagnostic lives in drive's
    already-captured `--json` stdout — never re-plumb stderr through
    `SourceProbe`.
 4. **Cockpit hygiene before any further walk**: kill the stale `serve`
