@@ -107,6 +107,22 @@ last verified against source and can skip it unless its area moved.
   `PgUp/PgDn page`; only the modal's own terse internal footer
   (`console-tui/src/lib.rs:1357`) omits it. Cosmetic terseness, not
   undocumented paging; left as-is.
+- **2026-07-26 (happy-path session, delta pass on an overseer nudge).**
+  Delta audit against master `ac61669`: since the prior baseline
+  `ab6e567`, the only non-docs commits are `940647b` (repeatable-command
+  identity — approve/accept deliberately left static-keyed) and
+  `2665cad` (command-queue single-consumer claim semantics) — both
+  internal command-spine changes. Verified no operator doc claims moved:
+  zero hits for command identity / retry / queue-consumption prose
+  across `docs/` (the one "idempotent" hit, `detailed-usage.md:158`, is
+  about autonomous-decision reflection, untouched by either commit).
+  **Clean by delta** — NOT a full re-verify of the skip-list. Scope
+  note: `docs/factory-confirmations.md` appeared 2026-07-24 (PR #408),
+  so the custody obligation now covers six files. Side findings recorded
+  on the ledger, not here: `-276inb`'s subject was delivered via
+  `2cd1f28`+`6262f66` while the item sat stranded, and `940647b` is
+  pre-implementation context for `-u3w3er` — see each item's 2026-07-26
+  `bd` comment.
 
 ## Read-first chain
 
