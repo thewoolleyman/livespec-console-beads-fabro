@@ -102,7 +102,10 @@ where the thread stands is how this requirement fractured three times before.
 - **Short instruction:** one
   `tmux send-keys -t console-happy-path-mvp -- '<one line>' Enter`.
 - **Longer text:** `tmux load-buffer` then `paste-buffer -t`, and VERIFY the paste
-  landed (capture the pane) BEFORE pressing Enter.
+  landed (capture the pane) BEFORE pressing Enter. A landed paste renders as
+  `[Pasted text #N +M lines]` in the input line; anything else means it did not
+  land. **Re-check for an open picker immediately before EVERY paste** — see the
+  Corrections log.
 - **Idle-plus-queued-input means STUCK, not idle.** Check for a modal or an open
   picker before assuming the session is resting.
 - An open `AskUserQuestion` picker SUPPRESSES the overseer daemon's wrap-up
@@ -248,6 +251,19 @@ are role-level rather than track-level:
 
 Earned on this track:
 
+- **Never paste into a pane with an open picker, and re-check right before every
+  paste.** Brief 01 was pasted into a pane checked clear moments earlier; between
+  the check and the paste the worker raised its NEXT brainstorm point, and the
+  picker swallowed the whole brief. Nothing landed and nothing warned — the pane
+  looked normal. Worse, a picker reads pasted text as KEYSTROKES, so an unlucky
+  paste can navigate or answer a maintainer-owned question. The window between
+  answering one point and the next opening is small and it is exactly when a
+  supervisor wants to talk. Capture, confirm no `Enter to select` line, paste,
+  confirm `[Pasted text #N]`, then Enter.
+- **Serial brainstorm pickers are a supervision outage in disguise.** The worker
+  raised its points one per turn, each one re-suppressing the daemon's wrap-up
+  injection. Batching is not only this maintainer's stated preference
+  (`AGENTS.md`) — it is what keeps the track supervised between decisions.
 - **A silent gate is a supervision outage, not a pause.** This thread sat on an
   open `AskUserQuestion` picker from 2026-07-23 to 2026-07-25 with no
   `.overseer-state` marker written. The picker suppressed the daemon's injection
