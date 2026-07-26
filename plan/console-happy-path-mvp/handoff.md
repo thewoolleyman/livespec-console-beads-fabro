@@ -199,14 +199,15 @@ mis-framed. Verified state:
   human"); it was MIS-FILED in this tenant. Beads has no cross-tenant
   edge — the close reason and this line ARE the link.
 
-**With `-6ma` closed, NO open ledger item in this tenant tracks the
-four stranded rows. THIS handoff is the tracking surface** until their
-recovery completes: `-sreeqc`, `-276inb`, `-qwjfsw`, `-ogpok4` await
-supervisor-authorized recovery against
-`research/strand-capture-2026-07-21/` (see the measured snapshot and
-Next action). Deleting or trimming this paragraph without a successor
-surface re-creates the invisible-obligation failure the defect itself
-is about.
+**The strand obligation is DISCHARGED (2026-07-26, supervisor-
+authorized).** All four rows were recovered through the guarded valve
+`dispatcher.py reconcile-merged` — merge re-confirmed from the forge,
+post-merge janitor green per item, parked at `acceptance` under
+`ai-then-human`, verified in the ledger. Never routed through
+`backlog`/`ready`, nothing re-dispatched. The capture
+(`research/strand-capture-2026-07-21/`, recovery record appended)
+remains the reproduction for the orchestrator's
+`plan/dispatch-claim-liveness/` thread.
 
 Nothing here blocks a dispatch. The dispatch leg is not dead and there
 is no "Stage-0.5 dispatch repair" project.
@@ -219,17 +220,14 @@ PARKED per `plan/archive/command-queue-semantics/`). `-6hbfq6`
 (help-overlay navigation) was admitted to `ready` by the 2026-07-23 valve
 review — still off the happy path, custody unchanged.
 
-**Measured 2026-07-26 (dated snapshot — re-measure before trusting;
-supersedes the wrong 2026-07-25 snapshot):** `-276inb`, `-sreeqc`,
-`-qwjfsw`, `-ogpok4` sit `active`/`fabro` — but NOT artifact-less: **all
-four of their PRs MERGED on 2026-07-21** (#352, #354, #358, #359; the
-implementations have been on master since). Each run died AFTER its
-merge, at the engine's `pull-primary` stage, because this thread's own
-uncommitted primary-checkout edits blocked the fast-forward — full
-verbatim evidence in `research/strand-capture-2026-07-21/`. The rows are
-post-merge bookkeeping residue awaiting HUMAN recovery (janitor,
-ledger-complete, acceptance), gated on supervisor authorization — do
-NOT move them, and do NOT re-dispatch them. `-u3w3er` and `-6hbfq6` sit
+**Measured 2026-07-26, post-recovery (dated snapshot — re-measure
+before trusting):** `-276inb`, `-sreeqc`, `-qwjfsw`, `-ogpok4` sit at
+**`acceptance`** (assignee `fabro`, the normal factory shape) — their
+PRs merged 2026-07-21 (#352, #354, #358, #359), the skipped post-merge
+janitor re-ran green during recovery, and each now awaits the **human
+accept valve (`c`) under `ai-then-human`** — which is precisely the
+happy path's own acceptance leg, walkable at the TUI once a FRESH
+cockpit is launched (see Next action). `-u3w3er` and `-6hbfq6` sit
 `ready`; the drain is functional (`-m36` fixed), so dispatching them is
 an operator choice, not a blocked path.
 
@@ -295,19 +293,16 @@ items + cockpit binary age) before trusting any claim here.
 
 Then, in order:
 
-1. **Strand recovery, gated on supervisor authorization.** The
-   2026-07-25 "Stage-0.5 dispatch repair" sequencing question is VOID —
-   its premise (dispatch leg dead) was wrong; see the corrected
-   § "Status composition". What actually remains: the four `active`
-   rows are merged-work bookkeeping residue whose verbatim capture is
-   `research/strand-capture-2026-07-21/` (landed on master 2026-07-26,
-   PR #431); the un-strand now waits ONLY on the supervisor's explicit
-   authorization. Recovery per item is verify-merged-PR → settle the
-   skipped post-merge bookkeeping → route through acceptance. NEVER
-   re-dispatch them. `-6ma` is CLOSED (2026-07-26, superseded by
-   `bd-ib-waov` — see § "Status composition"); `-m36`/`-8i9` closures
-   remain prepared maintainer decisions (both fixed on master — see the
-   corrected block above).
+1. **Strand recovery is COMPLETE (2026-07-26, supervisor-authorized;
+   see § "Status composition"). The live next leg it opens: the accept
+   valve.** Four real merged items sit at `acceptance` awaiting the
+   operator's `c` under `ai-then-human` — the happy path's own
+   acceptance leg, on real work, at the real stack. Before walking it:
+   launch a FRESH cockpit (`just tui` — the previous serve was killed
+   2026-07-26; never trust a stale binary, never run two clients).
+   `-6ma` is CLOSED (superseded by `bd-ib-waov`); `-m36`/`-8i9`
+   closures remain prepared maintainer decisions (both fixed on master
+   — see the corrected block above).
 2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
    (2026-07-21..25) — recorded with their verification in
    `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the

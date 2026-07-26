@@ -81,3 +81,39 @@ verify the merged PR against master, run/settle the post-merge
 bookkeeping the engine skipped, and route the item through acceptance —
 NOT re-dispatch (the work is merged; a re-dispatch would rebuild landed
 code and double-spend the queue).
+
+## Recovery record — 2026-07-26 (supervisor-authorized, briefs 05/06)
+
+All four rows were recovered through the purpose-built guarded valve —
+`dispatcher.py reconcile-merged --repo <primary> --item <id>` — which
+re-resolved each merged PR from the forge, re-ran only the post-merge
+janitor, and entered the normal acceptance path without relaunching
+Fabro. Per-item outcome `green` / "merged, post-merge janitor green"
+(PRs #352, #354, #358, #359 confirmed in each output). Verified in the
+ledger afterwards: all four at `acceptance`, awaiting the human accept
+valve under this repo's `ai-then-human` policy. No item was routed
+through `backlog` or `ready`; nothing was re-dispatched.
+
+Two findings recorded on supervisor request (brief 06), for the
+`plan/dispatch-claim-liveness/` thread in
+`livespec-orchestrator-beads-fabro` — recorded here only, nothing filed
+in that tenant:
+
+1. **Janitor-red check: NEGATIVE.** None of the four ever reached a
+   janitor stage — the only janitor entries in the captured trail
+   belong to the `-bamsy3` control (green). All four terminal outcomes
+   are `outcome.stage: "pull-primary", status: "failed"`. So this
+   tenant's strands are NOT members of that repo's 18-item
+   `janitor-post-merge/failed` population; they are a DIFFERENT failed
+   terminal stage exhibiting the SAME class that thread has since
+   diagnosed (the dispatcher survives and journals a terminal failed
+   outcome, but the outcome→transition mapping is partial — no ledger
+   transition exists for a post-merge failure, whatever the failed
+   stage). A second FLAVOR of the class in a second tenant, not a
+   second instance of theirs.
+2. **Assignee after recovery: `fabro` retained at `acceptance`** on all
+   four — matching the normal factory shape (controls `-bamsy3` and
+   `-ipwtll` retain `assignee: fabro` even at `done`), so the
+   `move_item` leaves-assignee-behind violation that thread documented
+   was NOT triggered here: the guarded reconcile valve was used, never
+   `move_item`.
