@@ -117,3 +117,30 @@ in that tenant:
    `move_item` leaves-assignee-behind violation that thread documented
    was NOT triggered here: the guarded reconcile valve was used, never
    `move_item`.
+
+## Observed outcome — assignee retention through recovery (2026-07-26)
+
+Recorded on supervisor direction (brief 07) as a corroborating witness
+for `plan/dispatch-claim-liveness/` in
+`livespec-orchestrator-beads-fabro` — nothing fixed, nothing filed in
+that tenant.
+
+Ledger state re-verified 2026-07-26 after the `reconcile-merged`
+recovery: **all four items sit at `acceptance` still carrying
+`assignee: fabro`** —
+
+    livespec-console-beads-fabro-sreeqc    acceptance    fabro
+    livespec-console-beads-fabro-276inb    acceptance    fabro
+    livespec-console-beads-fabro-qwjfsw    acceptance    fabro
+    livespec-console-beads-fabro-ogpok4    acceptance    fabro
+
+That thread predicted stale-assignee retention from their side (their
+`move_item` has no source-state guard and writes no assignee). This run
+confirms the retention holds for the SANCTIONED recovery valve too —
+`reconcile-merged` does not clear `assignee` on the `active →
+acceptance` completion — and confirms it in a SECOND tenant, which is
+stronger than their single reproduction. Context for whoever weighs it:
+this tenant's normal factory completions also retain `assignee: fabro`
+at `done` (`-bamsy3`, `-ipwtll`), so retention here may be the intended
+completion shape rather than a defect — the two-tenant observation is
+the fact; the verdict belongs to that thread.
