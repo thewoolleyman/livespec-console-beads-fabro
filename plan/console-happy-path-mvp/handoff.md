@@ -189,15 +189,24 @@ mis-framed. Verified state:
   site (`lib.rs:3363`) runs synchronously in effect handling; the one
   `thread::spawn` in console-cli (`main.rs:207`) is the source poller,
   not the drain. Freezes the cockpit; does not block.
-- `-6ma` (strands): the MECHANISM is real — stale `active` LEDGER rows
-  shrink WIP capacity (`_dispatcher_admission.py` counts
-  `status == "active"`), with nothing running behind them. Leaving a
-  dead run in `active` is DESIGNED (human recovery; the Dispatcher
-  never auto-resumes); the gap is that `active` conflates "executing"
-  with "awaiting a human", uncounted by any attention surface. Being
-  SUPERSEDED by a maintainer-directed epic in
-  `livespec-orchestrator-beads-fabro`; `-6ma` closes against that epic
-  id when it arrives — do not close it before then.
+- `-6ma` (strands): **CLOSED 2026-07-26 as superseded** by epic
+  `bd-ib-waov` (P1) in the `livespec-orchestrator-beads-fabro` tenant —
+  fixing thread `plan/dispatch-claim-liveness/` there (its PR #947),
+  verified on that repo's origin/master before closing. The diagnosis
+  was CORRECT (stale `active` LEDGER rows shrink WIP capacity —
+  `_dispatcher_admission.py` counts `status == "active"` — with nothing
+  running behind them; `active` conflates "executing" with "awaiting a
+  human"); it was MIS-FILED in this tenant. Beads has no cross-tenant
+  edge — the close reason and this line ARE the link.
+
+**With `-6ma` closed, NO open ledger item in this tenant tracks the
+four stranded rows. THIS handoff is the tracking surface** until their
+recovery completes: `-sreeqc`, `-276inb`, `-qwjfsw`, `-ogpok4` await
+supervisor-authorized recovery against
+`research/strand-capture-2026-07-21/` (see the measured snapshot and
+Next action). Deleting or trimming this paragraph without a successor
+surface re-creates the invisible-obligation failure the defect itself
+is about.
 
 Nothing here blocks a dispatch. The dispatch leg is not dead and there
 is no "Stage-0.5 dispatch repair" project.
@@ -291,13 +300,14 @@ Then, in order:
    its premise (dispatch leg dead) was wrong; see the corrected
    § "Status composition". What actually remains: the four `active`
    rows are merged-work bookkeeping residue whose verbatim capture is
-   `research/strand-capture-2026-07-21/`; the supervisor authorizes
-   un-stranding only after that capture landed on master. Recovery per
-   item is verify-merged-PR → settle the skipped post-merge bookkeeping
-   → route through acceptance. NEVER re-dispatch them. `-6ma` closes
-   only against its superseding orchestrator-repo epic id, relayed by
-   the supervisor; `-m36`/`-8i9` closures are prepared maintainer
-   decisions (both fixed on master — see the corrected block above).
+   `research/strand-capture-2026-07-21/` (landed on master 2026-07-26,
+   PR #431); the un-strand now waits ONLY on the supervisor's explicit
+   authorization. Recovery per item is verify-merged-PR → settle the
+   skipped post-merge bookkeeping → route through acceptance. NEVER
+   re-dispatch them. `-6ma` is CLOSED (2026-07-26, superseded by
+   `bd-ib-waov` — see § "Status composition"); `-m36`/`-8i9` closures
+   remain prepared maintainer decisions (both fixed on master — see the
+   corrected block above).
 2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
    (2026-07-21..25) — recorded with their verification in
    `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the
