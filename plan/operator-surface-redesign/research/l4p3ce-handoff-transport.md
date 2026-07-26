@@ -155,13 +155,29 @@ ongoing availability cost, and the fleet has a live cautionary case —
 the entire subject of livespec-overseer's `ship-overseer-to-fleet`
 thread.
 
-**Custody flag on (d), not yet routed:** this was a DRIVER-PLUGIN
-question answered in the console's thread. The decision stands, but
-`livespec-driver-claude` and `livespec-driver-codex` now have an
-implied consumer they do not know about — the console will render
-their `implement` invocation as a handoff target. Telling them is
-owed; routing that notice is the supervisor's, and nothing is filed in
-those repos from here.
+**Stated PRECONDITION of (d) — plugin resolution (supersedes the
+earlier "custody flag"; discharged 2026-07-26, supervisor brief 10,
+independently re-verified).** The decision to reuse the existing
+operation is sound BECAUSE no new surface is built, and the cost of
+that choice is precisely this: **the rendered handoff assumes a driver
+session whose project resolves the orchestrator plugin.**
+`livespec-orchestrator-beads-fabro` is installed PROJECT-SCOPED ONLY —
+`~/.claude/plugins/installed_plugins.json` lists it under 12 explicit
+`projectPath` entries with `scope: project` and NO user-scoped entry
+(verified 2026-07-26) — so
+`/livespec-orchestrator-beads-fabro:implement <id>` resolves only in a
+session rooted in one of those projects. The rendered line carries no
+working directory. Verified TRUE for this fleet: this repo and both
+driver repos (`livespec-driver-claude`, `livespec-driver-codex`) are
+among the 12, and the operator copies the command while standing in
+one of them. The ADOPTER story is the risk: a repo that adopts the
+console without installing the orchestrator plugin gets a
+non-resolving handoff — and by the no-console→driver-dependency
+contract the console CANNOT detect it, because a dead handoff and a
+working handoff look identical from the console. Nothing needs
+building in the driver repos — that was the point of reusing the
+existing operation; this precondition is documentation the amendment
+set must carry, not work to hand off.
 
 ## Keybinding
 
