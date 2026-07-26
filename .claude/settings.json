@@ -19,7 +19,8 @@
   "enabledPlugins": {
     "livespec@livespec": true,
     "livespec@livespec-driver-claude": true,
-    "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": true
+    "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": true,
+    "livespec-overseer@livespec-overseer": true
   },
   "extraKnownMarketplaces": {
     "livespec": {
@@ -40,6 +41,13 @@
       "source": {
         "source": "github",
         "repo": "thewoolleyman/livespec-orchestrator-beads-fabro",
+        "ref": "release"
+      }
+    },
+    "livespec-overseer": {
+      "source": {
+        "source": "github",
+        "repo": "thewoolleyman/livespec-overseer",
         "ref": "release"
       }
     }
