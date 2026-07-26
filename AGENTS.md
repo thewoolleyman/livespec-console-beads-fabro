@@ -51,6 +51,16 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   under concurrent sessions — plan-handoff status claims have measurably
   rotted within hours), then do real in-scope work if any exists, and only
   then write the blocked marker.
+  - **Write the marker LAST, every gated turn, and verify it with `cat`.**
+    The daemon deletes the marker the moment it sees the session take a
+    turn — including short background-notification turns (PR-merge
+    cleanups). A marker written mid-turn, or in an earlier turn, is GONE
+    by the time anyone looks. Measured 2026-07-26: three separate reports
+    of a "live" marker while the file was absent, which is precisely the
+    looks-stopped-while-gated failure these tracks exist to prevent. So:
+    on EVERY turn that ends human-gated, the final tool action is write
+    marker → `cat` marker, and any claim that it exists quotes that
+    `cat`'s bytes from the same turn.
 - **Durable agent memory lives in-repo.** Persist durable agent guidance and
   learned preferences in this file (or a file it references), NOT in ephemeral
   per-session agent memory. The repo's hook that blocks `~/.claude` memory writes
