@@ -1,12 +1,14 @@
-# `-l4p3ce` handoff transport — design input (DRAFT, not ratified)
+# `-l4p3ce` handoff transport — design input (DECIDED 2026-07-26)
 
 Drafted 2026-07-25 by the console-happy-path-mvp brainstorm leg, under
 this thread's maintainer entry gate (satisfied; the seven vocabulary
 points are decided — see
 `plan/console-happy-path-mvp/research/verb-vocabulary-brainstorm.md`).
-This is the INPUT to the `-l4p3ce` spec conversation, not its outcome.
-Everything here routes through this thread's ratification gates; the
-vocabulary halves route orchestrator-side first.
+**All four open questions were maintainer-decided 2026-07-26 (relayed
+via the supervisor session) — see § "The four transport decisions".**
+This remains the INPUT to the `-l4p3ce` spec conversation and still
+routes through this thread's ratification gates; the vocabulary halves
+route orchestrator-side first (filed there as that repo's PR #975).
 
 ## Fixed constraints (decided or contractual, with verification)
 
@@ -74,8 +76,8 @@ this cut.
    (`tmp/livespec-console-handoffs/<item-id>-<verb>.md`, repo-local
    `tmp/` like the console store, never host `/tmp`) stays RESERVED in
    the design for future verbs that genuinely need composed context,
-   but the MVP may ship without it. Maintainer reaction wanted: accept
-   the simplification, or keep the tmp file in the MVP cut anyway?
+   but the MVP ships WITHOUT it — decided 2026-07-26, see § "The four
+   transport decisions" (a), including why the slot must stay unbuilt.
 
 2. **Render: full-width overlay, not the detail pane.** `-vc7lmq`'s
    history shows pane truncation destroys copyability; the command
@@ -86,7 +88,9 @@ this cut.
    external binary (works through modern terminals and tmux with
    `set-clipboard on`), which respects the no-new-dependency posture;
    where unsupported, the overlay still shows the command for manual
-   copy. Open: is OSC 52 in the MVP cut, or does MVP ship render-only?
+   copy. IN-CUT — decided 2026-07-26, WITH the normative
+   no-claimed-success wording constraint in § "The four transport
+   decisions" (b).
 
 4. **Journaling stays driver-side — the console renders, the driver
    reports in.** `groom`: no journal, no lane move (the groom skill's
@@ -103,14 +107,61 @@ this cut.
    `ready` items, journaled, session ref required). `groom` implies no
    new orchestrator surface.
 
-## Open questions for the maintainer
+## The four transport decisions (maintainer-decided 2026-07-26)
 
-(a) Accept the no-tmp-file simplification for the MVP, or keep the
-    file leg? (b) OSC 52 in-cut or render-only? (c) tmux `new-window`
-    auto-spawn: post-MVP conversation or permanently out (contract)?
-(d) The driver-implement skill name/form on the driver side — existing
-    `implement` operation vs a dedicated driver entry — which is a
-    driver-plugin question, not console or orchestrator.
+**(a) Tmp-file leg: the simplification is ACCEPTED — the MVP ships
+with NO tmp-file leg.** The slot stays RESERVED in this design and is
+NOT built. Reasoning, recorded so a future reader does not "helpfully"
+build it: this repo already carries `CopyFabroAttach`, a scaffold built
+ahead of need that later read as a shipped feature and misled two
+sessions into believing a copy path existed. A reserved slot with a
+written rationale is the antidote; an unbuilt-but-half-plumbed
+mechanism is the disease.
+
+**(b) OSC 52: IN-CUT, with a NORMATIVE wording constraint.** Copy via
+OSC 52 with render-only fallback. Normative, not a style note:
+
+> The overlay MUST NOT claim the copy succeeded. OSC 52 is
+> fire-and-forget — the terminal returns no acknowledgement, so
+> success is UNKNOWABLE to the console. Permitted wording describes
+> what the console DID ("copy sent to terminal"); forbidden wording
+> asserts an outcome it cannot observe ("Copied!", "Copied to
+> clipboard").
+
+The reason is part of the design: on a terminal with clipboard
+disabled, an outcome-asserting message leaves the operator pasting
+stale content while believing they copied — a new lie in the exact
+surface this thread exists to make truthful, and one a test can pass
+straight through.
+
+**(c) tmux auto-spawn: POST-MVP, gated on a contract conversation —
+explicitly OUT of this cut and explicitly NOT dead.** Both halves,
+because "out of scope" alone reads as "rejected": the locked
+contract's PURPOSE is to stop the console taking a dependency on
+driver liveness, and a fire-and-forget `tmux new-window` arguably does
+not — nothing is monitored, awaited, or depended upon — while the
+contract's LETTER ("never spawns") forbids it. All four surveyed TUIs
+run the command themselves, so the ergonomic norm is on the other
+side. That gap is a real contract conversation worth having later.
+What must NOT happen is auto-spawn arriving as a convenience without
+that conversation.
+
+**(d) Driver-implement form: REUSE the existing `implement`
+operation.** The handoff renders the existing
+`/livespec-orchestrator-beads-fabro:implement <id>` invocation; no new
+driver-side surface is built. Reason: every added surface carries an
+ongoing availability cost, and the fleet has a live cautionary case —
+`supervise-plan` is BUILT but available in nobody's session, which is
+the entire subject of livespec-overseer's `ship-overseer-to-fleet`
+thread.
+
+**Custody flag on (d), not yet routed:** this was a DRIVER-PLUGIN
+question answered in the console's thread. The decision stands, but
+`livespec-driver-claude` and `livespec-driver-codex` now have an
+implied consumer they do not know about — the console will render
+their `implement` invocation as a handoff target. Telling them is
+owed; routing that notice is the supervisor's, and nothing is filed in
+those repos from here.
 
 ## Keybinding
 
