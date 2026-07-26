@@ -220,16 +220,17 @@ PARKED per `plan/archive/command-queue-semantics/`). `-6hbfq6`
 (help-overlay navigation) was admitted to `ready` by the 2026-07-23 valve
 review — still off the happy path, custody unchanged.
 
-**Measured 2026-07-26, post-recovery (dated snapshot — re-measure
-before trusting):** `-276inb`, `-sreeqc`, `-qwjfsw`, `-ogpok4` sit at
-**`acceptance`** (assignee `fabro`, the normal factory shape) — their
-PRs merged 2026-07-21 (#352, #354, #358, #359), the skipped post-merge
-janitor re-ran green during recovery, and each now awaits the **human
-accept valve (`c`) under `ai-then-human`** — which is precisely the
-happy path's own acceptance leg, walkable at the TUI once a FRESH
-cockpit is launched (see Next action). `-u3w3er` and `-6hbfq6` sit
-`ready`; the drain is functional (`-m36` fixed), so dispatching them is
-an operator choice, not a blocked path.
+**Measured 2026-07-26, post-accept-walk (dated snapshot — re-measure
+before trusting):** `-276inb`, `-sreeqc`, `-qwjfsw`, `-ogpok4` are
+**`done`** — accepted at the TUI `c` valve on a fresh current-master
+cockpit, per-item verified (`research/accept-valve-walk-2026-07-26.md`;
+their PRs merged 2026-07-21: #352, #354, #358, #359). `-m36` and
+`-8i9` are **CLOSED** (maintainer-decided 2026-07-26; both verified
+fixed in source before closing — see their close reasons; both exhibit
+the fixed-same-day-never-closed pattern). `-u3w3er` and `-6hbfq6` sit
+`ready`; the drain is functional, so dispatching them is an operator
+choice, not a blocked path. `-9ts` and `-htp` remain the two live
+drain defects (over-dispatch; UI-thread freeze) — neither blocks.
 
 ## The track
 
@@ -293,16 +294,17 @@ items + cockpit binary age) before trusting any claim here.
 
 Then, in order:
 
-1. **Strand recovery is COMPLETE (2026-07-26, supervisor-authorized;
-   see § "Status composition"). The live next leg it opens: the accept
-   valve.** Four real merged items sit at `acceptance` awaiting the
-   operator's `c` under `ai-then-human` — the happy path's own
-   acceptance leg, on real work, at the real stack. Before walking it:
-   launch a FRESH cockpit (`just tui` — the previous serve was killed
-   2026-07-26; never trust a stale binary, never run two clients).
-   `-6ma` is CLOSED (superseded by `bd-ib-waov`); `-m36`/`-8i9`
-   closures remain prepared maintainer decisions (both fixed on master
-   — see the corrected block above).
+1. **The accept leg is WALKED (2026-07-26, maintainer-directed): all
+   four items accepted at the TUI `c` valve on a fresh current-master
+   cockpit and verified `done`** — see
+   `research/accept-valve-walk-2026-07-26.md`, whose scoping section is
+   the honest boundary: this is the acceptance leg on real data, NOT
+   Stage 3(b). Still owed for 3(b): the groom leg (needs the
+   vocabulary ratification + `-l4p3ce` transport), ONE continuous
+   single-item walk (find → groom → admit → dispatch → monitor →
+   accept), and re-exercising `-sreeqc`'s approve leg at the keyboard
+   once `-u3w3er` lands. `-6ma`/`-m36`/`-8i9` are all CLOSED with
+   verified reasons.
 2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
    (2026-07-21..25) — recorded with their verification in
    `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the
