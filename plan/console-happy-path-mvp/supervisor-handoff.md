@@ -12,18 +12,54 @@
 Verify ALL of these before doing anything else. Stop on the FIRST failing check
 and report the exact expected name — do not improvise around a failure.
 
-1. **Supervised session exists.** tmux `console-happy-path-mvp` (bare plan topic
+Every check below is a RUNNABLE command, deliberately. A precondition stated as
+prose forces a cold-open supervisor to invent one, and the two most load-bearing
+checks are exactly the ones that used to be prose.
+
+1. **Supervised session exists** — tmux `console-happy-path-mvp` (bare plan topic
    per `livespec-overseer` `SPECIFICATION/spec.md` §"Session-name derivation"; a
-   repo-qualified name is used ONLY on a genuine cross-repo topic collision).
-   `tmux has-session -t console-happy-path-mvp`.
-2. **Supervisor session exists.** tmux `console-happy-path-mvp-supervisor` — the
-   session you are in.
-3. **The supervised pane is a live AGENT, not a shell.** Its pane process tree
-   must contain a live `claude` or `codex` CLI process. A tmux session that is
+   repo-qualified name is used ONLY on a genuine cross-repo topic collision):
+
+   ```bash
+   tmux has-session -t "console-happy-path-mvp"
+   ```
+
+2. **The supervised pane is a live AGENT, not a shell.** A tmux session that is
    only a shell is a FAILURE. Runtime identity comes from exact live process
-   evidence, NEVER from a session name.
-4. **Target repo is `/data/projects/livespec-console-beads-fabro`** and the
-   supervised pane's cwd resolves inside it.
+   evidence, NEVER from a session name — a leftover session named like an agent
+   proves nothing:
+
+   ```bash
+   pane_pid=$(tmux display-message -p -t "console-happy-path-mvp" '#{pane_pid}')
+   ps -o pid=,comm=,args= --ppid "$pane_pid" --pid "$pane_pid" -H
+   # PASS only if a live `claude` or `codex` process appears in that tree.
+   ```
+
+   Report which driver was found.
+
+3. **Supervisor session exists** — the session you are in:
+
+   ```bash
+   tmux has-session -t "console-happy-path-mvp-supervisor"
+   ```
+
+4. **The plan thread exists inside the target repo.** Absolute path: a bare
+   `plan/` check is cwd-relative and PASSES while pointed at the wrong repo.
+
+   ```bash
+   test -d "/data/projects/livespec-console-beads-fabro/plan/console-happy-path-mvp"
+   ```
+
+5. **The supervised pane's cwd resolves inside the target repo.** `readlink -f`
+   first — a symlinked path that merely LOOKS contained is a HALT:
+
+   ```bash
+   pane_cwd=$(tmux display-message -p -t "console-happy-path-mvp" '#{pane_current_path}')
+   case "$(readlink -f "$pane_cwd")" in
+     /data/projects/livespec-console-beads-fabro|/data/projects/livespec-console-beads-fabro/*) echo "PASS: $pane_cwd" ;;
+     *) echo "HALT: pane cwd $pane_cwd is outside the target repo" ;;
+   esac
+   ```
 
 If the thread has no session, that is not a failure — the track is `unassigned`
 and the maintainer must start it deliberately. Report that; never auto-spawn one.
@@ -97,17 +133,65 @@ where the thread stands is how this requirement fractured three times before.
 
 ## How to inspect and drive
 
-- **Inspect read-only:**
-  `tmux capture-pane -p -t console-happy-path-mvp | tail -N`.
-- **Short instruction:** one
-  `tmux send-keys -t console-happy-path-mvp -- '<one line>' Enter`.
-- **Longer text:** `tmux load-buffer` then `paste-buffer -t`, and VERIFY the paste
-  landed (capture the pane) BEFORE pressing Enter. A landed paste renders as
-  `[Pasted text #N +M lines]` in the input line; anything else means it did not
-  land. **Re-check for an open picker immediately before EVERY paste** — see the
-  Corrections log.
+Every command here is copy-pasteable as written.
+
+Inspect read-only — last 40 lines of the worker pane:
+
+```sh
+tmux capture-pane -p -t console-happy-path-mvp -S -40
+```
+
+`-S -40` starts 40 lines back. Do NOT pipe to `tail -N` — `-N` is a placeholder
+and `tail` rejects it.
+
+Short instruction — send the text, VERIFY, then send Enter SEPARATELY:
+
+```sh
+tmux send-keys -t console-happy-path-mvp -- '<one line>'
+tmux capture-pane -p -t console-happy-path-mvp -S -10   # confirm it landed
+tmux send-keys -t console-happy-path-mvp Enter          # only after verifying
+```
+
+Do NOT use the one-shot `… -- '<line>' Enter` form. Measured on this very pane:
+the trailing `Enter` argument lands the text in the prompt but does NOT submit
+it — the instruction sits queued until `Enter` is sent as a separate call. This
+cost a brief that sat unsubmitted while the track read as working.
+
+Longer text — load, paste, VERIFY, then Enter separately:
+
+```sh
+tmux load-buffer -b sup /tmp/msg.txt
+tmux paste-buffer -b sup -t console-happy-path-mvp
+tmux capture-pane -p -t console-happy-path-mvp -S -20   # confirm it landed
+tmux send-keys -t console-happy-path-mvp Enter          # only after verifying
+```
+
+A landed paste renders as `[Pasted text #N +M lines]`; anything else means it
+did not land. **Re-check for an open picker immediately before EVERY paste.**
+
+**Confirm a brief was PROCESSED, not merely queued.** A `queue-operation` entry
+in the transcript with no matching `user` message means it never ran:
+
+```sh
+python3 - <<'PY'
+import json
+p='/home/ubuntu/.claude/projects/-data-projects-livespec-console-beads-fabro/<session-id>.jsonl'
+rows=[json.loads(l) for l in open(p) if l.strip().startswith('{')]
+hits=[d.get('timestamp') for d in rows
+      if (d.get('message') or {}).get('role')=='user'
+      and 'SUPERVISOR BRIEF <N>' in json.dumps((d.get('message') or {}).get('content'))]
+print('processed:', hits or 'NO — still queued or dropped')
+PY
+```
+
 - **Idle-plus-queued-input means STUCK, not idle.** Check for a modal or an open
   picker before assuming the session is resting.
+- **Distinguish idle-done from wedged by `stop_reason`, not by silence.** A last
+  assistant message with `stop_reason: end_turn` means finished and waiting; a
+  tool result with no following assistant turn means wedged. They are identical
+  in the pane. Recovery is TWO Escapes — the first only repaints the UI, and a
+  message resent after it silently re-queues. Corroborate with CPU: a genuine
+  wedge idled at ~2%, a long legitimate operation ran at ~45%.
 - An open `AskUserQuestion` picker SUPPRESSES the overseer daemon's wrap-up
   injection into that pane (the daemon reads it as a structured gate and
   classifies `blocked:human`). When the worker raises one, clear it, answer it, or
@@ -122,14 +206,31 @@ where the thread stands is how this requirement fractured three times before.
 `AGENTS.md` §"Overseer tracks: never sit silently idle" requires a human-gated
 session to write `blocked: <concrete pending decisions>` to
 `tmp/overseer/console-happy-path-mvp/.overseer-state` (untracked) and to remove it
-when working again. **This track has never written that file.** If you find the
-worker genuinely gated, confirm the marker exists and names the real decisions; if
-you find it working, confirm the marker is gone.
+when working again. If you find the worker genuinely gated, confirm the marker
+exists and names the real decisions; if you find it working, confirm it is gone.
+
+**Verify the file; never accept the claim.** This worker reported the marker as
+live three separate times while the file did not exist — the directory's mtime
+moved because it wrote the marker and then removed it on resuming work without
+re-writing it at the next gate. The mechanical fix, now in force and holding:
+write it as the LAST action of any turn that ends gated (after the final report,
+because anything afterwards can clobber it), and never assert its contents
+without having just `cat`-ed it in the same turn.
 
 ## Decision-vetting rubric
 
-Escalate ONLY decisions that are BOTH genuinely blocking AND genuinely
-human-facing. For this thread that means:
+Escalate ONLY decisions that are genuinely BLOCKING — meaning no legitimate
+action can proceed under any assumption you could state and correct later.
+Outward-facing, sensitive-path, second-opinion and authorization-category are NOT
+by themselves reasons to escalate: state the assumption and keep going. The
+boundary that does stop you is never REMOVING, WEAKENING or SKIPPING an existing
+check — a property of the change, not of any file path.
+
+Do not ask what you should just do. The failure this rubric guards is not
+recklessness; it is a supervisor stopping four times in one session on things it
+could have decided and reported.
+
+For this thread the genuinely blocking set is:
 
 - **Every `plan/operator-surface-redesign/` brainstorm point.** That thread's
   ENTRY GATE is maintainer brainstorm participation — an absolute gate, not a
@@ -166,6 +267,96 @@ Two standing lanes that are legitimately owned elsewhere: the per-state
 (`SPECIFICATION/contracts.md`, the per-item verb-suppression clause), and the
 **factory** owns implementation — Stage-0 and Stage-2 items are dispatched, never
 implemented in-session.
+
+## Never end a turn without an armed re-entry
+
+The section above stops a supervisor reasoning itself into standing down. This
+one polices a DIFFERENT stall: dispatching work, writing a status report, and
+ending the turn. That reads like diligence and is indistinguishable from
+abandonment. This track lost 8h05m to it in one stretch, plus a 2.5-day gate
+earlier, and every recovery began with the maintainer noticing rather than the
+supervisor.
+
+- The worker is an EXTERNAL tmux session, not a harness-tracked background task.
+  Its completion emits NO notification.
+- A status report is not a work product that can end a turn. Narration is not
+  movement.
+- "I'll keep driving" / "I'll check back" is an INTENTION, not a mechanism.
+- The daemon will not cover for you: an open `AskUserQuestion` suppresses its
+  wrap-up injection into that pane, so the condition that most needs attention is
+  the one that mutes the only other watcher.
+
+**Arm on ANY open obligation — not only while the worker is mid-flight.** The
+8h05m stall had the worker correctly PARKED and gated on a ratification PR the
+SUPERVISOR owned; "worker busy" would have triggered nothing. Before ending any
+turn ask: *is there an open obligation, held by anyone, whose resolution should
+bring me back?* If yes, arm something. A worker that is idle-and-gated is
+precisely when you are the only moving part.
+
+**The wake condition need not be a pane.** Match the watcher to the event:
+
+```sh
+# Pane watcher — worker mid-flight. Detect busy by pane CHANGE, not status text.
+prev=""; stable=0
+for i in $(seq 1 180); do            # ~60 min ceiling
+  sleep 20
+  pane=$(tmux capture-pane -p -t console-happy-path-mvp -S -40) || { echo "WAKE: pane gone"; exit 0; }
+  case "$pane" in
+    *"Enter to select"*) echo "WAKE: picker open"; exit 0 ;;
+  esac
+  if [ "$pane" = "$prev" ]; then stable=$((stable+1)); else stable=0; prev="$pane"; fi
+  if [ "$stable" -ge 3 ]; then echo "WAKE: pane unchanged ~60s — worker idle"; exit 0; fi
+done
+echo "WAKE: watcher ceiling reached — worker still busy, RE-ARM NOW"
+```
+
+```sh
+# Forge watcher — a PR gating this thread. Exits on any terminal state.
+until [ "$(gh pr view <NUM> --repo <OWNER/REPO> --json state -q .state)" != "OPEN" ]; do
+  sleep 60
+done
+echo "WAKE: PR <NUM> is now $(gh pr view <NUM> --repo <OWNER/REPO> --json state -q .state)"
+```
+
+**Expiry is itself a wake, never an intention.** The ceiling message obliges an
+immediate re-arm; treat it as an action item, not a status line. If you cannot
+re-arm, record that in the obligation file below rather than letting the loop
+lapse silently.
+
+## Keep your own obligation record
+
+The worker has `.overseer-state` and it works — the 8h05m stall was diagnosed
+FROM it, because the worker's marker correctly named its gate while the
+supervisor had no equivalent.
+
+Maintain `tmp/overseer/console-happy-path-mvp-supervisor/.obligations`
+(untracked). Rewrite it as the LAST action of any turn that ends with anything
+open. Each line states **what is open, who holds it, what will wake you, and what
+you do if nothing does.** Never claim its contents without having just `cat`-ed
+it — the same discipline this charter imposes on the worker, which the supervisor
+enforced three times without self-applying.
+
+This file is also what makes the track survivable across a session restart or a
+context compaction: a replacement supervisor should need only the bindings at the
+top of this charter plus this file.
+
+## Handing an obligation to a peer track
+
+"Another track owns it" is not a handoff. A handoff is complete only when:
+
+1. You told that track's SUPERVISOR — never cross-drive another track's worker.
+2. They CONFIRMED it is not already in progress or imminent, so you do not race
+   them on a shared artifact.
+3. They CONFIRMED they removed it from their own plan and marker, so it cannot
+   live in two places — or explicitly declined, which you take to the maintainer
+   rather than argue peer-to-peer.
+4. It stays in your obligation record until they confirm, and is struck only on
+   their confirmation.
+
+Until all four hold, the obligation is still YOURS. What the gap costs:
+`livespec-console-beads-fabro-6ma`, a correctly diagnosed P1 that sat six days in
+a tenant whose owners could not fix it; and a driver-plugin notice that sat an
+hour inside the worker's marker with the supervisor's name on it.
 
 ## AskUserQuestion presentation rules
 
@@ -204,6 +395,26 @@ Repeat these in every instruction sent to the supervised session:
 - Establish outcomes from **artifacts** (merged PR / ledger / journal), never exit
   codes. Build every log timestamp with `date -u`, never by hand.
 
+**Verification discipline** — the shape of this thread's most expensive errors,
+all of which reached durable records before a human caught them:
+
+- **A filed item is a claim with a timestamp.** Re-read any work-item, bug or
+  status before reporting it as current. Five P1 titles were relayed here as
+  present-tense blockers when two were already dead — one fixed the same day it
+  was filed, one obsoleted by a sandbox change — and the framing reached a merged
+  handoff on master.
+- **An exit code read through a pipe is the last command's.** `… | tail -35; echo
+  "EXIT=$?"` reports `tail`. This defeats the artifacts rule above in a way its
+  wording does not name.
+- **Do the irreversible half only after verifying the reversible one.** A backup
+  ref push failed silently (zsh parsed `"$VAR:refs/…"` using its `:r` modifier)
+  and the branch was deleted anyway; the objects survived only by luck. Brace it
+  as `"${VAR}:refs/…"`, and confirm the backup EXISTS before removing the source.
+- **A specification clause you author is not exempt.** A proposal filed from this
+  session was self-contradictory and false about two shipped code paths; a peer
+  supervisor caught it minutes before ratification would have written it into a
+  contract.
+
 Repo-specific, each earned:
 
 - **`bd` needs the credential wrapper** — `/usr/local/bin/with-livespec-env.sh --`
@@ -214,6 +425,13 @@ Repo-specific, each earned:
   round-trips the file through `json.dumps` and silently strips every comment
   while reporting green (`bd-ib-lmi5`).
 - **`gh` is pinned to 2.46.0** — `gh pr checks` has no `--json` there.
+- **A fresh worktree cannot push until the worktree-pack is installed.**
+  `dev-tooling/` is gitignored, so a new worktree has no pack and the pre-push
+  `check-baseline` fails with `worktree_pack_absent` after burning the full check
+  run. Run `just install-worktree-pack` in the worktree first. It also writes a
+  `worktree_discipline` block into the TRACKED `.livespec.jsonc` — that write is
+  comment-preserving and is merely the documented default made explicit, so
+  revert it unless the change is the point of your PR.
 
 For factory dispatches, additionally: prove container ownership by **run-config
 argv via an ALL-container scan** — never by image shape, position, or timing; and
@@ -271,3 +489,28 @@ Earned on this track:
   unanswered for days while the track read as merely quiet. A supervisor's first
   sweep on any resume is: is there an open picker, and does the marker file agree
   with what the worker is actually doing?
+- **Dispatch is not completion — the stall this charter's new §"Never end a turn
+  without an armed re-entry" exists for.** The pattern repeated four times in one
+  session: compose a brief, verify receipt, write a well-organised summary, stop.
+  The summary is the most rewarding-feeling artifact available and every one of
+  them marked a stop. Worst instance: 8h05m while the worker sat correctly parked
+  on a ratification the supervisor itself owed and never armed a watcher for.
+  Every recovery began with the maintainer noticing.
+- **The supervisor instrumented the boundary it was already watching.** Two
+  monitors were built and twice rebuilt for the WORKER — pickers, wedges, process
+  death — and nothing ever watched the supervisor's own idleness. When the PR that
+  cleared the worker's only gate merged, nothing woke anyone.
+- **The one-shot `send-keys … Enter` form does not submit.** Diagnosed here as
+  flakiness across several briefs before the shipped `supervise-plan` contract
+  turned out to have it measured and documented. Read the contract before
+  inventing a theory.
+- **Prescribing a discipline is not adopting it.** The marker rule was enforced on
+  the worker three times, correctly and to good effect, while the supervisor kept
+  no equivalent record of its own obligations. If you are writing a rule for the
+  worker, ask whether it binds you first.
+- **A peer supervisor is a reviewer, not just a neighbour.** The peer on
+  `dispatch-claim-liveness` corrected this session's root-cause analysis on three
+  substantive points and caught a self-contradictory door rule in a proposal
+  minutes before ratification. Both times the correction was better than what this
+  session had written. Route findings to peers early and treat their pushback as
+  the cheapest review available.
