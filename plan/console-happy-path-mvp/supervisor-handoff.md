@@ -489,6 +489,20 @@ Earned on this track:
   unanswered for days while the track read as merely quiet. A supervisor's first
   sweep on any resume is: is there an open picker, and does the marker file agree
   with what the worker is actually doing?
+- **The supervisor's OWN picker is the same outage, one level up — and nothing
+  watches it.** Measured 2026-07-26/27: a batched question carrying three revise
+  dispositions sat open roughly 22 hours. The worker was correctly parked with an
+  accurate marker, so nothing was wrong below; the muted watcher was this pane's.
+  An open `AskUserQuestion` suppresses the daemon's wrap-up injection into
+  WHICHEVER pane holds it, and the supervisor pane has no second supervisor. The
+  rule above tells you to sweep the WORKER's pickers; it does not cover your own,
+  because you cannot watch yourself while blocked inside one. The only mitigation
+  that works is prospective: **name the pending question in `.obligations` BEFORE
+  the picker opens**, including the fact that its only wake is a human. That is
+  what made this resume cost minutes — the record named the question, its
+  recommended answers, and "there is no automatic wake for this", so a cold-open
+  supervisor could re-enter without reconstructing anything. Write the obligation
+  row first, then open the picker; never the reverse.
 - **Dispatch is not completion — the stall this charter's new §"Never end a turn
   without an armed re-entry" exists for.** The pattern repeated four times in one
   session: compose a brief, verify receipt, write a well-organised summary, stop.
