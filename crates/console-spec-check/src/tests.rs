@@ -134,11 +134,17 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // clauses, 15/77/22/52. The command-queue single-consumer revision added
     // eight contracts.md clauses for pending -> executing claims, duplicate
     // consumer no-ops, terminal finalization, and stale executing recovery:
-    // 174 normative clauses, 15/85/22/52.
+    // 174 normative clauses, 15/85/22/52. The v037 console-verb-presentation
+    // revision then added five contracts.md clauses: required per-item verb
+    // suppression consuming the orchestrator's ratified per-state vocabulary,
+    // the narrowed move-status picker offers with their MUST NOTs, and the
+    // driver-handoff surface (lane-appropriate render, the no-claimed-success
+    // OSC 52 wording, and the never-execute-the-driver rule): 179 normative
+    // clauses, 15/90/22/52.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 85),
+        ("contracts.md", 90),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 52),
     ];
@@ -150,7 +156,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 174,
+        total, 179,
         "total normative clauses across the console spec"
     );
     Ok(())
