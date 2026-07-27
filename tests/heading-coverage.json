@@ -953,5 +953,19 @@
         "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
       }
     ]
+  },
+  {
+    "scenario": "Scenario 25 -- Per-item verb hints follow the per-state vocabulary",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a TUI-level test should assert hint suppression and key inertness per the ratified per-state vocabulary (done item offers nothing; backlog item offers groom/move but not approve/accept; acceptance item keeps reject). Registered as reasoned TODO at revision time; the concrete test lands with the verb-suppression impl slice per the spec-then-impl sequencing.",
+    "clauses": []
+  },
+  {
+    "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a TUI-level test should assert the driver-handoff overlay renders the id-only groom/implement invocation per lane, never claims copy success, and spawns nothing. Registered as reasoned TODO at revision time; the concrete test lands with the driver-handoff impl slice per the spec-then-impl sequencing.",
+    "clauses": []
   }
 ]
