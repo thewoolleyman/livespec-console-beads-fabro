@@ -263,10 +263,14 @@ close, so it always describes the current context rather than a fixed summary.
 | Context | Hint |
 |---|---|
 | Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
-| Attention, a work-item-backed row selected | `up/down move \| enter open \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
+| Attention, pending-approval work-item selected | `up/down move \| enter open \| p approve \| r reject \| m set-admission \| ? help \| q quit` |
+| Attention, acceptance work-item selected | `up/down move \| enter open \| c accept \| r reject \| ? help \| q quit` |
 | Attention, no work-item selected | `? help \| q quit` |
 | Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
-| Lanes, drilled in with an item selected | `up/down move \| enter item \| esc lane list \| s move-status \| p/c/r approve/accept/reject \| m/n set-admission/acceptance \| ? help \| q quit` |
+| Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into a pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| ? help \| q quit` |
+| Lanes, drilled into a done item | `enter item \| esc lane list \| ? help \| q quit` |
 | Lanes, drilled into an empty lane | `esc lane list \| ? help \| q quit` |
 | Settings | `up/down move \| enter/space edit row \| ? help \| q quit` |
 | Spec, Events, Repos | `up/down move \| left/right focus \| / search \| ? help \| q quit` |
