@@ -973,8 +973,8 @@
   {
     "scenario": "Scenario 25 -- Per-item verb hints follow the per-state vocabulary",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid tmux E2E (the real-TUI tier) should assert hint suppression and key inertness per the ratified per-state vocabulary: a done item offers nothing, a backlog item offers groom/move but not approve/accept, and an acceptance-lane item keeps its reject hint. Registered as a reasoned TODO at revision time (v037); the concrete test lands with the verb-suppression impl slice per the spec-then-impl sequencing.",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary",
+    "reason": "Top-of-pyramid real-TUI tmux E2E proving the ratified per-state operator verb vocabulary at the shipped key/render boundary: a selected done item offers no per-item verb hint and keeps the corresponding keys inert, a selected backlog item keeps the operator-drivable move hint while suppressing human-valve hints, and a selected acceptance item keeps reject alongside accept instead of treating active as a single-entry-door predecessor.",
     "clauses": [
       {
         "gap_id": "gap-23tps2nk",

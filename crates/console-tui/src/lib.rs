@@ -24,8 +24,8 @@ use console_application::{
     OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
     TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
     ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
-    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
-    resolve_selected_operator_action, resolve_valve_action,
+    per_item_verb_is_state_valid, reduce_tui_interaction, resolve_command_palette_action,
+    resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -826,7 +826,10 @@ fn valve_open_input(
 ) -> Option<TuiTerminalInput> {
     let overlay = model.overlay();
     if matches!(overlay, TuiOverlay::None) {
-        if model.selected_work_item_id().is_some() {
+        if model
+            .selected_work_item_lane()
+            .is_some_and(|lane| per_item_verb_is_state_valid(lane, valve))
+        {
             return Some(TuiTerminalInput::Interaction(
                 TuiInteraction::OpenValveConfirm(valve),
             ));
@@ -848,9 +851,13 @@ fn override_open_input(
 ) -> Option<TuiTerminalInput> {
     let overlay = model.overlay();
     if matches!(overlay, TuiOverlay::None) {
-        if model.selected_work_item_id().is_some() {
+        let valve = PendingValve::SetOverride(override_dial);
+        if model
+            .selected_work_item_lane()
+            .is_some_and(|lane| per_item_verb_is_state_valid(lane, valve))
+        {
             return Some(TuiTerminalInput::Interaction(
-                TuiInteraction::OpenValveConfirm(PendingValve::SetOverride(override_dial)),
+                TuiInteraction::OpenValveConfirm(valve),
             ));
         }
         return None;
@@ -3975,6 +3982,18 @@ mod tests {
         build_tui_model_for_state(&demo_events(), &TuiInteractionState::new(0, overlay))
     }
 
+    fn attention_model_for_lane(lane: Lane, overlay: TuiOverlay) -> TuiScreenModel {
+        let event = lane_event(
+            "evt_attention_lane",
+            "console-selected",
+            lane,
+            None,
+            "a0",
+            lane.label(),
+        );
+        build_tui_model_for_state(&[event], &TuiInteractionState::new(0, overlay))
+    }
+
     /// An Attention-view model carrying the given overlay + focus pane, for
     /// keymap tests that exercise the Content-pane focus.
     fn attention_model_in(overlay: TuiOverlay, focus: FocusPane) -> TuiScreenModel {
@@ -4845,12 +4864,9 @@ mod tests {
 
     #[test]
     fn keymap_binds_the_five_valve_keys_on_a_selected_attention_item() {
-        // Attention view with a selected item: each valve key opens the
-        // valve-confirm modal staging that valve at its default option.
-        let model = attention_model(TuiOverlay::None);
+        let pending = attention_model_for_lane(Lane::PendingApproval, TuiOverlay::None);
         for (code, valve) in [
             ('p', PendingValve::Approve),
-            ('c', PendingValve::Accept),
             ('r', PendingValve::Reject(RejectMode::Rework)),
             ('m', PendingValve::SetAdmission(AdmissionPolicy::Manual)),
             (
@@ -4859,12 +4875,33 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                key_event_to_terminal_input(key(KeyCode::Char(code)), &model),
+                key_event_to_terminal_input(key(KeyCode::Char(code)), &pending),
                 Some(TuiTerminalInput::Interaction(
                     TuiInteraction::OpenValveConfirm(valve)
                 ))
             );
         }
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('c')), &pending),
+            None
+        );
+
+        let acceptance = attention_model_for_lane(Lane::Acceptance, TuiOverlay::None);
+        for (code, valve) in [
+            ('c', PendingValve::Accept),
+            ('r', PendingValve::Reject(RejectMode::Rework)),
+        ] {
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char(code)), &acceptance),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::OpenValveConfirm(valve)
+                ))
+            );
+        }
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('p')), &acceptance),
+            None
+        );
     }
 
     #[test]
@@ -5069,7 +5106,7 @@ mod tests {
     #[test]
     fn override_keys_stage_each_setting_and_confirming_persists_the_override_command() {
         // g/f/k stage the three per-item cap overrides at their `clear` start.
-        let attention = attention_model(TuiOverlay::None);
+        let attention = lanes_model_content(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
         for (code, dial) in [
             (
                 'g',

@@ -463,32 +463,56 @@ impl DispatcherOverride {
 /// The operator-drivable target lanes an item may be moved to from `from`, each
 /// mapping to a real orchestrator action ([`move_status_outcome`]).
 ///
-/// Every pre-terminal pipeline status is reachable via the guarded broad
-/// `move:<id>:<target>` action -- `backlog`, `ready`, `active`, `blocked` (minus
-/// `from` itself) -- with a SEMANTIC valve preferred where one exists:
-/// `pending-approval -> ready` uses approve, and `blocked -> ready | backlog`
-/// uses resolve-blocked. `done` is reachable ONLY from `acceptance` via accept
-/// (the ship-guard: no broad move ever targets `done`), and a `done` item offers
-/// no onward move at all (the picker never surfaces un-shipping). The corrective
-/// `acceptance -> active | backlog` reject routes are NOT offered here -- reject
-/// stays on its own `r` valve, since it reverts a merged change and is warned as
-/// destructive. A lane with no operator-drivable target returns an empty slice,
-/// so the move-status valve never opens on it.
+/// This is the console's consumed copy of the orchestrator-owned per-state
+/// operator verb vocabulary for the broad move-status verb. It deliberately does
+/// NOT re-expand to every pre-terminal status: `pending-approval -> ready` stays
+/// the approve valve, `done` stays reachable only by accept, and `active` is
+/// entered by dispatch or acceptance rework rather than by operator relocation. A
+/// lane with no operator-drivable target returns an empty slice, so the
+/// move-status valve never opens on it.
 const fn status_move_targets(from: Lane) -> &'static [Lane] {
     match from {
-        Lane::Backlog => &[Lane::Ready, Lane::Active, Lane::Blocked],
-        Lane::PendingApproval => &[Lane::Backlog, Lane::Ready, Lane::Active, Lane::Blocked],
-        Lane::Ready => &[Lane::Backlog, Lane::Active, Lane::Blocked],
-        Lane::Active => &[Lane::Backlog, Lane::Ready, Lane::Blocked],
-        Lane::Acceptance => &[
-            Lane::Backlog,
-            Lane::Ready,
-            Lane::Active,
-            Lane::Blocked,
-            Lane::Done,
-        ],
-        Lane::Blocked => &[Lane::Backlog, Lane::Ready, Lane::Active],
-        Lane::Done => &[],
+        Lane::Backlog => &[Lane::Ready, Lane::Blocked],
+        Lane::PendingApproval | Lane::Ready | Lane::Acceptance => &[Lane::Backlog, Lane::Blocked],
+        Lane::Blocked => &[Lane::Backlog, Lane::Ready],
+        Lane::Active | Lane::Done => &[],
+    }
+}
+
+/// Whether a selected work-item's lifecycle state admits the per-item verb.
+///
+/// This predicate is the shared state-valid slice for presentation and key
+/// handling. It consumes the orchestrator-owned per-state operator verb
+/// vocabulary as a table: hidden hints and inert keys therefore stay in lockstep.
+#[must_use]
+pub fn per_item_verb_is_state_valid(lane: Lane, verb: PendingValve) -> bool {
+    match verb {
+        PendingValve::Approve => matches!(lane, Lane::PendingApproval),
+        PendingValve::Accept => matches!(lane, Lane::Acceptance),
+        PendingValve::Reject(_mode) => {
+            matches!(lane, Lane::PendingApproval | Lane::Acceptance)
+        }
+        PendingValve::SetAdmission(_policy) => {
+            matches!(lane, Lane::Backlog | Lane::PendingApproval)
+        }
+        PendingValve::SetAcceptance(_policy) => {
+            matches!(
+                lane,
+                Lane::Backlog | Lane::PendingApproval | Lane::Ready | Lane::Active
+            )
+        }
+        PendingValve::SetOverride(
+            DispatcherOverride::MergeOnReviewCap(_) | DispatcherOverride::ReviewFixCap(_),
+        ) => matches!(lane, Lane::Backlog | Lane::PendingApproval | Lane::Ready),
+        PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(_value)) => {
+            matches!(
+                lane,
+                Lane::Backlog | Lane::PendingApproval | Lane::Ready | Lane::Active
+            )
+        }
+        PendingValve::MoveStatus { from, .. } => {
+            lane == from && !status_move_targets(from).is_empty()
+        }
     }
 }
 
@@ -1322,6 +1346,20 @@ impl TuiScreenModel {
         }
     }
 
+    /// The selected work-item's lifecycle lane, resolved from the same selected
+    /// work-item identity that per-item keys target.
+    #[must_use]
+    pub fn selected_work_item_lane(&self) -> Option<Lane> {
+        match self.active_view {
+            TuiView::Attention => self
+                .selected_work_item_id()
+                .and_then(|work_item_id| self.work_item_by_id(work_item_id))
+                .map(LaneWorkItem::lane),
+            TuiView::Lanes => self.selected_lane_item().map(LaneWorkItem::lane),
+            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
+        }
+    }
+
     /// The move-status valve the operator may open on the selected drilled-in
     /// lane item, staged at the first operator-drivable target for the item's
     /// current lane, or `None` when no lane item is selected or its lane has no
@@ -1456,13 +1494,13 @@ impl TuiScreenModel {
                 pane_footer_hint(
                     self.active_view,
                     self.lane_focus,
-                    self.selected_work_item_id().is_some(),
+                    self.selected_work_item_lane(),
                 )
             }
             (overlay, _) => footer_hint(
                 self.active_view,
                 self.lane_focus,
-                self.selected_work_item_id().is_some(),
+                self.selected_work_item_lane(),
                 overlay,
             ),
         }
@@ -1488,11 +1526,11 @@ const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q
 const fn footer_hint(
     active_view: TuiView,
     lane_focus: LaneFocus,
-    has_selected_work_item: bool,
+    selected_work_item_lane: Option<Lane>,
     overlay: &TuiOverlay,
 ) -> &'static str {
     match overlay {
-        TuiOverlay::None => pane_footer_hint(active_view, lane_focus, has_selected_work_item),
+        TuiOverlay::None => pane_footer_hint(active_view, lane_focus, selected_work_item_lane),
         TuiOverlay::Search { .. } => "type to search | esc cancel",
         TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
@@ -1537,14 +1575,12 @@ const fn footer_hint(
 const fn pane_footer_hint(
     view: TuiView,
     lane_focus: LaneFocus,
-    has_selected_work_item: bool,
+    selected_work_item_lane: Option<Lane>,
 ) -> &'static str {
     match view {
-        TuiView::Attention => {
-            if has_selected_work_item {
-                "up/down move | enter open | p/c/r approve/accept/reject | \
-                 m/n set-admission/acceptance | ? help | q quit"
-            } else {
+        TuiView::Attention => match selected_work_item_lane {
+            Some(lane) => attention_item_footer_hint(lane),
+            None => {
                 // NO work-item selected -- an empty inbox, OR a populated one
                 // sitting on a row that names no work-item (a plan thread, a
                 // hygiene finding, a spec-revise item). Either way the per-item
@@ -1552,14 +1588,13 @@ const fn pane_footer_hint(
                 // advertised.
                 "? help | q quit"
             }
-        }
+        },
         TuiView::Lanes => match lane_focus {
             // The lane OVERVIEW selects a LANE, never a work-item, so every
             // per-item key is inert here and none is advertised.
             LaneFocus::Overview => "up/down move | enter drill | ? help | q quit",
-            LaneFocus::Lane(_lane) if has_selected_work_item => {
-                "up/down move | enter item | esc lane list | s move-status | \
-                 p/c/r approve/accept/reject | m/n set-admission/acceptance | ? help | q quit"
+            LaneFocus::Lane(lane) if selected_work_item_lane.is_some() => {
+                lane_item_footer_hint(lane)
             }
             // An EMPTY drilled-in lane: nothing is selected, so `enter` opens
             // nothing, every per-item key is inert, AND up/down have no row to
@@ -1570,6 +1605,48 @@ const fn pane_footer_hint(
         TuiView::Spec | TuiView::Events | TuiView::Repos => {
             "up/down move | left/right focus | / search | ? help | q quit"
         }
+    }
+}
+
+const fn attention_item_footer_hint(lane: Lane) -> &'static str {
+    match lane {
+        Lane::PendingApproval => {
+            "up/down move | enter open | p approve | r reject | m set-admission | ? help | q quit"
+        }
+        Lane::Acceptance => "up/down move | enter open | c accept | r reject | ? help | q quit",
+        Lane::Backlog | Lane::Ready | Lane::Active | Lane::Blocked | Lane::Done => {
+            "up/down move | enter open | ? help | q quit"
+        }
+    }
+}
+
+const fn lane_item_footer_hint(lane: Lane) -> &'static str {
+    match lane {
+        Lane::Backlog => {
+            "up/down move | enter item | esc lane list | s move-status | m set-admission | \
+             g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+        }
+        Lane::PendingApproval => {
+            "up/down move | enter item | esc lane list | s move-status | p approve | r reject | \
+             m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | \
+             ? help | q quit"
+        }
+        Lane::Ready => {
+            "up/down move | enter item | esc lane list | s move-status | g merge cap | \
+             f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+        }
+        Lane::Active => {
+            "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | \
+             ? help | q quit"
+        }
+        Lane::Acceptance => {
+            "up/down move | enter item | esc lane list | s move-status | c accept | r reject | \
+             ? help | q quit"
+        }
+        Lane::Blocked => {
+            "up/down move | enter item | esc lane list | s move-status | ? help | q quit"
+        }
+        Lane::Done => "enter item | esc lane list | ? help | q quit",
     }
 }
 
@@ -5771,11 +5848,12 @@ mod tests {
         handle_work_item_move_command, handle_work_item_reject_command,
         handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
-        header_help_section, help_section_for_focus, help_section_for_view, project_attention,
-        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
-        validate_operator_action, work_item_override_outcome,
+        header_help_section, help_section_for_focus, help_section_for_view,
+        per_item_verb_is_state_valid, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
+        work_item_override_outcome,
     };
 
     #[test]
@@ -6729,7 +6807,7 @@ mod tests {
             footer_hint(
                 model.active_view(),
                 model.lane_focus(),
-                model.selected_work_item_id().is_some(),
+                model.selected_work_item_lane(),
                 &TuiOverlay::None,
             )
         );
@@ -10344,25 +10422,30 @@ mod tests {
         // available -- and the actionable panes surface their distinct keys.
         for view in TuiView::all() {
             assert!(
-                !footer_hint(*view, LaneFocus::Overview, true, &TuiOverlay::None)
-                    .trim()
-                    .is_empty()
+                !footer_hint(
+                    *view,
+                    LaneFocus::Overview,
+                    Some(Lane::PendingApproval),
+                    &TuiOverlay::None
+                )
+                .trim()
+                .is_empty()
             );
         }
         assert!(
             footer_hint(
                 TuiView::Attention,
                 LaneFocus::Overview,
-                true,
+                Some(Lane::PendingApproval),
                 &TuiOverlay::None
             )
-            .contains("approve/accept/reject")
+            .contains("p approve")
         );
         assert!(
             footer_hint(
                 TuiView::Lanes,
                 LaneFocus::Lane(Lane::Ready),
-                true,
+                Some(Lane::Ready),
                 &TuiOverlay::None
             )
             .contains("move-status")
@@ -10371,14 +10454,19 @@ mod tests {
             footer_hint(
                 TuiView::Settings,
                 LaneFocus::Overview,
-                true,
+                Some(Lane::PendingApproval),
                 &TuiOverlay::None
             )
             .contains("enter/space edit row")
         );
         // The read-only nav views surface select + focus-move + search.
         for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
-            let hint = footer_hint(view, LaneFocus::Overview, true, &TuiOverlay::None);
+            let hint = footer_hint(
+                view,
+                LaneFocus::Overview,
+                Some(Lane::PendingApproval),
+                &TuiOverlay::None,
+            );
             assert!(hint.contains("left/right focus") && hint.contains("search"));
         }
     }
@@ -10391,13 +10479,13 @@ mod tests {
         let lanes = footer_hint(
             TuiView::Lanes,
             LaneFocus::Lane(Lane::Ready),
-            true,
+            Some(Lane::Ready),
             &TuiOverlay::None,
         );
         let settings = footer_hint(
             TuiView::Settings,
             LaneFocus::Overview,
-            true,
+            Some(Lane::PendingApproval),
             &TuiOverlay::None,
         );
         assert_ne!(lanes, settings);
@@ -10411,11 +10499,11 @@ mod tests {
         // hints with that overlay's, and closing it (overlay back to None)
         // restores the pane's hints. Exercised against the Lanes pane so the
         // restore is observable via its distinctive `move-status` key.
-        let pane = footer_hint(TuiView::Lanes, LaneFocus::Overview, true, &TuiOverlay::None);
+        let pane = footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None);
         let help = footer_hint(
             TuiView::Lanes,
             LaneFocus::Overview,
-            true,
+            None,
             &TuiOverlay::Help {
                 selected_section: help_section_for_view(TuiView::Lanes),
                 scroll: 0,
@@ -10425,7 +10513,7 @@ mod tests {
         assert!(help.contains("close help") && !help.contains("move-status"));
         // Closing the overlay restores the underlying pane's hints verbatim.
         assert_eq!(
-            footer_hint(TuiView::Lanes, LaneFocus::Overview, true, &TuiOverlay::None),
+            footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None),
             pane
         );
     }
@@ -10461,6 +10549,138 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn per_item_verb_predicate_and_hints_cover_every_state() {
+        assert!(per_item_verb_is_state_valid(
+            Lane::PendingApproval,
+            PendingValve::Approve
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Acceptance,
+            PendingValve::Approve
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Acceptance,
+            PendingValve::Accept
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Done,
+            PendingValve::Accept
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::PendingApproval,
+            PendingValve::Reject(RejectMode::Rework)
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Acceptance,
+            PendingValve::Reject(RejectMode::Rework)
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Backlog,
+            PendingValve::Reject(RejectMode::Rework)
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Backlog,
+            PendingValve::SetAdmission(AdmissionPolicy::Manual)
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Ready,
+            PendingValve::SetAdmission(AdmissionPolicy::Manual)
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Active,
+            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman)
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Acceptance,
+            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman)
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Ready,
+            PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear))
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Ready,
+            PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Clear))
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Active,
+            PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Clear))
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Active,
+            PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear))
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Acceptance,
+            PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear))
+        ));
+        assert!(per_item_verb_is_state_valid(
+            Lane::Backlog,
+            PendingValve::MoveStatus {
+                from: Lane::Backlog,
+                to: Lane::Ready,
+            }
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Ready,
+            PendingValve::MoveStatus {
+                from: Lane::Backlog,
+                to: Lane::Ready,
+            }
+        ));
+        assert!(!per_item_verb_is_state_valid(
+            Lane::Done,
+            PendingValve::MoveStatus {
+                from: Lane::Done,
+                to: Lane::Backlog,
+            }
+        ));
+
+        let attention_pending = footer_hint(
+            TuiView::Attention,
+            LaneFocus::Overview,
+            Some(Lane::PendingApproval),
+            &TuiOverlay::None,
+        );
+        assert!(attention_pending.contains("p approve") && attention_pending.contains("r reject"));
+        let attention_acceptance = footer_hint(
+            TuiView::Attention,
+            LaneFocus::Overview,
+            Some(Lane::Acceptance),
+            &TuiOverlay::None,
+        );
+        assert!(
+            attention_acceptance.contains("c accept") && attention_acceptance.contains("r reject")
+        );
+        let attention_done = footer_hint(
+            TuiView::Attention,
+            LaneFocus::Overview,
+            Some(Lane::Done),
+            &TuiOverlay::None,
+        );
+        assert!(attention_done.contains("enter open") && !attention_done.contains("reject"));
+
+        for (lane, expected) in [
+            (Lane::Backlog, "m set-admission"),
+            (Lane::PendingApproval, "p approve"),
+            (Lane::Ready, "g merge cap"),
+            (Lane::Active, "k rework cap"),
+            (Lane::Acceptance, "c accept"),
+            (Lane::Blocked, "s move-status"),
+            (Lane::Done, "enter item"),
+        ] {
+            let hint = footer_hint(
+                TuiView::Lanes,
+                LaneFocus::Lane(lane),
+                Some(lane),
+                &TuiOverlay::None,
+            );
+            assert!(hint.contains(expected), "{lane:?}: {hint}");
+        }
+    }
+
+    #[test]
     fn the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane() {
         const MODAL_ITEM: &str = "console-pinned";
         // Enter drills into a LANE from the overview but opens an ITEM inside a
@@ -10468,12 +10688,7 @@ mod tests {
         // advertising "enter drill" in both is the lie this surface fixes.
         // The lane OVERVIEW selects a LANE, not an item, so every per-item key
         // is inert there and none may be advertised.
-        let overview = footer_hint(
-            TuiView::Lanes,
-            LaneFocus::Overview,
-            false,
-            &TuiOverlay::None,
-        );
+        let overview = footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None);
         assert!(overview.contains("enter drill"));
         for inert in ["move-status", "approve/accept/reject", "set-admission"] {
             assert!(!overview.contains(inert));
@@ -10482,23 +10697,23 @@ mod tests {
         let drilled = footer_hint(
             TuiView::Lanes,
             LaneFocus::Lane(Lane::Ready),
-            true,
+            Some(Lane::Ready),
             &TuiOverlay::None,
         );
         assert!(drilled.contains("enter item") && !drilled.contains("enter drill"));
         // With an item selected the per-item keys DO act, so they are listed.
-        assert!(drilled.contains("move-status") && drilled.contains("approve/accept/reject"));
+        assert!(drilled.contains("move-status") && drilled.contains("g merge cap"));
 
         // An EMPTY drilled-in lane selects nothing: `enter` opens nothing and
         // every per-item key is inert, so neither is advertised.
         let empty = footer_hint(
             TuiView::Lanes,
             LaneFocus::Lane(Lane::Ready),
-            false,
+            None,
             &TuiOverlay::None,
         );
         assert!(!empty.contains("enter item") && !empty.contains("enter drill"));
-        assert!(!empty.contains("move-status") && !empty.contains("approve/accept/reject"));
+        assert!(!empty.contains("move-status") && !empty.contains("p approve"));
         // Nothing to move over either, so the navigation key goes too.
         assert!(!empty.contains("up/down move"));
         assert!(empty.contains("esc lane list"));
@@ -10507,16 +10722,16 @@ mod tests {
         let attention_empty = footer_hint(
             TuiView::Attention,
             LaneFocus::Overview,
-            false,
+            None,
             &TuiOverlay::None,
         );
-        assert!(!attention_empty.contains("approve/accept/reject"));
+        assert!(!attention_empty.contains("p approve"));
         assert!(!attention_empty.contains("enter open"));
         // The open modal owns the hint line and names its own keys.
         let modal = footer_hint(
             TuiView::Lanes,
             LaneFocus::Lane(Lane::Ready),
-            true,
+            Some(Lane::Ready),
             &TuiOverlay::WorkItemDetail {
                 work_item_id: MODAL_ITEM.to_owned(),
                 scroll: 0,
@@ -10669,7 +10884,12 @@ mod tests {
             },
         ];
         for overlay in &overlays {
-            let hint = footer_hint(TuiView::Attention, LaneFocus::Overview, true, overlay);
+            let hint = footer_hint(
+                TuiView::Attention,
+                LaneFocus::Overview,
+                Some(Lane::PendingApproval),
+                overlay,
+            );
             // Non-empty and mentions the overlay's exit key.
             assert!(!hint.trim().is_empty() && hint.contains("esc"));
             // The overlay owns the hints: they do NOT fall through to the
@@ -10679,7 +10899,7 @@ mod tests {
                 footer_hint(
                     TuiView::Attention,
                     LaneFocus::Overview,
-                    true,
+                    Some(Lane::PendingApproval),
                     &TuiOverlay::None
                 )
             );
@@ -11119,7 +11339,7 @@ mod tests {
 
     #[test]
     fn move_status_valve_cycles_targets_and_status_move_targets_are_the_pre_terminal_set() {
-        // Blocked offers backlog/ready/active; up/down walks the ordered set.
+        // Blocked offers backlog/ready only; up/down walks the vocabulary order.
         let blocked_ready = PendingValve::MoveStatus {
             from: Lane::Blocked,
             to: Lane::Ready,
@@ -11128,7 +11348,7 @@ mod tests {
             blocked_ready.cycled(true),
             PendingValve::MoveStatus {
                 from: Lane::Blocked,
-                to: Lane::Active,
+                to: Lane::Backlog,
             }
         );
         assert_eq!(
@@ -11139,38 +11359,29 @@ mod tests {
             }
         );
 
-        // The drivable target sets are the pre-terminal pipeline statuses (minus
-        // the item's own lane), plus `done` only from acceptance, and nothing at
-        // all from a shipped `done` item.
+        // The drivable target sets mirror the per-state operator vocabulary:
+        // no `active` target, no pending-approval direct `ready`, and no moves
+        // from `active` or `done`.
         assert_eq!(
             status_move_targets(Lane::Backlog),
-            &[Lane::Ready, Lane::Active, Lane::Blocked]
+            &[Lane::Ready, Lane::Blocked]
         );
         assert_eq!(
             status_move_targets(Lane::PendingApproval),
-            &[Lane::Backlog, Lane::Ready, Lane::Active, Lane::Blocked]
+            &[Lane::Backlog, Lane::Blocked]
         );
         assert_eq!(
             status_move_targets(Lane::Ready),
-            &[Lane::Backlog, Lane::Active, Lane::Blocked]
+            &[Lane::Backlog, Lane::Blocked]
         );
-        assert_eq!(
-            status_move_targets(Lane::Active),
-            &[Lane::Backlog, Lane::Ready, Lane::Blocked]
-        );
+        assert_eq!(status_move_targets(Lane::Active), &[] as &[Lane]);
         assert_eq!(
             status_move_targets(Lane::Acceptance),
-            &[
-                Lane::Backlog,
-                Lane::Ready,
-                Lane::Active,
-                Lane::Blocked,
-                Lane::Done
-            ]
+            &[Lane::Backlog, Lane::Blocked]
         );
         assert_eq!(
             status_move_targets(Lane::Blocked),
-            &[Lane::Backlog, Lane::Ready, Lane::Active]
+            &[Lane::Backlog, Lane::Ready]
         );
         assert_eq!(status_move_targets(Lane::Done), &[] as &[Lane]);
     }
@@ -11701,17 +11912,11 @@ mod tests {
                 to: Lane::Backlog,
             })
         );
-        // An active item now also has pre-terminal move targets (it did not
-        // before the broad move landed).
+        // Active is entered by dispatch or acceptance rework, not operator
+        // relocation, so it has no move-status valve.
         let active =
             build_tui_model_for_state(&events, &drilldown_state(Lane::Active, 0, TuiOverlay::None));
-        assert_eq!(
-            active.selected_move_status_valve(),
-            Some(PendingValve::MoveStatus {
-                from: Lane::Active,
-                to: Lane::Backlog,
-            })
-        );
+        assert_eq!(active.selected_move_status_valve(), None);
         // A shipped `done` item offers no onward move (the picker never un-ships).
         let done =
             build_tui_model_for_state(&events, &drilldown_state(Lane::Done, 0, TuiOverlay::None));

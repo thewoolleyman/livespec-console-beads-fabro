@@ -894,6 +894,94 @@ fn tmux_tui_e2e_lifecycle_walkthrough_two_repos() -> HarnessResult<()> {
     Ok(())
 }
 
+/// Scenario 25 -- per-item verb hints and keys follow the orchestrator-owned
+/// state vocabulary.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<()> {
+    // Done is terminal: no per-item verb hint is offered, and all per-item verb
+    // keys stay inert instead of opening a stale valve modal.
+    let done = launch_lifecycle_on_lanes_item("state-vocab-done", "done")?;
+    let done_screen = done.wait_for_settled("done (1)", RENDER_TIMEOUT)?;
+    assert!(
+        done_screen.contains("enter item") && done_screen.contains("esc lane list"),
+        "done item must still expose non-verb lane-item navigation:\n{done_screen}"
+    );
+    for forbidden in [
+        "move-status",
+        "approve/accept/reject",
+        "set-admission/acceptance",
+    ] {
+        assert!(
+            !done_screen.contains(forbidden),
+            "done item must not advertise {forbidden:?}:\n{done_screen}"
+        );
+    }
+    for key in ["p", "c", "r", "m", "n", "s"] {
+        done.send_keys(&[key])?;
+        let after = done.wait_for_settled("done (1)", RENDER_TIMEOUT)?;
+        assert!(
+            !after.contains("Approve work-item")
+                && !after.contains("Accept work-item")
+                && !after.contains("Reject work-item")
+                && !after.contains("Set admission")
+                && !after.contains("Set acceptance")
+                && !after.contains("Move status"),
+            "terminal item key {key:?} must be inert:\n{after}"
+        );
+    }
+
+    // Backlog admits grooming/dispatch movement, but not the human valve verbs.
+    let backlog = launch_lifecycle_on_lanes_item("state-vocab-backlog", "backlog")?;
+    let backlog_screen = backlog.wait_for_settled("backlog (1)", RENDER_TIMEOUT)?;
+    assert!(
+        backlog_screen.contains("move-status"),
+        "backlog item must keep the operator-drivable move hint:\n{backlog_screen}"
+    );
+    assert!(
+        !backlog_screen.contains("approve/accept/reject"),
+        "backlog item must suppress human-valve hints:\n{backlog_screen}"
+    );
+
+    // Acceptance is a human valve lane with two exits: accept and reject.
+    let acceptance = launch_lifecycle_on_lanes_item("state-vocab-acceptance", "acceptance")?;
+    let acceptance_screen = acceptance.wait_for_settled("acceptance (1)", RENDER_TIMEOUT)?;
+    assert!(
+        acceptance_screen.contains("accept/reject"),
+        "acceptance item must keep both accept and reject hints:\n{acceptance_screen}"
+    );
+    assert!(
+        !acceptance_screen.contains("p approve"),
+        "acceptance item must not offer the pending-approval-only approve hint:\n{acceptance_screen}"
+    );
+
+    Ok(())
+}
+
+fn launch_lifecycle_on_lanes_item(label: &str, initial_lane: &str) -> HarnessResult<TmuxConsole> {
+    let repo = RepoFixture::new(label, &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let fixture = LifecycleFixture::new(label, initial_lane)?;
+    let env = fixture.env();
+    let borrowed: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
+    console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    console.send_keys(&["Down", "Down"])?;
+    console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    while !console
+        .wait_for_settled(initial_lane, RENDER_TIMEOUT)?
+        .contains("[focus]")
+    {
+        console.send_keys(&["Down"])?;
+    }
+    console.send_keys(&["Enter"])?;
+    console.wait_for_settled(ITEM_ID, RENDER_TIMEOUT)?;
+    std::mem::forget(fixture);
+    Ok(console)
+}
+
 /// Walk `docs/lifecycle-walkthrough.md` end to end against one repo.
 ///
 /// The item starts in `pending-approval` so the walk crosses BOTH human valves
