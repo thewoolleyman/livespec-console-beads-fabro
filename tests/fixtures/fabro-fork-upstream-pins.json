@@ -1,0 +1,54 @@
+{
+  "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
+  "upstream_plugin_version": "c53fd50e58b6",
+  "files": [
+    {
+      "path": "prompts/disposition.md",
+      "upstream_sha256": "78b0c649a286d7a4090f2150e1e4dec66e4bb5d1b774d2fa3bbbbea35463407e",
+      "present_in_fork": false,
+      "reason": "ABSENT FROM OUR FORK BY CONSTRUCTION. Upstream added a whole `disposition` stage; our workflow.fabro has zero references to it. Adopting it is a graph change, not a file copy. `present_in_fork: false` records that this omission is known, so the gate does not report it as a missing file every run."
+    },
+    {
+      "path": "prompts/fix.md",
+      "upstream_sha256": "2b5b0986f99d217e2a39ca10d37f0fda42dcca32605360c971a56327e049fffd",
+      "present_in_fork": true,
+      "reason": "DIVERGED only slightly from upstream. Low-risk to sync; not yet reviewed."
+    },
+    {
+      "path": "prompts/implement.md",
+      "upstream_sha256": "9e3cf834510e5eda829b36db69995be290791b5c3dfa8aff996c3231e33f4bf9",
+      "present_in_fork": true,
+      "reason": "DIVERGED. Upstream has grown honest-checks / no-detector-evasion, cohesion-decomposition and verbatim-move rules we have not adopted. Porting them is wanted but is its own reviewed change, not a silent sync."
+    },
+    {
+      "path": "prompts/pr.md",
+      "upstream_sha256": "02a9430cf61ce156263ee0609052851b61be531c987ee8431f00ebe57b3df6e2",
+      "present_in_fork": true,
+      "reason": "SYNCED VERBATIM from upstream 2026-07-28 (PR #476, merged 2026-07-28T22:08:32Z) \u2014 our copy had been frozen at 3fa2d5c and lacked the fetch+rebase publish leg that upstream landed as bd-ib-qq7f (PR #905). Keep it verbatim: a local 'improvement' to borrowed prose becomes a divergence nobody remembers agreeing to. The retry's exact-match ci.yml scoping is a known upstream wart, filed with factory-hardening; we inherit the fix when they ship it."
+    },
+    {
+      "path": "prompts/review-fix.md",
+      "upstream_sha256": "01f5d19825ec84bbe0152278b74846a6b13c8f1271ebcac30539aac62349bee0",
+      "present_in_fork": true,
+      "reason": "DELIBERATELY NOT SYNCED, same reason as review.md \u2014 and upstream has additionally rewritten it to consume a `disposition` record that our graph does not produce, so syncing it alone would reference a stage we do not run."
+    },
+    {
+      "path": "prompts/review.md",
+      "upstream_sha256": "d1c49c9258e2409b8a37b0a468e17e93081edba9c9e75a1036d73a0d2c73795f",
+      "present_in_fork": true,
+      "reason": "DELIBERATELY NOT SYNCED. This repo's review gate is ADVISORY / ship-on-cap by recorded decision (workflow.fabro, work-item bd-ib-egms32); upstream's is BLOCKING by default. Syncing would silently revert a ratified policy. Re-pin on upstream change only after confirming the change is policy-neutral."
+    },
+    {
+      "path": "workflow.fabro",
+      "upstream_sha256": "96e8169b27ad61633da43231b8e02bb38b442b8e55198fc5dfc5eb75c739ce10",
+      "present_in_fork": true,
+      "reason": "DIVERGED. Our graph encodes the advisory ship-on-cap review gate (see :9-10, bd-ib-egms32) and omits upstream's disposition stage. This is the file the fork exists to own; treat any upstream movement here as a design review, never a sync."
+    },
+    {
+      "path": "workflow.toml",
+      "upstream_sha256": "ff41a73492a4d242c10f01377dce798925b1ce297436514a43117ec35a119dad",
+      "present_in_fork": true,
+      "reason": "DIVERGED, AND THIS IS THE REASON THE FORK EXISTS: our docker pin is the `python-rust-agent-` sandbox layer, while upstream pins `python-agent-`, which its own comment documents as carrying no Rust. This is a Rust repo, so inheriting upstream's image would fail every cargo build. Note our copy is rewritten continuously by the pin-bump automation; that never affects this gate, which pins UPSTREAM's bytes, not ours. Upstream also carries github permissions, a different review adapter, disposition_adapter, review_fix_visit_cap and step-timer wrapping that we have not evaluated."
+    }
+  ]
+}
