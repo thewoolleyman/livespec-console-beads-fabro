@@ -148,6 +148,34 @@ install-commit-refuse-hooks:
 install-worktree-pack:
     uv run python -m livespec_dev_tooling.install_worktree_pack
 
+# Factory-boundary helper: fail if the current branch changes GitHub workflow
+# files. Deliberately OUTSIDE the canonical `check` aggregate — the factory
+# janitor lane invokes it explicitly, ahead of `check`, so an implementation
+# branch never reaches PR publication carrying `.github/workflows/` edits. The
+# fleet App's push token is contents-only, so such a branch would otherwise be
+# discovered by GitHub's own push rejection instead of being reported here and
+# routed to maintainer-side landing.
+#
+# ADOPTED 2026-07-28 because the orchestrator plugin's `_DEFAULT_JANITOR` is
+# `just check-no-workflow-edits install-worktree-pack check`, and this repo
+# defined the latter two but not this one — so every post-merge janitor died
+# with "Justfile does not contain recipe `check-no-workflow-edits`" and stranded
+# the work-item at `active` after its PR had already merged (observed on
+# livespec-console-beads-fabro-dm5f7q, PR #466 merged as 77ed854). Body mirrors
+# the peer at livespec-dev-tooling `justfile` rather than the orchestrator's
+# `workflow_guard.py` form, which resolves a `.claude-plugin/` script this
+# consumer repo does not carry.
+check-no-workflow-edits:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base=$(git merge-base HEAD origin/master 2>/dev/null || git merge-base HEAD master)
+    if git diff --quiet --name-only "$base"...HEAD -- .github/workflows; then
+        exit 0
+    fi
+    echo "ERROR: factory branches must not modify .github/workflows/ files" >&2
+    git diff --name-only "$base"...HEAD -- .github/workflows >&2
+    exit 1
+
 check:
     #!/usr/bin/env bash
     set -uo pipefail
