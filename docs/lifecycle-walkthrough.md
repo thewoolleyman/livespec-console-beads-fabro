@@ -83,7 +83,7 @@ The middle pane's title becomes `Attention [focus]`, and the Status line at the
 bottom changes to offer the per-item keys:
 
 ```
-up/down move | enter open | p/c/r approve/accept/reject | m/n set-admission/acceptance | ? help | q quit
+up/down move | enter open | p approve | r reject | m set-admission | ? help | q quit
 ```
 
 Use `↑` / `↓` here if you have more than one item; the walkthrough acts on the

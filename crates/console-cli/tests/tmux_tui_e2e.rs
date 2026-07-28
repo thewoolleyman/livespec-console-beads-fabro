@@ -337,7 +337,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     // on master. Asserting its ABSENCE is both the current truth and the
     // stronger check.
     assert!(
-        !attention.contains("approve/accept/reject"),
+        !attention.contains("p approve"),
         "an empty Attention inbox must not advertise its per-item valve keys:\n{attention}"
     );
     assert!(
@@ -902,7 +902,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
     // Done is terminal: no per-item verb hint is offered, and all per-item verb
     // keys stay inert instead of opening a stale valve modal.
     let done = launch_lifecycle_on_lanes_item("state-vocab-done", "done")?;
-    let done_screen = done.wait_for_settled("done (1)", RENDER_TIMEOUT)?;
+    let done_screen = done.wait_for_settled("Lane: done", RENDER_TIMEOUT)?;
     assert!(
         done_screen.contains("enter item") && done_screen.contains("esc lane list"),
         "done item must still expose non-verb lane-item navigation:\n{done_screen}"
@@ -919,7 +919,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
     }
     for key in ["p", "c", "r", "m", "n", "s"] {
         done.send_keys(&[key])?;
-        let after = done.wait_for_settled("done (1)", RENDER_TIMEOUT)?;
+        let after = done.wait_for_settled("Lane: done", RENDER_TIMEOUT)?;
         assert!(
             !after.contains("Approve work-item")
                 && !after.contains("Accept work-item")
@@ -933,7 +933,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
 
     // Backlog admits grooming/dispatch movement, but not the human valve verbs.
     let backlog = launch_lifecycle_on_lanes_item("state-vocab-backlog", "backlog")?;
-    let backlog_screen = backlog.wait_for_settled("backlog (1)", RENDER_TIMEOUT)?;
+    let backlog_screen = backlog.wait_for_settled("Lane: backlog", RENDER_TIMEOUT)?;
     assert!(
         backlog_screen.contains("move-status"),
         "backlog item must keep the operator-drivable move hint:\n{backlog_screen}"
@@ -945,9 +945,9 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
 
     // Acceptance is a human valve lane with two exits: accept and reject.
     let acceptance = launch_lifecycle_on_lanes_item("state-vocab-acceptance", "acceptance")?;
-    let acceptance_screen = acceptance.wait_for_settled("acceptance (1)", RENDER_TIMEOUT)?;
+    let acceptance_screen = acceptance.wait_for_settled("Lane: acceptance", RENDER_TIMEOUT)?;
     assert!(
-        acceptance_screen.contains("accept/reject"),
+        acceptance_screen.contains("c accept") && acceptance_screen.contains("r reject"),
         "acceptance item must keep both accept and reject hints:\n{acceptance_screen}"
     );
     assert!(
@@ -970,9 +970,15 @@ fn launch_lifecycle_on_lanes_item(label: &str, initial_lane: &str) -> HarnessRes
     console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
     console.send_keys(&["Down", "Down"])?;
     console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    // Focus the board (Enter), select the target lane row (Down until the
+    // `> <lane> (` cursor marker), then drill into it (Enter) — the sequence
+    // the walkthrough documents; the prior loop pressed Down in the Views
+    // menu waiting for a `[focus]` marker only Enter can produce.
+    console.send_keys(&["Enter"])?;
+    let marker = format!("> {initial_lane} (");
     while !console
-        .wait_for_settled(initial_lane, RENDER_TIMEOUT)?
-        .contains("[focus]")
+        .wait_for_settled("[focus]", RENDER_TIMEOUT)?
+        .contains(&marker)
     {
         console.send_keys(&["Down"])?;
     }
@@ -1013,8 +1019,8 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     console.send_keys(&["Enter"])?;
     let focused = console.wait_for_settled("Attention [focus]", RENDER_TIMEOUT)?;
     assert!(
-        focused.contains("p/c/r approve/accept/reject"),
-        "step 2: the Status line must offer the valve keys for {tenant}:\n{focused}"
+        focused.contains("p approve | r reject | m set-admission"),
+        "step 2: the Status line must offer the pending-approval verb keys for {tenant}:\n{focused}"
     );
 
     // --- Steps 3-4: `p` opens the approve valve, Enter confirms it -----------
@@ -1157,12 +1163,12 @@ fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<(
 
     // --- and the row carries no work-item, so the per-item keys stay hidden ---
     assert!(
-        !screen.contains("approve/accept/reject"),
+        !screen.contains("p approve"),
         "a row naming no work-item must not advertise the per-item valves, even \
          though the inbox is populated:\n{screen}"
     );
     assert!(
-        !screen.contains("m/n set-admission/acceptance"),
+        !screen.contains("m set-admission"),
         "a row naming no work-item must not advertise the policy dials:\n{screen}"
     );
     assert!(
