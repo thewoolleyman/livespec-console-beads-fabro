@@ -939,7 +939,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
         "backlog item must keep the operator-drivable move hint:\n{backlog_screen}"
     );
     assert!(
-        !backlog_screen.contains("approve/accept/reject"),
+        !backlog_screen.contains("p approve") && !backlog_screen.contains("c accept"),
         "backlog item must suppress human-valve hints:\n{backlog_screen}"
     );
 
