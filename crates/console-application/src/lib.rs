@@ -10690,7 +10690,7 @@ mod tests {
         // is inert there and none may be advertised.
         let overview = footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None);
         assert!(overview.contains("enter drill"));
-        for inert in ["move-status", "approve/accept/reject", "set-admission"] {
+        for inert in ["move-status", "p approve", "c accept", "set-admission"] {
             assert!(!overview.contains(inert));
         }
 
