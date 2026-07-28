@@ -287,6 +287,50 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
+**RESUME HERE (2026-07-28, supervisor brief 27 — supersedes everything below in this section).**
+Session console-happy-path-mvp wound down cleanly at a context boundary. Execute in order:
+
+0. CORRECTED CAUSE (brief 28): the prior session was PINNED to plugin `1567e8f200dc`
+   (cached 2026-07-22) — predating TWO shipped fixes: rebase-before-push in pr.md
+   (bd-ib-qq7f, released 2026-07-24 — why slice A hit the stale-base refusal) and
+   14c3cae's janitor pack provisioning (tagged v0.46.23 on 2026-07-26 — why
+   reconcile-merged failed worktree_pack_absent). Both were RELEASED, not missing; the
+   session never re-resolved. A fresh session resolves the current cache — REPORT the
+   resolved version hash FIRST; it must carry both fixes (e.g. `c53fd50e58b6`+). If it
+   resolves to one lacking either fix, STOP: that is a resolution defect. Never
+   hand-edit paths. Generalisable: long-lived sessions pin plugin versions at start and
+   present staleness as product defects.
+1. `dispatcher.py reconcile-merged --repo <primary> --item livespec-console-beads-fabro-dm5f7q`
+   (authorized; its PR #466 MERGED as 77ed854). If janitor fails again: STOP, report verbatim.
+2. `detect_impl_gaps.py --json`: confirm `gap-23tps2nk` CLOSES once `dm5f7q` reaches done
+   (closure is keyed to item-done, not merged code). Report either way.
+3. Cleanup (forge-verified: bb62344's content is on master via #467/221051a): delete remote
+   branch `feat/livespec-console-beads-fabro-dm5f7q` if it still exists (delete FROM A
+   WORKTREE — the primary refuses all pushes); remove leftover worktree
+   `happy-path-handoff-resync` if present. NEVER touch `janitor-reconcile-*` (diagnostic) or
+   other sessions' worktrees (`ci-concurrency-group`, `harden-tmux-check`).
+4. FILE freeform (maintainer consent given; `origin: freeform`, `gap_id: null`): "Wire
+   per_item_verb_is_state_valid into hint rendering — the predicate has no production call
+   site and hint text is a second, unbound encoding of the ratified vocabulary." Evidence:
+   predicate at `console-application/src/lib.rs:488` (no production call site; only test
+   refs); hints from `footer_hint` `:1526`, a `const fn` returning `&'static str` via
+   hardcoded per-lane literals; key inertness is a third path. Acceptance: a mutation to a
+   per-lane hint literal ALONE must be impossible (literal derived, not typed).
+5. DISPATCH that wiring item alone (factory path). On a publish refusal citing workflows
+   permission: it is the stale-base race (bd-ib-bwgko4, unfixed) — answer the run's
+   interview (Retry) THEN `fabro steer` the in-sandbox `git fetch && git rebase
+   origin/master` recipe. Never touch `.github/workflows/`, never `--no-verify`.
+6. B1 `-nvflph` only after the wiring slice MERGES; B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
+   verify-close behind B1; then C `-cxu4eu`; the tier-check bug `-ff6aue` any time. Serial.
+   All sit `pending-approval` (admit via the approve valve).
+
+Standing rules: worktree -> PR -> rebase-merge, never commit on the primary; verify against
+the forge after a fetch; outcomes from artifacts, never exit codes; overseer marker
+(`tmp/overseer/console-happy-path-mvp/.overseer-state`) written as the LAST action of every
+gated turn and `cat`-verified. Done, do not redo: slice A merged (#466) + dead-literal
+repoint (#467) + all red demos conclusive (incl. backlog `:944`); v050+v037 ratified;
+strand capture/recovery complete; accept-valve walk done.
+
 This thread runs **under supervision** since 2026-07-25 — read
 `plan/console-happy-path-mvp/supervisor-handoff.md` FIRST, and re-measure
 everything per its § "Reactivating a parked thread" (fetch + lanes + new
