@@ -324,10 +324,10 @@ Session console-happy-path-mvp wound down cleanly at a context boundary. Execute
    hardcoded per-lane literals; key inertness is a third path. Acceptance: a mutation to a
    per-lane hint literal ALONE must be impossible (literal derived, not typed).
 5. DISPATCH that wiring item alone (factory path). Our `.fabro` fork's `pr.md` was
-   SYNCED from upstream 2026-07-29 (PR #476), so the publish leg now runs an
+   SYNCED from upstream 2026-07-28 (PR #476, merged 2026-07-28T22:08:32Z), so the publish leg now runs an
    unconditional `git fetch origin master` + `git rebase origin/master` IMMEDIATELY
    BEFORE the push. That is the primary defence and it closes the common case.
-   AMENDED 2026-07-29 (supersedes this step's earlier "a refusal is NOT expected;
+   AMENDED 2026-07-28 (supersedes this step's earlier "a refusal is NOT expected;
    STOP AND REPORT on any refusal"). That wording assumed the bounded retry fires on
    any workflows-permission rejection. It does not. The synced prose instructs EXACT
    matching on a fully-qualified signature naming `.github/workflows/ci.yml`
