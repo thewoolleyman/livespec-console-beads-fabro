@@ -1,0 +1,17 @@
+[package]
+name = "console-fork-drift-check"
+description = "Fork-drift gate for the committed .fabro implement-work-item workflow fork"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+# Internal check crate — never published.
+publish = false
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true

@@ -175,6 +175,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "console-fork-drift-check"
+version = "0.3.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "console-spec-check"
 version = "0.3.0"
 dependencies = [

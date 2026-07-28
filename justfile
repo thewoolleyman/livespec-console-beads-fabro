@@ -192,6 +192,7 @@ check:
         check-baseline
         check-plugin-resolution
         check-doctor-static
+        check-fork-drift
     )
     failed=()
     for target in "${targets[@]}"; do
@@ -292,6 +293,22 @@ check-plugin-resolution:
 # doctor-out-of-band-edits is self-healing — on a drifted tree it writes a
 # history backfill into the worktree and fails, and committing that backfill
 # heals the track; on a clean tree it never fires.
+# Fork-drift gate over the committed `.fabro/workflows/implement-work-item/`
+# fork. Upstream once fixed the pr-stage publish leg (bd-ib-qq7f, PR #905) and
+# our fork silently kept the broken one for three weeks, because NOTHING
+# asserted the leg was present. This is that assertion. It pins UPSTREAM digests
+# per file rather than asserting byte-equality against an allowlist — six of the
+# seven files diverge deliberately, so an allowlist wide enough to tolerate that
+# would pass on anything. Re-pin with `just refresh-fork-upstream-pins`.
+check-fork-drift:
+    cargo run --quiet --package console-fork-drift-check
+
+# Re-capture upstream digests for the fork after a conscious review of what
+# upstream changed. Needs the orchestrator plugin installed; preserves each
+# pin's `reason`.
+refresh-fork-upstream-pins:
+    cargo run --quiet --package console-fork-drift-check -- --refresh
+
 check-doctor-static:
     #!/usr/bin/env bash
     set -euo pipefail
