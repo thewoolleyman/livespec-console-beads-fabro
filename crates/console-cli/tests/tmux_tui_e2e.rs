@@ -909,8 +909,11 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
     );
     for forbidden in [
         "move-status",
-        "approve/accept/reject",
-        "set-admission/acceptance",
+        "p approve",
+        "c accept",
+        "r reject",
+        "m set-admission",
+        "n set-acceptance",
     ] {
         assert!(
             !done_screen.contains(forbidden),
