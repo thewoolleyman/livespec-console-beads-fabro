@@ -323,17 +323,39 @@ Session console-happy-path-mvp wound down cleanly at a context boundary. Execute
    refs); hints from `footer_hint` `:1526`, a `const fn` returning `&'static str` via
    hardcoded per-lane literals; key inertness is a third path. Acceptance: a mutation to a
    per-lane hint literal ALONE must be impossible (literal derived, not typed).
-5. DISPATCH that wiring item alone (factory path). A publish refusal citing workflows
-   permission is NOT expected on a current plugin, and must NOT be worked around by
-   hand: `bd-ib-bwgko4` is CLOSED, superseded by `bd-ib-qq7f` (merged 2026-07-24 as
-   PR #905, `231e9a48`), which put `git fetch origin master` + `git rebase
-   origin/master` immediately before the push leg plus a bounded one-shot retry on
-   that exact rejection signature. The shipped `pr.md` now rebases automatically. So
-   if a refusal DOES occur: **STOP AND REPORT** — its recurrence is itself the
-   finding. HISTORY, for reading older notes only: the manual recovery was answer-the-
-   interview (Retry) THEN `fabro steer` the in-sandbox `git fetch && git rebase
-   origin/master` recipe; it was needed solely because the prior session ran a
-   pre-2026-07-24 plugin. Never touch `.github/workflows/`, never `--no-verify`.
+5. DISPATCH that wiring item alone (factory path). Our `.fabro` fork's `pr.md` was
+   SYNCED from upstream 2026-07-29 (PR #476), so the publish leg now runs an
+   unconditional `git fetch origin master` + `git rebase origin/master` IMMEDIATELY
+   BEFORE the push. That is the primary defence and it closes the common case.
+   AMENDED 2026-07-29 (supersedes this step's earlier "a refusal is NOT expected;
+   STOP AND REPORT on any refusal"). That wording assumed the bounded retry fires on
+   any workflows-permission rejection. It does not. The synced prose instructs EXACT
+   matching on a fully-qualified signature naming `.github/workflows/ci.yml`
+   (`prompts/pr.md:44-45`) and then explicitly forbids generalising — "Do NOT loop
+   and do NOT retry on any different error signature" (`:55`). The parenthetical at
+   `:46-47` disclaims EDITING that path; it is not a wildcard licence. So the retry
+   is INERT for a rejection naming any other file. Two cases, and they are handled
+   differently:
+   - Refusal naming **`.github/workflows/ci.yml`** — the retry SHOULD fire. If it
+     does not, that IS a finding: **STOP AND REPORT**.
+   - Refusal naming **any other workflow file** — the retry is INERT BY UPSTREAM
+     DESIGN. Do NOT treat it as novel and do NOT escalate it as one. Apply the known
+     recovery: answer the run's interview (Retry) THEN `fabro steer` the in-sandbox
+     `git fetch && git rebase origin/master` recipe, and record it as an instance of
+     the defect already filed with factory-hardening (agreed fix shape: key on the
+     stable head and tail of the signature, wildcard the path). On this host
+     `bump-pin-from-dispatch.yml` is the LIKELIER trigger than `ci.yml`, because
+     every livespec-dev-tooling pin bump rewrites it — v0.56.1 through v0.58.1 all
+     landed inside about a day.
+   RESIDUAL EXPOSURE, stated so nobody over-reacts: because step 2 rebases
+   unconditionally just before pushing, the retry only matters if master moves in the
+   narrow window BETWEEN that rebase and the push. The exposure is a pin bump landing
+   inside that window on a file other than `ci.yml`, in which case the run parks
+   needs-human with no retry attempted. Assume NO upstream fix before 2026-07-31:
+   factory-hardening has FILED it but not dispatched it, their account is at its
+   weekly ceiling, and the maintainer ruled their in-flight image-pin run is their
+   last dispatch this week.
+   Never touch `.github/workflows/`, never `--no-verify`.
 6. B1 `-nvflph` only after the wiring slice MERGES; B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
    verify-close behind B1; then C `-cxu4eu`; the tier-check bug `-ff6aue` any time. Serial.
    All sit `pending-approval` (admit via the approve valve).
@@ -343,7 +365,22 @@ the forge after a fetch; outcomes from artifacts, never exit codes; overseer mar
 (`tmp/overseer/console-happy-path-mvp/.overseer-state`) written as the LAST action of every
 gated turn and `cat`-verified. Done, do not redo: slice A merged (#466) + dead-literal
 repoint (#467) + all red demos conclusive (incl. backlog `:944`); v050+v037 ratified;
-strand capture/recovery complete; accept-valve walk done.
+strand capture/recovery complete; accept-valve walk done; `dm5f7q` recovered and
+ACCEPTED AT THE TUI `c` VALVE, now `done` (its gap-tied record discharges
+`gap-23tps2nk`); `pr.md` synced (#476).
+
+**A NAMED PATTERN ON THIS TRACK: an instruction outliving the condition that made it
+correct.** Twice now, guidance written into this file was accurate when authored and
+false weeks later, and each time a successor would have acted wrongly on it in good
+faith. First: "expect the stale-base refusal, apply the manual recovery" — true under
+the pre-2026-07-24 plugin, false after the restart. Second: step 5's "a refusal is NOT
+expected; STOP AND REPORT on any refusal" — true if the bounded retry fired on any
+workflows-permission rejection, false once its exact-match scoping was read closely.
+Durable instructions here SHOULD name the condition they depend on, so the next reader
+can check whether it still holds instead of inheriting a conclusion. A related trap,
+earned the same week: `gap-23tps2nk` "closing" was never a real check —
+`detect-impl-gaps` is a spec-clause CENSUS whose ids are a pure function of spec text,
+so it never shrinks; closure lives in the gap-tied work-item.
 
 This thread runs **under supervision** since 2026-07-25 — read
 `plan/console-happy-path-mvp/supervisor-handoff.md` FIRST, and re-measure
