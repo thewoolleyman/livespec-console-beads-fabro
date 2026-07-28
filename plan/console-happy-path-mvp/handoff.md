@@ -287,7 +287,7 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
-**RESUME HERE (2026-07-28, supervisor brief 27 — supersedes everything below in this section).**
+**RESUME HERE (2026-07-28, supervisor brief 28 — supersedes everything below in this section).**
 Session console-happy-path-mvp wound down cleanly at a context boundary. Execute in order:
 
 0. CORRECTED CAUSE (brief 28): the prior session was PINNED to plugin `1567e8f200dc`
@@ -299,7 +299,14 @@ Session console-happy-path-mvp wound down cleanly at a context boundary. Execute
    resolved version hash FIRST; it must carry both fixes (e.g. `c53fd50e58b6`+). If it
    resolves to one lacking either fix, STOP: that is a resolution defect. Never
    hand-edit paths. Generalisable: long-lived sessions pin plugin versions at start and
-   present staleness as product defects.
+   present staleness as product defects. MEASURED 2026-07-28: the resolving session got
+   `c53fd50e58b6` (installed for this `projectPath` per `installed_plugins.json`) and
+   confirmed BOTH fixes present — `install-worktree-pack` in `_DEFAULT_JANITOR`
+   (`_dispatcher_fabro_argv.py:58`) and `git rebase origin/master` before the push leg
+   (`pr.md` step 2). Note the three orchestrator `bin/` entries on `PATH`
+   (`ec529fe14afa`, `1fcc60a7e0fc`, `a6b2523a0e44`) are INERT — those directories do
+   not exist, and `dispatcher.py` is not on `PATH` under any name, so it is always
+   invoked by absolute path out of the installed cache.
 1. `dispatcher.py reconcile-merged --repo <primary> --item livespec-console-beads-fabro-dm5f7q`
    (authorized; its PR #466 MERGED as 77ed854). If janitor fails again: STOP, report verbatim.
 2. `detect_impl_gaps.py --json`: confirm `gap-23tps2nk` CLOSES once `dm5f7q` reaches done
@@ -316,10 +323,17 @@ Session console-happy-path-mvp wound down cleanly at a context boundary. Execute
    refs); hints from `footer_hint` `:1526`, a `const fn` returning `&'static str` via
    hardcoded per-lane literals; key inertness is a third path. Acceptance: a mutation to a
    per-lane hint literal ALONE must be impossible (literal derived, not typed).
-5. DISPATCH that wiring item alone (factory path). On a publish refusal citing workflows
-   permission: it is the stale-base race (bd-ib-bwgko4, unfixed) — answer the run's
+5. DISPATCH that wiring item alone (factory path). A publish refusal citing workflows
+   permission is NOT expected on a current plugin, and must NOT be worked around by
+   hand: `bd-ib-bwgko4` is CLOSED, superseded by `bd-ib-qq7f` (merged 2026-07-24 as
+   PR #905, `231e9a48`), which put `git fetch origin master` + `git rebase
+   origin/master` immediately before the push leg plus a bounded one-shot retry on
+   that exact rejection signature. The shipped `pr.md` now rebases automatically. So
+   if a refusal DOES occur: **STOP AND REPORT** — its recurrence is itself the
+   finding. HISTORY, for reading older notes only: the manual recovery was answer-the-
    interview (Retry) THEN `fabro steer` the in-sandbox `git fetch && git rebase
-   origin/master` recipe. Never touch `.github/workflows/`, never `--no-verify`.
+   origin/master` recipe; it was needed solely because the prior session ran a
+   pre-2026-07-24 plugin. Never touch `.github/workflows/`, never `--no-verify`.
 6. B1 `-nvflph` only after the wiring slice MERGES; B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
    verify-close behind B1; then C `-cxu4eu`; the tier-check bug `-ff6aue` any time. Serial.
    All sit `pending-approval` (admit via the approve valve).
