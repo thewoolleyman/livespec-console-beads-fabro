@@ -438,11 +438,25 @@ Consequence, from source: `requires_attention_from_lane`
 `ai-then-human` or `human-only`, and its docstring records that an `ai-only` item
 "auto-completes to `done` rather than resting in `acceptance`". So a newly-dispatched
 item will never rest at a human `c accept`. `auto_approve_ready` stays `false`, so the
-APPROVE half of the walk is unaffected. The walk therefore cannot end at a keyboard
-accept unless `acceptance_mode` is set back for the duration — which is a dispatcher
-lever in `.livespec.jsonc` and so maintainer-owned. Decide it BEFORE the walk, not
-during. (The already-banked accept-valve evidence stands: 2026-07-26's four items and
-2026-07-29's `dm5f7q` were accepted under the old setting.)
+APPROVE half of the walk is unaffected.
+
+**RESOLVED — do NOT touch `.livespec.jsonc` for this.** `acceptance_mode` is the
+repo-level DEFAULT and carries a documented PER-ITEM OVERRIDE: the `n` set-acceptance
+valve (`detailed-usage.md:419` "Per-item override | `n` set-acceptance"; the valve is
+`PendingValve::SetAcceptance` → `CommandType::WorkItemSetAcceptanceRequested`,
+`lib.rs:223,3295-3297`). `requires_attention_from_lane` keys on the ITEM's
+`acceptance_policy`, not the repo default, so pressing `n` on the walked item to set
+`ai-then-human` or `human-only` makes that one item rest at `acceptance` for a real
+keyboard `c accept` while every other item stays `ai-only`.
+
+So the walk gains a step rather than losing a leg: **… → dispatch → `n` set-acceptance
+→ monitor → `c` accept**. That is strictly better evidence than the old path — it
+exercises a policy-dial valve this thread has never walked, and it needs no config
+edit, no flip-flop on a lever that once silently broke the approve valve for a whole
+session, and no maintainer decision. Press `n` BEFORE the item reaches `acceptance`;
+an `ai-only` item auto-completes to `done` on arrival and there is no valve left to
+press. (The already-banked accept-valve evidence stands: 2026-07-26's four items and
+2026-07-29's `dm5f7q` were accepted under the old repo default.)
 
 ### 2. On a publish refusal — two cases, do not conflate them
 
