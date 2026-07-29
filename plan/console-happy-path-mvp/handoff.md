@@ -182,6 +182,60 @@ last verified against source and can skip it unless its area moved.
   and "issues every mutation through the orchestrator's `drive` API", which is a
   checkable restatement of the locked core contract and exactly the kind of claim
   that rots silently. Audit it with the rest.
+- **2026-07-29T23:1x–23:2xZ (delta pass, `a5af510..5e91d0e`; 2026-07-30 LOCAL —
+  we run at UTC+2). FINDING — `docs/lifecycle-walkthrough.md` Steps 5–7 are
+  UNREACHABLE on this repo as configured, and the E2E the doc cites as its own
+  guarantee structurally cannot catch it. Filed `-6zqv2w`.** Every link verified
+  against `5e91d0e`: `.livespec.jsonc:71` sets `"acceptance_mode": "ai-only"`
+  (`6f5f6b6`, maintainer-directed); `requires_attention_from_lane`
+  (`crates/console-application/src/lib.rs:5426-5443`) admits an `Acceptance`
+  item only under `AiThenHuman | HumanOnly`, its docstring (`:5422-5424`)
+  recording that an `ai-only` item "auto-completes to `done` rather than resting
+  in `acceptance`"; and no item carries a per-item `acceptance_policy` override
+  (all `None`), so a freshly dispatched item inherits `ai-only`. Against that,
+  the walkthrough asserts at `:140-141` that the factory "parks the result in
+  `acceptance` for a human to judge", at `:143-150` that the item is "back in
+  your inbox" with `attention: 1`, and presses `c` at `:155+` — with NO
+  precondition stated anywhere (it never names `acceptance_mode`, `ai-only`,
+  `ai-then-human`, `human-only`, or the `n set-acceptance` valve; `n` appears
+  only inside a quoted hint string at `:88`). **Why no gate sees it, which is
+  the whole point:** the doc opens (`:5-10`) by staking its correctness on
+  `tmux_tui_e2e_lifecycle_walkthrough_two_repos` — "if this page and the binary
+  disagree, that test fails" — but that test advances the item with
+  `fixture.factory_move("acceptance")` (`tmux_tui_e2e.rs:1074`), SCRIPTING the
+  transition against a hermetic fixture that never reads `.livespec.jsonc`. The
+  item is PLACED in `acceptance` unconditionally, so Step 6's `c` always has a
+  target and the test is green for any `acceptance_mode`. Note the fix was
+  ALREADY KNOWN and merely unpropagated: § 1 hit this for the thread's own
+  Stage 3(b) walk and resolved it with an early `n set-acceptance` press, and
+  nobody carried that into the operator doc describing the same walk.
+  **The 2026-07-29 FINDING is CLOSED, and my predecessor's prediction about it
+  was wrong in our favour — do not re-derive it.** That entry expected `mbohw3`
+  to leave the blocked/needs-human row out; the MERGED `514a326` added all four
+  missing rows (`Attention, blocked`; Lanes `ready`/`active`/`blocked`) and
+  upgraded the gate past `doc ⊆ rendered contexts` to a hard completeness list
+  requiring TEN contexts, `Attention, blocked work-item selected` among them.
+  Each of the four doc strings was compared to its rendering arm in the
+  bits-keyed `attention_item_footer_hint_for_bits` / `lane_item_footer_hint_for_bits`
+  (`lib.rs:1670-1759`) and matches. All four docs gate FILES are green (19
+  tests), and **both arms of `docs_status_hint_lockstep` were mutation-proved
+  RED, independently** (delete the `Attention, blocked` row → only the
+  completeness arm fails; typo a hint → only the value arm fails; RC=101 each,
+  exit codes read UNPIPED, tree restored byte-identically). Also re-verified
+  because `57e94a4` moved it OFF the skip-list: the `s` move-status table
+  (`detailed-usage.md:364-372`) — all SEVEN lanes now present and every row
+  equals `status_move_targets` (`lib.rs:473-480`), and the three restatements of
+  the ship-guard claim in `lifecycle-walkthrough.md` (`:15-18`, `:22-28`,
+  `:152-153`) each hold. Release-scoped claim clean, checked against the thing
+  no in-repo gate can reach — the FORGE: `gh release list` latest is `v0.3.0`,
+  equal to `.release-please-manifest.json` and to the gate's
+  `DOCS_REVIEWED_AGAINST`. Custody inventory confirmed at SEVEN files.
+  **NOT re-verified**: the rest of the skip-list, and the five docs no commit in
+  this range touched. **Method note, since this track values them:** my first
+  read of the move-status table reported `done` missing, because my grep
+  enumerated six lanes and not the seventh — the row was there all along. That
+  is § 6's "an absence never announces itself in a grep for the wrong token"
+  catching the person quoting it, one entry after the last author said the same.
 
 ## Read-first chain
 
@@ -363,6 +417,34 @@ cost PR #478).
 
 At wind-down: master `724b9e1`, primary clean, **0 fabro runs in flight, both host
 slots free**, no cockpit running.
+
+**RE-MEASURED 2026-07-29T23:0x–23:1xZ, and the table above held exactly** — every
+lane, every closure. Master is now `5e91d0e` (the wind-down commit itself),
+primary clean and level with the forge; no work-item has been filed against this
+thread's surface since `-mbohw3` on 2026-07-28; no cockpit process was running
+(checked by `/proc/*/exe`, NOT `ps | grep`, which self-matches a supervisor
+watcher whose argv carries the search string); 362 fabro runs, all terminal, and
+no admission slot locks — both host slots free.
+
+**`-cxu4eu` IS DISPATCHED AND IN FLIGHT as of 2026-07-29T23:10:08Z** — run
+`01KYR29FNM83F64C2ZGG7H06GF`, publish branch
+`feat/livespec-console-beads-fabro-cxu4eu`, launched with the § 0 command below.
+Verified before trusting it: the run's own spec carries
+`"review_adapter": "npx --no-install @zed-industries/codex-acp"`, and
+`git status --short .fabro/` is empty (the committed fork untouched — the copy
+differed from it by that ONE line and nothing else). Exactly ONE run is in
+flight, so a host slot remains for `-ff6aue`. When it lands, **check the review's
+verdict FORM before its prose** per § 0 — `review -> pr` is the unconditional
+fallback edge, so a malformed verdict publishes rather than failing.
+
+Two cautions a successor should not have to rediscover. **`fabro ps --json`
+reports `status` as an OBJECT (`{"kind": "running"}`), not a string** — a filter
+that stringifies it matches no terminal kind and reports every run as in-flight;
+key on `status.kind`. And **`npx --no-install @zed-industries/codex-acp` FAILS on
+the host** ("missing packages and no YES option") while being correct in the run:
+the adapter is baked into the `python-rust-agent-` sandbox layer, and
+`--no-install` is deliberate so a regression to the slim CI image fails loudly
+instead of silently re-downloading. Do not "fix" it to `-y` from a host probe.
 
 **THE DISPATCH COMMAND — copy it, and read § 0b before changing any part of it:**
 
