@@ -1810,8 +1810,8 @@ pub enum ApplicationError {
     /// `target_status` was absent or not one of {ready, backlog}.
     InvalidResolveBlockedTarget,
     /// Invalid move target variant -- a `work_item.move_requested` command carried
-    /// a payload whose `target_status` was absent or not one of the ratified
-    /// operator move targets {backlog, ready, blocked}.
+    /// a payload whose `target_status` was absent or not one of the pre-terminal
+    /// pipeline statuses {backlog, ready, blocked, active}.
     InvalidMoveTarget,
     /// Invalid dispatcher-override variant -- a
     /// `work_item.set_dispatcher_override_requested` command named a setting that
@@ -3915,8 +3915,8 @@ fn resolve_blocked_target_from_payload(payload_json: &str) -> ApplicationResult<
 
 /// Handle a `work_item.move_requested` command.
 ///
-/// Move relocates a work-item to an operator-drivable pipeline status:
-/// `payload_json` is `{"target_status": "backlog" | "ready" | "blocked"}`. The
+/// Move relocates a work-item to a pre-terminal pipeline status: `payload_json`
+/// is `{"target_status": "backlog" | "ready" | "blocked" | "active"}`. The
 /// handler validates the work-item id, parses and validates the target, derives
 /// the guarded `move:<work-item-id>:<target>` action-id, and rides the shared
 /// orchestrator-action port and `work_item` outcome family. Thin console-side
@@ -3927,8 +3927,8 @@ fn resolve_blocked_target_from_payload(payload_json: &str) -> ApplicationResult<
 /// # Errors
 /// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
 /// [`ApplicationError::InvalidMoveTarget`] when the payload's `target_status` is
-/// absent or not an operator-drivable pipeline status; also surfaces a port
-/// error when the port cannot produce a trustworthy outcome.
+/// absent or not a pre-terminal pipeline status; also surfaces a port error when
+/// the port cannot produce a trustworthy outcome.
 pub fn handle_work_item_move_command(
     command: &CommandEnvelope,
     payload_json: &str,
@@ -3942,9 +3942,9 @@ pub fn handle_work_item_move_command(
 
 /// Extract the move `target_status` from a command's persisted `payload_json`.
 ///
-/// The payload is `{"target_status": "backlog" | "ready" | "blocked"}` --
-/// the three ratified operator move targets the orchestrator's guarded
-/// `move` action accepts. Any other shape (including a `done` /
+/// The payload is `{"target_status": "backlog" | "ready" | "blocked" |
+/// "active"}` -- the four pre-terminal pipeline statuses the orchestrator's
+/// guarded `move` action accepts. Any other shape (including a `done` /
 /// `acceptance` / `pending-approval` target the ship-guard forbids) is an
 /// [`ApplicationError::InvalidMoveTarget`].
 fn move_target_from_payload(payload_json: &str) -> ApplicationResult<&'static str> {
@@ -3958,6 +3958,7 @@ fn move_target_from_payload(payload_json: &str) -> ApplicationResult<&'static st
         "backlog" => Ok("backlog"),
         "ready" => Ok("ready"),
         "blocked" => Ok("blocked"),
+        "active" => Ok("active"),
         _other => Err(ApplicationError::InvalidMoveTarget),
     }
 }
@@ -9127,12 +9128,13 @@ mod tests {
     }
 
     #[test]
-    fn move_handler_maps_each_ratified_target_onto_the_move_action_id()
+    fn move_handler_maps_each_pre_terminal_target_onto_the_move_action_id()
     -> super::ApplicationResult<()> {
         for (payload, expected) in [
             (r#"{"target_status":"backlog"}"#, "move:wi-1:backlog"),
             (r#"{"target_status":"ready"}"#, "move:wi-1:ready"),
             (r#"{"target_status":"blocked"}"#, "move:wi-1:blocked"),
+            (r#"{"target_status":"active"}"#, "move:wi-1:active"),
         ] {
             let command = move_command();
             let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
@@ -9144,12 +9146,11 @@ mod tests {
     }
 
     #[test]
-    fn move_handler_rejects_unratified_and_malformed_targets_and_empty_ids() {
-        // `active`/`done`/`acceptance`/`pending-approval` are not ratified
-        // operator move targets; a malformed or absent target is likewise
-        // refused, all before the port is invoked.
+    fn move_handler_rejects_ship_guarded_and_malformed_targets_and_empty_ids() {
+        // `done`/`acceptance`/`pending-approval` are the ship-guarded targets the
+        // orchestrator refuses; a malformed or absent target is likewise refused,
+        // all before the port is invoked.
         for payload in [
-            r#"{"target_status":"active"}"#,
             r#"{"target_status":"done"}"#,
             r#"{"target_status":"acceptance"}"#,
             r#"{"target_status":"pending-approval"}"#,
