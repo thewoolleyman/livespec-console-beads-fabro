@@ -365,6 +365,27 @@ verdict; a review that cannot start never emits one, and `workflow.fabro:283` ro
 `review -> escalate` unconditionally on `outcome=failed`. This is the same ceiling
 § 2 already noted for factory-hardening; it has now reached our own dispatch path.
 
+**RE-TESTED AND CONFIRMED — this is a measurement now, not a message.** A limit
+string is a claim with a timestamp, so it was re-run rather than believed
+(maintainer-directed "try again", 2026-07-29). Answered `[R]`; the loop went
+`fix -> janitor` (GREEN, ~1 min with the sandbox's tools already cached)
+`-> review`, and review failed **both** attempts again with the byte-identical
+cause, an hour after the first pair:
+
+    05:27:14.910Z  wall 25967ms  will_retry=true
+    05:27:29.756Z  wall  7710ms  will_retry=false
+    06:29:35.017Z  wall  9053ms  will_retry=true     <- the re-test
+    06:29:47.878Z  wall  8025ms  will_retry=false    <- the re-test
+
+all four `transient_infra | ACP turn failed`, cause `Internal error: You've hit your
+limit · resets Jul 31, 5am (UTC)`. So the ceiling is genuinely blocking and the date
+is genuinely 07-31; it is not a stale cached string. **Nothing published** — the run
+parked back at the escalate gate.
+
+**DO NOT KEEP PRESSING `[R]` — each cycle silently adds a speculative commit.** The
+`fix` node has `max_visits=3`, so two more `[R]` cycles are available and each one
+runs an agent that WILL find something to do. Evidence from this cycle below.
+
 **NO RECONCILE IS OWED — the previous § 0 was wrong on its premise.** It predicted
 `mbohw3` would strand at `active` when its PR merged. There is no PR and no branch:
 the run never reached the `pr` node. Verified on the forge — `git ls-remote origin
@@ -381,19 +402,45 @@ answer **`[R]`** via `fabro attach 01KYP37TZJ9MRTSDR3A0138W4M`; `[R]` routes
 work is re-checked rather than rebuilt. Do NOT answer `[I]` — it discards a
 completed implement cycle for no benefit, and would hit the same wall.
 
-**Watch the `fix` stage on the way through — its prompt does not match our
-situation.** `[R]` is named "Retry the fix" because the gate was designed for a RED
-JANITOR, and `prompts/fix.md` opens by asserting "The janitor gate is red … Its
-output is in the prior stage context above" and tells the agent to diagnose and fix
-that failure. Our janitor was GREEN; the failure was one node later, at `review`.
-So an agent will be handed a red-janitor brief with nothing red to find. The likely
-outcome is a no-op pass-through to `janitor -> review`, which is what we want, but
-the risk is that it invents changes to a green implementation to satisfy the brief.
-**Diff the result against the banked
-`stages/002-implement@1/diff.patch` before letting it publish** — that is precisely
-why the dump is worth keeping. If the fix stage does mutate the tree, that is a
-finding about the escalate gate's option vocabulary (one option, two very different
-failure modes), not just an inconvenience.
+**The `fix` stage's prompt does not match our situation, and on 2026-07-29 that
+produced a real, measured failure mode — worse than predicted, and subtler.**
+`[R]` is named "Retry the fix" because the gate was designed for a RED JANITOR:
+`prompts/fix.md` opens by asserting "The janitor gate is red … Its output is in the
+prior stage context above". Our janitor was GREEN and the failure was one node later.
+
+The prediction was that an agent would invent changes to a green tree to satisfy the
+false brief. What actually happened is more interesting. The agent **correctly
+rejected the false brief** — its own words: *"the provided prior janitor output was
+green; the actual red stage in the local history was `review (failed)`"*. It then
+went looking for the review's findings, **found none** (there were none — review died
+on the ceiling before emitting anything), and **manufactured a plausible substitute**:
+*"I'm treating this as a code-review recovery: identify the likely blocker from the
+diff, tighten it, and prove it with tests."* It then changed PRODUCTION code to
+satisfy a review finding that never existed, and committed it
+(`a5f51fa fix: route status hints through per-item predicate`, on top of the implement
+stage's `96f3ca9`).
+
+**Name the failure mode, because the gate will keep doing this:** an escalate gate
+whose only retry option presumes ONE upstream failure will, when the actual failure
+was a different one, cause the agent to invent a substitute failure rather than
+no-op. A well-behaved agent that correctly detects the mismatch still ends up
+fabricating work, because the option it was handed obliges it to fix *something*.
+
+**The change itself is defensible, which is exactly why it needs saying out loud.**
+The implement stage had derived the hints from a NEW `per_item_verb_kind_is_state_valid`
+helper it introduced (implement patch lines 110/113/321/338) — a kind-keyed parallel to
+the ratified valve-keyed predicate, i.e. arguably a FOURTH encoding of the thing this
+item exists to collapse. The fix stage routed both the production filter and the
+verifier through `per_item_verb_is_state_valid` instead, which is what the item's own
+ACCEPTANCE text demands by name. It ran a mutation proof and a full green `just check`.
+So: unrequested and unreviewed, but toward the brief rather than away from it. Judge it
+on merit when review can finally run; do not assume "the fix stage touched it" means
+"revert it", and do not assume green means reviewed.
+
+**Standing precondition for any future `[R]`: diff the result against the banked
+`stages/002-implement@1/diff.patch` BEFORE anything publishes** — that is why the dump
+is worth keeping. A `fabro dump` of a parked run costs nothing and each stage carries
+its own `diff.patch`.
 
 A green implementation is BANKED independently of the run: `fabro dump` of all 23
 files, including `stages/002-implement@1/diff.patch` (`+207/-107`
