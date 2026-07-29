@@ -3835,12 +3835,12 @@ mod tests {
     #[test]
     fn store_backed_once_only_valves_still_dedupe() -> Result<(), ConsoleRuntimeError> {
         // The other half of the audit, and the regression this fix must NOT cause.
-        // approve (pending-approval -> ready) and accept (acceptance -> done) are
-        // SEMANTICALLY once-per-item: approving twice is a no-op, and their static
-        // per-item key is CORRECT. Widening the repeatable set must not sweep them
-        // in — if it did, a double keypress would fire the valve twice.
+        // Approve and accept are SEMANTICALLY once-per-item: approving twice is a
+        // no-op, and their static per-item key is CORRECT. Widening the
+        // repeatable set must not sweep them in -- if it did, a double keypress
+        // would fire the valve twice.
         let (mut store, events) = store_with_selectable_item()?;
-        let approve = move_effect(&events, Lane::PendingApproval, Lane::Ready);
+        let approve = valve_effect(&events, PendingValve::Approve);
         let once = [approve];
         let kind = CommandType::WorkItemApproveRequested;
         let (actions, landed) = drive_effects(&mut store, &once, kind)?;

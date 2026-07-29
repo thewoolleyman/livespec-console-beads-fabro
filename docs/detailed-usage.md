@@ -363,12 +363,12 @@ The statuses `s` offers depend on the lane the item is in:
 
 | From | May be driven to |
 |---|---|
-| `backlog` | ready, active, blocked |
-| `pending-approval` | backlog, ready, active, blocked |
-| `ready` | backlog, active, blocked |
-| `active` | backlog, ready, blocked |
-| `acceptance` | backlog, ready, active, blocked, done |
-| `blocked` | backlog, ready, active |
+| `backlog` | ready, blocked |
+| `pending-approval` | backlog, blocked |
+| `ready` | backlog, blocked |
+| `active` | *nothing* — active is entered by the factory |
+| `acceptance` | backlog, blocked |
+| `blocked` | backlog, ready — through resolve-blocked |
 | `done` | *nothing* — a shipped item offers no onward move |
 
 ### The command palette
