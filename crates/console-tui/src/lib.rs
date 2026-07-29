@@ -284,6 +284,9 @@ pub enum TuiRuntimeEffect {
     OpenAttachCommand(String),
     /// Copy attach command variant.
     CopyAttachCommand(String),
+    /// Copy driver handoff command variant. This is render/copy only: it never
+    /// becomes a persisted console command and never triggers a source poll.
+    CopyDriverHandoff(String),
     /// Quit variant.
     Quit,
     /// Application error variant.
@@ -345,10 +348,47 @@ pub struct DeferredTuiRuntimeEffectSink;
 impl TuiRuntimeEffectSink for DeferredTuiRuntimeEffectSink {
     fn handle_runtime_effect(
         &mut self,
-        _effect: &TuiRuntimeEffect,
+        effect: &TuiRuntimeEffect,
     ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+        #[cfg(all(not(test), not(coverage)))]
+        if let TuiRuntimeEffect::CopyDriverHandoff(command) = effect {
+            write_osc52_copy(&mut std::io::stdout(), command)?;
+            return Ok(TuiRuntimeEffectSinkOutcome::Applied);
+        }
+        let _ = effect;
         Ok(TuiRuntimeEffectSinkOutcome::Deferred)
     }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn write_osc52_copy(writer: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
+    write!(writer, "\x1b]52;c;{}\x07", base64_encode(text.as_bytes()))?;
+    writer.flush()
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = *chunk.get(1).unwrap_or(&0);
+        let third = *chunk.get(2).unwrap_or(&0);
+        let packed = (u32::from(first) << 16) | (u32::from(second) << 8) | u32::from(third);
+        encoded.push(char::from(ALPHABET[((packed >> 18) & 0x3f) as usize]));
+        encoded.push(char::from(ALPHABET[((packed >> 12) & 0x3f) as usize]));
+        if chunk.len() > 1 {
+            encoded.push(char::from(ALPHABET[((packed >> 6) & 0x3f) as usize]));
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(char::from(ALPHABET[(packed & 0x3f) as usize]));
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 impl TuiLiveSession for DeferredTuiRuntimeEffectSink {
@@ -421,6 +461,9 @@ fn confirm_operator_action(
         TuiOverlay::None if model.active_view() == TuiView::Settings => {
             resolve_dispatcher_setting_edit(&model, requested_by)
         }
+        TuiOverlay::DriverHandoff { command } => Ok(OperatorActionOutcome::CopyDriverHandoff(
+            command.to_owned(),
+        )),
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
@@ -454,6 +497,9 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
         }
         OperatorActionOutcome::CopyAttachCommand(command) => {
             TuiRuntimeEffect::CopyAttachCommand(command)
+        }
+        OperatorActionOutcome::CopyDriverHandoff(command) => {
+            TuiRuntimeEffect::CopyDriverHandoff(command)
         }
     }
 }
@@ -495,6 +541,7 @@ pub fn key_event_to_terminal_input(
             'n',
         ),
         KeyCode::Char('s') => move_status_open_input(model),
+        KeyCode::Char('h') => driver_handoff_open_input(model),
         KeyCode::Char('g') => override_open_input(
             model,
             DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear),
@@ -548,6 +595,7 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         // The item modal is a READING surface, so up/down scroll its body
         // rather than moving a selection -- there is nothing to select in it.
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
+        TuiOverlay::DriverHandoff { .. } => return None,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
@@ -570,6 +618,7 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
         TuiOverlay::Help { .. } => TuiInteraction::HelpSelectNextSection,
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
+        TuiOverlay::DriverHandoff { .. } => return None,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
@@ -588,7 +637,8 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.overlay() {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::ValveConfirm { .. } => Some(TuiTerminalInput::Confirm),
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. } => Some(TuiTerminalInput::Confirm),
         TuiOverlay::Search { .. } | TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => {
             None
         }
@@ -761,8 +811,11 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
     match overlay {
         TuiOverlay::None => Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp)),
         // Esc-only close: `?` while Help is open is inert (does NOT dismiss it).
-        // The item modal likewise closes on Esc, so `?` is inert over it too.
-        TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => None,
+        // The item and handoff modals likewise close on Esc, so `?` is inert
+        // over them too.
+        TuiOverlay::Help { .. }
+        | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::DriverHandoff { .. } => None,
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
@@ -790,7 +843,8 @@ const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::ValveConfirm { .. } => None,
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. } => None,
     }
 }
 
@@ -878,6 +932,19 @@ fn move_status_open_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
             .map(|valve| TuiTerminalInput::Interaction(TuiInteraction::OpenValveConfirm(valve)));
     }
     text_input('s', overlay)
+}
+
+fn driver_handoff_open_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    let overlay = model.overlay();
+    if matches!(overlay, TuiOverlay::None) {
+        if model.selected_driver_handoff_command().is_some() {
+            return Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenDriverHandoff,
+            ));
+        }
+        return None;
+    }
+    text_input('h', overlay)
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -1234,6 +1301,10 @@ fn render_overlay(
             );
             WorkItemDetailScrollExtents::ZERO
         }
+        TuiOverlay::DriverHandoff { command } => {
+            render_driver_handoff_overlay(command, area, buffer);
+            WorkItemDetailScrollExtents::ZERO
+        }
         TuiOverlay::ValveConfirm { valve } => {
             // The modal's consent target MUST read from the SAME source `Enter`
             // dispatches on (`selected_work_item_id` — the Attention detail OR the
@@ -1282,6 +1353,28 @@ fn render_overlay(
 /// dialed-in mode/policy for a payload valve (cycled with up/down), and a
 /// "dangerous / use with caution" caution before a destructive reject. `Enter`
 /// submits; `Esc` cancels.
+fn render_driver_handoff_overlay(command: &str, area: Rect, buffer: &mut Buffer) {
+    let overlay = full_width_overlay_rect(area);
+    Clear.render(overlay, buffer);
+    let lines = vec![
+        Line::from(command.to_owned()),
+        Line::from("enter copy sent to terminal | esc cancel"),
+    ];
+    Paragraph::new(lines)
+        .block(Block::new().borders(Borders::ALL).title("Driver Handoff"))
+        .render(overlay, buffer);
+}
+
+fn full_width_overlay_rect(area: Rect) -> Rect {
+    let height = 5.min(area.height.max(1));
+    Rect::new(
+        area.x,
+        area.y + ((area.height - height) / 2),
+        area.width.max(1),
+        height,
+    )
+}
+
 fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer: &mut Buffer) {
     Clear.render(area, buffer);
     let mut lines = vec![
@@ -2156,9 +2249,7 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
     for y in area.top()..area.bottom() {
         let mut row = String::new();
         for x in area.left()..area.right() {
-            if let Some(cell) = buffer.cell((x, y)) {
-                row.push_str(cell.symbol());
-            }
+            row.push_str(buffer[(x, y)].symbol());
         }
         rows.push(row.trim_end().to_owned());
     }
@@ -3914,6 +4005,7 @@ mod tests {
             TuiRuntimeEffect::Render
             | TuiRuntimeEffect::OpenAttachCommand(_)
             | TuiRuntimeEffect::CopyAttachCommand(_)
+            | TuiRuntimeEffect::CopyDriverHandoff(_)
             | TuiRuntimeEffect::Quit
             | TuiRuntimeEffect::ApplicationError(_) => None,
         }
@@ -3927,6 +4019,7 @@ mod tests {
             | TuiRuntimeEffect::Render
             | TuiRuntimeEffect::OpenAttachCommand(_)
             | TuiRuntimeEffect::CopyAttachCommand(_)
+            | TuiRuntimeEffect::CopyDriverHandoff(_)
             | TuiRuntimeEffect::Quit
             | TuiRuntimeEffect::ApplicationError(_) => None,
         }
@@ -4233,6 +4326,183 @@ mod tests {
             assert!(text.contains(label), "record label missing: {label}");
         }
         Ok(())
+    }
+
+    fn driver_handoff_event(
+        work_item_id: &str,
+        lane: Lane,
+        factory_safety: Option<&str>,
+    ) -> ConsoleEvent {
+        let factory_safety_json =
+            factory_safety.map_or_else(|| "null".to_owned(), |value| format!("\"{value}\""));
+        let payload = format!(
+            concat!(
+                r#"{{"repo":"console","work_item_id":"{}","#,
+                r#""lane":"{}","lane_reason":null,"rank":"a0","status":"{}","#,
+                r#""source_version":1,"detail":{{"title":"Driver handoff fixture","#,
+                r#""factory_safety":{}}}}}"#,
+            ),
+            work_item_id,
+            lane.label(),
+            lane.label(),
+            factory_safety_json,
+        );
+        ConsoleEvent::fixture(
+            &format!("evt_{work_item_id}"),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
+    }
+
+    fn driver_handoff_model(
+        work_item_id: &str,
+        lane: Lane,
+        factory_safety: Option<&str>,
+    ) -> TuiScreenModel {
+        let events = [driver_handoff_event(work_item_id, lane, factory_safety)];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(lane))
+            .with_focus(FocusPane::Content);
+        build_tui_model_for_state(&events, &state)
+    }
+
+    #[test]
+    fn driver_handoff_overlay_renders_lane_appropriate_id_only_invocations() -> TuiRenderResult<()>
+    {
+        for (work_item_id, lane, factory_safety, operation) in [
+            (
+                "livespec-console-beads-fabro-backlog",
+                Lane::Backlog,
+                None,
+                "groom",
+            ),
+            (
+                "livespec-console-beads-fabro-unsafe",
+                Lane::Ready,
+                Some("host-only-refused"),
+                "implement",
+            ),
+        ] {
+            let model = driver_handoff_model(work_item_id, lane, factory_safety);
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char('h')), &model),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::OpenDriverHandoff
+                ))
+            );
+            let opened = reduce_tui_interaction(
+                &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                    .with_lane_focus(LaneFocus::Lane(lane))
+                    .with_focus(FocusPane::Content),
+                &[driver_handoff_event(work_item_id, lane, factory_safety)],
+                TuiInteraction::OpenDriverHandoff,
+            );
+            let rendered = render_to_text(
+                &build_tui_model_for_state(
+                    &[driver_handoff_event(work_item_id, lane, factory_safety)],
+                    &opened,
+                ),
+                112,
+                28,
+            )?;
+            let command = format!(
+                r#"claude "/livespec-orchestrator-beads-fabro:{operation} {work_item_id}""#
+            );
+
+            assert!(rendered.contains("Driver Handoff"));
+            assert!(rendered.contains(&command), "{rendered}");
+            assert!(rendered.contains("enter copy sent to terminal"));
+            assert!(!rendered.contains("Copied"));
+            assert!(!rendered.contains("prompt"));
+            assert!(!rendered.contains("tmp/livespec-console-handoffs"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn driver_handoff_is_suppressed_outside_backlog_and_host_only_ready() {
+        for (lane, factory_safety) in [
+            (Lane::Ready, None),
+            (Lane::PendingApproval, None),
+            (Lane::Active, Some("host-only-refused")),
+            (Lane::Acceptance, Some("host-only-refused")),
+            (Lane::Blocked, Some("host-only-refused")),
+            (Lane::Done, Some("host-only-refused")),
+        ] {
+            let model =
+                driver_handoff_model("livespec-console-beads-fabro-safe", lane, factory_safety);
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char('h')), &model),
+                None
+            );
+            assert!(!model.footer().contains("handoff"));
+        }
+    }
+
+    #[test]
+    fn driver_handoff_key_remains_literal_text_inside_text_overlays() {
+        let events = [driver_handoff_event(
+            "livespec-console-beads-fabro-backlog",
+            Lane::Backlog,
+            None,
+        )];
+        let model = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(
+                TuiView::Lanes,
+                0,
+                TuiOverlay::Search {
+                    query: String::new(),
+                },
+            )
+            .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
+            .with_focus(FocusPane::Content),
+        );
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('h')), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('h')))
+        );
+    }
+
+    #[test]
+    fn driver_handoff_confirm_copies_without_persisting_or_polling() {
+        let work_item_id = "livespec-console-beads-fabro-backlog";
+        let events = [driver_handoff_event(work_item_id, Lane::Backlog, None)];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('h')), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenDriverHandoff
+            ))
+        );
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenDriverHandoff);
+        let opened_model = build_tui_model_for_state(&events, &opened);
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Up), &opened_model),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &opened_model),
+            None
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &opened_model),
+            Some(TuiTerminalInput::Confirm)
+        );
+        let step = step_tui_runtime(&opened, &events, TuiTerminalInput::Confirm, "operator");
+        let effect = format!("{:?}", step.effect());
+
+        assert!(effect.contains("Copy"));
+        assert!(effect.contains("/livespec-orchestrator-beads-fabro:groom"));
+        assert!(effect.contains(work_item_id));
+        assert!(!effect.contains("PersistCommand"));
+        assert!(!effect_triggers_source_poll(step.effect()));
     }
 
     #[test]

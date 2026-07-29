@@ -985,8 +985,8 @@
   {
     "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid tmux E2E (the real-TUI tier) should assert the driver-handoff overlay renders the id-only groom/implement invocation per lane, never claims copy success, and spawns nothing. Registered as a reasoned TODO at revision time (v037); the concrete test lands with the driver-handoff impl slice per the spec-then-impl sequencing.",
+    "test": "crates/console-tui/src/lib.rs::tests::driver_handoff_overlay_renders_lane_appropriate_id_only_invocations; crates/console-tui/src/lib.rs::tests::driver_handoff_confirm_copies_without_persisting_or_polling; crates/console-tui/src/lib.rs::tests::driver_handoff_is_suppressed_outside_backlog_and_host_only_ready",
+    "reason": "TUI unit coverage proves Scenario 26 at the key/render/effect boundary: eligible backlog and host-only ready selections open the full-width handoff overlay with the id-only groom/implement invocation, the overlay wording avoids claimed copy success, Enter produces a copy-only non-persisted effect, and ineligible states suppress the handoff key and hint.",
     "clauses": [
       {
         "gap_id": "gap-hlfu7ucc",

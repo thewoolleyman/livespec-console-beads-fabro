@@ -567,6 +567,14 @@ pub enum TuiOverlay {
         /// changes, and clamped by the renderer to the section's wrapped height.
         scroll: usize,
     },
+    /// Driver-handoff variant: the full-width render-only overlay showing the
+    /// copy-paste-safe LLM-driver invocation for the selected work-item. It
+    /// carries only the command string; confirming it copies via the terminal
+    /// effect path and never records, spawns, monitors, or awaits a driver.
+    DriverHandoff {
+        /// The rendered driver command.
+        command: String,
+    },
     /// Work-item detail variant: the near-full-screen modal showing the FULL
     /// standardized record of the selected work-item — its title, description,
     /// and the rest of the descriptive shape the lane row has no room for.
@@ -615,6 +623,7 @@ impl TuiOverlay {
             Self::None
             | Self::CommandModal { .. }
             | Self::ValveConfirm { .. }
+            | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
             | Self::Help { .. } => None,
         }
@@ -631,6 +640,7 @@ impl TuiOverlay {
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
             | Self::ValveConfirm { .. }
+            | Self::DriverHandoff { .. }
             | Self::Help { .. } => None,
         }
     }
@@ -646,6 +656,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::ValveConfirm { .. }
+            | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
             | Self::Help { .. } => None,
         }
@@ -661,6 +672,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
             | Self::Help { .. } => None,
         }
@@ -747,6 +759,10 @@ pub enum TuiInteraction {
     /// Scroll the modal Help right-hand text pane UP one row. Inert unless the
     /// Help overlay is open.
     HelpScrollUp,
+    /// Open the driver-handoff overlay on the currently selected work-item, when
+    /// its lifecycle state admits a handoff per the orchestrator-owned verb
+    /// vocabulary.
+    OpenDriverHandoff,
     /// Open the work-item detail modal on the currently selected work-item,
     /// showing its full standardized record. Opens at the top of the record.
     OpenWorkItemDetail,
@@ -1329,6 +1345,27 @@ impl TuiScreenModel {
         self.lane_board.column(lane)?.items().get(index)
     }
 
+    /// The selected work-item record the per-item read-only surfaces act on.
+    /// Attention resolves by id through the lane board; Lanes uses the drilled-in
+    /// lane selection directly. Other views do not select work-items.
+    #[must_use]
+    pub fn selected_work_item(&self) -> Option<&LaneWorkItem> {
+        match self.active_view {
+            TuiView::Attention => self
+                .selected_work_item_id()
+                .and_then(|work_item_id| self.work_item_by_id(work_item_id)),
+            TuiView::Lanes => self.selected_lane_item(),
+            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
+        }
+    }
+
+    /// The selected work-item's eligible driver-handoff command, if its lane and
+    /// factory-safety marker admit the handoff verb.
+    #[must_use]
+    pub fn selected_driver_handoff_command(&self) -> Option<String> {
+        driver_handoff_command(self.selected_work_item()?)
+    }
+
     /// The work-item id the per-item valves act on: the selected drilled-in lane
     /// item's id in the `Lanes` view, the selected Attention item's work-item id
     /// in the `Attention` view, else `None`. This is what lets a per-item valve
@@ -1491,12 +1528,9 @@ impl TuiScreenModel {
         match (&self.overlay, self.focus) {
             (TuiOverlay::None, FocusPane::Header) => HEADER_FOOTER_HINT,
             (TuiOverlay::CommandModal { .. }, _) if self.selected_operator_action().is_none() => {
-                pane_footer_hint(
-                    self.active_view,
-                    self.lane_focus,
-                    self.selected_work_item_lane(),
-                )
+                model_pane_footer_hint(self)
             }
+            (TuiOverlay::None, _) => model_pane_footer_hint(self),
             (overlay, _) => footer_hint(
                 self.active_view,
                 self.lane_focus,
@@ -1535,6 +1569,7 @@ fn footer_hint(
         TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
         TuiOverlay::ValveConfirm { .. } => "up/down change | enter confirm | esc cancel",
+        TuiOverlay::DriverHandoff { .. } => "enter copy sent to terminal | esc cancel",
         TuiOverlay::WorkItemDetail { .. } => "up/down scroll | PgUp/PgDn page | esc close item",
         TuiOverlay::Help { .. } => "up/down section | PgUp/PgDn scroll | esc close help",
     }
@@ -1572,6 +1607,23 @@ fn footer_hint(
 /// The read-only nav views (Spec, Events, Repos) share one hint set because
 /// their available actions are identical (select + move focus + search), and
 /// Settings surfaces its edit key.
+fn model_pane_footer_hint(model: &TuiScreenModel) -> &'static str {
+    match model.active_view {
+        TuiView::Lanes => match model.lane_focus {
+            LaneFocus::Overview => "up/down move | enter drill | ? help | q quit",
+            LaneFocus::Lane(_lane) => model.selected_lane_item().map_or(
+                "esc lane list | ? help | q quit",
+                lane_item_footer_hint_for_item,
+            ),
+        },
+        _ => pane_footer_hint(
+            model.active_view,
+            model.lane_focus,
+            model.selected_work_item_lane(),
+        ),
+    }
+}
+
 fn pane_footer_hint(
     view: TuiView,
     lane_focus: LaneFocus,
@@ -1608,6 +1660,7 @@ const HINT_MERGE_CAP: u16 = 1 << 5;
 const HINT_FIX_CAP: u16 = 1 << 6;
 const HINT_SET_ACCEPTANCE: u16 = 1 << 7;
 const HINT_REWORK_CAP: u16 = 1 << 8;
+const HINT_DRIVER_HANDOFF: u16 = 1 << 9;
 
 fn per_item_hint_bits(lane: Lane, include_move_status: bool) -> u16 {
     let mut bits = 0;
@@ -1706,54 +1759,93 @@ fn lane_item_footer_hint(lane: Lane) -> &'static str {
     lane_item_footer_hint_for_bits(per_item_hint_bits(lane, true))
 }
 
+fn lane_item_footer_hint_for_item(item: &LaneWorkItem) -> &'static str {
+    lane_item_footer_hint_for_bits_with_driver(
+        per_item_hint_bits(item.lane(), true)
+            | (u16::from(driver_handoff_command(item).is_some()) * HINT_DRIVER_HANDOFF),
+        true,
+    )
+}
+
 const fn lane_item_footer_hint_for_bits(bits: u16) -> &'static str {
-    match bits {
-        bits if bits
-            == HINT_MOVE_STATUS
-                | HINT_SET_ADMISSION
-                | HINT_MERGE_CAP
-                | HINT_FIX_CAP
-                | HINT_SET_ACCEPTANCE
-                | HINT_REWORK_CAP =>
+    lane_item_footer_hint_for_bits_with_driver(bits, false)
+}
+
+const fn lane_item_footer_hint_for_bits_with_driver(
+    bits: u16,
+    include_driver_handoff: bool,
+) -> &'static str {
+    let base_bits = bits & !HINT_DRIVER_HANDOFF;
+    let has_handoff = include_driver_handoff && bits & HINT_DRIVER_HANDOFF != 0;
+    match (base_bits, has_handoff) {
+        (bits, true)
+            if bits
+                == HINT_MOVE_STATUS
+                    | HINT_SET_ADMISSION
+                    | HINT_MERGE_CAP
+                    | HINT_FIX_CAP
+                    | HINT_SET_ACCEPTANCE
+                    | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | s move-status | m set-admission | \
-             g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter item | esc lane list | h handoff | s move-status |              m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap |              ? help | q quit"
         }
-        bits if bits
-            == HINT_MOVE_STATUS
-                | HINT_APPROVE
-                | HINT_REJECT
-                | HINT_SET_ADMISSION
-                | HINT_MERGE_CAP
-                | HINT_FIX_CAP
-                | HINT_SET_ACCEPTANCE
-                | HINT_REWORK_CAP =>
+        (bits, false)
+            if bits
+                == HINT_MOVE_STATUS
+                    | HINT_SET_ADMISSION
+                    | HINT_MERGE_CAP
+                    | HINT_FIX_CAP
+                    | HINT_SET_ACCEPTANCE
+                    | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | s move-status | p approve | r reject | \
-             m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | \
-             ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | m set-admission |              g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
-        bits if bits
-            == HINT_MOVE_STATUS
-                | HINT_MERGE_CAP
-                | HINT_FIX_CAP
-                | HINT_SET_ACCEPTANCE
-                | HINT_REWORK_CAP =>
+        (bits, false)
+            if bits
+                == HINT_MOVE_STATUS
+                    | HINT_APPROVE
+                    | HINT_REJECT
+                    | HINT_SET_ADMISSION
+                    | HINT_MERGE_CAP
+                    | HINT_FIX_CAP
+                    | HINT_SET_ACCEPTANCE
+                    | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | s move-status | g merge cap | \
-             f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | p approve | r reject |              m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap |              ? help | q quit"
         }
-        bits if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
-            "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | \
-             ? help | q quit"
+        (bits, true)
+            if bits
+                == HINT_MOVE_STATUS
+                    | HINT_MERGE_CAP
+                    | HINT_FIX_CAP
+                    | HINT_SET_ACCEPTANCE
+                    | HINT_REWORK_CAP =>
+        {
+            "up/down move | enter item | esc lane list | h handoff | s move-status |              g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
-        bits if bits == HINT_MOVE_STATUS | HINT_ACCEPT | HINT_REJECT => {
-            "up/down move | enter item | esc lane list | s move-status | c accept | r reject | \
-             ? help | q quit"
+        (bits, false)
+            if bits
+                == HINT_MOVE_STATUS
+                    | HINT_MERGE_CAP
+                    | HINT_FIX_CAP
+                    | HINT_SET_ACCEPTANCE
+                    | HINT_REWORK_CAP =>
+        {
+            "up/down move | enter item | esc lane list | s move-status | g merge cap |              f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
-        HINT_MOVE_STATUS => {
+        (bits, _) if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
+            "up/down move | enter item | esc lane list | n set-acceptance | k rework cap |              ? help | q quit"
+        }
+        (bits, _) if bits == HINT_MOVE_STATUS | HINT_ACCEPT | HINT_REJECT => {
+            "up/down move | enter item | esc lane list | s move-status | c accept | r reject |              ? help | q quit"
+        }
+        (HINT_MOVE_STATUS, false) => {
             "up/down move | enter item | esc lane list | s move-status | ? help | q quit"
         }
+        (HINT_MOVE_STATUS, true) => {
+            "up/down move | enter item | esc lane list | h handoff | s move-status | ? help | q quit"
+        }
+        (_, true) => "enter item | esc lane list | h handoff | ? help | q quit",
         _ => "enter item | esc lane list | ? help | q quit",
     }
 }
@@ -1868,6 +1960,9 @@ pub enum OperatorActionOutcome {
     OpenAttachCommand(String),
     /// Copy attach command variant.
     CopyAttachCommand(String),
+    /// Copy driver handoff command variant. This is a terminal-copy effect only,
+    /// never a persisted command.
+    CopyDriverHandoff(String),
 }
 
 impl OperatorActionOutcome {
@@ -1878,7 +1973,9 @@ impl OperatorActionOutcome {
             Self::PersistCommand(command) | Self::PersistCommandWithPayload { command, .. } => {
                 Some(command)
             }
-            Self::OpenAttachCommand(_) | Self::CopyAttachCommand(_) => None,
+            Self::OpenAttachCommand(_)
+            | Self::CopyAttachCommand(_)
+            | Self::CopyDriverHandoff(_) => None,
         }
     }
 
@@ -1887,7 +1984,9 @@ impl OperatorActionOutcome {
     pub fn attach_command(&self) -> Option<&str> {
         match self {
             Self::OpenAttachCommand(command) | Self::CopyAttachCommand(command) => Some(command),
-            Self::PersistCommand(_) | Self::PersistCommandWithPayload { .. } => None,
+            Self::PersistCommand(_)
+            | Self::PersistCommandWithPayload { .. }
+            | Self::CopyDriverHandoff(_) => None,
         }
     }
 }
@@ -2993,6 +3092,9 @@ pub fn reduce_tui_interaction(
         TuiInteraction::HelpScrollUp => state
             .clone()
             .with_overlay(help_scroll(state.overlay(), false)),
+        TuiInteraction::OpenDriverHandoff => state
+            .clone()
+            .with_overlay(open_driver_handoff_overlay(&model)),
         TuiInteraction::OpenWorkItemDetail => {
             state.clone().with_overlay(open_work_item_detail(&model))
         }
@@ -3047,6 +3149,31 @@ fn open_command_modal(model: &TuiScreenModel) -> TuiOverlay {
     } else {
         TuiOverlay::None
     }
+}
+
+fn open_driver_handoff_overlay(model: &TuiScreenModel) -> TuiOverlay {
+    model
+        .selected_driver_handoff_command()
+        .map_or(TuiOverlay::None, |command| TuiOverlay::DriverHandoff {
+            command,
+        })
+}
+
+fn driver_handoff_command(item: &LaneWorkItem) -> Option<String> {
+    let operation = match item.lane() {
+        Lane::Backlog => "groom",
+        Lane::Ready if item.detail().factory_safety.is_some() => "implement",
+        Lane::PendingApproval
+        | Lane::Ready
+        | Lane::Active
+        | Lane::Acceptance
+        | Lane::Blocked
+        | Lane::Done => return None,
+    };
+    Some(format!(
+        r#"claude "/livespec-orchestrator-beads-fabro:{operation} {}""#,
+        item.work_item_id()
+    ))
 }
 
 /// The overlay `OpenWorkItemDetail` resolves to: the work-item detail modal
@@ -5458,6 +5585,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => None,
     }
@@ -5474,6 +5602,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
@@ -5581,6 +5710,7 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
     }
 }
@@ -5607,6 +5737,7 @@ fn help_scroll(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
     }
 }
@@ -5622,6 +5753,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
@@ -5638,6 +5770,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
@@ -5662,6 +5795,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
@@ -5678,6 +5812,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
@@ -5928,7 +6063,8 @@ mod tests {
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
         FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
-        HELP_SECTION_COUNT, HINT_ACCEPT, HINT_APPROVE, HINT_MOVE_STATUS,
+        HELP_SECTION_COUNT, HINT_ACCEPT, HINT_APPROVE, HINT_DRIVER_HANDOFF, HINT_FIX_CAP,
+        HINT_MERGE_CAP, HINT_MOVE_STATUS, HINT_REWORK_CAP, HINT_SET_ACCEPTANCE, HINT_SET_ADMISSION,
         JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
         OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
@@ -5941,11 +6077,12 @@ mod tests {
         handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
         header_help_section, help_section_for_focus, help_section_for_view,
-        lane_item_footer_hint_for_bits, per_item_verb_is_state_valid, project_attention,
-        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
-        validate_operator_action, work_item_override_outcome,
+        lane_item_footer_hint_for_bits, lane_item_footer_hint_for_bits_with_driver,
+        per_item_verb_is_state_valid, project_attention, project_lane_board,
+        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
+        work_item_override_outcome,
     };
 
     #[test]
@@ -6276,6 +6413,37 @@ mod tests {
             AdmissionPolicy::Manual,
             AcceptancePolicy::AiThenHuman,
         )
+    }
+
+    fn lane_event_with_factory_safety(
+        event_id: &str,
+        work_item_id: &str,
+        lane: Lane,
+        factory_safety: Option<&str>,
+        rank: &str,
+        status: &str,
+    ) -> ConsoleEvent {
+        let factory_safety_json =
+            factory_safety.map_or_else(|| "null".to_owned(), |value| format!("\"{value}\""));
+        let payload = format!(
+            concat!(
+                r#"{{"repo":"console","work_item_id":"{}","#,
+                r#""lane":"{}","lane_reason":null,"rank":"{}","status":"{}","#,
+                r#""source_version":1,"detail":{{"title":"Driver handoff fixture","#,
+                r#""factory_safety":{}}}}}"#,
+            ),
+            work_item_id,
+            lane.label(),
+            rank,
+            status,
+            factory_safety_json,
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10854,6 +11022,47 @@ mod tests {
     }
 
     #[test]
+    fn lane_handoff_footer_hint_is_only_added_to_claimed_driver_bits() {
+        let backlog_bits = HINT_MOVE_STATUS
+            | HINT_SET_ADMISSION
+            | HINT_MERGE_CAP
+            | HINT_FIX_CAP
+            | HINT_SET_ACCEPTANCE
+            | HINT_REWORK_CAP;
+        let ready_bits = HINT_MOVE_STATUS
+            | HINT_MERGE_CAP
+            | HINT_FIX_CAP
+            | HINT_SET_ACCEPTANCE
+            | HINT_REWORK_CAP;
+
+        let backlog =
+            lane_item_footer_hint_for_bits_with_driver(backlog_bits | HINT_DRIVER_HANDOFF, true);
+        assert!(backlog.contains("h handoff") && backlog.contains("m set-admission"));
+        assert!(
+            !lane_item_footer_hint_for_bits_with_driver(backlog_bits, false).contains("h handoff")
+        );
+
+        let ready =
+            lane_item_footer_hint_for_bits_with_driver(ready_bits | HINT_DRIVER_HANDOFF, true);
+        assert!(ready.contains("h handoff") && ready.contains("g merge cap"));
+        assert!(
+            !lane_item_footer_hint_for_bits_with_driver(ready_bits, false).contains("h handoff")
+        );
+
+        assert_eq!(
+            lane_item_footer_hint_for_bits_with_driver(
+                HINT_MOVE_STATUS | HINT_DRIVER_HANDOFF,
+                true,
+            ),
+            "up/down move | enter item | esc lane list | h handoff | s move-status | ? help | q quit"
+        );
+        assert_eq!(
+            lane_item_footer_hint_for_bits_with_driver(HINT_DRIVER_HANDOFF, true),
+            "enter item | esc lane list | h handoff | ? help | q quit"
+        );
+    }
+
+    #[test]
     fn the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane() {
         const MODAL_ITEM: &str = "console-pinned";
         // Enter drills into a LANE from the overview but opens an ITEM inside a
@@ -11207,8 +11416,20 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(
+            DispatcherSettingWrite::MergeOnReviewCap(false).value_json(),
+            serde_json::json!(false)
+        );
+        assert_eq!(
             DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::HumanOnly).value_json(),
             serde_json::json!("human-only")
+        );
+        assert_eq!(
+            DispatcherSettingWrite::ReviewFixCap(4).value_json(),
+            serde_json::json!(4)
+        );
+        assert_eq!(
+            DispatcherSettingWrite::AcceptanceReworkCap(6).value_json(),
+            serde_json::json!(6)
         );
         assert_eq!(
             DispatcherSettingWrite::WipCap(7).value_json(),
@@ -11328,6 +11549,13 @@ mod tests {
         };
         assert!(outcome.command().is_some());
         assert_eq!(outcome.attach_command(), None);
+
+        let open_attach = OperatorActionOutcome::OpenAttachCommand("fabro attach run".to_owned());
+        assert_eq!(open_attach.attach_command(), Some("fabro attach run"));
+
+        let handoff = OperatorActionOutcome::CopyDriverHandoff("claude groom wi".to_owned());
+        assert_eq!(handoff.command(), None);
+        assert_eq!(handoff.attach_command(), None);
     }
 
     // -----------------------------------------------------------------------
@@ -11870,6 +12098,79 @@ mod tests {
                 &TuiInteractionState::for_view(view, 0, TuiOverlay::None),
             );
             assert_eq!(model.selected_work_item_id(), None);
+        }
+    }
+
+    #[test]
+    fn selected_work_item_resolves_attention_record_for_driver_handoff() {
+        let attention_item = AttentionItemSnapshot::new(
+            "attention-ready-host-only",
+            "human-valve",
+            "high",
+            "Ready item needs host-only implementation",
+            AttentionSourceRef::new("console", Some("wi-ready-host-only"), None),
+            AttentionHandoff::new("implement", None, "implement:wi-ready-host-only"),
+        );
+        let events = [
+            lane_event_with_factory_safety(
+                "evt_ready_host_only",
+                "wi-ready-host-only",
+                Lane::Ready,
+                Some("host-only-refused"),
+                "a0",
+                "ready",
+            ),
+            lane_event_with_factory_safety(
+                "evt_backlog",
+                "wi-backlog",
+                Lane::Backlog,
+                None,
+                "a1",
+                "backlog",
+            ),
+            attention_appeared("evt_attention_ready_host_only", &attention_item),
+        ];
+        let model = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None),
+        );
+
+        assert_eq!(
+            model.selected_work_item().map(LaneWorkItem::work_item_id),
+            Some("wi-ready-host-only")
+        );
+        assert_eq!(
+            model.selected_driver_handoff_command().as_deref(),
+            Some(r#"claude "/livespec-orchestrator-beads-fabro:implement wi-ready-host-only""#)
+        );
+
+        let backlog = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(Lane::Backlog)),
+        );
+        assert_eq!(
+            backlog.selected_driver_handoff_command().as_deref(),
+            Some(r#"claude "/livespec-orchestrator-beads-fabro:groom wi-backlog""#)
+        );
+
+        let no_item = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+        );
+        assert_eq!(no_item.selected_driver_handoff_command(), None);
+
+        for view in [
+            TuiView::Spec,
+            TuiView::Events,
+            TuiView::Repos,
+            TuiView::Settings,
+        ] {
+            let inert = build_tui_model_for_state(
+                &events,
+                &TuiInteractionState::for_view(view, 0, TuiOverlay::None),
+            );
+            assert!(inert.selected_work_item().is_none());
         }
     }
 

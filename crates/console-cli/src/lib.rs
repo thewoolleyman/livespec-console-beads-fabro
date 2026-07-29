@@ -1679,6 +1679,7 @@ fn command_append_from_tui_effect(
         TuiRuntimeEffect::Render
         | TuiRuntimeEffect::OpenAttachCommand(_)
         | TuiRuntimeEffect::CopyAttachCommand(_)
+        | TuiRuntimeEffect::CopyDriverHandoff(_)
         | TuiRuntimeEffect::Quit
         | TuiRuntimeEffect::ApplicationError(_) => None,
     }
