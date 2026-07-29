@@ -128,8 +128,9 @@ last verified against source and can skip it unless its area moved.
   `research/strand-capture-2026-07-21/`). The disposition (close on
   recovery, never re-dispatch) stands; a correcting `bd` comment was
   appended to the item.
-- **2026-07-29 (delta pass, `ac61669..a5af510`). ONE FINDING — a reachable
-  Status-line state is undocumented, and no gate can see it.** Only two commits
+- **2026-07-29 (delta pass, `ac61669..a5af510`). FINDING — FOUR reachable
+  Status-line states are undocumented, two of them on this thread's own happy
+  path, and no gate can see any of them.** Only two commits
   in the range touched `docs/`, both in lockstep with their source: `2d5ce11`
   (split the Status-hint table per-lane) and `77ed854` (walkthrough Step-2 hint).
   `cargo test --test docs_status_hint_lockstep` is GREEN, so every hint the doc
@@ -142,9 +143,26 @@ last verified against source and can skip it unless its area moved.
   `up/down move | enter open | ? help | q quit`. **Live-confirmed at the real
   cockpit**, not only read: on launch the Attention list's first row was
   `Blocked: needs-human` (Detail: `livespec-console-beads-fabro-25rvmd`) and the
-  Status band showed exactly that string. Before `2d5ce11` a single row
-  ("Attention, a work-item-backed row selected") covered every work-item-backed
-  selection; splitting it per-lane covered two of three. The
+  Status band showed exactly that string, which `grep -F` puts nowhere in `docs/`.
+  Before `2d5ce11` a single row ("Attention, a work-item-backed row selected")
+  covered every work-item-backed selection; splitting it per-lane covered two of
+  three.
+  **The same split left the LANES table short by three, and these matter more.**
+  `lane_item_footer_hint` (`:1623-1652`) has SEVEN arms — one per `Lane::all()` —
+  and the doc carries four lane-item rows (backlog, pending-approval, acceptance,
+  done). Undocumented, all reachable by drilling into the lane:
+    - `Lane::Ready` → `up/down move | enter item | esc lane list | s move-status |
+      g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit`
+    - `Lane::Active` → `up/down move | enter item | esc lane list |
+      n set-acceptance | k rework cap | ? help | q quit`
+    - `Lane::Blocked` → `up/down move | enter item | esc lane list | s move-status |
+      ? help | q quit`
+  `ready` and `active` are the two lanes this thread's happy path runs THROUGH —
+  every item admitted at the approve valve lands in `ready`, and every dispatched
+  item sits in `active`. So the operator drilling into the most-walked lane in the
+  product meets a Status line the documentation never describes. That is a bigger
+  miss than the Attention one and it is the reason this entry is not a one-liner.
+  The
   `docs_status_hint_lockstep` gate CANNOT catch this — its own docstring commits
   to `doc ⊆ source`, "a hint may exist in source without appearing in the table".
   **`mbohw3` does not close it either**: its pending diff adds an
