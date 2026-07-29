@@ -160,31 +160,72 @@ line-numbering blocked by the sandbox) rather than silently degrading.
   check, and it is the exact defect class this repo has been bitten by: the six
   `docs_*_lockstep` gates stayed green through two recorded doc rots.
 
-### The finding it did raise, and why it is unresolved
+### The finding it did raise — RESOLVED, and it goes against the reviewer
 
 > `[ADVISORY] docs/detailed-usage.md:266 — The "Attention, backlog work-item selected"
 > row appears unreachable under requires_attention_from_lane; it documents the derived
 > source arm, but not a context the operator currently meets.`
 
-This is the **third independent derivation** of the same reachability point:
+**MEASURED SAME DAY: the row IS reachable, five times over, and the reviewer's
+advisory is REFUTED.** `needs_attention.py --json` for this repo returns five standing
+`hygiene:untriaged-backlog:<id>` items whose `source_ref` carries a work-item:
 
-1. the 2026-07-29 docs-custody audit (source read, plus a live 61-row Attention list
-   holding one `Blocked` and five `PendingApproval` rows and no `Backlog` row);
-2. this item's OWN implement stage, whose TUI regression went RED until it built a
-   fixture with an Attention row whose SOURCE REFERENCE names a Backlog work-item;
-3. the Codex review above.
+```json
+{"path": null, "repo": "livespec-console-beads-fabro",
+ "work_item": "livespec-console-beads-fabro-9ts"}
+```
 
-**The open question, which none of the three answers:** a Backlog lane row cannot
-enter the Attention list, so the only route is an ingested needs-attention row whose
-`work_item_id` resolves — via `selected_work_item_lane` -> `work_item_by_id` — to a
-Backlog item. Does the orchestrator actually EMIT such rows in production, or is that
-only synthesizable in a fixture? If the latter, this slice documented a context
-operators cannot meet, which is the inverse of the dishonesty `pane_footer_hint`'s own
-doc comment forbids ("advertise keys that do nothing"). **Answer this before treating
-the row as correct.**
+— likewise `-htp`, `-mvu22t`, `-oqm`, `-topr34`. All five are `lane=backlog`, verified
+against the ledger.
+
+The chain, end to end:
+
+1. a `hygiene:untriaged-backlog` row enters the Attention list as an
+   `AttentionEntry::NeedsAttention`. It is **not** filtered by
+   `requires_attention_from_lane` — that predicate gates only the valve-actionable
+   LANE FOLD, which is the step the advisory (and I) over-read;
+2. `source_ref.work_item` is exactly what `AttentionItem::work_item_id()` reads;
+3. `selected_work_item_lane()` resolves that id through `work_item_by_id` — from the
+   LANE collection, not from the attention snapshot — yielding `Lane::Backlog`;
+4. `attention_item_footer_hint(Lane::Backlog)` therefore renders.
+
+**So the docs row is CORRECT and necessary** — do not remove it on the strength of the
+advisory. And the pre-fix state was a GENUINE operator-visible defect rather than a
+structural risk: with five backlog-resolving rows live, `m set-admission` was admitted
+by the predicate and never advertised. The work-item's original rider, and its re-tier
+to a correctness fix, were right.
+
+**The audit's own corroboration was the weakest link, and it was mine.** Derivation (1)
+above cited "a live 61-row Attention list holding no `Backlog` row" as support. That
+list was dominated by worktree-hygiene rows whose `source_ref` carries a `path` and
+**no** `work_item` — and I never checked whether any row carried a `work_item`
+RESOLVING to backlog. Absence of a Backlog *lane* row is not absence of a
+backlog-*resolving* row; I conflated the two and treated the result as confirmation.
+This is the track's own named lesson landing on the person quoting it: **an absence
+never announces itself in a check aimed at the wrong field.**
+
+Derivation (2) — the implement stage's red TUI regression — was the one that had it
+right all along, and it was right for the right reason: it had to build a fixture with
+an Attention row whose source reference names a Backlog work-item *because that is what
+production emits*, not as a contrivance.
 
 ### The verdict on the vendor swap
 
-**Adequate, not good.** The claim this record supports is *"it caught the right thing
-and graded it too gently"* — not *"we changed reviewers under duress and it was
-fine"*. The distinction matters before four more slices ride on it.
+Written at n=1 as **"adequate, not good"** — it caught the right thing and graded it too
+gently. **Revised at n=2, upward.** The second slice (`nvflph`) returned
+`{"preferred_next_label": "fix"}` with a genuinely blocking, operator-visible finding:
+
+> `[BLOCKING] crates/console-tui/src/lib.rs:1737 — The in-app Lanes help still documents
+> the old move-status vocabulary as "any pre-terminal status" including active, plus
+> approve/accept routes. That contradicts the ratified picker doors implemented by this
+> branch.`
+
+That is this thread's defect class exactly — a second, unbound encoding of the verb
+vocabulary, here in help text — and it lands on `vwxyj4`'s clause ("the picker MUST NOT
+offer `active`"): the branch enforces the door while the help still advertises it.
+
+So the reviewer **discriminates**: approve on one slice, block on the next, both
+well-formed. The honest summary is that it is a capable reviewer that under-grades
+advisories, not a rubber stamp — and one advisory it did raise turned out to be wrong
+in the safe direction (flagging a row that is in fact reachable), which is the better
+way for a reviewer to be wrong.
