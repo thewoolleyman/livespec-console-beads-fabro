@@ -359,9 +359,23 @@ PARKED).** `implement` **succeeded**, `janitor` (`mise exec -- just check`)
 `blocked: human_input_required` at the `escalate` gate with a three-option interview
 (`[R]` retry / `[I]` re-implement / `[A]` abandon). At or after **2026-07-31T05:00Z**,
 answer **`[R]`** via `fabro attach 01KYP37TZJ9MRTSDR3A0138W4M`; `[R]` routes
-`fix -> janitor -> review`, so the green work is re-checked rather than rebuilt.
-Do NOT answer `[I]` — it discards a completed implement cycle for no benefit, and
-would hit the same wall.
+`escalate -> fix -> janitor -> review` (`workflow.fabro:295,256,253`), so the green
+work is re-checked rather than rebuilt. Do NOT answer `[I]` — it discards a
+completed implement cycle for no benefit, and would hit the same wall.
+
+**Watch the `fix` stage on the way through — its prompt does not match our
+situation.** `[R]` is named "Retry the fix" because the gate was designed for a RED
+JANITOR, and `prompts/fix.md` opens by asserting "The janitor gate is red … Its
+output is in the prior stage context above" and tells the agent to diagnose and fix
+that failure. Our janitor was GREEN; the failure was one node later, at `review`.
+So an agent will be handed a red-janitor brief with nothing red to find. The likely
+outcome is a no-op pass-through to `janitor -> review`, which is what we want, but
+the risk is that it invents changes to a green implementation to satisfy the brief.
+**Diff the result against the banked
+`stages/002-implement@1/diff.patch` before letting it publish** — that is precisely
+why the dump is worth keeping. If the fix stage does mutate the tree, that is a
+finding about the escalate gate's option vocabulary (one option, two very different
+failure modes), not just an inconvenience.
 
 A green implementation is BANKED independently of the run: `fabro dump` of all 23
 files, including `stages/002-implement@1/diff.patch` (`+207/-107`
