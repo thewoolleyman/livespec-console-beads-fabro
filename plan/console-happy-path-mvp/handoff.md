@@ -128,6 +128,42 @@ last verified against source and can skip it unless its area moved.
   `research/strand-capture-2026-07-21/`). The disposition (close on
   recovery, never re-dispatch) stands; a correcting `bd` comment was
   appended to the item.
+- **2026-07-29 (delta pass, `ac61669..a5af510`). ONE FINDING — a reachable
+  Status-line state is undocumented, and no gate can see it.** Only two commits
+  in the range touched `docs/`, both in lockstep with their source: `2d5ce11`
+  (split the Status-hint table per-lane) and `77ed854` (walkthrough Step-2 hint).
+  `cargo test --test docs_status_hint_lockstep` is GREEN, so every hint the doc
+  QUOTES exists in source. **The gap is completeness, not falsity.**
+  `requires_attention_from_lane` (`console-application/src/lib.rs:5336-5353`)
+  admits exactly THREE lanes into the Attention list — `PendingApproval`(manual),
+  `Acceptance`(`ai-then-human`|`human-only`), and **`Blocked`(`needs-human`)**.
+  `detailed-usage.md`'s table documents the first two and has no row for the
+  third, which renders the catch-all arm (`:1617-1619`)
+  `up/down move | enter open | ? help | q quit`. **Live-confirmed at the real
+  cockpit**, not only read: on launch the Attention list's first row was
+  `Blocked: needs-human` (Detail: `livespec-console-beads-fabro-25rvmd`) and the
+  Status band showed exactly that string. Before `2d5ce11` a single row
+  ("Attention, a work-item-backed row selected") covered every work-item-backed
+  selection; splitting it per-lane covered two of three. The
+  `docs_status_hint_lockstep` gate CANNOT catch this — its own docstring commits
+  to `doc ⊆ source`, "a hint may exist in source without appearing in the table".
+  **`mbohw3` does not close it either**: its pending diff adds an
+  "Attention, backlog" row and upgrades the gate to `doc ⊆ rendered contexts`
+  (a genuinely stronger verifier), but still omits the blocked/needs-human row —
+  worth folding in when that item resumes, since it is already editing this table.
+  Checked clean in the same pass: the `acceptance_mode` prose
+  (`detailed-usage.md:144-145,346,419`) is still accurate after `6f5f6b6`;
+  `842a316`/`ad4d023` added `just` recipes that no operator doc references. The
+  focus-ring claims at `:81` and `:318` (`Enter` or `→` moves focus into content)
+  were exercised at the keyboard and hold. **NOT re-verified**: the rest of the
+  skip-list, and the five docs no commit in this range touched.
+  **Scope correction: custody covers SEVEN files, not six.** `docs/README.md`
+  has been present since B6 (`7df1ea2`) and was never counted. It is mostly a
+  table of contents, but it is not inert prose — it asserts the console "never
+  writes the ledger, the orchestrator's settings files, or a Fabro run directly"
+  and "issues every mutation through the orchestrator's `drive` API", which is a
+  checkable restatement of the locked core contract and exactly the kind of claim
+  that rots silently. Audit it with the rest.
 
 ## Read-first chain
 
@@ -287,34 +323,58 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
-**RESUME HERE (2026-07-29T05:0xZ — supersedes every earlier RESUME HERE block).**
-Session wound down at a context boundary. Timestamps here are UTC; we run at UTC+2,
-so anything after 22:00 UTC dates to the next LOCAL day — build every timestamp with
-`date -u`, never by hand (that mistake cost PR #478).
+**RESUME HERE (2026-07-29T05:45Z — supersedes every earlier RESUME HERE block).**
+Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to the
+next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
+cost PR #478).
 
-### 0. FIRST ACTION — a reconcile is OWED. Do this before anything else.
+### 0. THE FACTORY IS DOWN UNTIL 2026-07-31T05:00Z. Read this before planning work.
 
-`livespec-console-beads-fabro-mbohw3` was dispatched and its Fabro run
-`01KYP37TZJ9MRTSDR3A0138W4M` was LIVE (`status: running`) at wind-down. But the
-DISPATCHER process that performs post-merge bookkeeping is DEAD: the dispatch was run
-in the FOREGROUND and a 20-minute tool timeout SIGTERM'd it. The run itself survived —
-Fabro executes server-side — but nothing is left to reconcile the ledger, so when the
-run's PR merges the item WILL STRAND at `active` exactly as `dm5f7q` did.
+**The review gate cannot run. Every Stage-2 dispatch will park at the human gate
+until the Claude subscription's weekly ceiling resets.** Measured 2026-07-29T05:27Z
+from the run's own event log, not inferred:
 
-    # 1. what is the run doing?
-    fabro inspect 01KYP37TZJ9MRTSDR3A0138W4M
-    # 2. once its PR is MERGED (verify on the forge), reconcile:
-    <plugin>/scripts/bin/dispatcher.py reconcile-merged \
-      --repo /data/projects/livespec-console-beads-fabro \
-      --item livespec-console-beads-fabro-mbohw3 --json
+    stage.failed review — category: transient_infra
+      "Internal error: You've hit your limit · resets Jul 31, 5am (UTC)"
 
-Resolve `<plugin>` from `installed_plugins.json` for THIS `projectPath` and invoke by
-ABSOLUTE PATH — a session can hold different plugin pins for different surfaces, and
-the orchestrator `bin/` dirs on `PATH` do not exist. Expect the DEFAULT janitor argv
-to work this time: the janitor checks out the item's OWN merge SHA, and this item's
-merge will postdate `ad4d023` where `check-no-workflow-edits` landed. (That is exactly
-why `dm5f7q` needed a reduced argv and this one should not.)
-**NEVER run a dispatch in the foreground — it is a ~30-40 minute operation.**
+The `review` node runs on the Claude SUBSCRIPTION (`workflow.toml:85-95`,
+`review_adapter`, `CLAUDE_CODE_OAUTH_TOKEN`). `implement` survived only because it is
+overridden to Codex (`acp_adapter`) — a DIFFERENT account. So the outage is
+review-only, and it is total: both attempts burned in 34 s.
+
+**Ship-on-cap does NOT rescue this.** That path needs review to RUN and return a
+verdict; a review that cannot start never emits one, and `workflow.fabro:283` routes
+`review -> escalate` unconditionally on `outcome=failed`. This is the same ceiling
+§ 2 already noted for factory-hardening; it has now reached our own dispatch path.
+
+**NO RECONCILE IS OWED — the previous § 0 was wrong on its premise.** It predicted
+`mbohw3` would strand at `active` when its PR merged. There is no PR and no branch:
+the run never reached the `pr` node. Verified on the forge — `git ls-remote origin
+refs/heads/feat/livespec-console-beads-fabro-mbohw3` is empty. Do not run
+`reconcile-merged`; there is nothing merged to reconcile.
+
+**State of run `01KYP37TZJ9MRTSDR3A0138W4M` (maintainer-directed 2026-07-29: LEAVE
+PARKED).** `implement` **succeeded**, `janitor` (`mise exec -- just check`)
+**succeeded — green**, `review` failed on the ceiling above, and the run now sits
+`blocked: human_input_required` at the `escalate` gate with a three-option interview
+(`[R]` retry / `[I]` re-implement / `[A]` abandon). At or after **2026-07-31T05:00Z**,
+answer **`[R]`** via `fabro attach 01KYP37TZJ9MRTSDR3A0138W4M`; `[R]` routes
+`fix -> janitor -> review`, so the green work is re-checked rather than rebuilt.
+Do NOT answer `[I]` — it discards a completed implement cycle for no benefit, and
+would hit the same wall.
+
+A green implementation is BANKED independently of the run: `fabro dump` of all 23
+files, including `stages/002-implement@1/diff.patch` (`+207/-107`
+`console-application/src/lib.rs`, `+130/-24` `docs_status_hint_lockstep.rs`,
+`+33/-3` `console-tui/src/lib.rs`, `+2/-1` `detailed-usage.md`). It lives in a
+SESSION scratchpad, so if it still matters after a restart, re-dump rather than
+hunt for it. If the holding engine dies before Jul 31, `fabro resume` is the
+documented recovery (`workflow.fabro:164-166`) — `attach` is only for a live engine.
+
+**NEVER run a dispatch in the foreground — it is a ~30-40 minute operation.** The
+previous session's dispatch was SIGTERM'd by a 20-minute tool timeout, which is why
+no dispatcher remains to do post-run bookkeeping. Verified 2026-07-29: no dispatcher
+process is running, so nothing will auto-dispatch a `ready` item into the dead gate.
 
 ### 1. Then continue the queue, serial — MAINTAINER SCOPE DECISION 2026-07-29
 
@@ -329,13 +389,46 @@ was driven*.
 Order, serial: (1) `mbohw3`'s live run through to merge, applying the § 2 refusal
 expectation below; (2) B1 `-nvflph`; (3) B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
 verify-close behind B1; (4) C `-cxu4eu`; (5) the tier-check bug `-ff6aue`.
-`-vwxyj4`/`-cyixzi`/`-zvnjef`/`-cxu4eu` still sit `pending-approval` — admit them at
-the TUI approve valve, NOT `drive.py`.
+
+**BLOCKED ON THE § 0 CEILING, NOT ON THIS ORDER.** The order stands and needs no
+re-litigation; nothing in it can reach MERGE before 2026-07-31T05:00Z, because every
+step traverses the dead `review` node. Resume the order at the reset — do not
+re-plan it, and do not read the delay as a scope change.
+
+**The admission half IS DONE (2026-07-29T05:4xZ, at the real TUI `p` valve, NOT
+`drive.py`).** `-cxu4eu`, `-cyixzi`, `-vwxyj4`, `-zvnjef` are all `ready`, each
+verified on the ledger after its own valve press. Every valve rendered
+`Approve work-item / Target: <exact id>` and was confirmed only after the id was
+read back; the pending-approval hint was captured verbatim at all five rows first:
+`up/down move | enter open | p approve | r reject | m set-admission | ? help | q quit`
+— `p`/`r`/`m` present, **no `c accept`**, matching `attention_item_footer_hint`'s
+`PendingApproval` arm exactly. No silent failure on any press. That is a THIRD live
+proof of v037 consumption, on a third lane.
+
+`-ectqye` was DELIBERATELY LEFT `pending-approval` — its routing is undecided per § 3
+below (reconcile with `-k0w` first). It sits adjacent to the others in the Attention
+list and the selection landed on it twice during navigation; re-verify the `Target:`
+line before any press near it.
 
 Then park with the Stage 3(b) walk legs QUEUED and named, not attempted: the groom leg
 (needs the vocabulary ratification + `-l4p3ce` transport) and ONE CONTINUOUS
 single-item walk (find → groom → admit → dispatch → monitor → accept). Individual legs
 are now proven; what is missing is one unbroken pass.
+
+**Stage 3(b)'s ACCEPT leg has been cut out from under the walk — maintainer-directed,
+and it needs a decision before the walk is attempted.** `6f5f6b6` (2026-07-29) set
+`acceptance_mode` to `ai-only` fleet-wide, deliberately reversing the 2026-07-21
+restore that this thread made *because the happy-path walk ships at the accept valve*.
+Consequence, from source: `requires_attention_from_lane`
+(`console-application/src/lib.rs:5336-5353`) surfaces an `acceptance` item only under
+`ai-then-human` or `human-only`, and its docstring records that an `ai-only` item
+"auto-completes to `done` rather than resting in `acceptance`". So a newly-dispatched
+item will never rest at a human `c accept`. `auto_approve_ready` stays `false`, so the
+APPROVE half of the walk is unaffected. The walk therefore cannot end at a keyboard
+accept unless `acceptance_mode` is set back for the duration — which is a dispatcher
+lever in `.livespec.jsonc` and so maintainer-owned. Decide it BEFORE the walk, not
+during. (The already-banked accept-valve evidence stands: 2026-07-26's four items and
+2026-07-29's `dm5f7q` were accepted under the old setting.)
 
 ### 2. On a publish refusal — two cases, do not conflate them
 
@@ -400,6 +493,23 @@ guard), **#487** `3277d74` (re-pin after upstream `856d699b5f7d`).
   (`:495-497`) admits it, agreeing with the lane table. The fix must collapse all three
   to one derivation and assert cross-view consistency. Both `bd` comments are on the
   item and rode into the dispatch as operator riders.
+  **REFINEMENT 2026-07-29 — the STRUCTURAL claim holds, the REACHABILITY claim as
+  written does not.** The item's rider calls the Backlog divergence "a live
+  operator-visible defect", which requires a Backlog row to be selectable in the
+  ATTENTION view. The valve-actionable lane fold cannot produce one:
+  `requires_attention_from_lane` (`:5336-5353`) admits only
+  `PendingApproval`(manual), `Acceptance`(`ai-then-human`|`human-only`) and
+  `Blocked`(`needs-human`). The only route left is an ingested needs-attention row
+  whose `work_item_id` happens to reference a Backlog item — because
+  `selected_work_item_lane` (`:1352`) resolves the lane via `work_item_by_id`, i.e.
+  from the LANE fold, not from the attention snapshot the row came from.
+  Corroborated live 2026-07-29: a 61-row Attention list held exactly one `Blocked`
+  and five `Pending approval` work-item rows and no Backlog/Ready/Active/Done row.
+  So the three-encodings defect and the fix are both still correct — collapse them —
+  but do NOT expect to reproduce the divergence by selecting a Backlog item in
+  Attention, and do not let a failed reproduction be read as "no defect". Pin the
+  rider's "first thing to pin down" through the LANE view, where the Backlog arm is
+  plainly reachable.
 
 ### 5. The fork, and the guard that now protects it
 
