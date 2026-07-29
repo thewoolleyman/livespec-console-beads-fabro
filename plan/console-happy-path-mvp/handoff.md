@@ -392,8 +392,9 @@ the run never reached the `pr` node. Verified on the forge — `git ls-remote or
 refs/heads/feat/livespec-console-beads-fabro-mbohw3` is empty. Do not run
 `reconcile-merged`; there is nothing merged to reconcile.
 
-**THE ESCALATE GATE IS NOT A PARKING SPACE — THE STALL WATCHDOG KILLS RUNS THAT SIT
-THERE. Measured, not reasoned.** The paragraph this replaces told a successor to leave
+**DO NOT PARK A RUN AT THE ESCALATE GATE — THE STALL WATCHDOG KILLED THE ONE RUN THAT
+SAT THERE. Measured (n=1), and see the scope correction below before generalising.**
+The paragraph this replaces told a successor to leave
 run `01KYP37TZJ9MRTSDR3A0138W4M` parked and answer `[R]` "at or after
 2026-07-31T05:00Z". **That was never achievable and the run is now dead.** It blocked
 at 06:30:05Z and Fabro killed it at 08:50:00Z:
@@ -401,17 +402,44 @@ at 06:30:05Z and Fabro killed it at 08:50:00Z:
     status: failed / workflow_error
     detail: stall watchdog: node "escalate" had no activity for ...
 
-~2h20m, matching `graph [stall_timeout="7200s"]`. The watchdog counts EVENT SILENCE,
-and a run waiting on a human emits no events — so the human-input gate is subject to
-the same watchdog as a hung node. **A human has roughly two hours to answer an
-escalate interview, or the run dies.** `fabro resume` is documented for a dead ENGINE
-(`workflow.fabro:164-166`); it does not resurrect a run the watchdog has failed.
+~2h20m, matching `graph [stall_timeout="7200s"]`. `fabro resume` is documented for a
+dead ENGINE (`workflow.fabro:164-166`); it does not resurrect a run the watchdog has
+failed.
 
-This invalidates the whole "park it and decide later" shape at this gate. Plan any
-escalate answer as a same-session action, and if the decision genuinely needs to wait,
-expect to ABANDON AND RE-DISPATCH rather than to return to a held run. Note the
-design tension for whoever owns the gate upstream: an in-loop HUMAN gate whose whole
-purpose is to wait for a person self-destructs in 2h of the waiting it exists to do.
+**SCOPE OF THAT CLAIM — CORRECTED 2026-07-29T21:4xZ, and read this before relying on
+it.** An earlier revision of this paragraph (mine) generalised the single observation
+above into "a human has roughly two hours to answer an escalate interview, or the run
+dies", and that general form is FALSIFIED. A concurrent orphaned run in the
+orchestrator tenant (`01KYQHB99WE87N1MAXKQ8MR8HP`) was still alive and `waiting` at
+**3h25m** — far past the 7200s fuse — while a sibling did free its slot at roughly the
+predicted time.
+
+What the evidence actually supports is narrow, and should be stated no wider:
+**one run, parked at the `escalate` node, was killed after ~2h20m, and the failure
+detail named that node.** That is a per-node observation with n=1. It is NOT a
+demonstrated property of parked runs in general.
+
+Candidate explanations, NONE verified and none worth the queue's time to chase: the
+surviving run is parked at a DIFFERENT node; or its node still emits events so the
+silence timer never accumulates; or the timeout is per-node rather than per-run (the
+failure text says `node "escalate" had no activity`, which is at least consistent with
+per-node). Whoever needs the general rule should measure it deliberately rather than
+inherit it from here.
+
+**The operational advice survives the correction, on a weaker basis.** Do not plan to
+park a run at `escalate` and come back tomorrow: at least once that cost a green
+implement+janitor cycle. Treat an escalate answer as SAME-SESSION work, and if the
+decision genuinely must wait, expect to ABANDON AND RE-DISPATCH rather than return to
+a held run. The design tension is still worth naming for whoever owns the gate
+upstream: an in-loop HUMAN gate whose purpose is to wait for a person can be killed by
+a silence timer for doing exactly that.
+
+**And the meta-lesson, because this is the track's named defect class biting the
+person documenting it.** This handoff warns that "durable guidance SHOULD NAME THE
+CONDITION it depends on, so the next reader can check whether it still holds instead
+of inheriting a conclusion." The 2h sentence did the opposite — it converted one
+measurement into a rule within hours, in the same file that warns against it. The
+measurement was sound; the generalisation was not.
 
 `implement` **succeeded**, `janitor` (`mise exec -- just check`) **succeeded — green**,
 and `review` failed on the ceiling above; both green cycles (`96f3ca9`, `a5f51fa`) died
