@@ -341,12 +341,72 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
-**RESUME HERE (2026-07-29T05:45Z — supersedes every earlier RESUME HERE block).**
+**RESUME HERE (2026-07-29T22:47Z — supersedes every earlier RESUME HERE block).**
 Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to the
 next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
 cost PR #478).
 
-### 0. THE FACTORY IS DOWN UNTIL 2026-07-31T05:00Z. Read this before planning work.
+### 0. THE FACTORY WORKS. TWO SLICES LEFT. START HERE.
+
+**State at wind-down, measured — re-measure anyway, it is a claim with a timestamp:**
+
+| item | lane | note |
+|---|---|---|
+| `-dm5f7q` | **closed** | slice A; accepted at the real TUI `c` valve |
+| `-mbohw3` | **closed** | PR #505 -> `514a326`; first Codex-reviewed slice |
+| `-nvflph` | **closed** | B1; PR #509 -> `46783ad`; three review visits |
+| `-vwxyj4` `-cyixzi` `-zvnjef` | **closed** | B2-B4, verify-closed (see § 1) |
+| `-cxu4eu` | `ready` | **C — DISPATCH THIS NEXT** |
+| `-ff6aue` | `ready` | then this. Serial. |
+| `-ectqye` | `pending-approval` | LEAVE IT — routing undecided, § 3 |
+| `-u3w3er` `-6hbfq6` | `ready` | off the happy path; operator choice |
+
+At wind-down: master `724b9e1`, primary clean, **0 fabro runs in flight, both host
+slots free**, no cockpit running.
+
+**THE DISPATCH COMMAND — copy it, and read § 0b before changing any part of it:**
+
+    P=/home/ubuntu/.claude/plugins/cache/livespec-orchestrator-beads-fabro/livespec-orchestrator-beads-fabro/856d699b5f7d
+    # 1. Build an UNTRACKED copy of the workflow dir and point review at Codex.
+    #    The WHOLE dir: `graph` is relative and the prompts hang off the graph.
+    W=$(mktemp -d)/wf-codex-review
+    mkdir -p "$W" && cp -r /data/projects/livespec-console-beads-fabro/.fabro/workflows/implement-work-item/. "$W/"
+    sed -i 's|^review_adapter = .*|review_adapter = "npx --no-install @zed-industries/codex-acp"|' "$W/workflow.toml"
+    # 2. Dispatch UNDER the credential wrapper, in the BACKGROUND (30-40 min).
+    /usr/local/bin/with-livespec-env.sh -- "$P/scripts/bin/dispatcher.py" dispatch \
+      --repo /data/projects/livespec-console-beads-fabro \
+      --item livespec-console-beads-fabro-cxu4eu \
+      --workflow "$W/workflow.toml" --json
+
+Then verify `git status --short .fabro/` is EMPTY — the committed `workflow.toml` must
+stay untouched — and confirm the run's spec carries
+`review_adapter: npx --no-install @zed-industries/codex-acp` before trusting it.
+
+**CHECK THE REVIEW'S VERDICT FORM FIRST, EVERY TIME, BEFORE READING ITS PROSE.**
+`review -> pr` is the UNCONDITIONAL fallback edge (`workflow.fabro:285`) and only
+`review -> review_fix` is guarded, so a MALFORMED verdict does not fail — it
+PUBLISHES. Pull `stages/*review*/response.md` from a `fabro dump` and confirm the last
+line parses as `{"preferred_next_label": "approve"|"fix"}`. Cheap, and silent when it
+breaks. Codex has produced it correctly 4/4 times (approve, fix, fix, approve).
+
+**WHAT THE REVIEWER IS WORTH, at n=4 — do not re-litigate this downward.** It
+discriminates: it blocked `-nvflph` twice on real operator-visible contradictions, and
+when `review_fix@1` silently failed to address a finding it RESTATED THE SAME FINDING
+UNCHANGED at the same file:line. A reviewer that forgets what it asked for is worse
+than none; this one does not. It under-grades advisories (it called one thing
+"advisory" that was arguably blocking, and raised one advisory that MEASUREMENT
+REFUTED — see § 4). An earlier revision of this file called it "adequate, not good"
+from n=1; that was an over-read of one sample and is withdrawn.
+
+**AND THE LESSON THAT PAID FOR ITSELF THREE TIMES TODAY:** every slice that narrows a
+ratified vocabulary should ASSUME a second and third restatement of it exists elsewhere
+and go hunting, rather than discovering them one review visit at a time. `-mbohw3` had
+three encodings of the per-item verb vocabulary; `-nvflph` had four of the move-status
+vocabulary (picker/handler, tests, Help modal, and the `WorkItemMoveRequested` domain
+contract prose). In BOTH cases the implementation was closer to correct than its
+descriptions were.
+
+### 0a. The ceiling that stopped us — HISTORICAL, routed around, still true of the default adapter
 
 **The review gate cannot run. Every Stage-2 dispatch will park at the human gate
 until the Claude subscription's weekly ceiling resets.** Measured 2026-07-29T05:27Z
@@ -560,7 +620,10 @@ trusting the pattern across the remaining slices.
 
 ### 1. Then continue the queue, serial — MAINTAINER SCOPE DECISION 2026-07-29
 
-**Run ALL FIVE Stage-2 slices through to MERGE, then PARK BEFORE Stage 3(b).** The
+**Run ALL FIVE Stage-2 slices through to MERGE, then PARK BEFORE Stage 3(b).**
+*(Standing directive, still in force. Progress 2026-07-29: steps 1-3 of the five are
+DONE — `-mbohw3`, B1 `-nvflph`, and B2-B4 verify-closed. Two remain: C `-cxu4eu`, then
+`-ff6aue`. The PARK-before-3(b) half is untouched and still binding.)* The
 maintainer's rationale, recorded so it is not re-litigated: finishing the slices gets
 the implementation complete and the ledger honest, and leaves the Stage 3(b) walk —
 which needs a fresh cockpit and continuous operator attention — for a DELIBERATE
@@ -568,24 +631,62 @@ session rather than the tail of a long one. The walk is the evidence this whole 
 exists to produce, and *doing it exhausted is how a leg gets recorded as walked when it
 was driven*.
 
-Order, serial: (1) `mbohw3`'s live run through to merge, applying the § 2 refusal
-expectation below; (2) B1 `-nvflph`; (3) B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
-verify-close behind B1; (4) C `-cxu4eu`; (5) the tier-check bug `-ff6aue`.
+Order, serial: (1) `mbohw3` **DONE**; (2) B1 `-nvflph` **DONE**; (3) B2-B4
+(`-vwxyj4`/`-cyixzi`/`-zvnjef`) **VERIFY-CLOSED**; (4) C `-cxu4eu` **← RESUME HERE**;
+(5) the tier-check bug `-ff6aue`.
 
-**BLOCKED ON THE § 0 CEILING, NOT ON THIS ORDER.** The order stands and needs no
-re-litigation; nothing in it can reach MERGE before 2026-07-31T05:00Z, because every
-step traverses the dead `review` node. Resume the order at the reset — do not
-re-plan it, and do not read the delay as a scope change.
+**B2-B4: WHY THEY WERE CLOSED WITHOUT DISPATCH, and the distinction matters.** All
+three clauses (`contracts.md:453-464` — the picker MUST NOT offer `active` from any
+lane, MUST NOT offer `ready` on `pending-approval`, MUST NOT offer `done` from any
+lane) are satisfied by `status_move_targets` (`console-application/src/lib.rs:473-480`),
+consumed by BOTH the picker cycle (`:306`) and the command validator (`:3435`), and
+asserted by a green test
+(`move_status_valve_cycles_targets_and_status_move_targets_are_the_pre_terminal_set`).
+
+But **they were REAL gaps when filed, and B1 is NOT what fixed them.** Measured:
+
+    2026-07-27T23:48-23:49Z   B2-B4 filed
+    2026-07-28T01:24:21Z      commit 2d5ce11 narrowed the table
+
+At filing time the table read `Backlog => [Ready, Active, Blocked]`,
+`PendingApproval => [Backlog, Ready, Active, Blocked]`,
+`Acceptance => [Backlog, Ready, Active, Blocked, Done]` — every one of the three
+clauses violated. So the gap census did NOT over-report. `2d5ce11` is
+"feat: pin per-state verb suppression" = **SLICE A (`-dm5f7q`, PR #466)**, not slice B.
+Slice B never touched the table — byte-identical across PR #509.
+
+The filing note predicted discharge "by the slice-B lead's single
+`status_move_targets` change" and **named the wrong sibling**. The honest disposition,
+and the wording used in each close reason: **fixed by slice A, verified and closed
+behind slice B** — not "never open", and not "fixed by B1". Those three readings mean
+different things and the ledger must not blur them.
+
+Slice B's real deliverable was the FOUR stale descriptions of a door slice A had
+already narrowed: the tests, `docs/`, the in-app Help modal
+(`console-tui/src/lib.rs:1737`) and the `WorkItemMoveRequested` domain-contract prose
+(`console-domain/src/lib.rs:362`). That is why it needed three review visits.
+
+**TWO ADVISORIES REMAIN OPEN from `-nvflph`'s final review**, and they are the good
+kind — a verifier that does not prove what it claims:
+`crates/console-cli/tests/tmux_tui_e2e.rs:946` asserts the backlog picker offers
+`ready/blocked` but only proves the initial `ready` option and the ABSENCE of `active`;
+`:971` is the same for acceptance, never proving `blocked` is reachable. Cycling once
+would make each explicit. Non-blocking (the doors are handler-enforced and unit-tested)
+but this is the repo's recorded "a verifier must be able to fail" class, so it deserves
+a follow-up rather than a shrug.
 
 **The admission half IS DONE (2026-07-29T05:4xZ, at the real TUI `p` valve, NOT
-`drive.py`).** `-cxu4eu`, `-cyixzi`, `-vwxyj4`, `-zvnjef` are all `ready`, each
+`drive.py`).** `-cxu4eu`, `-cyixzi`, `-vwxyj4`, `-zvnjef` were each admitted and
 verified on the ledger after its own valve press. Every valve rendered
 `Approve work-item / Target: <exact id>` and was confirmed only after the id was
 read back; the pending-approval hint was captured verbatim at all five rows first:
 `up/down move | enter open | p approve | r reject | m set-admission | ? help | q quit`
 — `p`/`r`/`m` present, **no `c accept`**, matching `attention_item_footer_hint`'s
-`PendingApproval` arm exactly. No silent failure on any press. That is a THIRD live
-proof of v037 consumption, on a third lane.
+`PendingApproval` arm as it stood that day. No silent failure on any press. That is a
+THIRD live proof of v037 consumption, on a third lane. **Full per-item evidence, with
+the one gap named (`zvnjef` was pressed from its sweep position and so has a single
+capture, not two), is in `research/stage2-evidence-2026-07-29.md` § 1 — the hint
+strings there are now HISTORICAL, since `514a326` rewrote the hint tables.**
 
 `-ectqye` was DELIBERATELY LEFT `pending-approval` — its routing is undecided per § 3
 below (reconcile with `-k0w` first). It sits adjacent to the others in the Attention
@@ -649,7 +750,29 @@ account ceiling until 2026-07-31.
 
 ### 3. DONE — do not redo
 
-Merged this session, all forge-verified: **#472** `edc3b29` (brief-29 correction),
+**Merged 2026-07-29 (the Codex-reviewer session), all forge-verified:** **#490**
+`e4c77cd` (§ 0 rewrite — the subscription ceiling), **#503** `259627a` (watchdog kill,
+strand door, re-dispatch mechanics), **#505** `514a326` (**`-mbohw3` implementation**),
+**#506** `7476ecf` (`research/stage2-evidence-2026-07-29.md` — the durable evidence
+note), **#508** `fc77ce8` (scoped my own over-broad watchdog claim), **#509**
+`46783ad` (**`-nvflph` implementation**), **#510** `724b9e1` (struck my own wrong
+reachability refinement).
+
+**THREE OF THOSE SEVEN CORRECT SOMETHING THIS SESSION ITSELF ASSERTED** (#503's
+"park until 07-31" was impossible; #508 scoped a rule I generalised from n=1; #510
+retracted a refinement I had filed as a rider). That is not noise — it is why the
+record is more trustworthy tonight than this morning. A successor should expect to
+correct this file too, and should not treat its confident sentences as settled merely
+because they are confident.
+
+**Two owed items were delivered LIVE and then made durable in #506**, because they had
+been re-requested four times while living only in session chat: the
+`console-fork-drift-check` RED DEMO (four arms — baseline RC=0, our-own-edit RC=0
+**blind**, upstream-digest-moved RC=1 **catches it**, restored RC=0, all read UNPIPED,
+tree restored) and the four admissions' captured hints. **Evidence that lives in a
+transcript has to be re-derived by whoever asks next; put it in a file.**
+
+Older, still true: **#472** `edc3b29` (brief-29 correction),
 **#474** `ad4d023` (adopt the `check-no-workflow-edits` janitor recipe), **#476**
 `6b3c434` (SYNC the forked `pr.md` publish leg), **#477** `f935ac8` (scope step 5's
 retry expectation), **#478** `24c75e1` (UTC dates), **#479** `842a316` (the fork-drift
