@@ -287,100 +287,175 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
-**RESUME HERE (2026-07-28, supervisor brief 28 — supersedes everything below in this section).**
-Session console-happy-path-mvp wound down cleanly at a context boundary. Execute in order:
+**RESUME HERE (2026-07-29T05:0xZ — supersedes every earlier RESUME HERE block).**
+Session wound down at a context boundary. Timestamps here are UTC; we run at UTC+2,
+so anything after 22:00 UTC dates to the next LOCAL day — build every timestamp with
+`date -u`, never by hand (that mistake cost PR #478).
 
-0. CORRECTED CAUSE (brief 28): the prior session was PINNED to plugin `1567e8f200dc`
-   (cached 2026-07-22) — predating TWO shipped fixes: rebase-before-push in pr.md
-   (bd-ib-qq7f, released 2026-07-24 — why slice A hit the stale-base refusal) and
-   14c3cae's janitor pack provisioning (tagged v0.46.23 on 2026-07-26 — why
-   reconcile-merged failed worktree_pack_absent). Both were RELEASED, not missing; the
-   session never re-resolved. A fresh session resolves the current cache — REPORT the
-   resolved version hash FIRST; it must carry both fixes (e.g. `c53fd50e58b6`+). If it
-   resolves to one lacking either fix, STOP: that is a resolution defect. Never
-   hand-edit paths. Generalisable: long-lived sessions pin plugin versions at start and
-   present staleness as product defects. MEASURED 2026-07-28: the resolving session got
-   `c53fd50e58b6` (installed for this `projectPath` per `installed_plugins.json`) and
-   confirmed BOTH fixes present — `install-worktree-pack` in `_DEFAULT_JANITOR`
-   (`_dispatcher_fabro_argv.py:58`) and `git rebase origin/master` before the push leg
-   (`pr.md` step 2). Note the three orchestrator `bin/` entries on `PATH`
-   (`ec529fe14afa`, `1fcc60a7e0fc`, `a6b2523a0e44`) are INERT — those directories do
-   not exist, and `dispatcher.py` is not on `PATH` under any name, so it is always
-   invoked by absolute path out of the installed cache.
-1. `dispatcher.py reconcile-merged --repo <primary> --item livespec-console-beads-fabro-dm5f7q`
-   (authorized; its PR #466 MERGED as 77ed854). If janitor fails again: STOP, report verbatim.
-2. `detect_impl_gaps.py --json`: confirm `gap-23tps2nk` CLOSES once `dm5f7q` reaches done
-   (closure is keyed to item-done, not merged code). Report either way.
-3. Cleanup (forge-verified: bb62344's content is on master via #467/221051a): delete remote
-   branch `feat/livespec-console-beads-fabro-dm5f7q` if it still exists (delete FROM A
-   WORKTREE — the primary refuses all pushes); remove leftover worktree
-   `happy-path-handoff-resync` if present. NEVER touch `janitor-reconcile-*` (diagnostic) or
-   other sessions' worktrees (`ci-concurrency-group`, `harden-tmux-check`).
-4. FILE freeform (maintainer consent given; `origin: freeform`, `gap_id: null`): "Wire
-   per_item_verb_is_state_valid into hint rendering — the predicate has no production call
-   site and hint text is a second, unbound encoding of the ratified vocabulary." Evidence:
-   predicate at `console-application/src/lib.rs:488` (no production call site; only test
-   refs); hints from `footer_hint` `:1526`, a `const fn` returning `&'static str` via
-   hardcoded per-lane literals; key inertness is a third path. Acceptance: a mutation to a
-   per-lane hint literal ALONE must be impossible (literal derived, not typed).
-5. DISPATCH that wiring item alone (factory path). Our `.fabro` fork's `pr.md` was
-   SYNCED from upstream 2026-07-28 (PR #476, merged 2026-07-28T22:08:32Z), so the publish leg now runs an
-   unconditional `git fetch origin master` + `git rebase origin/master` IMMEDIATELY
-   BEFORE the push. That is the primary defence and it closes the common case.
-   AMENDED 2026-07-28 (supersedes this step's earlier "a refusal is NOT expected;
-   STOP AND REPORT on any refusal"). That wording assumed the bounded retry fires on
-   any workflows-permission rejection. It does not. The synced prose instructs EXACT
-   matching on a fully-qualified signature naming `.github/workflows/ci.yml`
-   (`prompts/pr.md:44-45`) and then explicitly forbids generalising — "Do NOT loop
-   and do NOT retry on any different error signature" (`:55`). The parenthetical at
-   `:46-47` disclaims EDITING that path; it is not a wildcard licence. So the retry
-   is INERT for a rejection naming any other file. Two cases, and they are handled
-   differently:
-   - Refusal naming **`.github/workflows/ci.yml`** — the retry SHOULD fire. If it
-     does not, that IS a finding: **STOP AND REPORT**.
-   - Refusal naming **any other workflow file** — the retry is INERT BY UPSTREAM
-     DESIGN. Do NOT treat it as novel and do NOT escalate it as one. Apply the known
-     recovery: answer the run's interview (Retry) THEN `fabro steer` the in-sandbox
-     `git fetch && git rebase origin/master` recipe, and record it as an instance of
-     the defect already filed with factory-hardening (agreed fix shape: key on the
-     stable head and tail of the signature, wildcard the path). On this host
-     `bump-pin-from-dispatch.yml` is the LIKELIER trigger than `ci.yml`, because
-     every livespec-dev-tooling pin bump rewrites it — v0.56.1 through v0.58.1 all
-     landed inside about a day.
-   RESIDUAL EXPOSURE, stated so nobody over-reacts: because step 2 rebases
-   unconditionally just before pushing, the retry only matters if master moves in the
-   narrow window BETWEEN that rebase and the push. The exposure is a pin bump landing
-   inside that window on a file other than `ci.yml`, in which case the run parks
-   needs-human with no retry attempted. Assume NO upstream fix before 2026-07-31:
-   factory-hardening has FILED it but not dispatched it, their account is at its
-   weekly ceiling, and the maintainer ruled their in-flight image-pin run is their
-   last dispatch this week.
-   Never touch `.github/workflows/`, never `--no-verify`.
-6. B1 `-nvflph` only after the wiring slice MERGES; B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
-   verify-close behind B1; then C `-cxu4eu`; the tier-check bug `-ff6aue` any time. Serial.
-   All sit `pending-approval` (admit via the approve valve).
+### 0. FIRST ACTION — a reconcile is OWED. Do this before anything else.
 
-Standing rules: worktree -> PR -> rebase-merge, never commit on the primary; verify against
-the forge after a fetch; outcomes from artifacts, never exit codes; overseer marker
-(`tmp/overseer/console-happy-path-mvp/.overseer-state`) written as the LAST action of every
-gated turn and `cat`-verified. Done, do not redo: slice A merged (#466) + dead-literal
-repoint (#467) + all red demos conclusive (incl. backlog `:944`); v050+v037 ratified;
-strand capture/recovery complete; accept-valve walk done; `dm5f7q` recovered and
-ACCEPTED AT THE TUI `c` VALVE, now `done` (its gap-tied record discharges
-`gap-23tps2nk`); `pr.md` synced (#476).
+`livespec-console-beads-fabro-mbohw3` was dispatched and its Fabro run
+`01KYP37TZJ9MRTSDR3A0138W4M` was LIVE (`status: running`) at wind-down. But the
+DISPATCHER process that performs post-merge bookkeeping is DEAD: the dispatch was run
+in the FOREGROUND and a 20-minute tool timeout SIGTERM'd it. The run itself survived —
+Fabro executes server-side — but nothing is left to reconcile the ledger, so when the
+run's PR merges the item WILL STRAND at `active` exactly as `dm5f7q` did.
+
+    # 1. what is the run doing?
+    fabro inspect 01KYP37TZJ9MRTSDR3A0138W4M
+    # 2. once its PR is MERGED (verify on the forge), reconcile:
+    <plugin>/scripts/bin/dispatcher.py reconcile-merged \
+      --repo /data/projects/livespec-console-beads-fabro \
+      --item livespec-console-beads-fabro-mbohw3 --json
+
+Resolve `<plugin>` from `installed_plugins.json` for THIS `projectPath` and invoke by
+ABSOLUTE PATH — a session can hold different plugin pins for different surfaces, and
+the orchestrator `bin/` dirs on `PATH` do not exist. Expect the DEFAULT janitor argv
+to work this time: the janitor checks out the item's OWN merge SHA, and this item's
+merge will postdate `ad4d023` where `check-no-workflow-edits` landed. (That is exactly
+why `dm5f7q` needed a reduced argv and this one should not.)
+**NEVER run a dispatch in the foreground — it is a ~30-40 minute operation.**
+
+### 1. Then continue the queue, serial — MAINTAINER SCOPE DECISION 2026-07-29
+
+**Run ALL FIVE Stage-2 slices through to MERGE, then PARK BEFORE Stage 3(b).** The
+maintainer's rationale, recorded so it is not re-litigated: finishing the slices gets
+the implementation complete and the ledger honest, and leaves the Stage 3(b) walk —
+which needs a fresh cockpit and continuous operator attention — for a DELIBERATE
+session rather than the tail of a long one. The walk is the evidence this whole thread
+exists to produce, and *doing it exhausted is how a leg gets recorded as walked when it
+was driven*.
+
+Order, serial: (1) `mbohw3`'s live run through to merge, applying the § 2 refusal
+expectation below; (2) B1 `-nvflph`; (3) B2-B4 (`-vwxyj4`/`-cyixzi`/`-zvnjef`)
+verify-close behind B1; (4) C `-cxu4eu`; (5) the tier-check bug `-ff6aue`.
+`-vwxyj4`/`-cyixzi`/`-zvnjef`/`-cxu4eu` still sit `pending-approval` — admit them at
+the TUI approve valve, NOT `drive.py`.
+
+Then park with the Stage 3(b) walk legs QUEUED and named, not attempted: the groom leg
+(needs the vocabulary ratification + `-l4p3ce` transport) and ONE CONTINUOUS
+single-item walk (find → groom → admit → dispatch → monitor → accept). Individual legs
+are now proven; what is missing is one unbroken pass.
+
+### 2. On a publish refusal — two cases, do not conflate them
+
+Our `.fabro` fork's `pr.md` was SYNCED from upstream (#476), so the publish leg now
+runs an unconditional `git fetch origin master` + `git rebase origin/master`
+immediately before the push. The bounded retry, however, keys on an EXACT signature
+naming `.github/workflows/ci.yml` (`prompts/pr.md:44-45`) and explicitly forbids
+generalising (`:55`), so it is INERT for any other filename.
+
+- refusal naming **`ci.yml`** → the retry SHOULD have fired. If it did not, that IS a
+  finding: STOP AND REPORT.
+- refusal naming **any other** workflow file → inert by upstream design, NOT novel.
+  Apply the known recovery — answer the run's interview (Retry), THEN `fabro steer` the
+  in-sandbox `git fetch && git rebase origin/master` — and record it as an instance of
+  the defect already filed with factory-hardening. On this host
+  `bump-pin-from-dispatch.yml` is the LIKELIER trigger; every pin bump rewrites it.
+
+Residual exposure is narrow: the retry only matters if master moves between that
+rebase and the push. As of 2026-07-29 the upstream fix had NOT shipped (`pr.md` did
+not move in release `856d699b5f7d`); factory-hardening filed it but is at its weekly
+account ceiling until 2026-07-31.
+
+### 3. DONE — do not redo
+
+Merged this session, all forge-verified: **#472** `edc3b29` (brief-29 correction),
+**#474** `ad4d023` (adopt the `check-no-workflow-edits` janitor recipe), **#476**
+`6b3c434` (SYNC the forked `pr.md` publish leg), **#477** `f935ac8` (scope step 5's
+retry expectation), **#478** `24c75e1` (UTC dates), **#479** `842a316` (the fork-drift
+guard), **#487** `3277d74` (re-pin after upstream `856d699b5f7d`).
+
+- **`dm5f7q` is `done`.** Recovered via a maintainer-authorized reduced janitor argv
+  (dropping only the provably-vacuous `check-no-workflow-edits`), which returned it to
+  `acceptance` through the legitimate door — not a hand-close — and it was then
+  **ACCEPTED AT THE REAL TUI `c` VALVE**. Hints captured verbatim first; no silent
+  failure. Its `bd` comments carry the exact argv and the vacuity evidence.
+- **The APPROVE leg is WALKED at the keyboard** (the leg `-sreeqc` never got):
+  `ff6aue`, `mbohw3`, `nvflph` admitted at the TUI `p` valve, each verified on the
+  ledger. Hints captured verbatim before any keypress:
+  `... | s move-status | p approve | r reject | m set-admission | g merge cap |
+  f fix cap | n set-acceptance | k rework cap | ? help | q quit` — `p`/`r`/`m` present,
+  **no `c accept`**, matching `lane_item_footer_hint`'s `PendingApproval` arm exactly.
+  Together with the acceptance walk that is TWO live proofs of v037 consumption on two
+  different lanes.
+- **Cleanup done.** Remote `feat/livespec-console-beads-fabro-dm5f7q` deleted after a
+  CONFIRMED backup ref `refs/backup/feat-dm5f7q-20260728`. NOTE: an ancestor test is
+  the WRONG check in this repo — it rebase-merges, so branch SHAs never become
+  ancestors; verify by patch-id with `git cherry`.
+
+### 4. Corrections a successor will otherwise get wrong
+
+- **`gap-23tps2nk` will NEVER "close" in `detect_impl_gaps`.** That command is a
+  SPEC-CLAUSE CENSUS — its own docstring: it "enumerates every MUST / MUST NOT / SHOULD
+  / SHOULD NOT rule", ids are "a pure function of the spec-file path + canonical heading
+  path + rule text", and it is "intrinsically non-mutating". It was 179 before the
+  accept and 179 after. CLOSURE LIVES IN THE GAP-TIED WORK-ITEM:
+  `list_work_items.py --with-gap-id gap-23tps2nk --json` → count 1, `dm5f7q`,
+  `status=done`. Do not re-run it expecting 178.
+- **`mbohw3` is a CORRECTNESS fix, not a tidy-up, and there are THREE encodings.**
+  `attention_item_footer_hint` (`:1611-1621`) and `lane_item_footer_hint` (`:1623-`)
+  are separate per-lane tables and they CONTRADICT each other on `Lane::Backlog` — the
+  lane view advertises `m set-admission`, the Attention view does not, and the predicate
+  (`:495-497`) admits it, agreeing with the lane table. The fix must collapse all three
+  to one derivation and assert cross-view consistency. Both `bd` comments are on the
+  item and rode into the dispatch as operator riders.
+
+### 5. The fork, and the guard that now protects it
+
+`.fabro/workflows/implement-work-item/` is a COMMITTED FORK, read from our tree
+regardless of plugin version. **DELETE IS NOT AVAILABLE**: it is the SANCTIONED
+mechanism — `_dispatcher_paths.py::workflow_toml()` prefers the dispatch target's own
+committed `workflow.toml`, its docstring naming our exact case ("a Rust repo needing
+the `python-rust-agent-` layer, against the orchestrator's Python-only pin") — and
+upstream still pins a `python-agent` layer its own comment documents as carrying "no
+Rust". There is NO narrow override: `graph` is relative and resolves beside the chosen
+toml, so a repo-local toml drags in the graph AND every prompt. The real fix is an
+upstream narrow image-pin override, which the supervisor is requesting.
+
+**DO NOT sync `review.md` or `review-fix.md`.** Our review gate is ADVISORY /
+ship-on-cap by recorded decision (`workflow.fabro:9-10`, `bd-ib-egms32`) while
+upstream's is BLOCKING; syncing would silently revert a ratified policy.
+
+`just check-fork-drift` (crate `console-fork-drift-check`) pins the UPSTREAM digest of
+every fork file plus a mandatory reason, and fires when UPSTREAM moves. It is immune to
+our own pin-bump rewrites because it pins upstream's bytes. Its upstream lane cannot run
+in CI (that would need a `.github/workflows/` edit, which factory branches must not
+make), so it prints a LOUD skip there and runs for real on every dispatching machine
+including the pre-push hook. **It fired for real within hours of landing** — caught
+upstream `856d699b5f7d` moving `workflow.toml`, which on review was a one-line docker
+pin bump needing no port, re-pinned deliberately in #487. Re-pin with
+`just refresh-fork-upstream-pins` only AFTER reviewing what upstream changed — never to
+make a red build green.
+
+**It was DEMONSTRATED RED before it was accepted** (#479), three ways, exit codes read
+UNPIPED because a piped `$?` is the last command's: an upstream digest that no longer
+matches its pin (named `prompts/pr.md`), an undeclared file added to the fork (named
+it), and a pin left with an empty `reason` — all `RC=1`, with green restoring
+byte-identically afterwards. 26 unit tests; `lib.rs` at 100% line coverage per the
+workspace gate. It is a justified-divergence tracker rather than an allowlist: an
+allowlist says "ignore this", the `reason` field says "here is why", and
+`present_in_fork: false` records a KNOWN omission (upstream's `disposition` stage) so
+the gate does not cry missing-file every run.
+
+### 6. Standing rules
+
+worktree → PR → rebase-merge, never commit on the primary; `mise exec -- git` so
+lefthook runs; a fresh worktree needs `just install-worktree-pack` first and its
+`.livespec.jsonc` write reverted; `bd` needs the `/usr/local/bin/with-livespec-env.sh --`
+prefix; verify against the FORGE after a fetch; outcomes from ARTIFACTS not exit codes,
+and an exit code read through a pipe is the last command's; never `--no-verify`; never
+touch `.github/workflows/` or another session's worktrees.
 
 **A NAMED PATTERN ON THIS TRACK: an instruction outliving the condition that made it
-correct.** Twice now, guidance written into this file was accurate when authored and
-false weeks later, and each time a successor would have acted wrongly on it in good
-faith. First: "expect the stale-base refusal, apply the manual recovery" — true under
-the pre-2026-07-24 plugin, false after the restart. Second: step 5's "a refusal is NOT
-expected; STOP AND REPORT on any refusal" — true if the bounded retry fired on any
-workflows-permission rejection, false once its exact-match scoping was read closely.
-Durable instructions here SHOULD name the condition they depend on, so the next reader
-can check whether it still holds instead of inheriting a conclusion. A related trap,
-earned the same week: `gap-23tps2nk` "closing" was never a real check —
-`detect-impl-gaps` is a spec-clause CENSUS whose ids are a pure function of spec text,
-so it never shrinks; closure lives in the gap-tied work-item.
+correct.** It has happened twice — "expect the stale-base refusal" (true under the
+pre-2026-07-24 plugin, false after) and step 5's "a refusal is NOT expected" (true only
+if the retry fired on any signature). Durable guidance here SHOULD NAME THE CONDITION
+it depends on, so the next reader can check whether it still holds instead of
+inheriting a conclusion. Its sibling: **an absence never announces itself in a grep for
+the wrong token** — `pr.md` had two innocent "rebase" hits and the missing thing was
+`fetch`. And the track's dominant defect class remains **correct-looking state that
+nothing was checking**.
 
 This thread runs **under supervision** since 2026-07-25 — read
 `plan/console-happy-path-mvp/supervisor-handoff.md` FIRST, and re-measure
@@ -389,17 +464,15 @@ items + cockpit binary age) before trusting any claim here.
 
 Then, in order:
 
-1. **The accept leg is WALKED (2026-07-26, maintainer-directed): all
-   four items accepted at the TUI `c` valve on a fresh current-master
-   cockpit and verified `done`** — see
-   `research/accept-valve-walk-2026-07-26.md`, whose scoping section is
-   the honest boundary: this is the acceptance leg on real data, NOT
-   Stage 3(b). Still owed for 3(b): the groom leg (needs the
-   vocabulary ratification + `-l4p3ce` transport), ONE continuous
-   single-item walk (find → groom → admit → dispatch → monitor →
-   accept), and re-exercising `-sreeqc`'s approve leg at the keyboard
-   once `-u3w3er` lands. `-6ma`/`-m36`/`-8i9` are all CLOSED with
-   verified reasons.
+1. **Accept AND approve legs are both WALKED at the keyboard** — accept on
+   2026-07-26 (`research/accept-valve-walk-2026-07-26.md`) and again on
+   2026-07-29 for `dm5f7q`; approve on 2026-07-29 for `ff6aue`/`mbohw3`/
+   `nvflph`, which discharges the leg `-sreeqc` never got. Still owed for
+   Stage 3(b): the groom leg (needs the vocabulary ratification +
+   `-l4p3ce` transport) and ONE CONTINUOUS single-item walk
+   (find → groom → admit → dispatch → monitor → accept) — the legs are
+   now individually proven but have not been walked end-to-end in one
+   pass. `-6ma`/`-m36`/`-8i9` are all CLOSED with verified reasons.
 2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
    (2026-07-21..25) — recorded with their verification in
    `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the
@@ -417,7 +490,11 @@ Then, in order:
    technical guidance stands: the diagnostic lives in drive's
    already-captured `--json` stdout — never re-plumb stderr through
    `SourceProbe`.
-4. **Cockpit hygiene before any further walk**: kill the stale `serve`
-   (the 2026-07-21 binary polled for four days), relaunch `just tui`
-   fresh, and check for a stray second client first (`ps` for `serve` —
-   the single-operator MVP assumes exactly ONE live client).
+4. **Cockpit hygiene before any further walk**: `ps` for stray `serve`
+   processes FIRST (the single-operator MVP assumes exactly ONE live
+   client; a four-day-old binary was once caught still polling), then
+   relaunch `just tui`. Check the binary is not older than any merge that
+   touched a `console-*` crate — `cargo` will no-op the rebuild when only
+   non-console crates moved, which is correct but must be VERIFIED rather
+   than assumed. The cockpit runs in tmux `happy-path-tui`; it is the
+   PRODUCT, not an agent session.
