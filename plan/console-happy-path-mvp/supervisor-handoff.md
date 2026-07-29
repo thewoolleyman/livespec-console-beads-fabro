@@ -351,12 +351,41 @@ discipline sits — the LAST thing before the turn ends:
 1. **Is a watcher live RIGHT NOW, by task id?** Not "did I arm one this
    session" — is there an id I can name that has not yet fired, expired, or been
    killed? If no: arm one before ending.
-2. **Is there an open maintainer-facing item I have not ASKED?** If yes, ask it
-   as a picker this turn. See below.
+2. **Can this plan reach ARCHIVED without further maintainer input?** This is
+   the test — not "do I sense a decision pending". Answer it literally. If the
+   answer is NO, you owe a picker THIS TURN. No exceptions, and in particular:
+   - "The worker is busy" is not an answer. Worker activity is not plan
+     completion, and a busy worker is the most common reason a supervisor
+     convinces itself nothing is owed.
+   - "I already asked once" is not an answer. If the plan still cannot complete,
+     the situation has MOVED and the live question is a different one. Ask that.
+   - "I'm waiting on an external unblock" is not an answer — it is the question.
+     Whether to wait, spend, re-scope, or park is the maintainer's, every time.
+   - "It's obvious what to do" is not an answer. If it were, the plan would be
+     completable, and it is not.
 3. **Is `.obligations` rewritten to match what I just did?** If no: rewrite it.
 
 If all three pass, the turn may end. If any fails, the turn is not finished — it
 is abandoned, and it will read as diligence in the transcript either way.
+
+**AN INCOMPLETE, NON-ARCHIVED PLAN AT TURN END IS ITSELF AN OPEN
+MAINTAINER-FACING ITEM.** That is the whole of check 2 and it is not a judgement
+call. The failure mode this replaces is subtle and was committed twice in
+consecutive turns by the author of the section above: dispatch real work, arm a
+real watcher, write an accurate report — and end with the plan no closer to
+archivable and the maintainer holding no decision surface. Every individual act
+was correct. The turn was still a stall, and it took a human saying so.
+
+Do not measure a turn by what you dispatched. Measure it by whether the plan
+moved toward ARCHIVED, and if it did not, by whether the maintainer was handed
+the choice that would move it.
+
+**A conditional addressed to the maintainer in prose is a question, and it is
+already a violation.** "If that is not what you meant, say so." "Let me know if
+you would rather." "I can do X instead if you prefer." Each of those is a picker
+wearing prose, and each will sit unread in a status report. If you are asking,
+ASK — with options and a recommendation. If you are not asking, do not write a
+sentence shaped like a question and call the turn finished.
 
 ### A maintainer-facing item goes in a PICKER, never in prose
 
@@ -619,6 +648,20 @@ Earned on this track:
   status report addressed to the maintainer is not a decision surface, and
   offering one instead of a picker is the armed-re-entry stall in a report's
   clothes.
+- **The stall recurred one turn after its own fix merged, and the fix was too
+  soft.** PR #486 added §"A fired watcher is a spent watcher" and a terminal
+  check. The very next turn armed a watcher correctly, dispatched real work,
+  wrote an accurate report — and ended with the plan no closer to archivable, no
+  picker, and a conditional to the maintainer in PROSE ("if that is not what you
+  meant, say so"), one turn after adding the rule forbidding exactly that. The
+  maintainer had to say FAILURE a second time, in identical words.
+  The defect was in check 2: "is there an open maintainer-facing item I have not
+  asked?" is a JUDGEMENT, and a supervisor with a busy worker will always answer
+  no. Replaced with a literal test — can this plan reach ARCHIVED without further
+  maintainer input? — plus the four excuses that do not count. A check that can
+  be satisfied by feeling diligent is not a check; that is the same
+  vacuous-verifier class this track spent a day cataloguing, applied to the
+  charter's own instrumentation.
 - **Read the shipped contract before amending the charter.** This amendment came
   from `supervise-plan`'s own prose, which already contained the picker-not-prose
   rule this track had to learn by failing. The charter's own §"the one-shot
