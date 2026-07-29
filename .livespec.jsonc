@@ -41,14 +41,23 @@
       "server_port": 3307,
       "fake": false
     },
-    // Human-valve settings (restored 2026-07-21, plan/console-happy-path-mvp/).
-    // The 2026-07-20 autonomous-mode levers (auto_approve_ready: true,
-    // acceptance_mode: "ai-only") were maintainer-directed for the
-    // autonomous-mode acceptance work; that mode is retired for good, and the
-    // happy-path walk admits at the approve valve and ships at the accept
-    // valve, so both levers are back at their safe defaults:
-    //   auto_approve_ready: false          — a human admits at the valve.
-    //   acceptance_mode: "ai-then-human"   — AI reviews, a human ships.
+    // Human-valve settings. HISTORY, because this block has been changed twice
+    // and the reasons matter:
+    //   2026-07-20 — autonomous-mode levers set (auto_approve_ready: true,
+    //     acceptance_mode: "ai-only") for the autonomous-mode acceptance work.
+    //   2026-07-21 — both restored to safe defaults (plan/console-happy-path-mvp/)
+    //     because that mode was retired and the happy-path walk admits at the
+    //     approve valve and ships at the accept valve.
+    //   2026-07-29 — acceptance_mode set BACK to "ai-only", maintainer-directed:
+    //     every fleet member is "ai-only". This DELIBERATELY overrides the
+    //     2026-07-21 reasoning above for the acceptance half. That reasoning is
+    //     preserved rather than deleted so the next reader sees a decision was
+    //     reversed, not that it never existed.
+    // Current, and note the two halves now differ on purpose:
+    //   auto_approve_ready: false   — a human still ADMITS at the approve valve.
+    //     Left alone: it is a different lever and was not part of the 07-29
+    //     direction, which named acceptance only.
+    //   acceptance_mode: "ai-only"  — post-merge acceptance without a human.
     // The third lever, `merge_on_review_cap`, stays at its safe `false`
     // default: a review that cannot converge within `review_fix_cap` rounds is
     // precisely the case that must reach a human. A design-human-gated
@@ -59,7 +68,7 @@
     // every comment here while reporting green — tracked as bd-ib-lmi5.
     "dispatcher": {
       "auto_approve_ready": false,
-      "acceptance_mode": "ai-then-human"
+      "acceptance_mode": "ai-only"
     }
   }
 }
