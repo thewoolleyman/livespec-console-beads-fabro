@@ -18,11 +18,10 @@
 //! literal in the module that produces them. Changing a hint without updating
 //! the doc now fails here rather than in a reader's terminal.
 //!
-//! Deliberately one-directional. It asserts doc ⊆ source, not equality: a hint
-//! may exist in source without appearing in the table (the table documents the
-//! contexts an operator meets, and the source may hold arms for states the doc
-//! reasonably omits). What it forbids is the failure that actually occurred —
-//! the doc claiming a hint the binary no longer renders.
+//! The value check is deliberately one-directional: it asserts doc ⊆ source, not
+//! equality. The table's selected-work-item contexts are checked separately for
+//! completeness because an omitted row cannot be caught by comparing only the
+//! hint strings that the doc chose to quote.
 
 use std::path::{Path, PathBuf};
 
@@ -73,6 +72,55 @@ fn documented_hints(doc: &str) -> Vec<String> {
 /// insensitive to how a string literal was wrapped in the source.
 fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn documented_contexts(doc: &str) -> Vec<String> {
+    let mut contexts = Vec::new();
+    for line in doc.lines() {
+        let line = line.trim();
+        if !line.starts_with('|') || line.starts_with("|---") {
+            continue;
+        }
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 3 || cells[1] == "Context" {
+            continue;
+        }
+        contexts.push(cells[1].to_owned());
+    }
+    contexts
+}
+
+#[test]
+fn selected_work_item_status_contexts_are_documented() -> std::io::Result<()> {
+    let doc = read(SETTINGS_DOC)?;
+    let contexts = documented_contexts(&doc);
+    let required = [
+        "Attention, pending-approval work-item selected",
+        "Attention, acceptance work-item selected",
+        "Attention, blocked work-item selected",
+        "Lanes, drilled into a backlog item",
+        "Lanes, drilled into a pending-approval item",
+        "Lanes, drilled into a ready item",
+        "Lanes, drilled into an active item",
+        "Lanes, drilled into an acceptance item",
+        "Lanes, drilled into a blocked item",
+        "Lanes, drilled into a done item",
+    ];
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|context| !contexts.iter().any(|documented| documented == context))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "{SETTINGS_DOC} is missing reachable selected-work-item Status contexts:\n{}",
+        missing
+            .iter()
+            .map(|context| format!("  - {context}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    Ok(())
 }
 
 #[test]
