@@ -12,18 +12,20 @@ you read here is what the console does.
 ## Who drives what
 
 The operator does not drive every transition, and the TUI is deliberate about
-this. The `move` action refuses `acceptance`, `done`, and `pending-approval` —
-the **ship-guard**. Those lanes are reached by the factory finishing work or by
-a human valve, never by an operator relocating an item.
+this. The `move` action never offers `acceptance`, `done`, `pending-approval`,
+or `active` as targets — the **ship-guard**. Those lanes are reached by the
+factory finishing work, dispatch, rework return, or a human valve, never by an
+operator relocating an item.
 
 | Transition | Driven by |
 |---|---|
-| `backlog` → `ready` / `active` / `blocked` | operator — `s` move-to-status |
+| `backlog` → `ready` / `blocked` | operator — `s` move-to-status |
 | `pending-approval` → `ready` | operator — **`p` approve** |
+| `pending-approval` / `ready` / `acceptance` → `backlog` / `blocked` | operator — `s` move-to-status |
 | `ready` → `active` → … | the factory |
 | `active` → `acceptance` | the factory |
 | `acceptance` → `done` | operator — **`c` accept** |
-| any → `blocked` | operator — `r` reject, or the factory |
+| `blocked` → `ready` / `backlog` | operator — `s` resolve-blocked |
 
 So the two moments the factory genuinely needs you are **admission** (approve)
 and **ship** (accept). This walkthrough crosses both.
@@ -148,7 +150,7 @@ When it does, the item is back in your inbox:
 and the header counts it again — `attention: 1`.
 
 > This is the step you cannot drive from the keyboard, and the ship-guard is
-> why: `s` will not offer you `acceptance` as a target.
+> why: `s` will not offer you `active` or `acceptance` as a target.
 
 ## Step 6 — Open the accept valve
 

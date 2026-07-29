@@ -3419,58 +3419,40 @@ fn valve_outcome(
     }
 }
 
-/// Map a `from -> to` move onto the persist outcome for the real orchestrator
-/// transition it drives. A SEMANTIC valve wins where one exists: `approve`
-/// (`pending-approval -> ready`), `accept` (`acceptance -> done`), and
-/// `resolve-blocked` (`blocked -> ready | backlog`). Every other pre-terminal
-/// target (`backlog`/`ready`/`active`/`blocked`) rides the guarded broad
-/// `move:<id>:<target>` action. `None` for any pair that is not an
-/// operator-drivable transition -- the move-status valve only ever stages a pair
-/// produced by [`status_move_targets`], so this never rejects a valve the
-/// operator could actually open.
+/// Map an offered `from -> to` move onto the persist outcome for the real
+/// orchestrator transition it drives. Blocked resolution uses the semantic
+/// `resolve-blocked` valve (`blocked -> ready | backlog`); the remaining offered
+/// targets ride the guarded broad `move:<id>:<target>` action. `None` for any
+/// pair that is not in [`status_move_targets`] -- this rejects stale or manually
+/// staged duplicate semantic-valve paths such as `pending-approval -> ready` and
+/// `acceptance -> done`.
 fn move_status_outcome(
     from: Lane,
     to: Lane,
     work_item_id: &str,
     requested_by: &str,
 ) -> Option<OperatorActionOutcome> {
-    match (from, to) {
-        (Lane::PendingApproval, Lane::Ready) => {
-            Some(OperatorActionOutcome::PersistCommand(work_item_command(
-                "approve",
-                CommandType::WorkItemApproveRequested,
-                work_item_id,
-                requested_by,
-            )))
-        }
-        (Lane::Acceptance, Lane::Done) => {
-            Some(OperatorActionOutcome::PersistCommand(work_item_command(
-                "accept",
-                CommandType::WorkItemAcceptRequested,
-                work_item_id,
-                requested_by,
-            )))
-        }
-        (Lane::Blocked, Lane::Ready | Lane::Backlog) => Some(work_item_payload_outcome(
+    if !status_move_targets(from).contains(&to) {
+        return None;
+    }
+    if matches!(from, Lane::Blocked) {
+        return Some(work_item_payload_outcome(
             "resolve_blocked",
             CommandType::WorkItemResolveBlockedRequested,
             work_item_id,
             "target_status",
             to.label(),
             requested_by,
-        )),
-        (_from, Lane::Backlog | Lane::Ready | Lane::Active | Lane::Blocked) => {
-            Some(work_item_payload_outcome(
-                "move",
-                CommandType::WorkItemMoveRequested,
-                work_item_id,
-                "target_status",
-                to.label(),
-                requested_by,
-            ))
-        }
-        _other => None,
+        ));
     }
+    Some(work_item_payload_outcome(
+        "move",
+        CommandType::WorkItemMoveRequested,
+        work_item_id,
+        "target_status",
+        to.label(),
+        requested_by,
+    ))
 }
 
 /// Build a payload-less `work_item.<action>_requested` command envelope keyed by
@@ -12088,10 +12070,10 @@ mod tests {
     }
 
     #[test]
-    fn selected_move_status_valve_offers_the_first_pre_terminal_target() {
+    fn selected_move_status_valve_offers_the_first_ratified_target() {
         let events = drilldown_events();
-        // A pending-approval item can move to any pre-terminal status; the valve
-        // opens staged at the first target (backlog), and up/down cycles on.
+        // A pending-approval item can only withdraw to backlog or park as
+        // blocked; admission to ready stays on the approve valve.
         let pending = build_tui_model_for_state(
             &events,
             &drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None),
@@ -12151,49 +12133,6 @@ mod tests {
     fn move_status_resolves_to_the_real_orchestrator_transition_for_the_selected_item()
     -> super::ApplicationResult<()> {
         let events = drilldown_events();
-        // pending-approval -> ready maps onto the approve command (W7 proof).
-        let approve = build_tui_model_for_state(
-            &events,
-            &drilldown_state(
-                Lane::PendingApproval,
-                0,
-                TuiOverlay::ValveConfirm {
-                    valve: PendingValve::MoveStatus {
-                        from: Lane::PendingApproval,
-                        to: Lane::Ready,
-                    },
-                },
-            ),
-        );
-        let outcome = resolve_valve_action(&approve, "operator")?;
-        let command = outcome.command();
-        assert_eq!(
-            command.map(CommandEnvelope::command_type),
-            Some(&CommandType::WorkItemApproveRequested)
-        );
-        assert_eq!(command.map(CommandEnvelope::aggregate_id), Some("wi-a"));
-
-        // acceptance -> done maps onto the accept command.
-        let accept = build_tui_model_for_state(
-            &events,
-            &drilldown_state(
-                Lane::Acceptance,
-                0,
-                TuiOverlay::ValveConfirm {
-                    valve: PendingValve::MoveStatus {
-                        from: Lane::Acceptance,
-                        to: Lane::Done,
-                    },
-                },
-            ),
-        );
-        assert_eq!(
-            resolve_valve_action(&accept, "operator")?
-                .command()
-                .map(CommandEnvelope::command_type),
-            Some(&CommandType::WorkItemAcceptRequested)
-        );
-
         // blocked -> backlog maps onto resolve-blocked with the target payload.
         let resolve = build_tui_model_for_state(
             &events,
@@ -12222,26 +12161,29 @@ mod tests {
     #[test]
     fn move_status_with_a_non_drivable_pair_is_no_selected_operator_action() {
         let events = drilldown_events();
-        // A staged pair the operator could never open (pending-approval -> done)
-        // has no real transition, so it resolves to a no-op error rather than a
-        // fabricated command.
-        let model = build_tui_model_for_state(
-            &events,
-            &drilldown_state(
-                Lane::PendingApproval,
-                0,
-                TuiOverlay::ValveConfirm {
-                    valve: PendingValve::MoveStatus {
-                        from: Lane::PendingApproval,
-                        to: Lane::Done,
+        for (from, to) in [
+            (Lane::PendingApproval, Lane::Ready),
+            (Lane::PendingApproval, Lane::Active),
+            (Lane::PendingApproval, Lane::Done),
+            (Lane::Acceptance, Lane::Done),
+            (Lane::Acceptance, Lane::Ready),
+            (Lane::Active, Lane::Blocked),
+        ] {
+            let model = build_tui_model_for_state(
+                &events,
+                &drilldown_state(
+                    from,
+                    0,
+                    TuiOverlay::ValveConfirm {
+                        valve: PendingValve::MoveStatus { from, to },
                     },
-                },
-            ),
-        );
-        assert_eq!(
-            resolve_valve_action(&model, "operator"),
-            Err(ApplicationError::NoSelectedOperatorAction)
-        );
+                ),
+            );
+            assert_eq!(
+                resolve_valve_action(&model, "operator"),
+                Err(ApplicationError::NoSelectedOperatorAction)
+            );
+        }
     }
 
     #[test]
@@ -12271,43 +12213,16 @@ mod tests {
                     && command.aggregate_id() == "wi-a"
                     && payload_json == r#"{"target_status":"backlog"}"#
         ));
-        // active -> blocked is likewise a broad move.
-        let active = build_tui_model_for_state(
-            &events,
-            &drilldown_state(
-                Lane::Active,
-                0,
-                TuiOverlay::ValveConfirm {
-                    valve: PendingValve::MoveStatus {
-                        from: Lane::Active,
-                        to: Lane::Blocked,
-                    },
-                },
-            ),
-        );
-        assert!(matches!(
-            resolve_valve_action(&active, "operator")?,
-            OperatorActionOutcome::PersistCommandWithPayload { ref payload_json, .. }
-                if payload_json == r#"{"target_status":"blocked"}"#
-        ));
-
-        // Cover the remaining move-outcome arms: the `ready` and `active` broad
-        // targets, and blocked -> ready via resolve-blocked (the other half of the
-        // blocked pair).
+        // Cover the remaining move-outcome arms: acceptance -> blocked as a
+        // broad target, and blocked -> ready via resolve-blocked (the other half
+        // of the blocked pair).
         let cases = [
             (
-                Lane::Active,
-                Lane::Ready,
-                "wi-act",
+                Lane::Acceptance,
+                Lane::Blocked,
+                "wi-acc",
                 "move",
-                r#"{"target_status":"ready"}"#,
-            ),
-            (
-                Lane::PendingApproval,
-                Lane::Active,
-                "wi-a",
-                "move",
-                r#"{"target_status":"active"}"#,
+                r#"{"target_status":"blocked"}"#,
             ),
             (
                 Lane::Blocked,

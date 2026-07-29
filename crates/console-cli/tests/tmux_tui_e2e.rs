@@ -941,6 +941,15 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
         backlog_screen.contains("move-status"),
         "backlog item must keep the operator-drivable move hint:\n{backlog_screen}"
     );
+    backlog.send_keys(&["s"])?;
+    let backlog_move = backlog.wait_for_settled("Move status", RENDER_TIMEOUT)?;
+    assert!(
+        backlog_move.contains("ready")
+            && backlog_move.contains(VALVE_CONFIRM_LINE)
+            && !backlog_move.contains("active"),
+        "backlog move picker must offer ready/blocked without active:\n{backlog_move}"
+    );
+    backlog.send_keys(&["Escape"])?;
     assert!(
         !backlog_screen.contains("p approve") && !backlog_screen.contains("c accept"),
         "backlog item must suppress human-valve hints:\n{backlog_screen}"
@@ -956,6 +965,15 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
     assert!(
         !acceptance_screen.contains("p approve"),
         "acceptance item must not offer the pending-approval-only approve hint:\n{acceptance_screen}"
+    );
+    acceptance.send_keys(&["s"])?;
+    let acceptance_move = acceptance.wait_for_settled("Move status", RENDER_TIMEOUT)?;
+    assert!(
+        acceptance_move.contains("backlog")
+            && !acceptance_move.contains("done")
+            && !acceptance_move.contains("active")
+            && !acceptance_move.contains("ready"),
+        "acceptance move picker must narrow to backlog/blocked only:\n{acceptance_move}"
     );
 
     Ok(())

@@ -4962,9 +4962,9 @@ mod tests {
                 TuiInteraction::OpenValveConfirm(PendingValve::Approve)
             ))
         );
-        // `s` stages the move-status valve at the first drivable target -- now the
-        // first pre-terminal status (backlog), with up/down cycling on to ready
-        // (which still routes through approve).
+        // `s` stages the move-status valve at the first ratified target:
+        // pending-approval can withdraw to backlog or park as blocked, while
+        // admission to ready stays on the approve valve.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Char('s')), &model),
             Some(TuiTerminalInput::Interaction(
@@ -4986,15 +4986,14 @@ mod tests {
     }
 
     #[test]
-    fn move_status_on_a_pending_approval_lane_item_persists_the_approve_command() {
-        // W7 proof: from a drilled-in lane, selecting a pending-approval item and
-        // confirming the move-to-status valve persists the approve command that
-        // the shared orchestrator port dispatches as `approve:<id>`
-        // (pending-approval -> ready), with no payload.
+    fn move_status_on_a_pending_approval_lane_item_persists_the_move_command() {
+        // From a drilled-in lane, selecting a pending-approval item and
+        // confirming the move-to-status valve at its first ratified target
+        // persists the guarded move command, not the approve valve.
         let state = drilled_pending_state(TuiOverlay::ValveConfirm {
             valve: PendingValve::MoveStatus {
                 from: Lane::PendingApproval,
-                to: Lane::Ready,
+                to: Lane::Backlog,
             },
         });
         let step = step_tui_runtime(
@@ -5005,9 +5004,12 @@ mod tests {
         );
         assert_eq!(
             persisted_command(step.effect()).map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::WorkItemApproveRequested)
+            Some(&CommandType::WorkItemMoveRequested)
         );
-        assert_eq!(persisted_payload(step.effect()), None);
+        assert_eq!(
+            persisted_payload(step.effect()),
+            Some(r#"{"target_status":"backlog"}"#)
+        );
         assert_eq!(step.state().overlay(), &TuiOverlay::None);
     }
 
