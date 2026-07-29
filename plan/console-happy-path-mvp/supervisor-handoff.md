@@ -323,6 +323,79 @@ immediate re-arm; treat it as an action item, not a status line. If you cannot
 re-arm, record that in the obligation file below rather than letting the loop
 lapse silently.
 
+### A FIRED WATCHER IS A SPENT WATCHER
+
+The rule above covers a watcher that expires. It does not cover the far more
+common case, and the one that actually stalled this track on 2026-07-28: a
+watcher that **succeeds**. A watcher fires exactly once and is then DEAD. So the
+normal, healthy path — watcher fires, you read the event, you act on it — ends
+with **nothing armed**, and that is the moment a turn feels most complete.
+
+Every one of these leaves you unarmed, and only the first announces itself:
+
+- **Ceiling reached.** Loud, and already covered above.
+- **Fired successfully.** Silent. You consumed the event; the watcher is gone.
+- **Killed.** Silent and indistinguishable from a watcher patiently waiting.
+  Measured twice on this track: two consecutive `Bash(run_in_background)`
+  watchers were killed at ~16 min and ~8 min with no output. "I armed one
+  earlier" is not evidence one is running.
+
+Therefore: **never infer that you are armed. Confirm it by task id, every time.**
+
+### The terminal check — run it before ending ANY turn
+
+Principles did not stop this stall; the author of this section committed it.
+What stops it is a mechanical check at the same place the worker's marker
+discipline sits — the LAST thing before the turn ends:
+
+1. **Is a watcher live RIGHT NOW, by task id?** Not "did I arm one this
+   session" — is there an id I can name that has not yet fired, expired, or been
+   killed? If no: arm one before ending.
+2. **Is there an open maintainer-facing item I have not ASKED?** If yes, ask it
+   as a picker this turn. See below.
+3. **Is `.obligations` rewritten to match what I just did?** If no: rewrite it.
+
+If all three pass, the turn may end. If any fails, the turn is not finished — it
+is abandoned, and it will read as diligence in the transcript either way.
+
+### A maintainer-facing item goes in a PICKER, never in prose
+
+The shipped `supervise-plan` contract is explicit, and this charter was missing
+it: *every maintainer-facing action is an `AskUserQuestion` call carrying a
+recommendation — never a prose question, which sits unnoticed in a pane.*
+
+Ending a turn with observations addressed to the maintainer, and no picker, is
+the same stall wearing a report's clothes. The maintainer sees a wall of status
+and no decision surface. If something is genuinely theirs to decide, it is a
+picker with the recommended option first; if it is not theirs, it is not a
+maintainer-facing item and should be driven instead.
+
+This repo BATCHES up to four questions per call (`AGENTS.md`, and the
+§"AskUserQuestion presentation rules" below) rather than the fleet contract's
+one-per-turn. That divergence is deliberate and stands. The picker-not-prose
+rule is orthogonal to it and applies in full.
+
+### Watchers are instrumentation, and instrumentation carries the same defects
+
+Four supervisor probes malfunctioned on 2026-07-28, three of which would have
+sent the worker chasing a defect that did not exist. The failures were not
+exotic:
+
+- **Self-match.** A probe matching on `argv` counted its own shell, because the
+  shell running it has the search string in its argv. Key on something the probe
+  cannot itself carry — `/proc/*/exe`, not `ps | grep`.
+- **A key the source drops.** A liveness probe matched a work-item id that the
+  run's argv discards the moment it parks, so a waiting run read as dead.
+- **A vocabulary the source never emits.** A probe waited for `done` from a
+  view that says `closed`. Write probes against the vocabulary of the source
+  they query, not the contract you are reasoning about.
+- **Wrong-match arithmetic.** An `awk` took the LAST match where it needed the
+  first, and reported a correct file as broken.
+
+So: **a probe that reports a FAILURE against evidence you can read directly gets
+re-derived before it is relayed.** On this track the checks were wrong more often
+than the things they checked.
+
 ## Keep your own obligation record
 
 The worker has `.overseer-state` and it works — the 8h05m stall was diagnosed
@@ -528,3 +601,27 @@ Earned on this track:
   minutes before ratification. Both times the correction was better than what this
   session had written. Route findings to peers early and treat their pushback as
   the cheapest review available.
+- **The author of §"Never end a turn without an armed re-entry" stalled on it,
+  the same day, and the maintainer caught it rather than any mechanism.** The
+  section was written into this charter in PR #452 and enforced on the worker
+  repeatedly. Then: a watcher fired, its event was consumed, a PR was reviewed, a
+  brief was sent, the obligation record was rewritten — and the turn ended with
+  open obligations and NOTHING ARMED. The gap was that the section only made a
+  watcher's EXPIRY an obliging event. A watcher that fires SUCCESSFULLY is equally
+  spent, and it is spent at the moment the turn feels most complete. Fixed by
+  §"A fired watcher is a spent watcher" and by a mechanical terminal check, on the
+  theory that a principle this section already stated could not have prevented a
+  stall by the person who stated it.
+- **The same turn also ended with maintainer-facing prose and no picker.** The
+  shipped `supervise-plan` contract says every maintainer-facing action is an
+  AskUserQuestion carrying a recommendation, "never a prose question, which sits
+  unnoticed in a pane". This charter did not carry that rule; it now does. A
+  status report addressed to the maintainer is not a decision surface, and
+  offering one instead of a picker is the armed-re-entry stall in a report's
+  clothes.
+- **Read the shipped contract before amending the charter.** This amendment came
+  from `supervise-plan`'s own prose, which already contained the picker-not-prose
+  rule this track had to learn by failing. The charter's own §"the one-shot
+  send-keys form does not submit" correction says the same thing: the contract had
+  it measured and documented while this session was inventing a theory. Twice now.
+  Re-read the shipped contract when amending anything here.
