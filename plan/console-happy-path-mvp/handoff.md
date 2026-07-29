@@ -689,23 +689,38 @@ guard), **#487** `3277d74` (re-pin after upstream `856d699b5f7d`).
   (`:495-497`) admits it, agreeing with the lane table. The fix must collapse all three
   to one derivation and assert cross-view consistency. Both `bd` comments are on the
   item and rode into the dispatch as operator riders.
-  **REFINEMENT 2026-07-29 — the STRUCTURAL claim holds, the REACHABILITY claim as
-  written does not.** The item's rider calls the Backlog divergence "a live
-  operator-visible defect", which requires a Backlog row to be selectable in the
-  ATTENTION view. The valve-actionable lane fold cannot produce one:
-  `requires_attention_from_lane` (`:5336-5353`) admits only
-  `PendingApproval`(manual), `Acceptance`(`ai-then-human`|`human-only`) and
-  `Blocked`(`needs-human`). The only route left is an ingested needs-attention row
-  whose `work_item_id` happens to reference a Backlog item — because
-  `selected_work_item_lane` (`:1352`) resolves the lane via `work_item_by_id`, i.e.
-  from the LANE fold, not from the attention snapshot the row came from.
-  Corroborated live 2026-07-29: a 61-row Attention list held exactly one `Blocked`
-  and five `Pending approval` work-item rows and no Backlog/Ready/Active/Done row.
-  So the three-encodings defect and the fix are both still correct — collapse them —
-  but do NOT expect to reproduce the divergence by selecting a Backlog item in
-  Attention, and do not let a failed reproduction be read as "no defect". Pin the
-  rider's "first thing to pin down" through the LANE view, where the Backlog arm is
-  plainly reachable.
+  **THE RIDER WAS RIGHT. A mid-day "refinement" of mine that doubted it was WRONG and
+  has been struck — read this instead.** The rider calls the Backlog divergence "a live
+  operator-visible defect", which needs a Backlog row selectable in the ATTENTION view.
+  It is, and there are five live right now.
+
+  The mechanism, which the struck refinement did get right: the valve-actionable lane
+  fold cannot produce one — `requires_attention_from_lane` (`:5336-5353`) admits only
+  `PendingApproval`(manual), `Acceptance`(`ai-then-human`|`human-only`),
+  `Blocked`(`needs-human`) — so the route is an INGESTED needs-attention row whose
+  work-item reference resolves to a Backlog item, because `selected_work_item_lane`
+  (`:1352`) resolves through `work_item_by_id`, i.e. from the LANE collection and not
+  from the attention snapshot the row arrived on.
+
+  What the refinement got wrong was calling that route rare. **It is a standing hygiene
+  lane.** `needs_attention.py --json` returns five `hygiene:untriaged-backlog:<id>`
+  items whose `source_ref` is `{"path": null, "repo": ..., "work_item": "<id>"}` —
+  `-9ts`, `-htp`, `-mvu22t`, `-oqm`, `-topr34`, every one `lane=backlog` on the ledger.
+  `source_ref.work_item` is exactly what `AttentionItem::work_item_id()` reads. So the
+  chain closes and the Backlog hint arm renders in production.
+
+  **How the wrong refinement got written, because the method matters more than the
+  correction:** it cited a live 61-row Attention list "holding no Backlog row" as
+  corroboration. That list was almost entirely worktree-hygiene rows whose `source_ref`
+  carries a `path` and NO `work_item` — and the check never asked whether any row
+  carried a `work_item` RESOLVING to backlog. Absence of a Backlog LANE row is not
+  absence of a backlog-RESOLVING row. This is § 6's own rule biting the author who was
+  quoting it: **an absence never announces itself in a grep for the wrong token.**
+
+  Consequences: the docs row `mbohw3` added is CORRECT — do not remove it if a reviewer
+  calls it unreachable (one did; it was refuted). The three-encodings defect was a real
+  operator-visible defect, so the re-tier to correctness was right. And the divergence
+  IS reproducible in the Attention view — select one of the five untriaged-backlog rows.
 
 ### 5. The fork, and the guard that now protects it
 
