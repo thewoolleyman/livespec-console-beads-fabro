@@ -392,15 +392,39 @@ the run never reached the `pr` node. Verified on the forge — `git ls-remote or
 refs/heads/feat/livespec-console-beads-fabro-mbohw3` is empty. Do not run
 `reconcile-merged`; there is nothing merged to reconcile.
 
-**State of run `01KYP37TZJ9MRTSDR3A0138W4M` (maintainer-directed 2026-07-29: LEAVE
-PARKED).** `implement` **succeeded**, `janitor` (`mise exec -- just check`)
-**succeeded — green**, `review` failed on the ceiling above, and the run now sits
-`blocked: human_input_required` at the `escalate` gate with a three-option interview
-(`[R]` retry / `[I]` re-implement / `[A]` abandon). At or after **2026-07-31T05:00Z**,
-answer **`[R]`** via `fabro attach 01KYP37TZJ9MRTSDR3A0138W4M`; `[R]` routes
-`escalate -> fix -> janitor -> review` (`workflow.fabro:295,256,253`), so the green
-work is re-checked rather than rebuilt. Do NOT answer `[I]` — it discards a
-completed implement cycle for no benefit, and would hit the same wall.
+**THE ESCALATE GATE IS NOT A PARKING SPACE — THE STALL WATCHDOG KILLS RUNS THAT SIT
+THERE. Measured, not reasoned.** The paragraph this replaces told a successor to leave
+run `01KYP37TZJ9MRTSDR3A0138W4M` parked and answer `[R]` "at or after
+2026-07-31T05:00Z". **That was never achievable and the run is now dead.** It blocked
+at 06:30:05Z and Fabro killed it at 08:50:00Z:
+
+    status: failed / workflow_error
+    detail: stall watchdog: node "escalate" had no activity for ...
+
+~2h20m, matching `graph [stall_timeout="7200s"]`. The watchdog counts EVENT SILENCE,
+and a run waiting on a human emits no events — so the human-input gate is subject to
+the same watchdog as a hung node. **A human has roughly two hours to answer an
+escalate interview, or the run dies.** `fabro resume` is documented for a dead ENGINE
+(`workflow.fabro:164-166`); it does not resurrect a run the watchdog has failed.
+
+This invalidates the whole "park it and decide later" shape at this gate. Plan any
+escalate answer as a same-session action, and if the decision genuinely needs to wait,
+expect to ABANDON AND RE-DISPATCH rather than to return to a held run. Note the
+design tension for whoever owns the gate upstream: an in-loop HUMAN gate whose whole
+purpose is to wait for a person self-destructs in 2h of the waiting it exists to do.
+
+`implement` **succeeded**, `janitor` (`mise exec -- just check`) **succeeded — green**,
+and `review` failed on the ceiling above; both green cycles (`96f3ca9`, `a5f51fa`) died
+with the run, unpublished. The discarded cycle is recorded on `mbohw3`'s ledger
+comments with the commit ids and where the diffs survive.
+
+**Recovery performed 2026-07-29T17:48Z.** The dead run left `mbohw3` stranded at
+`active` with nothing merged, so `reconcile-merged` did not apply. The CONSOLE offers
+no door out — `status_move_targets(Lane::Active) => &[]` (`lib.rs:473-480`), by
+ratified design, because the factory owns that lane. The orchestrator does:
+`drive.py --action move:<id>:ready` (`move:<id>:backlog|ready|blocked`), which returned
+`active -> ready` green. That is the strand door for a died-without-merging run; note
+it, because this handoff previously recorded only the merged-item route.
 
 **The `fix` stage's prompt does not match our situation, and on 2026-07-29 that
 produced a real, measured failure mode — worse than predicted, and subtler.**
@@ -442,18 +466,69 @@ on merit when review can finally run; do not assume "the fix stage touched it" m
 is worth keeping. A `fabro dump` of a parked run costs nothing and each stage carries
 its own `diff.patch`.
 
-A green implementation is BANKED independently of the run: `fabro dump` of all 23
+The green implementation was BANKED independently of the run: `fabro dump` of all 23
 files, including `stages/002-implement@1/diff.patch` (`+207/-107`
 `console-application/src/lib.rs`, `+130/-24` `docs_status_hint_lockstep.rs`,
-`+33/-3` `console-tui/src/lib.rs`, `+2/-1` `detailed-usage.md`). It lives in a
-SESSION scratchpad, so if it still matters after a restart, re-dump rather than
-hunt for it. If the holding engine dies before Jul 31, `fabro resume` is the
-documented recovery (`workflow.fabro:164-166`) — `attach` is only for a live engine.
+`+33/-3` `console-tui/src/lib.rs`, `+2/-1` `detailed-usage.md`), plus
+`stages/006-fix@1/diff.patch`. Those live in a SESSION scratchpad and **the run they
+came from is now failed**, so they cannot be re-dumped once it is reaped — treat them
+as gone unless a live copy is found. This is the argument for dumping EARLY: the dump
+outlived the run, which is exactly what it was taken for.
 
 **NEVER run a dispatch in the foreground — it is a ~30-40 minute operation.** The
 previous session's dispatch was SIGTERM'd by a 20-minute tool timeout, which is why
 no dispatcher remains to do post-run bookkeeping. Verified 2026-07-29: no dispatcher
 process is running, so nothing will auto-dispatch a `ready` item into the dead gate.
+
+### 0b. Re-dispatching with a different reviewer — four things a successor gets wrong
+
+Maintainer decision 2026-07-29: point `review_adapter` at the Codex ACP adapter
+(`npx --no-install @zed-industries/codex-acp`) — implement and fix both went green on
+that account while only review died on the exhausted Claude subscription. Each item
+below was MEASURED, because three of the four contradict the obvious guess.
+
+1. **You CANNOT pass `review_adapter` as a `--input`.** `fabro_run_argv`
+   (`commands/_dispatcher_fabro_argv.py:200-218`) is a HARDCODED list — `acp_adapter`,
+   `review_fix_visit_cap`, `merge_on_review_cap_outcome` — with no knob for
+   `review_adapter`, and its own comment says the review node "uses its own
+   `review_adapter` default (Slice A) and is unaffected". The route that works is
+   `--workflow <path>`, which `workflow_toml()` honours as precedence rule 1 ("an
+   explicit `--workflow <path>` always wins"): copy the whole
+   `.fabro/workflows/implement-work-item/` dir somewhere untracked, change
+   `review_adapter` in the COPY, and point `--workflow` at it. The whole dir, because
+   `graph = "workflow.fabro"` is relative and the prompts hang off the graph.
+   The committed file stays untouched — verify with `git status --short .fabro/`.
+2. **`resume`, `fork` and `rewind` ALL lack `--input`.** A parked or dead run can
+   never adopt a new adapter. Re-dispatch is the only route; do not go looking for a
+   clever in-place fix.
+3. **`dispatcher.py` must be invoked ALREADY UNDER the credential wrapper.** Run bare,
+   it self-re-invokes `/usr/local/bin/with-livespec-env.sh` and that NESTED call fails
+   with `credential_wrapper could not run in this environment ... required secret env
+   var(s) ['BEADS_DOLT_PASSWORD','GITHUB_APP_ID','GITHUB_PRIVATE_KEY']`. The message
+   blames a sandbox and it is MISLEADING: the wrapper is healthy and resolves all four
+   secrets from the same session. Prefix it yourself —
+   `with-livespec-env.sh -- <plugin>/scripts/bin/dispatcher.py dispatch ...` — and it
+   passes straight through. Isolated with a clean two-arm probe run from a FILE, so
+   command-composition could not be the cause.
+4. **There is a HOST DISPATCH CAP of 2, shared across every tenant on this host.**
+   `ERROR: dispatch admission cap refused this dispatch: 2 Fabro run(s) already in
+   flight ... meets the host dispatch cap (2)`. On 2026-07-29 both slots were held by
+   the `livespec-overseer` tenant, which is not this thread's work and not something to
+   route around. Wait for a slot. Raising
+   `livespec-orchestrator-beads-fabro.dispatcher.host_dispatch_cap` is a
+   `.livespec.jsonc` dispatcher lever and therefore MAINTAINER-OWNED — these levers were
+   maintainer-directed once already and silently broke the approve valve for a session.
+
+Also seen on every dispatch attempt, and not ours to fix: `WARNING: master contains
+unreleased dispatcher commit(s): fad53c4fe4dc; a release must be cut before this code
+takes effect.`
+
+**A caution about the reviewer swap itself.** `prompts/review.md` requires the reviewer
+to emit a ROUTING VERDICT (`preferred_next_label`) that the `review -> review_fix` and
+`review -> pr` edge guards key on. A different vendor's reviewer has to satisfy that
+contract, not merely write good prose. If the verdict is malformed the run MISROUTES
+rather than failing cleanly, so read the first Codex review's routing decision before
+trusting the pattern across the remaining slices.
 
 ### 1. Then continue the queue, serial — MAINTAINER SCOPE DECISION 2026-07-29
 
@@ -630,6 +705,18 @@ upstream `856d699b5f7d` moving `workflow.toml`, which on review was a one-line d
 pin bump needing no port, re-pinned deliberately in #487. Re-pin with
 `just refresh-fork-upstream-pins` only AFTER reviewing what upstream changed — never to
 make a red build green.
+
+**KNOW WHAT IT DOES NOT CATCH: it is blind to OUR OWN edits.** Verified both
+directions 2026-07-29, exit codes read UNPIPED, tree restored after each:
+changing `review_adapter` in our committed `workflow.toml` -> **RC=0**, "fork in
+lockstep with its pins"; zeroing a pinned UPSTREAM digest -> **RC=1**, naming
+`prompts/pr.md`, pinned-vs-live, and the recorded reason. The fixture stores
+`upstream_sha256`, so the gate answers "did UPSTREAM move?" and nothing else. It does
+NOT answer "did we change our fork without recording why?" — that remains a human
+responsibility, and a reader who assumes otherwise will trust a green run that never
+looked at our side of the diff. (Corollary, in case a future brief argues from it:
+editing our committed fork does not RED this gate and does not force a pins refresh.
+The reasons not to edit it are review and provenance, not the guard.)
 
 **It was DEMONSTRATED RED before it was accepted** (#479), three ways, exit codes read
 UNPIPED because a piped `$?` is the last command's: an upstream digest that no longer
