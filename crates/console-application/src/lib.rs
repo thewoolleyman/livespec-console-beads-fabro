@@ -1523,7 +1523,7 @@ const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q
 /// string, so no context with available actions renders a blank line. The
 /// specific strings and bindings are an implementation detail; they stay in
 /// lock-step with the key handler and the modal Help sections.
-const fn footer_hint(
+fn footer_hint(
     active_view: TuiView,
     lane_focus: LaneFocus,
     selected_work_item_lane: Option<Lane>,
@@ -1572,23 +1572,14 @@ const fn footer_hint(
 /// The read-only nav views (Spec, Events, Repos) share one hint set because
 /// their available actions are identical (select + move focus + search), and
 /// Settings surfaces its edit key.
-const fn pane_footer_hint(
+fn pane_footer_hint(
     view: TuiView,
     lane_focus: LaneFocus,
     selected_work_item_lane: Option<Lane>,
 ) -> &'static str {
     match view {
-        TuiView::Attention => match selected_work_item_lane {
-            Some(lane) => attention_item_footer_hint(lane),
-            None => {
-                // NO work-item selected -- an empty inbox, OR a populated one
-                // sitting on a row that names no work-item (a plan thread, a
-                // hygiene finding, a spec-revise item). Either way the per-item
-                // valves and the record drill-in act on nothing, so none is
-                // advertised.
-                "? help | q quit"
-            }
-        },
+        TuiView::Attention => selected_work_item_lane
+            .map_or("? help | q quit", |lane| attention_item_footer_hint(lane)),
         TuiView::Lanes => match lane_focus {
             // The lane OVERVIEW selects a LANE, never a work-item, so every
             // per-item key is inert here and none is advertised.
@@ -1608,45 +1599,162 @@ const fn pane_footer_hint(
     }
 }
 
-const fn attention_item_footer_hint(lane: Lane) -> &'static str {
-    match lane {
-        Lane::PendingApproval => {
-            "up/down move | enter open | p approve | r reject | m set-admission | ? help | q quit"
+const HINT_MOVE_STATUS: u16 = 1 << 0;
+const HINT_APPROVE: u16 = 1 << 1;
+const HINT_ACCEPT: u16 = 1 << 2;
+const HINT_REJECT: u16 = 1 << 3;
+const HINT_SET_ADMISSION: u16 = 1 << 4;
+const HINT_MERGE_CAP: u16 = 1 << 5;
+const HINT_FIX_CAP: u16 = 1 << 6;
+const HINT_SET_ACCEPTANCE: u16 = 1 << 7;
+const HINT_REWORK_CAP: u16 = 1 << 8;
+
+fn per_item_hint_bits(lane: Lane, include_move_status: bool) -> u16 {
+    let mut bits = 0;
+    if include_move_status
+        && status_move_targets(lane).first().is_some_and(|to| {
+            per_item_verb_is_state_valid(
+                lane,
+                PendingValve::MoveStatus {
+                    from: lane,
+                    to: *to,
+                },
+            )
+        })
+    {
+        bits |= HINT_MOVE_STATUS;
+    }
+    if per_item_verb_is_state_valid(lane, PendingValve::Approve) {
+        bits |= HINT_APPROVE;
+    }
+    if per_item_verb_is_state_valid(lane, PendingValve::Accept) {
+        bits |= HINT_ACCEPT;
+    }
+    if per_item_verb_is_state_valid(lane, PendingValve::Reject(RejectMode::Rework)) {
+        bits |= HINT_REJECT;
+    }
+    if per_item_verb_is_state_valid(lane, PendingValve::SetAdmission(AdmissionPolicy::Manual)) {
+        bits |= HINT_SET_ADMISSION;
+    }
+    if per_item_verb_is_state_valid(
+        lane,
+        PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear)),
+    ) {
+        bits |= HINT_MERGE_CAP;
+    }
+    if per_item_verb_is_state_valid(
+        lane,
+        PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Clear)),
+    ) {
+        bits |= HINT_FIX_CAP;
+    }
+    if per_item_verb_is_state_valid(
+        lane,
+        PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+    ) {
+        bits |= HINT_SET_ACCEPTANCE;
+    }
+    if per_item_verb_is_state_valid(
+        lane,
+        PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)),
+    ) {
+        bits |= HINT_REWORK_CAP;
+    }
+    bits
+}
+
+fn attention_item_footer_hint(lane: Lane) -> &'static str {
+    attention_item_footer_hint_for_bits(per_item_hint_bits(lane, false))
+}
+
+const fn attention_item_footer_hint_for_bits(bits: u16) -> &'static str {
+    match bits {
+        bits if bits
+            == HINT_SET_ADMISSION
+                | HINT_MERGE_CAP
+                | HINT_FIX_CAP
+                | HINT_SET_ACCEPTANCE
+                | HINT_REWORK_CAP =>
+        {
+            "up/down move | enter open | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
-        Lane::Acceptance => "up/down move | enter open | c accept | r reject | ? help | q quit",
-        Lane::Backlog | Lane::Ready | Lane::Active | Lane::Blocked | Lane::Done => {
-            "up/down move | enter open | ? help | q quit"
+        bits if bits
+            == HINT_APPROVE
+                | HINT_REJECT
+                | HINT_SET_ADMISSION
+                | HINT_MERGE_CAP
+                | HINT_FIX_CAP
+                | HINT_SET_ACCEPTANCE
+                | HINT_REWORK_CAP =>
+        {
+            "up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
+        bits if bits == HINT_MERGE_CAP | HINT_FIX_CAP | HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
+            "up/down move | enter open | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+        }
+        bits if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
+            "up/down move | enter open | n set-acceptance | k rework cap | ? help | q quit"
+        }
+        bits if bits == HINT_ACCEPT | HINT_REJECT => {
+            "up/down move | enter open | c accept | r reject | ? help | q quit"
+        }
+        _ => "up/down move | enter open | ? help | q quit",
     }
 }
 
-const fn lane_item_footer_hint(lane: Lane) -> &'static str {
-    match lane {
-        Lane::Backlog => {
+fn lane_item_footer_hint(lane: Lane) -> &'static str {
+    lane_item_footer_hint_for_bits(per_item_hint_bits(lane, true))
+}
+
+const fn lane_item_footer_hint_for_bits(bits: u16) -> &'static str {
+    match bits {
+        bits if bits
+            == HINT_MOVE_STATUS
+                | HINT_SET_ADMISSION
+                | HINT_MERGE_CAP
+                | HINT_FIX_CAP
+                | HINT_SET_ACCEPTANCE
+                | HINT_REWORK_CAP =>
+        {
             "up/down move | enter item | esc lane list | s move-status | m set-admission | \
              g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
-        Lane::PendingApproval => {
+        bits if bits
+            == HINT_MOVE_STATUS
+                | HINT_APPROVE
+                | HINT_REJECT
+                | HINT_SET_ADMISSION
+                | HINT_MERGE_CAP
+                | HINT_FIX_CAP
+                | HINT_SET_ACCEPTANCE
+                | HINT_REWORK_CAP =>
+        {
             "up/down move | enter item | esc lane list | s move-status | p approve | r reject | \
              m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | \
              ? help | q quit"
         }
-        Lane::Ready => {
+        bits if bits
+            == HINT_MOVE_STATUS
+                | HINT_MERGE_CAP
+                | HINT_FIX_CAP
+                | HINT_SET_ACCEPTANCE
+                | HINT_REWORK_CAP =>
+        {
             "up/down move | enter item | esc lane list | s move-status | g merge cap | \
              f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
-        Lane::Active => {
+        bits if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
             "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | \
              ? help | q quit"
         }
-        Lane::Acceptance => {
+        bits if bits == HINT_MOVE_STATUS | HINT_ACCEPT | HINT_REJECT => {
             "up/down move | enter item | esc lane list | s move-status | c accept | r reject | \
              ? help | q quit"
         }
-        Lane::Blocked => {
+        HINT_MOVE_STATUS => {
             "up/down move | enter item | esc lane list | s move-status | ? help | q quit"
         }
-        Lane::Done => "enter item | esc lane list | ? help | q quit",
+        _ => "enter item | esc lane list | ? help | q quit",
     }
 }
 
@@ -5838,22 +5946,24 @@ mod tests {
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
         FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
-        HELP_SECTION_COUNT, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem,
-        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        HELP_SECTION_COUNT, HINT_ACCEPT, HINT_APPROVE, HINT_MOVE_STATUS,
+        JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count, footer_hint,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
+        attention_item_footer_hint_for_bits, build_tui_model, build_tui_model_for_state,
+        dispatcher_setting_rows, drilldown_item_count, footer_hint,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
         handle_work_item_move_command, handle_work_item_reject_command,
         handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
         header_help_section, help_section_for_focus, help_section_for_view,
-        per_item_verb_is_state_valid, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
-        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
-        work_item_override_outcome,
+        lane_item_footer_hint_for_bits, per_item_verb_is_state_valid, project_attention,
+        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
+        validate_operator_action, work_item_override_outcome,
     };
 
     #[test]
@@ -10678,6 +10788,87 @@ mod tests {
             );
             assert!(hint.contains(expected), "{lane:?}: {hint}");
         }
+    }
+
+    #[test]
+    fn per_item_status_hints_are_derived_from_the_state_valid_predicate() {
+        for lane in Lane::all() {
+            let attention = footer_hint(
+                TuiView::Attention,
+                LaneFocus::Overview,
+                Some(*lane),
+                &TuiOverlay::None,
+            );
+            let drilled = footer_hint(
+                TuiView::Lanes,
+                LaneFocus::Lane(*lane),
+                Some(*lane),
+                &TuiOverlay::None,
+            );
+
+            for (hint, verb) in [
+                ("p approve", PendingValve::Approve),
+                ("c accept", PendingValve::Accept),
+                ("r reject", PendingValve::Reject(RejectMode::Rework)),
+                (
+                    "m set-admission",
+                    PendingValve::SetAdmission(AdmissionPolicy::Manual),
+                ),
+                (
+                    "n set-acceptance",
+                    PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+                ),
+                (
+                    "g merge cap",
+                    PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(
+                        OverrideBool::Clear,
+                    )),
+                ),
+                (
+                    "f fix cap",
+                    PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Clear)),
+                ),
+                (
+                    "k rework cap",
+                    PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(
+                        OverrideInt::Clear,
+                    )),
+                ),
+            ] {
+                let valid = per_item_verb_is_state_valid(*lane, verb);
+                assert_eq!(attention.contains(hint), valid);
+                assert_eq!(drilled.contains(hint), valid);
+            }
+
+            let move_status = "s move-status";
+            let move_status_valid = status_move_targets(*lane).first().is_some_and(|to| {
+                per_item_verb_is_state_valid(
+                    *lane,
+                    PendingValve::MoveStatus {
+                        from: *lane,
+                        to: *to,
+                    },
+                )
+            });
+            assert!(!attention.contains(move_status));
+            assert_eq!(drilled.contains(move_status), move_status_valid);
+        }
+    }
+
+    #[test]
+    fn attention_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
+        assert_eq!(
+            attention_item_footer_hint_for_bits(HINT_APPROVE | HINT_ACCEPT),
+            "up/down move | enter open | ? help | q quit"
+        );
+    }
+
+    #[test]
+    fn lane_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
+        assert_eq!(
+            lane_item_footer_hint_for_bits(HINT_MOVE_STATUS | HINT_APPROVE | HINT_ACCEPT),
+            "enter item | esc lane list | ? help | q quit"
+        );
     }
 
     #[test]
