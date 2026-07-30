@@ -2260,7 +2260,10 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 mod tests {
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
-    use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
+    use console_application::source_adapters::{
+        AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
+        AttentionSourceRef, Lane, attention_item_payload_json,
+    };
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
         DispatcherSettingsRead, FocusPane, LaneFocus, LaneWorkItem, OperatorAction,
@@ -4355,6 +4358,23 @@ mod tests {
         .with_payload_json(payload)
     }
 
+    fn driver_handoff_attention_event(work_item_id: &str) -> ConsoleEvent {
+        let item = AttentionItemSnapshot::new(
+            &format!("attention-{work_item_id}"),
+            "human-valve",
+            "high",
+            "Ready item needs host-only implementation",
+            AttentionSourceRef::new("console", Some(work_item_id), None),
+            AttentionHandoff::new("implement", None, &format!("implement:{work_item_id}")),
+        );
+        ConsoleEvent::fixture(
+            &format!("evt_attention_{work_item_id}"),
+            EventType::AttentionItemAppeared,
+            "needs-attention",
+        )
+        .with_payload_json(attention_item_payload_json(&item))
+    }
+
     fn driver_handoff_model(
         work_item_id: &str,
         lane: Lane,
@@ -4368,8 +4388,33 @@ mod tests {
     }
 
     #[test]
-    fn driver_handoff_overlay_renders_lane_appropriate_id_only_invocations() -> TuiRenderResult<()>
-    {
+    fn driver_handoff_attention_selection_resolves_the_handoff_command() {
+        let work_item_id = "livespec-console-beads-fabro-attention-ready";
+        let events = [
+            driver_handoff_event(work_item_id, Lane::Ready, Some("host-only-refused")),
+            driver_handoff_attention_event(work_item_id),
+        ];
+        let model = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Content),
+        );
+
+        assert_eq!(
+            model.selected_driver_handoff_command().as_deref(),
+            Some(
+                r#"claude "/livespec-orchestrator-beads-fabro:implement livespec-console-beads-fabro-attention-ready""#
+            )
+        );
+
+        let inert = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None),
+        );
+        assert_eq!(inert.selected_driver_handoff_command(), None);
+    }
+
+    #[test]
+    fn driver_handoff_overlay_renders_lane_appropriate_id_only_invocations() {
         for (work_item_id, lane, factory_safety, operation) in [
             (
                 "livespec-console-beads-fabro-backlog",
@@ -4405,7 +4450,8 @@ mod tests {
                 ),
                 112,
                 28,
-            )?;
+            )
+            .unwrap_or_default();
             let command = format!(
                 r#"claude "/livespec-orchestrator-beads-fabro:{operation} {work_item_id}""#
             );
@@ -4417,7 +4463,6 @@ mod tests {
             assert!(!rendered.contains("prompt"));
             assert!(!rendered.contains("tmp/livespec-console-handoffs"));
         }
-        Ok(())
     }
 
     #[test]
@@ -4437,6 +4482,18 @@ mod tests {
                 None
             );
             assert!(!model.footer().contains("handoff"));
+
+            let events = [driver_handoff_event(
+                "livespec-console-beads-fabro-safe",
+                lane,
+                factory_safety,
+            )];
+            let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(lane))
+                .with_focus(FocusPane::Content);
+            let suppressed =
+                reduce_tui_interaction(&state, &events, TuiInteraction::OpenDriverHandoff);
+            assert_eq!(suppressed.overlay(), &TuiOverlay::None);
         }
     }
 
