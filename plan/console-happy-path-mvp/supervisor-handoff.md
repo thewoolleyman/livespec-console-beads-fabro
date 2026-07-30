@@ -32,22 +32,46 @@ The three maintainer decisions of 2026-07-30, which supersede the queue below:
 1. **Legs 2+3 RUN NOW**, on `-6zqv2w`, at the TUI keyboard: `p` admit → `ready` →
    palette-drain dispatch → `n` set-acceptance BEFORE `acceptance` → monitor →
    `c` accept. The earlier "defer to a fresh session" deferral is LIFTED.
-2. **Leg 1 (groom) is OUT of this walk** and routed elsewhere: it is blocked on an
-   orchestrator-side verb-vocabulary ratification that
-   `livespec-orchestrator-beads-fabro` has NOT authored (verified on the forge
-   2026-07-30T10:00Z — its `SPECIFICATION/proposed_changes/` holds one unrelated
-   file). A planning agent was dispatched INTO that repo to author a full plan for
-   it. That repo has a live agent but NO supervisor session, so the charter's
-   peer-handoff protocol has nobody to hand to — this stays a maintainer-routed
-   item, not a peer obligation.
+2. **Leg 1 (groom) IS NOT BLOCKED. It never was, since 2026-07-26.** The
+   per-state operator verb vocabulary was ratified as orchestrator **v050**:
+   `SPECIFICATION/contracts.md:1272` on their master, the consumed proposal in
+   `SPECIFICATION/history/v050/proposed_changes/`, from PR **#975** merged
+   2026-07-26T08:46:08Z. `-l4p3ce` is discharged too — its transport decisions are
+   ratified into OUR contract (console v037, the driver-handoff clause) and
+   IMPLEMENTED at `crates/console-application/src/lib.rs:12164`, asserted at
+   `crates/console-tui/src/lib.rs:4554`. Its `backlog` lane is unbuilt RESIDUE, not
+   unauthored design.
+   Leg 1 needs no dispatcher: the ratified vocabulary states `groom` needs no door,
+   because a groomed item stays `backlog` through the drafting conversation.
+   **So the full three-leg walk is available, and leg 1 is walkable even while the
+   dispatcher refuses.**
+
+   **HOW THIS WAS GOT WRONG, because the mistake is more useful than the fact.**
+   This supervisor checked orchestrator `SPECIFICATION/proposed_changes/`, found
+   one unrelated file, and concluded the vocabulary "has not been authored" —
+   relaying that to the maintainer and nearly landing it in this charter.
+   **An empty `proposed_changes/` is the signature of work that LANDED**: the
+   revise pass MOVES a ratified proposal into `history/vNNN/proposed_changes/`.
+   The directory was empty *because* the work was done. The strongest available
+   evidence of completion was read as evidence of absence.
+   That is this thread's own §"an absence never announces itself in a check aimed
+   at the wrong field", committed by a supervisor who had just quoted it. The
+   durable rule: **before asserting that a spec artifact was never authored, check
+   `history/*/proposed_changes/` and the merged-PR record, not only the pending
+   queue.** A lifecycle that moves artifacts on completion makes the pending queue
+   the one place a completed artifact can never be.
+   `research/verb-vocabulary-brainstorm.md`'s "verified 2026-07-25 ... has not been
+   authored there yet" was TRUE when written and went stale the next day; it was
+   read as a standing fact rather than a dated one.
 3. **`-sreeqc` is DISCHARGED**, not owed. The four clean TUI `p` admissions of
    2026-07-29 (`research/stage2-evidence-2026-07-29.md` §1, "No silent failure on
    any press") prove the approve valve at the real keyboard more strongly than one
    re-walk would. `-u3w3er` remains unfixed and was simply never TRIGGERED —
    record it that way; it was not disproven.
 
-**What still stands between here and ARCHIVED:** the walk's own outcome, and
-leg 1. The epic does not close on legs 2+3 alone.
+**What still stands between here and ARCHIVED:** the walk's own outcome. All three
+legs are now available — leg 1 was never actually blocked (see above), so the epic's
+full deliverable is reachable without waiting on another repository.
 
 ### First action on resume — in this order
 
@@ -802,6 +826,31 @@ Earned on this track:
   send-keys form does not submit" correction says the same thing: the contract had
   it measured and documented while this session was inventing a theory. Twice now.
   Re-read the shipped contract when amending anything here.
+- **A LIFECYCLE THAT MOVES ARTIFACTS ON COMPLETION MAKES THE PENDING QUEUE THE ONE
+  PLACE A COMPLETED ARTIFACT CAN NEVER BE.** On 2026-07-30 this supervisor declared
+  Stage 3(b)'s groom leg blocked on an orchestrator-side ratification "that repo has
+  not authored", having checked `SPECIFICATION/proposed_changes/` and found one
+  unrelated file. It had been ratified as v050 four days earlier (PR #975, merged
+  2026-07-26T08:46:08Z); the revise pass had MOVED the proposal into
+  `history/v050/proposed_changes/`. The empty pending queue was the signature of
+  completion, read as absence.
+  The claim reached the maintainer, two worker briefs, and a charter PR that was
+  pulled back from auto-merge before it landed. A subagent sent into the other repo
+  caught it, and its correction was better than anything this session had written —
+  the same lesson as §"a peer supervisor is a reviewer, not just a neighbour",
+  arriving from a subordinate rather than a peer.
+  Three compounding causes, each already named elsewhere in this charter:
+  (i) the probe was aimed at the wrong field, the track's own canonical lesson,
+  committed while quoting it into a brief; (ii) a DATED verification in
+  `research/verb-vocabulary-brainstorm.md` ("verified 2026-07-25 ... not authored
+  yet") was true when written and read as a standing fact — the same defect class as
+  the host-cap constant below, one entry later and unlearned; (iii) a `backlog` lane
+  on `-l4p3ce` was read as "design not done" when it was unbuilt residue of a design
+  ratified into our OWN contract and already implemented in our own source tree.
+  Practical rule: **to assert a spec artifact was never authored, check
+  `history/*/proposed_changes/` and the merged-PR record — never only the pending
+  queue.** And more generally: before declaring a thread blocked on another repo,
+  verify the blocker still exists at ITS source rather than in our note about it.
 - **An inherited operational CONSTANT is a claim with a timestamp, and this charter
   had already written that rule for work-items only.** On the 2026-07-30 resume the
   supervisor built a maintainer-facing recommendation on §"Factory facts"' "host
