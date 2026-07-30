@@ -30,7 +30,7 @@ that produced the superseded thread.
 3. `justfile:195` (`--fail-under-lines 100` today) and the `check-fuzz-smoke` /
    `check-mutants-smoke` seeds at :285-291.
 4. `.github/workflows/ci.yml` — the `ci-green` aggregation at :248.
-5. `AGENTS.md` — mutation protocol, `gh` 2.46.0 gotchas.
+5. `AGENTS.md` — mutation protocol, `gh pr checks --json` polling guidance.
 
 ## Status is read live, never stored here
 
