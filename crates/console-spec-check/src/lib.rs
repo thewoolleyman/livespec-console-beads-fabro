@@ -439,8 +439,7 @@ pub fn resolve_mode(raw: Option<&str>) -> Mode {
 /// resolves to a live H2 in the set its [`Audience`] selects. A live scenario
 /// is tested when the registry carries an entry for it (matched by file and
 /// name) with either a concrete non-empty test or a `TODO` sentinel whose
-/// reason explicitly acknowledges the scenario's top-of-pyramid/integration
-/// test tier.
+/// reason starts with an explicit `Test tier:` acknowledgement.
 #[must_use]
 pub fn evaluate(
     sources: &[SpecSource],
@@ -532,10 +531,25 @@ fn has_registered_test(entry: &CoverageEntry) -> bool {
 }
 
 fn acknowledges_top_of_pyramid_tier(reason: &str) -> bool {
-    let lower = reason.to_ascii_lowercase();
-    lower.contains("top-of-pyramid")
-        || lower.contains("integration")
-        || lower.contains("acceptance")
+    let tier = match reason.trim().strip_prefix("Test tier:") {
+        Some(tier) => tier.trim_start(),
+        None => return false,
+    };
+    let tier = tier
+        .strip_prefix("a ")
+        .or_else(|| tier.strip_prefix("an "))
+        .or_else(|| tier.strip_prefix("the "))
+        .unwrap_or(tier);
+    let label = tier
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    matches!(
+        label.as_str(),
+        "top-of-pyramid" | "integration" | "acceptance"
+    )
 }
 
 #[cfg(test)]
