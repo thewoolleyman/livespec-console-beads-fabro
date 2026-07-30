@@ -434,7 +434,8 @@ NOT DISCHARGED, AND THE GAP IS NOT A TECHNICALITY — READ THE SECOND TABLE.**
 
 | leg | state |
 |---|---|
-| 1 — find + groom | **HALF WALKED — the `h` HANDOFF is proven, the GROOM never ran.** § 0i. Supersedes § 0e's "WALKED". |
+| 1 — find + groom | **WALKED 2026-07-30 (attempt 4) — the groom RAN, on `-drn`.** § 0j. § 0i explains why the earlier "WALKED" was only the `h` handoff. |
+| — | **§ 0j found the MISSION'S PREMISE is wrong: groomed slices are DISPATCHER-admitted, so "slices admitted at the approve valve" describes behaviour the system does not have. Maintainer-owned; raised, not decided.** |
 | 2a — admit at `p` | **WALKED** on `-6zqv2w` — ledger `ready` |
 | 3a — `n` set-acceptance | **WALKED** on `-6zqv2w` — ledger `ai-then-human` |
 | 2b — dispatch (palette drain) | **WALKED WITH AN EXPLICIT PLUGIN-ROOT OVERRIDE** — § 0g. NEVER write this as a bare "WALKED". |
@@ -931,6 +932,95 @@ Status band" as advice.** The band lagged a closed modal by ~2s (the poll interv
 a capture taken immediately after confirming showed MODAL hints while no modal was
 open. Reading the band alone would have implied an open modal. **The modal's own text
 is the reliable signal; the band is eventually-consistent.**
+
+### 0j. ATTEMPT 4, 2026-07-30T16:39–18:1xZ — THE GROOM RAN FOR THE FIRST TIME, AND IT BROKE THE MISSION'S PREMISE
+
+**A real groom has now been executed in this tenant — the half § 0i said had never
+run.** Subject `-drn`, chosen with the maintainer. What it produced invalidates a
+sentence the Mission has carried since this thread opened.
+
+**THE MISSION'S PREMISE IS WRONG, AND THIS IS THE SESSION'S MOST IMPORTANT FINDING.**
+§ "Mission" says the walk is *"groom (via LLM-driver handoff) → **slices admitted at
+the approve valve** → ready → dispatched"*. Measured, on the two slices the groom
+actually filed:
+
+| slice | landed at | `admission_policy` | approve valve |
+|---|---|---|---|
+| `-ccycuk` (A) | **`ready`** | — | never offered; bypassed the valve entirely |
+| `-koykn7` (B) | `pending-approval` | **`auto`** | **CANNOT fire** — Dispatcher owns admission |
+
+`can_approve_item` (`_drive_valve_predicates.py:26-31`) requires
+`effective_admission_policy == manual`. Measured against siblings for contrast:
+`-2ckgiy` and `-ectqye` are `None` → `manual` and ARE approvable; `-koykn7` is `auto`.
+`awaits_dispatcher_admission` (`:34-39`) names precisely this state — *"the Dispatcher,
+not a human approve valve, owns admission"*.
+
+**So groomed slices are DISPATCHER-ADMITTED BY DESIGN, and the walk as SPECIFIED cannot
+be performed.** This is not a leg failure, not a console bug, and not something to route
+around: it is the specification describing behaviour the system does not have.
+**Redefining what the walk must prove is the MAINTAINER's call** — raised with them via
+the supervisor, and deliberately NOT decided here.
+
+**THE `p` REFUSAL WAS CORRECT. Record it that way, never as a blocked leg.** Pressed
+twice on `-koykn7` (18:03:50Z, 18:06:31Z), valve opened with the right `Target:` both
+times, ledger unchanged both times. The orchestrator's own answer on the documented
+`--json` surface:
+
+    {"action_id": "approve:livespec-console-beads-fabro-koykn7",
+     "domain_error": "invalid-source-state", "status": "failed",
+     "summary": "approve requires an effective-manual pending-approval item."}
+
+**Nothing was driven around the console** — that `drive.py` call was DIAGNOSIS and it
+RETURNED FAILED, so no workaround was applied and `-koykn7` sits exactly where the TUI
+left it.
+
+**Legs walked in this attempt, in one continuous sitting:**
+
+    16:40:10Z  `h` on -drn (backlog)  -> Driver Handoff overlay, full-width, id-only:
+                 claude "/livespec-orchestrator-beads-fabro:groom livespec-console-beads-fabro-drn"
+               Enter -> overlay closed, band restored, ledger lane STILL backlog
+    ~17:5xZ    GROOM RAN. Two slices drafted, maintainer approved the cut and the
+               slice-B decision rule. -drn regroomed OUT -> `done` (escalate-don't-drop).
+    18:02:38Z  `n` on -ccycuk (ready) -> "Set acceptance work-item /
+                 Target: ...-ccycuk / Policy-mode: ai-then-human" -> ledger
+                 acceptance_policy=ai-then-human, lane still `ready`
+    18:03:50Z  `p` on -koykn7 -> correctly refused (above)
+
+**THE RESUMABLE ASSET — DO NOT RE-STAGE IT.** `-ccycuk` sits at **`ready` with
+`acceptance_policy=ai-then-human`**, which is exactly the state the drain leg needs. Its
+staged state IS the asset. Do not move it to another lane, do not re-run `n`, and do not
+re-groom `-drn` (it is `done`; re-grooming would refuse anyway — groom only accepts a
+`backlog` target).
+
+**TWO DEFECTS FILED FROM THIS ATTEMPT:**
+
+- **`-0uw`** — the Status band ADVERTISED `p approve` on the auto-admission `-koykn7`,
+  so the operator was invited to press a key that could not work and then told nothing
+  when it didn't. The per-item verb predicate keys on LANE but not on admission policy,
+  breaking the exact rule `-dm5f7q`/`-mbohw3` exist to enforce. `awaits_dispatcher_admission`
+  already models the state; the hint layer simply does not consume it.
+- **`-ectqye` third instance, and materially the strongest.** The first two were
+  drain-path. This is the human APPROVE valve, and the payload is not merely absent from
+  the screen — it is **well-formed, structured, on the documented surface, and dropped**.
+  That upgrades the item from "no diagnostic exists" to "the diagnostic exists and is
+  discarded", which is a different and easier fix.
+
+**THREE DIFFERENT PLUGIN BUILDS WERE RESOLVED INSIDE THIS ONE WALK** — more `-pj5g3f`
+evidence, and worse than the filed form: the console resolves entry `[0]`
+`58a6467325e7`; the operator override resolves `eacbb88ead9c` (0.49.3); and the `groom`
+SKILL binding resolved a third, `1fc573da09c5`, from the cache tree. One operator, one
+task, three builds.
+
+**A PROSE/CODE DRIFT worth one line:** `prose/groom.md` § Step 3's example calls
+`file_approved_slices(path=, regroom_item_id=, slices=)`, but the function additionally
+requires keyword-only `local_repo`. The example as written raises `TypeError`. Minor,
+but it is the plugin's own LLM-facing driving prose, so it misleads every runtime.
+
+**PR #543 MERGED (`bb53f53`) during this attempt** — the fork sync carrying upstream's
+GitHub token-refresh block, i.e. the fix for § 0d's 401. **A dispatch started AFTER this
+commit is materially safer than one started before**, because a run whose `pr` node is
+reached past the ~60-min installation-token TTL should no longer 401. `-3tg`/`-htz`
+should be read as superseded-pending-verification by it, not as open.
 
 ### 0i. THE GROOM LEG IS ONLY HALF WALKED — and groom is the walk's SPINE, not a nicety
 
