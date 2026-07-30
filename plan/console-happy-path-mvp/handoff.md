@@ -410,8 +410,8 @@ cost PR #478).
 | `-mbohw3` | **closed** | PR #505 -> `514a326`; first Codex-reviewed slice |
 | `-nvflph` | **closed** | B1; PR #509 -> `46783ad`; three review visits |
 | `-vwxyj4` `-cyixzi` `-zvnjef` | **closed** | B2-B4, verify-closed (see § 1) |
-| `-cxu4eu` | `ready` | **C — DISPATCH THIS NEXT** |
-| `-ff6aue` | `ready` | then this. Serial. |
+| `-cxu4eu` | **`done`** | C — LANDED 2026-07-30, PR #515 -> `21ff727`. See § 0c. |
+| `-ff6aue` | `ready` -> dispatched | **THE LAST STAGE-2 SLICE — IN FLIGHT, see below** |
 | `-ectqye` | `pending-approval` | LEAVE IT — routing undecided, § 3 |
 | `-u3w3er` `-6hbfq6` | `ready` | off the happy path; operator choice |
 
@@ -487,6 +487,122 @@ three encodings of the per-item verb vocabulary; `-nvflph` had four of the move-
 vocabulary (picker/handler, tests, Help modal, and the `WorkItemMoveRequested` domain
 contract prose). In BOTH cases the implementation was closer to correct than its
 descriptions were.
+
+### 0b-bis. `-ff6aue` IS IN FLIGHT — the last Stage-2 slice
+
+Dispatched **2026-07-30T01:19:13Z**, run `01KYR9NWQYTZMTNJK951B3V37J`, publish branch
+`feat/livespec-console-beads-fabro-ff6aue`, Codex review adapter supplied via
+`--workflow <untracked copy>` (committed fork verified untouched, one line differing).
+When it lands, **that is the whole of the maintainer's Stage-2 scope — then PARK before
+Stage 3(b)** per § 1; do not start the walk on the tail of a long session.
+
+**EXPECT THE PUBLISH LEG TO FAIL IF THE RUN RUNS LONG (§ 0d).** Slice C took 1h54m and
+lost its `pr` node to a 401. If this one does the same: the branch will already be
+pushed, so open the PR by hand from the pushed ref, `[A]` the run, and then
+`reconcile-merged`. That path is now measured end-to-end and cost about ten minutes.
+
+### 0c. Slice C landed — and the four things it taught that will recur
+
+`-cxu4eu` is `done`: PR #515 -> `21ff727`, four substantive commits, all 13 CI checks
+green, reconciled through `dispatcher.py reconcile-merged` ("merged, post-merge janitor
+green"). The reviewer caught two real things — `7b2ddd6` restricted the handoff to the
+host-only set (the item's own forbidden-widening clause) and `21ff727` aligned the Help
+modal, which is the § 0 "assume a second restatement exists" lesson landing for the
+THIRD slice running. Contract clauses verified in the diff, not assumed:
+`Lane::Backlog => "groom"`, `Lane::Ready if factory_safety.is_some() => "implement"`,
+suppressed elsewhere, overlay wording `enter copy sent to terminal` carrying an explicit
+NEGATIVE assertion that `Copied` is absent, OSC 52 a fire-and-forget stdout write.
+
+**1. THE COVERAGE GATE IS CORRECT. Do not adjust it, and do not re-litigate this.**
+`implement` escalated asking for "maintainer guidance on whether to adjust the coverage
+gate/tooling behavior or accept the implementation with the coverage-gate anomaly". The
+answer is NEITHER, and one control measurement settles it — same command, same base:
+
+    clean 5e91d0e, no diff : TOTAL 20700 lines, 0 missed, 100.00% -> RC=0 GREEN
+    + the implement diff   : TOTAL 21055 lines, 5 missed,  99.98% -> gate FAILS
+
+Master satisfies `--fail-under-lines 100` EXACTLY, with zero missed lines. A diff that
+fails it introduced its own misses. **ALWAYS RUN THAT CONTROL** before believing any
+future "the coverage tooling is anomalous" claim — it converts an unfalsifiable
+complaint into a two-minute measurement.
+
+**2. `cargo llvm-cov report --show-missing-lines` is the tool. The implement stage
+burned most of a 1h51m run never finding it**, fighting lcov, JSON and HTML instead.
+It names ordinary misses in one shot. Its limit, which is itself the diagnosis: it
+listed only ONE of the five. The other four were in `console-application` reporting
+`LF=7438 LH=7434` while carrying only 7357 `DA` records, NONE zero-count and no
+duplicates — 4 lines counted in the line summary that map to no listable zero-hit
+source row (expansion/region-attributed accounting). Still caused by the diff, so still
+closable by changing what the new code executes. The one ordinary miss was the `?`
+error edge of `render_to_text(...)?` inside a TEST — a class the same run had already
+fixed once and left a second instance of.
+
+**3. A GENUINE PINCER BETWEEN TWO OF OUR OWN GATES — this will bite again.** Splitting
+grouped or-pattern match arms to win llvm-cov line coverage trips clippy
+`match_same_arms` at the commit hook (measured: it forced a revert mid-run). The
+clippy-satisfying shape leaves an unexercised alternative that llvm-cov counts as a
+missed line. **The shape that satisfies BOTH is to EXERCISE the untaken alternative
+with a test** — never to reshape the match and never to weaken either gate. Not filed
+as a work-item yet; it cost this run most of its wall-clock and deserves one.
+
+**4. `[R]` ROUTES TO `fix`, NOT TO THE FAILED NODE.** `escalate -> fix
+[label="[R] Retry the fix"]` — so when the `pr` node is what failed, there is NO option
+that retries publishing. `[R]` re-runs fix -> janitor -> review -> pr, i.e. minutes of
+rework on already-green code before it reaches the thing that actually broke. Read the
+graph before assuming a retry resumes where the failure was.
+
+**What DID work, and it is worth repeating verbatim: answer the gate, then steer.**
+`[R]` was answered and the diagnosis above was pushed in with
+`fabro steer <run> --text-stdin` (confirmed by a `run.steer` event). The janitor then
+went green three times and review approved. A steer is how an operator gets knowledge
+into a run that the dispatch goal did not carry — a `bd` comment added AFTER dispatch
+does NOT reach the running run, only the next one.
+
+**A LABEL THAT LIES: the run's own progress output says "Review (Claude Opus 4.8)"
+while the review actually ran on the Codex adapter.** That string is static graph text,
+not the resolved adapter. Trust the run spec's `review_adapter`, never the node label.
+
+### 0d. The publish leg failed on credentials, and the branch survived it
+
+The `pr` node pushed `feat/livespec-console-beads-fabro-cxu4eu` successfully — pre-push
+`just check` passed — and then failed:
+
+    gh pr create -> HTTP 401: Bad credentials
+    "operator must refresh gh auth/login credentials before PR creation"
+
+**That message misdirects. Do not go refresh your host `gh` login.** The host `gh` was
+fine throughout (it opened PRs #514 and #515 in the same session). The failure is
+inside the sandbox.
+
+**Hypothesis, strong but NOT established — and the complicating evidence stated so
+nobody inherits it as fact.** The `pr` node ran **1h51m** after run start
+(23:10:25Z -> 01:01:50Z) against a **1-hour** GitHub App installation-token lifetime,
+which fits an expired minted token exactly. AGAINST that reading: the `git push` in
+that same stage SUCCEEDED. So either push and the `gh` API draw on different
+credentials (a helper-refreshed token vs a `GH_TOKEN` minted once at run start), or the
+cause is something else. Whoever owns factory hardening should measure it rather than
+adopt this paragraph. **The operational consequence is real either way: any run whose
+implement+review cycles exceed ~1h can lose its publish leg**, and the ~30-40 min
+estimate in § 0 is optimistic once review_fix cycles are involved (this run: 1h54m).
+
+**The recovery is cheap and lossless — the push already happened.** Open the PR BY HAND
+from the pushed ref (`gh pr create --head feat/<item>`), which also has the merit of
+arming NO auto-merge, so a human merges after CI. Then `[A]` the run and, after the
+merge, use **`dispatcher.py reconcile-merged --repo <path> --item <id>`** — it
+re-confirmed the merge from the forge and ran the post-merge janitor green. Note this
+extends what § 0a recorded: `reconcile-merged` works for an ABANDONED-then-manually-
+merged run, not only for a run that merged on its own. The `move:<id>:ready` strand
+door remains the one for a run that died WITHOUT merging.
+
+**LIVE CONFIRMATION OF `-6zqv2w`, which arrived free with this merge.** After
+reconciliation `-cxu4eu` went **straight to `done`, skipping `acceptance` entirely**
+(`acceptance_policy: None`, inheriting `acceptance_mode: "ai-only"` from
+`.livespec.jsonc:71`). So a real, freshly dispatched work-item offered NO human
+`c accept` valve — exactly what `docs/lifecycle-walkthrough.md` Steps 5-7 promise will
+happen instead. That upgrades `-6zqv2w` from reachable-by-reading to observed in
+production, and it independently proves the `n set-acceptance` step § 1 added to the
+Stage 3(b) walk is REQUIRED, not belt-and-braces: press `n` before the item reaches
+`acceptance` or there is no accept leg to walk.
 
 ### 0a. The ceiling that stopped us — HISTORICAL, routed around, still true of the default adapter
 
@@ -714,8 +830,21 @@ exists to produce, and *doing it exhausted is how a leg gets recorded as walked 
 was driven*.
 
 Order, serial: (1) `mbohw3` **DONE**; (2) B1 `-nvflph` **DONE**; (3) B2-B4
-(`-vwxyj4`/`-cyixzi`/`-zvnjef`) **VERIFY-CLOSED**; (4) C `-cxu4eu` **← RESUME HERE**;
-(5) the tier-check bug `-ff6aue`.
+(`-vwxyj4`/`-cyixzi`/`-zvnjef`) **VERIFY-CLOSED**; (4) C `-cxu4eu` **DONE**
+(2026-07-30, PR #515 -> `21ff727`, § 0c); (5) the tier-check bug `-ff6aue`
+**← RESUME HERE, AND IT IS THE LAST ONE. Then PARK before Stage 3(b).**
+
+**`-ff6aue` was RE-VERIFIED STILL LIVE 2026-07-30 before being queued**, because two
+items on this track turned out already-fixed-never-closed and B2-B4 were fixed by a
+sibling slice. `acknowledges_top_of_pyramid_tier`
+(`crates/console-spec-check/src/lib.rs:534-539`) is byte-for-byte what the item
+describes — `lower.contains("top-of-pyramid") || lower.contains("integration") ||
+lower.contains("acceptance")` — and NO commit has touched that file since before the
+item was filed. So this dispatch is warranted; it is not another B2-B4. It is also
+itself a vacuous-verifier bug (a check that "cannot fail for realistic inputs" because
+it substring-matches ubiquitous domain vocabulary), which makes it a fitting last
+slice for a track whose dominant defect class is correct-looking state that nothing
+was checking.
 
 **B2-B4: WHY THEY WERE CLOSED WITHOUT DISPATCH, and the distinction matters.** All
 three clauses (`contracts.md:453-464` — the picker MUST NOT offer `active` from any
@@ -831,6 +960,14 @@ not move in release `856d699b5f7d`); factory-hardening filed it but is at its we
 account ceiling until 2026-07-31.
 
 ### 3. DONE — do not redo
+
+**Merged 2026-07-30, forge-verified by patch-id (`git cherry`, since this repo
+rebase-merges so branch SHAs never become ancestors):** **#514** `dd803c0` (docs-custody
+delta audit — the walkthrough accept-leg finding, `-6zqv2w`), **#515** `21ff727`
+(**`-cxu4eu` / slice C implementation**, opened by hand after the run's publish leg
+401'd — § 0d). On #515's patch-id check the four SUBSTANTIVE commits read `-` (upstream)
+while fabro's contentless stage-marker commits read `+`; that is correct and expected,
+not a partial merge — the rebase-merge drops the empty markers.
 
 **Merged 2026-07-29 (the Codex-reviewer session), all forge-verified:** **#490**
 `e4c77cd` (§ 0 rewrite — the subscription ceiling), **#503** `259627a` (watchdog kill,
@@ -994,6 +1131,29 @@ inheriting a conclusion. Its sibling: **an absence never announces itself in a g
 the wrong token** — `pr.md` had two innocent "rebase" hits and the missing thing was
 `fetch`. And the track's dominant defect class remains **correct-looking state that
 nothing was checking**.
+
+**A THIRD NAMED PATTERN, earned 2026-07-30: A CORRECTION THAT REACHED ONE DOCUMENT AND
+NOT ITS TWIN.** This thread discovered that `acceptance_mode: ai-only` cuts the accept
+leg out from under a walk, and fixed it — for its OWN Stage 3(b) walk, by adding an `n
+set-acceptance` step (§ 1). The operator-facing document describing the same walk,
+`docs/lifecycle-walkthrough.md`, was never touched, so its Steps 5-7 still promise a
+human `c accept` that production does not produce (filed `-6zqv2w`; confirmed live in
+§ 0d). The defect is not that the fix was wrong — it was right — but that a correction
+was applied where it was NOTICED rather than everywhere the claim LIVED. It is the
+sibling of § 0's "assume a second and third restatement exists elsewhere", promoted from
+a coding lesson to a documentation one: **when you correct a behavioral claim, grep for
+every OTHER place that claim is made, including prose and including your own plan
+files.** Diagnosed by the supervisor, and worth more than the finding that prompted it.
+
+**The wrong-token rule bit twice more in the same session, once inside a mutation proof
+and once inside a safety audit — it is not a beginner error.** First, a grep enumerating
+six lanes reported the `s` move-status table's `done` row missing; the row was there and
+the pattern lacked the seventh token. Second, an audit for coverage-exclusion
+gate-gaming searched `cfg(not(coverage` and reported none, while the diff carried
+`#[cfg(all(not(test), not(coverage)))]` — nested one level deeper, and it turned out to
+be a legitimate ~30-use repo idiom documented at `justfile:47`. Both were caught by
+reading source rather than by a better grep. **Prefer enumerating the source's own
+vocabulary over pattern-matching what you expect it to say.**
 
 This thread runs **under supervision** since 2026-07-25 — read
 `plan/console-happy-path-mvp/supervisor-handoff.md` FIRST, and re-measure
