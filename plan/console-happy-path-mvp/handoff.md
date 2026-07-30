@@ -66,6 +66,22 @@ claim, and every TUI claim in `overview-quickstart.md` and
 an inconsistency inside the source, not doc drift — a small TUI-text fix
 or a work-item, not a docs pass.
 
+**A THIRD STRUCTURAL MECHANISM, found 2026-07-30 and filed as `-2ckgiy`: ABSENT prose
+for a shipped verb, which no gate can catch even in principle.** The two mechanisms
+above are both ROT — prose that was true and became false. This one is different and
+the custody section needs it stated separately, because an auditor looking for rot will
+not find it. `-cxu4eu` shipped an entire new operator verb (`h`, the driver-handoff
+overlay) and `docs/` never mentions it: `grep -c "h handoff" docs/detailed-usage.md` =
+0, and no mention anywhere of the overlay or OSC 52. All 13 CI checks were green.
+**Neither arm of `docs_status_hint_lockstep` can see it**: the value arm is
+DELIBERATELY one-directional (`doc ⊆ source`, its own docstring saying "a hint may exist
+in source without appearing in the table"), and the completeness arm only requires the
+ten reachable CONTEXTS to HAVE ROWS — the backlog row exists, it is merely missing a
+key. So the failure mode is: **a new key added to an existing hint arm is invisible to
+both arms, forever.** Practical rule for this custody: after any slice that adds an
+operator key, diff the LIVE Status band against the documented row for that context,
+by hand, because nothing mechanical will.
+
 **One class no source-binding gate can catch:** a claim scoped to a
 RELEASED artifact has a second lifetime independent of master. The doc can
 accurately describe `v0.2.0` while master moves on, with nothing in the
@@ -675,6 +691,59 @@ PASSED the same gate, exit 0 read UNPIPED, same repo and argv shape. Filed as
   `-ectqye`, the one item under a do-not-press rule. Nothing was typed to move it.
   Reading the Detail pane's `Work item:` line before every press is what prevented
   admitting the wrong item; this is why that discipline is not ceremony.
+
+### 0g. ATTEMPT 2 — LEG 2b IS WALKED **WITH AN EXPLICIT PLUGIN-ROOT OVERRIDE**
+
+**Read the qualifier as part of the claim, not a footnote. A DEFAULT OPERATOR CANNOT
+DISPATCH ON THIS HOST TODAY.** `-pj5g3f` is the reason and it is unfixed. The override
+below ROUTES AROUND that defect without repairing it; anyone reading this section as
+"the dispatch path is healthy" has misread it.
+
+Maintainer-authorized 2026-07-30 after the § 0f refusal. Reproducible exactly:
+
+    /usr/local/bin/with-livespec-env.sh -- env \
+      LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT=/home/ubuntu/.claude/plugins/marketplaces/livespec-orchestrator-beads-fabro \
+      /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro serve
+
+resolved build **`0ea3e7bc5465`** (the marketplace checkout — the same build the § 0f
+refusal named as "latest release"), verified to pass the staleness gate at exit 0 read
+UNPIPED before relaunching.
+
+**THE OVERRIDE IS UNREACHABLE THROUGH `just tui`, AND THAT IS ITS OWN DEFECT.**
+Exporting the variable and then running `just tui` does NOT work: the recipe launches
+`with-livespec-env.sh -- <binary> serve`, and that credential wrapper has a FAIL-CLOSED
+env allowlist that does not include `LIVESPEC_CONSOLE_*`. Verified both directions by
+reading `/proc/<pid>/environ` of the live `serve` process — ABSENT when exported ahead
+of the recipe, PRESENT when injected INSIDE the wrapper with `env`. So the console's own
+documented knob (`docs/cli-options.md:82`) silently does nothing when set the obvious
+way, with no error and no warning. Recorded on `-pj5g3f`, which that upgrades from a
+resolution-order bug to a documented-option-that-cannot-be-used defect.
+
+**The drain then worked, at the TUI, with no fallback:** `:` palette -> `drain` ->
+Enter at 11:52:21Z; journal `dispatch-id` for `-6hbfq6` at 11:52:47Z with
+`workflow_toml` pointing at our committed fork, so the run inherits the
+`commit_timeout = "10m"` ported in `da2d1eb`. **No `drive.py`, nothing dispatched
+outside the cockpit.**
+
+**A PRECISION FINDING THAT CAUGHT ME MID-CLAIM, and the correction is part of the
+evidence.** I reported that the walk subject "has been dispatched". The artifact check
+refuted my own claim: `-6zqv2w`, `-u3w3er` and `-6hbfq6` were ALL `active` on the
+ledger, while exactly ONE run existed (`01KYSDXENCZSF5A17TASS9RNRC`, `-6hbfq6`) and
+only ONE `dispatch-id` record had been written. **The drain flips every picked item to
+`active` at CLAIM time and launches them SERIALLY, so `active` means CLAIMED, not
+EXECUTING.** Three `active` rows, one process. That is a live reproduction of exactly
+what `-6ma` diagnosed — and `-6ma` was CLOSED as mis-filed in this tenant while the
+behaviour demonstrably persists, which is how knowledge gets lost. Filed fresh with
+today's artifacts as **`-3lxx7t`**. The rule that caught this is the standing one:
+*requested is not dispatched; the dispatch leg is done when an implementation exists.*
+
+**STATUS OF 2b/3b AT THE TIME OF WRITING: IN PROGRESS, NOT COMPLETE.** The drain is
+walked. `-6zqv2w`'s own run had not launched — it is queued behind `-6hbfq6`, and the
+cockpit is frozen inline (`-htp`) until the whole drain returns. `c` accept is NOT yet
+pressed and MUST NOT be recorded as walked until an implementation exists and the item
+RESTS at `acceptance`. **If `-6zqv2w` reaches `done` without ever presenting the `c`
+valve, the `ai-then-human` override did not hold and that is a FINDING to report, not
+to paper over.**
 
 **Honest status of the pass: ATTEMPT 1 WAS INTERRUPTED BY AN EXTERNAL DISPATCHER
 REFUSAL, NOT COMPLETED.** Legs 1, the admit half of 2, and the `n` half of 3 are
