@@ -7,6 +7,97 @@
 > file through the skill becomes legitimate once that goal is demonstrably done,
 > and only if the regeneration preserves the Corrections log below.
 
+## RESUME HERE — state as of 2026-07-30T02:10Z (supervisor wind-down)
+
+**This section is the ONLY thing a fresh supervisor session inherits.** The previous
+supervisor kept a detailed `.obligations` file at
+`tmp/overseer/console-happy-path-mvp-supervisor/.obligations` (untracked, ~1900 lines).
+It still exists on disk and is worth reading, but it is NOT handed to you — this file is.
+
+### Where the thread actually stands
+
+**STAGE 2 IS COMPLETE. The thread is PARKED, NOT ARCHIVED — deliberately.**
+All eight Stage-2 items are `closed`: `-dm5f7q` (slice A), `-mbohw3` (predicate
+wiring), `-nvflph` (B1 move-picker), `-vwxyj4`/`-cyixzi`/`-zvnjef` (B2-B4,
+verify-closed on a real pre-existing violation — see below), `-cxu4eu` (C,
+driver-handoff), `-ff6aue` (the tier-check bug). Master was `fa55060` at wind-down.
+Do NOT read "Stage 2 complete" as "thread done": the three Stage 3(b) legs remain.
+
+### First action on resume — in this order
+
+1. Re-measure per §"Reactivating a parked thread" below. Everything here is a claim
+   with a timestamp.
+2. **READ `plan/console-happy-path-mvp/research/stage2-evidence-2026-07-29.md`
+   BEFORE ASKING THE WORKER FOR ANYTHING.** It holds, durably: §1 the four TUI
+   approve-valve admissions with hints captured verbatim and the one honest gap named
+   (`zvnjef` was pressed from its sweep position, so one capture not two); §2 the
+   `console-fork-drift-check` red demo AND its blind spot (RC=1 when an upstream digest
+   moves, **RC=0 when we edit our own committed file** — a green run says nothing about
+   our side of the diff); §3 whether the Codex reviewer genuinely reviewed (it did,
+   with a substantive advisory that the worker then refuted by measurement).
+   The previous supervisor re-requested all three FIVE times while they were already on
+   master, and three times offered "permission to report a gap" for a capture that had
+   already been made. Do not repeat that.
+3. Then pick up the queued work below.
+
+### Queued, nothing blocking
+
+- **Stage 3(b), the mission's remaining evidence** — the groom leg; one continuous
+  single-item walk; the `-sreeqc` approve re-walk post `-u3w3er`. The maintainer
+  deliberately deferred these to a fresh session: "doing it exhausted is how a leg gets
+  recorded as walked when it was driven." A walk needs a FRESH `just tui` build and a
+  `ps` for stray `serve` processes first — the single-operator MVP assumes exactly ONE
+  live client, and a stale cockpit proves nothing about current master.
+- **`-6zqv2w`** (bug: lifecycle-walkthrough Steps 5-7 unreachable under `acceptance_mode:
+  ai-only`) sits `pending-approval` ON PURPOSE. Admitting it at the TUI `p` valve is
+  itself a walk leg, and its subject matter IS the walkthrough 3(b) exercises.
+- **The gate-pincer bug** (filed): llvm-cov line coverage wants grouped or-pattern match
+  arms split; clippy `match_same_arms` rejects the split. Each gate is satisfiable only
+  by violating the other. It cost most of a 1h51m run and recurs on every slice that
+  adds match arms.
+
+### Factory facts that took a day to establish — do not re-derive
+
+- **`review_adapter` CANNOT be passed as `--input`.** `fabro_run_argv` is a hardcoded
+  list; `resume`/`fork`/`rewind` all lack `--input` entirely. The working route is
+  `--workflow <path>` pointed at a COPY of the whole
+  `.fabro/workflows/implement-work-item/` directory, with `review_adapter` changed in
+  the copy. All four successful dispatches used this. The maintainer chose the Codex
+  adapter (`npx --no-install @zed-industries/codex-acp`) because the Claude subscription
+  the review node reads is exhausted until 2026-07-31T05:00Z.
+- **NEVER edit the committed `.fabro/.../workflow.toml`.** The reason is review and
+  provenance — NOT the fork-drift gate, which is blind to our own edits (measured).
+- **`dispatcher.py` must be invoked ALREADY UNDER `/usr/local/bin/with-livespec-env.sh`.**
+  Run bare it self-re-invokes and the nested call fails with a message blaming a sandbox.
+  The wrapper itself is healthy.
+- **The escalate gate is not a parking space** — but the ~2h `stall_timeout` figure is
+  measured for the `escalate` node in ONE observation and is NOT a property of parked
+  runs generally: a concurrent orphaned run survived 3h25m in `waiting` unkilled. The
+  previous supervisor over-generalised this; treat an escalate answer as same-session
+  work without asserting a universal 2h fuse.
+- **Host dispatch cap is 2, shared across every tenant.** Blocked runs hold slots.
+  Raising `host_dispatch_cap` is a maintainer-owned `.livespec.jsonc` lever.
+- **B2-B4 were REAL gaps, not census over-reporting.** They were filed 2026-07-27T23:48Z
+  and `status_move_targets` was narrowed at 2026-07-28T01:24:21Z — filed ~1h36m before
+  the fix. The pre-fix table violated all three ratified MUST NOTs at once.
+
+### The lesson this session actually produced
+
+**An absence never announces itself in a check aimed at the wrong field.** Three
+sessions reached it independently in one day, in three subsystems. The previous
+supervisor hit it NINE times: five malfunctioning probes (an item id the run's argv
+drops when it parks; an argv that self-matched its own shell; waiting for `done` from a
+view that says `closed`; an `awk` taking the last match where it needed the first;
+comparing a working tree against `origin/master` and conflating staleness with an edit),
+plus "every dispatch on this host", "merged upstream but unreleased", "no production
+call site" (grepped one crate; the callers were in another), and finally demanding
+deliverables that were already committed.
+Practical rules earned: **a probe must key on something the probe itself cannot carry**
+(`/proc/*/exe`, not `ps | grep`); **a probe reporting a FAILURE against evidence you can
+read directly gets re-derived before it is relayed**; **before re-requesting a
+deliverable, grep the plan tree**; and **state the scope searched whenever you assert an
+absence.**
+
 ## HALT-first preconditions
 
 Verify ALL of these before doing anything else. Stop on the FIRST failing check
