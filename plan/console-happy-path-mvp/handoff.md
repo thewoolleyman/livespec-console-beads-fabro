@@ -435,14 +435,17 @@ why the old one could not fail on realistic input.
 **WHAT IS LEFT, and it is only Stage 3(b) — three legs, one unbroken pass.** The legs
 are individually proven; what has never happened is ONE continuous walk:
 
-1. **find a backlog item and groom it** via the LLM-driver handoff. This is the only
-   leg still needing upstream work — it wants the vocabulary ratification plus the
-   `-l4p3ce` transport (§ "Next action" item 2). `-cxu4eu` shipped the handoff
-   OVERLAY, so the console side of the render now exists on master.
+1. **find a backlog item and groom it** via the LLM-driver handoff. **WALKED
+   2026-07-30 — see § 0e. This leg needs NO dispatcher and is NOT blocked; any
+   earlier claim that it wants "the vocabulary ratification plus the `-l4p3ce`
+   transport" is STALE and struck (§ 0e explains why the claim survived four days
+   past its expiry).**
 2. **admit it at the TUI `p` valve** -> `ready` -> **dispatch** (palette drain).
+   Admission WALKED 2026-07-30; **the DISPATCH half is BLOCKED — § 0f.**
 3. **press `n` set-acceptance BEFORE it reaches `acceptance`**, then monitor, then
    **`c` accept**. The `n` step is REQUIRED, not cautious — see § 0d for the live
-   proof, and do not skip it.
+   proof, and do not skip it. `n` WALKED 2026-07-30; **`c` is UNREACHABLE until the
+   dispatch leg clears**, because nothing ever arrives at `acceptance`.
 
 **COCKPIT HYGIENE IS A PRECONDITION OF THE WALK, NOT A CHORE.** Before any 3(b)
 attempt: `ps` for stray `serve` processes FIRST — the single-operator MVP assumes
@@ -554,6 +557,138 @@ three encodings of the per-item verb vocabulary; `-nvflph` had four of the move-
 vocabulary (picker/handler, tests, Help modal, and the `WorkItemMoveRequested` domain
 contract prose). In BOTH cases the implementation was closer to correct than its
 descriptions were.
+
+### 0e. STAGE 3(b) ATTEMPT 1, 2026-07-30 — LEG 1 IS WALKED (first time ever)
+
+**The groom leg has been walked at the real TUI keyboard, on the real stack.** It was
+never blocked. Recorded first because it is the leg this thread has owed since it
+opened.
+
+Preconditions verified, not assumed: no console `serve` process and no
+`happy-path-tui` session at start (checked via `/proc/*/exe`, NOT `ps | grep`);
+`just tui` REBUILT (24.65s, recompiling `console-tui` + `console-cli`) because the
+existing release binary predated the Jul-30 console merges — **precondition (b) FAILED
+on the pre-existing binary, so the rebuild was real work, not a no-op**; exactly ONE
+live client throughout.
+
+Walked on `-zweohm`, chosen deliberately: it is the item titled *"Lane items expose no
+state-appropriate next action — groom is the natural verb for a backlog item but the UX
+neither mentions nor enables it"*. Demonstrating the feature on the item that asked for
+it is the cleanest available evidence that the gap is closed.
+
+Captured live at the keyboard, in order:
+
+    Lane: backlog [focus], selection livespec-console-beads-fabro-zweohm
+    hint BEFORE the keypress:
+      up/down move | enter item | esc lane list | h handoff | s move-status |
+      m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap |
+      ? help | q quit
+    after `h`:
+      ┌Driver Handoff───────────────────────────── (full pane width) ─┐
+      │claude "/livespec-orchestrator-beads-fabro:groom livespec-console-beads-fabro-zweohm"
+      │enter copy sent to terminal | esc cancel
+    after Enter: overlay closed, band restored, ledger lane STILL `backlog`
+
+Every clause of `SPECIFICATION/contracts.md:690` checked against that render:
+backlog -> **groom** invocation; **id-only** (no prompt file); **full-width** overlay;
+wording describes what the console did and **`Copied` appears zero times**; the id is
+exactly the selected one; and the lane does NOT move, which matches the ratified rule
+that **groom needs no door** — a groomed item stays `backlog` throughout.
+
+**WHY THIS LEG SAT "BLOCKED" FOR FOUR DAYS ON A FALSE PREMISE — the most reusable
+lesson of the day, and it is a fresh instance of this thread's own canonical rule.**
+The blocker was inherited: the vocabulary was said to be unratified. It was ratified
+on 2026-07-26 (orchestrator PR #975, its v050), and the transport decisions were cut
+into OUR OWN contract as console v037 and IMPLEMENTED by `-cxu4eu`. The check that
+produced the false blocker looked in the orchestrator's
+`SPECIFICATION/proposed_changes/`, found nothing relevant, and concluded "not
+authored". **But an EMPTY `proposed_changes/` is the signature of work that LANDED** —
+the revise pass MOVES a ratified proposal into `history/vNNN/proposed_changes/`. The
+strongest evidence of completion was read as evidence of absence. That is § 6's *"an
+absence never announces itself in a check aimed at the wrong token"*, in its purest
+form yet: the check was aimed at the wrong DIRECTORY, and the directory's emptiness
+meant the opposite of what it was taken to mean. Diagnosed and owned by the supervisor.
+Its sibling cause: `research/verb-vocabulary-brainstorm.md` says "verified 2026-07-25
+… has not been authored there yet", which was TRUE when written and went stale the next
+day — **a dated verification treated as a standing fact.**
+`-l4p3ce` sitting `backlog` is unbuilt RESIDUE (the in-app suspend/spawn survey), not
+unauthored design.
+
+### 0f. STAGE 3(b) ATTEMPT 1 — THE DISPATCH LEG IS BLOCKED, TWICE, AND THE COCKPIT SAYS NOTHING
+
+**Legs walked and ledger-verified:** `n` set-acceptance on `-6zqv2w` ->
+`acceptance_policy='ai-then-human'`; `p` approve on the same item -> `lane='ready'`, no
+silent failure. Each valve's `Target:` line was read back before Enter, and the
+pending-approval hint matched `detailed-usage.md:267` exactly (`p`/`r`/`m` present,
+**no `c accept`**). `n` was pressed at `pending-approval` — the EARLIEST valid point —
+which removes the `ai-only` auto-complete race rather than racing it.
+
+**The drain was refused twice and the operator saw nothing either time.** Second
+attempt, journal record written two seconds after the keypress (Enter 11:21:38Z):
+
+    {"at":"2026-07-30T11:21:40Z","blocking":true,
+     "stage":"dispatcher-staleness-refused",
+     "detail":"executing build 58a6467325e7 predates latest release 0ea3e7bc5465"}
+
+**This is a SHARPER finding than `-ectqye`/`-k0w` as filed, and the distinction changes
+the fix.** It is not "failed commands persist no diagnostic". The diagnostic EXISTS,
+carries `blocking: true`, and sits in the dispatcher journal that the console ACTIVELY
+INGESTS as its `dispatcher` source adapter — the Stored-events count rose 1566 -> 1579
+across the attempt, so ingestion was live. And still: no error, no banner, no attention
+row, and a screen-wide grep for `stale|refus|error|fail` returned **0 hits**. The gap
+is purely presentational. Full evidence is on `-ectqye` as a dated comment.
+
+**A SECOND, STRUCTURAL half — while ANY `pending-approval` item exists, a fully
+successful drain ALWAYS reports failure.** `is_dispatch_candidate`
+(`_dispatcher_loop_selection.py:126-145`) deliberately admits `pending-approval` items
+as candidates by projecting them to `ready`; a manual item is then HELD, and
+`admission_held_outcome` (`_dispatcher_admission.py:172-188`) returns `status="failed"`
+with its docstring stating the intent outright — *"so the dispatch exit code flips to 1
+and the maintainer's eyes are required"*. The console maps ANY non-zero probe to
+`FactoryDrainPortOutcome::failed()` and renders nothing. Measured: the candidate set
+was SIX (`6hbfq6`, `6zqv2w`, `ectqye`, `ekb5vq`, `u3w3er`, `xmcau7`), two of them
+pending-approval. **Do NOT over-read this: the admission gate itself is INTACT** —
+manual items are correctly held and never launched, so the approve valve is respected.
+The defect is a SEAM between two behaviours each correct in isolation, which is a
+different fix from either side alone.
+
+**ROOT CAUSE OF THE REFUSAL IS THE CONSOLE'S PLUGIN RESOLUTION, and
+`claude plugin update` CANNOT fix it.** `~/.claude/plugins/installed_plugins.json`
+holds an ARRAY of records under one plugin key with MIXED versions; the console took
+entry `[0]` = `58a6467325e7` (stale), while the update wrote `1fc573da09c5` into other
+entries and the then-latest release `0ea3e7bc5465` was installed nowhere. Proven
+resolution-specific rather than environmental: the marketplace checkout's dispatcher
+PASSED the same gate, exit 0 read UNPIPED, same repo and argv shape. Filed as
+**`-pj5g3f`**.
+
+**TWO MORE THINGS THE WALK PRODUCED, both filed:**
+
+- **`-2ckgiy`: the `h` driver-handoff verb shipped COMPLETELY UNDOCUMENTED.**
+  `grep -c "h handoff" docs/detailed-usage.md` = 0, and `docs/` never mentions the
+  overlay or OSC 52. The live backlog hint carries `h handoff`; the documented row
+  (`:272`) is the same string without it. **No gate can catch this** — the lockstep
+  value arm is deliberately doc-subset-of-source, and the completeness arm only
+  requires the ten CONTEXTS to have rows, which the backlog row does. Third recorded
+  instance of the same shape.
+- **A selection hazard, reproduced.** Completing a valve makes the row LEAVE the
+  Attention list, and the selection silently lands on the NEXT row — which here was
+  `-ectqye`, the one item under a do-not-press rule. Nothing was typed to move it.
+  Reading the Detail pane's `Work item:` line before every press is what prevented
+  admitting the wrong item; this is why that discipline is not ceremony.
+
+**Honest status of the pass: ATTEMPT 1 WAS INTERRUPTED BY AN EXTERNAL DISPATCHER
+REFUSAL, NOT COMPLETED.** Legs 1, the admit half of 2, and the `n` half of 3 are
+walked with captured evidence. The dispatch half of 2 is an OPEN leg — and it was NOT
+driven around: no `drive.py`, no external dispatch. `c` accept remains unreachable
+until dispatch clears. **`-xmcau7` IS dispatched but that was NOT this walk** — its
+journal record is `11:16:18Z, budget: 1`, five minutes before the keypress, and the
+console pushes `--budget 50`; it is another track's work on this host.
+
+**A NEW MEASURED CAVEAT ABOUT THE STATUS BAND, because this thread hands out "read the
+Status band" as advice.** The band lagged a closed modal by ~2s (the poll interval), so
+a capture taken immediately after confirming showed MODAL hints while no modal was
+open. Reading the band alone would have implied an open modal. **The modal's own text
+is the reliable signal; the band is eventually-consistent.**
 
 ### 0b-bis. `-ff6aue` LANDED — and it is the natural experiment on the 401
 
@@ -993,7 +1128,7 @@ list and the selection landed on it twice during navigation; re-verify the `Targ
 line before any press near it.
 
 Then park with the Stage 3(b) walk legs QUEUED and named, not attempted: the groom leg
-(needs the vocabulary ratification + `-l4p3ce` transport) and ONE CONTINUOUS
+(STRUCK — it needed neither; WALKED 2026-07-30, § 0e) and ONE CONTINUOUS
 single-item walk (find → groom → admit → dispatch → monitor → accept). Individual legs
 are now proven; what is missing is one unbroken pass.
 
@@ -1266,12 +1401,19 @@ Then, in order:
 1. **Accept AND approve legs are both WALKED at the keyboard** — accept on
    2026-07-26 (`research/accept-valve-walk-2026-07-26.md`) and again on
    2026-07-29 for `dm5f7q`; approve on 2026-07-29 for `ff6aue`/`mbohw3`/
-   `nvflph`, which discharges the leg `-sreeqc` never got. Still owed for
-   Stage 3(b): the groom leg (needs the vocabulary ratification +
-   `-l4p3ce` transport) and ONE CONTINUOUS single-item walk
-   (find → groom → admit → dispatch → monitor → accept) — the legs are
-   now individually proven but have not been walked end-to-end in one
-   pass. `-6ma`/`-m36`/`-8i9` are all CLOSED with verified reasons.
+   `nvflph`, which discharges the leg `-sreeqc` never got. **`-sreeqc` is
+   DISCHARGED by maintainer ruling 2026-07-30: the four clean TUI `p`
+   admissions of 2026-07-29 prove the approve valve at the keyboard more
+   strongly than one `-sreeqc` re-walk would. Do NOT re-walk it. `-u3w3er`
+   stays UNFIXED and was simply never triggered — record it that way, never
+   as disproven.** **The groom leg is WALKED (2026-07-30, § 0e) and never
+   needed the ratification or the transport — that clause was a phantom
+   blocker and is struck.** Still owed for Stage 3(b): ONE CONTINUOUS
+   single-item walk (find → groom → admit → dispatch → monitor → accept).
+   Attempt 1 got legs 1, admit and `n`, then stopped at the dispatch
+   refusal (§ 0f) — so every leg except `c` accept is now individually
+   proven, and what is missing is the unbroken pass.
+   `-6ma`/`-m36`/`-8i9` are all CLOSED with verified reasons.
 2. **Stage-1 brainstorm: all seven vocabulary points DECIDED**
    (2026-07-21..25) — recorded with their verification in
    `research/verb-vocabulary-brainstorm.md`. Next brainstorm output: the
