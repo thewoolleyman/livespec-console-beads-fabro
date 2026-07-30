@@ -1825,16 +1825,10 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             Line::from("             spec commitment hint; up/down and PgUp/PgDn scroll it)"),
             Line::from("esc          close the work-item record, then return a drilled-in"),
             Line::from("             lane to its overview"),
-            Line::from("s            move the selected work-item to a status it may be driven to"),
-            Line::from(
-                "             (any pre-terminal status: backlog / ready / active / blocked;",
-            ),
-            Line::from(
-                "              plus approve -> ready, accept -> done, resolve-blocked; `done`",
-            ),
-            Line::from(
-                "              is reached only via accept; up/down change target, Enter confirms)",
-            ),
+            Line::from("h            render the driver-handoff command when the selected item"),
+            Line::from("             admits one: groom on backlog; implement on host-only ready"),
+            Line::from("s            move the selected work-item to a ratified operator target"),
+            Line::from("             for its current lane; up/down change target, Enter confirms"),
             Line::from(
                 "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
             ),
@@ -5518,10 +5512,14 @@ mod tests {
         );
         let lanes_help = render_to_text(&lanes, 120, 72).unwrap_or_default();
         assert!(lanes_help.contains("> Lanes"), "{lanes_help}");
-        assert!(lanes_help.contains("move the selected work-item to a status"));
+        assert!(lanes_help.contains("move the selected work-item to a ratified operator target"));
         assert!(lanes_help.contains("select an individual work-item"));
-        // The broadened move set and the three per-item override keys are named.
-        assert!(lanes_help.contains("any pre-terminal status"));
+        // The driver handoff, narrowed move-status picker, and override keys are named.
+        assert!(lanes_help.contains("render the driver-handoff command"));
+        assert!(lanes_help.contains("host-only ready"));
+        assert!(lanes_help.contains("ratified operator target"));
+        assert!(!lanes_help.contains("any pre-terminal status"));
+        assert!(!lanes_help.contains("approve -> ready"));
         assert!(lanes_help.contains("per-item override of merge_on_review_cap"));
         // The Lanes right pane must not spill the Settings section's text.
         assert!(!lanes_help.contains("edit the selected setting row"));
