@@ -4469,6 +4469,7 @@ mod tests {
     fn driver_handoff_is_suppressed_outside_backlog_and_host_only_ready() {
         for (lane, factory_safety) in [
             (Lane::Ready, None),
+            (Lane::Ready, Some("safe")),
             (Lane::PendingApproval, None),
             (Lane::Active, Some("host-only-refused")),
             (Lane::Acceptance, Some("host-only-refused")),

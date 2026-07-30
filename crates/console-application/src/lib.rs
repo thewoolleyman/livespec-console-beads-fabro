@@ -1787,7 +1787,7 @@ const fn lane_item_footer_hint_for_bits_with_driver(
                     | HINT_SET_ACCEPTANCE
                     | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | h handoff | s move-status |              m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap |              ? help | q quit"
+            "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
         (bits, false)
             if bits
@@ -1798,7 +1798,7 @@ const fn lane_item_footer_hint_for_bits_with_driver(
                     | HINT_SET_ACCEPTANCE
                     | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | s move-status | m set-admission |              g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
         (bits, false)
             if bits
@@ -1811,7 +1811,7 @@ const fn lane_item_footer_hint_for_bits_with_driver(
                     | HINT_SET_ACCEPTANCE
                     | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | s move-status | p approve | r reject |              m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap |              ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
         (bits, true)
             if bits
@@ -1821,7 +1821,7 @@ const fn lane_item_footer_hint_for_bits_with_driver(
                     | HINT_SET_ACCEPTANCE
                     | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | h handoff | s move-status |              g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
         (bits, false)
             if bits
@@ -1831,13 +1831,13 @@ const fn lane_item_footer_hint_for_bits_with_driver(
                     | HINT_SET_ACCEPTANCE
                     | HINT_REWORK_CAP =>
         {
-            "up/down move | enter item | esc lane list | s move-status | g merge cap |              f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         }
         (bits, _) if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
-            "up/down move | enter item | esc lane list | n set-acceptance | k rework cap |              ? help | q quit"
+            "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | ? help | q quit"
         }
         (bits, _) if bits == HINT_MOVE_STATUS | HINT_ACCEPT | HINT_REJECT => {
-            "up/down move | enter item | esc lane list | s move-status | c accept | r reject |              ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | c accept | r reject | ? help | q quit"
         }
         (HINT_MOVE_STATUS, false) => {
             "up/down move | enter item | esc lane list | s move-status | ? help | q quit"
@@ -3162,7 +3162,9 @@ fn open_driver_handoff_overlay(model: &TuiScreenModel) -> TuiOverlay {
 fn driver_handoff_command(item: &LaneWorkItem) -> Option<String> {
     let operation = match item.lane() {
         Lane::Backlog => "groom",
-        Lane::Ready if item.detail().factory_safety.is_some() => "implement",
+        Lane::Ready if item.detail().factory_safety.as_deref() == Some("host-only-refused") => {
+            "implement"
+        }
         Lane::PendingApproval
         | Lane::Ready
         | Lane::Active
@@ -12198,7 +12200,7 @@ mod tests {
                 "evt_ready_safe_overlay",
                 "wi-ready-safe-overlay",
                 Lane::Ready,
-                None,
+                Some("safe"),
                 "a1",
                 "ready",
             ),
