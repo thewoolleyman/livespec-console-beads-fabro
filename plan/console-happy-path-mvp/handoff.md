@@ -416,6 +416,97 @@ Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to t
 next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
 cost PR #478).
 
+### 0-RESUME. READ THIS FIRST — state at 2026-07-30T14:0xZ, written at wind-down
+
+**Stage 3(b) attempt 1 is MOSTLY WALKED and stopped on a RED PR, not on anything you
+did. Four of five legs are done. The single remaining leg is `c` accept.**
+
+| leg | state |
+|---|---|
+| 1 — find + groom | **WALKED** 2026-07-30 (first time ever) — § 0e |
+| 2a — admit at `p` | **WALKED** — ledger `ready` |
+| 3a — `n` set-acceptance | **WALKED** — ledger `ai-then-human` |
+| 2b — dispatch (palette drain) | **WALKED WITH AN EXPLICIT PLUGIN-ROOT OVERRIDE** — § 0g. NEVER write this as a bare "WALKED". |
+| 3b — `c` accept | **NOT PRESSED.** Blocked below. |
+
+**WHY `c` IS NOT PRESSED, and do not press it until this clears.** The walk subject
+`-6zqv2w` was dispatched, its run SUCCEEDED, and it opened **PR #530 — which is RED on
+`check-e2e-tmux`** (13 other checks green). The dispatcher will not merge a red PR, so
+the item is stuck at `active` and never reaches `acceptance`. There is no valve to
+press yet. **Do not force it, and do not accept anything via `drive.py`.**
+
+The failure is an INCOMPLETE FACTORY FIX, diagnosed:
+
+    tmux_tui_e2e.rs:1169  assertion `left == right` failed
+      left:  ["set-acceptance:...dummy1:ai-then-human", "approve:...dummy1", "accept:...dummy1"]
+      right: ["approve:...dummy1", "accept:...dummy1"]
+
+The implementation correctly ADDED the `n set-acceptance` step to the documented walk —
+exactly what `-6zqv2w` asked for — and did NOT update the E2E's expected action list.
+Small, real, and the correct gate caught it.
+
+**A NEW FINDING THAT EXPLAINS HOW A RED PR GOT PUBLISHED AT ALL — file it if it is not
+filed yet.** The janitor gate is `just check`, whose target list is THIRTEEN entries
+(`check-format` … `check-fork-drift`) and **`check-e2e-tmux` IS NOT AMONG THEM**. CI
+runs it; the janitor does not. So a run can go green through implement → janitor →
+review → publish and open a PR that CI immediately fails. This will recur on every
+slice touching the walkthrough. Verified by reading the `check:` recipe in `justfile`.
+
+**A CORRECTION TO §§ 0e/0f THAT MUST NOT HARDEN INTO A FALSEHOOD.** Those sections say
+`tmux_tui_e2e_lifecycle_walkthrough_two_repos` "structurally cannot catch" the
+acceptance drift. That is true ONLY for what was tested — it scripts
+`fixture.factory_move("acceptance")`, so it cannot see `acceptance_mode`. **It CAN
+catch a change in the documented action sequence, and on 2026-07-30 it did exactly
+that.** Its blind spot is narrow and specific. Do not read those sections as "that E2E
+is useless".
+
+**WHAT TO DO NEXT, in order:**
+
+1. **Re-measure everything** (§ "Reactivating a parked thread"). Lanes move under other
+   sessions and the factory. Every claim below is timestamped, including this one.
+2. **Resolve PR #530.** It is the factory's slice, not yours to hand-fix casually — but
+   it is a one-line test-expectation update. Decide with the maintainer whether to fix
+   the assertion or let the run's poll exhaust and re-dispatch. Until #530 merges,
+   leg 3b cannot happen.
+3. **Then press `c`** once `-6zqv2w` RESTS at `acceptance`. It carries
+   `acceptance_policy='ai-then-human'`, set at the TUI, so it SHOULD park for a human.
+   **If it reaches `done` without ever presenting the valve, the override did not hold —
+   that is a FINDING to report, not to paper over.**
+4. Capture evidence live: Status-band hint BEFORE each keypress, the valve's
+   `Target: <exact id>` read back before Enter, and a ledger check after. Never
+   reconstruct a capture afterwards.
+
+**THE COCKPIT IS STILL RUNNING AND IS DELIBERATELY NOT DEFAULT-CONFIGURED.** tmux
+`happy-path-tui`, PID 3412363 at wind-down, ONE live client, binary built
+2026-07-30T10:34:30Z. It was launched with the plugin-root override because **a DEFAULT
+OPERATOR CANNOT DISPATCH ON THIS HOST TODAY** (`-pj5g3f`, unfixed). Exact form — the
+env var does NOT survive `just tui`, it must be injected INSIDE the credential wrapper:
+
+    /usr/local/bin/with-livespec-env.sh -- env \
+      LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT=/home/ubuntu/.claude/plugins/marketplaces/livespec-orchestrator-beads-fabro \
+      /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro serve
+
+If you relaunch, `ps` by `/proc/*/exe` first (NOT `ps | grep`, which self-matches), keep
+exactly ONE client, and rebuild if any `console-*` crate has moved.
+
+**LEDGER AT WIND-DOWN (re-measure — this is a claim with a timestamp):** master
+`c35014b`, primary clean. `-6zqv2w` `active` (`ai-then-human`), `-6hbfq6` `active`,
+`-u3w3er` `active` — note `-6hbfq6`'s run ENDED while its row stayed `active`, which is
+`-3lxx7t`'s defect from the other side and may need `reconcile-merged`.
+`pending-approval`: `-ectqye` (LEAVE IT, § 3), `-ekb5vq`, `-pj5g3f`, `-2ckgiy`,
+`-3lxx7t`.
+
+**FILED THIS SESSION**, all with epic `tracks` edges: `-pj5g3f` (console resolves a
+stale entry `[0]` of a mixed-version `installed_plugins.json`; carries TWO added
+findings — the credential wrapper SCRUBS `LIVESPEC_CONSOLE_*` so the documented
+override is unreachable via `just tui`, and concurrent sessions resolving different
+builds re-pin the fork fixture incompatibly and block each other's pushes
+indefinitely), `-2ckgiy` (the `h` handoff verb shipped undocumented), `-3lxx7t`
+(`active` means CLAIMED, not EXECUTING). New drain evidence added to `-ectqye`.
+
+**STANDING: this plan is PARKED, NOT ARCHIVED.** Stage 2 is complete; Stage 3(b) still
+owes ONE UNBROKEN PASS, and attempt 1 was interrupted twice by external failures.
+
 ### 0. STAGE 2 IS COMPLETE. THE THREAD IS **PARKED, NOT DONE**. START HERE.
 
 **Read this paragraph before anything else, because the obvious misreading is
