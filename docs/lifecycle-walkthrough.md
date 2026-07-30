@@ -44,6 +44,17 @@ or, from an installed binary, under the credential wrapper — see
 The walkthrough assumes one work-item sitting in `pending-approval`. If your
 board has none, the same keys work on any item; only the starting lane differs.
 
+### Human accept precondition
+
+The `c accept` leg exists only when the walked item carries a human acceptance
+leg: `ai-then-human` or `human-only`. This repository's default `acceptance_mode`
+is `ai-only`, so a new item that inherits the default auto-completes to `done`
+when the factory reaches acceptance and never waits for you to press `c`.
+
+Set the per-item acceptance policy before the item leaves the operator window.
+In this walkthrough, you do that from `pending-approval` with `n set-acceptance`
+before approving the item into `ready`.
+
 ---
 
 ## Step 1 — See what is waiting
@@ -100,7 +111,28 @@ selected row.
 > Detail pane shows a `Work item:` value. This is expected behavior, not a
 > stuck console.
 
-## Step 3 — Open the approve valve
+## Step 3 — Set the human acceptance leg
+
+Press:
+
+**`n`**
+
+A modal titled `Valve` opens:
+
+```
+Set acceptance
+Target: <your-work-item-id>
+Option: ai-then-human
+Enter to confirm | Esc to cancel
+```
+
+Press **`Enter`** to set that per-item override. The item stays in
+`pending-approval`, but it now has the human acceptance leg that Step 7 needs.
+
+Press `n` before the item reaches `acceptance`: under `ai-only`, the factory
+auto-completes on arrival and leaves no accept valve for you to open.
+
+## Step 4 — Open the approve valve
 
 Press:
 
@@ -123,7 +155,7 @@ up/down change | enter confirm | esc cancel
 Check the `Target:` line names the item you meant. `Esc` backs out with nothing
 sent.
 
-## Step 4 — Confirm the approval
+## Step 5 — Confirm the approval
 
 Press:
 
@@ -135,10 +167,11 @@ API — it never writes the ledger itself — and the item is admitted to `ready
 The inbox empties: the header returns to `attention: 0` and the Detail pane
 reads `No attention item selected`.
 
-## Step 5 — Let the factory work
+## Step 6 — Let the factory work
 
 Nothing to press. The item is now the factory's: it moves `ready` → `active`,
-does the work, and parks the result in `acceptance` for a human to judge.
+does the work, and parks the result in `acceptance` for a human to judge because
+Step 3 set the item to `ai-then-human`.
 
 The console polls its sources every 2 seconds, so the change appears on its own.
 When it does, the item is back in your inbox:
@@ -152,7 +185,7 @@ and the header counts it again — `attention: 1`.
 > This is the step you cannot drive from the keyboard, and the ship-guard is
 > why: `s` will not offer you `active` or `acceptance` as a target.
 
-## Step 6 — Open the accept valve
+## Step 7 — Open the accept valve
 
 With the item selected, press:
 
@@ -166,7 +199,7 @@ Target: <your-work-item-id>
 Enter to confirm | Esc to cancel
 ```
 
-## Step 7 — Ship it
+## Step 8 — Ship it
 
 Press:
 
@@ -178,7 +211,7 @@ inbox empties again — `attention: 0`, `No attention item selected`.
 `done` is terminal: it is reached *only* by `accept`, and a shipped item offers
 no onward move.
 
-## Step 8 — Confirm on the board
+## Step 9 — Confirm on the board
 
 Press:
 

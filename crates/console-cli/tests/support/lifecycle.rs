@@ -68,16 +68,19 @@ impl LifecycleFixture {
 
         std::fs::write(dir.join("lane"), format!("{initial_lane}\n"))
             .map_err(|error| format!("seed lane failed: {error}"))?;
+        std::fs::write(dir.join("acceptance_policy"), "ai-only\n")
+            .map_err(|error| format!("seed acceptance policy failed: {error}"))?;
         std::fs::write(dir.join("actions.log"), "")
             .map_err(|error| format!("seed action log failed: {error}"))?;
 
         let state = dir.join("lane");
+        let policy = dir.join("acceptance_policy");
         let log = dir.join("actions.log");
 
-        let work_items = write_script(&dir, "work-items.sh", &work_items_body(&state))?;
+        let work_items = write_script(&dir, "work-items.sh", &work_items_body(&state, &policy))?;
         let needs_attention =
             write_script(&dir, "needs-attention.sh", &needs_attention_body(&state))?;
-        let drive = write_script(&dir, "drive.sh", &drive_body(&state, &log))?;
+        let drive = write_script(&dir, "drive.sh", &drive_body(&state, &policy, &log))?;
 
         Ok(Self {
             dir,
@@ -118,8 +121,19 @@ impl LifecycleFixture {
     /// step, so a walkthrough that pretends the operator performs it would
     /// document a transition the TUI cannot make.
     pub fn factory_move(&self, lane: &str) -> HarnessResult<()> {
-        std::fs::write(self.dir.join("lane"), format!("{lane}\n"))
-            .map_err(|error| format!("factory_move to {lane} failed: {error}"))
+        let target = if lane == "acceptance" {
+            let policy = std::fs::read_to_string(self.dir.join("acceptance_policy"))
+                .map_err(|error| format!("read acceptance policy failed: {error}"))?;
+            if policy.trim() == "ai-only" {
+                "done"
+            } else {
+                lane
+            }
+        } else {
+            lane
+        };
+        std::fs::write(self.dir.join("lane"), format!("{target}\n"))
+            .map_err(|error| format!("factory_move to {target} failed: {error}"))
     }
 
     /// The lane the stub currently reports, with whitespace trimmed.
@@ -157,16 +171,20 @@ fn write_script(dir: &Path, name: &str, body: &str) -> HarnessResult<PathBuf> {
 }
 
 /// `list-work-items --json`: a one-element array reflecting the current lane.
-fn work_items_body(state: &Path) -> String {
+fn work_items_body(state: &Path, policy: &Path) -> String {
     format!(
         "#!/usr/bin/env bash\n\
          lane=$(tr -d '[:space:]' < {state} 2>/dev/null)\n\
          [ -n \"$lane\" ] || lane=backlog\n\
+         policy=$(tr -d '[:space:]' < {policy} 2>/dev/null)\n\
+         [ -n \"$policy\" ] || policy=ai-only\n\
          printf '[{{\"id\":\"{item}\",\"lane\":\"%s\",\"lane_reason\":null,\"rank\":\"a0\",\
-         \"status\":\"%s\",\"title\":\"{title}\",\"type\":\"task\",\"origin\":\"freeform\"}}]\\n' \
-         \"$lane\" \"$lane\"\n\
+         \"status\":\"%s\",\"title\":\"{title}\",\"type\":\"task\",\"origin\":\"freeform\",\
+         \"acceptance_policy\":\"%s\"}}]\\n' \
+         \"$lane\" \"$lane\" \"$policy\"\n\
          exit 0\n",
         state = shell_quote(state),
+        policy = shell_quote(policy),
         item = ITEM_ID,
         title = ITEM_TITLE,
     )
@@ -208,7 +226,7 @@ fn needs_attention_body(state: &Path) -> String {
 /// entirely and switches on the probe outcome — so every branch exits 0 except
 /// an unparseable action, which exits 1 so a typo surfaces as a failed valve
 /// rather than a silent no-op.
-fn drive_body(state: &Path, log: &Path) -> String {
+fn drive_body(state: &Path, policy: &Path, log: &Path) -> String {
     format!(
         "#!/usr/bin/env bash\n\
          action=''\n\
@@ -222,7 +240,7 @@ fn drive_body(state: &Path, log: &Path) -> String {
          \x20 printf '{{\"settings\":[\
          {{\"key\":\"auto_approve_ready\",\"value\":false}},\
          {{\"key\":\"merge_on_review_cap\",\"value\":false}},\
-         {{\"key\":\"acceptance_mode\",\"value\":\"ai-then-human\"}},\
+         {{\"key\":\"acceptance_mode\",\"value\":\"ai-only\"}},\
          {{\"key\":\"review_fix_cap\",\"value\":3}},\
          {{\"key\":\"acceptance_rework_cap\",\"value\":2}},\
          {{\"key\":\"wip_cap\",\"value\":5}}]}}\\n'\n\
@@ -234,12 +252,14 @@ fn drive_body(state: &Path, log: &Path) -> String {
          \x20 accept:*) printf 'done\\n' > {state} ;;\n\
          \x20 move:*:*|resolve-blocked:*:*) printf '%s\\n' \"${{action##*:}}\" > {state} ;;\n\
          \x20 reject:*:*) printf 'blocked\\n' > {state} ;;\n\
-         \x20 set-admission:*|set-acceptance:*|set-*-cap:*|set-config:*) : ;;\n\
+         \x20 set-acceptance:*:*) printf '%s\\n' \"${{action##*:}}\" > {policy} ;;\n\
+         \x20 set-admission:*|set-*-cap:*|set-config:*) : ;;\n\
          \x20 '') exit 1 ;;\n\
          esac\n\
          printf '{{}}\\n'\n\
          exit 0\n",
         state = shell_quote(state),
+        policy = shell_quote(policy),
         log = shell_quote(log),
     )
 }
