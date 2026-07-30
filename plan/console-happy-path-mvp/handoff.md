@@ -400,7 +400,74 @@ Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to t
 next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
 cost PR #478).
 
-### 0. THE FACTORY WORKS. TWO SLICES LEFT. START HERE.
+### 0. STAGE 2 IS COMPLETE. THE THREAD IS **PARKED, NOT DONE**. START HERE.
+
+**Read this paragraph before anything else, because the obvious misreading is
+expensive: "Stage 2 complete" is NOT "thread complete".** All five Stage-2 slices are
+`done` and the maintainer's dispatch scope is fully discharged — and Stage 3(b), the
+one-continuous real-stack walk that this whole epic exists to produce, **has not been
+attempted**. The epic does NOT close until it passes (§ "The track", Stage 3). This
+plan is **PARKED DELIBERATELY, NOT ARCHIVED.** Anyone who archives it on the strength
+of the table below has thrown away the deliverable.
+
+**Stage-2 scope, closed 2026-07-30 — all five, forge-verified:**
+
+| slice | item | landed |
+|---|---|---|
+| A | `-dm5f7q` | accepted at the real TUI `c` valve |
+| B (hints) | `-mbohw3` | PR #505 -> `514a326` |
+| B1 | `-nvflph` | PR #509 -> `46783ad` |
+| B2-B4 | `-vwxyj4` `-cyixzi` `-zvnjef` | verify-closed (fixed by slice A; see § 1) |
+| C | `-cxu4eu` | PR #515 -> `21ff727` (hand-published, § 0d) |
+| tier bug | `-ff6aue` | PR #517 -> `2132155`, auto-merged, 34 min |
+
+**`-ff6aue` was RED-DEMONSTRATED, not taken on a green CI** — it was a
+vacuous-verifier bug, so a passing build proves nothing about it. Run against the
+item's OWN repro on current master: baseline `RC=0` ("behavioral coverage clean, 0
+unlinked, 0 untested"); one TODO entry's reason set to `covers the acceptance lane` ->
+`RC=1`, naming the scenario and reporting "1 untested scenario(s)"; tree restored
+byte-identically. That exact input reported CLEAN before the fix. The new
+`acknowledges_top_of_pyramid_tier` (`crates/console-spec-check/src/lib.rs:533-553`)
+requires the reason to BEGIN with `Test tier:` and parses the first token as the
+label, instead of substring-matching `integration`/`acceptance` anywhere — which is
+why the old one could not fail on realistic input.
+
+**WHAT IS LEFT, and it is only Stage 3(b) — three legs, one unbroken pass.** The legs
+are individually proven; what has never happened is ONE continuous walk:
+
+1. **find a backlog item and groom it** via the LLM-driver handoff. This is the only
+   leg still needing upstream work — it wants the vocabulary ratification plus the
+   `-l4p3ce` transport (§ "Next action" item 2). `-cxu4eu` shipped the handoff
+   OVERLAY, so the console side of the render now exists on master.
+2. **admit it at the TUI `p` valve** -> `ready` -> **dispatch** (palette drain).
+3. **press `n` set-acceptance BEFORE it reaches `acceptance`**, then monitor, then
+   **`c` accept**. The `n` step is REQUIRED, not cautious — see § 0d for the live
+   proof, and do not skip it.
+
+**COCKPIT HYGIENE IS A PRECONDITION OF THE WALK, NOT A CHORE.** Before any 3(b)
+attempt: `ps` for stray `serve` processes FIRST — the single-operator MVP assumes
+EXACTLY ONE live client, and a four-day-old binary was once caught still polling —
+then a FRESH `just tui` build. Verify the binary is not older than any merge touching
+a `console-*` crate; `cargo` correctly no-ops when only non-console crates moved, but
+that must be VERIFIED rather than assumed. **Key the `ps` on `/proc/*/exe`, NOT on
+`ps | grep`** — a grep for a console/serve string self-matches any supervisor watcher
+whose argv carries it, which cost a false reading this session. The cockpit runs in
+tmux `happy-path-tui` and is the PRODUCT, not an agent session.
+
+**TWO ITEMS ARE WAITING AT THE APPROVE VALVE ON PURPOSE — do not sweep them.**
+
+- **`-6zqv2w`** (the walkthrough doc-rot bug, § 0d) is `pending-approval`
+  **deliberately**, maintainer-approved: admitting it at the TUI `p` valve IS a walk
+  leg, and its subject matter is the very walkthrough 3(b) exercises, so admitting it
+  there makes it evidence instead of overhead. Do not admit it from `drive.py`.
+- **`-ekb5vq`** (the clippy/llvm-cov gate pincer, § 0c item 3) is `pending-approval`,
+  filed 2026-07-30 with the measurements attached. Off the happy path; route it
+  whenever, but it will bite the next slice that adds match arms.
+
+`-ectqye` stays `pending-approval` with routing undecided (§ 3). `-u3w3er` and
+`-6hbfq6` sit `ready`, off the happy path, operator choice.
+
+### 0-historical. THE FACTORY WORKS. TWO SLICES LEFT. (superseded by § 0 above)
 
 **State at wind-down, measured — re-measure anyway, it is a claim with a timestamp:**
 
@@ -488,18 +555,22 @@ vocabulary (picker/handler, tests, Help modal, and the `WorkItemMoveRequested` d
 contract prose). In BOTH cases the implementation was closer to correct than its
 descriptions were.
 
-### 0b-bis. `-ff6aue` IS IN FLIGHT — the last Stage-2 slice
+### 0b-bis. `-ff6aue` LANDED — and it is the natural experiment on the 401
 
-Dispatched **2026-07-30T01:19:13Z**, run `01KYR9NWQYTZMTNJK951B3V37J`, publish branch
-`feat/livespec-console-beads-fabro-ff6aue`, Codex review adapter supplied via
-`--workflow <untracked copy>` (committed fork verified untouched, one line differing).
-When it lands, **that is the whole of the maintainer's Stage-2 scope — then PARK before
-Stage 3(b)** per § 1; do not start the walk on the tail of a long session.
+Dispatched **2026-07-30T01:19:13Z**, run `01KYR9NWQYTZMTNJK951B3V37J`; **auto-merged as
+PR #517 -> `2132155` and returned `stage: done, status: green` ("merged, post-merge
+janitor green") with dispatch RC=0.** Total elapsed **34 minutes**.
 
-**EXPECT THE PUBLISH LEG TO FAIL IF THE RUN RUNS LONG (§ 0d).** Slice C took 1h54m and
-lost its `pr` node to a 401. If this one does the same: the branch will already be
-pushed, so open the PR by hand from the pushed ref, `[A]` the run, and then
-`reconcile-merged`. That path is now measured end-to-end and cost about ten minutes.
+**That 34 minutes is evidence, so record it as such.** Slice C ran **1h54m** and lost
+its `pr` node to `HTTP 401: Bad credentials`; this run reached `pr` well inside an hour
+and published without incident, on the same adapter, same workflow copy, same host,
+same credentials path. That is consistent with § 0d's expired-installation-token
+hypothesis and is the closest thing to a controlled comparison available without
+instrumenting the sandbox. It is still NOT proof — n=1 each side, and § 0d's
+contradicting evidence (the `git push` succeeded in the same stage that 401'd) is
+unexplained either way. **Practical rule, which holds regardless of the mechanism: a
+run that passes roughly an hour before reaching `pr` should be EXPECTED to need the
+by-hand publish recovery, and that recovery costs about ten minutes.**
 
 ### 0c. Slice C landed — and the four things it taught that will recur
 
@@ -650,8 +721,23 @@ the run never reached the `pr` node. Verified on the forge — `git ls-remote or
 refs/heads/feat/livespec-console-beads-fabro-mbohw3` is empty. Do not run
 `reconcile-merged`; there is nothing merged to reconcile.
 
+**SCOPE CORRECTION RE-AFFIRMED 2026-07-30, supervisor-owned, and it belongs at the TOP
+of this subsection because the paragraph below it reads stronger than the evidence.**
+The ~2h figure is measured for the **`escalate` node, in ONE observation**. It is NOT a
+property of parked runs generally: a concurrent orphaned run in the orchestrator tenant
+survived **3h25m** in `waiting` without being killed. The supervisor who first
+generalised this has now flagged it twice as their own over-generalisation, not the
+worker's. Treat the two-hour number as a per-node datum with n=1. Do not plan around it
+as a rule, and do not repeat it as one.
+
+Corroborating datum from 2026-07-30, since it bears on how much urgency a parked gate
+deserves: slice C's second park (the `pr`-node 401) was read from outside as "WAITING
+1h55m44s", which was the **run's total age**, not its time at the gate — the gate had
+been open about twenty seconds. **If you are deciding urgency from a duration, confirm
+what the clock is actually measuring before acting on it.**
+
 **DO NOT PARK A RUN AT THE ESCALATE GATE — THE STALL WATCHDOG KILLED THE ONE RUN THAT
-SAT THERE. Measured (n=1), and see the scope correction below before generalising.**
+SAT THERE. Measured (n=1), and see the scope correction ABOVE before generalising.**
 The paragraph this replaces told a successor to leave
 run `01KYP37TZJ9MRTSDR3A0138W4M` parked and answer `[R]` "at or after
 2026-07-31T05:00Z". **That was never achievable and the run is now dead.** It blocked
@@ -829,10 +915,12 @@ session rather than the tail of a long one. The walk is the evidence this whole 
 exists to produce, and *doing it exhausted is how a leg gets recorded as walked when it
 was driven*.
 
-Order, serial: (1) `mbohw3` **DONE**; (2) B1 `-nvflph` **DONE**; (3) B2-B4
+**THIS ORDER IS FULLY DISCHARGED AS OF 2026-07-30 — the PARK half is now in force.**
+(1) `mbohw3` **DONE**; (2) B1 `-nvflph` **DONE**; (3) B2-B4
 (`-vwxyj4`/`-cyixzi`/`-zvnjef`) **VERIFY-CLOSED**; (4) C `-cxu4eu` **DONE**
-(2026-07-30, PR #515 -> `21ff727`, § 0c); (5) the tier-check bug `-ff6aue`
-**← RESUME HERE, AND IT IS THE LAST ONE. Then PARK before Stage 3(b).**
+(PR #515 -> `21ff727`, § 0c/§ 0d); (5) the tier-check bug `-ff6aue` **DONE**
+(PR #517 -> `2132155`, red-demonstrated — § 0b-bis). **Stage 2 is complete; the thread
+is PARKED with Stage 3(b) queued and named in § 0. Do not archive it.**
 
 **`-ff6aue` was RE-VERIFIED STILL LIVE 2026-07-30 before being queued**, because two
 items on this track turned out already-fixed-never-closed and B2-B4 were fixed by a
@@ -965,7 +1053,20 @@ account ceiling until 2026-07-31.
 rebase-merges so branch SHAs never become ancestors):** **#514** `dd803c0` (docs-custody
 delta audit — the walkthrough accept-leg finding, `-6zqv2w`), **#515** `21ff727`
 (**`-cxu4eu` / slice C implementation**, opened by hand after the run's publish leg
-401'd — § 0d). On #515's patch-id check the four SUBSTANTIVE commits read `-` (upstream)
+401'd — § 0d), **#516** `9c0f2ab` (slice C's lessons — the coverage control
+measurement), **#517** `2132155` (**`-ff6aue` implementation**, auto-merged by the
+factory, red-demonstrated afterwards — § 0b-bis).
+
+**BOTH RED-DEMO OBLIGATIONS ARE DISCHARGED — and BOTH state their blind spot, which is
+the half that matters.** `console-fork-drift-check`: RC=1 when an upstream digest
+moves, **RC=0 when we edit our OWN committed file** — so a green run says nothing about
+our side of the diff (`research/stage2-evidence-2026-07-29.md` § 2). `console-spec-check`
+tier gate: RC=1 on the exact input that used to report clean (§ 0b-bis). Also
+discharged and durable, in that same note's § 1: the four TUI approve-valve admissions
+with hints captured verbatim, a per-item table, and the ONE gap stated rather than
+glossed (`zvnjef` was pressed from its sweep position, so it has one capture and not
+two). **All three of those were re-requested repeatedly while already on master; if you
+are about to ask for them, read `research/stage2-evidence-2026-07-29.md` first.** On #515's patch-id check the four SUBSTANTIVE commits read `-` (upstream)
 while fabro's contentless stage-marker commits read `+`; that is correct and expected,
 not a partial merge — the rebase-merge drops the empty markers.
 
