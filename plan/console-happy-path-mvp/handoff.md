@@ -252,6 +252,17 @@ last verified against source and can skip it unless its area moved.
   enumerated six lanes and not the seventh — the row was there all along. That
   is § 6's "an absence never announces itself in a grep for the wrong token"
   catching the person quoting it, one entry after the last author said the same.
+- **2026-07-30 (SPOT CHECK ONLY — do not credit this as a delta pass).** While walking
+  the `c` accept leg (§ 0h) the live Status band on the selected `Acceptance review`
+  row was compared to its documented row and matched byte for byte:
+  `detailed-usage.md:268` = `up/down move | enter open | c accept | r reject | ? help |
+  q quit`. The blocked row selected moments earlier correctly showed no `c`. **Scope
+  searched: ONE row, one context, one moment.** Nothing else was checked. Note against
+  that: `docs/lifecycle-walkthrough.md` GAINED a new "Human accept precondition"
+  section and a renumbering of Steps 3-9 in this same session (PR #530), and no audit
+  has been run over the result — **treat the whole walkthrough as UNVERIFIED prose.**
+  Recorded because an unrecorded check is indistinguishable from one never made, not
+  because it discharges any part of the custody.
 
 ## Read-first chain
 
@@ -416,34 +427,52 @@ Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to t
 next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
 cost PR #478).
 
-### 0-RESUME. READ THIS FIRST — state at 2026-07-30T14:0xZ, written at wind-down
+### 0-RESUME. READ THIS FIRST — state at 2026-07-30T15:0xZ (supersedes the 14:0xZ block)
 
-**Stage 3(b) attempt 1 is MOSTLY WALKED and stopped on a RED PR, not on anything you
-did. Four of five legs are done. The single remaining leg is `c` accept.**
+**EVERY LEG IS NOW INDIVIDUALLY WALKED, INCLUDING `c` ACCEPT. THE MISSION IS STILL
+NOT DISCHARGED, AND THE GAP IS NOT A TECHNICALITY — READ THE SECOND TABLE.**
 
 | leg | state |
 |---|---|
-| 1 — find + groom | **WALKED** 2026-07-30 (first time ever) — § 0e |
-| 2a — admit at `p` | **WALKED** — ledger `ready` |
-| 3a — `n` set-acceptance | **WALKED** — ledger `ai-then-human` |
+| 1 — find + groom | **WALKED** 2026-07-30 — § 0e — **but on `-zweohm`, NOT on the item that was carried to `done`** |
+| 2a — admit at `p` | **WALKED** on `-6zqv2w` — ledger `ready` |
+| 3a — `n` set-acceptance | **WALKED** on `-6zqv2w` — ledger `ai-then-human` |
 | 2b — dispatch (palette drain) | **WALKED WITH AN EXPLICIT PLUGIN-ROOT OVERRIDE** — § 0g. NEVER write this as a bare "WALKED". |
-| 3b — `c` accept | **NOT PRESSED.** Blocked below. |
+| 3b — `c` accept | **WALKED 2026-07-30T15:04Z — first time ever.** § 0h |
 
-**WHY `c` IS NOT PRESSED, and do not press it until this clears.** The walk subject
-`-6zqv2w` was dispatched, its run SUCCEEDED, and it opened **PR #530 — which is RED on
-`check-e2e-tmux`** (13 other checks green). The dispatcher will not merge a red PR, so
-the item is stuck at `active` and never reaches `acceptance`. There is no valve to
-press yet. **Do not force it, and do not accept anything via `drive.py`.**
+**WHAT IS STILL OWED, stated as the deliverable and not as a caveat.** Stage 3(b) is
+**ONE CONTINUOUS SINGLE-ITEM WALK**: find → groom → admit → dispatch → monitor →
+accept. That has NOT happened. What now exists is every leg proven individually, plus
+one item (`-6zqv2w`) carried from `pending-approval` to `done` at the TUI. Three things
+separate that from the deliverable, and none of them is cosmetic:
 
-The failure is an INCOMPLETE FACTORY FIX, diagnosed:
+| gap | detail |
+|---|---|
+| **the groom leg was on a different item** | Leg 1 was walked on `-zweohm`; `-6zqv2w` was never groomed. No single item has traversed the whole path. |
+| **it was not continuous** | The pass spans THREE sessions and was interrupted twice by external failures (a dispatcher staleness refusal, then a red PR). |
+| **three interventions were needed** | a plugin-root override to dispatch at all (`-pj5g3f`); a HAND FIX of the factory's red PR (#530); and `reconcile-merged` for post-merge bookkeeping the dead drain loop never did. |
+
+**So the epic does NOT close on this.** Anyone reading the first table alone and
+archiving the thread has thrown away the deliverable, exactly as § 0 warned about
+"Stage 2 complete". The honest summary is: *the surface is proven; the unbroken pass
+is not.*
+
+**PR #530 IS MERGED — and it is NOT an unassisted factory landing.** The run
+(`01KYSGS1CYKQSQTG6PFH9SR1YM`) implemented the slice, published the PR, and then
+terminated `succeeded` while the PR was RED on `check-e2e-tmux` (13 other checks
+green). Because the run was already terminal there was nothing to steer or retry, so
+the final commit is a maintainer-authorised HAND FIX. Merged `27ccb73` at
+2026-07-30T14:53:11Z. **Do not tally #530 as a clean factory landing** — the commit
+message and a PR comment both say so, deliberately, because a future reader computing
+factory success rates would otherwise count it.
+
+The factory's miss was real and small: it correctly ADDED the `n set-acceptance` step
+to the documented walk and updated the non-exhaustive sibling assertion at
+`tmux_tui_e2e.rs:1053`, but not the EXHAUSTIVE ordered-action assertion at `:1169`.
 
     tmux_tui_e2e.rs:1169  assertion `left == right` failed
       left:  ["set-acceptance:...dummy1:ai-then-human", "approve:...dummy1", "accept:...dummy1"]
       right: ["approve:...dummy1", "accept:...dummy1"]
-
-The implementation correctly ADDED the `n set-acceptance` step to the documented walk —
-exactly what `-6zqv2w` asked for — and did NOT update the E2E's expected action list.
-Small, real, and the correct gate caught it.
 
 **A NEW FINDING THAT EXPLAINS HOW A RED PR GOT PUBLISHED AT ALL — file it if it is not
 filed yet.** The janitor gate is `just check`, whose target list is THIRTEEN entries
@@ -463,64 +492,87 @@ is useless".
 **WHAT TO DO NEXT, in order:**
 
 1. **Re-measure everything** (§ "Reactivating a parked thread"). Lanes move under other
-   sessions and the factory. Every claim below is timestamped, including this one.
-2. **Resolve PR #530.** It is the factory's slice, not yours to hand-fix casually — but
-   it is a one-line test-expectation update. Decide with the maintainer whether to fix
-   the assertion or let the run's poll exhaust and re-dispatch. Until #530 merges,
-   leg 3b cannot happen.
-3. **Then press `c`** once `-6zqv2w` RESTS at `acceptance`. It carries
-   `acceptance_policy='ai-then-human'`, set at the TUI, so it SHOULD park for a human.
-   **If it reaches `done` without ever presenting the valve, the override did not hold —
-   that is a FINDING to report, not to paper over.**
+   sessions and the factory. Every claim here is timestamped, including this one.
+2. **Run the ONE CONTINUOUS PASS on a SINGLE FRESH ITEM.** That is the whole remaining
+   deliverable. Pick a `backlog` item, groom it with `h`, admit it at `p`, press `n`
+   BEFORE it leaves the operator window, drain it, monitor, accept at `c` — one item,
+   one sitting. Do NOT assemble it from the legs already walked; that is precisely what
+   this thread has done three times and it is not the deliverable.
+3. **Expect the same three interventions and decide in advance how you will record
+   them**: the plugin-root override (`-pj5g3f`), a possible red PR on a gate the
+   janitor does not run (`-drn`), and `reconcile-merged` if the drain loop dies before
+   the merge. Each is legitimate; each must be named in the record rather than smoothed
+   over. A pass needing all three is still worth having — it is just not a clean one,
+   and the difference is the whole point of this thread.
 4. Capture evidence live: Status-band hint BEFORE each keypress, the valve's
    `Target: <exact id>` read back before Enter, and a ledger check after. Never
    reconstruct a capture afterwards.
 
-**THE COCKPIT IS STILL RUNNING AND IS DELIBERATELY NOT DEFAULT-CONFIGURED.** tmux
-`happy-path-tui`, PID 3412363 at wind-down, ONE live client, binary built
-2026-07-30T10:34:30Z. It was launched with the plugin-root override because **a DEFAULT
-OPERATOR CANNOT DISPATCH ON THIS HOST TODAY** (`-pj5g3f`, unfixed). Exact form — the
-env var does NOT survive `just tui`, it must be injected INSIDE the credential wrapper:
+**COCKPIT STATE AT WIND-DOWN.** tmux `happy-path-tui`, **PID 1883911**, ONE live
+client, binary rebuilt **2026-07-30T14:52:52Z** from `be09e26` — current for all
+runtime code (the only later commit, `27ccb73`, is test-only and does not enter the
+release binary). Launched with the plugin-root override because **a DEFAULT OPERATOR
+CANNOT DISPATCH ON THIS HOST TODAY** (`-pj5g3f`, unfixed — entry `[0]` of
+`installed_plugins.json` is still `58a6467325e7`). The env var does NOT survive
+`just tui`; it must be injected INSIDE the credential wrapper:
 
     /usr/local/bin/with-livespec-env.sh -- env \
       LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT=/home/ubuntu/.claude/plugins/marketplaces/livespec-orchestrator-beads-fabro \
       /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro serve
 
-**THE COCKPIT IS FROZEN, AND THAT IS EXPECTED — DO NOT KILL IT AS A WEDGE.** Its
-Status band is stuck on `type a drain command | esc cancel` because the drain runs
-INLINE on the UI thread (`-htp`, a known live defect) and had been blocked **2h16m** at
-wind-down. **A live `dispatcher loop` process (PID 3514295 at wind-down) is still behind
-it**, polling PR #530's checks and holding post-run bookkeeping for three claimed items.
-Killing the cockpit kills that loop and strands `-6zqv2w`/`-u3w3er`/`-6hbfq6` worse than
-they already are. Check for it before deciding:
+That resolves build **`eacbb88ead9c` (release 0.49.3)** — MEASURED from the marketplace
+checkout's HEAD this session. § 0g's `0ea3e7bc5465` is STALE; do not re-inherit it.
 
-    for p in /proc/[0-9]*; do cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
-      case "$cmd" in *dispatcher.py*loop*--repo*livespec-console-beads-fabro*)
-        echo "drain alive: ${p#/proc/}";; esac; done
+**The cockpit is NOT frozen any more** — the drain loop returned on its own and the TUI
+unfroze, so the previous section's "do not kill it" warning has served its purpose. If
+you find it frozen again, that warning and its probe are still correct: check for a
+live `dispatcher.py loop` behind it before deciding, and key the probe on `python3` so
+it cannot self-match the shell running it (mine did).
 
-If that prints nothing the drain has returned and the cockpit is safe to quit with `q`.
-If it prints a PID, leave both alone until you have decided what to do about PR #530.
+If you relaunch, `ps` by `/proc/*/exe` first (NOT `ps | grep`, which self-matches),
+keep exactly ONE client, and rebuild if any `console-*` crate SOURCE has moved — a
+test-only commit does not require it, but verify rather than assume.
 
-If you relaunch, `ps` by `/proc/*/exe` first (NOT `ps | grep`, which self-matches), keep
-exactly ONE client, and rebuild if any `console-*` crate has moved.
+**LEDGER AT WIND-DOWN 2026-07-30T15:0xZ (re-measure — a claim with a timestamp):**
+master `27ccb73`. `-6zqv2w` **`done`** (accepted at the TUI `c` valve, § 0h);
+`-u3w3er` `done`; **`-6hbfq6` still `active` though `886011d` MERGED** — a second live
+instance of `-3lxx7t`, owed a `reconcile-merged`. `pending-approval`: `-ectqye`
+(LEAVE IT, § 3), `-ekb5vq`, `-pj5g3f`, `-2ckgiy`, `-3lxx7t`. `backlog`: the three new
+items below.
 
-**LEDGER AT WIND-DOWN (re-measure — this is a claim with a timestamp):** master
-`c35014b`, primary clean. `-6zqv2w` `active` (`ai-then-human`), `-6hbfq6` `active`,
-`-u3w3er` `active` — note `-6hbfq6`'s run ENDED while its row stayed `active`, which is
-`-3lxx7t`'s defect from the other side and may need `reconcile-merged`.
-`pending-approval`: `-ectqye` (LEAVE IT, § 3), `-ekb5vq`, `-pj5g3f`, `-2ckgiy`,
-`-3lxx7t`.
+**FILED 2026-07-30 (attempt 3), all with epic `tracks` edges:**
 
-**FILED THIS SESSION**, all with epic `tracks` edges: `-pj5g3f` (console resolves a
-stale entry `[0]` of a mixed-version `installed_plugins.json`; carries TWO added
-findings — the credential wrapper SCRUBS `LIVESPEC_CONSOLE_*` so the documented
-override is unreachable via `just tui`, and concurrent sessions resolving different
-builds re-pin the fork fixture incompatibly and block each other's pushes
-indefinitely), `-2ckgiy` (the `h` handoff verb shipped undocumented), `-3lxx7t`
-(`active` means CLAIMED, not EXECUTING). New drain evidence added to `-ectqye`.
+- **`-drn`** — `just check`'s 13-target list omits `check-e2e-tmux`, so a run can go
+  green through implement -> janitor -> review -> publish and open a PR that CI
+  immediately fails. This is exactly what happened to #530. Recipe read at source.
+- **`-3tg` (P1)** — our fork's `workflow.toml` lacks upstream's
+  `[run.integrations.github.permissions]` block, so Fabro builds no mintable token
+  source and in-sandbox `gh` 401s past the ~60-min installation-token TTL. **This
+  DIAGNOSES § 0d's recorded-as-unexplained 401**: upstream's own comment says `git push`
+  is refreshed separately via origin-URL rotation while `gh` reads a static token minted
+  once at dispatch — which is precisely the push-succeeded/gh-401 contradiction § 0d
+  could not resolve. The gate's own rationale is "upstream once fixed the pr-stage
+  publish leg and our fork silently kept the broken one for three weeks"; this is the
+  publish leg AGAIN.
+- **`-htz`** — our committed `review_adapter` names the DEPRECATED
+  `@zed-industries/claude-code-acp`, whose `@latest` is frozen at a tombstone (0.16.2,
+  2026-03-26), while `acp_adapter` runs the current package at 0.44.0 — the same adapter
+  ~28 minor versions apart. Latent, because recent dispatches OVERRODE the adapter.
 
-**STANDING: this plan is PARKED, NOT ARCHIVED.** Stage 2 is complete; Stage 3(b) still
-owes ONE UNBROKEN PASS, and attempt 1 was interrupted twice by external failures.
+**`-pj5g3f` ESCALATED** with a new measurement: `installed_plugins.json` now holds
+THIRTEEN records under one plugin key across SIX distinct builds, entry `[0]` unchanged.
+It is no longer "entry [0] is stale" — the resolution surface is unbounded and
+diverging, and it now blocks PUSHES as well as the drain.
+
+**DO NOT PORT `-3tg`/`-htz` CASUALLY.** Both sit on maintainer-owned surfaces (dispatch
+credentials; model adapter selection), and the adapter one collides with the standing
+maintainer decision pointing `review_adapter` at Codex while the Claude subscription is
+exhausted. They are filed, not fixed, deliberately.
+
+**STANDING: this plan is PARKED, NOT ARCHIVED.** Stage 2 is complete and every Stage
+3(b) leg is now individually walked — and the epic still owes **ONE UNBROKEN
+SINGLE-ITEM PASS**, which has never happened. See the second table in § 0-RESUME for
+exactly what is missing and why the first table alone must not be read as completion.
 
 ### 0. STAGE 2 IS COMPLETE. THE THREAD IS **PARKED, NOT DONE**. START HERE.
 
@@ -864,6 +916,73 @@ Status band" as advice.** The band lagged a closed modal by ~2s (the poll interv
 a capture taken immediately after confirming showed MODAL hints while no modal was
 open. Reading the band alone would have implied an open modal. **The modal's own text
 is the reliable signal; the band is eventually-consistent.**
+
+### 0h. ATTEMPT 3, 2026-07-30 — THE `c` ACCEPT LEG IS WALKED, AND `ai-then-human` HELD
+
+**The last leg is walked at the real TUI keyboard, on a fresh binary, with exactly one
+live client.** Captured live in order, never reconstructed afterwards.
+
+Preconditions verified, not assumed. The drain loop (PID 3514295) had RETURNED, so the
+cockpit unfroze on its own — the maintainer's "frozen cockpit is expected" addendum
+was correct end to end, and killing it would have stranded three items. The running
+binary was then STALE: `c540a96` (`-u3w3er`) and `886011d` (`-6hbfq6`) had merged after
+it was built, so it was rebuilt (a REAL rebuild — it recompiled `console-tui` and
+`console-cli`) and relaunched. Exactly ONE client throughout, checked by `/proc/*/exe`.
+
+**The relaunch override, MEASURED not inherited — and the inherited value was stale:**
+
+    /usr/local/bin/with-livespec-env.sh -- env \
+      LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT=/home/ubuntu/.claude/plugins/marketplaces/livespec-orchestrator-beads-fabro \
+      /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro serve
+
+resolves build **`eacbb88ead9c` (release 0.49.3)**, read from the marketplace
+checkout's own HEAD. § 0g records `0ea3e7bc5465`; that is now WRONG and re-inheriting
+it would misdate the evidence. **A DEFAULT OPERATOR STILL CANNOT DISPATCH ON THIS HOST**
+— `installed_plugins.json` entry `[0]` is still `58a6467325e7`, unchanged since
+`-pj5g3f` was filed. The override routes around that defect; it does not repair it.
+
+**Captured at the keyboard, in order:**
+
+    BEFORE the keypress — selection on the Acceptance review row:
+      Detail : Work item: livespec-console-beads-fabro-6zqv2w
+      Status : up/down move | enter open | c accept | r reject | ? help | q quit
+      header : attention: 71
+    15:03:56Z  `c`  ->  ┌Valve┐ Accept work-item
+                        Target: livespec-console-beads-fabro-6zqv2w
+                        Enter to confirm | Esc to cancel
+    15:04:07Z  Enter -> modal closed, no error
+    15:04:32Z  ledger: lane=done status=done (was acceptance/ai-then-human at 15:01:07Z)
+               header: attention: 71 -> 70, the Acceptance review row gone
+
+**THE `ai-then-human` OVERRIDE HELD — this was the named failure case and it did not
+fire.** § 0g warned that if `-6zqv2w` reached `done` without ever presenting the valve,
+that was a FINDING. It did not: it RESTED at `acceptance` (ledger-verified at
+15:01:07Z, and the reconcile's own surface line said "parked in acceptance under
+acceptance_policy ai-then-human — awaits a human's final acceptance before done"), the
+`c accept` hint appeared, the valve opened on the right target, and the press moved it.
+So the `n set-acceptance` step § 1 added to the walk is now proven end-to-end on a real
+item, not merely reasoned from source.
+
+**A DOC-CUSTODY SPOT CHECK PASSED ON THE EXACT ROW THE WALK USES.** The live Status
+band equalled `detailed-usage.md:268` byte for byte
+(`up/down move | enter open | c accept | r reject | ? help | q quit`). Compare the
+blocked row selected moments earlier, which correctly showed no `c`.
+
+**THE SELECTION HAZARD REPRODUCED AGAIN, third recorded time.** Completing the valve
+made the row leave the Attention list and the selection silently landed on the NEXT
+row — `-ectqye`, the one item under a standing do-not-press rule. Nothing was typed to
+move it. Reading the Detail pane's `Work item:` line before every press is what keeps
+this from becoming a wrong-item valve press; it is not ceremony.
+
+**`reconcile-merged` WAS NEEDED, AND WHY THAT IS NOT "DRIVING AROUND THE CONSOLE".**
+The drain loop died before the merge, so nothing did post-merge bookkeeping and
+`-6zqv2w` sat `active` with a merged PR. The console offers NO door out of `active`
+(`status_move_targets(Lane::Active) => &[]`, ratified — the factory owns that lane), so
+this is the sanctioned guarded door from § 0d, used before for `-cxu4eu`. It returned
+`stage: done, status: green, "merged, post-merge janitor green"`, merge_sha `27ccb73`.
+**The accept VALVE itself was pressed at the TUI** — no `drive.py`, nothing accepted
+outside the cockpit. Bookkeeping through the documented door is not the same as
+discharging a leg outside the surface, and the two must not be blurred.
 
 ### 0b-bis. `-ff6aue` LANDED — and it is the natural experiment on the 401
 
@@ -1501,6 +1620,20 @@ upstream `856d699b5f7d` moving `workflow.toml`, which on review was a one-line d
 pin bump needing no port, re-pinned deliberately in #487. Re-pin with
 `just refresh-fork-upstream-pins` only AFTER reviewing what upstream changed — never to
 make a red build green.
+
+**`git fetch` BEFORE YOU RE-PIN — THE RE-PIN YOU ARE ABOUT TO MAKE MAY ALREADY EXIST.**
+Earned 2026-07-30, when this gate refused a push carrying a one-line TEST change that
+could not possibly affect `.fabro/`. The trigger was this session's own SessionStart
+hook bumping the plugin (`1fc573da09c5` -> `eacbb88ead9c`), which staled pins taken
+against the older build. Two re-pins had already landed that day — `5a6148a` (against
+`1fc573da09c5`) and `be09e26` (against `eacbb88ead9c`) — and a fetch showed master
+ALREADY carried the second, taken against the very build this host resolves. **Rebasing
+the blocked branch onto that master turned the gate green with no new pin commit.**
+Re-pinning over a newer pin restarts the ping-pong instead of ending it, so the order
+is: fetch, rebase, re-run the gate, and only re-pin if it is still red. When you do
+re-pin, put YOUR resolved build id in the `reason` as "resolved on this host as <id>" —
+the re-pin is not idempotent across hosts and the reason field is the only place that
+pattern is visible. Full measurement (13 records, 6 builds) is on `-pj5g3f`.
 
 **KNOW WHAT IT DOES NOT CATCH: it is blind to OUR OWN edits.** Verified both
 directions 2026-07-29, exit codes read UNPIPED, tree restored after each:
