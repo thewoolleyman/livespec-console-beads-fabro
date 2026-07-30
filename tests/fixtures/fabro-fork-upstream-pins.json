@@ -1,6 +1,6 @@
 {
   "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
-  "upstream_plugin_version": "0.49.3",
+  "upstream_plugin_version": "eacbb88ead9c",
   "files": [
     {
       "path": "prompts/disposition.md",

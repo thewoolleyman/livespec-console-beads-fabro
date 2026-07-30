@@ -42,8 +42,13 @@
 # livespec-impl-beads-8m2), and (c) APPENDS an
 # [environments.livespec-ci.env] table carrying the real
 # CLAUDE_CODE_OAUTH_TOKEN value read from the Dispatcher's process
-# environment and a GH_TOKEN freshly minted from the GitHub App
-# installation-token provider (github-app-auth Pillars 1+2: the dispatch
+# environment and a GITHUB_TOKEN freshly minted from the GitHub App
+# installation-token provider (the FULL name GITHUB_TOKEN, never the
+# short GH_TOKEN: gh/git prefer GH_TOKEN, and fabro re-projects its own
+# re-minted token per exec under GITHUB_TOKEN, so a projected GH_TOKEN
+# would shadow fabro's fresh value and expire past the ~60-min TTL at a
+# long run's publish node — the github-app-auth Pillar-1 anti-pattern)
+# (github-app-auth Pillars 1+2: the dispatch
 # TARGET's credential_wrapper injects the full per-wrapper set: GITHUB_APP_ID,
 # GITHUB_PRIVATE_KEY, BEADS_DOLT_PASSWORD, and CLAUDE_CODE_OAUTH_TOKEN; no
 # fleet-PAT fallback) — the run-scoped credential projection per the
@@ -73,6 +78,29 @@ graph = "workflow.fabro"
 [run]
 goal = "Implement one ready work-item per the livespec family discipline"
 
+# fabro-token-refresh part 1 — make Fabro OWN the fresh gh token.
+# Requesting a push+PR-scoped GitHub App installation token makes
+# `is_token_requested()` true, so Fabro's build_sandbox_env
+# (fabro-workflow/src/pipeline/initialize.rs) builds a MINTABLE token source and
+# re-projects a FRESH GITHUB_TOKEN into every node's ACP launch env at spawn —
+# the value the in-sandbox `gh pr create` + rebase-auto-merge arming reads.
+# WITHOUT this block Fabro builds NO token source (refresh_managed=false), so the
+# external ACP agent's `gh` falls back to the Dispatcher's STATIC overlay
+# GITHUB_TOKEN (minted once at dispatch) and 401s past the ~60-min
+# installation-token TTL on a long run's publish node. This is precisely the
+# per-exec re-mint the CREDENTIAL CHANNEL note above already ASSUMES but which
+# was never actually requested. (git push is refreshed separately via origin-URL
+# rotation at each ACP node entry — fabro-workflow acp.rs turn-entry re-mint.)
+#
+# PORTED FROM THE ORCHESTRATOR 2026-07-30. Its absence here is the diagnosed
+# cause of this thread's § 0d failure: slice C's `pr` node pushed successfully
+# and then `gh pr create` returned HTTP 401 after a 1h51m run, and the handoff
+# recorded that contradiction as UNEXPLAINED. Upstream's rationale above
+# explains both halves — push rotates, gh does not.
+[run.integrations.github.permissions]
+contents = "write"
+pull_requests = "write"
+
 [run.inputs]
 # ACP coding-agent adapter for the implement/fix/pr/review_fix nodes (the
 # IMPLEMENTER nodes). Defaults to the Claude adapter; the Dispatcher
@@ -88,11 +116,34 @@ acp_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 # The Claude ACP adapter is Claude Code under the hood, so it reads Claude
 # Code's own env — the model is pinned by prefixing ANTHROPIC_MODEL +
 # CLAUDE_CODE_EFFORT_LEVEL onto the command (fabro parses leading KEY=val
-# assignments into the child's env). KNOWN CAVEAT: some claude-code-acp
-# versions have ignored ANTHROPIC_MODEL and defaulted to haiku, so "the
-# review node actually runs on Opus 4.8" is a live acceptance check — pin a
-# recent @latest and verify the model in the run transcript.
-review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @zed-industries/claude-code-acp@latest"
+# assignments into the child's env).
+#
+# SAME PACKAGE AS `acp_adapter` ABOVE, AND VERSION-LESS FOR THE SAME REASON.
+# This used to read `npx -y @zed-industries/claude-code-acp@latest`. That name
+# is the DEPRECATED FORMER NAME of @agentclientprotocol/claude-agent-acp — npm
+# says so outright ("This package has been renamed to
+# @agentclientprotocol/claude-agent-acp"). It is not a second adapter; it is
+# this one under a dead alias.
+#
+# The consequence was the opposite of what `@latest` suggests. `@latest` on a
+# DEPRECATED package does not float — it is frozen at the tombstone (0.16.2,
+# last published 2026-03-26) forever, while the implementer node ran THE SAME
+# adapter under its current name at CLAUDE_AGENT_ACP_VERSION=0.44.0. Two nodes,
+# one adapter, ~28 minor versions apart, and the review node could never receive
+# an upstream fix. Dropping the name and the `@latest` resolves the global baked
+# into the sandbox image (livespec-dev-tooling
+# docker/fabro-sandbox/agent/Dockerfile), exactly as `acp_adapter` already does.
+#
+# The `@latest` was never a deliberate pin: it entered with the original fork
+# commit 3fa2d5c (2026-07-06) and no later commit ever touched the line.
+#
+# LIVE ACCEPTANCE CHECK, still owed: a former caveat here recorded that some
+# claude-code-acp versions ignored ANTHROPIC_MODEL and defaulted to haiku. That
+# was observed on the frozen 0.16.x line and is plausibly fixed upstream long
+# since, but "the review node actually runs on Opus 4.8" is only provable from a
+# real run — verify the model in the transcript of the next dispatch. A green CI
+# run does not substitute; CI never runs the review node.
+review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
 [run.environment]
 id = "livespec-ci"
@@ -214,7 +265,27 @@ enabled = false
 script = "git fetch --unshallow --quiet"
 
 [[run.prepare.steps]]
-script = "mise trust && mise install --quiet"
+# PORTED FROM THE ORCHESTRATOR 2026-07-30 (the credential scrub only; the
+# `livespec-step-timer` wrapper upstream also carries is deliberately NOT
+# ported here — it introduces a binary dependency on the sandbox image that
+# this fork has not verified, and a missing wrapper would fail every prepare
+# step. Tracked as a follow-up.)
+#
+# Upstream's rationale: a CREDENTIALED api.github.com request from the sandbox
+# lands in the authenticated rate-limit bucket for the App installation, which
+# the whole fleet shares; when exhausted the fetch 403s, the prepare step exits
+# 1, and the run dies before ANY agent work while the admitted work-item is
+# left stranded in `active`. Measured upstream: two dispatches died this way
+# (2026-07-26 20:02:42Z and 20:05:17Z), and the cause was reproduced at
+# 20:27:16Z — in the same sandbox, in the same second, the ANONYMOUS request
+# for the same URL returned 200 while the credentialed one returned 403.
+#
+# Anonymous is the right posture, not a workaround: this fetch reads public
+# release metadata only, so it needs no credential at all. GH_TOKEN and
+# GITHUB_API_TOKEN are scrubbed alongside GITHUB_TOKEN because mise accepts any
+# of the three. The scrub is scoped to this single command — every later step,
+# and every agent node, still sees the full credential environment.
+script = "sh -c 'mise trust && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_API_TOKEN mise install --quiet'"
 
 [[run.prepare.steps]]
 script = "uv sync --all-groups"
