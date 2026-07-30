@@ -434,7 +434,7 @@ NOT DISCHARGED, AND THE GAP IS NOT A TECHNICALITY — READ THE SECOND TABLE.**
 
 | leg | state |
 |---|---|
-| 1 — find + groom | **WALKED** 2026-07-30 — § 0e — **but on `-zweohm`, NOT on the item that was carried to `done`** |
+| 1 — find + groom | **HALF WALKED — the `h` HANDOFF is proven, the GROOM never ran.** § 0i. Supersedes § 0e's "WALKED". |
 | 2a — admit at `p` | **WALKED** on `-6zqv2w` — ledger `ready` |
 | 3a — `n` set-acceptance | **WALKED** on `-6zqv2w` — ledger `ai-then-human` |
 | 2b — dispatch (palette drain) | **WALKED WITH AN EXPLICIT PLUGIN-ROOT OVERRIDE** — § 0g. NEVER write this as a bare "WALKED". |
@@ -448,7 +448,7 @@ separate that from the deliverable, and none of them is cosmetic:
 
 | gap | detail |
 |---|---|
-| **the groom leg was on a different item** | Leg 1 was walked on `-zweohm`; `-6zqv2w` was never groomed. No single item has traversed the whole path. |
+| **the groom leg never actually ran** | § 0i. Only the `h` HANDOFF was walked (on `-zweohm`, a different item, which produced NO slices). Since groom is the ONLY route from `backlog` to `pending-approval`, the walk has no spine without it. |
 | **it was not continuous** | The pass spans THREE sessions and was interrupted twice by external failures (a dispatcher staleness refusal, then a red PR). |
 | **three interventions were needed** | a plugin-root override to dispatch at all (`-pj5g3f`); a HAND FIX of the factory's red PR (#530); and `reconcile-merged` for post-merge bookkeeping the dead drain loop never did. |
 
@@ -493,11 +493,19 @@ is useless".
 
 1. **Re-measure everything** (§ "Reactivating a parked thread"). Lanes move under other
    sessions and the factory. Every claim here is timestamped, including this one.
-2. **Run the ONE CONTINUOUS PASS on a SINGLE FRESH ITEM.** That is the whole remaining
-   deliverable. Pick a `backlog` item, groom it with `h`, admit it at `p`, press `n`
-   BEFORE it leaves the operator window, drain it, monitor, accept at `c` — one item,
-   one sitting. Do NOT assemble it from the legs already walked; that is precisely what
-   this thread has done three times and it is not the deliverable.
+2. **Run the ONE CONTINUOUS PASS.** That is the whole remaining deliverable, and § 0i
+   changes its shape — read that first. The pass is: pick a `backlog` item, press `h`,
+   **then actually RUN the emitted `claude "/…:groom <id>"` in a driver session and
+   approve a cut**, which files SLICES at `pending-approval`; admit a slice at `p`;
+   press `n` BEFORE it leaves the operator window; drain; monitor; accept at `c`.
+   **Pressing `h` is not grooming** — it emits the command and nothing else, which is
+   why § 0e's claim had to be narrowed.
+   **This contains a MAINTAINER-OWNED DECISION POINT.** The groom skill is a drafting
+   conversation in which "the maintainer OWNS the cut and the acceptance; the front-end
+   drafts and files NOTHING until approval". Schedule that; do not assume a worker
+   session can discharge it alone.
+   Do NOT assemble the pass from legs already walked — that is precisely what this
+   thread has done three times and it is not the deliverable.
 3. **Expect the same three interventions and decide in advance how you will record
    them**: the plugin-root override (`-pj5g3f`), a possible red PR on a gate the
    janitor does not run (`-drn`), and `reconcile-merged` if the drain loop dies before
@@ -732,11 +740,18 @@ vocabulary (picker/handler, tests, Help modal, and the `WorkItemMoveRequested` d
 contract prose). In BOTH cases the implementation was closer to correct than its
 descriptions were.
 
-### 0e. STAGE 3(b) ATTEMPT 1, 2026-07-30 — LEG 1 IS WALKED (first time ever)
+### 0e. STAGE 3(b) ATTEMPT 1, 2026-07-30 — THE `h` HANDOFF IS WALKED (first time ever)
 
-**The groom leg has been walked at the real TUI keyboard, on the real stack.** It was
-never blocked. Recorded first because it is the leg this thread has owed since it
-opened.
+> **SCOPE CORRECTED 2026-07-30, see § 0i — READ THAT BEFORE THIS.** This section
+> originally read "LEG 1 IS WALKED". What it verifies is the **`h` DRIVER-HANDOFF
+> OVERLAY**, exhaustively and correctly. It does NOT establish that a groom happened:
+> `groom.py:292` files slices at `pending-approval`, and `-zweohm` produced none. The
+> console's half of leg 1 is walked; the driver's half never ran. Every clause checked
+> below still holds — only the LABEL was too wide.
+
+**The driver-handoff overlay has been walked at the real TUI keyboard, on the real
+stack.** It was never blocked. Recorded first because it is the leg this thread has
+owed since it opened.
 
 Preconditions verified, not assumed: no console `serve` process and no
 `happy-path-tui` session at start (checked via `/proc/*/exe`, NOT `ps | grep`);
@@ -916,6 +931,60 @@ Status band" as advice.** The band lagged a closed modal by ~2s (the poll interv
 a capture taken immediately after confirming showed MODAL hints while no modal was
 open. Reading the band alone would have implied an open modal. **The modal's own text
 is the reliable signal; the band is eventually-consistent.**
+
+### 0i. THE GROOM LEG IS ONLY HALF WALKED — and groom is the walk's SPINE, not a nicety
+
+**§ 0e records leg 1 as "WALKED". That claim covers the `h` HANDOFF OVERLAY only. The
+groom itself never ran, and no groomed slice has ever existed in this tenant.** This is
+this thread's own named honesty hazard — a leg recorded as walked when only part of it
+was — and it is recorded here rather than quietly amended because the mission depends
+on it.
+
+**The mission has always said so, in its own words** (§ "Mission"):
+
+> groom (via LLM-driver handoff) → **slices** admitted at the approve valve → ready →
+> dispatched (palette drain) → active/monitored → acceptance → accept → done.
+
+**Slices.** The thing admitted at the `p` valve is the OUTPUT of a groom, not the
+groomed item.
+
+**The evidence, four links, each checked at source 2026-07-30:**
+
+1. `groom.py:292` (orchestrator, marketplace `eacbb88ead9c`) constructs each approved
+   slice with `status="pending-approval"`. **Groom is the producer of approve-valve
+   work.**
+2. `-zweohm`, § 0e's groom subject, is **still `backlog`**, has **zero** items depending
+   on it, and its only edge is `parent-child` to `-6msemd`. **No slice was ever filed.**
+3. `status_move_targets(Lane::Backlog) => &[Lane::Ready, Lane::Blocked]`
+   (`console-application/src/lib.rs`) — and `drive.py --action move:` accepts only
+   `backlog|ready|blocked`. **There is NO operator route from `backlog` to
+   `pending-approval`.**
+4. Therefore groom is **load-bearing for the walk's spine**. Without it the `p` approve
+   leg has nothing to act on that originated from a backlog item, and the walk cannot be
+   continuous by construction.
+
+**WHAT § 0e DID PROVE, and it is worth keeping.** Every clause it checked against
+`SPECIFICATION/contracts.md:690` is valid and independently useful: the overlay renders
+full-width, emits `claude "/livespec-orchestrator-beads-fabro:groom <id>"` id-only with
+no prompt file, the id matches the selection, `Copied` appears zero times, and the lane
+correctly does not move. **The CONSOLE's half of leg 1 is genuinely walked.** What was
+never done is the DRIVER's half — opening that session, running the groom, and approving
+a cut.
+
+**WHY THAT HALF IS NOT A FORMALITY.** `/livespec-orchestrator-beads-fabro:groom` is a
+"read-only drafting conversation — the maintainer OWNS the cut and the acceptance; the
+front-end drafts and files NOTHING until approval". So the unbroken pass contains a
+**maintainer-owned decision point** partway through, which no worker session can
+discharge alone. Any plan for the continuous walk has to schedule that, not assume it.
+
+**HOW THE OVERSTATEMENT HAPPENED, because the mechanism recurs.** § 0e verified the
+console-side contract exhaustively and truthfully, then named the result by the LEG
+("the groom leg has been walked") rather than by what was verified ("the groom HANDOFF
+renders and emits correctly"). The lane not moving was read as confirmation — "a groomed
+item stays `backlog` throughout" — when it is equally consistent with no groom having
+happened at all. **A check that cannot distinguish success from absence confirms
+nothing**, which is this track's dominant defect class (correct-looking state that
+nothing was checking) reappearing inside its own evidence.
 
 ### 0h. ATTEMPT 3, 2026-07-30 — THE `c` ACCEPT LEG IS WALKED, AND `ai-then-human` HELD
 
@@ -1422,7 +1491,8 @@ list and the selection landed on it twice during navigation; re-verify the `Targ
 line before any press near it.
 
 Then park with the Stage 3(b) walk legs QUEUED and named, not attempted: the groom leg
-(STRUCK — it needed neither; WALKED 2026-07-30, § 0e) and ONE CONTINUOUS
+(STRUCK — it needed neither; the `h` HANDOFF walked 2026-07-30 § 0e, but the GROOM
+ITSELF has never run — § 0i) and ONE CONTINUOUS
 single-item walk (find → groom → admit → dispatch → monitor → accept). Individual legs
 are now proven; what is missing is one unbroken pass.
 
@@ -1714,9 +1784,11 @@ Then, in order:
    admissions of 2026-07-29 prove the approve valve at the keyboard more
    strongly than one `-sreeqc` re-walk would. Do NOT re-walk it. `-u3w3er`
    stays UNFIXED and was simply never triggered — record it that way, never
-   as disproven.** **The groom leg is WALKED (2026-07-30, § 0e) and never
-   needed the ratification or the transport — that clause was a phantom
-   blocker and is struck.** Still owed for Stage 3(b): ONE CONTINUOUS
+   as disproven.** **The `h` DRIVER-HANDOFF is WALKED (2026-07-30, § 0e) and
+   never needed the ratification or the transport — that clause was a phantom
+   blocker and is struck. But the GROOM ITSELF has never run (§ 0i), and since
+   groom is the only route from `backlog` to `pending-approval`, that half is
+   the walk's spine.** Still owed for Stage 3(b): ONE CONTINUOUS
    single-item walk (find → groom → admit → dispatch → monitor → accept).
    Attempt 1 got legs 1, admit and `n`, then stopped at the dispatch
    refusal (§ 0f) — so every leg except `c` accept is now individually
