@@ -182,6 +182,20 @@ push = false
 # red-green-replay gate (livespec-dev-tooling v0.11.0, bumped
 # family-wide) passes machine/empty checkpoint commits naturally, so
 # the interim skip_git_hooks=true escape from the probe is retired.
+#
+# PORTED VERBATIM FROM UPSTREAM 2026-07-30 (plugin 1fc573da09c5, their
+# `fix(factory): raise Fabro checkpoint commit timeout`). Upstream's own
+# rationale: "Gate-heavy repositories can legitimately spend minutes in
+# those hooks. Fabro's stock 30-second checkpoint budget destroyed
+# completed work when `git add` or `git commit` crossed that ceiling
+# (ledger bd-ib-6ka)."
+# This repo is exactly that case, and the pairing with `skip_git_hooks =
+# false` directly above is what makes it load-bearing here rather than
+# theoretical: because hooks RUN on checkpoint commits, a checkpoint pays
+# our full gate cost. Measured on this host 2026-07-30 — pre-commit
+# 91.76s, pre-push check 251-273s — i.e. multiples of the 30s stock
+# budget that upstream says destroyed work.
+commit_timeout = "10m"
 skip_git_hooks = false
 exclude_globs = ["**/.venv/**", "**/node_modules/**", "**/.cache/**"]
 
