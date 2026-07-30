@@ -486,6 +486,21 @@ env var does NOT survive `just tui`, it must be injected INSIDE the credential w
       LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT=/home/ubuntu/.claude/plugins/marketplaces/livespec-orchestrator-beads-fabro \
       /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro serve
 
+**THE COCKPIT IS FROZEN, AND THAT IS EXPECTED — DO NOT KILL IT AS A WEDGE.** Its
+Status band is stuck on `type a drain command | esc cancel` because the drain runs
+INLINE on the UI thread (`-htp`, a known live defect) and had been blocked **2h16m** at
+wind-down. **A live `dispatcher loop` process (PID 3514295 at wind-down) is still behind
+it**, polling PR #530's checks and holding post-run bookkeeping for three claimed items.
+Killing the cockpit kills that loop and strands `-6zqv2w`/`-u3w3er`/`-6hbfq6` worse than
+they already are. Check for it before deciding:
+
+    for p in /proc/[0-9]*; do cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
+      case "$cmd" in *dispatcher.py*loop*--repo*livespec-console-beads-fabro*)
+        echo "drain alive: ${p#/proc/}";; esac; done
+
+If that prints nothing the drain has returned and the cockpit is safe to quit with `q`.
+If it prints a PID, leave both alone until you have decided what to do about PR #530.
+
 If you relaunch, `ps` by `/proc/*/exe` first (NOT `ps | grep`, which self-matches), keep
 exactly ONE client, and rebuild if any `console-*` crate has moved.
 
