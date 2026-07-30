@@ -1016,6 +1016,46 @@ task, three builds.
 requires keyword-only `local_repo`. The example as written raises `TypeError`. Minor,
 but it is the plugin's own LLM-facing driving prose, so it misleads every runtime.
 
+**THE DRAIN LEG IS BLOCKED — `-ccycuk` IS HOST-ONLY-REFUSED, AND THE COCKPIT SAID
+NOTHING (FOURTH TIME TODAY).** Palette drain at 18:32:51Z on a fresh binary, one client.
+The drain RETURNED (it did not even freeze the cockpit) and `-ccycuk` stayed `ready`.
+Journal, 11 s later:
+
+    {"stage": "loop-pick", "budget": 50, "picked": [], "dry_run": false}
+    stage: host-only-refused  status: failed
+    detail: "factory-safety refusal: ...-ccycuk ... declares an edit under
+      .github/workflows/, a withheld sandbox capability. It MUST NOT be dispatched to a
+      fabro sandbox ... If the workflow path is citation-only, set the recorded override
+      with `set-workflow-scope-override:<id>:citation-only`, or add an inline negation
+      declaration stating that the item ships no files under .github/workflows/."
+
+**THIS IS PARTLY MY OWN AUTHORING AND THAT IS THE INTERESTING PART.** Slice A's
+description says, deliberately and prominently, *"this slice READS
+`.github/workflows/ci.yml` and MUST NOT create or update any file under
+`.github/workflows/`"* — which is exactly the "inline negation declaration" the refusal
+says would satisfy it. It was refused anyway. **So the factory-safety check appears to
+fire on the PATH MENTION rather than the INTENT, which inverts the incentive: it
+rewards not writing the constraint down.** Filed as part of `-w7d`; the matcher lives in
+`_dispatcher_host_only.py` and should be MEASURED before anyone "fixes" it.
+
+**AND THE REMEDY IS UNREACHABLE FROM THE COCKPIT.**
+`set-workflow-scope-override:<id>:citation-only` is a HUMAN VALVE
+(`_drive_policy_valves.py:128`) and the console binds NO KEY to it — the per-item verb
+set is `p r m n k g f s h`. So an operator whose dispatch is refused for factory-safety
+cannot clear it without leaving the cockpit. Filed as **`-w7d`**.
+
+**THREE DISTINCT SILENT REFUSAL PATHS ARE NOW ON RECORD IN ONE DAY**, all invisible at
+the cockpit: `dispatcher-staleness-refused` (§ 0f), `human-valve` `invalid-source-state`
+(the `p` press above), and `host-only-refused` (this one). All four instances are on
+`-ectqye`, whose framing should harden: the diagnostics are RICH, ACTIONABLE and ALREADY
+WRITTEN — one of them literally names the command that would unblock the operator — and
+they are discarded at the presentation boundary. That is a smaller fix and a bigger
+payoff than "failed commands persist no diagnostic" suggests.
+
+**STATE OF THE PASS: legs 1 (find), groom, and `n` are WALKED; `p` was correctly refused
+(not a leg failure); the DRAIN leg is BLOCKED on `-w7d` and `c` is unreachable behind
+it.** `-ccycuk` remains `ready` + `ai-then-human` — the staged asset. Do not re-stage it.
+
 **PR #543 MERGED (`bb53f53`) during this attempt** — the fork sync carrying upstream's
 GitHub token-refresh block, i.e. the fix for § 0d's 401. **A dispatch started AFTER this
 commit is materially safer than one started before**, because a run whose `pr` node is
