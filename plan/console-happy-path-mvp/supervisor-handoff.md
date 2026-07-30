@@ -7,21 +7,47 @@
 > file through the skill becomes legitimate once that goal is demonstrably done,
 > and only if the regeneration preserves the Corrections log below.
 
-## RESUME HERE — state as of 2026-07-30T02:10Z (supervisor wind-down)
+## RESUME HERE — state as of 2026-07-30T10:20Z (Stage 3(b) walk IN FLIGHT)
 
-**This section is the ONLY thing a fresh supervisor session inherits.** The previous
-supervisor kept a detailed `.obligations` file at
-`tmp/overseer/console-happy-path-mvp-supervisor/.obligations` (untracked, ~1900 lines).
-It still exists on disk and is worth reading, but it is NOT handed to you — this file is.
+**This section is the ONLY thing a fresh supervisor session inherits.** The
+predecessor's 1966-line `.obligations` is ARCHIVED beside the live one as
+`tmp/overseer/console-happy-path-mvp-supervisor/.obligations.archive-2026-07-29`
+(untracked). The LIVE `.obligations` at that directory is short and current —
+read that, not the archive.
 
 ### Where the thread actually stands
 
-**STAGE 2 IS COMPLETE. The thread is PARKED, NOT ARCHIVED — deliberately.**
-All eight Stage-2 items are `closed`: `-dm5f7q` (slice A), `-mbohw3` (predicate
-wiring), `-nvflph` (B1 move-picker), `-vwxyj4`/`-cyixzi`/`-zvnjef` (B2-B4,
-verify-closed on a real pre-existing violation — see below), `-cxu4eu` (C,
-driver-handoff), `-ff6aue` (the tier-check bug). Master was `fa55060` at wind-down.
-Do NOT read "Stage 2 complete" as "thread done": the three Stage 3(b) legs remain.
+**THE THREAD IS NO LONGER PARKED. Stage 3(b) legs 2+3 were AUTHORISED by the
+maintainer on 2026-07-30 and the walk is RUNNING.** Do not re-park it on the
+strength of an older section below; where this block and anything further down
+disagree, THIS BLOCK IS NEWER.
+
+Stage 2 remains complete — all eight items `closed` (`-dm5f7q` slice A, `-mbohw3`
+predicate wiring, `-nvflph` B1 move-picker, `-vwxyj4`/`-cyixzi`/`-zvnjef` B2-B4
+verify-closed on a real pre-existing violation, `-cxu4eu` slice C driver-handoff,
+`-ff6aue` the tier-check bug).
+
+The three maintainer decisions of 2026-07-30, which supersede the queue below:
+
+1. **Legs 2+3 RUN NOW**, on `-6zqv2w`, at the TUI keyboard: `p` admit → `ready` →
+   palette-drain dispatch → `n` set-acceptance BEFORE `acceptance` → monitor →
+   `c` accept. The earlier "defer to a fresh session" deferral is LIFTED.
+2. **Leg 1 (groom) is OUT of this walk** and routed elsewhere: it is blocked on an
+   orchestrator-side verb-vocabulary ratification that
+   `livespec-orchestrator-beads-fabro` has NOT authored (verified on the forge
+   2026-07-30T10:00Z — its `SPECIFICATION/proposed_changes/` holds one unrelated
+   file). A planning agent was dispatched INTO that repo to author a full plan for
+   it. That repo has a live agent but NO supervisor session, so the charter's
+   peer-handoff protocol has nobody to hand to — this stays a maintainer-routed
+   item, not a peer obligation.
+3. **`-sreeqc` is DISCHARGED**, not owed. The four clean TUI `p` admissions of
+   2026-07-29 (`research/stage2-evidence-2026-07-29.md` §1, "No silent failure on
+   any press") prove the approve valve at the real keyboard more strongly than one
+   re-walk would. `-u3w3er` remains unfixed and was simply never TRIGGERED —
+   record it that way; it was not disproven.
+
+**What still stands between here and ARCHIVED:** the walk's own outcome, and
+leg 1. The epic does not close on legs 2+3 alone.
 
 ### First action on resume — in this order
 
@@ -40,7 +66,7 @@ Do NOT read "Stage 2 complete" as "thread done": the three Stage 3(b) legs remai
    already been made. Do not repeat that.
 3. Then pick up the queued work below.
 
-### Queued, nothing blocking
+### Queued — SUPERSEDED 2026-07-30 by the three decisions above; kept for context
 
 - **Stage 3(b), the mission's remaining evidence** — the groom leg; one continuous
   single-item walk; the `-sreeqc` approve re-walk post `-u3w3er`. The maintainer
@@ -48,6 +74,9 @@ Do NOT read "Stage 2 complete" as "thread done": the three Stage 3(b) legs remai
   recorded as walked when it was driven." A walk needs a FRESH `just tui` build and a
   `ps` for stray `serve` processes first — the single-operator MVP assumes exactly ONE
   live client, and a stale cockpit proves nothing about current master.
+  **Status 2026-07-30:** the deferral is LIFTED and the walk is running; the groom leg
+  is routed out; `-sreeqc` is discharged. The cockpit-hygiene preconditions in this
+  bullet REMAIN in force for every walk — they are the durable part of it.
 - **`-6zqv2w`** (bug: lifecycle-walkthrough Steps 5-7 unreachable under `acceptance_mode:
   ai-only`) sits `pending-approval` ON PURPOSE. Admitting it at the TUI `p` valve is
   itself a walk leg, and its subject matter IS the walkthrough 3(b) exercises.
@@ -75,8 +104,22 @@ Do NOT read "Stage 2 complete" as "thread done": the three Stage 3(b) legs remai
   runs generally: a concurrent orphaned run survived 3h25m in `waiting` unkilled. The
   previous supervisor over-generalised this; treat an escalate answer as same-session
   work without asserting a universal 2h fuse.
-- **Host dispatch cap is 2, shared across every tenant.** Blocked runs hold slots.
-  Raising `host_dispatch_cap` is a maintainer-owned `.livespec.jsonc` lever.
+- **The host ceiling is 10, NOT 2 — do not plan around a 2-slot ceiling.** Corrected
+  by the maintainer 2026-07-30 after this charter's previous figure was relayed to
+  them as a live constraint. The effective host-wide limit is fabro's own
+  `max_concurrent_runs = 10`, under `[server.scheduler]` in
+  `/home/ubuntu/.fabro/settings.toml` (read there, measured 2026-07-30).
+  `host_dispatch_cap` (orchestrator config, default 2) is a SECOND mechanism that
+  duplicates that ceiling poorly, and it is being retired by
+  `livespec-orchestrator-beads-fabro`'s `plan/retire-host-dispatch-cap/` thread.
+  Treat "wait for a slot, the cap is 2" as a dead premise. `handoff.md` §"Next
+  action" item 4 still carries the old figure; custody of that file is the worker's.
+  **The transferable lesson is not the number.** An inherited operational constant
+  is a claim with a timestamp, exactly like a filed work-item — and this one was
+  re-relayed to the maintainer as current without ever being read at its source. A
+  config VALUE gets verified in the config FILE before it is used as an argument,
+  and the same rule the charter already imposes on work-items applies to every
+  number a successor inherits here.
 - **B2-B4 were REAL gaps, not census over-reporting.** They were filed 2026-07-27T23:48Z
   and `status_move_targets` was narrowed at 2026-07-28T01:24:21Z — filed ~1h36m before
   the fix. The pre-fix table violated all three ratified MUST NOTs at once.
@@ -759,3 +802,23 @@ Earned on this track:
   send-keys form does not submit" correction says the same thing: the contract had
   it measured and documented while this session was inventing a theory. Twice now.
   Re-read the shipped contract when amending anything here.
+- **An inherited operational CONSTANT is a claim with a timestamp, and this charter
+  had already written that rule for work-items only.** On the 2026-07-30 resume the
+  supervisor built a maintainer-facing recommendation on §"Factory facts"' "host
+  dispatch cap is 2, blocked runs hold slots" — presented to the maintainer as a
+  live constraint on whether off-happy-path items could be dispatched during the
+  Stage 3(b) walk. The maintainer corrected it: the ceiling is `max_concurrent_runs
+  = 10` in `/home/ubuntu/.fabro/settings.toml`, and `host_dispatch_cap` is
+  duplicated tech debt already being retired in another repo. Verifying it took one
+  `grep` of the config file — less effort than the paragraph that relayed it.
+  The failure is NOT that the number went stale; numbers do. It is that the charter
+  already carried §"A filed item is a claim with a timestamp. Re-read any
+  work-item, bug or status before reporting it as current", and the supervisor
+  applied it diligently to every work-item it named while treating the facts
+  section's constants as settled background. **The rule was scoped to the artifact
+  class that had bitten the track before, so it did not cover the next one.**
+  A successor should read §"Factory facts that took a day to establish — do not
+  re-derive" as "do not re-DERIVE these; do re-READ any of them you are about to
+  put in front of the maintainer." Re-deriving a measurement is expensive;
+  confirming a config value at its source is not, and only one of those is what
+  that heading is warning you off.
