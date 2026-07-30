@@ -1168,8 +1168,13 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     let actions = fixture.actions()?;
     assert_eq!(
         actions,
-        vec![format!("approve:{ITEM_ID}"), format!("accept:{ITEM_ID}")],
-        "the walk must issue exactly the documented approve/accept actions for {tenant}"
+        vec![
+            format!("set-acceptance:{ITEM_ID}:ai-then-human"),
+            format!("approve:{ITEM_ID}"),
+            format!("accept:{ITEM_ID}"),
+        ],
+        "the walk must issue exactly the documented \
+         set-acceptance/approve/accept actions for {tenant}"
     );
     Ok(())
 }
