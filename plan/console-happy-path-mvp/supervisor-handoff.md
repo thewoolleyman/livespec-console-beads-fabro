@@ -684,7 +684,9 @@ Repo-specific, each earned:
 - **Edit `.livespec.jsonc` BY HAND.** `drive --action set-config:<k>:<v>`
   round-trips the file through `json.dumps` and silently strips every comment
   while reporting green (`bd-ib-lmi5`).
-- **`gh` is pinned to 2.46.0** — `gh pr checks` has no `--json` there.
+- **Use `gh pr checks --json name,bucket` for CI polling.** Current host guidance
+  supports JSON output; remember that pending checks exit 8, so inspect the JSON
+  buckets instead of treating the non-zero status as a hard failure.
 - **A fresh worktree cannot push until the worktree-pack is installed.**
   `dev-tooling/` is gitignored, so a new worktree has no pack and the pre-push
   `check-baseline` fails with `worktree_pack_absent` after burning the full check

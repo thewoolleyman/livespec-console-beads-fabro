@@ -25,7 +25,8 @@ One mechanism, one thread: identity derivation in the adapters → the
    `attention_item_version` :2547-2561, `not_observed` stable id :1784-1803.
 3. `crates/console-eventstore/src/lib.rs` — unique index (statement opens :48), `insert or ignore`
    :486, duplicate short-circuit :744-752.
-4. `AGENTS.md` — credential wrapper, mutation protocol, `gh` 2.46.0 gotchas.
+4. `AGENTS.md` — credential wrapper, mutation protocol, `gh pr checks --json`
+   polling guidance.
 
 ## Status is read live, never stored here
 
