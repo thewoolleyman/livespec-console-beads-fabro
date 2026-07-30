@@ -161,11 +161,11 @@ fn assert_store_side_effects(store_path: &Path) -> HarnessResult<()> {
 /// Lanes, Settings): `?` opens auto-focused to the focused pane's section; the
 /// modal is a bordered window with a 3-character border on each side and on top
 /// and bottom, never wider than the viewport; a LEFT-side section menu beside a
-/// RIGHT-side text pane whose content switches as the menu is navigated (and
-/// which left/right never scroll); `esc to exit` is printed at the bottom at all
-/// times; the modal closes ONLY on `Esc` (a non-Esc key keeps it open and the
-/// underlying view neither switches nor scrolls); and Esc returns focus to the
-/// pane the operator was on.
+/// RIGHT-side text pane whose content switches as the menu is navigated, with
+/// left/right choosing the Help pane focus; `esc to exit` is printed at the
+/// bottom at all times; the modal closes ONLY on `Esc` (a non-Esc key keeps it
+/// open and the underlying view neither switches nor scrolls); and Esc returns
+/// focus to the pane the operator was on.
 #[test]
 #[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
 fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
@@ -245,21 +245,17 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
         "the right pane content must switch away from the Lanes text:\n{events}"
     );
 
-    // --- left / right do NOT scroll or change the right pane ---
-    console.send_keys(&["Left"])?;
-    let after_left = console.wait_for_settled("> Events", RENDER_TIMEOUT)?;
-    assert!(
-        after_left.contains("event timeline") && !after_left.contains("lane board"),
-        "Left must be inert (no section change, no scroll):\n{after_left}"
-    );
+    // --- right focuses the text pane; down scrolls it without changing section ---
     console.send_keys(&["Right"])?;
+    console.send_keys(&["Down"])?;
     let after_right = console.wait_for_settled("> Events", RENDER_TIMEOUT)?;
     assert!(
-        after_right.contains("event timeline"),
-        "Right must be inert (no section change, no scroll):\n{after_right}"
+        after_right.contains("event timeline") && !after_right.contains("lane board"),
+        "Down with Help text focused must not change the selected section:\n{after_right}"
     );
 
-    // --- up moves the menu selection back (right pane scrolls up/down only) ---
+    // --- left focuses the menu again; up moves the menu selection back ---
+    console.send_keys(&["Left"])?;
     console.send_keys(&["Up"])?; // section Events -> Lanes
     let back = console.wait_for_settled("> Lanes", RENDER_TIMEOUT)?;
     assert!(
