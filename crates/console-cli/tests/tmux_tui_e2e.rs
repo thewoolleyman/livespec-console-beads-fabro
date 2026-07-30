@@ -876,10 +876,35 @@ fn tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned() -> HarnessRes
 
 /// Step 4 of the walkthrough: `p` on the selected item opens the approve valve.
 const APPROVE_MODAL_TITLE: &str = "Approve work-item";
-/// Step 8: `c` opens the accept valve.
+/// Step 7: `c` opens the accept valve.
 const ACCEPT_MODAL_TITLE: &str = "Accept work-item";
 /// Both valve modals close on this exact affordance line.
 const VALVE_CONFIRM_LINE: &str = "Enter to confirm | Esc to cancel";
+/// The operator walkthrough must document the per-item override that makes the
+/// human accept valve reachable when the repo default is `ai-only`.
+const LIFECYCLE_WALKTHROUGH_DOC: &str = include_str!("../../../docs/lifecycle-walkthrough.md");
+
+#[test]
+fn lifecycle_walkthrough_documents_human_acceptance_precondition() {
+    for required in [
+        "### Human accept precondition",
+        "The `c accept` leg exists only when the walked item carries a human acceptance",
+        "`ai-then-human` or `human-only`",
+        "This repository's default `acceptance_mode`",
+        "auto-completes to `done`",
+        "with `n set-acceptance`",
+        "before approving the item into `ready`",
+        "## Step 3 — Set the human acceptance leg",
+        "Set acceptance",
+        "Option: ai-then-human",
+        "Press `n` before the item reaches `acceptance`",
+    ] {
+        assert!(
+            LIFECYCLE_WALKTHROUGH_DOC.contains(required),
+            "lifecycle walkthrough must bind the human acceptance precondition; missing {required:?}"
+        );
+    }
+}
 
 #[test]
 #[ignore = "requires tmux and a release binary; run via `just check-e2e-tmux`"]
@@ -1005,6 +1030,32 @@ fn launch_lifecycle_on_lanes_item(label: &str, initial_lane: &str) -> HarnessRes
     Ok(console)
 }
 
+fn set_human_acceptance_leg(
+    console: &TmuxConsole,
+    fixture: &LifecycleFixture,
+    tenant: &str,
+) -> HarnessResult<()> {
+    console.send_keys(&["n"])?;
+    let set_acceptance = console.wait_for_settled("Set acceptance", RENDER_TIMEOUT)?;
+    assert!(
+        set_acceptance.contains("ai-then-human") && set_acceptance.contains(VALVE_CONFIRM_LINE),
+        "step 3: the set-acceptance modal must default to ai-then-human for {tenant}:\n{set_acceptance}"
+    );
+    console.send_keys(&["Enter"])?;
+    let accepted_policy = console.wait_for_settled("Pending approval", RENDER_TIMEOUT)?;
+    assert!(
+        accepted_policy.contains("attention: 1"),
+        "step 3: setting acceptance policy must keep the item in the inbox for {tenant}:\n{accepted_policy}"
+    );
+    assert!(
+        fixture
+            .actions()?
+            .contains(&format!("set-acceptance:{ITEM_ID}:ai-then-human")),
+        "step 3: setting acceptance policy must emit the per-item override for {tenant}"
+    );
+    Ok(())
+}
+
 /// Walk `docs/lifecycle-walkthrough.md` end to end against one repo.
 ///
 /// The item starts in `pending-approval` so the walk crosses BOTH human valves
@@ -1040,68 +1091,71 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
         "step 2: the Status line must offer the pending-approval verb keys for {tenant}:\n{focused}"
     );
 
-    // --- Steps 3-4: `p` opens the approve valve, Enter confirms it -----------
+    // --- Step 3: `n` sets the human acceptance leg before factory handoff ----
+    set_human_acceptance_leg(&console, &fixture, tenant)?;
+
+    // --- Steps 4-5: `p` opens the approve valve, Enter confirms it -----------
     console.send_keys(&["p"])?;
     let modal = console.wait_for_settled(APPROVE_MODAL_TITLE, RENDER_TIMEOUT)?;
     assert!(
         modal.contains(VALVE_CONFIRM_LINE),
-        "step 3: the approve modal must show its confirm affordance for {tenant}:\n{modal}"
+        "step 4: the approve modal must show its confirm affordance for {tenant}:\n{modal}"
     );
     assert!(
         modal.contains("up/down change | enter confirm | esc cancel"),
-        "step 3: the Status line must switch to the modal's hints for {tenant}:\n{modal}"
+        "step 4: the Status line must switch to the modal's hints for {tenant}:\n{modal}"
     );
 
     console.send_keys(&["Enter"])?;
     let approved = console.wait_for_settled("attention: 0", RENDER_TIMEOUT)?;
     assert!(
         approved.contains("No attention item selected"),
-        "step 4: approving must empty the inbox for {tenant}:\n{approved}"
+        "step 5: approving must empty the inbox for {tenant}:\n{approved}"
     );
     assert_eq!(
         fixture.lane()?,
         "ready",
-        "step 4: approving must admit the item to `ready` for {tenant}"
+        "step 5: approving must admit the item to `ready` for {tenant}"
     );
 
-    // --- Step 5: the FACTORY advances the item; the operator cannot ----------
+    // --- Step 6: the FACTORY advances the item; the operator cannot ----------
     // `move` refuses `acceptance` (the ship-guard), so this transition is not
     // an operator keystroke and the doc must not pretend otherwise.
     fixture.factory_move("acceptance")?;
     let review = console.wait_for_settled("Acceptance review", RENDER_TIMEOUT)?;
     assert!(
         review.contains("attention: 1"),
-        "step 5: the finished item must re-enter the inbox for {tenant}:\n{review}"
+        "step 6: the finished item must re-enter the inbox for {tenant}:\n{review}"
     );
 
-    // --- Steps 6-7: `c` opens the accept valve, Enter ships the item ---------
+    // --- Steps 7-8: `c` opens the accept valve, Enter ships the item ---------
     console.send_keys(&["c"])?;
     let accept = console.wait_for_settled(ACCEPT_MODAL_TITLE, RENDER_TIMEOUT)?;
     assert!(
         accept.contains(VALVE_CONFIRM_LINE),
-        "step 6: the accept modal must show its confirm affordance for {tenant}:\n{accept}"
+        "step 7: the accept modal must show its confirm affordance for {tenant}:\n{accept}"
     );
 
     console.send_keys(&["Enter"])?;
     let shipped = console.wait_for_settled("attention: 0", RENDER_TIMEOUT)?;
     assert!(
         shipped.contains("No attention item selected"),
-        "step 7: accepting must empty the inbox for {tenant}:\n{shipped}"
+        "step 8: accepting must empty the inbox for {tenant}:\n{shipped}"
     );
     assert_eq!(
         fixture.lane()?,
         "done",
-        "step 7: accepting must ship the item to `done` for {tenant}"
+        "step 8: accepting must ship the item to `done` for {tenant}"
     );
 
-    // --- Step 8: the board shows the item in `done` --------------------------
+    // --- Step 9: the board shows the item in `done` --------------------------
     console.send_keys(&["Escape"])?;
     console.wait_for_settled("Views [focus]", RENDER_TIMEOUT)?;
     console.send_keys(&["Down", "Down"])?;
     let board = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
     assert!(
         board.contains("done (1)"),
-        "step 8: the board must show the shipped item in `done` for {tenant}:\n{board}"
+        "step 9: the board must show the shipped item in `done` for {tenant}:\n{board}"
     );
     assert!(
         board.contains("pending-approval (0)"),
