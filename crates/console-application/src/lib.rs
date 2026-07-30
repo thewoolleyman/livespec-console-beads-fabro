@@ -11260,6 +11260,14 @@ mod tests {
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
             },
+            TuiOverlay::DriverHandoff {
+                command: r#"claude "/livespec-orchestrator-beads-fabro:implement wi-ready""#
+                    .to_owned(),
+            },
+            TuiOverlay::WorkItemDetail {
+                work_item_id: "wi-ready".to_owned(),
+                scroll: 0,
+            },
             TuiOverlay::Help {
                 selected_section: 0,
                 scroll: 0,
@@ -12171,7 +12179,61 @@ mod tests {
                 &TuiInteractionState::for_view(view, 0, TuiOverlay::None),
             );
             assert!(inert.selected_work_item().is_none());
+            assert_eq!(inert.selected_driver_handoff_command(), None);
         }
+    }
+
+    #[test]
+    fn open_driver_handoff_overlay_uses_the_selected_eligible_item() {
+        let events = [
+            lane_event_with_factory_safety(
+                "evt_ready_host_only_overlay",
+                "wi-ready-host-only-overlay",
+                Lane::Ready,
+                Some("host-only-refused"),
+                "a0",
+                "ready",
+            ),
+            lane_event_with_factory_safety(
+                "evt_ready_safe_overlay",
+                "wi-ready-safe-overlay",
+                Lane::Ready,
+                None,
+                "a1",
+                "ready",
+            ),
+        ];
+        let eligible_state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+
+        let opened =
+            reduce_tui_interaction(&eligible_state, &events, TuiInteraction::OpenDriverHandoff);
+
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::DriverHandoff {
+                command: r#"claude "/livespec-orchestrator-beads-fabro:implement wi-ready-host-only-overlay""#
+                    .to_owned(),
+            }
+        );
+
+        let safe_ready_state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+            .with_selected_lane_item_index(1);
+        let safe_ready = reduce_tui_interaction(
+            &safe_ready_state,
+            &events,
+            TuiInteraction::OpenDriverHandoff,
+        );
+
+        assert_eq!(safe_ready.overlay(), &TuiOverlay::None);
+
+        let no_item_state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Active));
+        let no_item =
+            reduce_tui_interaction(&no_item_state, &events, TuiInteraction::OpenDriverHandoff);
+
+        assert_eq!(no_item.overlay(), &TuiOverlay::None);
     }
 
     #[test]
