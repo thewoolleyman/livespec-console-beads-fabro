@@ -185,16 +185,25 @@ pub trait CommandAppendStore {
     /// Append a command envelope and return whether it was inserted or deduplicated.
     fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome>;
 
+    /// List persisted commands so the append path can preserve static valve
+    /// idempotency unless the prior static row is terminal-failed.
+    fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>>;
+
     /// The count of commands already appended — a monotonic sequence (commands
     /// are append-only) used to make each repeatable operator action (a broad
-    /// MOVE, a fleet DRAIN) a distinct command so it always lands (see
-    /// [`is_repeatable_command`] and [`command_append_from_tui_effect`]).
+    /// MOVE, a fleet DRAIN, or a failed once-only valve retry) a distinct
+    /// command so it always lands (see [`is_repeatable_command`] and
+    /// [`command_append_from_tui_effect`]).
     fn command_count(&self) -> EventStoreResult<usize>;
 }
 
 impl CommandAppendStore for SqliteEventStore {
     fn append_command(&mut self, append: &CommandAppend) -> EventStoreResult<CommandAppendOutcome> {
         Self::append_command(self, append)
+    }
+
+    fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
+        Self::list_commands(self)
     }
 
     fn command_count(&self) -> EventStoreResult<usize> {
@@ -211,10 +220,14 @@ pub fn persist_tui_runtime_effects(
     let mut outcomes = Vec::new();
     for effect in effects {
         // Read the monotonic command count BEFORE each append so a repeatable
-        // action (move, drain) gets a distinct key (an earlier append in this
-        // batch bumps the count for the next).
+        // action (move, drain, or a failed once-only valve retry) gets a
+        // distinct key (an earlier append in this batch bumps the count for the
+        // next).
         let sequence = store.command_count()?;
-        let Some(append) = command_append_from_tui_effect(effect, requested_at, sequence) else {
+        let existing_commands = store.list_commands()?;
+        let Some(append) =
+            command_append_from_tui_effect(effect, requested_at, sequence, &existing_commands)
+        else {
             continue;
         };
         outcomes.push(store.append_command(&append)?);
@@ -1646,15 +1659,18 @@ fn command_append_from_tui_effect(
     effect: &TuiRuntimeEffect,
     requested_at: &str,
     sequence: usize,
+    existing_commands: &[StoredCommand],
 ) -> Option<CommandAppend> {
     match effect {
         TuiRuntimeEffect::PersistCommand(command) => {
             // The payload-LESS commands ride this arm, and a payload-less
             // command's identity has no operator-varied field at all — so a
             // repeatable one (the fleet drain) can only be distinguished here.
-            // The once-per-item valves (approve/accept) also ride this arm and
-            // are left untouched by the guard inside.
-            let command = distinguish_repeatable_command(command, sequence);
+            // The once-per-item valves (approve/accept) also ride this arm: they
+            // keep their static key unless that static row is terminal-failed,
+            // in which case a retry gets the same sequence discriminator used
+            // by repeatable actions.
+            let command = distinguish_retryable_command(command, sequence, existing_commands);
             Some(CommandAppend::new(
                 command.clone(),
                 requested_at.to_owned(),
@@ -1667,7 +1683,7 @@ fn command_append_from_tui_effect(
             command,
             payload_json,
         } => {
-            let command = distinguish_repeatable_command(command, sequence);
+            let command = distinguish_retryable_command(command, sequence, existing_commands);
             Some(CommandAppend::new(
                 command.clone(),
                 requested_at.to_owned(),
@@ -1707,10 +1723,11 @@ fn command_append_from_tui_effect(
 ///   nothing. Being payload-less is precisely WHY the distinguisher is needed —
 ///   there is no payload for the key to vary on.
 ///
-/// The once-per-item transitions are deliberately EXCLUDED and keep their static
-/// key: approve (`pending-approval -> ready`) and accept (`acceptance -> done`)
-/// are idempotent by design, so a double keypress SHOULD be absorbed rather than
-/// fire the valve twice.
+/// The once-per-item transitions are deliberately EXCLUDED from unconditional
+/// repeatability: approve (`pending-approval -> ready`) and accept (`acceptance
+/// -> done`) are idempotent by design, so a double keypress SHOULD be absorbed
+/// rather than fire the valve twice. Their failed terminal rows are handled by
+/// [`is_failed_once_only_valve_retry`] instead.
 const fn is_repeatable_command(command_type: CommandType) -> bool {
     matches!(
         command_type,
@@ -1746,6 +1763,24 @@ fn distinguish_repeatable_command(command: &CommandEnvelope, sequence: usize) ->
     if !is_repeatable_command(*command.command_type()) {
         return command.clone();
     }
+    distinguish_command(command, sequence)
+}
+
+fn distinguish_retryable_command(
+    command: &CommandEnvelope,
+    sequence: usize,
+    existing_commands: &[StoredCommand],
+) -> CommandEnvelope {
+    if is_repeatable_command(*command.command_type()) {
+        return distinguish_repeatable_command(command, sequence);
+    }
+    if is_failed_once_only_valve_retry(command, existing_commands) {
+        return distinguish_command(command, sequence);
+    }
+    command.clone()
+}
+
+fn distinguish_command(command: &CommandEnvelope, sequence: usize) -> CommandEnvelope {
     CommandEnvelope::new(
         format!("{}_{sequence}", command.command_id()),
         *command.command_type(),
@@ -1753,6 +1788,37 @@ fn distinguish_repeatable_command(command: &CommandEnvelope, sequence: usize) ->
         format!("{}:{sequence}", command.idempotency_key()),
         command.requested_by().to_owned(),
     )
+}
+
+fn is_failed_once_only_valve_retry(
+    command: &CommandEnvelope,
+    existing_commands: &[StoredCommand],
+) -> bool {
+    if !matches!(
+        *command.command_type(),
+        CommandType::WorkItemApproveRequested | CommandType::WorkItemAcceptRequested
+    ) {
+        return false;
+    }
+    let mut saw_attempt = false;
+    for stored in existing_commands.iter().filter(|stored| {
+        stored.command_type() == command.command_type().contract_name()
+            && stored.aggregate_id() == Some(command.aggregate_id())
+            && is_valve_attempt_key(stored.idempotency_key(), command.idempotency_key())
+    }) {
+        saw_attempt = true;
+        if !matches!(stored.status(), "failed" | "rejected") {
+            return false;
+        }
+    }
+    saw_attempt
+}
+
+fn is_valve_attempt_key(stored_key: &str, base_key: &str) -> bool {
+    stored_key == base_key
+        || stored_key
+            .strip_prefix(base_key)
+            .is_some_and(|suffix| suffix.starts_with(':'))
 }
 
 fn command_correlation_id(command: &CommandEnvelope) -> String {
@@ -2253,11 +2319,12 @@ mod tests {
         demo_events, distinguish_repeatable_command, doctor_report, events_tail_report,
         factory_command_from_stored, handle_pending_config_commands,
         handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
-        initial_source_seed, live_source_adapters, load_tui_events_from_store,
-        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects,
-        python_normalized_invocation, refresh_sources, render_tui_preview, resolve_console_repo,
-        run, run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
-        source_polls_from_seed, work_item_command_from_stored,
+        initial_source_seed, is_failed_once_only_valve_retry, live_source_adapters,
+        load_tui_events_from_store, observe_and_reflect_autonomous_decisions,
+        persist_tui_runtime_effects, python_normalized_invocation, refresh_sources,
+        render_tui_preview, resolve_console_repo, run, run_store_backed_tui_session,
+        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
+        work_item_command_from_stored,
     };
 
     #[test]
@@ -3837,9 +3904,9 @@ mod tests {
     fn store_backed_once_only_valves_still_dedupe() -> Result<(), ConsoleRuntimeError> {
         // The other half of the audit, and the regression this fix must NOT cause.
         // Approve and accept are SEMANTICALLY once-per-item: approving twice is a
-        // no-op, and their static per-item key is CORRECT. Widening the
-        // repeatable set must not sweep them in -- if it did, a double keypress
-        // would fire the valve twice.
+        // no-op, and their static per-item key is CORRECT while the original row
+        // is not terminal-failed. Widening the retry path must not sweep healthy
+        // valves in -- if it did, a double keypress would fire the valve twice.
         let (mut store, events) = store_with_selectable_item()?;
         let approve = valve_effect(&events, PendingValve::Approve);
         let once = [approve];
@@ -3853,6 +3920,102 @@ mod tests {
         let (repeat_actions, still_landed) = drive_effects(&mut store, &once, kind)?;
         assert!(repeat_actions.is_empty());
         assert_eq!(still_landed, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_failed_approve_can_be_retried_without_losing_replay_safety()
+    -> Result<(), ConsoleRuntimeError> {
+        const FIRST_REQUESTED_AT: &str = "2026-07-19T00:00:01Z";
+        const FIRST_HANDLED_AT: &str = "2026-07-19T00:00:02Z";
+        const RETRY_REQUESTED_AT: &str = "2026-07-19T00:00:03Z";
+        const RETRY_HANDLED_AT: &str = "2026-07-19T00:00:04Z";
+        const AFTER_SUCCESS_REQUESTED_AT: &str = "2026-07-19T00:00:05Z";
+
+        let (mut store, events) = store_with_selectable_item()?;
+        let approve = valve_effect(&events, PendingValve::Approve);
+        let once = [approve];
+
+        let first = persist_tui_runtime_effects(&mut store, &once, FIRST_REQUESTED_AT)?;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].status(), CommandAppendStatus::Inserted);
+
+        let mut failing_port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::failed());
+        let first_outcomes =
+            handle_pending_work_item_commands(&mut store, FIRST_HANDLED_AT, &mut failing_port)?;
+        assert_eq!(first_outcomes.len(), 1);
+        assert_eq!(first_outcomes[0].command_status(), "failed");
+        assert_eq!(failing_port.observed_action_ids, ["approve:wi-1"]);
+        let commands_after_failure = store.list_commands()?;
+        assert_eq!(commands_after_failure.len(), 1);
+        assert_eq!(commands_after_failure[0].status(), "failed");
+        assert_eq!(
+            commands_after_failure[0].idempotency_key(),
+            "wi-1:work_item.approve_requested"
+        );
+
+        let retry = persist_tui_runtime_effects(&mut store, &once, RETRY_REQUESTED_AT)?;
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].status(), CommandAppendStatus::Inserted);
+        assert_eq!(
+            retry[0].command_id(),
+            "cmd_work_item_approve_requested_wi-1_1"
+        );
+        let commands_after_retry = store.list_commands()?;
+        assert_eq!(commands_after_retry.len(), 2);
+        let retry_command = commands_after_retry
+            .iter()
+            .find(|command| command.command_id() == retry[0].command_id())
+            .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
+        assert_eq!(
+            retry_command.idempotency_key(),
+            "wi-1:work_item.approve_requested:1"
+        );
+        assert_eq!(retry_command.status(), "pending");
+
+        let replay = store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                retry_command.command_id().to_owned(),
+                CommandType::WorkItemApproveRequested,
+                retry_command.aggregate_id().unwrap_or_default().to_owned(),
+                retry_command.idempotency_key().to_owned(),
+                retry_command.requested_by().to_owned(),
+            ),
+            RETRY_REQUESTED_AT.to_owned(),
+            retry_command.aggregate_id().map(ToOwned::to_owned),
+            format!("corr_{}", retry_command.command_id()),
+            "{}".to_owned(),
+        ))?;
+        assert_eq!(replay.status(), CommandAppendStatus::Duplicate);
+
+        let mut succeeding_port = SimulatedWorkItemActionPort::default();
+        let retry_outcomes =
+            handle_pending_work_item_commands(&mut store, RETRY_HANDLED_AT, &mut succeeding_port)?;
+        assert_eq!(retry_outcomes.len(), 1);
+        assert_eq!(retry_outcomes[0].command_status(), "completed");
+        assert_eq!(succeeding_port.observed_action_ids, ["approve:wi-1"]);
+        let commands_after_success = store.list_commands()?;
+        assert_eq!(
+            commands_after_success
+                .iter()
+                .find(|command| command.command_id() == "cmd_work_item_approve_requested_wi-1")
+                .map(StoredCommand::status),
+            Some("failed")
+        );
+        assert_eq!(
+            commands_after_success
+                .iter()
+                .find(|command| command.command_id() == "cmd_work_item_approve_requested_wi-1_1")
+                .map(StoredCommand::status),
+            Some("completed")
+        );
+
+        let after_success =
+            persist_tui_runtime_effects(&mut store, &once, AFTER_SUCCESS_REQUESTED_AT)?;
+        assert_eq!(after_success.len(), 1);
+        assert_eq!(after_success[0].status(), CommandAppendStatus::Duplicate);
+        assert_eq!(store.list_commands()?.len(), 2);
         Ok(())
     }
 
@@ -4069,7 +4232,7 @@ mod tests {
     }
 
     #[test]
-    fn distinguish_repeatable_command_distinguishes_drain_and_leaves_the_valves_alone() {
+    fn distinguish_repeatable_command_distinguishes_drain_and_leaves_healthy_valves_alone() {
         // The pure-function contract, tested directly rather than through the
         // effect pipeline: which actions get a per-append identity, and that an
         // exact re-persist at the SAME sequence still dedupes so replay safety
@@ -4097,9 +4260,10 @@ mod tests {
             distinguished.idempotency_key()
         );
 
-        // The once-per-item valves are NOT widened into: approving or accepting an
-        // item twice SHOULD be absorbed as an idempotent no-op, so both keep their
-        // static key.
+        // The once-per-item valves are NOT unconditionally widened into:
+        // approving or accepting an item twice SHOULD be absorbed as an
+        // idempotent no-op while the original row is not terminal-failed, so the
+        // pure repeatable discriminator keeps both static.
         for (command_id, command_type, idempotency_key) in [
             (
                 "cmd_work_item_approve_requested_wi-1",
@@ -4123,6 +4287,15 @@ mod tests {
             assert_eq!(unchanged.command_id(), command_id);
             assert_eq!(unchanged.idempotency_key(), idempotency_key);
         }
+
+        let move_command = CommandEnvelope::new(
+            "cmd_work_item_move_requested_wi-1_ready".to_owned(),
+            CommandType::WorkItemMoveRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.move_requested:target_status=ready".to_owned(),
+            "operator".to_owned(),
+        );
+        assert!(!is_failed_once_only_valve_retry(&move_command, &[]));
     }
 
     #[test]
@@ -6511,6 +6684,10 @@ mod tests {
             _append: &CommandAppend,
         ) -> EventStoreResult<CommandAppendOutcome> {
             Err(EventStoreError::InvalidSequence)
+        }
+
+        fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
+            Ok(Vec::new())
         }
 
         fn command_count(&self) -> EventStoreResult<usize> {
