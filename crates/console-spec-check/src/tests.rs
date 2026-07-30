@@ -494,6 +494,32 @@ fn evaluate_accepts_reasoned_pending_todo_scenarios() {
 }
 
 #[test]
+fn evaluate_rejects_todo_reason_that_mentions_acceptance_lane_without_test_tier() {
+    let sources: [SpecSource; 0] = [];
+    let operator = vec!["Lane Mention".to_string()];
+    let nfr: Vec<String> = Vec::new();
+    let registry = vec![CoverageEntry {
+        scenario: "Lane Mention".to_string(),
+        scenario_file: "scenarios.md".to_string(),
+        test: "TODO".to_string(),
+        reason: "Pending because this covers the acceptance lane.".to_string(),
+        clauses: Vec::new(),
+    }];
+
+    let report = evaluate(&sources, &registry, &operator, &nfr);
+    let untested: Vec<(&str, &str)> = report
+        .untested_scenarios
+        .iter()
+        .map(|u| (u.scenario_file.as_str(), u.scenario.as_str()))
+        .collect();
+    assert_eq!(
+        untested,
+        vec![("scenarios.md", "Lane Mention")],
+        "domain vocabulary alone must not satisfy the TODO test-tier acknowledgement",
+    );
+}
+
+#[test]
 fn evaluate_rejects_unreasoned_pending_todo_scenarios() {
     let sources: [SpecSource; 0] = [];
     let operator = vec![
