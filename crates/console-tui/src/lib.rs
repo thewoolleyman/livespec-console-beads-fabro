@@ -20,7 +20,7 @@
 use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettingsRead,
-    FocusPane, HELP_SECTION_COUNT, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
+    FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
     OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
     TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
     ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
@@ -160,6 +160,7 @@ fn run_terminal_loop(
         state = state
             .with_detail_max_scroll(extents.detail_max_scroll)
             .with_header_max_scroll(extents.header_max_scroll)
+            .with_help_scroll_extents(extents.help_max_scroll, extents.help_page_rows)
             .with_work_item_detail_scroll_extents(
                 extents.work_item_detail_max_scroll,
                 extents.work_item_detail_page_rows,
@@ -562,8 +563,8 @@ pub fn key_event_to_terminal_input(
         KeyCode::Right => right_input(model),
         KeyCode::Tab => tab_input(model, true),
         KeyCode::BackTab => tab_input(model, false),
-        KeyCode::PageUp => help_scroll_input(overlay, false),
-        KeyCode::PageDown => help_scroll_input(overlay, true),
+        KeyCode::PageUp => page_scroll_input(overlay, false),
+        KeyCode::PageDown => page_scroll_input(overlay, true),
         KeyCode::Home
         | KeyCode::End
         | KeyCode::Delete
@@ -583,7 +584,7 @@ pub fn key_event_to_terminal_input(
 }
 
 /// Up: in a command modal, move the action selection; behind the modal Help
-/// overlay, move the left-menu section selection UP; with no overlay open, act
+/// overlay, act in the focused Help pane; with no overlay open, act
 /// within the focused pane (move the Views selection on the nav, the content
 /// selection in the content list, or scroll the Detail pane up); behind any
 /// other overlay it is the harmless content move.
@@ -591,7 +592,10 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     Some(match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
-        TuiOverlay::Help { .. } => TuiInteraction::HelpSelectPreviousSection,
+        TuiOverlay::Help { focus, .. } => match focus {
+            HelpFocus::Menu => TuiInteraction::HelpSelectPreviousSection,
+            HelpFocus::Text => TuiInteraction::HelpScrollUp,
+        },
         // The item modal is a READING surface, so up/down scroll its body
         // rather than moving a selection -- there is nothing to select in it.
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
@@ -610,13 +614,15 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     })
 }
 
-/// Down: the mirror of [`up_interaction`] (behind Help it moves the left-menu
-/// section selection DOWN).
+/// Down: the mirror of [`up_interaction`].
 const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     Some(match model.overlay() {
         TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
-        TuiOverlay::Help { .. } => TuiInteraction::HelpSelectNextSection,
+        TuiOverlay::Help { focus, .. } => match focus {
+            HelpFocus::Menu => TuiInteraction::HelpSelectNextSection,
+            HelpFocus::Text => TuiInteraction::HelpScrollDown,
+        },
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
         TuiOverlay::DriverHandoff { .. } => return None,
         TuiOverlay::None => match model.focus() {
@@ -718,11 +724,13 @@ fn content_back_interaction(model: &TuiScreenModel) -> TuiInteraction {
     TuiInteraction::FocusNav
 }
 
-/// Left: behind an overlay it is inert; otherwise it walks focus one pane toward
-/// the nav, clamped at the leftmost — the Detail pane returns to Content, the
-/// Content pane steps back (a drilled-in lane to its overview, else focus to the
-/// Views nav), and on the Views nav (leftmost) left is inert.
+/// Left: inside Help it focuses the section menu; behind any other overlay it
+/// is inert; otherwise it walks focus one pane toward the nav, clamped at the
+/// leftmost.
 fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    if matches!(model.overlay(), TuiOverlay::Help { .. }) {
+        return Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusMenu));
+    }
     if model.overlay().is_open() {
         return None;
     }
@@ -738,12 +746,13 @@ fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     Some(TuiTerminalInput::Interaction(interaction))
 }
 
-/// Right: behind an overlay it is inert; otherwise it walks focus one pane toward
-/// the Detail pane, clamped at the rightmost — the Views nav dives into Content,
-/// Content dives into Detail (on a view that has a Detail pane), and on the
-/// Detail pane (rightmost) right is inert. The Lanes view has no Detail pane, so
-/// right clamps at Content there.
+/// Right: inside Help it focuses the prose pane; behind any other overlay it is
+/// inert; otherwise it walks focus one pane toward the Detail pane, clamped at
+/// the rightmost.
 const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
+    if matches!(model.overlay(), TuiOverlay::Help { .. }) {
+        return Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusText));
+    }
     if model.overlay().is_open() {
         return None;
     }
@@ -827,12 +836,12 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
 /// modal is open they page that surface's text up/down; everywhere else they are
 /// inert. Both surfaces scroll UP and DOWN only, so no horizontal counterpart
 /// exists.
-const fn help_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTerminalInput> {
+const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTerminalInput> {
     match overlay {
         TuiOverlay::Help { .. } => Some(TuiTerminalInput::Interaction(if down {
-            TuiInteraction::HelpScrollDown
+            TuiInteraction::HelpPageDown
         } else {
-            TuiInteraction::HelpScrollUp
+            TuiInteraction::HelpPageUp
         })),
         TuiOverlay::WorkItemDetail { .. } => Some(TuiTerminalInput::Interaction(if down {
             TuiInteraction::WorkItemDetailPageDown
@@ -992,6 +1001,12 @@ pub struct RenderScrollExtents {
     /// The work-item detail modal's visible content rows, or `1` when that modal
     /// is not open or is too small to measure.
     pub work_item_detail_page_rows: usize,
+    /// The Help overlay prose pane's maximum vertical scroll offset measured
+    /// from its wrapped body, or `0` when Help is not open.
+    pub help_max_scroll: usize,
+    /// The Help overlay prose pane's visible content rows, or `1` when Help is
+    /// not open or is too small to measure.
+    pub help_page_rows: usize,
 }
 
 impl RenderScrollExtents {
@@ -1002,6 +1017,8 @@ impl RenderScrollExtents {
         header_max_scroll: 0,
         work_item_detail_max_scroll: 0,
         work_item_detail_page_rows: 1,
+        help_max_scroll: 0,
+        help_page_rows: 1,
     };
 }
 
@@ -1036,12 +1053,14 @@ pub fn render_model(
     let header_max_scroll = render_header(model, vertical[0], buffer);
     let detail_max_scroll = render_body(model, vertical[1], buffer);
     render_footer(model, vertical[2], buffer);
-    let work_item_detail_extents = render_overlay(model, area, buffer);
+    let overlay_extents = render_overlay(model, area, buffer);
     RenderScrollExtents {
         detail_max_scroll,
         header_max_scroll,
-        work_item_detail_max_scroll: work_item_detail_extents.max_scroll,
-        work_item_detail_page_rows: work_item_detail_extents.page_rows,
+        work_item_detail_max_scroll: overlay_extents.work_item_detail.max_scroll,
+        work_item_detail_page_rows: overlay_extents.work_item_detail.page_rows,
+        help_max_scroll: overlay_extents.help.max_scroll,
+        help_page_rows: overlay_extents.help.page_rows,
     }
 }
 
@@ -1275,20 +1294,16 @@ fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn render_overlay(
-    model: &TuiScreenModel,
-    area: Rect,
-    buffer: &mut Buffer,
-) -> WorkItemDetailScrollExtents {
+fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> OverlayScrollExtents {
     match model.overlay() {
-        TuiOverlay::None => WorkItemDetailScrollExtents::ZERO,
+        TuiOverlay::None => OverlayScrollExtents::ZERO,
         TuiOverlay::Search { query } => {
             render_prompt_overlay("Search", format!("/{query}"), area, buffer);
-            WorkItemDetailScrollExtents::ZERO
+            OverlayScrollExtents::ZERO
         }
         TuiOverlay::CommandPalette { query } => {
             render_prompt_overlay("Command Palette", format!(":{query}"), area, buffer);
-            WorkItemDetailScrollExtents::ZERO
+            OverlayScrollExtents::ZERO
         }
         TuiOverlay::CommandModal {
             selected_action_index,
@@ -1299,11 +1314,11 @@ fn render_overlay(
                 overlay_rect(area),
                 buffer,
             );
-            WorkItemDetailScrollExtents::ZERO
+            OverlayScrollExtents::ZERO
         }
         TuiOverlay::DriverHandoff { command } => {
             render_driver_handoff_overlay(command, area, buffer);
-            WorkItemDetailScrollExtents::ZERO
+            OverlayScrollExtents::ZERO
         }
         TuiOverlay::ValveConfirm { valve } => {
             // The modal's consent target MUST read from the SAME source `Enter`
@@ -1318,7 +1333,7 @@ fn render_overlay(
                 overlay_rect(area),
                 buffer,
             );
-            WorkItemDetailScrollExtents::ZERO
+            OverlayScrollExtents::ZERO
         }
         TuiOverlay::WorkItemDetail {
             work_item_id,
@@ -1331,21 +1346,31 @@ fn render_overlay(
             // newly-inserted sibling would otherwise slide a different
             // work-item under the same index and silently swap the record the
             // operator is reading.
-            render_work_item_detail(
-                model.work_item_by_id(work_item_id),
-                work_item_id,
-                help_overlay_rect(area),
-                buffer,
-                *scroll,
-            )
+            OverlayScrollExtents {
+                work_item_detail: render_work_item_detail(
+                    model.work_item_by_id(work_item_id),
+                    work_item_id,
+                    help_overlay_rect(area),
+                    buffer,
+                    *scroll,
+                ),
+                help: HelpScrollExtents::ZERO,
+            }
         }
         TuiOverlay::Help {
+            focus,
             selected_section,
             scroll,
-        } => {
-            render_help_overlay(help_overlay_rect(area), buffer, *selected_section, *scroll);
-            WorkItemDetailScrollExtents::ZERO
-        }
+        } => OverlayScrollExtents {
+            work_item_detail: WorkItemDetailScrollExtents::ZERO,
+            help: render_help_overlay(
+                help_overlay_rect(area),
+                buffer,
+                *focus,
+                *selected_section,
+                *scroll,
+            ),
+        },
     }
 }
 
@@ -1462,12 +1487,38 @@ fn render_work_item_detail(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayScrollExtents {
+    work_item_detail: WorkItemDetailScrollExtents,
+    help: HelpScrollExtents,
+}
+
+impl OverlayScrollExtents {
+    const ZERO: Self = Self {
+        work_item_detail: WorkItemDetailScrollExtents::ZERO,
+        help: HelpScrollExtents::ZERO,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WorkItemDetailScrollExtents {
     max_scroll: usize,
     page_rows: usize,
 }
 
 impl WorkItemDetailScrollExtents {
+    const ZERO: Self = Self {
+        max_scroll: 0,
+        page_rows: 1,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelpScrollExtents {
+    max_scroll: usize,
+    page_rows: usize,
+}
+
+impl HelpScrollExtents {
     const ZERO: Self = Self {
         max_scroll: 0,
         page_rows: 1,
@@ -1645,13 +1696,19 @@ fn help_overlay_rect(area: Rect) -> Rect {
 /// wrapped height. `esc to exit` is printed at the bottom at all times, and the
 /// modal closes ONLY on `Esc`. The text MUST stay in lock-step with the key
 /// handler and the footer hint.
-fn render_help_overlay(area: Rect, buffer: &mut Buffer, selected_section: usize, scroll: usize) {
+fn render_help_overlay(
+    area: Rect,
+    buffer: &mut Buffer,
+    focus: HelpFocus,
+    selected_section: usize,
+    scroll: usize,
+) -> HelpScrollExtents {
     Clear.render(area, buffer);
     let outer = Block::new().borders(Borders::ALL).title("Help");
     let inner = outer.inner(area);
     outer.render(area, buffer);
     if inner.width == 0 || inner.height == 0 {
-        return;
+        return HelpScrollExtents::ZERO;
     }
     // Reserve the bottom row for the always-visible `esc to exit` line; the menu
     // and the scrollable text pane share the region above it.
@@ -1663,17 +1720,23 @@ fn render_help_overlay(area: Rect, buffer: &mut Buffer, selected_section: usize,
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(HELP_MENU_WIDTH), Constraint::Min(1)])
         .split(rows[0]);
-    render_help_menu(columns[0], buffer, selected_section);
-    render_help_section_text(columns[1], buffer, selected_section, scroll);
+    render_help_menu(
+        columns[0],
+        buffer,
+        focus == HelpFocus::Menu,
+        selected_section,
+    );
+    let extents = render_help_section_text(columns[1], buffer, selected_section, scroll);
     // `esc to exit` sits on its own reserved row, so it is printed at the bottom
     // at all times regardless of the selected section or the scroll offset.
     Paragraph::new(Line::from("esc to exit")).render(rows[1], buffer);
+    extents
 }
 
 /// Render the modal Help LEFT-side section menu: one row per section (`Global
 /// actions` plus one per focusable pane), the selected row marked `>` and drawn
 /// bold/reversed, beside a right-border divider separating it from the text pane.
-fn render_help_menu(area: Rect, buffer: &mut Buffer, selected_section: usize) {
+fn render_help_menu(area: Rect, buffer: &mut Buffer, focused: bool, selected_section: usize) {
     let divider = Block::new().borders(Borders::RIGHT);
     let inner = divider.inner(area);
     divider.render(area, buffer);
@@ -1686,7 +1749,12 @@ fn render_help_menu(area: Rect, buffer: &mut Buffer, selected_section: usize) {
             };
             let line = Line::from(format!("{marker}{}", help_section_label(section)));
             if section == selected_section {
-                line.style(Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+                let modifier = if focused {
+                    Modifier::BOLD | Modifier::REVERSED
+                } else {
+                    Modifier::BOLD
+                };
+                line.style(Style::new().add_modifier(modifier))
             } else {
                 line
             }
@@ -1716,7 +1784,7 @@ fn render_help_section_text(
     buffer: &mut Buffer,
     selected_section: usize,
     scroll: usize,
-) {
+) -> HelpScrollExtents {
     let lines = help_section_lines(selected_section);
     let viewport = usize::from(area.height);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -1726,6 +1794,10 @@ fn render_help_section_text(
     paragraph
         .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
         .render(area, buffer);
+    HelpScrollExtents {
+        max_scroll,
+        page_rows: viewport.max(1),
+    }
 }
 
 /// The help lines for menu section `section`: section `0` is the `Global
@@ -1778,8 +1850,8 @@ fn global_help_lines() -> Vec<Line<'static>> {
         Line::from("?            open this help"),
         Line::from("q / ctrl-c   quit"),
         Line::from(""),
-        Line::from("In this help: up/down change the section, PgUp/PgDn scroll this pane,"),
-        Line::from("Left/Right are inert, and only Esc closes it."),
+        Line::from("In this help: left/right choose menu or text pane; up/down act there,"),
+        Line::from("PgUp/PgDn page this pane, and only Esc closes it."),
     ]
 }
 
@@ -2260,7 +2332,7 @@ mod tests {
     };
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
-        DispatcherSettingsRead, FocusPane, LaneFocus, LaneWorkItem, OperatorAction,
+        DispatcherSettingsRead, FocusPane, HelpFocus, LaneFocus, LaneWorkItem, OperatorAction,
         OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry,
         TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
         build_tui_model_for_state, header_help_section, help_section_for_view,
@@ -2629,6 +2701,7 @@ mod tests {
         // which lists a "Header" menu row and renders the header pane's help body.
         let state = TuiInteractionState::new(0, TuiOverlay::None)
             .with_overlay(TuiOverlay::Help {
+                focus: HelpFocus::Menu,
                 selected_section: header_help_section(),
                 scroll: 0,
             })
@@ -2917,6 +2990,12 @@ mod tests {
         // literal char; `?` behind the command modal is inert.
         let none = attention_model(TuiOverlay::None);
         let help = attention_model(TuiOverlay::Help {
+            focus: HelpFocus::Menu,
+            selected_section: 1,
+            scroll: 0,
+        });
+        let help_text = attention_model(TuiOverlay::Help {
+            focus: HelpFocus::Text,
             selected_section: 1,
             scroll: 0,
         });
@@ -2945,8 +3024,8 @@ mod tests {
             None
         );
 
-        // Behind the Help overlay: up/down navigate the section menu, PgUp/PgDn
-        // scroll the right pane, left/right and Enter are inert, and only Esc
+        // Behind the Help overlay: left/right focus the Help panes, up/down act
+        // on the focused Help pane, PgUp/PgDn page the right pane, and only Esc
         // closes the overlay.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Up), &help),
@@ -2961,19 +3040,30 @@ mod tests {
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::PageDown), &help),
+            key_event_to_terminal_input(key(KeyCode::Up), &help_text),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpScrollUp))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Down), &help_text),
             Some(TuiTerminalInput::Interaction(
                 TuiInteraction::HelpScrollDown
             ))
         );
         assert_eq!(
-            key_event_to_terminal_input(key(KeyCode::PageUp), &help),
-            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpScrollUp))
+            key_event_to_terminal_input(key(KeyCode::PageDown), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpPageDown))
         );
-        assert_eq!(key_event_to_terminal_input(key(KeyCode::Left), &help), None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::PageUp), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpPageUp))
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &help),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusMenu))
+        );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Right), &help),
-            None
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusText))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &help),
@@ -3011,6 +3101,7 @@ mod tests {
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::Help {
+                focus: HelpFocus::Menu,
                 selected_section: help_section_for_view(TuiView::Attention),
                 scroll: 0,
             },
@@ -5486,6 +5577,7 @@ mod tests {
                 TuiView::Settings,
                 0,
                 TuiOverlay::Help {
+                    focus: HelpFocus::Menu,
                     selected_section: help_section_for_view(TuiView::Settings),
                     scroll: 0,
                 },
@@ -5505,6 +5597,7 @@ mod tests {
                 TuiView::Lanes,
                 0,
                 TuiOverlay::Help {
+                    focus: HelpFocus::Menu,
                     selected_section: help_section_for_view(TuiView::Lanes),
                     scroll: 0,
                 },
@@ -5680,6 +5773,7 @@ mod tests {
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::Help {
+                focus: HelpFocus::Menu,
                 selected_section: help_section_for_view(TuiView::Attention),
                 scroll: 0,
             },
@@ -5734,6 +5828,7 @@ mod tests {
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::Help {
+                focus: HelpFocus::Menu,
                 selected_section: 0,
                 scroll: 0,
             },
@@ -5767,6 +5862,7 @@ mod tests {
             let state = TuiInteractionState::new(
                 0,
                 TuiOverlay::Help {
+                    focus: HelpFocus::Menu,
                     selected_section: section,
                     scroll: 0,
                 },
@@ -5794,12 +5890,53 @@ mod tests {
     }
 
     #[test]
+    fn render_help_overlay_reports_scroll_extents_for_page_keys() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                focus: HelpFocus::Menu,
+                selected_section: 0,
+                scroll: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+        let area = Rect::new(0, 0, 120, 18);
+        let mut buffer = Buffer::empty(area);
+        let extents = render_model(&model, area, &mut buffer);
+
+        // 18 rows total - 3 top/bottom Help margins * 2 - 2 Help borders - 1
+        // reserved footer row = 9 visible prose rows.
+        assert_eq!(extents.help_page_rows, 9);
+        assert!(extents.help_max_scroll > 0);
+        assert_eq!(extents.work_item_detail_page_rows, 1);
+        assert_eq!(extents.work_item_detail_max_scroll, 0);
+    }
+
+    #[test]
+    fn render_help_overlay_keeps_selected_menu_row_marked_when_text_focused() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                focus: HelpFocus::Text,
+                selected_section: 0,
+                scroll: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+        let output = render_to_text(&model, 120, 24).unwrap_or_default();
+
+        assert!(output.contains("> Global actions"), "{output}");
+        assert!(output.contains("esc to exit"), "{output}");
+    }
+
+    #[test]
     fn render_help_overlay_survives_a_viewport_too_small_to_inset() {
         // A viewport smaller than the 3-char frame collapses the modal's inner
         // area to nothing; the renderer must guard it and not panic.
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::Help {
+                focus: HelpFocus::Menu,
                 selected_section: 0,
                 scroll: 0,
             },
@@ -5814,14 +5951,13 @@ mod tests {
         // PageUp/PageDown scroll the Help right pane; on every other surface they
         // are inert.
         let help = attention_model(TuiOverlay::Help {
+            focus: HelpFocus::Menu,
             selected_section: 0,
             scroll: 0,
         });
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::PageDown), &help),
-            Some(TuiTerminalInput::Interaction(
-                TuiInteraction::HelpScrollDown
-            ))
+            Some(TuiTerminalInput::Interaction(TuiInteraction::HelpPageDown))
         );
         let none = attention_model(TuiOverlay::None);
         let search = attention_model(TuiOverlay::Search {

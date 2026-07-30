@@ -284,7 +284,7 @@ close, so it always describes the current context rather than a fixed summary.
 | Command modal open | `up/down select action \| enter run \| esc cancel` |
 | Valve confirm open | `up/down change \| enter confirm \| esc cancel` |
 | Work-item record open | `up/down scroll \| PgUp/PgDn page \| esc close item` |
-| Help open | `up/down section \| PgUp/PgDn scroll \| esc close help` |
+| Help open | `left/right pane \| up/down act \| PgUp/PgDn page \| esc close help` |
 
 **The Status line never advertises a key that would do nothing.** The per-item
 valves act on a *selected work-item*, so they are absent on the lane overview
@@ -392,8 +392,9 @@ There are eight sections: **Global actions** first, then one per view
 
 | Key | Effect |
 |---|---|
-| `↑` / `↓` | Move between sections. Stops at the ends; does not wrap. Moving section resets the text pane to the top. |
-| `PgUp` / `PgDn` | Scroll the text pane. Vertical only — the text wraps rather than scrolling sideways. |
+| `←` / `→` | Focus the section menu / text pane. |
+| `↑` / `↓` | With the section menu focused, move between sections; with the text pane focused, scroll by one line. Section movement stops at the ends and resets the text pane to the top. |
+| `PgUp` / `PgDn` | Page the text pane by the current viewport height, regardless of which help pane is focused. Vertical only — the text wraps rather than scrolling sideways. |
 | `Esc` | Close. |
 
 `Esc` is the **only** way out: `?` is inert while Help is open, so it does not
