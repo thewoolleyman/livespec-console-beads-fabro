@@ -13,6 +13,15 @@ Four pieces, each with measured evidence already on the ledger:
 - **`-htp` — drain OFF the UI thread.** The drain runs INLINE in effect handling. On
   2026-07-30 the cockpit sat frozen for **2h16m** on one drain and was frozen again on
   the next. **This is the worst live usability defect on record for this console.**
+  Anchor re-measured 2026-08-02 against master `69ea9d4`:
+  `crates/console-application/src/lib.rs:3561`, `let port_outcome =
+  port.drain_ready_queue(&request)?;` — a plain synchronous call, no spawn, no channel.
+  The parked thread's `:3363` is ~198 lines STALE; re-measure again when this plan opens,
+  because that file is the hottest region in the repo.
+  **The misleading negative, so it is not rediscovered:** the only `thread::spawn` in
+  `console-cli` is `main.rs:207` (`poller_loop`), which is the SOURCE POLLER, not the
+  drain. A grep for `thread::spawn` returns exactly one hit and invites the wrong
+  conclusion that the drain is already off-thread.
 - **Per-item dispatch (`-8aw`, currently PARKED).** Dispatch ONE item, menu-driven.
   Parked when the queue-level palette drain was judged sufficient for an MVP; menu
   primacy plus 01's registry changes that calculus, so re-open it here rather than
@@ -23,7 +32,29 @@ Four pieces, each with measured evidence already on the ledger:
   plumbing one. Completes `-ectqye` (01 does its action-invocation half).
 - **Stranded-active visibility (`-3lxx7t` class).** A run goes terminal while its ledger
   row stays `active`, and nothing distinguishes that from a live run. Measured twice on
-  2026-07-30, once on an item whose PR had already MERGED.
+  2026-07-30.
+  **CORRECTION 2026-08-02 — the second of those two was NOT this defect.** This bullet
+  said "once on an item whose PR had already MERGED". That item was `-6hbfq6`, and its
+  stale `active` row had a different cause: post-merge bookkeeping, not the claim/launch
+  race. Its run had finished and merged; `reconcile-merged` could not complete because the
+  post-merge janitor checks out THE MERGE SHA
+  (`_dispatcher_engine_janitor.py:171`, `ref = merged.merge_sha`) and the host-coupled
+  `check-fork-drift` can never agree with committed pins after a plugin bump. That is
+  `-3r6`, and `-6hbfq6` is now reconciled and CLOSED. **`-3lxx7t`'s window is BEFORE
+  execution (claimed, not yet launched); `-6hbfq6`'s was AFTER it finished.** Same
+  symptom — an `active` row with nothing running — different defect, different fix.
+  So this plan inherits ONE measured instance, not two: three ledger rows `active`
+  against ONE in-flight run, 2026-07-30T11:52–11:54Z.
+  **The presentation goal is unchanged and arguably strengthened by the correction:** if
+  the surface distinguished "executing" from "claimed" from "finished but unreconciled",
+  both causes would have been visible instead of indistinguishable.
+- **`-9ts` — the drain discards the requested budget.** Anchor re-measured 2026-08-02
+  against master `69ea9d4`: `crates/console-application/src/lib.rs:1992` binds
+  `_request: &FactoryDrainRequest` with a leading underscore (the compiler-visible
+  statement that the caller's budget is deliberately unread) and `:1995-1997` pushes the
+  `OPERATOR_DRAIN_BUDGET` constant (`= 50`, `:1975`) unconditionally. The parked thread's
+  `:1849,1869` are ~130 lines stale. Its sibling at `:1917` DOES thread `request` without
+  the underscore, so the surrounding code already has the shape the fix wants.
 
 ## Why this handoff is thin, deliberately
 
