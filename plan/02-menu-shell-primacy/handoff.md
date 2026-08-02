@@ -61,6 +61,30 @@ cockpit during this plan, and that is expected, not a regression). Out: the walk
 which segment, and record any hotkey used as a FAILURE of the menus-only claim rather
 than a convenience.
 
+## DOC CUSTODY — DECLARED TO RIDE THIS PLAN, **NOT YET ACCEPTED HERE**
+
+Flagged 2026-08-03 by the session that ran a doc-custody pass and went looking for where
+the obligation actually lives. `plan/console-happy-path-mvp/handoff.md` § 0-SUCCESSION
+says "**DOC CUSTODY → rides plan 02**, final home decided by plan 04". **The section below
+does not cover it** — it accepts three `operator-surface-redesign` items and nothing else.
+By both threads' own rule ("another plan owns it is not a handoff; a handoff is complete
+only when the successor confirms it"), that transfer is INCOMPLETE.
+
+**Deliberately left unaccepted for now, and this is the substantive part.** Doc custody is
+ACTIVE RECURRING WORK, not a label — it fired twice inside four days
+(`-cxu4eu`'s `h` overlay, then slice C's record-modal refusal line, both shipped with zero
+prose, neither catchable by any gate). **Accepting it into a plan that has not started
+would make an active obligation dormant**, which is the precise outcome the archived
+thread's § "Doc custody" was written to prevent.
+
+So until 02 actually opens, custody REMAINS with `plan/console-happy-path-mvp/`, where it
+is still live and where the 2026-08-03 pass was logged. **When 02 opens, its first act
+should be to accept this explicitly** — replace this section with an acceptance, or push
+the final home to 04 with a named interim holder. Do NOT archive
+`plan/console-happy-path-mvp/` while this section still says "not yet accepted": doing so
+drops the obligation on the floor, which is the exact condition its archival was
+conditioned on avoiding.
+
 ## Inherited custody — ACCEPTED 2026-08-02
 
 From `plan/archive/operator-surface-redesign/`, absorbed and archived on the

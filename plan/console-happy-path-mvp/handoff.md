@@ -706,9 +706,26 @@ decoupled, numbered plans now carry this arc:
   item or a named successor. **This section's § "Doc custody" is STILL LIVE until 04
   says otherwise** — it is recurring work, not a dormant label, and deleting it without
   a successor is the specific outcome archival was conditioned on avoiding.
+  **VERIFIED 2026-08-03 AND IT IS NOT ACCEPTED.** Plan 02's
+  § "Inherited custody — ACCEPTED" covers the three `operator-surface-redesign` items and
+  **says nothing about doc custody**, so by this thread's own rule the transfer is
+  INCOMPLETE. A counter-section now exists there naming the gap. **This is the load-bearing
+  half: custody stays HERE, live, until 02 opens and accepts it** — moving an active
+  recurring obligation into an unstarted plan is how it goes dormant, and it fired TWICE in
+  four days (`-cxu4eu`'s `h` overlay, then plan-01 slice C's record-modal refusal line;
+  both shipped with zero prose, neither catchable by any gate). The 2026-08-03 delta pass
+  `69ea9d4..67c58d4` was run and logged HERE, under that still-live custody, which is
+  correct and is the proof the arrangement works.
 - **The staged asset → plan 01.** `-ccycuk` sits at `ready` with
   `acceptance_policy=ai-then-human`, untouched. **Do not re-stage it, do not move it, do
   not re-run `n`.** 01's dogfood leg resumes it through the new invoker.
+  **Status 2026-08-03: plan 01 ATTEMPTED the leg and it is BLOCKED on a maintainer
+  disposition, not on work** — the console's availability predicate requires
+  `factory_safety == "host-only-refused"`, a value upstream's `FactorySafety` vocabulary
+  cannot produce (it is a dispatcher STAGE name), so the remedy is unofferable on exactly
+  the class of item that needs it. Measured on `-w7d`; see
+  `plan/01-action-registry-and-invoker/handoff.md`. **The asset is still untouched**
+  (`updated_at` `2026-07-30T18:01:11Z`) — the leg was not forced through.
 
 **DO NOT ARCHIVE THIS THREAD BEFORE THOSE TRANSFERS ARE ACCEPTED.** "Another plan owns
 it" is not a handoff; a handoff is complete only when the successor has confirmed it.
