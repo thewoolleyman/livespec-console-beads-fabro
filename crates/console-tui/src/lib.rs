@@ -4064,6 +4064,55 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn every_registry_hotkey_stages_its_action_where_offered_and_is_inert_elsewhere() {
+        // no-orphan-hotkeys, keymap half: the keymap dispatches EVERY
+        // registered hotkey to exactly the action the registry stages for the
+        // selection, and the key is inert where the registry offers nothing —
+        // key behavior is a pure function of the registry, with no
+        // hand-written arm left to drift.
+        let lanes = [
+            (Lane::Backlog, "backlog"),
+            (Lane::PendingApproval, "pending-approval"),
+            (Lane::Acceptance, "acceptance"),
+            (Lane::Done, "done"),
+        ];
+        for (lane, label) in lanes {
+            let events = [lane_event(
+                "evt_no_orphan",
+                "console-no-orphan",
+                lane,
+                None,
+                "a0",
+                label,
+            )];
+            let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(lane))
+                .with_selected_lane_item_index(0);
+            let model = build_tui_model_for_state(&events, &state);
+            let ctx = model.selected_action_context();
+            assert!(ctx.is_some(), "{label}: no action context");
+            for (ctx, spec) in ctx.iter().flat_map(|ctx| {
+                action_registry::ACTION_REGISTRY
+                    .iter()
+                    .map(move |spec| (ctx, spec))
+            }) {
+                let input = key_event_to_terminal_input(key(KeyCode::Char(spec.hotkey)), &model);
+                let staged = action_registry::stage_action(spec, ctx).map(|staged| {
+                    TuiTerminalInput::Interaction(match staged {
+                        action_registry::StagedAction::Valve(valve) => {
+                            TuiInteraction::OpenValveConfirm(valve)
+                        }
+                        action_registry::StagedAction::DriverHandoff => {
+                            TuiInteraction::OpenDriverHandoff
+                        }
+                    })
+                });
+                assert_eq!(input, staged, "{label}/{}", spec.id);
+            }
+        }
+    }
+
     /// A single manual-admission pending-approval item: the context that
     /// admits the approve valve and the cap-override dials.
     fn pending_events() -> [ConsoleEvent; 1] {
@@ -5733,12 +5782,7 @@ mod tests {
                 spec,
                 action_registry::ActionSurface::Attention,
             );
-            assert_eq!(
-                rendered.contains(spec.label),
-                offered,
-                "help section vs registry for `{}`",
-                spec.id
-            );
+            assert_eq!(rendered.contains(spec.label), offered, "{}", spec.id);
         }
     }
 

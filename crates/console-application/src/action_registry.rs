@@ -448,3 +448,132 @@ pub enum StagedAction {
     /// Open the driver-handoff overlay.
     DriverHandoff,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ACTION_REGISTRY, ActionContext, ActionSurface, action_for_hotkey, action_for_id,
+        action_offered_on_surface,
+    };
+    use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
+
+    #[test]
+    fn registry_entries_are_complete_unique_and_off_the_system_keys() {
+        // no-orphan-hotkeys, registry half: every entry carries a stable id, a
+        // hint token, a menu path (the taxonomy menus are generated from), and
+        // a UNIQUE hotkey that cannot shadow a system key.
+        let mut hotkeys = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for spec in ACTION_REGISTRY {
+            assert!(!spec.id.is_empty());
+            assert!(!spec.label.is_empty());
+            assert!(!spec.hint_token.is_empty());
+            assert!(!spec.menu_path.is_empty(), "{}", spec.id);
+            assert!(hotkeys.insert(spec.hotkey), "{}", spec.hotkey);
+            assert!(ids.insert(spec.id), "{}", spec.id);
+            assert!(
+                !['/', ':', '?', 'q', ' '].contains(&spec.hotkey),
+                "{}",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn hotkey_and_id_lookups_round_trip_every_entry() {
+        for spec in ACTION_REGISTRY {
+            assert_eq!(
+                action_for_hotkey(spec.hotkey).map(|found| found.id),
+                Some(spec.id)
+            );
+            assert_eq!(
+                action_for_id(spec.id).map(|found| found.hotkey),
+                Some(spec.hotkey)
+            );
+        }
+        assert!(action_for_hotkey('z').is_none());
+        assert!(action_for_id("no-such-action").is_none());
+    }
+
+    #[test]
+    fn surface_offering_matches_the_documented_surface_split() {
+        // The move-status and driver-handoff verbs are drilled-lane-only;
+        // every other action is offered on both per-item surfaces.
+        for spec in ACTION_REGISTRY {
+            let lane_drill = action_offered_on_surface(spec, ActionSurface::LaneDrill);
+            let attention = action_offered_on_surface(spec, ActionSurface::Attention);
+            assert!(lane_drill, "{}", spec.id);
+            let drill_only = spec.id == "move" || spec.id == "driver-handoff";
+            assert_eq!(attention, !drill_only, "{}", spec.id);
+        }
+    }
+
+    #[test]
+    fn approve_availability_needs_the_manual_admission_dimension() {
+        let manual = ActionContext {
+            lane: Lane::PendingApproval,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: false,
+            surface: ActionSurface::Attention,
+        };
+        let auto = ActionContext {
+            admission_policy: AdmissionPolicy::Auto,
+            ..manual
+        };
+        let approve = action_for_id("approve");
+        assert_eq!(approve.map(|spec| (spec.availability)(&manual)), Some(true));
+        assert_eq!(approve.map(|spec| (spec.availability)(&auto)), Some(false));
+    }
+
+    #[test]
+    fn valve_availability_maps_every_valve_shape_onto_its_registry_entry() {
+        use super::valve_is_available;
+        use crate::{DispatcherOverride, OverrideBool, OverrideInt, PendingValve, RejectMode};
+        let ready_drill = ActionContext {
+            lane: Lane::Ready,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: false,
+            surface: ActionSurface::LaneDrill,
+        };
+        // A move staged from a lane the item is NOT in is refused outright.
+        let stale_from = PendingValve::MoveStatus {
+            from: Lane::Backlog,
+            to: Lane::Ready,
+        };
+        assert!(!valve_is_available(stale_from, &ready_drill));
+        let live_from = PendingValve::MoveStatus {
+            from: Lane::Ready,
+            to: Lane::Backlog,
+        };
+        assert!(valve_is_available(live_from, &ready_drill));
+        // Every valve shape resolves to its registry entry's availability.
+        assert!(!valve_is_available(PendingValve::Approve, &ready_drill));
+        assert!(!valve_is_available(PendingValve::Accept, &ready_drill));
+        assert!(!valve_is_available(
+            PendingValve::Reject(RejectMode::Rework),
+            &ready_drill
+        ));
+        assert!(!valve_is_available(
+            PendingValve::SetAdmission(AdmissionPolicy::Manual),
+            &ready_drill
+        ));
+        assert!(valve_is_available(
+            PendingValve::SetAcceptance(AcceptancePolicy::AiOnly),
+            &ready_drill
+        ));
+        assert!(valve_is_available(
+            PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(OverrideBool::On)),
+            &ready_drill
+        ));
+        assert!(valve_is_available(
+            PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Value(3))),
+            &ready_drill
+        ));
+        assert!(valve_is_available(
+            PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)),
+            &ready_drill
+        ));
+    }
+}

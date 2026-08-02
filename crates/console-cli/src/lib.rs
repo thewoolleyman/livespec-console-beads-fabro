@@ -3323,13 +3323,9 @@ mod tests {
             "Set admission policy",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        append_work_item_lane(
-            &mut store,
-            "console-pending",
-            "pending-approval",
-            1,
-            "2026-07-13T00:00:00Z",
-        )?;
+        let seeded =
+            append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
+        assert!(seeded.is_ok());
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -3373,13 +3369,9 @@ mod tests {
             "Set admission policy",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        append_work_item_lane(
-            &mut store,
-            "console-pending",
-            "pending-approval",
-            1,
-            "2026-07-13T00:00:00Z",
-        )?;
+        let seeded =
+            append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
+        assert!(seeded.is_ok());
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -3790,13 +3782,14 @@ mod tests {
         ingest_needs_attention(&mut store, &needs_attention, "2026-07-19T00:00:00Z")?;
         // The row resolves to a manual-admission pending-approval board record,
         // the lane that admits every per-item valve these tests stage.
-        append_work_item_lane(
+        let seeded = append_work_item_lane(
             &mut store,
             "wi-1",
             "pending-approval",
             1,
             "2026-07-19T00:00:00Z",
-        )?;
+        );
+        assert!(seeded.is_ok());
         let events = store.list_console_events()?;
         Ok((store, events))
     }
@@ -6331,6 +6324,9 @@ mod tests {
         ))?;
         Ok(())
     }
+
+    /// The seed timestamp the session fixtures share.
+    const TS0: &str = "2026-07-13T00:00:00Z";
 
     /// Append a work-item snapshot so a selectable inbox row resolves to a
     /// full board record — the availability context the registry-checked
