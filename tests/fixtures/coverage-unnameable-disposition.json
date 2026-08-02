@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "RECORDED DISPOSITION for ONE specific llvm-cov accounting signature. Read this",
+    "before changing anything here, and read livespec-console-beads-fabro-3yx.",
+    "",
+    "THIS IS NOT A COVERAGE-THRESHOLD CHANGE. The line-coverage requirement is still",
+    "100% for every line llvm-cov can ATTRIBUTE to a source line. `check-coverage`",
+    "fails on a single nameable uncovered line exactly as it always did, and the",
+    "standing maintainer ruling that the coverage gate is correct and must not be",
+    "weakened (plan/console-happy-path-mvp/handoff.md, section 0c item 1) is UNTOUCHED.",
+    "",
+    "What is dispositioned is narrower: llvm-cov's own summary sometimes counts MORE",
+    "missed lines than any listing surface can name. Five surfaces were proven blind to",
+    "it (--show-missing-lines, JSON segment reconstruction, zero-count segments",
+    "intersected with the diff, the --text annotated listing, and the lcov export), and",
+    "a designed compilation-count experiment failed to move it and is recorded as",
+    "INCONCLUSIVE. An operator cannot act on a miss the tooling will not name.",
+    "",
+    "The allowance below caps how many such unnameable lines may pass. It does NOT",
+    "hide a nameable one: the gate reports and fails on every line it can name, and",
+    "reports the dispositioned count loudly on every run."
+  ],
+  "signature": "summary-missed-exceeds-nameable-missed",
+  "max_unnameable_missed_lines": 1,
+  "authorized_by": "maintainer",
+  "authorized_on": "2026-08-02",
+  "reason": "llvm-cov reports one missed line in console-application that no listing surface can attribute to a source line. Filed as livespec-console-beads-fabro-3yx with the full forensic record and a falsifiable prediction; the prediction's own experiment ran and was inconclusive. Authorized narrowly by the maintainer on 2026-08-02 so plan-01 milestone 2 can land as the A/B/C split, on the explicit condition that ordinary nameable misses continue to block everything.",
+  "tracking_item": "livespec-console-beads-fabro-3yx",
+  "forensics": [
+    "plan/01-action-registry-and-invoker/research/coverage-phantom-bounded-pass.md",
+    "plan/01-action-registry-and-invoker/research/slice-split-test-partition.md"
+  ],
+  "review_when": [
+    "The allowance must be REDUCED, never raised, as slices land. Raising it needs a new maintainer authorization recorded here with its own reason.",
+    "If a slice shows a NAMEABLE miss, fix it. This disposition does not apply.",
+    "If -3yx is ever explained or fixed, delete this file and restore the plain --fail-under-lines 100 invocation."
+  ]
+}
