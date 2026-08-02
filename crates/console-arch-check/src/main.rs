@@ -983,9 +983,10 @@ fn check_registry_bypass(crate_name: &str, file: &syn::File, display: &str) -> V
     visitor.findings
 }
 
-/// The one `console-tui` function allowed to construct the staging
-/// interactions: the registry-consulting key path.
-const REGISTRY_STAGING_FN: &str = "registry_action_input";
+/// The `console-tui` functions allowed to construct the staging
+/// interactions: the registry-consulting key path and the invoker's confirm,
+/// both of which stage exclusively through `action_registry::stage_action`.
+const REGISTRY_STAGING_FNS: [&str; 2] = ["registry_action_input", "invoker_confirm_step"];
 
 /// The staging interactions only the registry path may construct.
 const STAGING_INTERACTIONS: [&str; 2] = ["OpenValveConfirm", "OpenDriverHandoff"];
@@ -1009,7 +1010,9 @@ impl<'ast> Visit<'ast> for RegistryBypassVisitor<'_> {
         if is_test_fn(&node.attrs) {
             return;
         }
-        let allowed = node.sig.ident == REGISTRY_STAGING_FN;
+        let allowed = REGISTRY_STAGING_FNS
+            .iter()
+            .any(|name| node.sig.ident == name);
         if allowed {
             self.allowed_depth += 1;
         }
@@ -1034,8 +1037,8 @@ impl<'ast> Visit<'ast> for RegistryBypassVisitor<'_> {
                     .any(|staging| variant == staging)
             {
                 self.findings.push(format!(
-                    "{}: `TuiInteraction::{variant}` may only be constructed by \
-                     `{REGISTRY_STAGING_FN}` (the registry-consulting key path); a direct \
+                    "{}: `TuiInteraction::{variant}` may only be constructed by a \
+                     registry-consulting staging path ({REGISTRY_STAGING_FNS:?}); a direct \
                      staging bypasses the registry availability derivation",
                     self.display
                 ));

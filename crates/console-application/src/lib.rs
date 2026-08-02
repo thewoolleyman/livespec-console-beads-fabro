@@ -643,6 +643,16 @@ pub enum TuiOverlay {
         /// The staged valve intent (with its dialed-in mode/policy).
         valve: PendingValve,
     },
+    /// Action-invoker variant: the generic roster of EVERY registered operator
+    /// action for the current selection, opened from the command palette
+    /// (`actions`). Available actions stage their normal confirm flow on
+    /// `Enter`; unavailable ones render marked and stay inert. It is
+    /// SCAFFOLDING for the menu shell, deliberately minimal: every action is
+    /// reachable here before menus exist, including the hotkey-less ones.
+    ActionInvoker {
+        /// Index of the selected row in the registry roster.
+        selected_action: usize,
+    },
 }
 
 impl TuiOverlay {
@@ -659,6 +669,7 @@ impl TuiOverlay {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
             Self::None
             | Self::CommandModal { .. }
+            | Self::ActionInvoker { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
@@ -676,6 +687,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::ActionInvoker { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::Help { .. } => None,
@@ -692,6 +704,7 @@ impl TuiOverlay {
             Self::None
             | Self::Search { .. }
             | Self::CommandPalette { .. }
+            | Self::ActionInvoker { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
@@ -709,6 +722,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::ActionInvoker { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
             | Self::Help { .. } => None,
@@ -729,6 +743,8 @@ pub enum TuiInteraction {
     OpenCommandPalette,
     /// Open command modal variant.
     OpenCommandModal,
+    /// Open the generic action-invoker roster for the current selection.
+    OpenActionInvoker,
     /// Close overlay variant.
     CloseOverlay,
     /// Select next view variant.
@@ -1637,8 +1653,9 @@ const fn overlay_footer_hint(overlay: &TuiOverlay) -> &'static str {
     match overlay {
         TuiOverlay::None => "? help | q quit",
         TuiOverlay::Search { .. } => "type to search | esc cancel",
-        TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
+        TuiOverlay::CommandPalette { .. } => "type a command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
+        TuiOverlay::ActionInvoker { .. } => "up/down select | enter stage | esc cancel",
         TuiOverlay::ValveConfirm { .. } => "up/down change | enter confirm | esc cancel",
         TuiOverlay::DriverHandoff { .. } => "enter copy sent to terminal | esc cancel",
         TuiOverlay::WorkItemDetail { .. } => "up/down scroll | PgUp/PgDn page | esc close item",
@@ -2893,6 +2910,9 @@ pub fn reduce_tui_interaction(
             })
         }
         TuiInteraction::OpenCommandModal => state.clone().with_overlay(open_command_modal(&model)),
+        TuiInteraction::OpenActionInvoker => state
+            .clone()
+            .with_overlay(TuiOverlay::ActionInvoker { selected_action: 0 }),
         TuiInteraction::CloseOverlay => state.clone().with_overlay(TuiOverlay::None),
         TuiInteraction::TypeChar(value) => state
             .clone()
@@ -3561,6 +3581,12 @@ fn work_item_payload_outcome(
         command,
         payload_json: serde_json::Value::Object(payload).to_string(),
     }
+}
+
+/// Whether a command-palette query asks for the action-invoker roster.
+#[must_use]
+pub fn command_palette_query_opens_action_invoker(query: &str) -> bool {
+    query.trim().eq_ignore_ascii_case("actions")
 }
 
 fn command_palette_query_matches_drain(query: &str) -> bool {
@@ -5565,6 +5591,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         TuiOverlay::None
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -5582,6 +5609,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -5693,6 +5721,7 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
@@ -5721,6 +5750,7 @@ fn help_scroll(overlay: &TuiOverlay, rows: usize, down: bool, max_scroll: usize)
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
@@ -5743,6 +5773,7 @@ fn help_focus(overlay: &TuiOverlay, focus: HelpFocus) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
@@ -5759,6 +5790,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         },
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -5776,6 +5808,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         },
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -5798,6 +5831,10 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         } => TuiOverlay::CommandModal {
             selected_action_index: clamp_action_index(detail, selected_action_index + 1),
         },
+        TuiOverlay::ActionInvoker { selected_action } => TuiOverlay::ActionInvoker {
+            selected_action: (selected_action + 1)
+                .min(action_registry::ACTION_REGISTRY.len().saturating_sub(1)),
+        },
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
@@ -5814,6 +5851,9 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
             selected_action_index,
         } => TuiOverlay::CommandModal {
             selected_action_index: selected_action_index.saturating_sub(1),
+        },
+        TuiOverlay::ActionInvoker { selected_action } => TuiOverlay::ActionInvoker {
+            selected_action: selected_action.saturating_sub(1),
         },
         TuiOverlay::None
         | TuiOverlay::Search { .. }
@@ -6074,7 +6114,8 @@ mod tests {
         OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
         TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
-        build_tui_model, build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count,
+        build_tui_model, build_tui_model_for_state, command_palette_query_opens_action_invoker,
+        dispatcher_setting_rows, drilldown_item_count,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
         handle_work_item_move_command, handle_work_item_reject_command,
@@ -9938,6 +9979,93 @@ mod tests {
     }
 
     #[test]
+    fn workflow_scope_override_valve_maps_onto_its_action_id_and_payload() {
+        // The valve's dial has exactly one admitted value, so its labels,
+        // cycling, and outcome are all pinned here in one place.
+        let valve = PendingValve::SetWorkflowScopeOverride;
+        assert_eq!(valve.valve_label(), "Set workflow scope");
+        assert_eq!(valve.option_label(), Some("citation-only"));
+        assert_eq!(valve.option_display().as_deref(), Some("citation-only"));
+        assert!(!valve.is_destructive());
+        assert_eq!(valve.cycled(true), valve);
+        assert_eq!(valve.cycled(false), valve);
+        assert!(per_item_verb_is_state_valid(Lane::Ready, valve));
+        assert!(!per_item_verb_is_state_valid(Lane::Backlog, valve));
+        assert!(!per_item_verb_is_state_valid(Lane::Acceptance, valve));
+
+        let outcome = super::valve_outcome(valve, "wi-1", "operator");
+        assert!(matches!(
+            outcome,
+            Some(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.command_type() == &CommandType::WorkItemSetWorkflowScopeOverrideRequested
+                    && command.aggregate_id() == "wi-1"
+                    && payload_json == r#"{"scope":"citation-only"}"#
+        ));
+    }
+
+    #[test]
+    fn workflow_scope_handler_maps_the_payload_onto_the_action_id() {
+        let command = CommandEnvelope::new(
+            "cmd_scope".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_workflow_scope_override_requested:scope=citation-only".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let outcome = handle_work_item_set_workflow_scope_override_command(
+            &command,
+            r#"{"scope":"citation-only"}"#,
+            &mut port,
+        );
+        assert_eq!(
+            port.observed_action_ids,
+            ["set-workflow-scope-override:wi-1:citation-only"]
+        );
+        assert_eq!(
+            outcome.map(|outcome| outcome.command_status().to_owned()),
+            Ok("completed".to_owned())
+        );
+    }
+
+    #[test]
+    fn workflow_scope_handler_rejects_an_empty_work_item_id_without_invoking_the_port() {
+        let command = CommandEnvelope::new(
+            "cmd_scope_empty".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "   ".to_owned(),
+            "empty:work_item.set_workflow_scope_override_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let outcome = handle_work_item_set_workflow_scope_override_command(
+            &command,
+            r#"{"scope":"citation-only"}"#,
+            &mut port,
+        );
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert!(port.observed_action_ids.is_empty());
+    }
+
+    #[test]
+    fn workflow_scope_handler_rejects_bad_payloads_without_invoking_the_port() {
+        let command = CommandEnvelope::new(
+            "cmd_scope".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_workflow_scope_override_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        for payload in ["not json", "{}", r#"{"scope":"everything"}"#] {
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            let outcome =
+                handle_work_item_set_workflow_scope_override_command(&command, payload, &mut port);
+            assert_eq!(outcome, Err(ApplicationError::InvalidWorkflowScope));
+            assert!(port.observed_action_ids.is_empty());
+        }
+    }
+
+    #[test]
     fn dispatcher_action_port_is_not_wired_when_unavailable() {
         let probe = StubDrainProbe {
             outcome: SourceProbeOutcome::unavailable("drive binary not found"),
@@ -11129,6 +11257,54 @@ mod tests {
             staged.overlay(),
             &TuiOverlay::ValveConfirm {
                 valve: PendingValve::Accept
+            }
+        );
+    }
+
+    #[test]
+    fn the_new_variants_carry_their_derived_debug_forms() {
+        // Derive-generated arms are part of the surface: the debug forms name
+        // the variants (and are what a failed assertion would print).
+        assert!(
+            format!("{:?}", TuiOverlay::ActionInvoker { selected_action: 3 })
+                .contains("ActionInvoker")
+        );
+        assert!(
+            format!("{:?}", PendingValve::SetWorkflowScopeOverride)
+                .contains("SetWorkflowScopeOverride")
+        );
+        assert!(
+            format!("{:?}", ApplicationError::InvalidWorkflowScope)
+                .contains("InvalidWorkflowScope")
+        );
+    }
+
+    #[test]
+    fn the_palette_actions_query_opens_the_invoker_and_the_roster_moves_and_clamps() {
+        assert!(command_palette_query_opens_action_invoker("actions"));
+        assert!(command_palette_query_opens_action_invoker("  ACTIONS  "));
+        assert!(!command_palette_query_opens_action_invoker("drain"));
+
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let opened = reduce_tui_interaction(&state, &[], TuiInteraction::OpenActionInvoker);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::ActionInvoker { selected_action: 0 }
+        );
+        // Up from the top clamps; down walks; down past the end clamps.
+        let up = reduce_tui_interaction(&opened, &[], TuiInteraction::SelectPreviousAction);
+        assert_eq!(
+            up.overlay(),
+            &TuiOverlay::ActionInvoker { selected_action: 0 }
+        );
+        let mut walked = opened;
+        for _step in 0..(action_registry::ACTION_REGISTRY.len() + 3) {
+            walked = reduce_tui_interaction(&walked, &[], TuiInteraction::SelectNextAction);
+        }
+        assert_eq!(
+            walked.overlay(),
+            &TuiOverlay::ActionInvoker {
+                selected_action: action_registry::ACTION_REGISTRY.len() - 1
             }
         );
     }
@@ -12893,92 +13069,5 @@ mod tests {
                     && payload_json == r#"{"setting":"merge_on_review_cap","value":true}"#
         ));
         Ok(())
-    }
-
-    #[test]
-    fn workflow_scope_override_valve_maps_onto_its_action_id_and_payload() {
-        // The valve's dial has exactly one admitted value, so its labels,
-        // cycling, and outcome are all pinned here in one place.
-        let valve = PendingValve::SetWorkflowScopeOverride;
-        assert_eq!(valve.valve_label(), "Set workflow scope");
-        assert_eq!(valve.option_label(), Some("citation-only"));
-        assert_eq!(valve.option_display().as_deref(), Some("citation-only"));
-        assert!(!valve.is_destructive());
-        assert_eq!(valve.cycled(true), valve);
-        assert_eq!(valve.cycled(false), valve);
-        assert!(per_item_verb_is_state_valid(Lane::Ready, valve));
-        assert!(!per_item_verb_is_state_valid(Lane::Backlog, valve));
-        assert!(!per_item_verb_is_state_valid(Lane::Acceptance, valve));
-
-        let outcome = super::valve_outcome(valve, "wi-1", "operator");
-        assert!(matches!(
-            outcome,
-            Some(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
-                if command.command_type() == &CommandType::WorkItemSetWorkflowScopeOverrideRequested
-                    && command.aggregate_id() == "wi-1"
-                    && payload_json == r#"{"scope":"citation-only"}"#
-        ));
-    }
-
-    #[test]
-    fn workflow_scope_handler_maps_the_payload_onto_the_action_id() {
-        let command = CommandEnvelope::new(
-            "cmd_scope".to_owned(),
-            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
-            "wi-1".to_owned(),
-            "wi-1:work_item.set_workflow_scope_override_requested:scope=citation-only".to_owned(),
-            "operator".to_owned(),
-        );
-        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
-        let outcome = handle_work_item_set_workflow_scope_override_command(
-            &command,
-            r#"{"scope":"citation-only"}"#,
-            &mut port,
-        );
-        assert_eq!(
-            port.observed_action_ids,
-            ["set-workflow-scope-override:wi-1:citation-only"]
-        );
-        assert_eq!(
-            outcome.map(|outcome| outcome.command_status().to_owned()),
-            Ok("completed".to_owned())
-        );
-    }
-
-    #[test]
-    fn workflow_scope_handler_rejects_an_empty_work_item_id_without_invoking_the_port() {
-        let command = CommandEnvelope::new(
-            "cmd_scope_empty".to_owned(),
-            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
-            "   ".to_owned(),
-            "empty:work_item.set_workflow_scope_override_requested".to_owned(),
-            "operator".to_owned(),
-        );
-        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
-        let outcome = handle_work_item_set_workflow_scope_override_command(
-            &command,
-            r#"{"scope":"citation-only"}"#,
-            &mut port,
-        );
-        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
-        assert!(port.observed_action_ids.is_empty());
-    }
-
-    #[test]
-    fn workflow_scope_handler_rejects_bad_payloads_without_invoking_the_port() {
-        let command = CommandEnvelope::new(
-            "cmd_scope".to_owned(),
-            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
-            "wi-1".to_owned(),
-            "wi-1:work_item.set_workflow_scope_override_requested".to_owned(),
-            "operator".to_owned(),
-        );
-        for payload in ["not json", "{}", r#"{"scope":"everything"}"#] {
-            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
-            let outcome =
-                handle_work_item_set_workflow_scope_override_command(&command, payload, &mut port);
-            assert_eq!(outcome, Err(ApplicationError::InvalidWorkflowScope));
-            assert!(port.observed_action_ids.is_empty());
-        }
     }
 }

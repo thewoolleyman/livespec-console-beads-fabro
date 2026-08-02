@@ -283,7 +283,8 @@ close, so it always describes the current context rather than a fixed summary.
 | Settings | `up/down move \| enter/space edit row \| ? help \| q quit` |
 | Spec, Events, Repos | `up/down move \| left/right focus \| / search \| ? help \| q quit` |
 | Search open | `type to search \| esc cancel` |
-| Command palette open | `type a drain command \| esc cancel` |
+| Command palette open | `type a command \| esc cancel` |
+| Action invoker open | `up/down select \| enter stage \| esc cancel` |
 | Command modal open | `up/down select action \| enter run \| esc cancel` |
 | Valve confirm open | `up/down change \| enter confirm \| esc cancel` |
 | Work-item record open | `up/down scroll \| PgUp/PgDn page \| esc close item` |
@@ -323,7 +324,7 @@ its hints stay readable while the modal is open.
 | `Ctrl-C` | Quit, at any time, including from inside an overlay. |
 | `q` | Quit — only when no overlay is open. With search or the command palette open it types a literal `q` into the query. |
 | `/` | Open search. |
-| `:` | Open the command palette. |
+| `:` | Open the command palette (`drain`, `actions`). |
 | `?` | Open the Help modal. |
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward. Inert while an overlay is open. |
 
@@ -384,9 +385,19 @@ The statuses `s` offers depend on the lane the item is in:
 
 ### The command palette
 
-`:` opens it. It accepts exactly two commands, `drain` and
-`drain ready queue`; both drain the ready queue. Anything else is reported as
-an unknown command.
+`:` opens it. It accepts exactly three commands: `drain` and
+`drain ready queue` (both drain the ready queue), and `actions`, which opens
+the action invoker. Anything else is reported as an unknown command.
+
+### The action invoker
+
+`:` then `actions` opens a roster of EVERY registered operator action for the
+current selection, in one list — including the actions that carry no hotkey at
+all (today: `Set workflow scope override`, the recorded remedy a
+factory-safety refusal names). An available action stages its normal confirm
+modal on `Enter`; an unavailable one renders marked `(unavailable here)` and
+stays inert. The roster is deliberately minimal scaffolding for the menu
+shell: it exists so every action is reachable before menus land.
 
 ## The Help modal
 

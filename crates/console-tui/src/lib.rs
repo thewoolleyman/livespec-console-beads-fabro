@@ -448,12 +448,53 @@ pub fn step_tui_runtime(
     }
 }
 
+/// Enter on the invoker roster: stage the selected action's normal confirm
+/// flow — the valve modal (with its own Target line and parameter cycling) or
+/// the driver-handoff overlay — exactly as its hotkey would, THROUGH the same
+/// registry availability derivation. An unavailable selection is inert.
+fn invoker_confirm_step(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    model: &TuiScreenModel,
+    selected_action: usize,
+) -> TuiRuntimeStep {
+    let staged = action_registry::ACTION_REGISTRY
+        .get(selected_action)
+        .zip(model.selected_action_context())
+        .and_then(|(spec, ctx)| action_registry::stage_action(spec, &ctx));
+    let interaction = match staged {
+        Some(action_registry::StagedAction::Valve(valve)) => {
+            TuiInteraction::OpenValveConfirm(valve)
+        }
+        Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
+        None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Render),
+    };
+    TuiRuntimeStep::new(
+        reduce_tui_interaction(state, events, interaction),
+        TuiRuntimeEffect::Render,
+    )
+}
+
 fn confirm_operator_action(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
     requested_by: &str,
 ) -> TuiRuntimeStep {
     let model = build_tui_model_for_state(events, state);
+    // The palette's `actions` command OPENS the invoker roster rather than
+    // resolving an operator action, so it returns a state transition here,
+    // before the outcome match.
+    if let TuiOverlay::CommandPalette { query } = model.overlay()
+        && console_application::command_palette_query_opens_action_invoker(query)
+    {
+        return TuiRuntimeStep::new(
+            reduce_tui_interaction(state, events, TuiInteraction::OpenActionInvoker),
+            TuiRuntimeEffect::Render,
+        );
+    }
+    if let TuiOverlay::ActionInvoker { selected_action } = model.overlay() {
+        return invoker_confirm_step(state, events, &model, *selected_action);
+    }
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
         TuiOverlay::ValveConfirm { .. } => resolve_valve_action(&model, requested_by),
@@ -468,6 +509,8 @@ fn confirm_operator_action(
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
+        // The invoker confirm returned above; this arm is unreachable for it.
+        | TuiOverlay::ActionInvoker { .. }
         // The work-item detail modal is READ-ONLY: `enter_input` yields no
         // `Confirm` while it is open, so it never actually reaches here.
         | TuiOverlay::WorkItemDetail { .. }
@@ -561,7 +604,9 @@ pub fn key_event_to_terminal_input(
 /// other overlay it is the harmless content move.
 const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     Some(match model.overlay() {
-        TuiOverlay::CommandModal { .. } => TuiInteraction::SelectPreviousAction,
+        TuiOverlay::CommandModal { .. } | TuiOverlay::ActionInvoker { .. } => {
+            TuiInteraction::SelectPreviousAction
+        }
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
         TuiOverlay::Help { focus, .. } => match focus {
             HelpFocus::Menu => TuiInteraction::HelpSelectPreviousSection,
@@ -588,7 +633,9 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
 /// Down: the mirror of [`up_interaction`].
 const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     Some(match model.overlay() {
-        TuiOverlay::CommandModal { .. } => TuiInteraction::SelectNextAction,
+        TuiOverlay::CommandModal { .. } | TuiOverlay::ActionInvoker { .. } => {
+            TuiInteraction::SelectNextAction
+        }
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
         TuiOverlay::Help { focus, .. } => match focus {
             HelpFocus::Menu => TuiInteraction::HelpSelectNextSection,
@@ -614,6 +661,7 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.overlay() {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => Some(TuiTerminalInput::Confirm),
         TuiOverlay::Search { .. } | TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => {
@@ -795,6 +843,7 @@ const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
         // over them too.
         TuiOverlay::Help { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::DriverHandoff { .. } => None,
         TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
@@ -823,6 +872,7 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => None,
     }
@@ -1221,6 +1271,10 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> Ov
         }
         TuiOverlay::CommandPalette { query } => {
             render_prompt_overlay("Command Palette", format!(":{query}"), area, buffer);
+            OverlayScrollExtents::ZERO
+        }
+        TuiOverlay::ActionInvoker { selected_action } => {
+            render_action_invoker(model, *selected_action, overlay_rect(area), buffer);
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::CommandModal {
@@ -1764,7 +1818,7 @@ fn global_help_lines() -> Vec<Line<'static>> {
             "esc          step focus back (Detail -> Content -> nav; drilled lane -> overview)",
         ),
         Line::from("/            open search"),
-        Line::from(":            open the command palette (drain)"),
+        Line::from(":            open the command palette (drain, actions)"),
         Line::from("?            open this help"),
         Line::from("q / ctrl-c   quit"),
         Line::from(""),
@@ -1879,6 +1933,46 @@ fn render_prompt_overlay(title: &'static str, value: String, area: Rect, buffer:
     Paragraph::new(value)
         .block(Block::new().borders(Borders::ALL).title(title))
         .render(overlay, buffer);
+}
+
+/// Render the generic action-invoker roster: EVERY registered action, in
+/// canonical order, with its hotkey (or `menu` for the hotkey-less ones) and
+/// an `unavailable` marker where the registry does not offer the action for
+/// the current selection — offered actions stage their normal confirm flow on
+/// Enter; unavailable rows are selectable but inert (the spec scenario's
+/// "presented as unavailable").
+fn render_action_invoker(
+    model: &TuiScreenModel,
+    selected_action: usize,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    Clear.render(area, buffer);
+    let ctx = model.selected_action_context();
+    let items = action_registry::ACTION_REGISTRY
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            let marker = if index == selected_action { ">" } else { " " };
+            let key_display = spec
+                .hotkey
+                .map_or_else(|| "menu".to_owned(), |key| key.to_string());
+            let availability = match ctx.as_ref() {
+                Some(ctx) if (spec.availability)(ctx) => "",
+                _unavailable => "  (unavailable here)",
+            };
+            let row = format!("{marker} {} [{key_display}]{availability}", spec.label);
+            ListItem::new(row).style(if index == selected_action {
+                Style::new().add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            })
+        });
+    Widget::render(
+        List::new(items).block(Block::new().borders(Borders::ALL).title("Actions")),
+        area,
+        buffer,
+    );
 }
 
 fn render_command_modal(
@@ -4114,6 +4208,155 @@ mod tests {
                 assert_eq!(input, staged, "{label}/{}", spec.id);
             }
         }
+    }
+
+    #[test]
+    fn the_palette_actions_command_opens_the_invoker_and_enter_stages_the_selection() {
+        // Confirming the palette's `actions` query opens the invoker roster.
+        let palette = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: "actions".to_owned(),
+            },
+        );
+        let opened = step_tui_runtime(
+            &palette,
+            &pending_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            opened.state().overlay(),
+            &TuiOverlay::ActionInvoker { selected_action: 0 }
+        );
+
+        // Enter on an AVAILABLE row stages its normal valve confirm flow:
+        // walk the selection to the approve row over the pending item.
+        let approve_index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == "approve")
+            .unwrap_or_default();
+        let mut state = opened.state().clone();
+        for _step in 0..approve_index {
+            state =
+                reduce_tui_interaction(&state, &pending_events(), TuiInteraction::SelectNextAction);
+        }
+        let staged = step_tui_runtime(
+            &state,
+            &pending_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            staged.state().overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve
+            }
+        );
+
+        // Enter on an UNAVAILABLE row is inert: accept is invalid on a
+        // pending-approval item, so the roster stays open and nothing stages.
+        let accept_index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == "accept")
+            .unwrap_or_default();
+        let parked = TuiInteractionState::new(
+            0,
+            TuiOverlay::ActionInvoker {
+                selected_action: accept_index,
+            },
+        );
+        let inert = step_tui_runtime(
+            &parked,
+            &pending_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(
+            inert.state().overlay(),
+            &TuiOverlay::ActionInvoker {
+                selected_action: accept_index,
+            }
+        );
+    }
+
+    #[test]
+    fn the_invoker_reaches_the_hotkeyless_scope_override_on_a_refused_ready_item() {
+        // The whole point of the hotkey-less entry: on a drilled-in
+        // host-only-refused ready item, the invoker stages the workflow-scope
+        // override no key can reach.
+        let events = [driver_handoff_event(
+            "console-refused",
+            Lane::Ready,
+            Some("host-only-refused"),
+        )];
+        let scope_index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == "set-workflow-scope-override")
+            .unwrap_or_default();
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ActionInvoker {
+                selected_action: scope_index,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_selected_lane_item_index(0);
+        let staged = step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator");
+        assert_eq!(
+            staged.state().overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetWorkflowScopeOverride
+            }
+        );
+    }
+
+    #[test]
+    fn the_invoker_stages_the_driver_handoff_from_its_row() {
+        // Enter on the driver-handoff row of a drilled-in backlog item opens
+        // the handoff overlay, exactly as the `h` key would.
+        let events = [driver_handoff_event(
+            "console-groomable",
+            Lane::Backlog,
+            None,
+        )];
+        let handoff_index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == "driver-handoff")
+            .unwrap_or_default();
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ActionInvoker {
+                selected_action: handoff_index,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
+        .with_selected_lane_item_index(0);
+        let staged = step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator");
+        assert!(matches!(
+            staged.state().overlay(),
+            TuiOverlay::DriverHandoff { .. }
+        ));
+    }
+
+    #[test]
+    fn render_action_invoker_lists_every_action_with_availability_markers() {
+        let state = TuiInteractionState::new(0, TuiOverlay::ActionInvoker { selected_action: 0 });
+        let model = build_tui_model_for_state(&pending_events(), &state);
+        // Tall enough that the eleven-row roster fits inside the third-height
+        // overlay box; the hotkey-less action is the LAST row.
+        let rendered = render_to_text(&model, 110, 60).unwrap_or_default();
+        assert!(rendered.contains("Actions"));
+        assert!(rendered.contains("Approve work-item [p]"));
+        // The hotkey-less action renders with its menu marker, unavailable on
+        // a pending-approval selection.
+        assert!(rendered.contains("Set workflow scope override [menu]  (unavailable here)"));
+        // Accept cannot fire on a pending item: marked, not hidden.
+        assert!(rendered.contains("Accept work-item [c]  (unavailable here)"));
+        // The overlay owns the Status hints while open.
+        assert!(model.footer().contains("enter stage"));
     }
 
     /// A single manual-admission pending-approval item: the context that

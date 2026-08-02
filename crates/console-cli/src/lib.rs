@@ -3960,6 +3960,77 @@ mod tests {
     }
 
     #[test]
+    fn the_workflow_scope_override_rides_the_spine_to_its_action_id()
+    -> Result<(), ConsoleRuntimeError> {
+        // The hotkey-less valve's full round trip: staged from a drilled-in
+        // host-only-refused ready item, persisted, rebuilt from the store, and
+        // dispatched as set-workflow-scope-override:<id>:citation-only.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let payload = concat!(
+            r#"{"repo":"livespec-console-beads-fabro","work_item_id":"wi-refused","#,
+            r#""lane":"ready","lane_reason":null,"rank":"a0","status":"ready","#,
+            r#""source_version":1,"detail":{"title":"Refused ready fixture","#,
+            r#""factory_safety":"host-only-refused"}}"#,
+        );
+        let event = ConsoleEvent::new(
+            "evt_wi_refused".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
+            1,
+        )
+        .with_payload_json(payload.to_owned());
+        store.append_event(&EventAppend::new(
+            event,
+            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
+            "2026-08-02T00:00:00Z".to_owned(),
+            "2026-08-02T00:00:00Z".to_owned(),
+            None,
+            "corr_evt_wi_refused".to_owned(),
+            Some("evt_wi_refused".to_owned()),
+            payload.to_owned(),
+            "{}".to_owned(),
+        ))?;
+        let events = store.list_console_events()?;
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetWorkflowScopeOverride,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_selected_lane_item_index(0);
+        let effect =
+            console_tui::step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator")
+                .effect()
+                .clone();
+        let kind = CommandType::WorkItemSetWorkflowScopeOverrideRequested;
+        let (actions, landed) = drive_effects(&mut store, &[effect], kind)?;
+        assert_eq!(
+            actions,
+            ["set-workflow-scope-override:wi-refused:citation-only"]
+        );
+        assert_eq!(landed, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn the_erroring_port_inherits_the_honest_not_wired_read_default() {
+        // The trait's default read is honest not-wired for a port carrying no
+        // real read capability — asserted on THIS crate's test port so the
+        // inherited default is exercised where it is instantiated.
+        let mut port = ErroringWorkItemActionPort;
+        let reading = port.read_action(&OrchestratorActionRequest::new("config".to_owned()));
+        assert_eq!(
+            reading,
+            Ok(console_application::OrchestratorActionReading::not_wired())
+        );
+    }
+
+    #[test]
     fn store_backed_once_only_valves_still_dedupe() -> Result<(), ConsoleRuntimeError> {
         // The other half of the audit, and the regression this fix must NOT cause.
         // Approve and accept are SEMANTICALLY once-per-item: approving twice is a
@@ -7012,76 +7083,5 @@ mod tests {
             }
             Ok(0)
         }
-    }
-
-    #[test]
-    fn the_workflow_scope_override_rides_the_spine_to_its_action_id()
-    -> Result<(), ConsoleRuntimeError> {
-        // The hotkey-less valve's full round trip: staged from a drilled-in
-        // host-only-refused ready item, persisted, rebuilt from the store, and
-        // dispatched as set-workflow-scope-override:<id>:citation-only.
-        let mut store = SqliteEventStore::open_in_memory()?;
-        let payload = concat!(
-            r#"{"repo":"livespec-console-beads-fabro","work_item_id":"wi-refused","#,
-            r#""lane":"ready","lane_reason":null,"rank":"a0","status":"ready","#,
-            r#""source_version":1,"detail":{"title":"Refused ready fixture","#,
-            r#""factory_safety":"host-only-refused"}}"#,
-        );
-        let event = ConsoleEvent::new(
-            "evt_wi_refused".to_owned(),
-            1,
-            "factory".to_owned(),
-            EventType::WorkItemSnapshotObserved,
-            "orchestrator".to_owned(),
-            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
-            1,
-        )
-        .with_payload_json(payload.to_owned());
-        store.append_event(&EventAppend::new(
-            event,
-            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
-            "2026-08-02T00:00:00Z".to_owned(),
-            "2026-08-02T00:00:00Z".to_owned(),
-            None,
-            "corr_evt_wi_refused".to_owned(),
-            Some("evt_wi_refused".to_owned()),
-            payload.to_owned(),
-            "{}".to_owned(),
-        ))?;
-        let events = store.list_console_events()?;
-        let state = TuiInteractionState::for_view(
-            TuiView::Lanes,
-            0,
-            TuiOverlay::ValveConfirm {
-                valve: PendingValve::SetWorkflowScopeOverride,
-            },
-        )
-        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
-        .with_selected_lane_item_index(0);
-        let effect =
-            console_tui::step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator")
-                .effect()
-                .clone();
-        let kind = CommandType::WorkItemSetWorkflowScopeOverrideRequested;
-        let (actions, landed) = drive_effects(&mut store, &[effect], kind)?;
-        assert_eq!(
-            actions,
-            ["set-workflow-scope-override:wi-refused:citation-only"]
-        );
-        assert_eq!(landed, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn the_erroring_port_inherits_the_honest_not_wired_read_default() {
-        // The trait's default read is honest not-wired for a port carrying no
-        // real read capability — asserted on THIS crate's test port so the
-        // inherited default is exercised where it is instantiated.
-        let mut port = ErroringWorkItemActionPort;
-        let reading = port.read_action(&OrchestratorActionRequest::new("config".to_owned()));
-        assert_eq!(
-            reading,
-            Ok(console_application::OrchestratorActionReading::not_wired())
-        );
     }
 }

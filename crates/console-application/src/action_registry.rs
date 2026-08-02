@@ -165,8 +165,12 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
                 })
         },
         staging: ActionStaging::Valve(|ctx| {
-            let to = status_move_targets(ctx.lane).first().copied()?;
-            Some(PendingValve::MoveStatus { from: ctx.lane, to })
+            status_move_targets(ctx.lane)
+                .first()
+                .map(|to| PendingValve::MoveStatus {
+                    from: ctx.lane,
+                    to: *to,
+                })
         }),
     },
     ActionSpec {
@@ -503,7 +507,7 @@ mod tests {
             assert!(!spec.menu_path.is_empty(), "{}", spec.id);
             assert!(ids.insert(spec.id), "{}", spec.id);
             if let Some(key) = spec.hotkey {
-                assert!(hotkeys.insert(key), "{key}");
+                assert!(hotkeys.insert(key), "{}", key);
                 assert!(!['/', ':', '?', 'q', ' '].contains(&key), "{}", spec.id);
             }
         }
@@ -534,6 +538,36 @@ mod tests {
             assert!(lane_drill, "{}", spec.id);
             let drill_only = spec.id == "move" || spec.id == "driver-handoff";
             assert_eq!(attention, !drill_only, "{}", spec.id);
+        }
+    }
+
+    #[test]
+    fn every_registered_action_stages_from_some_admitting_context() {
+        // Every staging closure runs against a context its availability
+        // admits: an action the registry offers somewhere must stage there —
+        // a roster entry that can never stage is a phantom.
+        use super::stage_action;
+        for spec in ACTION_REGISTRY {
+            let mut staged_somewhere = false;
+            for surface in [ActionSurface::Attention, ActionSurface::LaneDrill] {
+                for lane in Lane::all() {
+                    for admission in [AdmissionPolicy::Manual, AdmissionPolicy::Auto] {
+                        for handoff in [false, true] {
+                            let ctx = ActionContext {
+                                lane: *lane,
+                                admission_policy: admission,
+                                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                                has_driver_handoff: handoff,
+                                surface,
+                            };
+                            if (spec.availability)(&ctx) {
+                                staged_somewhere |= stage_action(spec, &ctx).is_some();
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(staged_somewhere, "{}", spec.id);
         }
     }
 
@@ -604,35 +638,19 @@ mod tests {
             PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)),
             &ready_drill
         ));
-    }
-
-    #[test]
-    fn every_registered_action_stages_from_some_admitting_context() {
-        // Every staging closure runs against a context its availability
-        // admits: an action the registry offers somewhere must stage there —
-        // a roster entry that can never stage is a phantom.
-        use super::stage_action;
-        for spec in ACTION_REGISTRY {
-            let mut staged_somewhere = false;
-            for surface in [ActionSurface::Attention, ActionSurface::LaneDrill] {
-                for lane in Lane::all() {
-                    for admission in [AdmissionPolicy::Manual, AdmissionPolicy::Auto] {
-                        for handoff in [false, true] {
-                            let ctx = ActionContext {
-                                lane: *lane,
-                                admission_policy: admission,
-                                acceptance_policy: AcceptancePolicy::AiThenHuman,
-                                has_driver_handoff: handoff,
-                                surface,
-                            };
-                            if (spec.availability)(&ctx) {
-                                staged_somewhere |= stage_action(spec, &ctx).is_some();
-                            }
-                        }
-                    }
-                }
-            }
-            assert!(staged_somewhere, "{}", spec.id);
-        }
+        // The scope override needs the factory-safety dimension, not the lane
+        // alone.
+        assert!(!valve_is_available(
+            PendingValve::SetWorkflowScopeOverride,
+            &ready_drill
+        ));
+        let refused_ready = ActionContext {
+            has_driver_handoff: true,
+            ..ready_drill
+        };
+        assert!(valve_is_available(
+            PendingValve::SetWorkflowScopeOverride,
+            &refused_ready
+        ));
     }
 }
