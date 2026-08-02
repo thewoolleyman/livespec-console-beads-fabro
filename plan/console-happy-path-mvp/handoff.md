@@ -528,32 +528,39 @@ catch a change in the documented action sequence, and on 2026-07-30 it did exact
 that.** Its blind spot is narrow and specific. Do not read those sections as "that E2E
 is useless".
 
-**WHAT TO DO NEXT, in order:**
+**WHAT TO DO NEXT — THIS THREAD IS NO LONGER THE ACTIVE ONE. READ THIS FIRST.**
 
-1. **Re-measure everything** (§ "Reactivating a parked thread"). Lanes move under other
-   sessions and the factory. Every claim here is timestamped, including this one.
-2. **Run the ONE CONTINUOUS PASS.** That is the whole remaining deliverable, and § 0i
-   changes its shape — read that first. The pass is: pick a `backlog` item, press `h`,
-   **then actually RUN the emitted `claude "/…:groom <id>"` in a driver session and
-   approve a cut**, which files SLICES at `pending-approval`; admit a slice at `p`;
-   press `n` BEFORE it leaves the operator window; drain; monitor; accept at `c`.
-   **Pressing `h` is not grooming** — it emits the command and nothing else, which is
-   why § 0e's claim had to be narrowed.
-   **This contains a MAINTAINER-OWNED DECISION POINT.** The groom skill is a drafting
-   conversation in which "the maintainer OWNS the cut and the acceptance; the front-end
-   drafts and files NOTHING until approval". Schedule that; do not assume a worker
-   session can discharge it alone.
-   Do NOT assemble the pass from legs already walked — that is precisely what this
-   thread has done three times and it is not the deliverable.
-3. **Expect the same three interventions and decide in advance how you will record
-   them**: the plugin-root override (`-pj5g3f`), a possible red PR on a gate the
-   janitor does not run (`-drn`), and `reconcile-merged` if the drain loop dies before
-   the merge. Each is legitimate; each must be named in the record rather than smoothed
-   over. A pass needing all three is still worth having — it is just not a clean one,
-   and the difference is the whole point of this thread.
-4. Capture evidence live: Status-band hint BEFORE each keypress, the valve's
-   `Target: <exact id>` read back before Enter, and a ledger check after. Never
-   reconstruct a capture afterwards.
+**Updated 2026-08-02 at wind-down. The work has MOVED to a new four-plan arc; do NOT
+resume the old continuous pass from here.** The maintainer decided that menus and
+dialogs are the first-class, required, primary navigation UX mechanism and hotkeys only
+an additional power-user convenience. That decision reshapes the whole surface, so the
+walk this thread owed is now plan 04's, on the new UX.
+
+**GO HERE:**
+
+| plan | epic | what it is |
+|---|---|---|
+| **`plan/01-action-registry-and-invoker/handoff.md`** | `-dvv` | **START HERE — full handoff, it is next** |
+| `plan/02-menu-shell-primacy/` | `-et3` | charter; blocked by 01 |
+| `plan/03-dispatch-ux-and-outcome-surfacing/` | `-1df` | charter; blocked by 01 |
+| `plan/04-mvp-unbroken-walk-and-close/` | `-9nb` | charter; blocked by 02 AND 03 — owns the unbroken walk and this arc's archive |
+
+Dependencies are LEDGER EDGES (`bd dep list`), not prose. If those plan directories are
+absent from your checkout, **PR #569 has not merged yet** — check it
+(`gh pr view 569`), and read this file's § 0-SUCCESSION if present.
+
+**THE ONE THING NOT TO DISTURB.** `livespec-console-beads-fabro-ccycuk` sits at `ready`
+with `acceptance_policy=ai-then-human`, staged deliberately since 2026-07-30 and
+untouched. **Do not re-stage it, do not move it, do not re-run `n`, do not drain it from
+here.** Plan 01's dogfood leg resumes it through the invoker it builds. It is currently
+blocked by a factory-safety refusal whose remedy
+(`set-workflow-scope-override:<id>:citation-only`) has no console binding — that is
+`-w7d`, and 01 fixes it.
+
+**Everything this thread learned is already banked** — §§ 0e–0j here, and on the ledger:
+`-0uw`, `-w7d`, `-drn` (regroomed out), `-3tg`, `-htz`, plus escalations on `-pj5g3f`,
+`-3lxx7t` and four instances on `-ectqye`. Nothing is owed that lives only in a
+transcript.
 
 **COCKPIT STATE AT WIND-DOWN.** tmux `happy-path-tui`, **PID 1883911**, ONE live
 client, binary rebuilt **2026-07-30T14:52:52Z** from `be09e26` — current for all
@@ -616,10 +623,13 @@ credentials; model adapter selection), and the adapter one collides with the sta
 maintainer decision pointing `review_adapter` at Codex while the Claude subscription is
 exhausted. They are filed, not fixed, deliberately.
 
-**STANDING: this plan is PARKED, NOT ARCHIVED.** Stage 2 is complete and every Stage
-3(b) leg is now individually walked — and the epic still owes **ONE UNBROKEN
-SINGLE-ITEM PASS**, which has never happened. See the second table in § 0-RESUME for
-exactly what is missing and why the first table alone must not be read as completion.
+**STANDING: this plan is PARKED WITH A NAMED SUCCESSOR ARC, NOT ARCHIVED, and NOT the
+place to resume work.** Stage 2 is complete; every Stage 3(b) leg is individually walked
+(`h` handoff, a real groom, `n`, a correct `p` refusal, `c` accept) and the ONE UNBROKEN
+PASS was never achieved — it is now plan 04's deliverable, on the menu-primary surface.
+**Do not archive this thread until plans 01/02/04 have ACCEPTED their custody transfers**
+(walk deliverable → 04, doc custody → rides 02 with its final home set by 04, staged
+asset → 01). "Another plan owns it" is not a handoff.
 
 ### 0. STAGE 2 IS COMPLETE. THE THREAD IS **PARKED, NOT DONE**. START HERE.
 
