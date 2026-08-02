@@ -328,10 +328,31 @@ last verified against source and can skip it unless its area moved.
       `DriverHandoff`. That claim is also correctly SCOPED: under Search, the palette,
       the command modal and valve-confirm, `?` is `text_input('?')` — it types a literal
       `?` rather than being inert, and the doc does not claim otherwise.
-  **NOT re-verified**: the remaining skip-list entries (the `s` move-status table, the
-  header degrade ladder, the attention row format, the whole-record modal claim, and the
-  TUI claims in `overview-quickstart.md` and `cli-options.md`), and the docs no commit in
-  this range touched.
+  **THIRD INCREMENT, same pass — the `s` MOVE-STATUS TABLE and the PALETTE claim
+  re-verified, both CLEAN.**
+    - **Move-status table** (`detailed-usage.md:374-383`) vs `status_move_targets`
+      (`lib.rs:488-495`). Extracted BOTH SIDES AND DIFFED AS SETS rather than grepping for
+      tokens, deliberately: the 2026-07-29T23 entry records an auditor reporting `done`
+      missing because a grep enumerated six lanes and not the seventh, and the table's
+      seventh row does sit past a natural stopping point. All SEVEN lanes present and
+      every row matches — `backlog`→ready,blocked; `pending-approval`/`ready`/`acceptance`
+      →backlog,blocked (one source arm, three doc rows, all three correct);
+      `blocked`→backlog,ready; `active` and `done`→nothing. The doc's added annotations
+      ("through resolve-blocked", "active is entered by the factory", "a shipped item
+      offers no onward move") are explanatory and contradicted by nothing.
+    - **Palette** (`:386-388`) "accepts exactly two commands, `drain` and `drain ready
+      queue`" — `command_palette_query_matches_drain` (`lib.rs:3533-3536`) is exactly
+      `normalized == "drain" || normalized == "drain ready queue"`. Correct.
+      **FORWARD FLAG: this sentence is a KNOWN future-change point.** Slice B adds
+      `actions` to the palette, so it becomes three. The branch already updates this prose;
+      the claim is correct on master TODAY and must not be "corrected" ahead of the merge.
+    - **`overview-quickstart.md` and `cli-options.md` stay legitimately SKIPPED** — checked
+      rather than assumed: neither quotes a hint string or a key binding, so the registry
+      rewrite could not have rotted them. Their skip-list entry survives on
+      "area unchanged", which is the condition the skip list is actually written against.
+  **NOT re-verified**: the header degrade ladder, the attention row format, and the
+  whole-record modal claim (none of their areas moved in this range), and the docs no
+  commit in this range touched.
 
 ## Read-first chain
 
