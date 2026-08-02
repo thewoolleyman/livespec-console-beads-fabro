@@ -86,9 +86,25 @@ citation on archival. It is not — that citation reached the spec through a pro
 `revise` pass, not a direct edit. **An existing state is evidence of what is allowed to
 BE, not of how it is allowed to GET there.**
 
-The fix belongs in a `/livespec:propose-change` → `/livespec:revise` pass. Note the same
-file also cites `plan/needs-attention/`, which does not exist either — PRE-EXISTING and
-not caused by this archive, but worth folding into the same propose-change.
+The fix belongs in a `/livespec:propose-change` → `/livespec:revise` pass. **FILED
+2026-08-02** as `SPECIFICATION/proposed_changes/archived-plan-thread-citations.md`.
+
+**CORRECTION 2026-08-02 — the sentence that stood here was WRONG.** It said contracts.md
+"also cites `plan/needs-attention/`, which does not exist either". That citation is
+explicitly qualified `repo thewoolleyman/livespec`, so it is a CROSS-REPO reference, not
+a path in this repository, and calling it a local dangling reference was a
+misreading — I matched the path text without reading its repo qualifier.
+
+What is actually true, verified against the livespec marketplace checkout: the thread was
+archived UPSTREAM, and the file now sits at
+`plan/archive/needs-attention/research/design.md`. So it IS stale, by the same
+archived-thread mechanism, one repo over. Both citations are covered by the filed
+propose-change — but as two instances of one mechanism, not as two local danglers.
+
+Worth keeping rather than silently fixing, because the error has a shape:
+**a grep for a path matched, and the qualifier that changed its meaning sat just before
+the match.** The archived predecessor thread recorded the mirror image of this —
+"an absence never announces itself in a grep for the wrong token".
 
 ## Why this note exists rather than a link
 
