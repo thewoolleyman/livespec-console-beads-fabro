@@ -140,13 +140,22 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // the narrowed move-status picker offers with their MUST NOTs, and the
     // driver-handoff surface (lane-appropriate render, the no-claimed-success
     // OSC 52 wording, and the never-execute-the-driver rule): 179 normative
-    // clauses, 15/90/22/52.
+    // clauses, 15/90/22/52. The v038 menu-primary-operator-ux revision added
+    // ten contracts.md TUI-Contract clauses (menus/dialogs as the first-class
+    // primary navigation mechanism, hotkeys additional-only and never the sole
+    // route, the single action registry with menu taxonomy, the availability
+    // predicate spanning lane AND effective admission policy consumed by both
+    // presentation and invocation, derived-not-restated surfaces, and mandatory
+    // refusal rendering) and five non-functional-requirements.md clauses
+    // (the cross-repo action-surface parity check: red on unbound published
+    // actions, allowlist-with-reasons omissions, and a required born-red
+    // demonstration): 194 normative clauses, 15/100/22/57.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 15_usize),
-        ("contracts.md", 90),
+        ("contracts.md", 100),
         ("constraints.md", 22),
-        ("non-functional-requirements.md", 52),
+        ("non-functional-requirements.md", 57),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -156,7 +165,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 179,
+        total, 194,
         "total normative clauses across the console spec"
     );
     Ok(())
