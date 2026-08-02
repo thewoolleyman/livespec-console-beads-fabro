@@ -312,9 +312,11 @@ last verified against source and can skip it unless its area moved.
 2. `plan/console-happy-path-mvp/research/happy-path-gap-analysis.md` —
    leg-by-leg live-verified status of the happy path, the binding
    constraints (locked core contract), and the custody map.
-3. `plan/operator-surface-redesign/handoff.md` — the design thread this one
-   consumes: maintainer-brainstorm entry gate, "no impl items until
-   ratification", cross-repo verb-vocabulary sequencing.
+3. `plan/archive/operator-surface-redesign/handoff.md` — the design thread this
+   one consumes: maintainer-brainstorm entry gate, "no impl items until
+   ratification", cross-repo verb-vocabulary sequencing. **ARCHIVED 2026-08-02**
+   (absorbed into the 01–04 arc); read its archive banner first — the body's
+   "do not archive" and sequencing instructions are historical.
 4. `plan/archive/work-item-lifecycle-redesign/research/locked-core-contract.md`
    — the invariants every slice must obey (zero Beads knowledge; commands
    only through the orchestrator surface; lane consumed never re-derived;
@@ -503,8 +505,16 @@ it" is not a handoff; a handoff is complete only when the successor has confirme
 
 `plan/operator-surface-redesign/`: the menu-primary decision SATISFIES its brainstorm
 entry gate (see `plan/01-action-registry-and-invoker/research/operator-surface-redesign-decision.md`).
-Its own disposition — absorb vs archive — is with the maintainer and is NOT this
-thread's call.
+
+**DECIDED AND DONE 2026-08-02 — this paragraph used to say the disposition "is with the
+maintainer and is NOT this thread's call", which was true when written and is now FALSE.**
+The maintainer ruled ABSORB AND ARCHIVE. The thread lives at
+`plan/archive/operator-surface-redesign/`, with custody named and ACCEPTED before
+archival: `-zweohm`/`-vc7lmq`/`-l4p3ce` to plan 02, `-ipi` to plan 03, and the cross-repo
+verb-vocabulary dependency to plan 01 (whose parity fixture now consumes the
+orchestrator's published surface mechanically). The ledger `parent-child` edges were
+re-pointed, so the transfer is an edge and not prose. Epic `-6msemd`'s own closure is a
+PREPARED maintainer decision, not taken.
 
 ### 0-RESUME. READ THIS FIRST — state at 2026-07-30T15:0xZ (supersedes the 14:0xZ block)
 

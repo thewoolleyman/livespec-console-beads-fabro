@@ -147,8 +147,9 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
 
 ## Read-first
 
-1. `research/operator-surface-redesign-decision.md` — how this decision satisfies
-   `plan/operator-surface-redesign/`'s brainstorm entry gate.
+1. `research/operator-surface-redesign-decision.md` — how this decision satisfies the
+   operator-surface-redesign thread's brainstorm entry gate, and the custody map from
+   absorbing it. That thread is ARCHIVED at `plan/archive/operator-surface-redesign/`.
 2. `plan/console-happy-path-mvp/handoff.md` §§ 0h–0j — the walk evidence this plan
    inherits, including the three silent-refusal paths and the staged asset.
 3. `plan/archive/work-item-lifecycle-redesign/research/locked-core-contract.md` — the
