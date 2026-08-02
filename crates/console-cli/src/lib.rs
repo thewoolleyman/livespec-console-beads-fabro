@@ -39,7 +39,7 @@ use console_application::{
     handle_work_item_move_command, handle_work_item_reject_command,
     handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
     handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
-    project_attention,
+    handle_work_item_set_workflow_scope_override_command, project_attention,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
@@ -1324,6 +1324,10 @@ pub fn handle_pending_work_item_commands(
                 command,
                 payload_json,
             } => handle_work_item_set_dispatcher_override_command(command, payload_json, port)?,
+            PendingWorkItemCommand::SetWorkflowScopeOverride {
+                command,
+                payload_json,
+            } => handle_work_item_set_workflow_scope_override_command(command, payload_json, port)?,
         };
         outcomes.push(finalize_pending_command(
             store,
@@ -1738,6 +1742,7 @@ const fn is_repeatable_command(command_type: CommandType) -> bool {
             | CommandType::WorkItemSetAcceptanceRequested
             | CommandType::WorkItemResolveBlockedRequested
             | CommandType::WorkItemSetDispatcherOverrideRequested
+            | CommandType::WorkItemSetWorkflowScopeOverrideRequested
             | CommandType::ConfigDispatcherSettingSet
     )
 }
@@ -1901,6 +1906,14 @@ enum PendingWorkItemCommand {
         /// The persisted `payload_json` carrying `{"setting": ..., "value": ...}`.
         payload_json: String,
     },
+    /// A rebuilt `work_item.set_workflow_scope_override_requested` command plus
+    /// its stored payload.
+    SetWorkflowScopeOverride {
+        /// The rebuilt command envelope.
+        command: CommandEnvelope,
+        /// The persisted `payload_json` carrying `{"scope": ...}`.
+        payload_json: String,
+    },
 }
 
 impl PendingWorkItemCommand {
@@ -1914,7 +1927,8 @@ impl PendingWorkItemCommand {
             | Self::SetAcceptance { command, .. }
             | Self::ResolveBlocked { command, .. }
             | Self::Move { command, .. }
-            | Self::SetDispatcherOverride { command, .. } => command,
+            | Self::SetDispatcherOverride { command, .. }
+            | Self::SetWorkflowScopeOverride { command, .. } => command,
         }
     }
 }
@@ -1941,6 +1955,8 @@ fn work_item_command_from_stored(
     let is_move = contract_name == CommandType::WorkItemMoveRequested.contract_name();
     let is_set_override =
         contract_name == CommandType::WorkItemSetDispatcherOverrideRequested.contract_name();
+    let is_set_workflow_scope =
+        contract_name == CommandType::WorkItemSetWorkflowScopeOverrideRequested.contract_name();
     if !(is_approve
         || is_accept
         || is_reject
@@ -1948,7 +1964,8 @@ fn work_item_command_from_stored(
         || is_set_acceptance
         || is_resolve_blocked
         || is_move
-        || is_set_override)
+        || is_set_override
+        || is_set_workflow_scope)
     {
         return Ok(None);
     }
@@ -2009,12 +2026,20 @@ fn work_item_command_from_stored(
             command: rebuild(CommandType::WorkItemMoveRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
-    } else {
+    } else if is_set_override {
         // Set-dispatcher-override sets/clears one per-item cap override: it
         // surfaces the stored `payload_json` (the `{"setting": ..., "value": ...}`
         // object) for the application handler to parse.
         PendingWorkItemCommand::SetDispatcherOverride {
             command: rebuild(CommandType::WorkItemSetDispatcherOverrideRequested),
+            payload_json: stored_command.payload_json().to_owned(),
+        }
+    } else {
+        // Set-workflow-scope-override records a declared workflow path as
+        // citation-only: it surfaces the stored `payload_json` (the
+        // `{"scope": ...}` object) for the application handler to parse.
+        PendingWorkItemCommand::SetWorkflowScopeOverride {
+            command: rebuild(CommandType::WorkItemSetWorkflowScopeOverrideRequested),
             payload_json: stored_command.payload_json().to_owned(),
         }
     };
@@ -6987,5 +7012,76 @@ mod tests {
             }
             Ok(0)
         }
+    }
+
+    #[test]
+    fn the_workflow_scope_override_rides_the_spine_to_its_action_id()
+    -> Result<(), ConsoleRuntimeError> {
+        // The hotkey-less valve's full round trip: staged from a drilled-in
+        // host-only-refused ready item, persisted, rebuilt from the store, and
+        // dispatched as set-workflow-scope-override:<id>:citation-only.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let payload = concat!(
+            r#"{"repo":"livespec-console-beads-fabro","work_item_id":"wi-refused","#,
+            r#""lane":"ready","lane_reason":null,"rank":"a0","status":"ready","#,
+            r#""source_version":1,"detail":{"title":"Refused ready fixture","#,
+            r#""factory_safety":"host-only-refused"}}"#,
+        );
+        let event = ConsoleEvent::new(
+            "evt_wi_refused".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
+            1,
+        )
+        .with_payload_json(payload.to_owned());
+        store.append_event(&EventAppend::new(
+            event,
+            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
+            "2026-08-02T00:00:00Z".to_owned(),
+            "2026-08-02T00:00:00Z".to_owned(),
+            None,
+            "corr_evt_wi_refused".to_owned(),
+            Some("evt_wi_refused".to_owned()),
+            payload.to_owned(),
+            "{}".to_owned(),
+        ))?;
+        let events = store.list_console_events()?;
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetWorkflowScopeOverride,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_selected_lane_item_index(0);
+        let effect =
+            console_tui::step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator")
+                .effect()
+                .clone();
+        let kind = CommandType::WorkItemSetWorkflowScopeOverrideRequested;
+        let (actions, landed) = drive_effects(&mut store, &[effect], kind)?;
+        assert_eq!(
+            actions,
+            ["set-workflow-scope-override:wi-refused:citation-only"]
+        );
+        assert_eq!(landed, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn the_erroring_port_inherits_the_honest_not_wired_read_default() {
+        // The trait's default read is honest not-wired for a port carrying no
+        // real read capability — asserted on THIS crate's test port so the
+        // inherited default is exercised where it is instantiated.
+        let mut port = ErroringWorkItemActionPort;
+        let reading = port.read_action(&OrchestratorActionRequest::new("config".to_owned()));
+        assert_eq!(
+            reading,
+            Ok(console_application::OrchestratorActionReading::not_wired())
+        );
     }
 }

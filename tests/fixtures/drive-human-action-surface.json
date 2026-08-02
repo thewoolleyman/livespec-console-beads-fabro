@@ -1,0 +1,86 @@
+{
+  "_comment": "The orchestrator's PUBLISHED human action surface, pinned for the cross-repo parity gate (crates/console-cli/tests/drive_surface_parity.rs). Source of truth: livespec-orchestrator-beads-fabro SPECIFICATION/contracts.md \u00a7 '#### drive' (the action-id grammar) and \u00a7 'Per-state operator verb vocabulary', cross-checked against the shipped is_human_valve_action prefix tuple (_drive_valves.py:92-107, plugin c402de396ee3). There is no machine-readable upstream manifest for actions (only config keys have one), so this fixture is a hand-reviewed capture: refresh it by re-reading those sections and re-recording each divergence below with a reason. Every entry MUST carry either a console_binding (a registry action id) or a mandatory non-empty omission reason \u2014 an allowlist says 'ignore this'; a reason says 'here is why'.",
+  "captured_against_plugin": "c402de396ee3",
+  "actions": [
+    {
+      "action": "approve",
+      "console_binding": "approve"
+    },
+    {
+      "action": "accept",
+      "console_binding": "accept"
+    },
+    {
+      "action": "reject",
+      "console_binding": "reject"
+    },
+    {
+      "action": "resolve-blocked",
+      "console_binding": "move",
+      "note": "The console's move-status valve routes a blocked item's move through the semantic resolve-blocked action id (move_status_outcome)."
+    },
+    {
+      "action": "set-admission",
+      "console_binding": "set-admission"
+    },
+    {
+      "action": "set-acceptance",
+      "console_binding": "set-acceptance"
+    },
+    {
+      "action": "set-workflow-scope-override",
+      "console_binding": "set-workflow-scope-override",
+      "note": "SHIPPED BUT UNPUBLISHED upstream: absent from contracts.md's 'ten human valve/policy actions' list while present in the shipped prefix tuple. The valve is the documented remedy a factory-safety refusal names (-w7d); this gate was BORN RED against it before the console bound it."
+    },
+    {
+      "action": "set-merge-on-review-cap",
+      "console_binding": "set-merge-on-review-cap"
+    },
+    {
+      "action": "set-review-fix-cap",
+      "console_binding": "set-review-fix-cap"
+    },
+    {
+      "action": "set-acceptance-rework-cap",
+      "console_binding": "set-acceptance-rework-cap"
+    },
+    {
+      "action": "move",
+      "console_binding": "move"
+    }
+  ],
+  "published_but_unimplemented": [
+    {
+      "action": "driver-dispatch",
+      "reason": "Published at contracts.md '#### driver-dispatch:<id>' but absent from the shipped drive surface (no handler in the scripts tree). The console's driver-handoff overlay covers the operator half; binding a drive action that does not exist would be a phantom."
+    },
+    {
+      "action": "defer",
+      "reason": "Named in contracts.md prose but absent from the shipped drive surface. Not bindable until it exists."
+    }
+  ],
+  "non_operator_actions": [
+    {
+      "action": "impl",
+      "reason": "Per-item dispatch stays PARKED per plan/archive/command-queue-semantics/ (-8aw): the queue-level palette drain is the MVP dispatch surface. Not a human valve upstream (dispatcher shell-out)."
+    },
+    {
+      "action": "config",
+      "reason": "Read surface consumed by the Settings view via the config manifest completeness gate (console-completeness-check), not a per-item operator action."
+    },
+    {
+      "action": "config-manifest",
+      "reason": "Machine manifest read; consumed by just refresh-config-manifest, not an operator action."
+    },
+    {
+      "action": "set-config",
+      "reason": "Bound through the Settings view's row editor (ConfigDispatcherSettingSet), which the config completeness gate already binds to docs; outside the per-item registry."
+    }
+  ],
+  "console_local_actions": [
+    {
+      "action": "driver-handoff",
+      "reason": "Console-side verb: renders the driver invocation for copy/paste; the driver session journals its own dispatch through the orchestrator's driver-dispatch surface. Not a drive action-id."
+    }
+  ]
+}

@@ -1793,7 +1793,10 @@ fn registry_help_lines(surface: action_registry::ActionSurface) -> Vec<Line<'sta
                     )
                 },
             );
-            Line::from(format!("{:<13}{text}", spec.hotkey))
+            let key_display = spec
+                .hotkey
+                .map_or_else(|| "menu".to_owned(), |key| key.to_string());
+            Line::from(format!("{key_display:<13}{text}"))
         })
         .collect()
 }
@@ -4092,12 +4095,12 @@ mod tests {
             let model = build_tui_model_for_state(&events, &state);
             let ctx = model.selected_action_context();
             assert!(ctx.is_some(), "{label}: no action context");
-            for (ctx, spec) in ctx.iter().flat_map(|ctx| {
+            for (ctx, spec, hotkey) in ctx.iter().flat_map(|ctx| {
                 action_registry::ACTION_REGISTRY
                     .iter()
-                    .map(move |spec| (ctx, spec))
+                    .filter_map(move |spec| spec.hotkey.map(|hotkey| (ctx, spec, hotkey)))
             }) {
-                let input = key_event_to_terminal_input(key(KeyCode::Char(spec.hotkey)), &model);
+                let input = key_event_to_terminal_input(key(KeyCode::Char(hotkey)), &model);
                 let staged = action_registry::stage_action(spec, ctx).map(|staged| {
                     TuiTerminalInput::Interaction(match staged {
                         action_registry::StagedAction::Valve(valve) => {
