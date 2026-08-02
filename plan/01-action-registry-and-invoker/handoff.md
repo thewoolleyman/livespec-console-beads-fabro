@@ -156,6 +156,119 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    orchestrator surface; lane consumed never re-derived; attention as pure derivation;
    no console→driver dependency).
 
+
+## RESUME HERE — state at 2026-08-02T07:4xZ (supersedes nothing; first resume block)
+
+**MILESTONE 1 IS MERGED. MILESTONE 2 IS BUILT AND COMMITTED BUT CANNOT PUSH — one
+coverage-accounting question is with the maintainer.** Re-measure everything; every
+claim here is timestamped.
+
+### What is DONE and on master
+
+- **PR #573 -> `64131cd`**: the ACTION REGISTRY (`console_application::action_registry`)
+  with hints, hotkeys, and Help rosters DERIVED from it; the ten-bit hint mask, both
+  hint string tables, and the four bespoke key helpers deleted; byte-identity with every
+  pinned hint string test-proven; the `-0uw` fix (approve suppressed AND inert on
+  dispatcher-admitted items, docs rows added); invocation-side enforcement (reducer +
+  confirm consult the same derivation); `docs_status_hint_lockstep` upgraded with a
+  per-context RENDERED-EQUALITY arm + fourteen-context completeness list;
+  no-orphan-hotkeys tests; console-arch-check `check_registry_bypass` (syn rule, paired
+  tests). Three live mutation demos recorded in the PR body. Behavior change recorded
+  deliberately: `h` is now INERT on the Attention surface (was live-but-unhinted).
+- **PR #571 -> `f3c8c93`**: fork pins re-pinned against plugin `c402de396ee3` (fifth
+  firing; one-line upstream docker bump, not ported).
+
+### Milestone 2 — COMMITTED LOCAL-ONLY, worktree `feat/action-invoker`
+
+Branch `feat/action-invoker` at **`35a8c2b`** (parent `ab49fc4`, parent `64131cd`),
+worktree `~/.worktrees/livespec-console-beads-fabro/feat/action-invoker`, CLEAN. NOT
+pushed: the pre-push gate runs `just check-coverage`, which is RED by exactly ONE line
+(below). Everything else measured GREEN on this tree: workspace tests 38/38 binaries
+(app 298, tui 108, cli 133+), fmt, clippy, arch (the registry-bypass lint now allows
+`invoker_confirm_step` as a second registry-consulting staging path), docs gates.
+
+What the two commits carry:
+
+- `ab49fc4` — the **cross-repo parity gate BORN RED** (fixture
+  `tests/fixtures/drive-human-action-surface.json` pinning the orchestrator's
+  eleven-prefix human valve surface, bidirectional, mandatory omission reasons; red
+  output banked in `research/parity-gate-born-red.md`) and then green by binding
+  **`set-workflow-scope-override`** (`-w7d`): new CommandType, `PendingValve::
+  SetWorkflowScopeOverride`, registry entry with `hotkey: None` — the FIRST
+  menu/invoker-only action — full spine rehydration, scope allowlist `citation-only`.
+- `35a8c2b` — the **ACTION INVOKER** (palette `:` -> `actions` -> roster of every
+  registered action, unavailable rows marked `(unavailable here)` and inert, Enter
+  stages the normal confirm flow; `TuiOverlay::ActionInvoker`) and the **`-ectqye`
+  action half**: `run_action` failure now CAPTURES the drive stdout
+  (`OrchestratorActionOutcome::Failed { refusal }`), the failure event + command
+  `error_json` carry it, the model projects latest-failure-per-item (cleared on a later
+  completed action), and the record modal renders `Last action: <id> refused —
+  <domain_error>: <summary>`. Docs updated (palette prose, action-invoker section,
+  overlay hint rows).
+
+### THE ONE BLOCKER — a coverage phantom the maintainer must disposition
+
+`just check-coverage` reports **one missed line in `console-application/src/lib.rs`
+(7928 lines, 7927 covered)** that NO llvm-cov listing surface can name. Measured
+exhaustively on this tree, each probe run fresh:
+
+- lcov export: LF=7917/7928 vs **7823 DA records, NONE zero** (LF > #DA — the same
+  `LF/LH vs DA` inconsistency `plan/console-happy-path-mvp/handoff.md` § 0c item 2
+  recorded for slice C, where 4 such lines existed).
+- JSON export: zero zero-count non-gap region entries unaccounted, zero zero-count
+  expansions (recursive), zero all-zero function instantiation GROUPS (after fixes).
+- Four independent reconstructions of llvm's line accounting (max-entry, gap-aware,
+  per-function-group union, per-group sums) each report 100% covered.
+- **CONTROL: master (`64131cd`) is clean — 21,783/21,783.** The phantom is
+  diff-attributed but unattributable to a line.
+- Six targeted execution-fixes were applied during the hunt; five closed REAL gaps
+  (misses went 2 -> 1): the `valve_is_available` scope arm in the app binary, the
+  projection's malformed-payload edge, the handler's empty-id edge, the inherited
+  `read_action` default on the cli test port, ActionFailure derives. The sixth
+  (derived Debug arms of the new enum variants) did not move the number.
+
+**The maintainer decision** (never a worker's: the never-weaken-a-check rule):
+(a) authorize continued execution-iteration (§ 0c precedent, unbounded cost);
+(b) authorize splitting/bisecting the branch into smaller PRs to isolate the
+construct; or (c) an explicitly-authorized narrow disposition of the one-line
+summary artifact. Until then the branch stays local; do NOT `--no-verify`.
+
+### Remaining after the blocker clears
+
+1. Push, PR (body draft exists but is session-local — rewrite from this section and
+   `research/parity-gate-born-red.md`; include the three PR-1-style mutation demos:
+   parity reverse-arm red is still OWED as a live demo), `just check-e2e-tmux` before
+   push (green on this tree as of `64131cd`+M2? — NOT yet re-run after the invoker
+   commits; RUN IT), rebase-merge.
+2. **The dogfood leg** (charter § Milestone acceptance): rebuild the cockpit, invoker ->
+   `set-workflow-scope-override:livespec-console-beads-fabro-ccycuk:citation-only`,
+   drain at the TUI (NO drive.py fallback), monitor, `c` accept. `-ccycuk` still sits
+   `ready` + `ai-then-human`, untouched. The plugin-root override for the cockpit and
+   the known dispatch hazards are in `plan/console-happy-path-mvp/handoff.md` § 0-RESUME.
+
+### Findings surfaced this session (recorded, not fixed here)
+
+- **`-6hbfq6` reconcile is STRUCTURALLY blocked** (bd comment on the item, 2026-08-02):
+  the post-merge janitor checks out THE MERGE SHA (`_dispatcher_engine_janitor.py:171`,
+  `ref = merged.merge_sha`), so `886011d`'s committed pins can never satisfy the
+  host-coupled `check-fork-drift` after a plugin bump; the master-tip re-pin cannot
+  reach it. ANY item merged before a plugin bump is unreconcilable on this host. The
+  sanctioned exit is the `dm5f7q` precedent — a maintainer-authorized reduced janitor
+  argv dropping only the provably-time-inconsistent `check-fork-drift` (which ran green
+  in PR #527's own pre-push). Decision owed.
+- **Upstream reject divergence, verified at source**: the orchestrator's RATIFIED
+  per-lane table (contracts.md:1297) admits `reject` at `pending-approval`; shipped
+  `_reject_item` (`_drive_valves.py:184-213`) refuses any status except `acceptance`.
+  The console's vocabulary-derived `r reject` hint on a pending-approval item is
+  therefore advertised-but-refused today (silently, pre-`-ectqye`-fix). Upstream-owned.
+- **The shipped binary never sends the driver-handoff OSC 52 copy**: only the deferred
+  test sink handles `CopyDriverHandoff`; the store-backed sink drops it
+  (`command_append_from_tui_effect` drop arm) while the overlay says "copy sent to
+  terminal". Worth a work-item.
+- The parity capture records two more upstream divergences with reasons in the fixture:
+  `set-workflow-scope-override` shipped-but-unpublished; `driver-dispatch`/`defer`
+  published-but-unimplemented.
+
 ## Standing rules
 
 worktree → PR → rebase-merge, never the primary; `mise exec -- git` so lefthook runs; a
