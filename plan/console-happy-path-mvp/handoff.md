@@ -302,8 +302,36 @@ last verified against source and can skip it unless its area moved.
   the shipped binary never sends it (the store-backed sink drops `CopyDriverHandoff` while
   the overlay says "copy sent to terminal"). Documenting it would document a dead path;
   the defect is the overlay's claim, and it is a separate item.
-  **NOT re-verified**: the rest of the skip-list, and the docs no commit in this range
-  touched.
+  **SECOND INCREMENT, same pass — THREE SKIP-LIST ENTRIES PULLED BACK AND RE-VERIFIED,
+  all CLEAN.** PR #573 made Status hints, hotkeys and Help rosters registry-derived and
+  deliberately made `h` INERT on the Attention surface, and `886011d` changed Help
+  navigation — so "every Status-line hint", "the 8-section Help modal" and "global key
+  inertness under overlays" all had their AREA CHANGE and came off the skip list. Each
+  was re-checked at source, not skimmed:
+    - **8-section Help modal.** `HELP_SECTION_COUNT = 1 + TuiView::all().len() + 1`
+      (`lib.rs:5554`) and `TuiView::all()` has SIX entries (`:130-136`), so 1+6+1 = 8.
+      `detailed-usage.md:401-402` says "eight sections: Global actions first, then one
+      per view (Attention, Spec, Lanes, Events, Repos, Settings), and Header last" —
+      matching the count, both bookends, AND the source order.
+    - **The `h`-inert-on-Attention change landed correctly in docs.** Zero of the five
+      `Attention, …` hint rows carry `h handoff`; it appears only on the two drilled-in
+      LANES rows (`:273`, `:277`), and `:304-306` explains the asymmetry ("a drilled-in
+      backlog item (groom) or a drilled-in host-only-refused ready item (implement)").
+      Because `h` was previously live-but-UNHINTED, the behaviour change made the docs
+      more accurate rather than less — worth noting, since a deliberate behaviour change
+      is normally where prose rots.
+    - **Global key inertness, two claims proved at source.** `:36`/`:328` "`Tab` and
+      `Shift-Tab` are inert while any overlay is open" — `tab_input`
+      (`console-tui/src/lib.rs:759-762`) returns `None` on `overlay().is_open()`, so the
+      "any" quantifier is exact. `:411` "`?` is inert while Help is open" —
+      `question_input` (`:790-798`) returns `None` for `Help`, `WorkItemDetail` and
+      `DriverHandoff`. That claim is also correctly SCOPED: under Search, the palette,
+      the command modal and valve-confirm, `?` is `text_input('?')` — it types a literal
+      `?` rather than being inert, and the doc does not claim otherwise.
+  **NOT re-verified**: the remaining skip-list entries (the `s` move-status table, the
+  header degrade ladder, the attention row format, the whole-record modal claim, and the
+  TUI claims in `overview-quickstart.md` and `cli-options.md`), and the docs no commit in
+  this range touched.
 
 ## Read-first chain
 
