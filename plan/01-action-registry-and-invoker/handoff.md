@@ -207,10 +207,20 @@ evidence.**
 `set-workflow-scope-override` ships `hotkey: None` — the first deliberately
 menu/invoker-only action — so A alone does not make it reachable.
 
-**Separability was MEASURED, not inferred:** the refusal renders in the record modal
-(`console-tui/src/lib.rs:1454`), the invoker overlay references `refusal` nowhere, and
-they share no rendering path. The charter states requirement 4 as one clause; **the
-charter wording was wrong, not the reading** — maintainer-confirmed 2026-08-02.
+**Separability was MEASURED, not inferred:** the refusal renders in the record modal,
+the invoker overlay references `refusal` nowhere, and they share no rendering path. The
+charter states requirement 4 as one clause; **the charter wording was wrong, not the
+reading** — maintainer-confirmed 2026-08-02.
+
+> **That anchor is BRANCH-RELATIVE — `console-tui/src/lib.rs:1454` on the
+> `feat/action-invoker` branch, NOT on master.** Slice C is unmerged, so on master that
+> line is `let detail = item.detail();` and a reader following it lands in unrelated
+> code. Caught 2026-08-02 by sweeping every `file.rs:NNNN` citation in the live plan
+> handoffs against master. **General rule for this arc, since three of the four plans now
+> carry source anchors: an anchor into unmerged work MUST say which branch it is on.**
+> A stale anchor and a branch-relative anchor fail the same way — the reader lands
+> somewhere plausible and wrong — but only the stale one gets caught by re-measuring
+> against master.
 
 **SLICE A ACCEPTANCE CARRIES AN EXTRA ITEM:** the parity gate's **omission-reason arm is
 still NOT mutation-demonstrated**. The forward arm was born red and the reverse arm is
