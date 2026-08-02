@@ -219,9 +219,25 @@ check-nextest:
     just ensure-rust-quality-tools
     cargo nextest run --workspace --all-features
 
+# Line coverage. The 100% requirement for ATTRIBUTABLE lines is unchanged; a
+# single nameable uncovered line still fails. What `--fail-under-lines 100`
+# cannot express is llvm-cov counting misses no listing surface can NAME, so the
+# summary and the listing are compared explicitly and that one signature is
+# capped by a recorded, reasoned disposition. See
+# tests/fixtures/coverage-unnameable-disposition.json and ledger item
+# livespec-console-beads-fabro-3yx.
 check-coverage:
+    #!/usr/bin/env bash
+    set -uo pipefail
     just ensure-rust-quality-tools
-    cargo llvm-cov --workspace --all-features --lib --fail-under-lines 100
+    export_json="$(mktemp)"
+    missing_txt="$(mktemp)"
+    trap 'rm -f "${export_json}" "${missing_txt}"' EXIT
+    # One instrumented run; the listing reuses its profdata.
+    cargo llvm-cov --workspace --all-features --lib --json --output-path "${export_json}" || exit 1
+    cargo llvm-cov report --show-missing-lines | tee "${missing_txt}" || exit 1
+    python3 dev-tooling/coverage-gate.py \
+        "${export_json}" "${missing_txt}" tests/fixtures/coverage-unnameable-disposition.json
 
 check-deps:
     just ensure-rust-quality-tools
