@@ -158,7 +158,51 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    no console→driver dependency).
 
 
-## RESUME HERE — state at 2026-08-02T08:5xZ (SUPERSEDES the 07:4xZ block below)
+## RESUME HERE — state at 2026-08-02T~10:30Z (SUPERSEDES every block below)
+
+**MILESTONE 2 IS UNBLOCKED AND SPLIT. Slice A is BUILT, GREEN, and awaiting merge.**
+
+| PR | slice | state |
+|---|---|---|
+| **#585** | **A** — parity gate + `set-workflow-scope-override` + the coverage disposition | **14/14 CI GREEN**, open |
+| #588 | B — DRAFT, **plan only, no implementation**, based on A's branch | open |
+
+**THE COVERAGE BLOCKER IS DISPOSITIONED, NARROWLY.** Maintainer-authorized 2026-08-02
+after ONE bounded pass FAILED and the follow-up compilation-count experiment came back
+INCONCLUSIVE. `check-coverage` now compares llvm-cov's summary against its own
+`--show-missing-lines` listing and caps only the unnameable residue via
+`tests/fixtures/coverage-unnameable-disposition.json`; logic in
+`dev-tooling/coverage-gate.py`. **The 100% requirement for attributable lines is
+UNCHANGED, § 0c is untouched, and a single NAMEABLE miss still fails** — proven by four
+red mutation demos plus a green control, and fail-closed if the fixture is missing.
+Tracking `-3yx`. **B and C inherit it ONLY on the IDENTICAL signature.** Allowance may be
+reduced, never raised without new recorded authorization.
+
+**NEXT, in order:** merge #585 -> rebase `feat/slice-b-action-invoker` -> build slice B
+from `research/slice-b-build-plan.md` (it carries the TWO non-obvious cherry-pick
+conflict resolutions and the enumerated 54-site slice-C removal list — do not re-derive
+them) -> then slice C.
+
+**The dogfood leg is HELD until A AND B are BOTH MERGED.** B is a plan today, so it is
+not satisfied. Conditions unchanged (fresh build, one client via `/proc/*/exe`,
+plugin-root override inside the credential wrapper, invoker -> drain -> monitor -> `c`).
+`-ccycuk` untouched at `ready` + `ai-then-human`.
+
+**Milestone-1 component note:** the menu-primary propose-change was going through the
+maintainer's `revise` pass in the supervisor pane at wind-down.
+**`SPECIFICATION/proposed_changes/` and `history/` were OFF-LIMITS** — confirm it landed
+before touching either.
+
+**Verified for plan 02 before it opens** (see its charter): `menu_path` shipped as
+required, but `hotkey` shipped MANDATORY on master and only slice A widens it to
+`Option<char>` — so no keyless menu entry is expressible until A merges. And 02's
+"every action via menus" is UNDEFINED: all ten registry entries are per-item verbs under
+one top-level node, and structural keys are forbidden as registry hotkeys. That choice
+decides whether 02's completeness gate is a verifier or a tautology.
+
+---
+
+## Earlier block — state at 2026-08-02T08:5xZ (HISTORICAL)
 
 **MILESTONE 1 IS MERGED. MILESTONE 2 IS BUILT AND CANNOT PUSH. THE COVERAGE QUESTION
 WENT TO THE MAINTAINER AND CAME BACK: ONE BOUNDED PASS WAS SPENT AND IT FAILED. THE
