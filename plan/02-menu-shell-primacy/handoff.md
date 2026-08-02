@@ -61,6 +61,52 @@ cockpit during this plan, and that is expected, not a regression). Out: the walk
 which segment, and record any hotkey used as a FAILURE of the menus-only claim rather
 than a convenience.
 
+## Inherited custody — ACCEPTED 2026-08-02
+
+From `plan/archive/operator-surface-redesign/`, absorbed and archived on the
+maintainer's ruling. **This section IS the acceptance** — the discipline that thread and
+`plan/console-happy-path-mvp/` both record is that "another plan owns it" is not a
+handoff; a handoff is complete only when the successor confirms it. Confirmed here.
+
+| item | what it asks for | status at transfer |
+|---|---|---|
+| `-zweohm` | lane items expose no state-appropriate next action; each lane/status maps to its actually-valid verbs and the item surface presents exactly that set | backlog |
+| `-vc7lmq` | the detail pane should offer only state-valid commands (redesign half; the immediate defect shipped separately as `-qwjfsw`, closed) | backlog |
+| `-l4p3ce` | a paradigm for handing off to an LLM driver session. **The transport SHIPPED** as the `h` driver-handoff overlay (`-cxu4eu`); what remains here is menu-driven invocation of heavyweight verbs | backlog |
+
+**Why these land on 02 and not 01:** the availability predicate they depend on already
+shipped in 01 (registry predicates, multi-dimensional, consumed by both presentation and
+invocation — the `-0uw` fix). What is left is *presentation of exactly the valid set*,
+which is the menu. Generating menus from the registry taxonomy is this plan's mission,
+so these are not extra scope; they are the same work stated as grievances.
+
+**Carry forward, measured and still true:** `valve_open_input` gates only on "is a
+work-item selected", never on `item.lane()` — so `p`/`c`/`r` all fire on a backlog item
+where they are meaningless. Generalize from `s` (move-status), which already consults
+`status_move_targets(lane)` and returns `None` when a lane has no drivable target.
+`RejectMode::Regroom` is a REJECT mode, semantically the opposite of grooming a backlog
+item — it is not the groom transport, but it is shipped and the design must account for
+it.
+
+**A live hazard for this plan specifically:** the shipped binary never sends the
+driver-handoff OSC 52 copy — only the deferred test sink handles `CopyDriverHandoff`,
+while the overlay says "copy sent to terminal". Recorded in plan 01's resume block.
+
+## Implementation mode — RULED 2026-08-02
+
+**Implement IN-SESSION**: worktree → PR → **full gates** → rebase-merge. That is the
+default for every slice in this plan.
+
+**Factory dispatch is the exception, not the fallback**: use it only for well-bounded,
+sandbox-safe slices, and **record the choice per slice** with the reason. A slice that
+touches host-coupled surfaces, plugin resolution, or anything under `.github/workflows/`
+is not sandbox-safe — see the known live hazards in
+`plan/01-action-registry-and-invoker/handoff.md`.
+
+Recording the mode here rather than leaving it as session convention, because the two
+routes have different evidence obligations and a successor cannot infer which was used
+from the merge alone.
+
 ## Ledger
 
 Tracks `-2ckgiy`. Blocked by `-dvv` (01). Blocks `-9nb` (04).

@@ -157,11 +157,107 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    no console→driver dependency).
 
 
-## RESUME HERE — state at 2026-08-02T07:4xZ (supersedes nothing; first resume block)
+## RESUME HERE — state at 2026-08-02T08:5xZ (SUPERSEDES the 07:4xZ block below)
 
-**MILESTONE 1 IS MERGED. MILESTONE 2 IS BUILT AND COMMITTED BUT CANNOT PUSH — one
-coverage-accounting question is with the maintainer.** Re-measure everything; every
+**MILESTONE 1 IS MERGED. MILESTONE 2 IS BUILT AND CANNOT PUSH. THE COVERAGE QUESTION
+WENT TO THE MAINTAINER AND CAME BACK: ONE BOUNDED PASS WAS SPENT AND IT FAILED. THE
+DECIDED PATH IS NOW A THREE-WAY SPLIT — A -> B -> C.** Re-measure everything; every
 claim here is timestamped.
+
+### The bounded pass — SPENT, FAILED, NOT TO BE RE-ENTERED
+
+Authorized as ONE keyed pass (regions newly-missed vs master, not blind execution
+fixes) under a stop-regardless discipline. It did not find the line;
+`just check-coverage` is still `RC=1`. **Do not open a second pass** — that decision has
+been taken once and the blind alley is documented.
+
+What it settled, and why the record is worth more than the failure costs:
+
+- **FIVE listing surfaces are blind to it**, four of them newly proven this pass:
+  `--show-missing-lines` prints no missing-line section; JSON segment reconstruction
+  yields ZERO uncovered lines; the annotated `--text` listing renders 7,836 instrumented
+  lines with none at count 0; and the keyed step found **all 42 zero-count segments sit
+  on lines the diff never touched** — the 591 added lines contain no zero-count segment
+  at all.
+- **The commit-boundary bisect is a PROVEN dead end.** `ab49fc4` measures 43 missed
+  lines, but only because its tests land in the tip commit. Intermediate commits are not
+  coverage-gated, so that boundary cannot localize anything. Do not repeat it.
+- **Filed as `-3yx`** (P2 bug, `tracks` under `-dvv`) with a falsifiable prediction: the
+  phantom tracks the NUMBER OF COMPILATIONS of `console-application` in the merged
+  profile, not the diff. Two crate disambiguators are present and 91 function records
+  read `count == 0` while the summary reports zero missed functions.
+- Forensics: `research/coverage-phantom-bounded-pass.md`.
+
+### THE SPLIT — APPROVED A -> B -> C. This is the path forward.
+
+Each slice is a separate PR carrying its own tests, so **each must independently pass
+the coverage gate** — the constraint the commit boundary never imposed, and the reason
+this localizes where the bisect could not. `-3yx` records the verdict: either the
+phantom localizes to one slice, or it vanishes/persists uniformly. **Either outcome is
+evidence.**
+
+| slice | content | note |
+|---|---|---|
+| **A** | cross-repo parity gate + `set-workflow-scope-override` binding (`-w7d`) | smallest, `lib.rs` +78 |
+| **B** | the action invoker (`TuiOverlay::ActionInvoker`, palette roster, confirm staging) + docs | **LEG-CRITICAL** |
+| **C** | the `-ectqye` action half (refusal capture, `error_json`, latest-failure projection, record-modal render) | on no critical path |
+
+**A + B is the minimum that unblocks the dogfood leg, and C is not needed for it.**
+`set-workflow-scope-override` ships `hotkey: None` — the first deliberately
+menu/invoker-only action — so A alone does not make it reachable.
+
+**Separability was MEASURED, not inferred:** the refusal renders in the record modal
+(`console-tui/src/lib.rs:1454`), the invoker overlay references `refusal` nowhere, and
+they share no rendering path. The charter states requirement 4 as one clause; **the
+charter wording was wrong, not the reading** — maintainer-confirmed 2026-08-02.
+
+**SLICE A ACCEPTANCE CARRIES AN EXTRA ITEM:** the parity gate's **omission-reason arm is
+still NOT mutation-demonstrated**. The forward arm was born red and the reverse arm is
+now demonstrated red; the third is owed and is pinned to slice A so it cannot slip
+again.
+
+### Deliberate deferral, recorded as a DECISION not an oversight
+
+The full workspace suite was **not re-run after the rebase**. Verified post-rebase:
+`check-e2e-tmux` (GREEN, 11/11), format, clippy, arch. The "everything else green" line
+in the older block below is a PRE-rebase measurement. Accepted by the maintainer
+2026-08-02 on the grounds that **each split PR runs the full gates at pre-push**, which
+converts it into a current measurement per-slice.
+
+### The dogfood leg — HOLD LIFTS once A and B are BOTH merged
+
+Then, in order: fresh `just tui` build (**the live cockpit binary is 2026-07-30 and is
+STALE** — PID 1883911 was still running at 08:0xZ), verify exactly ONE live client via
+`/proc/*/exe`, then `set-workflow-scope-override:livespec-console-beads-fabro-ccycuk:
+citation-only` **FROM THE COCKPIT**, drain at the TUI (no `drive.py` fallback), monitor,
+`c` accept. `-ccycuk` remains `ready` + `ai-then-human`, untouched. Recording conditions
+unchanged: a leg discharged outside the surface is an OPEN leg with a workaround.
+
+### Also decided 2026-08-02
+
+- **`-6hbfq6` janitor authorization GRANTED, THIS ITEM ONLY**: reduced janitor argv
+  dropping ONLY `check-fork-drift`, recorded with the time-inconsistency rationale (its
+  own pre-push ran that gate green at merge time). The `dm5f7q` precedent applies
+  verbatim. **NOT a standing policy** — expect recurrence per-item for any pre-bump merge
+  until `-3r6` lands, and each recurrence goes back to the maintainer.
+- **`plan/operator-surface-redesign/` is ABSORBED AND ARCHIVED** at
+  `plan/archive/operator-surface-redesign/`, custody named and accepted BEFORE archival
+  (`-zweohm`/`-vc7lmq`/`-l4p3ce` -> 02; `-ipi` -> 03; ledger edges re-pointed and
+  verified). See `research/operator-surface-redesign-decision.md`.
+- **Plan 04's mission is AMENDED and SETTLED** — the assumption flag is out.
+- **Plans 02–04 implement IN-SESSION**: worktree -> PR -> full gates -> rebase-merge;
+  factory dispatch only for well-bounded sandbox-safe slices, choice recorded per slice.
+
+### Branch state after this session
+
+`feat/action-invoker` REBASED onto master `d765aae`: `ab49fc4` -> **`e3d82eb`**,
+`35a8c2b` -> **`66b4fd2`**, plus `787ead7` and `f51dceb` carrying the banked evidence.
+Still unpushable (same one line). The evidence docs are duplicated into THIS PR so they
+have a forge copy independent of that branch.
+
+---
+
+## The 07:4xZ block (HISTORICAL — read the block above first)
 
 ### What is DONE and on master
 
@@ -207,6 +303,13 @@ What the two commits carry:
   overlay hint rows).
 
 ### THE ONE BLOCKER — a coverage phantom the maintainer must disposition
+
+> **RESOLVED 2026-08-02 — the three options below were put to the maintainer and option
+> (a) was chosen, spent, and FAILED. The decided path is now the A -> B -> C split. Do
+> not re-offer these options and do not open a second iteration pass.** The measurements
+> in this subsection remain accurate and are superseded only in their disposition; the
+> current record is the block at the top of this file plus
+> `research/coverage-phantom-bounded-pass.md` and ledger item `-3yx`.
 
 `just check-coverage` reports **one missed line in `console-application/src/lib.rs`
 (7928 lines, 7927 covered)** that NO llvm-cov listing surface can name. Measured

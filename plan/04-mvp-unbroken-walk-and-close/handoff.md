@@ -10,30 +10,33 @@ Opened 2026-08-02.
 The amended MVP walk: **one unbroken single-item pass, MENUS-ONLY, on the real stack** —
 then close and archive the whole arc.
 
-## THE AMENDED WALK — CARRY THIS AS A VISIBLE ASSUMPTION, NOT A SETTLED FACT
+## THE AMENDED WALK — RULED ON AND SETTLED 2026-08-02
 
-**The maintainer has NOT explicitly ruled on this. It is an assumption pending their
-confirmation at review, and it must stay flagged until they confirm it.**
+**The maintainer AMENDED the mission to system reality on 2026-08-02.** This is no
+longer an assumption and is not to be re-litigated. The flag that stood here — "carry
+this as a visible assumption, not a settled fact" — is REMOVED because the ruling it
+waited for has been given.
 
-The assumption: the mission text is **AMENDED to what the system actually does** —
+The mission text is **AMENDED to what the system actually does** —
 
 > groom → **ready** (Dispatcher-admitted; `admission_policy=auto` is BY DESIGN) →
-> dispatch → acceptance → accept
+> **menu-driven dispatch** → acceptance → accept
 
 with the **approve valve proven SEPARATELY on manual-admission items** (already done:
 four clean TUI admissions on 2026-07-29, plus one correctly-refused press on 2026-07-30).
 
-**Why the amendment is proposed.** `plan/console-happy-path-mvp/` said "slices admitted
-at the approve valve". Measured 2026-07-30, on the two slices a real groom produced:
-`-ccycuk` landed at `ready` outright, and `-koykn7` landed `pending-approval` carrying
-`admission_policy=auto`, which `can_approve_item` refuses because it requires
+**Why the amendment was made, kept because the evidence is the reason it survives.**
+`plan/console-happy-path-mvp/` said "slices admitted at the approve valve". Measured
+2026-07-30, on the two slices a real groom produced: `-ccycuk` landed at `ready`
+outright, and `-koykn7` landed `pending-approval` carrying `admission_policy=auto`,
+which `can_approve_item` refuses because it requires
 `effective_admission_policy == manual`. `awaits_dispatcher_admission` names exactly that
-state. So the original walk **cannot be performed as written** — not because of a bug,
-but because the specification described behaviour the system does not have.
+state. So the original walk **could not be performed as written** — not because of a
+bug, but because the specification described behaviour the system does not have.
 
-**If the maintainer rejects the amendment, this plan's mission changes** and the
-alternative is a spec change making groomed slices manual-admission. Do not quietly
-proceed on the assumption; surface it at review.
+The alternative the maintainer declined was a spec change making groomed slices
+manual-admission. Recorded so a successor does not re-propose it as though it were
+unconsidered.
 
 ## Why this handoff is thin, deliberately
 
@@ -66,6 +69,21 @@ actually shipped.
   substantially; what REMAINS becomes a standing item or a named successor thread.
   **Custody must NEVER be dropped silently** — that is the exact condition the last
   archived thread was conditioned on, and the reason its obligation survived at all.
+
+## Implementation mode — RULED 2026-08-02
+
+**Implement IN-SESSION**: worktree → PR → **full gates** → rebase-merge. That is the
+default for every slice in this plan.
+
+**Factory dispatch is the exception, not the fallback**: use it only for well-bounded,
+sandbox-safe slices, and **record the choice per slice** with the reason. A slice that
+touches host-coupled surfaces, plugin resolution, or anything under `.github/workflows/`
+is not sandbox-safe — see the known live hazards in
+`plan/01-action-registry-and-invoker/handoff.md`.
+
+Recording the mode here rather than leaving it as session convention, because the two
+routes have different evidence obligations and a successor cannot infer which was used
+from the merge alone.
 
 ## Ledger
 

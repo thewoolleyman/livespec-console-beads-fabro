@@ -1,5 +1,63 @@
 # Operator-surface redesign — state-valid verbs, truthful detail panes, driver handoff
 
+> # CLOSED AND ARCHIVED 2026-08-02 — ABSORBED INTO THE 01–04 ARC
+>
+> **Do not resume this thread.** Its entry gate was satisfied, its design question was
+> answered, and custody of every open item was transferred and ACCEPTED before this
+> archival — not merely asserted.
+>
+> ## The concluding entry: the menu-primary decision
+>
+> This thread existed to open one question — which verbs are valid in which state, how
+> they are presented, and how heavyweight LLM-driven verbs reach a driver session. Its
+> ENTRY GATE was maintainer brainstorm participation, an absolute gate.
+>
+> **The maintainer participated and decided, 2026-08-02, verbatim:**
+>
+> > "I would rather every action be available via MENUS and DIALOGS as the first-class,
+> > required, primary navigation UX mechanism. And hotkeys are only provided IN ADDITION
+> > to first-class menu operation AS A POWER-USER CONVENIENCE."
+>
+> That answers the presentation half outright: the action set is registry-derived and
+> menus are primary. The transport half was answered by shipping — the `h` driver-handoff
+> overlay (`-cxu4eu`) is the paradigm `-l4p3ce` asked for.
+>
+> ## Custody transferred — NAMED, and accepted by the successor
+>
+> | item | inherits | acceptance recorded in |
+> |---|---|---|
+> | `-zweohm`, `-vc7lmq`, `-l4p3ce` | **plan 02** (`-et3`) | `plan/02-menu-shell-primacy/handoff.md` § Inherited custody |
+> | `-ipi` | **plan 03** (`-1df`) | `plan/03-dispatch-ux-and-outcome-surfacing/handoff.md` § Inherited custody |
+> | cross-repo verb-vocabulary dependency | **plan 01** (`-dvv`) | the parity gate + fixture, already shipped |
+> | `-qwjfsw` | — | CLOSED, nothing owed |
+>
+> Ledger `parent-child` edges were RE-POINTED to the receiving epics, so the transfer is
+> an edge and not prose.
+>
+> **ONE LOOSE END THIS ARCHIVE CREATED, left OPEN deliberately:**
+> `SPECIFICATION/contracts.md`'s driver-handoff clause still cites
+> `plan/operator-surface-redesign/research/l4p3ce-handoff-transport.md` at its
+> pre-archive path. It CANNOT be corrected by editing the file — the gates refuse it
+> (`doctor-out-of-band-edits`, and the clause is content-linked to its scenario). It
+> needs a `/livespec:propose-change` -> `/livespec:revise` pass. Details in plan 01's
+> `research/operator-surface-redesign-decision.md`. The full reasoning is
+> `plan/01-action-registry-and-invoker/research/operator-surface-redesign-decision.md`.
+>
+> **Epic `-6msemd` itself:** its remaining role was the critical-path `blocks` gate on
+> `plan/console-happy-path-mvp/`, which the menu-primary decision satisfies. Closing it
+> is a PREPARED MAINTAINER DECISION, not taken here — the same idiom used for `-m36`
+> and `-8i9`.
+>
+> ## What is still TRUE below, and worth reading
+>
+> The verified defect analyses (`valve_open_input` gates only on "is a work-item
+> selected"; the `CopyFabroAttach` scaffold is dead; `RejectMode::Regroom` is a reject
+> mode and not a groom transport) are measurements, not plans, and they remain accurate.
+> The two research records travel with this archive.
+>
+> Everything below this banner is the thread AS IT STOOD. Its "do not archive", "no impl
+> items until ratification", and sequencing instructions are HISTORICAL.
+
 **Epic anchor:** `livespec-console-beads-fabro-6msemd`
 
 **Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which

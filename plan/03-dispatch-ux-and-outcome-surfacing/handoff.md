@@ -66,6 +66,48 @@ success OR refusal — appears in the UI without leaving the cockpit.
 Decoupled from 02 by design: neither needs the other's output. It runs AFTER 02 under
 the one-live-execution-thread rule, not because of a dependency.
 
+## Inherited custody — ACCEPTED 2026-08-02
+
+From `plan/archive/operator-surface-redesign/`, absorbed and archived on the
+maintainer's ruling. **This section IS the acceptance**, per the standing rule that
+"another plan owns it" is not a handoff until the successor confirms it.
+
+| item | what it asks for | status at transfer |
+|---|---|---|
+| `-ipi` | migrate the attention render path from `WorkItemSnapshot(Observed)` to the `attention_item.*` stream | backlog, P3 |
+
+**Why this lands on 03.** The `attention_item.*` stream carries `handoff.command` — the
+truthful replacement for the fabricated `fabro attach` line. That makes the migration
+an OUTCOME-SURFACING change, which is this plan's subject, not a menu change.
+
+**This is the one item no other plan naturally absorbed**, which is precisely why the
+archival named it rather than letting it fall between 02 and 04. If this plan later
+judges it out of scope, it must be re-homed EXPLICITLY, not dropped.
+
+**Known constraint, carried:** the migration is blocked on reconciling with ratified
+Scenario 5, so a propose-change MUST precede the code. That is why it sat in a design
+thread rather than a delivery one, and the constraint survives the transfer.
+
+**Cross-tenant bookkeeping: NOTHING IS OWED.** `livespec-yes5` is CLOSED
+(maintainer-directed wind-down 2026-07-08) and its close reason explicitly records that
+prose-linked carry-overs "PERSIST as standalone backlog items in their own tenants (NOT
+lost)", naming `-ipi`. There is no open epic to report back to.
+
+## Implementation mode — RULED 2026-08-02
+
+**Implement IN-SESSION**: worktree → PR → **full gates** → rebase-merge. That is the
+default for every slice in this plan.
+
+**Factory dispatch is the exception, not the fallback**: use it only for well-bounded,
+sandbox-safe slices, and **record the choice per slice** with the reason. A slice that
+touches host-coupled surfaces, plugin resolution, or anything under `.github/workflows/`
+is not sandbox-safe — see the known live hazards in
+`plan/01-action-registry-and-invoker/handoff.md`.
+
+Recording the mode here rather than leaving it as session convention, because the two
+routes have different evidence obligations and a successor cannot infer which was used
+from the merge alone.
+
 ## Ledger
 
 Tracks `-htp`, `-8aw`, `-3lxx7t`, `-9ts`. Blocked by `-dvv` (01). Blocks `-9nb` (04).
