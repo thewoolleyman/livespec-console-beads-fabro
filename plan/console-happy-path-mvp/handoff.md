@@ -353,6 +353,44 @@ last verified against source and can skip it unless its area moved.
   **NOT re-verified**: the header degrade ladder, the attention row format, and the
   whole-record modal claim (none of their areas moved in this range), and the docs no
   commit in this range touched.
+- **2026-08-03 (delta pass, `69ea9d4..67c58d4`). FINDING — the THIRD MECHANISM fired
+  again, on the auditing session's OWN slice, one day after § "Doc custody" named it.
+  FIXED in the same pass.** Range is 29 commits; exactly ONE touched `docs/` (`d9fc67d`,
+  slice B) and three touched console crates (`52f4b94` A, `d9fc67d` B, `67c58d4` C).
+    - **THE FINDING: slice C (`67c58d4`) shipped an operator-visible render with ZERO
+      prose.** The record modal gained a `Last action: <id> refused — …` line and `grep -rn
+      'Last action\|refused —' docs/` returned nothing. **No gate can see it, exactly as
+      predicted**: it is not a Status-band hint, so neither arm of
+      `docs_status_hint_lockstep` applies, and the completeness arm is satisfied because
+      the `Work-item record open` row EXISTS (`:290`) — only the modal's BODY content is
+      undescribed. Structurally identical to `-cxu4eu`'s `h` overlay: the row exists, the
+      behaviour behind it does not appear. **Fixed here** with a new
+      `### When an action is refused` section carrying all FOUR `display_line` shapes as a
+      table, each verified at `lib.rs` before writing: `refused — <domain_error>: <summary>`
+      / `refused — <one field>` / `failed — <raw output>` / `failed (no diagnostic
+      emitted)`. The `refused` vs `failed` split is load-bearing — it tells the operator
+      whether the surface explained itself — and no earlier draft of this prose existed to
+      rot, because `66b4fd2`'s own docs hunk never covered C either.
+    - **Slice A (`52f4b94`) checked and CLEAN, for a reason worth recording**: it shipped a
+      new operator verb (`set-workflow-scope-override`) but with `hotkey: None` and an
+      EMPTY `hint_token`, so it adds no Status-band row to drift. It is named in prose at
+      `:395-397` via B's invoker section. A hotkey-less action is the one shape the third
+      mechanism cannot bite through the hint table, since it never had a hint.
+    - **The 2026-08-02 FORWARD FLAG discharged.** That entry flagged the palette's
+      "exactly two commands" as a known future-change point and said not to correct it
+      early. Slice B changed it to three (`drain`, `drain ready queue`, `actions`) in
+      lockstep with the source. **Verified LIVE, not only read** — at the real cockpit the
+      palette Status band showed `type a command | esc cancel` (the new string) and the
+      invoker's showed `up/down select | enter stage | esc cancel`, byte-matching the new
+      `Action invoker open` row at `:287`. That live diff is precisely the manual check
+      § "Doc custody" demands after a slice adds an operator surface, and it is the one
+      thing nothing mechanical does.
+  **NOT re-verified**: the whole skip-list, and the six operator docs no commit in this
+  range touched (only `detailed-usage.md` moved). **Method note:** the first range query
+  used a `crates/console-*/src/` pathspec and reported one commit where three were true —
+  the glob did not match as intended. Caught by noticing the count disagreed with what I
+  had just merged myself. A pathspec that silently matches less than you meant produces a
+  CLEAN audit over the wrong range, which is worse than a noisy one.
 
 ## Read-first chain
 
