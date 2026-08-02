@@ -1321,6 +1321,89 @@ impl AttentionDetail {
     }
 }
 
+/// The latest observed refusal/failure of an operator action per work-item.
+///
+/// Projected from the `work_item.action.failed` event stream and cleared
+/// again the moment a later action against the item completes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionFailure {
+    action_id: String,
+    refusal: Option<String>,
+}
+
+impl ActionFailure {
+    /// The failed action's id (`<verb>:<work-item-id>[:<value>]`).
+    #[must_use]
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+
+    /// The operator-facing failure line: the structured refusal's
+    /// `domain_error` and `summary` when the payload parses as the drive
+    /// surface's `--json` shape, the raw refusal otherwise, or an honest
+    /// no-diagnostic marker when the surface emitted nothing.
+    #[must_use]
+    pub fn display_line(&self) -> String {
+        let Some(refusal) = self.refusal.as_deref() else {
+            return format!("{} failed (no diagnostic emitted)", self.action_id);
+        };
+        let parsed: Option<serde_json::Value> = serde_json::from_str(refusal).ok();
+        let field = |key: &str| {
+            parsed
+                .as_ref()
+                .and_then(|value| value.get(key))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        match (field("domain_error"), field("summary")) {
+            (Some(domain_error), Some(summary)) => {
+                format!("{} refused — {domain_error}: {summary}", self.action_id)
+            }
+            (Some(domain_error), None) => {
+                format!("{} refused — {domain_error}", self.action_id)
+            }
+            (None, Some(summary)) => format!("{} refused — {summary}", self.action_id),
+            (None, None) => format!("{} failed — {refusal}", self.action_id),
+        }
+    }
+}
+
+/// Fold the `work_item.action.*` outcome events into the latest failure per
+/// work-item: a failed action surfaces until a later action against the same
+/// item completes, so a stale refusal never outlives its recovery.
+fn project_action_failures(events: &[ConsoleEvent]) -> BTreeMap<String, ActionFailure> {
+    let mut failures = BTreeMap::new();
+    for event in events {
+        match event.event_type() {
+            EventType::WorkItemActionFailed => {
+                let payload: Option<serde_json::Value> =
+                    serde_json::from_str(event.payload_json()).ok();
+                let field = |key: &str| {
+                    payload
+                        .as_ref()
+                        .and_then(|value| value.get(key))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                };
+                if let Some(action_id) = field("action_id") {
+                    failures.insert(
+                        event.stream_id().to_owned(),
+                        ActionFailure {
+                            action_id,
+                            refusal: field("refusal"),
+                        },
+                    );
+                }
+            }
+            EventType::WorkItemActionCompleted => {
+                failures.remove(event.stream_id());
+            }
+            _other => {}
+        }
+    }
+    failures
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents tui screen model data used by the console.
 pub struct TuiScreenModel {
@@ -1343,6 +1426,7 @@ pub struct TuiScreenModel {
     dispatcher_settings: DispatcherSettingsRead,
     unavailable_sources: Vec<String>,
     header: String,
+    action_failures: BTreeMap<String, ActionFailure>,
 }
 
 impl TuiScreenModel {
@@ -1410,6 +1494,14 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_lane_item_index(&self) -> Option<usize> {
         self.selected_lane_item_index
+    }
+
+    /// The latest failed operator action against `work_item_id`, if the most
+    /// recent observed action outcome for it was a failure. Cleared by a later
+    /// completed action, so a recovered item carries no stale refusal.
+    #[must_use]
+    pub fn action_failure_for(&self, work_item_id: &str) -> Option<&ActionFailure> {
+        self.action_failures.get(work_item_id)
     }
 
     #[must_use]
@@ -2079,8 +2171,14 @@ impl OrchestratorActionRequest {
 pub enum OrchestratorActionOutcome {
     /// The orchestrator action completed successfully.
     Completed,
-    /// The orchestrator action failed.
-    Failed,
+    /// The orchestrator action failed. When the action surface emitted a
+    /// structured refusal on stdout (the `--json` payload carrying
+    /// `action_id` / `domain_error` / `summary`), it rides here instead of
+    /// being discarded at the port boundary.
+    Failed {
+        /// The child surface's captured stdout, when it emitted one.
+        refusal: Option<String>,
+    },
     /// The action was requested but no real orchestrator action surface is
     /// wired, so nothing was attempted. Reported honestly instead of
     /// fabricating success.
@@ -2097,7 +2195,15 @@ impl OrchestratorActionOutcome {
     #[must_use]
     /// Return the stored value.
     pub const fn failed() -> Self {
-        Self::Failed
+        Self::Failed { refusal: None }
+    }
+
+    #[must_use]
+    /// A failure carrying the refusal payload the action surface emitted.
+    pub const fn failed_with_refusal(refusal: String) -> Self {
+        Self::Failed {
+            refusal: Some(refusal),
+        }
     }
 
     #[must_use]
@@ -2237,8 +2343,19 @@ impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
             SourceProbeOutcome::Observed { success: true, .. } => {
                 OrchestratorActionOutcome::completed()
             }
-            SourceProbeOutcome::Observed { success: false, .. } => {
-                OrchestratorActionOutcome::failed()
+            SourceProbeOutcome::Observed {
+                success: false,
+                stdout,
+            } => {
+                // The refusal payload only exists HERE — discarding it was the
+                // presentation half of the silent-valve defect. A blank stdout
+                // stays an unexplained failure rather than an empty refusal.
+                let refusal = stdout.trim();
+                if refusal.is_empty() {
+                    OrchestratorActionOutcome::failed()
+                } else {
+                    OrchestratorActionOutcome::failed_with_refusal(refusal.to_owned())
+                }
             }
             SourceProbeOutcome::Unavailable { .. } => OrchestratorActionOutcome::not_wired(),
         })
@@ -2631,6 +2748,7 @@ pub fn build_tui_model_for_state(
         selected_repo: state.selected_repo().to_owned(),
         selected_setting_index,
         dispatcher_settings: state.dispatcher_settings().clone(),
+        action_failures: project_action_failures(events),
         // The canonical, untruncated header. The source-health segment sits LAST
         // (after attention) so that when a narrow terminal cannot hold every
         // field, `header_line` degrades from the right — dropping the low-value
@@ -4246,7 +4364,7 @@ fn run_work_item_action(
             ));
             "completed"
         }
-        OrchestratorActionOutcome::Failed => {
+        OrchestratorActionOutcome::Failed { refusal } => {
             events.push(work_item_command_event(
                 command,
                 EventType::WorkItemActionStarted,
@@ -4254,11 +4372,10 @@ fn run_work_item_action(
                 action_id,
                 2,
             ));
-            events.push(work_item_command_event(
+            events.push(work_item_failure_event(
                 command,
-                EventType::WorkItemActionFailed,
-                "failed",
                 action_id,
+                refusal.as_deref(),
                 3,
             ));
             "failed"
@@ -4307,6 +4424,33 @@ fn work_item_command_event(
         })
         .to_string(),
     )
+}
+
+/// Build the `work_item.action.failed` event, carrying the refusal payload the
+/// action surface emitted (when it emitted one) beside the action id — the
+/// store-side half of surfacing a refused valve instead of discarding its
+/// diagnostic at the presentation boundary.
+fn work_item_failure_event(
+    command: &CommandEnvelope,
+    action_id: &str,
+    refusal: Option<&str>,
+    stream_seq: u64,
+) -> ConsoleEvent {
+    let mut payload = serde_json::Map::new();
+    payload.insert("action_id".to_owned(), action_id.to_owned().into());
+    if let Some(refusal) = refusal {
+        payload.insert("refusal".to_owned(), refusal.to_owned().into());
+    }
+    ConsoleEvent::new(
+        format!("evt_{}_failed", command.command_id()),
+        1,
+        command_event_context(EventType::WorkItemActionFailed).to_owned(),
+        EventType::WorkItemActionFailed,
+        "console:work-item-command-handler".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+    .with_payload_json(serde_json::Value::Object(payload).to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -5274,7 +5418,7 @@ pub fn handle_config_dispatcher_setting_set_command(
             ));
             "completed"
         }
-        OrchestratorActionOutcome::NotWired | OrchestratorActionOutcome::Failed => {
+        OrchestratorActionOutcome::NotWired | OrchestratorActionOutcome::Failed { .. } => {
             // The settings write did not land (no real surface, or the action
             // failed). Emit the honest not-wired outcome and NO changed event
             // rather than fabricating success.
@@ -6104,8 +6248,8 @@ mod tests {
         attention_item_payload_json, attention_resolved_payload_json,
     };
     use super::{
-        ApplicationError, AttentionDetail, AttentionEvent, AttentionItem, AutonomousAudit,
-        AutonomousDecisionsPort, ConfigCommandOutcome, DispatcherFactoryDrainPort,
+        ActionFailure, ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
+        AutonomousAudit, AutonomousDecisionsPort, ConfigCommandOutcome, DispatcherFactoryDrainPort,
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
@@ -6123,11 +6267,11 @@ mod tests {
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
         handle_work_item_set_workflow_scope_override_command, header_help_section,
         help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
-        per_item_verb_is_state_valid, project_attention, project_lane_board,
-        reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
-        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
-        work_item_override_outcome,
+        per_item_verb_is_state_valid, project_action_failures, project_attention,
+        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
+        resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
+        validate_operator_action, work_item_failure_event, work_item_override_outcome,
     };
 
     #[test]
@@ -7904,6 +8048,7 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: Vec::new(),
             header: "LiveSpec Console".to_owned(),
+            action_failures: std::collections::BTreeMap::new(),
         };
 
         assert_eq!(model.selected_operator_action(), None);
@@ -8156,6 +8301,7 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: Vec::new(),
             header: String::new(),
+            action_failures: std::collections::BTreeMap::new(),
         };
 
         let open = resolve_selected_operator_action(&model, "operator");
@@ -9975,6 +10121,23 @@ mod tests {
 
         let outcome = port.run_action(&OrchestratorActionRequest::new("approve:wi-1".to_owned()));
 
+        assert_eq!(
+            outcome,
+            Ok(OrchestratorActionOutcome::failed_with_refusal(
+                "approve error".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn dispatcher_action_port_failure_without_stdout_carries_no_refusal() {
+        // A blank stdout stays an unexplained failure rather than an empty
+        // refusal payload.
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("   ", false),
+        };
+        let mut port = DispatcherOrchestratorActionPort::new(&probe, "drive", &["--repo", "/repo"]);
+        let outcome = port.run_action(&OrchestratorActionRequest::new("approve:wi-1".to_owned()));
         assert_eq!(outcome, Ok(OrchestratorActionOutcome::failed()));
     }
 
@@ -10026,6 +10189,40 @@ mod tests {
             outcome.map(|outcome| outcome.command_status().to_owned()),
             Ok("completed".to_owned())
         );
+    }
+
+    #[test]
+    fn a_failed_action_outcome_threads_its_refusal_into_the_failure_event() {
+        // The Failed arm of the shared work-item action runner, exercised in
+        // THIS crate with a captured refusal: the failure event carries it.
+        let command = CommandEnvelope::new(
+            "cmd_scope_fail".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_workflow_scope_override_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(
+            OrchestratorActionOutcome::failed_with_refusal(r#"{"domain_error":"x"}"#.to_owned()),
+        );
+        let outcome = handle_work_item_set_workflow_scope_override_command(
+            &command,
+            r#"{"scope":"citation-only"}"#,
+            &mut port,
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::WorkItemCommandOutcome::command_status),
+            Ok("failed")
+        );
+        let carries_refusal = outcome.iter().any(|outcome| {
+            outcome
+                .events()
+                .iter()
+                .any(|event| event.payload_json().contains("domain_error"))
+        });
+        assert!(carries_refusal);
     }
 
     #[test]
@@ -11259,6 +11456,124 @@ mod tests {
                 valve: PendingValve::Accept
             }
         );
+    }
+
+    #[test]
+    fn the_model_exposes_the_projected_failure_and_the_drilled_hint_derives() {
+        // The failure accessor and the drilled-lane hint derivation both run
+        // through the MODEL here, not only through the free functions.
+        let command = CommandEnvelope::new(
+            "cmd_model_af".to_owned(),
+            CommandType::WorkItemApproveRequested,
+            "console-pending".to_owned(),
+            "console-pending:work_item.approve_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut events: Vec<ConsoleEvent> = fabro_gate_events().into_iter().collect();
+        events.push(work_item_failure_event(
+            &command,
+            "approve:console-pending",
+            Some("held"),
+            9,
+        ));
+        let drilled = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::PendingApproval))
+            .with_selected_lane_item_index(0)
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &drilled);
+        assert_eq!(
+            model
+                .action_failure_for("console-pending")
+                .map(ActionFailure::action_id),
+            Some("approve:console-pending")
+        );
+        assert!(model.action_failure_for("console-unknown").is_none());
+        // The drilled selection's Status hints derive through the model path.
+        assert!(model.footer().contains("p approve"));
+    }
+
+    #[test]
+    fn action_failure_display_line_covers_every_refusal_shape() {
+        let structured = ActionFailure {
+            action_id: "approve:console-auto".to_owned(),
+            refusal: Some(
+                r#"{"action_id":"approve:console-auto","domain_error":"invalid-source-state","status":"failed","summary":"approve requires an effective-manual pending-approval item."}"#
+                    .to_owned(),
+            ),
+        };
+        assert_eq!(
+            structured.display_line(),
+            "approve:console-auto refused — invalid-source-state: approve requires an effective-manual pending-approval item."
+        );
+        let summary_only = ActionFailure {
+            action_id: "a:b".to_owned(),
+            refusal: Some(r#"{"summary":"held"}"#.to_owned()),
+        };
+        assert_eq!(summary_only.display_line(), "a:b refused — held");
+        let error_only = ActionFailure {
+            action_id: "a:b".to_owned(),
+            refusal: Some(r#"{"domain_error":"invalid-action-id"}"#.to_owned()),
+        };
+        assert_eq!(error_only.display_line(), "a:b refused — invalid-action-id");
+        let raw = ActionFailure {
+            action_id: "a:b".to_owned(),
+            refusal: Some("dispatcher exploded".to_owned()),
+        };
+        assert_eq!(raw.display_line(), "a:b failed — dispatcher exploded");
+        let silent = ActionFailure {
+            action_id: "a:b".to_owned(),
+            refusal: None,
+        };
+        assert_eq!(silent.display_line(), "a:b failed (no diagnostic emitted)");
+        assert_eq!(silent.action_id(), "a:b");
+        // The derived impls are part of the type's surface: a clone compares
+        // equal and the debug form names the type.
+        assert_eq!(silent.clone(), silent);
+        assert!(format!("{silent:?}").contains("ActionFailure"));
+    }
+
+    #[test]
+    fn action_failures_project_the_latest_failure_and_clear_on_recovery() {
+        let command = CommandEnvelope::new(
+            "cmd_af".to_owned(),
+            CommandType::WorkItemApproveRequested,
+            "console-af".to_owned(),
+            "console-af:work_item.approve_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let failed = work_item_failure_event(
+            &command,
+            "approve:console-af",
+            Some(r#"{"domain_error":"invalid-source-state","summary":"held"}"#),
+            3,
+        );
+        let failures = project_action_failures(std::slice::from_ref(&failed));
+        assert_eq!(
+            failures.get("console-af").map(ActionFailure::action_id),
+            Some("approve:console-af")
+        );
+        // A malformed failure payload (no action_id) projects nothing rather
+        // than a phantom entry.
+        let malformed = ConsoleEvent::new(
+            "evt_af_malformed".to_owned(),
+            1,
+            "work_item".to_owned(),
+            EventType::WorkItemActionFailed,
+            "console:work-item-command-handler".to_owned(),
+            "console-af-malformed".to_owned(),
+            1,
+        )
+        .with_payload_json("{}".to_owned());
+        assert!(project_action_failures(&[malformed]).is_empty());
+        // A later completed action against the SAME item clears the failure.
+        let completed = super::work_item_command_event(
+            &command,
+            EventType::WorkItemActionCompleted,
+            "completed",
+            "approve:console-af",
+            4,
+        );
+        assert!(project_action_failures(&[failed, completed]).is_empty());
     }
 
     #[test]
@@ -12839,6 +13154,7 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             unavailable_sources: vec![],
             header: String::new(),
+            action_failures: std::collections::BTreeMap::new(),
         };
 
         let overlay = super::open_command_modal(&model);

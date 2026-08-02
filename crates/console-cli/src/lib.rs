@@ -1630,8 +1630,15 @@ fn finalize_pending_command(
         }
     }
     let result_json = format!(r#"{{"event_count":{inserted_event_count}}}"#);
+    // A failed command's error_json carries the FAILURE EVENT's payload — the
+    // action id plus any refusal the action surface emitted — instead of the
+    // empty object that used to discard the diagnostic at the store boundary.
+    let failure_payload = events
+        .iter()
+        .find(|event| *event.event_type() == EventType::WorkItemActionFailed)
+        .map(ConsoleEvent::payload_json);
     let error_json = if matches!(command_status, "failed" | "rejected") {
-        Some("{}")
+        Some(failure_payload.unwrap_or("{}"))
     } else {
         None
     };
@@ -4028,6 +4035,40 @@ mod tests {
             reading,
             Ok(console_application::OrchestratorActionReading::not_wired())
         );
+    }
+
+    #[test]
+    fn a_refused_valve_persists_its_refusal_into_the_failure_event()
+    -> Result<(), ConsoleRuntimeError> {
+        // The action-invocation half of the silent-valve defect: the refusal
+        // payload the drive surface emits rides the work_item.action.failed
+        // event into the store, where the record modal renders it — instead of
+        // being discarded at the port boundary.
+        let (mut store, events) = store_with_selectable_item()?;
+        let approve = valve_effect(&events, PendingValve::Approve);
+        let refusal = concat!(
+            r#"{"action_id":"approve:wi-1","domain_error":"invalid-source-state","#,
+            r#""status":"failed","summary":"approve requires an effective-manual "#,
+            r#"pending-approval item."}"#,
+        );
+        let mut port = SimulatedWorkItemActionPort::returning(
+            OrchestratorActionOutcome::failed_with_refusal(refusal.to_owned()),
+        );
+        let persisted =
+            persist_tui_runtime_effects(&mut store, &[approve], "2026-08-02T00:00:01Z")?;
+        assert_eq!(persisted.len(), 1);
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-08-02T00:00:02Z", &mut port)?;
+        assert_eq!(outcomes[0].command_status(), "failed");
+        let events = store.list_console_events()?;
+        let payload = events
+            .iter()
+            .find(|event| *event.event_type() == EventType::WorkItemActionFailed)
+            .map(ConsoleEvent::payload_json)
+            .unwrap_or_default();
+        assert!(payload.contains("invalid-source-state"), "{payload}");
+        assert!(payload.contains("effective-manual"), "{payload}");
+        Ok(())
     }
 
     #[test]

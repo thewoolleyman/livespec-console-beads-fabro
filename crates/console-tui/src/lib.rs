@@ -1322,6 +1322,7 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> Ov
                 work_item_detail: render_work_item_detail(
                     model.work_item_by_id(work_item_id),
                     work_item_id,
+                    model.action_failure_for(work_item_id),
                     help_overlay_rect(area),
                     buffer,
                     *scroll,
@@ -1414,6 +1415,7 @@ const ITEM_FIELD_ABSENT: &str = "—";
 fn render_work_item_detail(
     item: Option<&LaneWorkItem>,
     work_item_id: &str,
+    failure: Option<&console_application::ActionFailure>,
     area: Rect,
     buffer: &mut Buffer,
     scroll: usize,
@@ -1432,7 +1434,7 @@ fn render_work_item_detail(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
-    let body = item.map_or_else(
+    let mut body = item.map_or_else(
         || {
             // Honest, not blank: the item was on the board when the modal
             // opened and is not now, so say THAT rather than substituting a
@@ -1443,6 +1445,16 @@ fn render_work_item_detail(
         },
         work_item_detail_lines,
     );
+    if let Some(failure) = failure {
+        // The refusal the action surface emitted for this item's latest failed
+        // action — rendered on the reading surface instead of being discarded
+        // at the presentation boundary.
+        body.push(Line::from(""));
+        body.push(Line::from(format!(
+            "Last action: {}",
+            failure.display_line()
+        )));
+    }
     let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
     let max_scroll = paragraph
         .line_count(rows[0].width)
@@ -4342,6 +4354,47 @@ mod tests {
     }
 
     #[test]
+    fn the_record_modal_renders_the_latest_refusal_for_its_item() {
+        // The refusal payload a failed action carried rides the failure event
+        // into the model and renders on the item's reading surface.
+        // A raw (non-JSON) refusal exercises the fallback display; the
+        // structured domain_error/summary parse is pinned by the application
+        // display tests.
+        let refusal_payload = concat!(
+            r#"{"action_id":"approve:console-pending","#,
+            r#""refusal":"dispatcher-staleness-refused: executing build predates latest release"}"#,
+        );
+        // The failure event's STREAM is the work-item aggregate, exactly as
+        // the command handler emits it — the projection keys on it.
+        let failed = ConsoleEvent::new(
+            "evt_refused".to_owned(),
+            1,
+            "work_item".to_owned(),
+            EventType::WorkItemActionFailed,
+            "console:work-item-command-handler".to_owned(),
+            "console-pending".to_owned(),
+            9,
+        )
+        .with_payload_json(refusal_payload.to_owned());
+        let mut events: Vec<ConsoleEvent> = pending_events().into_iter().collect();
+        events.push(failed);
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::WorkItemDetail {
+                work_item_id: "console-pending".to_owned(),
+                // The failure line is the record's LAST row; the renderer
+                // clamps this to the true bottom.
+                scroll: 10_000,
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+        assert!(model.action_failure_for("console-pending").is_some());
+        let rendered = render_to_text(&model, 110, 40).unwrap_or_default();
+        assert!(rendered.contains("Last action:"), "{rendered}");
+        assert!(rendered.contains("dispatcher-staleness-refused"));
+    }
+
+    #[test]
     fn render_action_invoker_lists_every_action_with_availability_markers() {
         let state = TuiInteractionState::new(0, TuiOverlay::ActionInvoker { selected_action: 0 });
         let model = build_tui_model_for_state(&pending_events(), &state);
@@ -4582,7 +4635,7 @@ mod tests {
             .ok_or("the drilled-in Ready lane has a selected item")?;
         let area = Rect::new(0, 0, 100, 40);
         let mut buffer = Buffer::empty(area);
-        render_work_item_detail(Some(item), item.work_item_id(), area, &mut buffer, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), None, area, &mut buffer, 0);
         let text = buffer_to_text(&buffer, area);
 
         for expected in [
@@ -4897,7 +4950,7 @@ mod tests {
             .ok_or("the drilled-in Ready lane has a selected item")?;
         let area = Rect::new(0, 0, 80, 30);
         let mut buffer = Buffer::empty(area);
-        render_work_item_detail(Some(item), item.work_item_id(), area, &mut buffer, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), None, area, &mut buffer, 0);
         let text = buffer_to_text(&buffer, area);
         assert!(text.contains(ITEM_FIELD_ABSENT));
         // The lifecycle fields the lane row already carried still render.
@@ -4906,7 +4959,7 @@ mod tests {
         // With nothing selected the modal says so instead of rendering an empty
         // box that reads like a broken screen.
         let mut empty = Buffer::empty(area);
-        render_work_item_detail(None, MODAL_ITEM, area, &mut empty, 0);
+        render_work_item_detail(None, MODAL_ITEM, None, area, &mut empty, 0);
         assert!(buffer_to_text(&empty, area).contains("no longer on the board"));
 
         // A BLOCKED item renders its lane reason rather than the placeholder --
@@ -4919,6 +4972,7 @@ mod tests {
         render_work_item_detail(
             Some(blocked),
             blocked.work_item_id(),
+            None,
             area,
             &mut blocked_buffer,
             0,
@@ -4929,7 +4983,14 @@ mod tests {
         // A viewport too small to inset degrades without panicking.
         let tiny = Rect::new(0, 0, 2, 2);
         let mut tiny_buffer = Buffer::empty(tiny);
-        render_work_item_detail(Some(item), item.work_item_id(), tiny, &mut tiny_buffer, 0);
+        render_work_item_detail(
+            Some(item),
+            item.work_item_id(),
+            None,
+            tiny,
+            &mut tiny_buffer,
+            0,
+        );
         Ok(())
     }
 
@@ -4944,7 +5005,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 20);
 
         let mut top = Buffer::empty(area);
-        render_work_item_detail(Some(item), item.work_item_id(), area, &mut top, 0);
+        render_work_item_detail(Some(item), item.work_item_id(), None, area, &mut top, 0);
         let top_text = buffer_to_text(&top, area);
         assert!(top_text.contains("Render the whole record"));
         assert!(!top_text.contains("body line 39"));
@@ -4952,7 +5013,14 @@ mod tests {
         // A far-past-the-end offset clamps to the last row: the tail is visible
         // and the head has scrolled away.
         let mut bottom = Buffer::empty(area);
-        render_work_item_detail(Some(item), item.work_item_id(), area, &mut bottom, 10_000);
+        render_work_item_detail(
+            Some(item),
+            item.work_item_id(),
+            None,
+            area,
+            &mut bottom,
+            10_000,
+        );
         let bottom_text = buffer_to_text(&bottom, area);
         assert!(bottom_text.contains("body line 39"));
         assert!(!bottom_text.contains("Render the whole record"));
@@ -5327,7 +5395,7 @@ mod tests {
         // empty box that reads as a broken screen.
         let area = Rect::new(0, 0, 90, 20);
         let mut buffer = Buffer::empty(area);
-        render_work_item_detail(None, "console-vanished", area, &mut buffer, 0);
+        render_work_item_detail(None, "console-vanished", None, area, &mut buffer, 0);
         let text = buffer_to_text(&buffer, area);
         assert!(text.contains("Work item: console-vanished"));
         assert!(text.contains("no longer on the board"));
