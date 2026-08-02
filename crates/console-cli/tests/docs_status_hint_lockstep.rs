@@ -22,8 +22,18 @@
 //! equality. The table's selected-work-item contexts are checked separately for
 //! completeness because an omitted row cannot be caught by comparing only the
 //! hint strings that the doc chose to quote.
+//!
+//! Since the hints became a registry DERIVATION rather than string literals, a
+//! third arm binds every selected-work-item row to the availability context it
+//! documents and asserts the quoted hint EQUALS the derivation for that
+//! context — bidirectional per documented row, which the grep arm cannot be.
+//! (The grep arm still guards the non-item rows, whose strings remain source
+//! literals.)
 
 use std::path::{Path, PathBuf};
+
+use console_application::action_registry::{ActionContext, ActionSurface, selected_item_hint};
+use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 
 /// Where the hints are produced (`footer_hint` / `pane_footer_hint`).
 const HINT_SOURCE: &str = "crates/console-application/src/lib.rs";
@@ -95,12 +105,16 @@ fn selected_work_item_status_contexts_are_documented() -> std::io::Result<()> {
     let doc = read(SETTINGS_DOC)?;
     let contexts = documented_contexts(&doc);
     let required = [
+        "Attention, backlog work-item selected",
         "Attention, pending-approval work-item selected",
+        "Attention, dispatcher-admitted pending-approval work-item selected",
         "Attention, acceptance work-item selected",
         "Attention, blocked work-item selected",
         "Lanes, drilled into a backlog item",
         "Lanes, drilled into a pending-approval item",
+        "Lanes, drilled into a dispatcher-admitted pending-approval item",
         "Lanes, drilled into a ready item",
+        "Lanes, drilled into a host-only-refused ready item",
         "Lanes, drilled into an active item",
         "Lanes, drilled into an acceptance item",
         "Lanes, drilled into a blocked item",
@@ -185,5 +199,153 @@ fn the_lane_overview_hint_advertises_no_per_item_valve() -> std::io::Result<()> 
              not a work-item, so every per-item key is inert there.\nRow: {row}"
         );
     }
+    Ok(())
+}
+
+/// Every `(context, hint)` pair quoted in the doc's Status-line table.
+fn documented_context_hints(doc: &str) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    for line in doc.lines() {
+        let line = line.trim();
+        if !line.starts_with('|') || line.starts_with("|---") {
+            continue;
+        }
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 3 || cells[1] == "Context" {
+            continue;
+        }
+        let Some(open) = line.find('`') else { continue };
+        let rest = &line[open + 1..];
+        let Some(close) = rest.find('`') else {
+            continue;
+        };
+        rows.push((cells[1].to_owned(), rest[..close].replace("\\|", "|")));
+    }
+    rows
+}
+
+/// The availability context a selected-work-item table row documents, or
+/// `None` for the non-item rows (header, overview, overlays, ...), which the
+/// grep arm guards.
+fn context_binding(label: &str) -> Option<ActionContext> {
+    let (surface, lane, admission, handoff) = match label {
+        "Attention, backlog work-item selected" => (
+            ActionSurface::Attention,
+            Lane::Backlog,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Attention, pending-approval work-item selected" => (
+            ActionSurface::Attention,
+            Lane::PendingApproval,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Attention, dispatcher-admitted pending-approval work-item selected" => (
+            ActionSurface::Attention,
+            Lane::PendingApproval,
+            AdmissionPolicy::Auto,
+            false,
+        ),
+        "Attention, acceptance work-item selected" => (
+            ActionSurface::Attention,
+            Lane::Acceptance,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Attention, blocked work-item selected" => (
+            ActionSurface::Attention,
+            Lane::Blocked,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        // A drilled-in backlog item ALWAYS claims the driver-handoff (groom)
+        // verb, so its documented row carries `h handoff`.
+        "Lanes, drilled into a backlog item" => (
+            ActionSurface::LaneDrill,
+            Lane::Backlog,
+            AdmissionPolicy::Manual,
+            true,
+        ),
+        "Lanes, drilled into a pending-approval item" => (
+            ActionSurface::LaneDrill,
+            Lane::PendingApproval,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Lanes, drilled into a dispatcher-admitted pending-approval item" => (
+            ActionSurface::LaneDrill,
+            Lane::PendingApproval,
+            AdmissionPolicy::Auto,
+            false,
+        ),
+        "Lanes, drilled into a ready item" => (
+            ActionSurface::LaneDrill,
+            Lane::Ready,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Lanes, drilled into a host-only-refused ready item" => (
+            ActionSurface::LaneDrill,
+            Lane::Ready,
+            AdmissionPolicy::Manual,
+            true,
+        ),
+        "Lanes, drilled into an active item" => (
+            ActionSurface::LaneDrill,
+            Lane::Active,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Lanes, drilled into an acceptance item" => (
+            ActionSurface::LaneDrill,
+            Lane::Acceptance,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Lanes, drilled into a blocked item" => (
+            ActionSurface::LaneDrill,
+            Lane::Blocked,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        "Lanes, drilled into a done item" => (
+            ActionSurface::LaneDrill,
+            Lane::Done,
+            AdmissionPolicy::Manual,
+            false,
+        ),
+        _other => return None,
+    };
+    Some(ActionContext {
+        lane,
+        admission_policy: admission,
+        acceptance_policy: AcceptancePolicy::AiThenHuman,
+        has_driver_handoff: handoff,
+        surface,
+    })
+}
+
+/// Every selected-work-item row's quoted hint EQUALS the registry derivation
+/// for the context it documents.
+#[test]
+fn every_documented_selected_item_hint_equals_the_rendered_derivation() -> std::io::Result<()> {
+    let doc = read(SETTINGS_DOC)?;
+    let mut bound = 0;
+    for (label, hint) in documented_context_hints(&doc) {
+        let Some(ctx) = context_binding(&label) else {
+            continue;
+        };
+        bound += 1;
+        assert_eq!(
+            hint,
+            selected_item_hint(&ctx),
+            "the documented hint for context `{label}` must equal the rendered derivation"
+        );
+    }
+    assert!(
+        bound >= 14,
+        "expected at least fourteen bound selected-item rows, got {bound}"
+    );
     Ok(())
 }

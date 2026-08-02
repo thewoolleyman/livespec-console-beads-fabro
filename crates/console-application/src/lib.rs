@@ -2959,12 +2959,33 @@ pub fn reduce_tui_interaction(
         }
         TuiInteraction::WorkItemDetailPageDown => work_item_detail_page_scroll_state(state, true),
         TuiInteraction::WorkItemDetailPageUp => work_item_detail_page_scroll_state(state, false),
-        TuiInteraction::OpenValveConfirm(valve) => state
-            .clone()
-            .with_overlay(TuiOverlay::ValveConfirm { valve }),
+        TuiInteraction::OpenValveConfirm(valve) => open_valve_confirm_state(state, &model, valve),
         TuiInteraction::CycleValveOption(forward) => state
             .clone()
             .with_overlay(cycle_valve_option(state.overlay(), forward)),
+    }
+}
+
+/// Stage the valve-confirm modal — only for a valve the registry offers for
+/// the current selection.
+///
+/// Presentation and invocation share ONE availability derivation: an
+/// unoffered valve is refused at staging, exactly as its hint is suppressed
+/// and its key is inert.
+fn open_valve_confirm_state(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    valve: PendingValve,
+) -> TuiInteractionState {
+    if model
+        .selected_action_context()
+        .is_some_and(|ctx| action_registry::valve_is_available(valve, &ctx))
+    {
+        state
+            .clone()
+            .with_overlay(TuiOverlay::ValveConfirm { valve })
+    } else {
+        state.clone()
     }
 }
 
@@ -3372,6 +3393,16 @@ pub fn resolve_valve_action(
     let work_item_id = model
         .selected_work_item_id()
         .ok_or(ApplicationError::NoSelectedWorkItem)?;
+    // The invocation-side half of the one-derivation rule: the confirm
+    // resolves only an action the registry offers for THIS selection, so a
+    // staged valve whose availability lapsed (or that was staged around the
+    // key handler) cannot fire while unoffered.
+    if !model
+        .selected_action_context()
+        .is_some_and(|ctx| action_registry::valve_is_available(valve, &ctx))
+    {
+        return Err(ApplicationError::NoSelectedOperatorAction);
+    }
     valve_outcome(valve, work_item_id, requested_by)
         .ok_or(ApplicationError::NoSelectedOperatorAction)
 }
@@ -12007,19 +12038,28 @@ mod tests {
 
     #[test]
     fn resolve_valve_action_persists_payloadless_approve_and_accept() {
-        for (valve, command_type, action) in [
+        for (valve, command_type, action, index, item_id) in [
             (
                 PendingValve::Approve,
                 CommandType::WorkItemApproveRequested,
                 "approve",
+                0,
+                "console-pending",
             ),
+            // Accept resolves against the ACCEPTANCE-lane item: the registry
+            // availability check refuses an accept staged off its lane.
             (
                 PendingValve::Accept,
                 CommandType::WorkItemAcceptRequested,
                 "accept",
+                1,
+                "console-accept",
             ),
         ] {
-            let model = valve_model(valve);
+            let model = build_tui_model_for_state(
+                &fabro_gate_events(),
+                &TuiInteractionState::new(index, TuiOverlay::ValveConfirm { valve }),
+            );
             let outcome = resolve_valve_action(&model, "operator");
             let command = outcome
                 .as_ref()
@@ -12029,13 +12069,10 @@ mod tests {
                 command.map(CommandEnvelope::command_type),
                 Some(&command_type)
             );
-            assert_eq!(
-                command.map(CommandEnvelope::aggregate_id),
-                Some("console-pending")
-            );
+            assert_eq!(command.map(CommandEnvelope::aggregate_id), Some(item_id));
             assert_eq!(
                 command.map(CommandEnvelope::idempotency_key),
-                Some(format!("console-pending:work_item.{action}_requested").as_str())
+                Some(format!("{item_id}:work_item.{action}_requested").as_str())
             );
             assert_eq!(command.map(CommandEnvelope::requested_by), Some("operator"));
             // Payloadless: a plain PersistCommand, never PersistCommandWithPayload.

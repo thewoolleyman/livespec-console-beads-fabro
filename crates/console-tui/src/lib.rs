@@ -17,15 +17,15 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
+use console_application::source_adapters::Lane;
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettingsRead,
-    FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
-    OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
-    TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-    ViewSummaryItem, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
-    per_item_verb_is_state_valid, reduce_tui_interaction, resolve_command_palette_action,
-    resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
+    ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
+    HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
+    OperatorActionOutcome, PendingValve, SettingRow, TimelineEntry, TuiInteraction,
+    TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, action_registry,
+    build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
+    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+    resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -526,39 +526,10 @@ pub fn key_event_to_terminal_input(
         KeyCode::Char('?') => question_input(overlay),
         KeyCode::Char('q') => q_input(overlay),
         KeyCode::Char(' ') => space_input(model, overlay),
-        KeyCode::Char('p') => valve_open_input(model, PendingValve::Approve, 'p'),
-        KeyCode::Char('c') => valve_open_input(model, PendingValve::Accept, 'c'),
-        KeyCode::Char('r') => {
-            valve_open_input(model, PendingValve::Reject(RejectMode::Rework), 'r')
-        }
-        KeyCode::Char('m') => valve_open_input(
-            model,
-            PendingValve::SetAdmission(AdmissionPolicy::Manual),
-            'm',
+        KeyCode::Char(value) => action_registry::action_for_hotkey(value).map_or_else(
+            || text_input(value, overlay),
+            |spec| registry_action_input(model, spec, value),
         ),
-        KeyCode::Char('n') => valve_open_input(
-            model,
-            PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
-            'n',
-        ),
-        KeyCode::Char('s') => move_status_open_input(model),
-        KeyCode::Char('h') => driver_handoff_open_input(model),
-        KeyCode::Char('g') => override_open_input(
-            model,
-            DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear),
-            'g',
-        ),
-        KeyCode::Char('f') => override_open_input(
-            model,
-            DispatcherOverride::ReviewFixCap(OverrideInt::Clear),
-            'f',
-        ),
-        KeyCode::Char('k') => override_open_input(
-            model,
-            DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear),
-            'k',
-        ),
-        KeyCode::Char(value) => text_input(value, overlay),
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
         KeyCode::Tab => tab_input(model, true),
@@ -877,83 +848,30 @@ fn space_input(model: &TuiScreenModel, overlay: &TuiOverlay) -> Option<TuiTermin
     text_input(' ', overlay)
 }
 
-/// A valve key (`p`/`c`/`r`/`m`/`n`): with no overlay open and a selected
-/// work-item -- either the selected Attention item OR the individually-selected
-/// item in a drilled-in lane -- open the valve-confirm modal staging the given
-/// valve; on any view without a selected work-item it is inert; behind an open
-/// text overlay it is a literal character.
-fn valve_open_input(
+/// A registered action's hotkey: with no overlay open, stage the action for
+/// the selected work-item exactly where its Status-line hint is offered — the
+/// key consults the SAME registry availability derivation the hints derive
+/// from, so hidden hints and inert keys cannot diverge. On a selection the
+/// registry does not offer the action for, the key is inert; behind an open
+/// text overlay the character is a literal.
+fn registry_action_input(
     model: &TuiScreenModel,
-    valve: PendingValve,
+    spec: &'static action_registry::ActionSpec,
     character: char,
 ) -> Option<TuiTerminalInput> {
     let overlay = model.overlay();
-    if matches!(overlay, TuiOverlay::None) {
-        if model
-            .selected_work_item_lane()
-            .is_some_and(|lane| per_item_verb_is_state_valid(lane, valve))
-        {
-            return Some(TuiTerminalInput::Interaction(
-                TuiInteraction::OpenValveConfirm(valve),
-            ));
-        }
-        return None;
+    if !matches!(overlay, TuiOverlay::None) {
+        return text_input(character, overlay);
     }
-    text_input(character, overlay)
-}
-
-/// A per-item override key (`g`/`f`/`k`): with no overlay open and a selected
-/// work-item (Attention or drilled-in lane), open the valve-confirm modal staging
-/// the given override valve at its `clear` starting value; on a view without a
-/// selected work-item it is inert; behind an open text overlay it is a literal
-/// character.
-fn override_open_input(
-    model: &TuiScreenModel,
-    override_dial: DispatcherOverride,
-    character: char,
-) -> Option<TuiTerminalInput> {
-    let overlay = model.overlay();
-    if matches!(overlay, TuiOverlay::None) {
-        let valve = PendingValve::SetOverride(override_dial);
-        if model
-            .selected_work_item_lane()
-            .is_some_and(|lane| per_item_verb_is_state_valid(lane, valve))
-        {
-            return Some(TuiTerminalInput::Interaction(
-                TuiInteraction::OpenValveConfirm(valve),
-            ));
-        }
-        return None;
+    let ctx = model.selected_action_context()?;
+    match action_registry::stage_action(spec, &ctx)? {
+        action_registry::StagedAction::Valve(valve) => Some(TuiTerminalInput::Interaction(
+            TuiInteraction::OpenValveConfirm(valve),
+        )),
+        action_registry::StagedAction::DriverHandoff => Some(TuiTerminalInput::Interaction(
+            TuiInteraction::OpenDriverHandoff,
+        )),
     }
-    text_input(character, overlay)
-}
-
-/// The move-status key (`s`): with no overlay open and an individually-selected
-/// work-item in a drilled-in lane whose current lane has an operator-drivable
-/// target, open the valve-confirm modal staging the move-status valve at its
-/// first target; on a lane item with no drivable target, or off the drill-in, it
-/// is inert; behind an open text overlay it is a literal character.
-fn move_status_open_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
-    let overlay = model.overlay();
-    if matches!(overlay, TuiOverlay::None) {
-        return model
-            .selected_move_status_valve()
-            .map(|valve| TuiTerminalInput::Interaction(TuiInteraction::OpenValveConfirm(valve)));
-    }
-    text_input('s', overlay)
-}
-
-fn driver_handoff_open_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
-    let overlay = model.overlay();
-    if matches!(overlay, TuiOverlay::None) {
-        if model.selected_driver_handoff_command().is_some() {
-            return Some(TuiTerminalInput::Interaction(
-                TuiInteraction::OpenDriverHandoff,
-            ));
-        }
-        return None;
-    }
-    text_input('h', overlay)
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -1855,27 +1773,48 @@ fn global_help_lines() -> Vec<Line<'static>> {
     ]
 }
 
+/// The per-item action roster, DERIVED from the action registry: one line per
+/// action the surface can offer, in canonical order, so the Help modal cannot
+/// drift from the real action set (the second-encoding defect class the
+/// registry exists to retire).
+fn registry_help_lines(surface: action_registry::ActionSurface) -> Vec<Line<'static>> {
+    action_registry::ACTION_REGISTRY
+        .iter()
+        .filter(|spec| action_registry::action_offered_on_surface(spec, surface))
+        .map(|spec| {
+            let text = spec.parameter.map_or_else(
+                || format!("{} (confirm modal)", spec.label),
+                |parameter| {
+                    format!(
+                        "{} -- {}: {} (up/down cycle)",
+                        spec.label,
+                        parameter.name,
+                        parameter.choices.join(" | ")
+                    )
+                },
+            );
+            Line::from(format!("{:<13}{text}", spec.hotkey))
+        })
+        .collect()
+}
+
 /// The per-pane help section for `view`: what the pane shows plus the keys usable
 /// while it is focused. Kept in lock-step with the key handler.
 fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
     match view {
-        TuiView::Attention => vec![
-            Line::from("Attention -- the default view: the merged, ranked needs-attention"),
-            Line::from("list across the fleet, with the selected item's detail on the right."),
-            Line::from(""),
-            Line::from("up / down    move the Content selection, or scroll the Detail pane"),
-            Line::from("enter        open the command modal for the selected work-item"),
-            Line::from(
-                "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
-            ),
-            Line::from(
-                "m / n        set-admission / set-acceptance override for the selected item",
-            ),
-            Line::from("g / f / k    per-item override of merge_on_review_cap / review_fix_cap /"),
-            Line::from(
-                "              acceptance_rework_cap (up/down cycle the value, incl. `clear`)",
-            ),
-        ],
+        TuiView::Attention => {
+            let mut lines = vec![
+                Line::from("Attention -- the default view: the merged, ranked needs-attention"),
+                Line::from("list across the fleet, with the selected item's detail on the right."),
+                Line::from(""),
+                Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+                Line::from("enter        open the command modal for the selected work-item"),
+            ];
+            lines.extend(registry_help_lines(
+                action_registry::ActionSurface::Attention,
+            ));
+            lines
+        }
         TuiView::Spec => vec![
             Line::from("Spec -- the spec-side status view (read-only): the specification's"),
             Line::from("lifecycle state for the selected repo."),
@@ -1897,21 +1836,12 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             Line::from("             spec commitment hint; up/down and PgUp/PgDn scroll it)"),
             Line::from("esc          close the work-item record, then return a drilled-in"),
             Line::from("             lane to its overview"),
-            Line::from("h            render the driver-handoff command when the selected item"),
-            Line::from("             admits one: groom on backlog; implement on host-only ready"),
-            Line::from("s            move the selected work-item to a ratified operator target"),
-            Line::from("             for its current lane; up/down change target, Enter confirms"),
-            Line::from(
-                "p / c / r    approve / accept / reject the selected work-item (confirm modal)",
-            ),
-            Line::from(
-                "m / n        set-admission / set-acceptance override for the selected item",
-            ),
-            Line::from("g / f / k    per-item override of merge_on_review_cap / review_fix_cap /"),
-            Line::from(
-                "              acceptance_rework_cap (up/down cycle the value, incl. `clear`)",
-            ),
-        ],
+        ]
+        .into_iter()
+        .chain(registry_help_lines(
+            action_registry::ActionSurface::LaneDrill,
+        ))
+        .collect(),
         TuiView::Events => vec![
             Line::from("Events -- the console event timeline (read-only): the observed"),
             Line::from("source events for the selected repo."),
@@ -2334,8 +2264,8 @@ mod tests {
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
         DispatcherSettingsRead, FocusPane, HelpFocus, LaneFocus, LaneWorkItem, OperatorAction,
         OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, build_tui_model,
-        build_tui_model_for_state, header_help_section, help_section_for_view,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
+        build_tui_model, build_tui_model_for_state, header_help_section, help_section_for_view,
         reduce_tui_interaction,
     };
 
@@ -4134,6 +4064,19 @@ mod tests {
         ]
     }
 
+    /// A single manual-admission pending-approval item: the context that
+    /// admits the approve valve and the cap-override dials.
+    fn pending_events() -> [ConsoleEvent; 1] {
+        [lane_event(
+            "evt_demo_pending",
+            "console-pending",
+            Lane::PendingApproval,
+            None,
+            "a0",
+            "pending-approval",
+        )]
+    }
+
     fn factory_events() -> [ConsoleEvent; 2] {
         [
             ConsoleEvent::new(
@@ -5552,7 +5495,7 @@ mod tests {
         );
         let step = step_tui_runtime(
             &state,
-            &demo_events(),
+            &pending_events(),
             TuiTerminalInput::Confirm,
             "operator",
         );
@@ -5605,15 +5548,15 @@ mod tests {
         );
         let lanes_help = render_to_text(&lanes, 120, 72).unwrap_or_default();
         assert!(lanes_help.contains("> Lanes"), "{lanes_help}");
-        assert!(lanes_help.contains("move the selected work-item to a ratified operator target"));
+        assert!(lanes_help.contains("Move status"));
         assert!(lanes_help.contains("select an individual work-item"));
-        // The driver handoff, narrowed move-status picker, and override keys are named.
-        assert!(lanes_help.contains("render the driver-handoff command"));
-        assert!(lanes_help.contains("host-only ready"));
-        assert!(lanes_help.contains("ratified operator target"));
+        // The roster derives from the registry: the driver handoff, the
+        // narrowed move-status picker, and the override dials are all named.
+        assert!(lanes_help.contains("Driver handoff"));
+        assert!(lanes_help.contains("target status: backlog | ready | blocked"));
         assert!(!lanes_help.contains("any pre-terminal status"));
         assert!(!lanes_help.contains("approve -> ready"));
-        assert!(lanes_help.contains("per-item override of merge_on_review_cap"));
+        assert!(lanes_help.contains("merge_on_review_cap"));
         // The Lanes right pane must not spill the Settings section's text.
         assert!(!lanes_help.contains("edit the selected setting row"));
     }
@@ -5673,7 +5616,7 @@ mod tests {
         );
         let approve = step_tui_runtime(
             &approve_state,
-            &demo_events(),
+            &pending_events(),
             TuiTerminalInput::Confirm,
             "operator",
         );
@@ -5686,7 +5629,7 @@ mod tests {
 
         // A payload valve persists the mode/policy payload.
         let reject_state = TuiInteractionState::new(
-            0,
+            1,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Reject(RejectMode::Regroom),
             },
@@ -5782,18 +5725,21 @@ mod tests {
         // A tall area so the full section body (including the valve keys near the
         // bottom) renders inside the modal rather than being clipped.
         let output = render_to_text(&model, 120, 72);
-        assert_eq!(
-            output
-                .as_ref()
-                .map(|r| r.contains("approve / accept / reject")),
-            Ok(true)
-        );
-        assert_eq!(
-            output
-                .as_ref()
-                .map(|r| r.contains("set-admission / set-acceptance")),
-            Ok(true)
-        );
+        // The roster is DERIVED from the registry: every action the Attention
+        // surface can offer is listed by hotkey and label.
+        let rendered = output.unwrap_or_default();
+        for spec in action_registry::ACTION_REGISTRY {
+            let offered = action_registry::action_offered_on_surface(
+                spec,
+                action_registry::ActionSurface::Attention,
+            );
+            assert_eq!(
+                rendered.contains(spec.label),
+                offered,
+                "help section vs registry for `{}`",
+                spec.id
+            );
+        }
     }
 
     #[test]
