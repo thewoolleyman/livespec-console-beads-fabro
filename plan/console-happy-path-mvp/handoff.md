@@ -263,6 +263,47 @@ last verified against source and can skip it unless its area moved.
   has been run over the result — **treat the whole walkthrough as UNVERIFIED prose.**
   Recorded because an unrecorded check is indistinguishable from one never made, not
   because it discharges any part of the custody.
+- **2026-08-02 (delta pass, `5e91d0e..69ea9d4`). FINDING — `-2ckgiy` is PARTIALLY fixed
+  and its title is now wrong; everything else checked is CLEAN, including the walkthrough
+  the last entry flagged UNVERIFIED.** 77 commits in range, all but ~12 dep bumps. Twelve
+  touched `crates/`, only THREE touched `docs/` — that gap is where this pass looked.
+  **The walkthrough flag is DISCHARGED.** `docs/lifecycle-walkthrough.md`'s new "Human
+  accept precondition" (`:47-55`) is accurate against config, not just internally
+  consistent: it states this repo's default `acceptance_mode` is `ai-only` so a new item
+  auto-completes to `done`, and `.livespec.jsonc:71` is `"acceptance_mode": "ai-only"`.
+  Steps 1–9 are sequential with no gaps or duplicates after PR #530's renumbering, and
+  BOTH back-references resolve — `:130` "Step 7 needs" → Step 7 is the accept valve, and
+  `:174` "Step 3 set the item to `ai-then-human`" → Step 3 is "Set the human acceptance
+  leg". A renumbering that leaves a dangling back-reference is invisible to every gate,
+  which is why they were checked by hand.
+  **Help overlay re-verified AT SOURCE because `886011d` moved it off the skip-list.**
+  `detailed-usage.md:290` (`left/right pane | up/down act | PgUp/PgDn page | esc close
+  help`) matches the new focus model, and `:408`'s claim that PgUp/PgDn pages "regardless
+  of which help pane is focused" is TRUE: `page_scroll_input` (`console-tui/src/lib.rs:810`)
+  matches `TuiOverlay::Help { .. }` and never inspects `HelpFocus`. Its "vertical only"
+  clause holds too — the docstring records no horizontal counterpart exists.
+  Also clean: `c540a96` (approve-valve retry) introduced NO doc claim to rot — the single
+  `idempotent` hit (`:158`) is still the autonomous-decision reflection sentence, as the
+  2026-07-26 entry found; the `-0uw` fix IS documented (`:300-306`, `p approve` renders
+  only while effective admission is `manual`); and `docs/README.md`'s core-contract claim
+  survives the new `h` verb — `lib.rs:3068` RENDERS a `claude "/livespec-orchestrator-
+  beads-fabro:<op>"` string for the operator to run and never issues it, so "issues every
+  mutation through the orchestrator's `drive` API" still holds.
+  **THE FINDING.** `-2ckgiy` recorded that `h` shipped with `grep -c "h handoff"` = 0.
+  That is now 3: PR #573 added both hint rows (`:273`, `:277`) and the availability prose
+  (`:304-306`), and the upgraded lockstep gate pins those rows. **But no doc anywhere says
+  what pressing `h` DOES** — that it opens a full-width `TuiOverlay::DriverHandoff`
+  (`console-tui/src/lib.rs:465`) rendering a copyable driver invocation. The other two
+  `handoff` hits (`:116`, `:121`) are the ATTENTION ROW's `handoff.command`, a different
+  thing. So the item's own thesis survives its own partial fix, one level in: the
+  completeness arm requires reachable CONTEXTS to have ROWS, and nothing requires prose
+  describing the surface a key OPENS. Reframe recorded on the item.
+  **Do NOT "fix" the OSC 52 silence.** `docs/` never mentions OSC 52 and that is CORRECT —
+  the shipped binary never sends it (the store-backed sink drops `CopyDriverHandoff` while
+  the overlay says "copy sent to terminal"). Documenting it would document a dead path;
+  the defect is the overlay's claim, and it is a separate item.
+  **NOT re-verified**: the rest of the skip-list, and the docs no commit in this range
+  touched.
 
 ## Read-first chain
 
