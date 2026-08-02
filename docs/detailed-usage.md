@@ -399,6 +399,28 @@ modal on `Enter`; an unavailable one renders marked `(unavailable here)` and
 stays inert. The roster is deliberately minimal scaffolding for the menu
 shell: it exists so every action is reachable before menus land.
 
+### When an action is refused
+
+An operator action that fails does not fail silently. Whatever the
+orchestrator's action surface emitted is captured, carried on the item's
+`work_item.action.failed` event, and rendered on the item's own record — open
+the record with `Enter` and its last line reads `Last action: …`:
+
+| what the surface emitted | the line reads |
+|---|---|
+| a `--json` payload with `domain_error` and `summary` | `Last action: <id> refused — <domain_error>: <summary>` |
+| only one of those two fields | `Last action: <id> refused — <that field>` |
+| output that does not parse as that shape | `Last action: <id> failed — <raw output>` |
+| nothing at all | `Last action: <id> failed (no diagnostic emitted)` |
+
+So `refused` means the surface explained itself and the explanation is quoted;
+`failed` means it did not, and you are seeing either its raw output or an honest
+admission that there was none. Nothing is invented to fill the gap.
+
+Only the LATEST failure per work-item is kept, and it is cleared the moment a
+later action against that same item completes — so a refusal you have already
+recovered from never lingers on the record.
+
 ## The Help modal
 
 `?` opens it, and — this is the point — it opens **focused on the section for
