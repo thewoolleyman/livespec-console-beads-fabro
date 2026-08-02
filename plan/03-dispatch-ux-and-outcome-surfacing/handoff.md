@@ -97,6 +97,47 @@ success OR refusal — appears in the UI without leaving the cockpit.
 Decoupled from 02 by design: neither needs the other's output. It runs AFTER 02 under
 the one-live-execution-thread rule, not because of a dependency.
 
+## SCOPE CORRECTION — "presentation, not plumbing" is only HALF true (measured 2026-08-02)
+
+The mission bullet above says the dispatcher journal is ALREADY INGESTED, so refusal
+surfacing "is a PRESENTATION gap, not a plumbing one". **The measurement behind that
+(stored events rose 1566 -> 1579 across a drain) is real, and the inference from it is
+too broad.** Verified at source against master `69ea9d4`:
+
+**What IS ingested.** `normalize_dispatcher_journal_entry`
+(`console-application/src/source_adapters.rs:1255`) does reach the event store, and
+`dispatcher_journal_event` (`:1372`) attaches the WHOLE entry as
+`SourcePayload::DispatcherJournalEntry`, so nothing is dropped in normalization. That
+much of the claim holds.
+
+**What the entry can HOLD, which is the problem.** `DispatcherJournalEntry` (`:869`) has
+exactly five fields — repo, work_item_id, dispatch_id, `kind`, source_version — and **no
+free-text field at all**. `kind` is `DispatcherJournalKind` (`:852`), which is `Copy`,
+carries no data, and has **exactly ONE variant: `BacklogBounce`**. It maps to the single
+`EventType::DispatcherBacklogBounceObserved`.
+
+**And the decisive negative:** `grep -c refusal` over
+`console-application/src/lib.rs`, `console-domain/src/lib.rs` and `source_adapters.rs` on
+master returns **0, 0, 0**. No refusal text exists anywhere in the console today.
+
+**So the correction:** the journal path models ONE phenomenon — backlog bounces — with no
+payload. For those, surfacing really is presentation. **For REFUSAL TEXT it is plumbing:**
+it needs a payload-carrying journal shape (a new `DispatcherJournalKind` variant or a text
+field), almost certainly a new `EventType`, and the adapter change to populate them. Do
+not scope this milestone as presentation-only and then discover the schema mid-flight.
+
+**Do not confuse the two paths — they are genuinely different.** Slice C (unmerged, plan
+01) captures refusal on the CONSOLE'S OWN COMMAND SPINE — `run_action` failure into
+`error_json`, surfaced via `WorkItemActionFailed`/`FactoryDrainFailed` and the record
+modal. That is not the dispatcher journal. When slice C lands, the console will show
+refusals for actions IT issued, and still show nothing for a refusal the dispatcher
+journalled on its own. This plan owns the second one.
+
+**Consequence for the 1566 -> 1579 measurement:** thirteen events arrived, and on this
+evidence they were backlog-bounce entries. The measurement proves the journal pipe is
+live; it does NOT prove the refusal travelled it. Re-run it with the entry kinds printed
+before relying on it further.
+
 ## Inherited custody — ACCEPTED 2026-08-02
 
 From `plan/archive/operator-surface-redesign/`, absorbed and archived on the
