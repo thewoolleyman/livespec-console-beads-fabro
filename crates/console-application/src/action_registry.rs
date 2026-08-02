@@ -385,6 +385,61 @@ pub fn stage_action(spec: &ActionSpec, ctx: &ActionContext) -> Option<StagedActi
     }
 }
 
+/// Whether `spec` is ever offered on `surface`, for any selection state.
+///
+/// Reference surfaces (the Help modal, menu generation) use this to list the
+/// actions a surface can offer without fixing a selection; the per-selection
+/// answer stays [`ActionSpec::availability`]'s alone.
+#[must_use]
+pub fn action_offered_on_surface(spec: &ActionSpec, surface: ActionSurface) -> bool {
+    Lane::all().iter().any(|lane| {
+        [AdmissionPolicy::Manual, AdmissionPolicy::Auto]
+            .iter()
+            .any(|admission| {
+                [false, true].iter().any(|handoff| {
+                    (spec.availability)(&ActionContext {
+                        lane: *lane,
+                        admission_policy: *admission,
+                        acceptance_policy: AcceptancePolicy::AiThenHuman,
+                        has_driver_handoff: *handoff,
+                        surface,
+                    })
+                })
+            })
+    })
+}
+
+/// Whether the staged valve is a registered action available for `ctx`.
+///
+/// The invocation-side half of the one-derivation rule: the reducer refuses
+/// to stage, and the confirm refuses to resolve, a valve the registry does
+/// not offer for the selection, so hidden hints, inert keys, and non-firing
+/// confirms cannot diverge.
+#[must_use]
+pub fn valve_is_available(valve: PendingValve, ctx: &ActionContext) -> bool {
+    let id = match valve {
+        PendingValve::Approve => "approve",
+        PendingValve::Accept => "accept",
+        PendingValve::Reject(_mode) => "reject",
+        PendingValve::SetAdmission(_policy) => "set-admission",
+        PendingValve::SetAcceptance(_policy) => "set-acceptance",
+        PendingValve::MoveStatus { from, .. } => {
+            if from != ctx.lane {
+                return false;
+            }
+            "move"
+        }
+        PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(_value)) => {
+            "set-merge-on-review-cap"
+        }
+        PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(_value)) => "set-review-fix-cap",
+        PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(_value)) => {
+            "set-acceptance-rework-cap"
+        }
+    };
+    action_for_id(id).is_some_and(|spec| (spec.availability)(ctx))
+}
+
 /// The staged result of invoking an available registered action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StagedAction {

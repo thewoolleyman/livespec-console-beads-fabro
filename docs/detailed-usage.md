@@ -265,13 +265,16 @@ close, so it always describes the current context rather than a fixed summary.
 | Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
 | Attention, backlog work-item selected | `up/down move \| enter open \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Attention, pending-approval work-item selected | `up/down move \| enter open \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Attention, acceptance work-item selected | `up/down move \| enter open \| c accept \| r reject \| ? help \| q quit` |
 | Attention, blocked work-item selected | `up/down move \| enter open \| ? help \| q quit` |
 | Attention, no work-item selected | `? help \| q quit` |
 | Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
-| Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into a pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into a dispatcher-admitted pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into a ready item | `up/down move \| enter item \| esc lane list \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into a host-only-refused ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into an active item | `up/down move \| enter item \| esc lane list \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| ? help \| q quit` |
 | Lanes, drilled into a blocked item | `up/down move \| enter item \| esc lane list \| s move-status \| ? help \| q quit` |
@@ -294,6 +297,14 @@ populated one sitting on a row that names no work-item**. `up`/`down` drop out
 too when there are no rows to move over. `Enter` opens a selected work-item's
 record from Attention or a drilled-in lane, so it is absent when there is no
 selected work-item.
+
+Availability is derived from the selected item's full record, not its lane
+alone. `p approve` renders only while the item's **effective admission policy
+is `manual`** — a dispatcher-admitted (`auto`) item omits it, because the
+approve valve cannot fire there (`m set-admission` is the operator's route to
+reclaim the door). `h handoff` renders only where the driver-handoff verb
+applies: a drilled-in **backlog** item (groom) or a drilled-in
+**host-only-refused ready** item (implement).
 
 An open overlay's hint wins over the focused pane's. The pane hints key on the
 active **view** plus what is selected in it — not on which of the body panes

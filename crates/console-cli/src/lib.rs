@@ -2285,9 +2285,10 @@ mod tests {
     use console_application::{
         ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
         AutonomousDecisionsPort, DispatcherOverride, FactoryDrainPort, FactoryDrainPortOutcome,
-        FactoryDrainRequest, LaneColumn, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode, TuiInteractionState,
-        TuiOverlay, build_tui_model, project_attention, project_lane_board,
+        FactoryDrainRequest, LaneColumn, LaneFocus, OrchestratorActionOutcome,
+        OrchestratorActionPort, OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode,
+        TuiInteractionState, TuiOverlay, TuiView, build_tui_model, project_attention,
+        project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
             AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
@@ -3322,6 +3323,13 @@ mod tests {
             "Set admission policy",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        append_work_item_lane(
+            &mut store,
+            "console-pending",
+            "pending-approval",
+            1,
+            "2026-07-13T00:00:00Z",
+        )?;
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -3365,6 +3373,13 @@ mod tests {
             "Set admission policy",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        append_work_item_lane(
+            &mut store,
+            "console-pending",
+            "pending-approval",
+            1,
+            "2026-07-13T00:00:00Z",
+        )?;
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -3706,10 +3721,22 @@ mod tests {
             .clone()
     }
 
-    /// Build the `work_item.move_requested` effect the `s`-move valve produces for
-    /// the operator-selected work-item.
+    /// Build the `work_item.move_requested` effect the `s`-move valve produces
+    /// for the item selected in a DRILLED-IN lane — the surface where the
+    /// move-status verb acts (it is inert on the Attention surface).
     fn move_effect(events: &[ConsoleEvent], from: Lane, to: Lane) -> TuiRuntimeEffect {
-        valve_effect(events, PendingValve::MoveStatus { from, to })
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::MoveStatus { from, to },
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(from))
+        .with_selected_lane_item_index(0);
+        console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
+            .effect()
+            .clone()
     }
 
     /// Drive `effects` through a store-backed sink in order, returning the
@@ -3761,6 +3788,15 @@ mod tests {
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         ingest_needs_attention(&mut store, &needs_attention, "2026-07-19T00:00:00Z")?;
+        // The row resolves to a manual-admission pending-approval board record,
+        // the lane that admits every per-item valve these tests stage.
+        append_work_item_lane(
+            &mut store,
+            "wi-1",
+            "pending-approval",
+            1,
+            "2026-07-19T00:00:00Z",
+        )?;
         let events = store.list_console_events()?;
         Ok((store, events))
     }
@@ -3880,7 +3916,12 @@ mod tests {
     fn store_backed_repeated_resolve_blocked_all_land() -> Result<(), ConsoleRuntimeError> {
         // An item can be blocked, resolved to ready, blocked AGAIN, and resolved to
         // ready again. The second resolve-to-ready repeats the first key.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, _seeded) = store_with_selectable_item()?;
+        // The board holds the item BLOCKED throughout: resolving it does not
+        // move the board row until the next source poll, so every staging sees
+        // the blocked record the registry availability check requires.
+        append_work_item_lane(&mut store, "wi-1", "blocked", 2, "2026-07-19T00:00:00Z")?;
+        let events = store.list_console_events()?;
         let effects = [
             move_effect(&events, Lane::Blocked, Lane::Ready),
             move_effect(&events, Lane::Blocked, Lane::Backlog),
@@ -4038,11 +4079,20 @@ mod tests {
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
-        let events = store.list_console_events()?;
 
-        let move_to_backlog = move_effect(&events, Lane::Ready, Lane::Backlog);
-        let move_back_to_ready = move_effect(&events, Lane::Backlog, Lane::Ready);
-        let move_to_backlog_again = move_effect(&events, Lane::Ready, Lane::Backlog);
+        // Each staging sees the board record ingestion would have produced by
+        // then: ready before the first move, backlog before the second, ready
+        // again before the third — the availability check requires the staged
+        // `from` to BE the item's lane.
+        append_work_item_lane(&mut store, "wi-1", "ready", 1, "2026-07-17T00:00:00Z")?;
+        let move_to_backlog =
+            move_effect(&store.list_console_events()?, Lane::Ready, Lane::Backlog);
+        append_work_item_lane(&mut store, "wi-1", "backlog", 2, "2026-07-17T00:00:00Z")?;
+        let move_back_to_ready =
+            move_effect(&store.list_console_events()?, Lane::Backlog, Lane::Ready);
+        append_work_item_lane(&mut store, "wi-1", "ready", 3, "2026-07-17T00:00:00Z")?;
+        let move_to_backlog_again =
+            move_effect(&store.list_console_events()?, Lane::Ready, Lane::Backlog);
 
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -6277,6 +6327,45 @@ mod tests {
             Some("evt_ready_work".to_owned()),
             r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
                 .to_owned(),
+            "{}".to_owned(),
+        ))?;
+        Ok(())
+    }
+
+    /// Append a work-item snapshot so a selectable inbox row resolves to a
+    /// full board record — the availability context the registry-checked
+    /// valves consult — in the lane that admits the staged valve.
+    fn append_work_item_lane(
+        store: &mut SqliteEventStore,
+        work_item_id: &str,
+        lane_label: &str,
+        source_version: u64,
+        observed_at: &str,
+    ) -> Result<(), EventStoreError> {
+        let payload = format!(
+            r#"{{"repo":"livespec-console-beads-fabro","work_item_id":"{work_item_id}","lane":"{lane_label}","lane_reason":null,"rank":"a0","status":"{lane_label}","source_version":{source_version}}}"#
+        );
+        let event_id = format!("evt_{work_item_id}_{source_version}");
+        let stream = format!("repo:livespec-console-beads-fabro:{work_item_id}");
+        let event = ConsoleEvent::new(
+            event_id.clone(),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator".to_owned(),
+            stream.clone(),
+            source_version,
+        )
+        .with_payload_json(payload.clone());
+        store.append_event(&EventAppend::new(
+            event,
+            stream,
+            observed_at.to_owned(),
+            observed_at.to_owned(),
+            None,
+            format!("corr_{event_id}"),
+            Some(event_id),
+            payload,
             "{}".to_owned(),
         ))?;
         Ok(())
