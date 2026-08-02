@@ -427,6 +427,20 @@ mis-framed. Verified state:
   (`crates/console-cli/src/lib.rs:1713-1725`); the 2026-07-21 drain's
   attempt-suffixed command id confirms it live. Ledger item stale-open;
   closing it is a prepared maintainer decision.
+  **Re-verified 2026-08-02: still true, anchor now `:1731-1743` (moved 18 lines), and
+  `-m36`/`-8i9`/`-6ma` are all CLOSED on the ledger — the prepared decisions were taken.**
+
+  > **DO NOT read `is_repeatable_command` as the whole retry story — `-u3w3er`'s fix is
+  > NOT there and looking for it there suggests, wrongly, that the item was closed
+  > without one.** Approve and accept are DELIBERATELY absent from that list: they are
+  > once-per-item valves and making them repeatable would fire the valve twice. `c540a96`
+  > fixed retry through a separate, narrower path — `distinguish_retryable_command`
+  > (`crates/console-cli/src/lib.rs:1769-1781`), which applies the sequence discriminator
+  > to a once-only valve ONLY when `is_failed_once_only_valve_retry` says the prior static
+  > row is TERMINAL-FAILED, and otherwise preserves the static key. So the idempotency
+  > guarantee is intact and the retry works, by design, in two different places.
+  > Recorded because this repo has a named pattern of concluding "fixed-same-day-never-
+  > closed" or "closed-but-not-fixed" from looking in the one obvious place.
 - `-8i9` (bundled workflow ignores the repo's Fabro override): **FIXED
   by 2026-07-21** — every `dispatch-id` journal entry from the
   2026-07-21 and 2026-07-23 runs records the REPO's own
