@@ -212,6 +212,7 @@ fn check_crate_sources(crate_name: &str, crate_dir: &Path) -> Vec<String> {
         findings.extend(check_unwrap_expect(&file, &display));
         findings.extend(check_type_placement(crate_name, &file, &display));
         findings.extend(check_adapter_isolation(&file, &display));
+        findings.extend(check_registry_bypass(crate_name, &file, &display));
     }
     findings
 }
@@ -960,6 +961,90 @@ impl<'ast> Visit<'ast> for UnwrapExpectVisitor<'_> {
     }
 }
 
+/// Rule: no key handler stages an operator action around the action registry.
+///
+/// In `console-tui` production code the ONLY function that may construct the
+/// action-staging interactions (`TuiInteraction::OpenValveConfirm` and
+/// `TuiInteraction::OpenDriverHandoff`) is `registry_action_input`, the one
+/// path that consults the registry's availability derivation. A hand-written
+/// key arm that stages either interaction directly would reintroduce the
+/// second-encoding defect the registry exists to retire, so it is flagged
+/// here rather than waiting for a hint/behavior divergence to be noticed.
+fn check_registry_bypass(crate_name: &str, file: &syn::File, display: &str) -> Vec<String> {
+    if crate_name != "console-tui" {
+        return Vec::new();
+    }
+    let mut visitor = RegistryBypassVisitor {
+        findings: Vec::new(),
+        display,
+        allowed_depth: 0,
+    };
+    visitor.visit_file(file);
+    visitor.findings
+}
+
+/// The one `console-tui` function allowed to construct the staging
+/// interactions: the registry-consulting key path.
+const REGISTRY_STAGING_FN: &str = "registry_action_input";
+
+/// The staging interactions only the registry path may construct.
+const STAGING_INTERACTIONS: [&str; 2] = ["OpenValveConfirm", "OpenDriverHandoff"];
+
+struct RegistryBypassVisitor<'a> {
+    findings: Vec<String>,
+    display: &'a str,
+    /// Non-zero while visiting the body of the allowed staging function.
+    allowed_depth: usize,
+}
+
+impl<'ast> Visit<'ast> for RegistryBypassVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if has_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if is_test_fn(&node.attrs) {
+            return;
+        }
+        let allowed = node.sig.ident == REGISTRY_STAGING_FN;
+        if allowed {
+            self.allowed_depth += 1;
+        }
+        syn::visit::visit_item_fn(self, node);
+        if allowed {
+            self.allowed_depth -= 1;
+        }
+    }
+
+    fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+        if self.allowed_depth == 0 {
+            let segments: Vec<String> = node
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            if let [.., parent, variant] = segments.as_slice()
+                && parent == "TuiInteraction"
+                && STAGING_INTERACTIONS
+                    .iter()
+                    .any(|staging| variant == staging)
+            {
+                self.findings.push(format!(
+                    "{}: `TuiInteraction::{variant}` may only be constructed by \
+                     `{REGISTRY_STAGING_FN}` (the registry-consulting key path); a direct \
+                     staging bypasses the registry availability derivation",
+                    self.display
+                ));
+            }
+        }
+        syn::visit::visit_expr_path(self, node);
+    }
+}
+
 /// Rule: the `EventType` / `CommandType` enums are defined only in
 /// `console-domain` (the bounded-context contract home), never in
 /// adapter or other outer crates.
@@ -1109,8 +1194,8 @@ mod tests {
 
     use super::{
         CrateNode, check_adapter_isolation, check_forbid_unsafe, check_layering,
-        check_tmux_socket_scoping, check_tmux_socket_scoping_source, check_type_placement,
-        check_unwrap_expect,
+        check_registry_bypass, check_tmux_socket_scoping, check_tmux_socket_scoping_source,
+        check_type_placement, check_unwrap_expect,
     };
 
     fn node(name: &str, workspace_deps: &[&str], external_deps: &[&str]) -> CrateNode {
@@ -1728,5 +1813,70 @@ mod tests {
         // sources are clean.
         let findings = check_tmux_socket_scoping(Path::new(env!("CARGO_MANIFEST_DIR")));
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_direct_valve_staging_outside_the_registry_path_is_flagged() -> syn::Result<()> {
+        let source = r"
+            fn sneaky_key_arm() -> TuiInteraction {
+                TuiInteraction::OpenValveConfirm(PendingValve::Approve)
+            }
+        ";
+        let findings = check_registry_bypass("console-tui", &syn::parse_file(source)?, "lib.rs");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("OpenValveConfirm"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_direct_driver_handoff_staging_outside_the_registry_path_is_flagged() -> syn::Result<()> {
+        let source = r"
+            fn sneaky_key_arm() -> TuiInteraction {
+                TuiInteraction::OpenDriverHandoff
+            }
+        ";
+        let findings = check_registry_bypass("console-tui", &syn::parse_file(source)?, "lib.rs");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("OpenDriverHandoff"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_registry_staging_path_is_not_flagged() -> syn::Result<()> {
+        let source = r"
+            fn registry_action_input() -> TuiInteraction {
+                TuiInteraction::OpenValveConfirm(PendingValve::Approve)
+            }
+        ";
+        let file = syn::parse_file(source)?;
+        assert!(check_registry_bypass("console-tui", &file, "lib.rs").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_code_staging_is_not_flagged() -> syn::Result<()> {
+        let source = r"
+            #[cfg(test)]
+            mod tests {
+                fn helper() -> TuiInteraction {
+                    TuiInteraction::OpenValveConfirm(PendingValve::Approve)
+                }
+            }
+        ";
+        let file = syn::parse_file(source)?;
+        assert!(check_registry_bypass("console-tui", &file, "lib.rs").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn non_tui_crates_are_not_scanned_for_registry_bypass() -> syn::Result<()> {
+        let source = r"
+            fn reducer_arm() -> TuiInteraction {
+                TuiInteraction::OpenValveConfirm(PendingValve::Approve)
+            }
+        ";
+        let file = syn::parse_file(source)?;
+        assert!(check_registry_bypass("console-application", &file, "lib.rs").is_empty());
+        Ok(())
     }
 }

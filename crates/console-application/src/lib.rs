@@ -1442,20 +1442,6 @@ impl TuiScreenModel {
         }
     }
 
-    /// The selected work-item's lifecycle lane, resolved from the same selected
-    /// work-item identity that per-item keys target.
-    #[must_use]
-    pub fn selected_work_item_lane(&self) -> Option<Lane> {
-        match self.active_view {
-            TuiView::Attention => self
-                .selected_work_item_id()
-                .and_then(|work_item_id| self.work_item_by_id(work_item_id))
-                .map(LaneWorkItem::lane),
-            TuiView::Lanes => self.selected_lane_item().map(LaneWorkItem::lane),
-            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
-        }
-    }
-
     /// The move-status valve the operator may open on the selected drilled-in
     /// lane item, staged at the first operator-drivable target for the item's
     /// current lane, or `None` when no lane item is selected or its lane has no
@@ -10738,11 +10724,7 @@ mod tests {
         let mut state = TuiInteractionState::new(0, TuiOverlay::None);
         for _step in 0..TuiView::all().len() {
             let model = build_tui_model_for_state(&[], &state);
-            assert!(
-                !model.footer().trim().is_empty(),
-                "{:?}",
-                model.active_view()
-            );
+            assert!(!model.footer().trim().is_empty());
             state = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextView);
         }
         assert!(
@@ -11041,6 +11023,39 @@ mod tests {
     }
 
     #[test]
+    fn overlay_footer_hint_offers_the_bare_navigation_fallback_for_no_overlay() {
+        // The None arm is the harmless fallback for a caller that routed a
+        // closed overlay here; production routes None to the pane hints first.
+        assert_eq!(overlay_footer_hint(&TuiOverlay::None), "? help | q quit");
+    }
+
+    #[test]
+    fn the_reducer_refuses_to_stage_a_valve_the_registry_does_not_offer() {
+        // fabro_gate_events index 2 selects the BLOCKED item, which admits no
+        // approve: staging is refused and the overlay stays closed — the same
+        // derivation that suppresses the hint and makes the key inert.
+        let state = TuiInteractionState::new(2, TuiOverlay::None);
+        let refused = reduce_tui_interaction(
+            &state,
+            &fabro_gate_events(),
+            TuiInteraction::OpenValveConfirm(PendingValve::Approve),
+        );
+        assert_eq!(refused.overlay(), &TuiOverlay::None);
+        // The acceptance item (index 1) admits accept: staging opens the modal.
+        let staged = reduce_tui_interaction(
+            &TuiInteractionState::new(1, TuiOverlay::None),
+            &fabro_gate_events(),
+            TuiInteraction::OpenValveConfirm(PendingValve::Accept),
+        );
+        assert_eq!(
+            staged.overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::Accept
+            }
+        );
+    }
+
+    #[test]
     fn attention_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
         // A selection admitting no action keeps the navigation-only hints.
         let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Blocked);
@@ -11188,11 +11203,7 @@ mod tests {
                 has_driver_handoff: handoff,
                 surface,
             };
-            assert_eq!(
-                action_registry::selected_item_hint(&ctx),
-                expected,
-                "{surface:?}/{lane:?}/handoff={handoff}"
-            );
+            assert_eq!(action_registry::selected_item_hint(&ctx), expected);
         }
     }
 
