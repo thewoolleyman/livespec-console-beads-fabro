@@ -158,10 +158,125 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    no console→driver dependency).
 
 
-## RESUME HERE — state at 2026-08-02T20:0xZ (SUPERSEDES every block below)
+## RESUME HERE — state at 2026-08-03T~00:2xZ (SUPERSEDES every block below)
 
-**SLICES A AND B ARE BOTH MERGED. THE DOGFOOD-LEG HOLD IS LIFTED — that leg is the next
-action, and it has NOT been started.** Re-measure everything; every claim is timestamped.
+**THE DOGFOOD LEG WAS ATTEMPTED AND IS BLOCKED — NOT BY EXECUTION, BY A REAL DEFECT THAT
+THE ATTEMPT MEASURED. The invoker WORKS; the action it exists to reach is permanently
+unofferable on the class of item that needs it.** Nothing was worked around: no
+`drive.py` fallback, no weakened predicate, and `-ccycuk` is untouched
+(`updated_at` still `2026-07-30T18:01:11Z`).
+
+### What the leg proved, and where it stopped
+
+Walked at the real cockpit (master `d0037e1`, fresh release binary built
+2026-08-03T00:04Z, ONE client by `/proc/*/exe`, plugin-root override inside the
+credential wrapper, tmux `happy-path-tui`):
+
+| step | result |
+|---|---|
+| stale 2026-07-30 cockpit (PID 1883911) still running | killed; no `dispatcher.py` behind it |
+| Lanes → drill `ready` → select `-ccycuk` | Status band shows `s g f n k` and **no** scope-override token — correct, it ships `hotkey: None` + empty `hint_token` |
+| `:` palette | hint reads **`type a command`** — slice B's new string, live |
+| `actions` | **invoker renders all eleven actions** with availability markers; `Set workflow scope override [menu]` is the last row |
+| that row | **`(unavailable here)`** — and so is `Driver handoff` |
+
+**So the invoker itself is PROVEN on the real stack.** What is not proven is the leg's
+point: staging the hotkey-less action.
+
+### The defect — the console predicate and the dispatcher refusal are MUTUALLY EXCLUSIVE
+
+Filed as a measured comment on **`-w7d`** (2026-08-03), which is exactly its home — that
+bug's "console binds no key at all" half is now CLOSED by A+B, and this is what remains.
+
+- Console `action_registry.rs:343`: `lane == Ready && ctx.has_driver_handoff`, and
+  `has_driver_handoff` needs `factory_safety == Some("host-only-refused")`
+  (`lib.rs:3102`).
+- Dispatcher `_dispatcher_host_only.py:43-49` refuses via three arms: (1)
+  `factory_safety is not None`; (2) allow on the raw label
+  `workflow-scope-override:citation-only`; (3) a REGEX over title/description/reason.
+- **Arm 3 fires only when `factory_safety` IS null; the console offers the override only
+  when it is NON-null.** Every item refused by the text arm therefore has an unofferable
+  remedy, forever.
+
+Measured on `-ccycuk` by executing the orchestrator's OWN matcher against its OWN record
+(plugin `4e3e883a08b3`) rather than by reading it:
+
+    factory_safety       : None
+    declares-edit match  : True
+      matched            : 'hub/workflows/ci.yml` and MUST NOT\ncreate or update any
+                            file under `.github/workflows/`. If the imple'
+    negation-escape match: False
+    override label held  : False
+
+**The span that triggers the refusal is the item's own PROHIBITION** — an edit verb within
+80 chars of the path, inside a sentence forbidding the edit. That is the charter's
+"it rewards not writing the constraint down", now with the exact matched span. And **the
+documented escape does not fire on the wording the item already uses**:
+`_NEGATED_WORKFLOW_SCOPE` demands `no files? (under|in) .github/workflows/`, the item says
+"any file", so an item complying in substance fails on phrasing.
+
+### AND THE ROOT CAUSE IS WORSE THAN A NULL FIELD — read this part twice
+
+Chasing why the attention row says `factory_safety recorded-refusal` while the record says
+`—` produced the actual defect.
+
+**The console's one production consumer of `factory_safety` tests for a value the
+orchestrator's vocabulary does not contain.**
+
+- `console-application/src/lib.rs:3102` — the ONLY production site — requires
+  `factory_safety == Some("host-only-refused")`.
+- Upstream `FactorySafety` is `Literal["needs-host-secrets", "mutates-host-machinery",
+  "needs-privileged-host"]` (`_vendor/livespec_runtime/work_items/types.py:73-77`).
+  **`"host-only-refused"` is not a member.** It is a dispatcher STAGE name
+  (`_needs_attention_work_items.py:42`, `_HOST_ONLY_REFUSAL_STAGE`), and the orchestrator
+  emits it as a stage, never as this field's value.
+- So that match arm is **unreachable on real data**. It is true only in FIXTURES — the
+  literal appears at ten test sites (`lib.rs:12555,12621`; `console-cli:3973`;
+  `console-tui:4291,4717,4751,4797-4800`) and every one of them INVENTS the string.
+
+Consequences, both observed live: `driver_handoff_command` never yields `implement` for a
+real `ready` item, so the `h` handoff is never offered there; and `has_driver_handoff` is
+therefore permanently false for `ready`, so `set-workflow-scope-override` can never be
+offered — regardless of the null-field question above.
+
+**This is a VACUOUS VERIFIER, the same class as `-ff6aue`, which this thread already hit
+once.** Ten green tests assert a behaviour that cannot occur in production, because they
+supply an input the producer cannot produce. A passing suite says nothing about this path.
+
+Where `recorded-refusal` actually comes from, since it misleads: `_host_only_reasons`
+(`_needs_attention_work_items.py:167-175`) has TWO arms — the item field when non-null,
+and otherwise the **dispatcher JOURNAL FILE** (`tmp/fabro-dispatch-journal.jsonl`),
+yielding the literal `"recorded-refusal"`. `-ccycuk` is on the journal arm. **So the
+cockpit tells the operator about the refusal in the Attention pane from the journal, while
+the action that clears it is greyed out in the invoker because the work-item record it
+reads is empty.** Both panes are correct given their inputs; the inputs disagree.
+
+**Why the console must NOT just widen its predicate.** `is_host_only_item` is computed at
+dispatch and never published — the per-item read surface carries no field modelling "would
+be refused", and no orchestrator path writes `factory_safety` at all (every occurrence in
+`livespec_orchestrator_beads_fabro/` is a READ or a label serialization of an
+already-set field; the sole assignments are `store.py:134,170`, reading it back FROM
+labels). Re-deriving arm 3's regex console-side violates the locked core contract. Same
+shape as `-0uw`, whose charter note says `awaits_dispatcher_admission` "already models the
+missing dimension orchestrator-side — consume it, do not re-derive it". **Here that field
+does not exist yet**, so the fix is upstream-first.
+
+**DISPOSITION OWED (maintainer; cross-repo surface, not a worker's call):** (a)
+orchestrator publishes a refusal / `awaits_scope_override` signal the console consumes;
+(b) orchestrator persists `factory_safety` when arm 3 refuses AND the two sides agree a
+shared vocabulary; or (c) widen `_NEGATED_WORKFLOW_SCOPE`. (a)/(b) unblock the cockpit;
+(c) unblocks only this one item. **Any of them must also fix the console's dead string
+match and re-point the ten fixtures at a real value — otherwise the path stays unreachable
+and the tests stay vacuous.**
+
+**Do NOT "fix" this by draining first to see whether a fresh refusal populates the field.**
+It does not: arm 3 is a pure read of the description at dispatch time, and nothing in the
+orchestrator writes `factory_safety` back (verified by enumerating every occurrence). A
+drain would re-refuse and change nothing, at the cost of a dispatch.
+
+### Everything below this line is the 2026-08-02T20:0xZ state, still accurate
+
+**SLICES A AND B ARE BOTH MERGED.** Re-measure everything; every claim is timestamped.
 
 | PR | slice | landed |
 |---|---|---|
