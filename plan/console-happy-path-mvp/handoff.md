@@ -518,6 +518,28 @@ reached acceptance. The leg is discharged through merge; the
 acceptance legs remain open pending strand recovery. `-7rcps4` was
 already `done` before the walk.
 
+> **RE-CHECKED 2026-08-02 — ONE OF THE TWO DEFECTS THAT MADE THIS LEG FAIL IS NOW FIXED,
+> so the leg is no longer blocked by what blocked it.** The record above stays as written
+> (it is the honest account of what happened on 2026-07-21) but a reader planning a
+> re-walk needs the delta:
+>
+> - **`-u3w3er` ("every retry was swallowed") is FIXED and CLOSED.** `c540a96` added
+>   `distinguish_retryable_command` (`crates/console-cli/src/lib.rs:1769-1781`): a
+>   once-only valve whose prior static row is TERMINAL-FAILED now gets a sequence
+>   discriminator on retry, so a failed `p` press can be pressed again and lands. The
+>   swallowed-retry half of this leg's failure is gone. **Note it is NOT in
+>   `is_repeatable_command`** — approve/accept stay once-only by design; see the
+>   do-not-conclude note in § "Adjacent, custody elsewhere".
+> - **`-ectqye` ("first valve press failed silently") is STILL `pending-approval`**, with
+>   routing undecided per § 3. Its ACTION-INVOCATION half is built on the unmerged
+>   `feat/action-invoker` branch (refusal captured and rendered) and is tracked by plan 01;
+>   the background/journal half belongs to plan 03. So the silence is addressed in code
+>   that has not merged.
+>
+> **Practical consequence for plan 04's walk:** a failed approve is now RETRYABLE at the
+> TUI even though it may still be SILENT about why it failed. Do not plan around the
+> retry defect; do plan around the silence until slice C lands.
+
 **Stage 1 — the minimal-verb brainstorm (critical path).** Satisfy
 `plan/operator-surface-redesign/`'s maintainer entry gate with a
 happy-path-minimal agenda: (a) groom-verb exposure on `backlog` /
