@@ -92,6 +92,50 @@ it.
 driver-handoff OSC 52 copy — only the deferred test sink handles `CopyDriverHandoff`,
 while the overlay says "copy sent to terminal". Recorded in plan 01's resume block.
 
+## Registry readiness — MEASURED 2026-08-02, before this plan opens
+
+This plan generates menus FROM the registry, so the registry's actual shape is this
+plan's input. Measured against master `69ea9d4` and the unmerged slice A, so the
+first session does not discover it mid-flight.
+
+**GOOD — `menu_path` shipped day one, exactly as plan 01 requirement 1 demanded.** It is
+`&'static [&'static str]` (`action_registry.rs:104`), a REAL two-level taxonomy, not a
+flat placeholder: all ten master entries carry one, and a registry test asserts
+non-emptiness for every entry. Groups today: `Work item > Hand off`,
+`Work item > Lifecycle` (4), `Work item > Policy dials` (5). **No schema migration is
+owed for the taxonomy** — the sequencing worked.
+
+**BUT THE HOTKEY FIELD DID NOT GET THE SAME TREATMENT, and this one gates you.** On
+master `pub hotkey: char` is MANDATORY (`:100`), so **a menu-only action is not
+expressible in the registry at all.** Slice A widens it to `Option<char>` and adds the
+first `hotkey: None` entry (`set-workflow-scope-override`). That widening is a schema
+migration of exactly the kind requirement 1 existed to prevent — it simply landed one
+slice later instead of never. **Practical consequence: until slice A merges, this plan
+cannot generate a menu entry for any action that has no key.** Slice A is currently
+BLOCKED (see plan 01 — the `-3yx` coverage phantom), so treat that as a real dependency
+and not a formality.
+
+**THE SCOPING QUESTION THIS PLAN MUST ANSWER FIRST — "every action" is not yet defined.**
+The maintainer's proof obligation is *"some mechanical, generic test to prove that EVERY
+action can be driven via MENUs, and hotkeys are ONLY ADDITIONAL."* Measured, the registry
+holds TEN entries, ALL under a single top-level node `Work item`, and every one is a
+per-item verb. The structural keys — `/` search, `:` palette, `?` help, `q` quit, space,
+and Tab/arrow focus movement — are **deliberately excluded**: they are matched ahead of
+the registry lookup in `key_event_to_terminal_input`, and `action_registry.rs:475`
+actively FORBIDS them as registry hotkeys.
+
+So a registry-generated menu covers per-item verbs and nothing else, and the completeness
+test can be written against either of two very different populations:
+
+- **every REGISTERED action** — mechanical, provable today, and arguably what the registry
+  is for; but it makes the test true by construction and says nothing about navigation.
+- **every operator-reachable BEHAVIOUR** — matches the plain meaning of the maintainer's
+  words, and requires either registering the structural keys or defining them out.
+
+**Do not pick this silently.** It determines whether the completeness gate is a real
+verifier or a tautology, and this repo's standing rule is that a verifier must be able to
+fail. Raise it with the maintainer at open, with this measurement attached.
+
 ## Implementation mode — RULED 2026-08-02
 
 **Implement IN-SESSION**: worktree → PR → **full gates** → rebase-merge. That is the
