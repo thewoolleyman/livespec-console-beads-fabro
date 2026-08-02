@@ -380,8 +380,32 @@ last verified against source and can skip it unless its area moved.
 Compose live status from the `list-work-items` operation. The epic's edge
 set IS the tracked set:
 
-- **blocks** (critical-path gate): `-6msemd` (operator-surface-redesign
-  design ratification).
+> **RE-MEASURED 2026-08-02 — the enumeration below is a DATED SNAPSHOT and the live
+> edge set has outgrown it. Read the edges, not this list; that is what this section
+> already tells you to do.** Live at 2026-08-02: SEVENTEEN edges on `-b3k5hi` —
+> 7 backlog/`tracks`, 5 closed/`tracks`, 4 pending-approval/`tracks`, 1 backlog/`blocks`.
+> Items filed after this prose was written (`-ekb5vq`, `-3tg`, `-3lxx7t`, `-drn`, `-0uw`,
+> `-pj5g3f`, `-6zqv2w`, `-2ckgiy`, `-htz`, `-w7d`) carry edges and appear nowhere below.
+>
+> **ONE EDGE IS STALE IN SUBSTANCE: `-6msemd` is still wired `via blocks`.** That gate is
+> SATISFIED — the maintainer's menu-primary decision answered the design question, the
+> thread is archived at `plan/archive/operator-surface-redesign/`, and its children were
+> re-parented to plans 02 and 03. The epic itself stays open only as a PREPARED
+> maintainer decision to close, so removing the `blocks` edge is that same decision's
+> to make and was NOT taken here. Recorded because a stale `blocks` edge is precisely
+> what corrupts a `next` ranking, and this thread is parked where nobody would notice.
+>
+> **Two entries below are NOT epic edges, and both are fine:** `-u3w3er` is CLOSED, and
+> `-ectqye` is tracked by plan 01 (`-dvv`) instead — verified, not assumed. It is NOT
+> custody-less. `-sreeqc`'s parent-child edge IS present.
+>
+> **MEASUREMENT GOTCHA, cost me two near-false findings today — `bd dep list <epic>`
+> DOES NOT SHOW parent-child CHILDREN.** The edge is stored on the CHILD and points up,
+> so an epic with children can report "no dependencies" (that is exactly what `-6msemd`
+> did) and a child can be absent from its own parent's listing (that is what `-sreeqc`
+> did). Closed items DO appear, so absence is not a status filter. To enumerate children,
+> query the CHILD (`bd show <child> --json` → `parent`), or you will report a wired item
+> as orphaned.
 - **tracks** (collected pieces, custody unchanged): `-zweohm` (groom /
   state-valid verbs), `-l4p3ce` (LLM handoff MVP), `-vc7lmq`
   (valid-commands detail), `-qwjfsw` (bogus attach), `-7rcps4` (modal
