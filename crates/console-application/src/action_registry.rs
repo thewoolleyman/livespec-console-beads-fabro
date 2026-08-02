@@ -96,8 +96,10 @@ pub struct ActionSpec {
     /// The exact Status-line hint fragment for this action.
     pub hint_token: &'static str,
     /// The hotkey that invokes this action — a power-user convenience only,
-    /// never the sole route once menus exist.
-    pub hotkey: char,
+    /// never the sole route once menus exist. `None` is a menu/invoker-only
+    /// action: reachable without any key, the living proof that hotkeys are
+    /// additional.
+    pub hotkey: Option<char>,
     /// The menu path this action lives under. Menus are GENERATED from this
     /// taxonomy; it is carried from day one so the menu shell inherits no
     /// schema migration.
@@ -132,7 +134,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "driver-handoff",
         label: "Driver handoff",
         hint_token: "h handoff",
-        hotkey: 'h',
+        hotkey: Some('h'),
         menu_path: &["Work item", "Hand off"],
         parameter: None,
         availability: |ctx| {
@@ -144,7 +146,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "move",
         label: "Move status",
         hint_token: "s move-status",
-        hotkey: 's',
+        hotkey: Some('s'),
         menu_path: &["Work item", "Lifecycle"],
         parameter: Some(ActionParameter {
             name: "target status",
@@ -171,7 +173,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "approve",
         label: "Approve work-item",
         hint_token: "p approve",
-        hotkey: 'p',
+        hotkey: Some('p'),
         menu_path: &["Work item", "Lifecycle"],
         parameter: None,
         // Lane AND effective admission policy: the approve valve fires only on
@@ -188,7 +190,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "accept",
         label: "Accept work-item",
         hint_token: "c accept",
-        hotkey: 'c',
+        hotkey: Some('c'),
         menu_path: &["Work item", "Lifecycle"],
         parameter: None,
         availability: |ctx| per_item_verb_is_state_valid(ctx.lane, PendingValve::Accept),
@@ -198,7 +200,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "reject",
         label: "Reject work-item",
         hint_token: "r reject",
-        hotkey: 'r',
+        hotkey: Some('r'),
         menu_path: &["Work item", "Lifecycle"],
         parameter: Some(ActionParameter {
             name: "mode",
@@ -213,7 +215,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-admission",
         label: "Set admission",
         hint_token: "m set-admission",
-        hotkey: 'm',
+        hotkey: Some('m'),
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "policy",
@@ -233,7 +235,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-merge-on-review-cap",
         label: "Set override",
         hint_token: "g merge cap",
-        hotkey: 'g',
+        hotkey: Some('g'),
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "merge_on_review_cap",
@@ -257,7 +259,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-review-fix-cap",
         label: "Set override",
         hint_token: "f fix cap",
-        hotkey: 'f',
+        hotkey: Some('f'),
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "review_fix_cap",
@@ -279,7 +281,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-acceptance",
         label: "Set acceptance",
         hint_token: "n set-acceptance",
-        hotkey: 'n',
+        hotkey: Some('n'),
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "policy",
@@ -299,7 +301,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-acceptance-rework-cap",
         label: "Set override",
         hint_token: "k rework cap",
-        hotkey: 'k',
+        hotkey: Some('k'),
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "acceptance_rework_cap",
@@ -319,12 +321,32 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             ))
         }),
     },
+    // Menu/invoker-only, DELIBERATELY: the first action with no hotkey, the
+    // living proof that every action is reachable without one. It records the
+    // selected item's declared `.github/workflows/` path as citation-only —
+    // the documented remedy a factory-safety host-only refusal names — so it
+    // is offered exactly where it unblocks: a ready item the factory refused.
+    ActionSpec {
+        id: "set-workflow-scope-override",
+        label: "Set workflow scope override",
+        hint_token: "",
+        hotkey: None,
+        menu_path: &["Work item", "Factory safety"],
+        parameter: Some(ActionParameter {
+            name: "scope",
+            choices: &["citation-only"],
+        }),
+        availability: |ctx| ctx.lane == Lane::Ready && ctx.has_driver_handoff,
+        staging: ActionStaging::Valve(|_ctx| Some(PendingValve::SetWorkflowScopeOverride)),
+    },
 ];
 
 /// The registered action bound to `hotkey`, if any.
 #[must_use]
 pub fn action_for_hotkey(hotkey: char) -> Option<&'static ActionSpec> {
-    ACTION_REGISTRY.iter().find(|spec| spec.hotkey == hotkey)
+    ACTION_REGISTRY
+        .iter()
+        .find(|spec| spec.hotkey == Some(hotkey))
 }
 
 /// The registered action with the given stable id, if any.
@@ -340,7 +362,9 @@ pub fn action_for_id(id: &str) -> Option<&'static ActionSpec> {
 pub fn available_hint_tokens(ctx: &ActionContext) -> Vec<&'static str> {
     ACTION_REGISTRY
         .iter()
-        .filter(|spec| (spec.availability)(ctx))
+        // Hint tokens are KEY hints: a menu/invoker-only action has no key to
+        // hint, so it renders in menus and the invoker roster instead.
+        .filter(|spec| spec.hotkey.is_some() && (spec.availability)(ctx))
         .map(|spec| spec.hint_token)
         .collect()
 }
@@ -436,6 +460,7 @@ pub fn valve_is_available(valve: PendingValve, ctx: &ActionContext) -> bool {
         PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(_value)) => {
             "set-acceptance-rework-cap"
         }
+        PendingValve::SetWorkflowScopeOverride => "set-workflow-scope-override",
     };
     action_for_id(id).is_some_and(|spec| (spec.availability)(ctx))
 }
@@ -467,25 +492,29 @@ mod tests {
         for spec in ACTION_REGISTRY {
             assert!(!spec.id.is_empty());
             assert!(!spec.label.is_empty());
-            assert!(!spec.hint_token.is_empty());
+            // A hint token is a KEY hint: keyed actions carry one, and a
+            // menu/invoker-only action carries none.
+            // Bound as a local so the assert fits on ONE line: rustfmt's
+            // fn_call_width would otherwise break the args across lines and put
+            // the failure-only `spec.id` message on a line llvm-cov counts as
+            // never executed. Same pincer PR #573 restructured out.
+            let keyed = spec.hotkey.is_some();
+            assert_eq!(spec.hint_token.is_empty(), !keyed, "{}", spec.id);
             assert!(!spec.menu_path.is_empty(), "{}", spec.id);
-            assert!(hotkeys.insert(spec.hotkey), "{}", spec.hotkey);
             assert!(ids.insert(spec.id), "{}", spec.id);
-            assert!(
-                !['/', ':', '?', 'q', ' '].contains(&spec.hotkey),
-                "{}",
-                spec.id
-            );
+            if let Some(key) = spec.hotkey {
+                assert!(hotkeys.insert(key), "{key}");
+                assert!(!['/', ':', '?', 'q', ' '].contains(&key), "{}", spec.id);
+            }
         }
     }
 
     #[test]
     fn hotkey_and_id_lookups_round_trip_every_entry() {
         for spec in ACTION_REGISTRY {
-            assert_eq!(
-                action_for_hotkey(spec.hotkey).map(|found| found.id),
-                Some(spec.id)
-            );
+            if let Some(key) = spec.hotkey {
+                assert_eq!(action_for_hotkey(key).map(|found| found.id), Some(spec.id));
+            }
             assert_eq!(
                 action_for_id(spec.id).map(|found| found.hotkey),
                 Some(spec.hotkey)
@@ -575,5 +604,35 @@ mod tests {
             PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)),
             &ready_drill
         ));
+    }
+
+    #[test]
+    fn every_registered_action_stages_from_some_admitting_context() {
+        // Every staging closure runs against a context its availability
+        // admits: an action the registry offers somewhere must stage there —
+        // a roster entry that can never stage is a phantom.
+        use super::stage_action;
+        for spec in ACTION_REGISTRY {
+            let mut staged_somewhere = false;
+            for surface in [ActionSurface::Attention, ActionSurface::LaneDrill] {
+                for lane in Lane::all() {
+                    for admission in [AdmissionPolicy::Manual, AdmissionPolicy::Auto] {
+                        for handoff in [false, true] {
+                            let ctx = ActionContext {
+                                lane: *lane,
+                                admission_policy: admission,
+                                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                                has_driver_handoff: handoff,
+                                surface,
+                            };
+                            if (spec.availability)(&ctx) {
+                                staged_somewhere |= stage_action(spec, &ctx).is_some();
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(staged_somewhere, "{}", spec.id);
+        }
     }
 }

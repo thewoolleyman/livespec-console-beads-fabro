@@ -253,6 +253,13 @@ pub enum PendingValve {
     /// `clear`-to-inherit-global option. It maps onto the orchestrator's per-cap
     /// override actions -- never a console-side ledger write.
     SetOverride(DispatcherOverride),
+    /// The workflow-scope-override human valve: record the selected item's
+    /// declared `.github/workflows/` path as citation-only, so the
+    /// factory-safety host-only refusal stops holding it. Maps onto the
+    /// orchestrator's `set-workflow-scope-override:<id>:citation-only` action
+    /// -- the documented remedy that refusal names. The scope value has exactly
+    /// one admitted value today, so the dial does not cycle.
+    SetWorkflowScopeOverride,
 }
 
 impl PendingValve {
@@ -267,6 +274,7 @@ impl PendingValve {
             Self::SetAcceptance(_policy) => "Set acceptance",
             Self::MoveStatus { .. } => "Move status",
             Self::SetOverride(_dial) => "Set override",
+            Self::SetWorkflowScopeOverride => "Set workflow scope",
         }
     }
 
@@ -278,6 +286,7 @@ impl PendingValve {
     pub const fn option_label(&self) -> Option<&'static str> {
         match self {
             Self::Approve | Self::Accept | Self::SetOverride(_) => None,
+            Self::SetWorkflowScopeOverride => Some(WORKFLOW_SCOPE_CITATION_ONLY),
             Self::Reject(mode) => Some(mode.as_str()),
             Self::SetAdmission(policy) => Some(policy.label()),
             Self::SetAcceptance(policy) => Some(policy.label()),
@@ -308,7 +317,9 @@ impl PendingValve {
     /// backward). The payload-free approve/accept valves are returned unchanged.
     pub fn cycled(self, forward: bool) -> Self {
         match self {
-            Self::Approve | Self::Accept => self,
+            // The scope dial has exactly one admitted value, so it does not
+            // cycle, exactly like the payload-free valves.
+            Self::Approve | Self::Accept | Self::SetWorkflowScopeOverride => self,
             Self::Reject(mode) => Self::Reject(rotate(RejectMode::all(), mode, forward)),
             Self::SetAdmission(policy) => {
                 Self::SetAdmission(rotate(AdmissionPolicy::all(), policy, forward))
@@ -324,6 +335,9 @@ impl PendingValve {
         }
     }
 }
+
+/// The one workflow-scope value the orchestrator's allowlist admits.
+const WORKFLOW_SCOPE_CITATION_ONLY: &str = "citation-only";
 
 /// One of the three per-item override valves, paired with its dialed-in value.
 ///
@@ -528,6 +542,12 @@ pub fn per_item_verb_is_state_valid(lane: Lane, verb: PendingValve) -> bool {
         PendingValve::MoveStatus { from, .. } => {
             lane == from && !status_move_targets(from).is_empty()
         }
+        // Console-scoped, not vocabulary-consumed: the orchestrator ships no
+        // source-state guard for this valve and publishes no vocabulary row
+        // for it, so the console offers it where it unblocks — the
+        // host-only-refused `ready` set (the registry availability adds the
+        // factory-safety dimension on top of the lane).
+        PendingValve::SetWorkflowScopeOverride => matches!(lane, Lane::Ready),
     }
 }
 
@@ -1739,6 +1759,11 @@ pub enum ApplicationError {
     /// `work_item.set_acceptance_requested` command carried a payload whose
     /// `policy` was absent or not one of {ai-only, human-only, ai-then-human}.
     InvalidAcceptancePolicy,
+    /// Invalid workflow scope variant -- a
+    /// `work_item.set_workflow_scope_override_requested` command carried a
+    /// payload whose `scope` was absent or not `citation-only` (the one scope
+    /// the orchestrator's value allowlist admits).
+    InvalidWorkflowScope,
     /// Invalid resolve-blocked target variant -- a
     /// `work_item.resolve_blocked_requested` command carried a payload whose
     /// `target_status` was absent or not one of {ready, backlog}.
@@ -3447,6 +3472,14 @@ fn valve_outcome(
             override_dial,
             requested_by,
         )),
+        PendingValve::SetWorkflowScopeOverride => Some(work_item_payload_outcome(
+            "set_workflow_scope_override",
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            work_item_id,
+            "scope",
+            WORKFLOW_SCOPE_CITATION_ONLY,
+            requested_by,
+        )),
     }
 }
 
@@ -3849,6 +3882,50 @@ fn set_admission_policy_from_payload(payload_json: &str) -> ApplicationResult<Ad
         .ok_or(ApplicationError::InvalidAdmissionPolicy)?;
     serde_json::from_value(policy.clone())
         .map_err(|_error| ApplicationError::InvalidAdmissionPolicy)
+}
+
+/// Handle a `work_item.set_workflow_scope_override_requested` command.
+///
+/// The workflow-scope-override human valve: `payload_json` is
+/// `{"scope": "citation-only"}` (the one value the orchestrator's allowlist
+/// admits). The handler validates the work-item id, validates the scope,
+/// derives the `set-workflow-scope-override:<work-item-id>:<scope>` action-id,
+/// and rides the shared orchestrator-action port and `work_item` outcome
+/// family exactly like the policy dials. Thin console-side validation only --
+/// the orchestrator's `drive` surface owns the recorded override -- and it
+/// never writes the ledger directly.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// [`ApplicationError::InvalidWorkflowScope`] when the payload's `scope` is
+/// absent or not `citation-only`; also surfaces a port error when the port
+/// cannot produce a trustworthy outcome.
+pub fn handle_work_item_set_workflow_scope_override_command(
+    command: &CommandEnvelope,
+    payload_json: &str,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
+    let work_item_id = validate_work_item_id(command.aggregate_id())?;
+    let scope = workflow_scope_from_payload(payload_json)?;
+    let action_id = format!("set-workflow-scope-override:{work_item_id}:{scope}");
+    run_work_item_action(command, &action_id, port)
+}
+
+/// Extract the workflow `scope` from a command's persisted `payload_json`.
+///
+/// The payload is the JSON object `{"scope": "citation-only"}`; any other
+/// shape or value is an [`ApplicationError::InvalidWorkflowScope`].
+fn workflow_scope_from_payload(payload_json: &str) -> ApplicationResult<&'static str> {
+    let value: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|_error| ApplicationError::InvalidWorkflowScope)?;
+    let scope = value
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ApplicationError::InvalidWorkflowScope)?;
+    if scope != WORKFLOW_SCOPE_CITATION_ONLY {
+        return Err(ApplicationError::InvalidWorkflowScope);
+    }
+    Ok(WORKFLOW_SCOPE_CITATION_ONLY)
 }
 
 /// Handle a `work_item.set_acceptance_requested` command.
@@ -6003,8 +6080,9 @@ mod tests {
         handle_work_item_move_command, handle_work_item_reject_command,
         handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
-        header_help_section, help_section_for_focus, help_section_for_view, model_pane_footer_hint,
-        overlay_footer_hint, per_item_verb_is_state_valid, project_attention, project_lane_board,
+        handle_work_item_set_workflow_scope_override_command, header_help_section,
+        help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
+        per_item_verb_is_state_valid, project_attention, project_lane_board,
         reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
         resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
@@ -12815,5 +12893,92 @@ mod tests {
                     && payload_json == r#"{"setting":"merge_on_review_cap","value":true}"#
         ));
         Ok(())
+    }
+
+    #[test]
+    fn workflow_scope_override_valve_maps_onto_its_action_id_and_payload() {
+        // The valve's dial has exactly one admitted value, so its labels,
+        // cycling, and outcome are all pinned here in one place.
+        let valve = PendingValve::SetWorkflowScopeOverride;
+        assert_eq!(valve.valve_label(), "Set workflow scope");
+        assert_eq!(valve.option_label(), Some("citation-only"));
+        assert_eq!(valve.option_display().as_deref(), Some("citation-only"));
+        assert!(!valve.is_destructive());
+        assert_eq!(valve.cycled(true), valve);
+        assert_eq!(valve.cycled(false), valve);
+        assert!(per_item_verb_is_state_valid(Lane::Ready, valve));
+        assert!(!per_item_verb_is_state_valid(Lane::Backlog, valve));
+        assert!(!per_item_verb_is_state_valid(Lane::Acceptance, valve));
+
+        let outcome = super::valve_outcome(valve, "wi-1", "operator");
+        assert!(matches!(
+            outcome,
+            Some(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
+                if command.command_type() == &CommandType::WorkItemSetWorkflowScopeOverrideRequested
+                    && command.aggregate_id() == "wi-1"
+                    && payload_json == r#"{"scope":"citation-only"}"#
+        ));
+    }
+
+    #[test]
+    fn workflow_scope_handler_maps_the_payload_onto_the_action_id() {
+        let command = CommandEnvelope::new(
+            "cmd_scope".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_workflow_scope_override_requested:scope=citation-only".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let outcome = handle_work_item_set_workflow_scope_override_command(
+            &command,
+            r#"{"scope":"citation-only"}"#,
+            &mut port,
+        );
+        assert_eq!(
+            port.observed_action_ids,
+            ["set-workflow-scope-override:wi-1:citation-only"]
+        );
+        assert_eq!(
+            outcome.map(|outcome| outcome.command_status().to_owned()),
+            Ok("completed".to_owned())
+        );
+    }
+
+    #[test]
+    fn workflow_scope_handler_rejects_an_empty_work_item_id_without_invoking_the_port() {
+        let command = CommandEnvelope::new(
+            "cmd_scope_empty".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "   ".to_owned(),
+            "empty:work_item.set_workflow_scope_override_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+        let outcome = handle_work_item_set_workflow_scope_override_command(
+            &command,
+            r#"{"scope":"citation-only"}"#,
+            &mut port,
+        );
+        assert_eq!(outcome, Err(ApplicationError::EmptyWorkItemId));
+        assert!(port.observed_action_ids.is_empty());
+    }
+
+    #[test]
+    fn workflow_scope_handler_rejects_bad_payloads_without_invoking_the_port() {
+        let command = CommandEnvelope::new(
+            "cmd_scope".to_owned(),
+            CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+            "wi-1".to_owned(),
+            "wi-1:work_item.set_workflow_scope_override_requested".to_owned(),
+            "operator".to_owned(),
+        );
+        for payload in ["not json", "{}", r#"{"scope":"everything"}"#] {
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            let outcome =
+                handle_work_item_set_workflow_scope_override_command(&command, payload, &mut port);
+            assert_eq!(outcome, Err(ApplicationError::InvalidWorkflowScope));
+            assert!(port.observed_action_ids.is_empty());
+        }
     }
 }

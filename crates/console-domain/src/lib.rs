@@ -370,6 +370,14 @@ pub enum CommandType {
     /// settings only; `auto_approve_ready`/`acceptance_mode` use the policy dials
     /// and `wip_cap` admits no per-item override.
     WorkItemSetDispatcherOverrideRequested,
+    /// Request to record a work-item's workflow-scope override -- maps onto the
+    /// orchestrator's `set-workflow-scope-override:<work-item-id>:<scope>` human
+    /// valve, where the payload carries `scope` (currently only
+    /// `citation-only`). Recording the override marks a declared
+    /// `.github/workflows/` path as citation-only so the factory-safety
+    /// host-only refusal stops holding the item; it never moves the item
+    /// between lifecycle states.
+    WorkItemSetWorkflowScopeOverrideRequested,
     /// Request to set ONE dispatcher policy setting's global default -- the
     /// Configuration context's per-setting write, whose payload carries
     /// `{ repo, setting, value }`. A single command MUST change exactly one
@@ -399,6 +407,9 @@ impl CommandType {
             Self::WorkItemSetDispatcherOverrideRequested => {
                 "work_item.set_dispatcher_override_requested"
             }
+            Self::WorkItemSetWorkflowScopeOverrideRequested => {
+                "work_item.set_workflow_scope_override_requested"
+            }
             Self::ConfigDispatcherSettingSet => "config.dispatcher_setting_set",
             Self::FactoryAutonomousDecisionReflected => "factory.autonomous_decision_reflected",
         }
@@ -416,7 +427,8 @@ impl CommandType {
             | Self::WorkItemSetAcceptanceRequested
             | Self::WorkItemResolveBlockedRequested
             | Self::WorkItemMoveRequested
-            | Self::WorkItemSetDispatcherOverrideRequested => "work_item",
+            | Self::WorkItemSetDispatcherOverrideRequested
+            | Self::WorkItemSetWorkflowScopeOverrideRequested => "work_item",
             Self::ConfigDispatcherSettingSet => "configuration",
         }
     }
