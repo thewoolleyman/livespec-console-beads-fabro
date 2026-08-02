@@ -158,12 +158,57 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    no console→driver dependency).
 
 
-## RESUME HERE — state at 2026-08-03T~00:2xZ (SUPERSEDES every block below)
+## RESUME HERE — state at 2026-08-03T~01:4xZ (SUPERSEDES every block below)
 
-**THE DOGFOOD LEG WAS ATTEMPTED AND IS BLOCKED — NOT BY EXECUTION, BY A REAL DEFECT THAT
-THE ATTEMPT MEASURED. The invoker WORKS; the action it exists to reach is permanently
-unofferable on the class of item that needs it.** Nothing was worked around: no
-`drive.py` fallback, no weakened predicate, and `-ccycuk` is untouched
+**MILESTONE 2 IS COMPLETE — A, B AND C ARE ALL MERGED. The only thing plan 01 still owes
+is the DOGFOOD LEG, which is blocked on a maintainer disposition (below), not on work.**
+
+| PR | slice | landed |
+|---|---|---|
+| #585 | A — parity gate + `set-workflow-scope-override` + coverage disposition | `52f4b94` + `82ed394` |
+| #588 | B — the action invoker | `d9fc67d` |
+| #596 | **C — refusal surfacing (`-ectqye` action half)** | **`67c58d4`** |
+
+Master `67c58d4`. Every charter requirement 1–6 is now satisfied except the milestone
+acceptance leg. Requirement 4's "RENDER THE RESULT — success or the full refusal payload"
+is closed by B (invoker) + C (refusal render).
+
+### Slice C, for the record — it went in clean
+
+Recovered by cherry-picking the pre-split `66b4fd2` onto a master ALREADY carrying A and
+B, so the three-way merge left only the C hunks (3 files, +451/−26, 53 `refusal` lines, no
+docs — B's doc hunk was already there). Six conflicts, all mechanical: `action_registry.rs`
+keeps master's rustfmt-stable assert, the rest take the incoming side — the import list now
+legitimately wants C's symbols, and the other four have EMPTY HEAD sides because they ARE
+the tests slice B removed. **It compiled first try.** The slice-B duplicate-test sweep was
+re-run; the only doubled name is `action_id`, correctly — `ActionFailure::action_id` and
+`OrchestratorActionRequest::action_id` are distinct impls.
+
+**Reusable technique, worth more than this slice:** to split a commit that mixes two
+features, ship one half, then recover the other by cherry-picking the ORIGINAL commit onto
+the shipped master. Git's three-way merge subtracts what is already applied, so the
+remainder IS the other half — no hand-reconstruction, and the conflicts are exactly the
+seams. Cheaper and far less error-prone than re-deriving from a removal list.
+
+### `-3yx` IS SETTLED AT n=3 — do not open another bisect
+
+| slice | unnameable | nameable | `console-application/src/lib.rs` |
+|---|---|---|---|
+| A | 1 | 0 | — |
+| B | 1 | 0 | 7,714 lines |
+| C | 1 | 0 | 7,929 lines |
+
+Three independent slices, same count, and **the count moved with neither slice content nor
+file size**. The split existed to distinguish "localizes to one construct" from
+"vanishes or persists uniformly"; the answer is **persists uniformly**. It is a property of
+the file/build, not of any construct in the diff, so bisecting for the construct cannot
+succeed. Slice C inherited the disposition on the identical signature, as authorized.
+
+### THE DOGFOOD LEG — attempted 2026-08-03, BLOCKED on a maintainer disposition
+
+**Not blocked by execution.** The invoker WORKS on the real stack; the action it exists to
+reach is permanently unofferable on the class of item that needs it. Nothing was worked
+around: no `drive.py` fallback, no weakened predicate, and `-ccycuk` is untouched
 (`updated_at` still `2026-07-30T18:01:11Z`).
 
 ### What the leg proved, and where it stopped
@@ -330,7 +375,7 @@ first sweep missed. **General rule: a cherry-pick plan authored before a re-part
 stale about what the BASE already contains, even when every word it says about the
 PATCH is still true.**
 
-### Slice C — the remaining piece, unstarted
+### Slice C — LANDED 2026-08-03 as PR #596 (`67c58d4`). The text below is HISTORICAL.
 
 The `-ectqye` action half: refusal capture on `OrchestratorActionOutcome::Failed`, the
 `error_json` payload, `work_item_failure_event`, the latest-failure projection, and the
