@@ -17,10 +17,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 
+/// The operator action registry.
+///
+/// The single source of truth for the per-item operator action set, from
+/// which hints, key bindings, and menus derive.
+pub mod action_registry;
 /// Module containing source-adapters support.
 pub mod source_adapters;
 
@@ -1572,25 +1578,42 @@ impl TuiScreenModel {
     /// open overlay replaces the pane's hints with that overlay's (restored when
     /// the overlay closes). It is never empty, so no context in which shortcut
     /// actions are available shows a blank hint line. See [`footer_hint`].
-    pub fn footer(&self) -> &str {
+    pub fn footer(&self) -> Cow<'static, str> {
         // The Header pane is not view-keyed, so its focused hints come from
         // `focus` rather than `active_view`: while it holds focus (and no overlay
         // owns the line), the hints describe its horizontal-scroll keys. An open
         // overlay still owns the hint line first, so it is matched ahead of the
         // Header-focus branch.
         match (&self.overlay, self.focus) {
-            (TuiOverlay::None, FocusPane::Header) => HEADER_FOOTER_HINT,
+            (TuiOverlay::None, FocusPane::Header) => Cow::Borrowed(HEADER_FOOTER_HINT),
             (TuiOverlay::CommandModal { .. }, _) if self.selected_operator_action().is_none() => {
                 model_pane_footer_hint(self)
             }
             (TuiOverlay::None, _) => model_pane_footer_hint(self),
-            (overlay, _) => footer_hint(
-                self.active_view,
-                self.lane_focus,
-                self.selected_work_item_lane(),
-                overlay,
-            ),
+            (overlay, _) => Cow::Borrowed(overlay_footer_hint(overlay)),
         }
+    }
+
+    /// The availability context for the selected work-item, or `None` when no
+    /// per-item surface holds a selected work-item. This is the ONE context both
+    /// the Status-line hints and the key handlers consult, so hidden hints and
+    /// inert keys cannot diverge.
+    #[must_use]
+    pub fn selected_action_context(&self) -> Option<action_registry::ActionContext> {
+        let surface = match (self.active_view, self.lane_focus) {
+            (TuiView::Attention, _) => action_registry::ActionSurface::Attention,
+            (TuiView::Lanes, LaneFocus::Lane(_lane)) => action_registry::ActionSurface::LaneDrill,
+            (
+                TuiView::Lanes
+                | TuiView::Spec
+                | TuiView::Events
+                | TuiView::Repos
+                | TuiView::Settings,
+                _,
+            ) => return None,
+        };
+        self.selected_work_item()
+            .map(|item| action_registry::ActionContext::for_item(item, surface))
     }
 }
 
@@ -1599,25 +1622,14 @@ impl TuiScreenModel {
 /// header. Non-empty and context-specific, like every other focused-pane hint.
 const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q quit";
 
-/// The context-specific Status-line shortcut hints for a focused pane
-/// (`active_view`) and any open `overlay`, per the TUI Contract / Scenario 19.
-///
-/// An open modal/overlay owns the hints while it holds focus, so it is matched
-/// FIRST: the returned keys are the ones that act in that overlay, replacing the
-/// pane's hints until the overlay closes. With no overlay open the hints reflect
-/// the focused pane's own available actions, so switching focus to a different
-/// pane changes the hints. Every arm returns a non-empty, context-appropriate
-/// string, so no context with available actions renders a blank line. The
-/// specific strings and bindings are an implementation detail; they stay in
-/// lock-step with the key handler and the modal Help sections.
-fn footer_hint(
-    active_view: TuiView,
-    lane_focus: LaneFocus,
-    selected_work_item_lane: Option<Lane>,
-    overlay: &TuiOverlay,
-) -> &'static str {
+/// The Status-line shortcut hints an open modal/overlay owns while it holds
+/// focus, per the TUI Contract / Scenario 19: the returned keys are the ones
+/// that act in that overlay, replacing the pane's hints until it closes. The
+/// `None` arm is the harmless fallback for a caller that routed a closed
+/// overlay here; the no-overlay hints come from [`model_pane_footer_hint`].
+const fn overlay_footer_hint(overlay: &TuiOverlay) -> &'static str {
     match overlay {
-        TuiOverlay::None => pane_footer_hint(active_view, lane_focus, selected_work_item_lane),
+        TuiOverlay::None => "? help | q quit",
         TuiOverlay::Search { .. } => "type to search | esc cancel",
         TuiOverlay::CommandPalette { .. } => "type a drain command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
@@ -1662,246 +1674,35 @@ fn footer_hint(
 /// The read-only nav views (Spec, Events, Repos) share one hint set because
 /// their available actions are identical (select + move focus + search), and
 /// Settings surfaces its edit key.
-fn model_pane_footer_hint(model: &TuiScreenModel) -> &'static str {
+fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
     match model.active_view {
+        // A selected work-item's hints DERIVE from the action registry through
+        // the same availability context the key handlers consult; with no
+        // work-item selected (a non-item Attention row, the lane overview, an
+        // empty drilled-in lane) the per-item keys are alike inert and none is
+        // advertised.
+        TuiView::Attention => model
+            .selected_action_context()
+            .map_or(Cow::Borrowed("? help | q quit"), |ctx| {
+                Cow::Owned(action_registry::selected_item_hint(&ctx))
+            }),
         TuiView::Lanes => match model.lane_focus {
-            LaneFocus::Overview => "up/down move | enter drill | ? help | q quit",
-            LaneFocus::Lane(_lane) => model.selected_lane_item().map_or(
-                "esc lane list | ? help | q quit",
-                lane_item_footer_hint_for_item,
-            ),
-        },
-        _ => pane_footer_hint(
-            model.active_view,
-            model.lane_focus,
-            model.selected_work_item_lane(),
-        ),
-    }
-}
-
-fn pane_footer_hint(
-    view: TuiView,
-    lane_focus: LaneFocus,
-    selected_work_item_lane: Option<Lane>,
-) -> &'static str {
-    match view {
-        TuiView::Attention => selected_work_item_lane
-            .map_or("? help | q quit", |lane| attention_item_footer_hint(lane)),
-        TuiView::Lanes => match lane_focus {
             // The lane OVERVIEW selects a LANE, never a work-item, so every
             // per-item key is inert here and none is advertised.
-            LaneFocus::Overview => "up/down move | enter drill | ? help | q quit",
-            LaneFocus::Lane(lane) if selected_work_item_lane.is_some() => {
-                lane_item_footer_hint(lane)
-            }
+            LaneFocus::Overview => Cow::Borrowed("up/down move | enter drill | ? help | q quit"),
             // An EMPTY drilled-in lane: nothing is selected, so `enter` opens
             // nothing, every per-item key is inert, AND up/down have no row to
             // move over. Only stepping back out does anything.
-            LaneFocus::Lane(_lane) => "esc lane list | ? help | q quit",
+            LaneFocus::Lane(_lane) => model
+                .selected_action_context()
+                .map_or(Cow::Borrowed("esc lane list | ? help | q quit"), |ctx| {
+                    Cow::Owned(action_registry::selected_item_hint(&ctx))
+                }),
         },
-        TuiView::Settings => "up/down move | enter/space edit row | ? help | q quit",
+        TuiView::Settings => Cow::Borrowed("up/down move | enter/space edit row | ? help | q quit"),
         TuiView::Spec | TuiView::Events | TuiView::Repos => {
-            "up/down move | left/right focus | / search | ? help | q quit"
+            Cow::Borrowed("up/down move | left/right focus | / search | ? help | q quit")
         }
-    }
-}
-
-const HINT_MOVE_STATUS: u16 = 1 << 0;
-const HINT_APPROVE: u16 = 1 << 1;
-const HINT_ACCEPT: u16 = 1 << 2;
-const HINT_REJECT: u16 = 1 << 3;
-const HINT_SET_ADMISSION: u16 = 1 << 4;
-const HINT_MERGE_CAP: u16 = 1 << 5;
-const HINT_FIX_CAP: u16 = 1 << 6;
-const HINT_SET_ACCEPTANCE: u16 = 1 << 7;
-const HINT_REWORK_CAP: u16 = 1 << 8;
-const HINT_DRIVER_HANDOFF: u16 = 1 << 9;
-
-fn per_item_hint_bits(lane: Lane, include_move_status: bool) -> u16 {
-    let mut bits = 0;
-    if include_move_status
-        && status_move_targets(lane).first().is_some_and(|to| {
-            per_item_verb_is_state_valid(
-                lane,
-                PendingValve::MoveStatus {
-                    from: lane,
-                    to: *to,
-                },
-            )
-        })
-    {
-        bits |= HINT_MOVE_STATUS;
-    }
-    if per_item_verb_is_state_valid(lane, PendingValve::Approve) {
-        bits |= HINT_APPROVE;
-    }
-    if per_item_verb_is_state_valid(lane, PendingValve::Accept) {
-        bits |= HINT_ACCEPT;
-    }
-    if per_item_verb_is_state_valid(lane, PendingValve::Reject(RejectMode::Rework)) {
-        bits |= HINT_REJECT;
-    }
-    if per_item_verb_is_state_valid(lane, PendingValve::SetAdmission(AdmissionPolicy::Manual)) {
-        bits |= HINT_SET_ADMISSION;
-    }
-    if per_item_verb_is_state_valid(
-        lane,
-        PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(OverrideBool::Clear)),
-    ) {
-        bits |= HINT_MERGE_CAP;
-    }
-    if per_item_verb_is_state_valid(
-        lane,
-        PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(OverrideInt::Clear)),
-    ) {
-        bits |= HINT_FIX_CAP;
-    }
-    if per_item_verb_is_state_valid(
-        lane,
-        PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
-    ) {
-        bits |= HINT_SET_ACCEPTANCE;
-    }
-    if per_item_verb_is_state_valid(
-        lane,
-        PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)),
-    ) {
-        bits |= HINT_REWORK_CAP;
-    }
-    bits
-}
-
-fn attention_item_footer_hint(lane: Lane) -> &'static str {
-    attention_item_footer_hint_for_bits(per_item_hint_bits(lane, false))
-}
-
-const fn attention_item_footer_hint_for_bits(bits: u16) -> &'static str {
-    match bits {
-        bits if bits
-            == HINT_SET_ADMISSION
-                | HINT_MERGE_CAP
-                | HINT_FIX_CAP
-                | HINT_SET_ACCEPTANCE
-                | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter open | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        bits if bits
-            == HINT_APPROVE
-                | HINT_REJECT
-                | HINT_SET_ADMISSION
-                | HINT_MERGE_CAP
-                | HINT_FIX_CAP
-                | HINT_SET_ACCEPTANCE
-                | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        bits if bits == HINT_MERGE_CAP | HINT_FIX_CAP | HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
-            "up/down move | enter open | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        bits if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
-            "up/down move | enter open | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        bits if bits == HINT_ACCEPT | HINT_REJECT => {
-            "up/down move | enter open | c accept | r reject | ? help | q quit"
-        }
-        _ => "up/down move | enter open | ? help | q quit",
-    }
-}
-
-fn lane_item_footer_hint(lane: Lane) -> &'static str {
-    lane_item_footer_hint_for_bits(per_item_hint_bits(lane, true))
-}
-
-fn lane_item_footer_hint_for_item(item: &LaneWorkItem) -> &'static str {
-    lane_item_footer_hint_for_bits_with_driver(
-        per_item_hint_bits(item.lane(), true)
-            | (u16::from(driver_handoff_command(item).is_some()) * HINT_DRIVER_HANDOFF),
-        true,
-    )
-}
-
-const fn lane_item_footer_hint_for_bits(bits: u16) -> &'static str {
-    lane_item_footer_hint_for_bits_with_driver(bits, false)
-}
-
-const fn lane_item_footer_hint_for_bits_with_driver(
-    bits: u16,
-    include_driver_handoff: bool,
-) -> &'static str {
-    let base_bits = bits & !HINT_DRIVER_HANDOFF;
-    let has_handoff = include_driver_handoff && bits & HINT_DRIVER_HANDOFF != 0;
-    match (base_bits, has_handoff) {
-        (bits, true)
-            if bits
-                == HINT_MOVE_STATUS
-                    | HINT_SET_ADMISSION
-                    | HINT_MERGE_CAP
-                    | HINT_FIX_CAP
-                    | HINT_SET_ACCEPTANCE
-                    | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        (bits, false)
-            if bits
-                == HINT_MOVE_STATUS
-                    | HINT_SET_ADMISSION
-                    | HINT_MERGE_CAP
-                    | HINT_FIX_CAP
-                    | HINT_SET_ACCEPTANCE
-                    | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter item | esc lane list | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        (bits, false)
-            if bits
-                == HINT_MOVE_STATUS
-                    | HINT_APPROVE
-                    | HINT_REJECT
-                    | HINT_SET_ADMISSION
-                    | HINT_MERGE_CAP
-                    | HINT_FIX_CAP
-                    | HINT_SET_ACCEPTANCE
-                    | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        (bits, true)
-            if bits
-                == HINT_MOVE_STATUS
-                    | HINT_MERGE_CAP
-                    | HINT_FIX_CAP
-                    | HINT_SET_ACCEPTANCE
-                    | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        (bits, false)
-            if bits
-                == HINT_MOVE_STATUS
-                    | HINT_MERGE_CAP
-                    | HINT_FIX_CAP
-                    | HINT_SET_ACCEPTANCE
-                    | HINT_REWORK_CAP =>
-        {
-            "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        (bits, _) if bits == HINT_SET_ACCEPTANCE | HINT_REWORK_CAP => {
-            "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | ? help | q quit"
-        }
-        (bits, _) if bits == HINT_MOVE_STATUS | HINT_ACCEPT | HINT_REJECT => {
-            "up/down move | enter item | esc lane list | s move-status | c accept | r reject | ? help | q quit"
-        }
-        (HINT_MOVE_STATUS, false) => {
-            "up/down move | enter item | esc lane list | s move-status | ? help | q quit"
-        }
-        (HINT_MOVE_STATUS, true) => {
-            "up/down move | enter item | esc lane list | h handoff | s move-status | ? help | q quit"
-        }
-        (_, true) => "enter item | esc lane list | h handoff | ? help | q quit",
-        _ => "enter item | esc lane list | ? help | q quit",
     }
 }
 
@@ -6175,22 +5976,18 @@ mod tests {
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
         FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
-        HELP_SECTION_COUNT, HINT_ACCEPT, HINT_APPROVE, HINT_DRIVER_HANDOFF, HINT_FIX_CAP,
-        HINT_MERGE_CAP, HINT_MOVE_STATUS, HINT_REWORK_CAP, HINT_SET_ACCEPTANCE, HINT_SET_ADMISSION,
-        HelpFocus, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem, OperatorAction,
-        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem,
+        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-        attention_item_footer_hint_for_bits, build_tui_model, build_tui_model_for_state,
-        dispatcher_setting_rows, drilldown_item_count, footer_hint,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
+        build_tui_model, build_tui_model_for_state, dispatcher_setting_rows, drilldown_item_count,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
         handle_work_item_move_command, handle_work_item_reject_command,
         handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
-        header_help_section, help_section_for_focus, help_section_for_view,
-        lane_item_footer_hint_for_bits, lane_item_footer_hint_for_bits_with_driver,
-        per_item_verb_is_state_valid, project_attention, project_lane_board,
+        header_help_section, help_section_for_focus, help_section_for_view, model_pane_footer_hint,
+        overlay_footer_hint, per_item_verb_is_state_valid, project_attention, project_lane_board,
         reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
         resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
@@ -7174,15 +6971,7 @@ mod tests {
         let focused = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Header);
         let model = build_tui_model_for_state(&events, &focused);
         assert!(model.footer().contains("scroll") && model.footer().contains("leave"));
-        assert_ne!(
-            model.footer(),
-            footer_hint(
-                model.active_view(),
-                model.lane_focus(),
-                model.selected_work_item_lane(),
-                &TuiOverlay::None,
-            )
-        );
+        assert_ne!(model.footer(), model_pane_footer_hint(&model));
 
         // An open overlay wins the hint line even while the header holds focus.
         let with_help = focused.with_overlay(TuiOverlay::Help {
@@ -10915,54 +10704,34 @@ mod tests {
         // Scenario 19 case 1 + case 4: every focused pane renders a non-empty,
         // context-appropriate hint line -- never a blank one where actions are
         // available -- and the actionable panes surface their distinct keys.
-        for view in TuiView::all() {
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        for _step in 0..TuiView::all().len() {
+            let model = build_tui_model_for_state(&[], &state);
             assert!(
-                !footer_hint(
-                    *view,
-                    LaneFocus::Overview,
-                    Some(Lane::PendingApproval),
-                    &TuiOverlay::None
-                )
-                .trim()
-                .is_empty()
+                !model.footer().trim().is_empty(),
+                "{:?}",
+                model.active_view()
             );
+            state = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextView);
         }
         assert!(
-            footer_hint(
-                TuiView::Attention,
-                LaneFocus::Overview,
-                Some(Lane::PendingApproval),
-                &TuiOverlay::None
+            item_hint(
+                action_registry::ActionSurface::Attention,
+                Lane::PendingApproval
             )
             .contains("p approve")
         );
         assert!(
-            footer_hint(
-                TuiView::Lanes,
-                LaneFocus::Lane(Lane::Ready),
-                Some(Lane::Ready),
-                &TuiOverlay::None
-            )
-            .contains("move-status")
+            item_hint(action_registry::ActionSurface::LaneDrill, Lane::Ready)
+                .contains("move-status")
         );
-        assert!(
-            footer_hint(
-                TuiView::Settings,
-                LaneFocus::Overview,
-                Some(Lane::PendingApproval),
-                &TuiOverlay::None
-            )
-            .contains("enter/space edit row")
-        );
+        assert!(model_pane_footer_hint(&settings_view_model()).contains("enter/space edit row"));
         // The read-only nav views surface select + focus-move + search.
+        let read_only = "up/down move | left/right focus | / search | ? help | q quit";
+        assert!(read_only.contains("left/right focus") && read_only.contains("search"));
         for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
-            let hint = footer_hint(
-                view,
-                LaneFocus::Overview,
-                Some(Lane::PendingApproval),
-                &TuiOverlay::None,
-            );
-            assert!(hint.contains("left/right focus") && hint.contains("search"));
+            let model = view_model(view);
+            assert_eq!(model.footer(), read_only);
         }
     }
 
@@ -10971,18 +10740,8 @@ mod tests {
         // Scenario 19 case 2: moving focus from Lanes to Settings changes the
         // hints to that pane's actions, and the two panes' hints DIFFER (their
         // action sets genuinely differ: status-move/valves vs. edit).
-        let lanes = footer_hint(
-            TuiView::Lanes,
-            LaneFocus::Lane(Lane::Ready),
-            Some(Lane::Ready),
-            &TuiOverlay::None,
-        );
-        let settings = footer_hint(
-            TuiView::Settings,
-            LaneFocus::Overview,
-            Some(Lane::PendingApproval),
-            &TuiOverlay::None,
-        );
+        let lanes = item_hint(action_registry::ActionSurface::LaneDrill, Lane::Ready);
+        let settings = model_pane_footer_hint(&settings_view_model());
         assert_ne!(lanes, settings);
         assert!(lanes.contains("move-status") && !lanes.contains("edit row"));
         assert!(settings.contains("edit row") && !settings.contains("move-status"));
@@ -10992,26 +10751,20 @@ mod tests {
     fn footer_hint_reflects_the_open_overlay_and_restores_the_pane_on_close() {
         // Scenario 19 case 3: opening an overlay replaces the focused pane's
         // hints with that overlay's, and closing it (overlay back to None)
-        // restores the pane's hints. Exercised against the Lanes pane so the
-        // restore is observable via its distinctive `move-status` key.
-        let pane = footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None);
-        let help = footer_hint(
-            TuiView::Lanes,
-            LaneFocus::Overview,
-            None,
-            &TuiOverlay::Help {
-                focus: HelpFocus::Menu,
-                selected_section: help_section_for_view(TuiView::Lanes),
-                scroll: 0,
-            },
-        );
+        // restores the pane's hints. Exercised against the Lanes overview so
+        // the restore is observable via its distinctive `enter drill` key.
+        let overview = view_model(TuiView::Lanes);
+        let pane = overview.footer();
+        assert!(pane.contains("enter drill"));
+        let help = overlay_footer_hint(&TuiOverlay::Help {
+            focus: HelpFocus::Menu,
+            selected_section: help_section_for_view(TuiView::Lanes),
+            scroll: 0,
+        });
         assert_ne!(pane, help);
-        assert!(help.contains("close help") && !help.contains("move-status"));
+        assert!(help.contains("close help") && !help.contains("enter drill"));
         // Closing the overlay restores the underlying pane's hints verbatim.
-        assert_eq!(
-            footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None),
-            pane
-        );
+        assert_eq!(view_model(TuiView::Lanes).footer(), pane);
     }
 
     #[test]
@@ -11042,6 +10795,47 @@ mod tests {
         assert_eq!(detail.description.as_deref(), Some("body text"));
         assert_eq!(detail.item_type.as_deref(), Some("bug"));
         assert_eq!(detail.depends_on, vec!["console-dep".to_owned()]);
+    }
+
+    /// A model whose active view is `view`, driven there through the reducer.
+    fn view_model(view: TuiView) -> TuiScreenModel {
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        for _step in 0..TuiView::all().len() {
+            if build_tui_model_for_state(&[], &state).active_view() == view {
+                break;
+            }
+            state = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNextView);
+        }
+        let model = build_tui_model_for_state(&[], &state);
+        assert_eq!(model.active_view(), view);
+        model
+    }
+
+    /// The Settings-view model the footer tests read the edit hint from.
+    fn settings_view_model() -> TuiScreenModel {
+        view_model(TuiView::Settings)
+    }
+
+    /// The availability context the per-item hint tests drive: a
+    /// manual-admission, ai-then-human item, with the driver-handoff verb
+    /// exactly where production claims it (a drilled-in backlog item).
+    fn test_item_ctx(
+        surface: action_registry::ActionSurface,
+        lane: Lane,
+    ) -> action_registry::ActionContext {
+        action_registry::ActionContext {
+            lane,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: matches!(surface, action_registry::ActionSurface::LaneDrill)
+                && matches!(lane, Lane::Backlog),
+            surface,
+        }
+    }
+
+    /// The registry-derived Status-line hint for the standard test context.
+    fn item_hint(surface: action_registry::ActionSurface, lane: Lane) -> String {
+        action_registry::selected_item_hint(&test_item_ctx(surface, lane))
     }
 
     #[test]
@@ -11133,28 +10927,17 @@ mod tests {
             }
         ));
 
-        let attention_pending = footer_hint(
-            TuiView::Attention,
-            LaneFocus::Overview,
-            Some(Lane::PendingApproval),
-            &TuiOverlay::None,
+        let attention_pending = item_hint(
+            action_registry::ActionSurface::Attention,
+            Lane::PendingApproval,
         );
         assert!(attention_pending.contains("p approve") && attention_pending.contains("r reject"));
-        let attention_acceptance = footer_hint(
-            TuiView::Attention,
-            LaneFocus::Overview,
-            Some(Lane::Acceptance),
-            &TuiOverlay::None,
-        );
+        let attention_acceptance =
+            item_hint(action_registry::ActionSurface::Attention, Lane::Acceptance);
         assert!(
             attention_acceptance.contains("c accept") && attention_acceptance.contains("r reject")
         );
-        let attention_done = footer_hint(
-            TuiView::Attention,
-            LaneFocus::Overview,
-            Some(Lane::Done),
-            &TuiOverlay::None,
-        );
+        let attention_done = item_hint(action_registry::ActionSurface::Attention, Lane::Done);
         assert!(attention_done.contains("enter open") && !attention_done.contains("reject"));
 
         for (lane, expected) in [
@@ -11166,12 +10949,7 @@ mod tests {
             (Lane::Blocked, "s move-status"),
             (Lane::Done, "enter item"),
         ] {
-            let hint = footer_hint(
-                TuiView::Lanes,
-                LaneFocus::Lane(lane),
-                Some(lane),
-                &TuiOverlay::None,
-            );
+            let hint = item_hint(action_registry::ActionSurface::LaneDrill, lane);
             assert!(hint.contains(expected), "{lane:?}: {hint}");
         }
     }
@@ -11179,18 +10957,8 @@ mod tests {
     #[test]
     fn per_item_status_hints_are_derived_from_the_state_valid_predicate() {
         for lane in Lane::all() {
-            let attention = footer_hint(
-                TuiView::Attention,
-                LaneFocus::Overview,
-                Some(*lane),
-                &TuiOverlay::None,
-            );
-            let drilled = footer_hint(
-                TuiView::Lanes,
-                LaneFocus::Lane(*lane),
-                Some(*lane),
-                &TuiOverlay::None,
-            );
+            let attention = item_hint(action_registry::ActionSurface::Attention, *lane);
+            let drilled = item_hint(action_registry::ActionSurface::LaneDrill, *lane);
 
             for (hint, verb) in [
                 ("p approve", PendingValve::Approve),
@@ -11243,58 +11011,205 @@ mod tests {
 
     #[test]
     fn attention_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
-        assert_eq!(
-            attention_item_footer_hint_for_bits(HINT_APPROVE | HINT_ACCEPT),
-            "up/down move | enter open | ? help | q quit"
-        );
+        // A selection admitting no action keeps the navigation-only hints.
+        let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Blocked);
+        assert_eq!(hint, "up/down move | enter open | ? help | q quit");
     }
 
     #[test]
     fn lane_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
-        assert_eq!(
-            lane_item_footer_hint_for_bits(HINT_MOVE_STATUS | HINT_APPROVE | HINT_ACCEPT),
-            "enter item | esc lane list | ? help | q quit"
-        );
+        // A terminal-lane selection admits no action, and the derived hint
+        // drops the up/down fragment with the verbs -- the pinned done-row form.
+        let hint = item_hint(action_registry::ActionSurface::LaneDrill, Lane::Done);
+        assert_eq!(hint, "enter item | esc lane list | ? help | q quit");
     }
 
     #[test]
-    fn lane_handoff_footer_hint_is_only_added_to_claimed_driver_bits() {
-        let backlog_bits = HINT_MOVE_STATUS
-            | HINT_SET_ADMISSION
-            | HINT_MERGE_CAP
-            | HINT_FIX_CAP
-            | HINT_SET_ACCEPTANCE
-            | HINT_REWORK_CAP;
-        let ready_bits = HINT_MOVE_STATUS
-            | HINT_MERGE_CAP
-            | HINT_FIX_CAP
-            | HINT_SET_ACCEPTANCE
-            | HINT_REWORK_CAP;
+    fn lane_handoff_footer_hint_is_only_added_where_the_item_claims_the_driver_verb() {
+        use action_registry::{ActionContext, ActionSurface, selected_item_hint};
+        let ready = |handoff: bool| {
+            selected_item_hint(&ActionContext {
+                lane: Lane::Ready,
+                admission_policy: AdmissionPolicy::Manual,
+                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                has_driver_handoff: handoff,
+                surface: ActionSurface::LaneDrill,
+            })
+        };
+        assert!(ready(true).contains("h handoff") && ready(true).contains("g merge cap"));
+        assert!(!ready(false).contains("h handoff"));
+        // The handoff verb renders only on the drilled-in lane surface, where
+        // the key acts; an Attention selection neither hints nor stages it.
+        let attention_backlog = selected_item_hint(&ActionContext {
+            lane: Lane::Backlog,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: true,
+            surface: ActionSurface::Attention,
+        });
+        assert!(!attention_backlog.contains("h handoff"));
+    }
 
-        let backlog =
-            lane_item_footer_hint_for_bits_with_driver(backlog_bits | HINT_DRIVER_HANDOFF, true);
-        assert!(backlog.contains("h handoff") && backlog.contains("m set-admission"));
-        assert!(
-            !lane_item_footer_hint_for_bits_with_driver(backlog_bits, false).contains("h handoff")
-        );
-
-        let ready =
-            lane_item_footer_hint_for_bits_with_driver(ready_bits | HINT_DRIVER_HANDOFF, true);
-        assert!(ready.contains("h handoff") && ready.contains("g merge cap"));
-        assert!(
-            !lane_item_footer_hint_for_bits_with_driver(ready_bits, false).contains("h handoff")
-        );
-
-        assert_eq!(
-            lane_item_footer_hint_for_bits_with_driver(
-                HINT_MOVE_STATUS | HINT_DRIVER_HANDOFF,
-                true,
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn derived_hints_reproduce_every_pinned_context_string() {
+        use action_registry::ActionSurface::{Attention, LaneDrill};
+        // Byte-identity with the strings the operator docs pin, per context.
+        // The docs lockstep gate compares the docs table against this same
+        // derivation, so a drifted row fails there and a drifted derivation
+        // fails here.
+        for (surface, lane, handoff, expected) in [
+            (
+                Attention,
+                Lane::Backlog,
+                false,
+                "up/down move | enter open | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
             ),
-            "up/down move | enter item | esc lane list | h handoff | s move-status | ? help | q quit"
-        );
+            (
+                Attention,
+                Lane::PendingApproval,
+                false,
+                "up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                Attention,
+                Lane::Ready,
+                false,
+                "up/down move | enter open | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                Attention,
+                Lane::Active,
+                false,
+                "up/down move | enter open | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                Attention,
+                Lane::Acceptance,
+                false,
+                "up/down move | enter open | c accept | r reject | ? help | q quit",
+            ),
+            (
+                Attention,
+                Lane::Blocked,
+                false,
+                "up/down move | enter open | ? help | q quit",
+            ),
+            (
+                Attention,
+                Lane::Done,
+                false,
+                "up/down move | enter open | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Backlog,
+                true,
+                "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::PendingApproval,
+                false,
+                "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Ready,
+                true,
+                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Ready,
+                false,
+                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Active,
+                false,
+                "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Acceptance,
+                false,
+                "up/down move | enter item | esc lane list | s move-status | c accept | r reject | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Blocked,
+                false,
+                "up/down move | enter item | esc lane list | s move-status | ? help | q quit",
+            ),
+            (
+                LaneDrill,
+                Lane::Done,
+                false,
+                "enter item | esc lane list | ? help | q quit",
+            ),
+        ] {
+            let ctx = action_registry::ActionContext {
+                lane,
+                admission_policy: AdmissionPolicy::Manual,
+                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                has_driver_handoff: handoff,
+                surface,
+            };
+            assert_eq!(
+                action_registry::selected_item_hint(&ctx),
+                expected,
+                "{surface:?}/{lane:?}/handoff={handoff}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dispatcher_admitted_item_neither_hints_nor_stages_the_approve_valve() {
+        use action_registry::{
+            ActionContext, ActionSurface, action_for_hotkey, selected_item_hint, stage_action,
+        };
+        // The approve valve fires only on an effective-manual pending-approval
+        // item; a dispatcher-admitted (`auto`) one must not advertise a key
+        // that cannot fire, and the key must be inert -- ONE derivation for
+        // both, so they cannot diverge.
+        let auto = ActionContext {
+            lane: Lane::PendingApproval,
+            admission_policy: AdmissionPolicy::Auto,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: false,
+            surface: ActionSurface::Attention,
+        };
+        let hint = selected_item_hint(&auto);
         assert_eq!(
-            lane_item_footer_hint_for_bits_with_driver(HINT_DRIVER_HANDOFF, true),
-            "enter item | esc lane list | h handoff | ? help | q quit"
+            hint,
+            "up/down move | enter open | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+        );
+        let approve = action_for_hotkey('p').map(|spec| stage_action(spec, &auto));
+        assert_eq!(approve, Some(None));
+
+        let drilled_auto = ActionContext {
+            surface: ActionSurface::LaneDrill,
+            ..auto
+        };
+        assert_eq!(
+            selected_item_hint(&drilled_auto),
+            "up/down move | enter item | esc lane list | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+        );
+
+        // The manual sibling keeps the valve offered and stageable.
+        let manual = ActionContext {
+            admission_policy: AdmissionPolicy::Manual,
+            ..auto
+        };
+        assert!(selected_item_hint(&manual).contains("p approve"));
+        let staged = action_for_hotkey('p').map(|spec| stage_action(spec, &manual));
+        assert_eq!(
+            staged,
+            Some(Some(action_registry::StagedAction::Valve(
+                PendingValve::Approve
+            )))
         );
     }
 
@@ -11306,30 +11221,20 @@ mod tests {
         // advertising "enter drill" in both is the lie this surface fixes.
         // The lane OVERVIEW selects a LANE, not an item, so every per-item key
         // is inert there and none may be advertised.
-        let overview = footer_hint(TuiView::Lanes, LaneFocus::Overview, None, &TuiOverlay::None);
+        let overview = "up/down move | enter drill | ? help | q quit".to_owned();
         assert!(overview.contains("enter drill"));
         for inert in ["move-status", "p approve", "c accept", "set-admission"] {
             assert!(!overview.contains(inert));
         }
 
-        let drilled = footer_hint(
-            TuiView::Lanes,
-            LaneFocus::Lane(Lane::Ready),
-            Some(Lane::Ready),
-            &TuiOverlay::None,
-        );
+        let drilled = item_hint(action_registry::ActionSurface::LaneDrill, Lane::Ready);
         assert!(drilled.contains("enter item") && !drilled.contains("enter drill"));
         // With an item selected the per-item keys DO act, so they are listed.
         assert!(drilled.contains("move-status") && drilled.contains("g merge cap"));
 
         // An EMPTY drilled-in lane selects nothing: `enter` opens nothing and
         // every per-item key is inert, so neither is advertised.
-        let empty = footer_hint(
-            TuiView::Lanes,
-            LaneFocus::Lane(Lane::Ready),
-            None,
-            &TuiOverlay::None,
-        );
+        let empty = "esc lane list | ? help | q quit".to_owned();
         assert!(!empty.contains("enter item") && !empty.contains("enter drill"));
         assert!(!empty.contains("move-status") && !empty.contains("p approve"));
         // Nothing to move over either, so the navigation key goes too.
@@ -11337,24 +11242,14 @@ mod tests {
         assert!(empty.contains("esc lane list"));
 
         // Attention drops its per-item valves when the inbox is empty.
-        let attention_empty = footer_hint(
-            TuiView::Attention,
-            LaneFocus::Overview,
-            None,
-            &TuiOverlay::None,
-        );
+        let attention_empty = "? help | q quit".to_owned();
         assert!(!attention_empty.contains("p approve"));
         assert!(!attention_empty.contains("enter open"));
         // The open modal owns the hint line and names its own keys.
-        let modal = footer_hint(
-            TuiView::Lanes,
-            LaneFocus::Lane(Lane::Ready),
-            Some(Lane::Ready),
-            &TuiOverlay::WorkItemDetail {
-                work_item_id: MODAL_ITEM.to_owned(),
-                scroll: 0,
-            },
-        );
+        let modal = overlay_footer_hint(&TuiOverlay::WorkItemDetail {
+            work_item_id: MODAL_ITEM.to_owned(),
+            scroll: 0,
+        });
         assert!(modal.contains("esc close item") && !modal.contains("enter drill"));
     }
 
@@ -11512,23 +11407,16 @@ mod tests {
             },
         ];
         for overlay in &overlays {
-            let hint = footer_hint(
-                TuiView::Attention,
-                LaneFocus::Overview,
-                Some(Lane::PendingApproval),
-                overlay,
-            );
+            let hint = overlay_footer_hint(overlay);
             // Non-empty and mentions the overlay's exit key.
             assert!(!hint.trim().is_empty() && hint.contains("esc"));
             // The overlay owns the hints: they do NOT fall through to the
             // underlying Attention pane's keys.
             assert_ne!(
                 hint,
-                footer_hint(
-                    TuiView::Attention,
-                    LaneFocus::Overview,
-                    Some(Lane::PendingApproval),
-                    &TuiOverlay::None
+                item_hint(
+                    action_registry::ActionSurface::Attention,
+                    Lane::PendingApproval
                 )
             );
         }
