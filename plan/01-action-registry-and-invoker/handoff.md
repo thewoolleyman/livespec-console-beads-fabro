@@ -158,7 +158,100 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    no console→driver dependency).
 
 
-## RESUME HERE — state at 2026-08-02T~10:30Z (SUPERSEDES every block below)
+## RESUME HERE — state at 2026-08-02T20:0xZ (SUPERSEDES every block below)
+
+**SLICES A AND B ARE BOTH MERGED. THE DOGFOOD-LEG HOLD IS LIFTED — that leg is the next
+action, and it has NOT been started.** Re-measure everything; every claim is timestamped.
+
+| PR | slice | landed |
+|---|---|---|
+| #585 | **A** — parity gate + `set-workflow-scope-override` + coverage disposition | `52f4b94` + `82ed394` |
+| #588 | **B** — the action invoker | `d9fc67d` (+ fork re-pin `5cd22a1`) |
+
+Master at wind-down: **`5cd22a1`**. Both merged rebase-style, so branch SHAs differ from
+master's — verify by CONTENT, not ancestry.
+
+**WHAT IS NOW REACHABLE THAT WAS NOT.** `set-workflow-scope-override` shipped in A with
+`hotkey: None`; B's invoker is the first surface that can reach it. **A + B was the
+stated minimum for the dogfood leg, and it is now satisfied.**
+
+### The dogfood leg — UNBLOCKED, NOT STARTED. This is the next action.
+
+Charter § Milestone acceptance, unchanged and in order:
+
+1. Fresh `just tui` build. **The live cockpit binary is 2026-07-30 and STALE** — it
+   predates the whole registry, so it cannot show the invoker at all.
+2. Exactly ONE live client, checked by `/proc/*/exe` (NOT `ps | grep`, which self-matches).
+3. From the cockpit, **via the invoker**, apply
+   `set-workflow-scope-override:livespec-console-beads-fabro-ccycuk:citation-only`.
+4. Drain at the TUI. **No `drive.py` fallback** — if it wedges, STOP AND REPORT.
+5. Monitor. 6. `c` accept.
+
+`-ccycuk` re-verified 2026-08-02T20:0xZ: still `READY`, untouched, description intact.
+Launch needs the plugin-root override INSIDE the credential wrapper (`-pj5g3f`); the
+command is in `plan/console-happy-path-mvp/handoff.md` § 0-RESUME. Recording conditions
+unchanged: **a leg discharged outside the surface is an OPEN leg with a workaround.**
+
+### `-3yx`: the split's experiment RETURNED, and the answer is "persists uniformly"
+
+Slice B's coverage gate reports **1 dispositioned unnameable missed line, nameable
+misses 0** — the IDENTICAL signature to A, at the allowance of 1, not above it. The
+split was designed to distinguish "the phantom localizes to one slice" from
+"it vanishes or persists uniformly". **It persists uniformly.** That is a real result,
+not a non-event: it refutes localization-by-construct, so a successor should NOT open
+another bisect hoping to corner it. Slice C inherits the disposition on the same terms —
+identical signature only, and a NAMEABLE miss is ordinary work to fix.
+
+### One build-plan fact that did NOT hold — the class, not the instance
+
+`research/slice-b-build-plan.md` predicted the cherry-pick's two conflicts exactly, and
+the 54 `refusal` sites measured exactly. What it could not know is that it was written
+**before slice A was re-partitioned to take seven relocated tests**. Cherry-picking
+`66b4fd2` onto merged-A therefore **duplicated seven tests** — six across the three
+`lib.rs` files plus `every_registered_action_stages_from_some_admitting_context` in
+`action_registry.rs`, which a `lib.rs`-only sweep misses. Each pair was proven
+byte-identical before the added copy was dropped, and the compiler caught the one the
+first sweep missed. **General rule: a cherry-pick plan authored before a re-partition is
+stale about what the BASE already contains, even when every word it says about the
+PATCH is still true.**
+
+### Slice C — the remaining piece, unstarted
+
+The `-ectqye` action half: refusal capture on `OrchestratorActionOutcome::Failed`, the
+`error_json` payload, `work_item_failure_event`, the latest-failure projection, and the
+record-modal `Last action:` render, plus its nine tests. It is **on no critical path** —
+the dogfood leg does not need it. Its content is recoverable in full from `66b4fd2` on
+the (now merged-and-superseded) `feat/action-invoker` branch: everything this slice-B
+pass REMOVED is exactly slice C, and each removal restored master's shape byte-for-byte,
+so the reverse diff is the slice.
+
+### The fork-drift gate fired a SIXTH time, same shape as the fifth
+
+This session's own SessionStart hook bumped the plugin `c402de396ee3 -> 4e3e883a08b3`,
+and the whole upstream diff is ONE line: its docker pin `python-agent-v1.13.14 ->
+v1.14.2`. NOT PORTED (standing no-Rust-layer reason; our fork keeps
+`python-rust-agent-v1.14.3`). Re-pinned in `5cd22a1` with the review appended to the
+pin's reason. **A caution worth more than the fix:** the first attempt at appending that
+reason self-aborted on a guard matching `REVIEWED 2026-08-02 (` — which the FIFTH firing
+had already written on the same date. The refresh had already made the gate GREEN, so
+for one step the pin was digest-updated with the review UNRECORDED, which is precisely
+the refreshed-to-green failure mode the discipline forbids. Date-keyed idempotence
+guards are unsafe when two firings share a day; key on the ordinal.
+
+### Also worth knowing
+
+- `check-e2e-tmux` was run BY HAND (11/11 green) before push, because `just check` still
+  omits it — `-drn`. The gate that would close this is **`-ccycuk` itself**, the very
+  item the dogfood leg dispatches.
+- The `docs/detailed-usage.md` palette claim moved from "exactly two commands" to three,
+  as the 2026-08-02 doc-custody audit flagged forward.
+- `SPECIFICATION/proposed_changes/menu-primary-operator-ux.md` is **still pending** —
+  history is at `v037` (2026-07-27). The maintainer's `revise` pass has NOT landed, so
+  `proposed_changes/` and `history/` remain OFF-LIMITS.
+
+---
+
+## Earlier block — state at 2026-08-02T~10:30Z (HISTORICAL)
 
 **MILESTONE 2 IS UNBLOCKED AND SPLIT. Slice A is BUILT, GREEN, and awaiting merge.**
 
