@@ -427,6 +427,44 @@ Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to t
 next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
 cost PR #478).
 
+### 0-SUCCESSION. THIS THREAD HAS A SUCCESSOR ARC — READ BEFORE ANY ARCHIVE
+
+**Added 2026-08-02 on the maintainer's menu-primary decision.** This thread stays
+**PARKED** until `plan/01-action-registry-and-invoker/`'s PR merges, then its archive is
+PREPARED — with custody NAMED AND ACCEPTED first, never after.
+
+The maintainer decided that menus and dialogs are the first-class, required, primary
+navigation mechanism and hotkeys only an additional power-user convenience. Four
+decoupled, numbered plans now carry this arc:
+
+| plan | epic | owns |
+|---|---|---|
+| `plan/01-action-registry-and-invoker/` | `-dvv` | the registry + generic invoker; **banks the interim unbroken-pass evidence** |
+| `plan/02-menu-shell-primacy/` | `-et3` | menus generated from the registry; generated docs |
+| `plan/03-dispatch-ux-and-outcome-surfacing/` | `-1df` | drain off the UI thread; refusal surfacing |
+| `plan/04-mvp-unbroken-walk-and-close/` | `-9nb` | the amended unbroken walk; **archive sequencing + final doc-custody home** |
+
+**CUSTODY TRANSFERS, named so none is dropped silently:**
+
+- **The walk deliverable → plan 04.** 01 banks the interim pass as its own dogfood leg;
+  04 owns the menus-only unbroken pass and the close.
+- **DOC CUSTODY → rides plan 02, final home decided by plan 04.** 02's
+  registry-generated docs shrink it substantially; whatever remains becomes a standing
+  item or a named successor. **This section's § "Doc custody" is STILL LIVE until 04
+  says otherwise** — it is recurring work, not a dormant label, and deleting it without
+  a successor is the specific outcome archival was conditioned on avoiding.
+- **The staged asset → plan 01.** `-ccycuk` sits at `ready` with
+  `acceptance_policy=ai-then-human`, untouched. **Do not re-stage it, do not move it, do
+  not re-run `n`.** 01's dogfood leg resumes it through the new invoker.
+
+**DO NOT ARCHIVE THIS THREAD BEFORE THOSE TRANSFERS ARE ACCEPTED.** "Another plan owns
+it" is not a handoff; a handoff is complete only when the successor has confirmed it.
+
+`plan/operator-surface-redesign/`: the menu-primary decision SATISFIES its brainstorm
+entry gate (see `plan/01-action-registry-and-invoker/research/operator-surface-redesign-decision.md`).
+Its own disposition — absorb vs archive — is with the maintainer and is NOT this
+thread's call.
+
 ### 0-RESUME. READ THIS FIRST — state at 2026-07-30T15:0xZ (supersedes the 14:0xZ block)
 
 **EVERY LEG IS NOW INDIVIDUALLY WALKED, INCLUDING `c` ACCEPT. THE MISSION IS STILL
