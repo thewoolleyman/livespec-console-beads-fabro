@@ -574,7 +574,70 @@ mode is retired for good. Nothing about Stage-2 remains to inherit.
 
 ## Next action
 
-**RESUME HERE (2026-07-29T22:47Z — supersedes every earlier RESUME HERE block).**
+### RESUME HERE — 2026-08-02T~10:30Z. SUPERSEDES EVERY BLOCK BELOW.
+
+**THIS THREAD IS STILL PARKED. The live work is plan 01 — go to
+`plan/01-action-registry-and-invoker/handoff.md`.** This block exists because a session
+restart inherits ONLY this file, so the arc's state has to be reachable from here.
+
+**Landed to master today:** PR #576 (wrapup + `plan/operator-surface-redesign/` absorbed
+and archived, custody accepted by plans 02/03 as LEDGER EDGES), #579 (spec
+propose-change filed), #581 (doc-custody delta pass). Master was `ff52b37` at wind-down.
+
+**OPEN AND AWAITING MERGE — check both before doing anything:**
+
+| PR | what | state at wind-down |
+|---|---|---|
+| **#585** | **slice A** — parity gate + `set-workflow-scope-override` + the coverage-gate disposition | **14/14 CI GREEN**, open |
+| #588 | slice B — DRAFT, **plan only, no implementation**, based on A's branch | open |
+
+**THE COVERAGE BLOCKER IS DISPOSITIONED, NARROWLY — read this before touching
+`check-coverage`.** Maintainer-authorized 2026-08-02. `just check-coverage` no longer
+uses `--fail-under-lines 100`; it compares llvm-cov's summary against its own
+`--show-missing-lines` listing and caps ONLY the unnameable residue via
+`tests/fixtures/coverage-unnameable-disposition.json` (mandatory reason, fork-drift
+idiom), logic in `dev-tooling/coverage-gate.py`. **The 100% requirement for ATTRIBUTABLE
+lines is UNCHANGED and § 0c is UNTOUCHED — a single nameable miss still fails.** Four
+mutation demos red + green control; fail-closed on a missing fixture. Tracking `-3yx`.
+**Slices B and C inherit it ONLY on the IDENTICAL signature; a nameable miss is ordinary
+work.** The allowance may be REDUCED, never raised without new recorded authorization.
+
+**NEXT ACTIONS, in order:**
+
+1. **Merge #585** (supervisor arms merges), then rebase `feat/slice-b-action-invoker`.
+2. **Build slice B** — `plan/01-action-registry-and-invoker/research/slice-b-build-plan.md`
+   has the two cherry-pick conflict resolutions (both non-obvious) and the enumerated
+   54-site slice-C removal list. Do not re-derive them.
+3. **Then slice C.** Order A -> B -> C is maintainer-approved.
+4. **DOGFOOD LEG IS HELD and lifts only when A AND B are BOTH MERGED** — B is currently a
+   plan, so it is NOT satisfied. Then: fresh `just tui` build (the live cockpit binary is
+   2026-07-30 and STALE), ONE client verified via `/proc/*/exe`, plugin-root override
+   INSIDE the credential wrapper (`-pj5g3f` re-measured 2026-08-02: entry `[0]` still
+   `58a6467325e7`, four builds behind), then
+   `set-workflow-scope-override:...-ccycuk:citation-only` FROM THE COCKPIT -> drain at the
+   TUI -> monitor -> `c`. `-ccycuk` is untouched at `ready` + `ai-then-human`.
+5. **`SPECIFICATION/proposed_changes/` and `history/` were OFF-LIMITS at wind-down** — the
+   maintainer's `revise` pass was running in the supervisor pane. Confirm it finished
+   (BRIEF 18) before touching either.
+
+**Also closed today:** `-6hbfq6` reconciled and CLOSED under a maintainer-authorized
+reduced janitor argv (THIS ITEM ONLY, not standing policy; argv on the item). It went
+straight to CLOSED rather than back to `acceptance`, so **it must NOT be counted as TUI
+`c`-valve evidence.**
+
+**Ledger records written today:** `-3yx` (filed: the coverage phantom, its falsifiable
+prediction, the slice-A verdict, the INCONCLUSIVE compilation-count experiment, and the
+disposition), plus findings on `-2ckgiy`, `-ekb5vq`, `-3lxx7t`, `-pj5g3f`, `-9ts`,
+`-htp`, `-6hbfq6`.
+
+**A measurement gotcha that cost two near-false findings — do not relearn it:**
+`bd dep list <epic>` does NOT show parent-child CHILDREN. The edge is stored on the CHILD
+and points up, so an epic with children can report "no dependencies". Closed items DO
+appear, so absence reads convincingly as an orphan. Query the child.
+
+---
+
+**RESUME HERE (2026-07-29T22:47Z — HISTORICAL; superseded by the block above).**
 Timestamps here are UTC; we run at UTC+2, so anything after 22:00 UTC dates to the
 next LOCAL day — build every timestamp with `date -u`, never by hand (that mistake
 cost PR #478).
