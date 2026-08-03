@@ -17,6 +17,21 @@
     "claude": { "status": "exempt", "reason": "livespec-console-beads-fabro is the Rust Control-Plane console; it ships no command/skill surface to resolve from a harness" },
     "codex":  { "status": "exempt", "reason": "livespec-console-beads-fabro is the Rust Control-Plane console; it ships no command/skill surface to resolve from a harness" }
   },
+  // Planning/work-item-resolution registry. These targets are the repo slugs
+  // accepted by typed cross-tenant `depends_on` refs so the Dispatcher
+  // readiness gate can fail closed on still-open sibling work.
+  "cross_repo_targets": {
+    "livespec-dev-tooling": {
+      "github_url": "https://github.com/thewoolleyman/livespec-dev-tooling",
+      "local_clone": "/data/projects/livespec-dev-tooling",
+      "default_branch": "master"
+    },
+    "livespec-orchestrator-beads-fabro": {
+      "github_url": "https://github.com/thewoolleyman/livespec-orchestrator-beads-fabro",
+      "local_clone": "/data/projects/livespec-orchestrator-beads-fabro",
+      "default_branch": "master"
+    }
+  },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
   // Credential-injection wrapper (fleet default) prefixed to the beads CLIs so a bare invocation self-heals its tenant secret.
   "credential_wrapper": ["/usr/local/bin/with-livespec-env.sh", "--"],
@@ -72,4 +87,3 @@
     }
   }
 }
-
