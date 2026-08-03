@@ -322,6 +322,12 @@ fn context_binding(label: &str) -> Option<ActionContext> {
         admission_policy: admission,
         acceptance_policy: AcceptancePolicy::AiThenHuman,
         has_driver_handoff: handoff,
+        // The documented contexts describe items NOT awaiting an override, so
+        // the scope-override action contributes no hint token to any of them.
+        // It carries an empty `hint_token` anyway (it is menu/invoker-only),
+        // so this cannot change a documented row either way — stated rather
+        // than left for a reader to re-derive.
+        awaits_scope_override: false,
         surface,
     })
 }

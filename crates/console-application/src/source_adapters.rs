@@ -457,7 +457,34 @@ pub struct WorkItemDetail {
     /// Why the item is blocked, when it is.
     pub blocked_reason: Option<String>,
     /// The item's factory-safety marking.
+    ///
+    /// The orchestrator's vocabulary is `needs-host-secrets`,
+    /// `mutates-host-machinery` and `needs-privileged-host`. Consume it as
+    /// PRESENT-or-ABSENT rather than matching a particular value: the
+    /// dispatcher's own first refusal arm is `factory_safety is not None`, and
+    /// a console arm keyed to one spelling goes silently dead the moment that
+    /// vocabulary grows. It already did once — see [`awaits_scope_override`].
+    ///
+    /// [`awaits_scope_override`]: WorkItemDetail::awaits_scope_override
     pub factory_safety: Option<String>,
+    /// Whether the item is waiting on a workflow-scope override to clear a
+    /// factory-safety refusal it earned from its DESCRIPTION rather than from
+    /// this field.
+    ///
+    /// SEAM, deliberately inert today. The dispatcher refuses on three arms in
+    /// order: a non-null `factory_safety`; then an allow on the recorded
+    /// override label; then a regex over the item's own text. **The override
+    /// only clears the THIRD arm** — it is consulted after the first has
+    /// already refused — so "may I offer the override?" is NOT answerable from
+    /// `factory_safety`, and deriving it from there would offer the action
+    /// exactly where it cannot help.
+    ///
+    /// The orchestrator does not publish this yet; the decision that it should
+    /// was taken 2026-08-03 (`-w7d`). Until the field appears on the wire this
+    /// reads `false` and the action is correctly never offered. When it
+    /// appears, it is consumed AS DATA with no predicate change — the
+    /// consume-don't-re-derive rule the `-0uw` fix established.
+    pub awaits_scope_override: bool,
     /// The admission policy AS EMITTED, kept separate from the collapsed enum
     /// the action paths use.
     ///
@@ -1934,6 +1961,19 @@ fn record_text(record: &serde_json::Map<String, serde_json::Value>, key: &str) -
     }
 }
 
+/// Read a boolean record field, treating absent / null / non-boolean as
+/// `false`.
+///
+/// A field the producer does not emit yet must read as "no", not as an error
+/// and not as a synthesized "yes": that is what lets a consumption seam sit
+/// inert until the producer starts publishing it.
+fn record_flag(record: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    record
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Read the `depends_on` field as display ids, TOTALLY.
 ///
 /// Absent, `null`, and a non-array value all read as no dependencies rather
@@ -2052,6 +2092,7 @@ pub fn parse_orchestrator_observation(
             supersedes: record_text(&raw, "supersedes"),
             blocked_reason: record_text(&raw, "blocked_reason"),
             factory_safety: record_text(&raw, "factory_safety"),
+            awaits_scope_override: record_flag(&raw, "awaits_scope_override"),
             admission_policy: record_text(&raw, "admission_policy"),
             acceptance_policy: record_text(&raw, "acceptance_policy"),
         };
@@ -4096,7 +4137,7 @@ mod tests {
         "notes": "an operator note",
         "supersedes": "livespec-console-beads-fabro-older",
         "blocked_reason": "waiting on review",
-        "factory_safety": "safe"
+        "factory_safety": "needs-host-secrets"
     }]"#;
 
     fn only_snapshot(parsed: &ParsedObservation) -> &WorkItemSnapshot {
@@ -4151,7 +4192,7 @@ mod tests {
             Some("livespec-console-beads-fabro-older")
         );
         assert_eq!(detail.blocked_reason.as_deref(), Some("waiting on review"));
-        assert_eq!(detail.factory_safety.as_deref(), Some("safe"));
+        assert_eq!(detail.factory_safety.as_deref(), Some("needs-host-secrets"));
         // `audit` arrives as an OBJECT and is flattened to its JSON text.
         assert_eq!(detail.audit.as_deref(), Some(r#"{"commits":["abc123"]}"#));
         // `depends_on` arrives as objects: a `local` kind shows the bare id, a

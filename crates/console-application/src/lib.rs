@@ -3217,9 +3217,19 @@ fn open_driver_handoff_overlay(model: &TuiScreenModel) -> TuiOverlay {
 fn driver_handoff_command(item: &LaneWorkItem) -> Option<String> {
     let operation = match item.lane() {
         Lane::Backlog => "groom",
-        Lane::Ready if item.detail().factory_safety.as_deref() == Some("host-only-refused") => {
-            "implement"
-        }
+        // Keyed on the marking being PRESENT, not on any one spelling. The
+        // dispatcher's own first refusal arm is `factory_safety is not None`,
+        // so any marked `ready` item is one the factory will refuse and an
+        // attended host session is the only route forward.
+        //
+        // This arm previously tested `== Some("host-only-refused")`, which is
+        // a dispatcher STAGE name and NOT a member of the published
+        // `FactorySafety` vocabulary (`needs-host-secrets` /
+        // `mutates-host-machinery` / `needs-privileged-host`). It could
+        // therefore never fire on real data, and the ten tests that covered it
+        // all invented the value they then asserted on. Measured 2026-08-03;
+        // see `-w7d`.
+        Lane::Ready if item.detail().factory_safety.is_some() => "implement",
         Lane::PendingApproval
         | Lane::Ready
         | Lane::Active
@@ -11245,6 +11255,9 @@ mod tests {
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: matches!(surface, action_registry::ActionSurface::LaneDrill)
                 && matches!(lane, Lane::Backlog),
+            // The default test selection is not awaiting an override, which is
+            // what a real item reads today — the signal is unpublished.
+            awaits_scope_override: false,
             surface,
         }
     }
@@ -11648,6 +11661,7 @@ mod tests {
                 admission_policy: AdmissionPolicy::Manual,
                 acceptance_policy: AcceptancePolicy::AiThenHuman,
                 has_driver_handoff: handoff,
+                awaits_scope_override: false,
                 surface: ActionSurface::LaneDrill,
             })
         };
@@ -11660,6 +11674,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Manual,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: true,
+            awaits_scope_override: false,
             surface: ActionSurface::Attention,
         });
         assert!(!attention_backlog.contains("h handoff"));
@@ -11770,6 +11785,7 @@ mod tests {
                 admission_policy: AdmissionPolicy::Manual,
                 acceptance_policy: AcceptancePolicy::AiThenHuman,
                 has_driver_handoff: handoff,
+                awaits_scope_override: false,
                 surface,
             };
             assert_eq!(action_registry::selected_item_hint(&ctx), expected);
@@ -11790,6 +11806,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Auto,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: false,
+            awaits_scope_override: false,
             surface: ActionSurface::Attention,
         };
         let hint = selected_item_hint(&auto);
@@ -12867,7 +12884,7 @@ mod tests {
                 "evt_ready_host_only",
                 "wi-ready-host-only",
                 Lane::Ready,
-                Some("host-only-refused"),
+                Some("needs-privileged-host"),
                 "a0",
                 "ready",
             ),
@@ -12933,7 +12950,7 @@ mod tests {
                 "evt_ready_host_only_overlay",
                 "wi-ready-host-only-overlay",
                 Lane::Ready,
-                Some("host-only-refused"),
+                Some("needs-privileged-host"),
                 "a0",
                 "ready",
             ),
@@ -12941,7 +12958,9 @@ mod tests {
                 "evt_ready_safe_overlay",
                 "wi-ready-safe-overlay",
                 Lane::Ready,
-                Some("safe"),
+                // Factory-SAFE is the ABSENCE of a marking, not a marking that
+                // spells "safe" — the published vocabulary has no such value.
+                None,
                 "a1",
                 "ready",
             ),
