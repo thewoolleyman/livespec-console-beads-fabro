@@ -3970,8 +3970,9 @@ mod tests {
     fn the_workflow_scope_override_rides_the_spine_to_its_action_id()
     -> Result<(), ConsoleRuntimeError> {
         // The hotkey-less valve's full round trip: staged from a drilled-in
-        // host-only-refused ready item, persisted, rebuilt from the store, and
-        // dispatched as set-workflow-scope-override:<id>:citation-only.
+        // ready item the orchestrator reports as awaiting a scope override,
+        // persisted, rebuilt from the store, and dispatched as
+        // set-workflow-scope-override:<id>:citation-only.
         let mut store = SqliteEventStore::open_in_memory()?;
         let payload = concat!(
             r#"{"repo":"livespec-console-beads-fabro","work_item_id":"wi-refused","#,
