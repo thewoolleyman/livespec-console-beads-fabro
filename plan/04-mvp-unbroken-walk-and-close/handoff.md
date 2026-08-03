@@ -26,7 +26,7 @@ with the **approve valve proven SEPARATELY on manual-admission items** (already 
 four clean TUI admissions on 2026-07-29, plus one correctly-refused press on 2026-07-30).
 
 **Why the amendment was made, kept because the evidence is the reason it survives.**
-`plan/console-happy-path-mvp/` said "slices admitted at the approve valve". Measured
+`plan/archive/console-happy-path-mvp/` said "slices admitted at the approve valve". Measured
 2026-07-30, on the two slices a real groom produced: `-ccycuk` landed at `ready`
 outright, and `-koykn7` landed `pending-approval` carrying `admission_policy=auto`,
 which `can_approve_item` refuses because it requires
@@ -64,7 +64,7 @@ actually shipped.
 
 ## Also owns
 
-- **Archive sequencing for the whole arc** (01–04 and `plan/console-happy-path-mvp/`).
+- **Archive sequencing for the whole arc** (01–04 and `plan/archive/console-happy-path-mvp/`).
 - **Final disposition of DOC CUSTODY.** Registry-generated docs (02) shrink it
   substantially; what REMAINS becomes a standing item or a named successor thread.
   **Custody must NEVER be dropped silently** — that is the exact condition the last

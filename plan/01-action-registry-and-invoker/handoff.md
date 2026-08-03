@@ -150,7 +150,7 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
 1. `research/operator-surface-redesign-decision.md` — how this decision satisfies the
    operator-surface-redesign thread's brainstorm entry gate, and the custody map from
    absorbing it. That thread is ARCHIVED at `plan/archive/operator-surface-redesign/`.
-2. `plan/console-happy-path-mvp/handoff.md` §§ 0h–0j — the walk evidence this plan
+2. `plan/archive/console-happy-path-mvp/handoff.md` §§ 0h–0j — the walk evidence this plan
    inherits, including the three silent-refusal paths and the staged asset.
 3. `plan/archive/work-item-lifecycle-redesign/research/locked-core-contract.md` — the
    invariants every slice obeys (zero Beads knowledge; commands only through the
@@ -436,7 +436,7 @@ Charter § Milestone acceptance, unchanged and in order:
 
 `-ccycuk` re-verified 2026-08-02T20:0xZ: still `READY`, untouched, description intact.
 Launch needs the plugin-root override INSIDE the credential wrapper (`-pj5g3f`); the
-command is in `plan/console-happy-path-mvp/handoff.md` § 0-RESUME. Recording conditions
+command is in `plan/archive/console-happy-path-mvp/handoff.md` § 0-RESUME. Recording conditions
 unchanged: **a leg discharged outside the surface is an OPEN leg with a workaround.**
 
 ### `-3yx`: the split's experiment RETURNED, and the answer is "persists uniformly"
@@ -711,7 +711,7 @@ What the two commits carry:
 exhaustively on this tree, each probe run fresh:
 
 - lcov export: LF=7917/7928 vs **7823 DA records, NONE zero** (LF > #DA — the same
-  `LF/LH vs DA` inconsistency `plan/console-happy-path-mvp/handoff.md` § 0c item 2
+  `LF/LH vs DA` inconsistency `plan/archive/console-happy-path-mvp/handoff.md` § 0c item 2
   recorded for slice C, where 4 such lines existed).
 - JSON export: zero zero-count non-gap region entries unaccounted, zero zero-count
   expansions (recursive), zero all-zero function instantiation GROUPS (after fixes).
@@ -742,7 +742,7 @@ summary artifact. Until then the branch stays local; do NOT `--no-verify`.
    `set-workflow-scope-override:livespec-console-beads-fabro-ccycuk:citation-only`,
    drain at the TUI (NO drive.py fallback), monitor, `c` accept. `-ccycuk` still sits
    `ready` + `ai-then-human`, untouched. The plugin-root override for the cockpit and
-   the known dispatch hazards are in `plan/console-happy-path-mvp/handoff.md` § 0-RESUME.
+   the known dispatch hazards are in `plan/archive/console-happy-path-mvp/handoff.md` § 0-RESUME.
 
 ### Findings surfaced this session (recorded, not fixed here)
 

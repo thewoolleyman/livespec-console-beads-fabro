@@ -45,7 +45,7 @@
     // and the reasons matter:
     //   2026-07-20 — autonomous-mode levers set (auto_approve_ready: true,
     //     acceptance_mode: "ai-only") for the autonomous-mode acceptance work.
-    //   2026-07-21 — both restored to safe defaults (plan/console-happy-path-mvp/)
+    //   2026-07-21 — both restored to safe defaults (plan/archive/console-happy-path-mvp/)
     //     because that mode was retired and the happy-path walk admits at the
     //     approve valve and ships at the accept valve.
     //   2026-07-29 — acceptance_mode set BACK to "ai-only", maintainer-directed:

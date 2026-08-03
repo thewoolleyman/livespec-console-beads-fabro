@@ -70,7 +70,7 @@ anything this plan needs.
 
 ### 1. Doc custody — **ACCEPTED HERE, 2026-08-03**
 
-The transfer declared by `plan/console-happy-path-mvp/` § 0-SUCCESSION was never accepted;
+The transfer declared by `plan/archive/console-happy-path-mvp/` § 0-SUCCESSION was never accepted;
 `#599` named that gap and deliberately left it open rather than rubber-stamping it into a
 plan that had not started. **This plan has now started, so the objection has expired and
 custody is accepted here.** This paragraph IS the acceptance.
@@ -84,9 +84,9 @@ only by a human diff).
 **The final home is still plan 04's to decide** (§ 0-SUCCESSION), and this plan's own
 mission is what shrinks the obligation: docs GENERATED from the registry make an
 undocumented verb impossible, which is the `-2ckgiy` class closed outright. Whatever
-survives generation is what 04 disposes of. **Do not archive
-`plan/console-happy-path-mvp/` on the strength of this acceptance alone** — 04 sequences
-the archive.
+survives generation is what 04 disposes of. **That thread was ARCHIVED on 2026-08-03**
+(`plan/archive/console-happy-path-mvp/`) once this acceptance made its gate complete; its
+audit log moves with the obligation and is now maintained from here.
 
 ### 2. Registry readiness — **RE-MEASURED 2026-08-03 against master `28452a8`**
 
@@ -104,7 +104,60 @@ now DISCHARGED.** Re-measured with A, B and C all merged:
 **So the schema migration that gated this plan is done and a menu-only action is now
 expressible and shipped.** The taxonomy still needs no migration.
 
-### 3. THE SCOPING QUESTION — RAISED, NOT PICKED
+### 3b. THE SCOPING QUESTION IS **ANSWERED** — 2026-08-03
+
+**Maintainer decision: EVERY OPERATOR-REACHABLE BEHAVIOUR.** The plain meaning of the
+ratified words, not the registry-shaped convenience. The gate must quantify over what an
+operator can actually DO, and each behaviour must either carry a menu path or be
+**explicitly defined out with a stated rationale**.
+
+**THE POPULATION, MEASURED** at `key_event_to_terminal_input`
+(`crates/console-tui/src/lib.rs:558-593`) — this is the real list, not an estimate:
+
+**THE POSTURE IS "REGISTER BY DEFAULT"** (maintainer, 2026-08-03). Exclusion is the
+exception and must be argued; it is not the convenient default for anything awkward.
+
+| behaviour | classification |
+|---|---|
+| the ELEVEN registry entries (`KeyCode::Char(v)` → `action_for_hotkey`) | **menu-drivable** — already carry `menu_path` |
+| `/` search, `:` palette, `?` help, `q` quit, `Ctrl-C` quit | **REGISTER — menu paths owed. This is the real work**, and they are not in the registry today |
+| `Tab`/`BackTab`, `Left`/`Right`, `Up`/`Down`, space | **structural residue — excludable**: pure focus movement |
+| `Enter`, `Esc`, `PageUp`/`PageDown`, `Backspace` | excludable on the SAME rationale — menu operation and text entry, not actions a menu could contain — but argue each in the fixture rather than assuming it |
+| `Home`/`End`/`Delete`/`Insert`/`F(_)`/`CapsLock`/… | inert; no behaviour to cover |
+
+**THE BOOTSTRAP PARADOX, and why the carve-out is principled rather than convenient.**
+`Up`/`Down`/`Enter`/`Esc`/`Tab` are how a menu is OPERATED. Requiring them to be
+"drivable via a menu path" is circular — you would need a menu to open a menu. They are
+the substrate menus run ON, not actions a menu could contain. **That is the rationale the
+decision's "or defined out" arm requires, and it must be written into the fixture rather
+than assumed**, because a reader who finds them merely absent cannot tell a principled
+exclusion from an oversight. Everything in that row is navigation or text entry; nothing
+in it mutates a work-item or the factory.
+
+**WHY THIS CHOICE MAKES THE GATE A REAL VERIFIER — the point of asking.** Under
+"every registered action" the gate would be near-tautological: menus are GENERATED from
+the registry, so it would quantify over its own input. Under this choice it can FAIL for a
+reason that matters — **`/`, `:`, `?` and `q` are operator actions with no menu path
+today**, so a naive implementation is BORN RED against them, exactly as slice A's parity
+gate was. That red is the evidence the gate works. It also means the deliverable is larger
+than "generate menus": those four (five with `Ctrl-C`) need registry entries and menu
+homes — plausibly `View > Search`, `View > Command palette`, `Help > …`, `File > Quit` —
+which is the FIRST top-level structure beyond `Work item` and therefore the first real
+menu BAR.
+
+**Consequence for the taxonomy, flagged now:** all eleven current entries sit under one
+top-level node. Adding these introduces at least one more, so the menu bar becomes real
+rather than a single-node degenerate case. Design the bar for ≥2 top-level nodes from the
+start.
+
+**Do NOT re-derive the exclusion list from the key handler at gate time.** Enumerate it in
+a checked-in fixture with a mandatory reason per entry (the `console-fork-drift-check` /
+`coverage-unnameable-disposition` idiom this repo already uses for justified divergence),
+and **fail closed when a new key appears that the fixture does not classify** — otherwise
+the next structural key added silently escapes the gate, which is the `-2ckgiy` mechanism
+all over again.
+
+### 3. THE SCOPING QUESTION — RAISED, NOT PICKED (superseded by § 3b above)
 
 The charter requires this be raised at open rather than chosen silently, because it decides
 whether the completeness gate is a real verifier or a tautology. **The measurement is
@@ -132,7 +185,7 @@ the header would otherwise think custody is still unclaimed.)*
 ## DOC CUSTODY — DECLARED TO RIDE THIS PLAN, **NOT YET ACCEPTED HERE**
 
 Flagged 2026-08-03 by the session that ran a doc-custody pass and went looking for where
-the obligation actually lives. `plan/console-happy-path-mvp/handoff.md` § 0-SUCCESSION
+the obligation actually lives. `plan/archive/console-happy-path-mvp/handoff.md` § 0-SUCCESSION
 says "**DOC CUSTODY → rides plan 02**, final home decided by plan 04". **The section below
 does not cover it** — it accepts three `operator-surface-redesign` items and nothing else.
 By both threads' own rule ("another plan owns it is not a handoff; a handoff is complete
@@ -145,11 +198,11 @@ prose, neither catchable by any gate). **Accepting it into a plan that has not s
 would make an active obligation dormant**, which is the precise outcome the archived
 thread's § "Doc custody" was written to prevent.
 
-So until 02 actually opens, custody REMAINS with `plan/console-happy-path-mvp/`, where it
+So until 02 actually opens, custody REMAINS with `plan/archive/console-happy-path-mvp/`, where it
 is still live and where the 2026-08-03 pass was logged. **When 02 opens, its first act
 should be to accept this explicitly** — replace this section with an acceptance, or push
 the final home to 04 with a named interim holder. Do NOT archive
-`plan/console-happy-path-mvp/` while this section still says "not yet accepted": doing so
+`plan/archive/console-happy-path-mvp/` while this section still says "not yet accepted": doing so
 drops the obligation on the floor, which is the exact condition its archival was
 conditioned on avoiding.
 
@@ -157,7 +210,7 @@ conditioned on avoiding.
 
 From `plan/archive/operator-surface-redesign/`, absorbed and archived on the
 maintainer's ruling. **This section IS the acceptance** — the discipline that thread and
-`plan/console-happy-path-mvp/` both record is that "another plan owns it" is not a
+`plan/archive/console-happy-path-mvp/` both record is that "another plan owns it" is not a
 handoff; a handoff is complete only when the successor confirms it. Confirmed here.
 
 | item | what it asks for | status at transfer |
