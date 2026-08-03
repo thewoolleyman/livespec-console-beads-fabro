@@ -61,6 +61,74 @@ cockpit during this plan, and that is expected, not a regression). Out: the walk
 which segment, and record any hotkey used as a FAILURE of the menus-only claim rather
 than a convenience.
 
+## THIS PLAN IS OPEN — 2026-08-03. Read this section first.
+
+Opened on the supervisor's instruction after plan 01 reached its blocked point. **Plan 01
+is complete except its dogfood leg, which is blocked on UPSTREAM** (an orchestrator
+signal, propose-change filed as their PR #1250) — not on console work, and not on
+anything this plan needs.
+
+### 1. Doc custody — **ACCEPTED HERE, 2026-08-03**
+
+The transfer declared by `plan/console-happy-path-mvp/` § 0-SUCCESSION was never accepted;
+`#599` named that gap and deliberately left it open rather than rubber-stamping it into a
+plan that had not started. **This plan has now started, so the objection has expired and
+custody is accepted here.** This paragraph IS the acceptance.
+
+What is accepted: the recurring obligation to re-audit `docs/` against source, the audit
+log in that thread's § "Doc custody", and its skip-list. **It is recurring work, not a
+dormant label** — it fired three times in four days (`-cxu4eu`'s `h` overlay, plan-01
+slice C's record-modal refusal line, and a misnamed Status context, the last two caught
+only by a human diff).
+
+**The final home is still plan 04's to decide** (§ 0-SUCCESSION), and this plan's own
+mission is what shrinks the obligation: docs GENERATED from the registry make an
+undocumented verb impossible, which is the `-2ckgiy` class closed outright. Whatever
+survives generation is what 04 disposes of. **Do not archive
+`plan/console-happy-path-mvp/` on the strength of this acceptance alone** — 04 sequences
+the archive.
+
+### 2. Registry readiness — **RE-MEASURED 2026-08-03 against master `28452a8`**
+
+The § below was measured against `69ea9d4` with slice A unmerged. **Its blocking concern is
+now DISCHARGED.** Re-measured with A, B and C all merged:
+
+| | charter (69ea9d4) | now (`28452a8`) |
+|---|---|---|
+| entries | 10 | **11** |
+| `hotkey` type | `char`, MANDATORY — **gating** | **`Option<char>`** |
+| menu-only entries | 0 (not expressible) | **1** (`set-workflow-scope-override`) |
+| top-level nodes | 1 (`Work item`) | 1 (`Work item`) |
+| groups | Hand off 1, Lifecycle 4, Policy dials 5 | + **Factory safety 1** |
+
+**So the schema migration that gated this plan is done and a menu-only action is now
+expressible and shipped.** The taxonomy still needs no migration.
+
+### 3. THE SCOPING QUESTION — RAISED, NOT PICKED
+
+The charter requires this be raised at open rather than chosen silently, because it decides
+whether the completeness gate is a real verifier or a tautology. **The measurement is
+unchanged by A/B/C: all ELEVEN entries are per-item verbs under the single top-level node
+`Work item`.** The structural keys (`/` search, `:` palette, `?` help, `q` quit, space,
+Tab/arrow focus) are matched ahead of the registry lookup and are actively forbidden as
+registry hotkeys.
+
+So "every action can be driven via MENUs" can mean:
+
+- **every REGISTERED action** — mechanical and provable today, but true largely by
+  construction, and it says nothing about navigation.
+- **every operator-reachable BEHAVIOUR** — the plain meaning of the maintainer's words,
+  but it requires either registering the structural keys or explicitly defining them out.
+
+**Raised with the maintainer as a picker at open.** Do not proceed to the completeness gate
+until it is answered; everything else in the mission (menu widget, accelerator display,
+generation) is unaffected and can proceed.
+
+## DOC CUSTODY — the 2026-08-03 acceptance above SUPERSEDES this section
+
+*(Kept because its reasoning is why the acceptance waited, and a successor who reads only
+the header would otherwise think custody is still unclaimed.)*
+
 ## DOC CUSTODY — DECLARED TO RIDE THIS PLAN, **NOT YET ACCEPTED HERE**
 
 Flagged 2026-08-03 by the session that ran a doc-custody pass and went looking for where

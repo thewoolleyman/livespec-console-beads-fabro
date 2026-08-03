@@ -706,7 +706,11 @@ decoupled, numbered plans now carry this arc:
   item or a named successor. **This section's § "Doc custody" is STILL LIVE until 04
   says otherwise** — it is recurring work, not a dormant label, and deleting it without
   a successor is the specific outcome archival was conditioned on avoiding.
-  **VERIFIED 2026-08-03 AND IT IS NOT ACCEPTED.** Plan 02's
+  **ACCEPTED BY PLAN 02 ON 2026-08-03** — the transfer is now COMPLETE; see that plan's
+  § "THIS PLAN IS OPEN". It opened, so the objection recorded below expired. The FINAL
+  home is still plan 04's call, and this thread must not be archived on the strength of
+  the interim acceptance alone. The history of why it waited:
+  Plan 02's
   § "Inherited custody — ACCEPTED" covers the three `operator-surface-redesign` items and
   **says nothing about doc custody**, so by this thread's own rule the transfer is
   INCOMPLETE. A counter-section now exists there naming the gap. **This is the load-bearing
