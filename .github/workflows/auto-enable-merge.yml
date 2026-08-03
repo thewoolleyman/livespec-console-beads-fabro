@@ -1,0 +1,154 @@
+# Auto-enable-merge workflow — set --auto --rebase on PRs from the
+# user-or-agent identity allowlist, when not draft and not flagged
+# do-not-merge. Eliminates the "agent opened a PR but forgot to
+# `gh pr merge --auto --rebase` the user" failure mode (li-8f3,
+# supersedes li-abl; original PR #78 reverted because GITHUB_TOKEN
+# could not enable auto-merge — see li-8f3 description for the
+# full diagnosis).
+#
+# WHY THIS REPO GOT IT LATE, and it is worth stating because the
+# absence was invisible rather than deliberate.
+# livespec-console-beads-fabro was one of two fleet repos still
+# missing this workflow on 2026-08-03. Measured that day across nine
+# release-please-carrying repos, with seven PRESENT rows as the
+# control, this repo and livespec-runtime were the only two ABSENT.
+# The consequence was observable, not inferred: release PR #404
+# ("chore(master): release 0.4.0") sat OPEN from 2026-07-23 with
+# `autoMergeRequest: null`, and NO release-please PR had EVER merged
+# in this repo. A release train that has never once completed reads
+# exactly like a repo that simply has not released yet.
+#
+# The gap was found only because a sibling repo's audit was widened.
+# That audit had compared THREE repos, concluded livespec-overseer was
+# "the ONLY fleet repo missing" the workflow, and was wrong — an
+# absence tested against too small a comparison set is not evidence
+# about a fleet. Tracked as livespec-console-beads-fabro-4vo.
+#
+# Auth model:
+#   - Uses a GitHub App installation token instead of GITHUB_TOKEN.
+#   - actions/create-github-app-token@v3 mints a fresh token at
+#     runtime (lasts ~1 hour, discarded after the run).
+#   - The App's private key has no calendar expiration, so this
+#     workflow never silently breaks on token expiry.
+#   - Required repo secrets: APP_ID, APP_PRIVATE_KEY (managed via
+#     `gh secret set`). BOTH ALREADY EXISTED in this repo when the
+#     workflow landed — only the file was missing, so this was never
+#     a credentials project.
+#
+# Why an App instead of GITHUB_TOKEN: the GraphQL
+# `enablePullRequestAutoMerge` mutation requires admin-level repo
+# access that `github-actions[bot]` lacks regardless of declared
+# `permissions:` scopes. Apps installed on the repo are granted
+# the access by the install grant itself.
+#
+# Enable paths (ANY one qualifies), each still subject to the
+# draft-skip and do-not-merge opt-out below:
+#   - Author in the human allowlist:
+#       - thewoolleyman — the user's own PRs and PRs opened by agents
+#         acting via the user's PAT (Claude Code, etc., where the PR
+#         author == the PAT owner).
+#   - The fleet's OWN release-please App (author login
+#     `livespec-pr-bot[bot]`) on a head branch whose name starts with
+#     `release-please--`. The branch-shape guard scopes the App path to
+#     release PRs, so the App cannot auto-enable-merge any other PR it
+#     might author. Verified against this repo's live release PR #404,
+#     whose head is
+#     `release-please--branches--master--components--livespec-console-beads-fabro`.
+#
+# Explicit opt-out paths (apply to BOTH enable paths):
+#   - `--draft` PRs are skipped (the trigger only fires on
+#     ready-for-review state).
+#   - PRs labelled `do-not-merge` are skipped.
+#
+# Out of scope by design:
+#   - EXTERNAL bot PRs (dependabot, future renovate) — author neither
+#     in the human allowlist nor the fleet's release-please App.
+#   - Future collaborator PRs — same gate.
+#
+# Why the release-please App path exists: across 2026-06-30..2026-07-03
+# the fleet's release train stalled in all six repos — release-please's
+# App-authored release PRs were never in the author allowlist, so
+# auto-merge was never enabled and the release PRs silently parked. The
+# branch-shape-guarded App path closes that gap (livespec-c1k9).
+#
+# This workflow ensures green PRs enter the auto-merge state on open
+# so they merge hands-off under this repo's rebase-merge-only
+# discipline (`.ai/spec-check-and-ci-discipline.md`: "The repo allows
+# rebase merges only (no squash, no merge commit) — `gh pr merge
+# --auto --rebase`", and AGENTS.md step 4 of the worktree -> PR flow).
+# The citation is deliberately NOT to SPECIFICATION/: this repo's
+# non-functional-requirements.md states no merge-strategy clause, and a
+# pointer at a section that does not exist is worse than none. No
+# pre-merge branch-update step is required:
+# rebase-merge resolves each PR against the current `master` tip at
+# merge time and re-runs CI on the rebased result.
+#
+# ACCEPTANCE IS LIVE, NOT FILE PRESENCE. A workflow that exists but
+# never fires is the vacuous-green shape this fleet keeps
+# rediscovering. The bar, proven in livespec-overseer on 2026-08-02:
+# a release-please PR reaches MERGED with `mergedBy` ==
+# `app/livespec-pr-bot`, with no human or agent pressing merge. Note
+# that in this fleet agents authenticate with the maintainer's
+# credentials, so a hand-merge and an agent merge produce the SAME
+# `mergedBy` string — merging a parked release PR by hand destroys the
+# only acceptance evidence available.
+
+name: Auto-enable merge
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+      - unlabeled
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # Per-PR concurrency: a synchronize-then-unlabeled burst on the
+  # same PR collapses to one effective run.
+  group: auto-enable-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-latest
+    # Composed gate: NOT draft AND do-not-merge label absent AND
+    # (author in human allowlist OR the fleet's release-please App on a
+    # release-please-- head branch). All continuation lines share one
+    # indent so the `>-` fold yields a single-line expression.
+    if: >-
+      github.event.pull_request.draft == false
+      && !contains(github.event.pull_request.labels.*.name, 'do-not-merge')
+      && (
+      contains(fromJSON('["thewoolleyman"]'), github.event.pull_request.user.login)
+      || (github.event.pull_request.user.login == 'livespec-pr-bot[bot]'
+      && startsWith(github.event.pull_request.head.ref, 'release-please--'))
+      )
+    steps:
+      - name: Mint App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: "Enable auto-merge (rebase) on PR #${{ github.event.pull_request.number }}"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # `gh pr merge --auto` is idempotent — re-running on a PR
+          # that already has auto-merge set returns 0.
+          if gh pr merge "$PR" --repo "$REPO" --auto --rebase; then
+            echo "Auto-merge enabled on PR #$PR (rebase strategy)"
+          else
+            echo "::error::failed to enable auto-merge on PR #$PR"
+            exit 1
+          fi
