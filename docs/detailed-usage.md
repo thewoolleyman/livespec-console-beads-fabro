@@ -274,7 +274,7 @@ close, so it always describes the current context rather than a fixed summary.
 | Lanes, drilled into a pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into a dispatcher-admitted pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into a ready item | `up/down move \| enter item \| esc lane list \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into a host-only-refused ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into a factory-unsafe ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into an active item | `up/down move \| enter item \| esc lane list \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| ? help \| q quit` |
 | Lanes, drilled into a blocked item | `up/down move \| enter item \| esc lane list \| s move-status \| ? help \| q quit` |
@@ -304,8 +304,10 @@ alone. `p approve` renders only while the item's **effective admission policy
 is `manual`** — a dispatcher-admitted (`auto`) item omits it, because the
 approve valve cannot fire there (`m set-admission` is the operator's route to
 reclaim the door). `h handoff` renders only where the driver-handoff verb
-applies: a drilled-in **backlog** item (groom) or a drilled-in
-**host-only-refused ready** item (implement).
+applies: a drilled-in **backlog** item (groom), or a drilled-in **ready** item
+that carries a factory-safety marking (implement). Any marking counts — the
+factory refuses a marked item whatever the marking says, so an attended host
+session is the route forward.
 
 An open overlay's hint wins over the focused pane's. The pane hints key on the
 active **view** plus what is selected in it — not on which of the body panes

@@ -114,7 +114,7 @@ fn selected_work_item_status_contexts_are_documented() -> std::io::Result<()> {
         "Lanes, drilled into a pending-approval item",
         "Lanes, drilled into a dispatcher-admitted pending-approval item",
         "Lanes, drilled into a ready item",
-        "Lanes, drilled into a host-only-refused ready item",
+        "Lanes, drilled into a factory-unsafe ready item",
         "Lanes, drilled into an active item",
         "Lanes, drilled into an acceptance item",
         "Lanes, drilled into a blocked item",
@@ -285,7 +285,7 @@ fn context_binding(label: &str) -> Option<ActionContext> {
             AdmissionPolicy::Manual,
             false,
         ),
-        "Lanes, drilled into a host-only-refused ready item" => (
+        "Lanes, drilled into a factory-unsafe ready item" => (
             ActionSurface::LaneDrill,
             Lane::Ready,
             AdmissionPolicy::Manual,

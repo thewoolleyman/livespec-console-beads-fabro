@@ -544,9 +544,11 @@ pub fn per_item_verb_is_state_valid(lane: Lane, verb: PendingValve) -> bool {
         }
         // Console-scoped, not vocabulary-consumed: the orchestrator ships no
         // source-state guard for this valve and publishes no vocabulary row
-        // for it, so the console offers it where it unblocks — the
-        // host-only-refused `ready` set (the registry availability adds the
-        // factory-safety dimension on top of the lane).
+        // for it, so the console offers it on the `ready` lane and lets the
+        // REGISTRY availability add the deciding dimension —
+        // `awaits_scope_override`, NOT factory safety. The two are disjoint:
+        // a factory-marked item is refused on an earlier arm than the one this
+        // override clears, so it is never the item awaiting one.
         PendingValve::SetWorkflowScopeOverride => matches!(lane, Lane::Ready),
     }
 }
