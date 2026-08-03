@@ -1,5 +1,42 @@
 # console-happy-path-mvp — handoff
 
+> # ARCHIVED 2026-08-03. THIS THREAD IS CLOSED. DO NOT RESUME IT.
+>
+> **Everything live moved to the numbered 01–04 arc. Start there, not here.**
+>
+> | successor | epic | what it took from this thread |
+> |---|---|---|
+> | `plan/01-action-registry-and-invoker/` | `-dvv` | the STAGED ASSET `-ccycuk`, and the interim unbroken-pass evidence |
+> | `plan/02-menu-shell-primacy/` | `-et3` | **DOC CUSTODY** — accepted 2026-08-03 in its § "THIS PLAN IS OPEN" |
+> | `plan/03-dispatch-ux-and-outcome-surfacing/` | `-1df` | drain off the UI thread; refusal surfacing |
+> | `plan/04-mvp-unbroken-walk-and-close/` | `-9nb` | **THE WALK DELIVERABLE**, and the arc's archive sequencing |
+>
+> **Archive gate, verified before the move — every transfer has a NAMED, ACCEPTING
+> successor**, which is the condition this thread set for its own archival and the reason
+> it stayed open so long:
+>
+> - **Doc custody → plan 02.** Accepted explicitly on 2026-08-03, recorded at both ends.
+>   It stayed unaccepted for a day ON PURPOSE (see PR #599): moving active recurring work
+>   into a plan that had not started would have made it dormant, which is the exact outcome
+>   this thread's § "Doc custody" was written to prevent. **The audit log below is the live
+>   record and moves with the obligation — the FINAL home is plan 04's call, not settled by
+>   this archival.**
+> - **Walk deliverable → plan 04.** Its Mission IS the walk ("one unbroken single-item
+>   pass, MENUS-ONLY, on the real stack"), and its § "THE AMENDED WALK" cites this thread by
+>   path and amends its mission text. That section is the acceptance.
+> - **Staged asset → plan 01.** `-ccycuk` resumed there; still untouched at `ready` /
+>   `ai-then-human`.
+>
+> **What this thread never achieved, stated plainly so the archive does not read as
+> success:** the ONE CONTINUOUS unbroken pass. Every leg was walked individually — `h`
+> handoff, a real groom, `n`, a correct `p` refusal, `c` accept — and they never joined
+> into a single uninterrupted walk. That deliverable is plan 04's, on the menu-primary
+> surface, and it is still owed.
+>
+> Read below only for HISTORY and for the doc-custody audit log. Every "RESUME HERE",
+> "next action", and "STANDING" block below is superseded by the four plans above.
+
+
 **Epic anchor:** `livespec-console-beads-fabro-b3k5hi` — status is READ from
 the ledger (`list-work-items` / `next`), never stored here.
 Opened 2026-07-20 (session `exploratory-test-tui`).

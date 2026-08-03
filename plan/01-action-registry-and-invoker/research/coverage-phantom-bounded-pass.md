@@ -28,7 +28,7 @@ rebase carried only a dev-tooling pin and plan docs, no Rust).
 ## Five listing surfaces, none of which can name the line
 
 1. **`cargo llvm-cov report --show-missing-lines`** — the tool
-   `plan/console-happy-path-mvp/handoff.md` § 0c item 2 names as *the* tool for
+   `plan/archive/console-happy-path-mvp/handoff.md` § 0c item 2 names as *the* tool for
    ordinary misses. It prints **no missing-line section at all** while the same
    invocation's summary still counts 1.
 2. **JSON segment reconstruction** (this pass). 23,012 segments, **0
