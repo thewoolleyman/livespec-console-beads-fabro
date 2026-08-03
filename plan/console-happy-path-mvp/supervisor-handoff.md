@@ -179,7 +179,7 @@ checks are exactly the ones that used to be prose.
    repo-qualified name is used ONLY on a genuine cross-repo topic collision):
 
    ```bash
-   tmux has-session -t "console-happy-path-mvp"
+   tmux has-session -t '=console-happy-path-mvp:'
    ```
 
 2. **The supervised pane is a live AGENT, not a shell.** A tmux session that is
@@ -188,7 +188,7 @@ checks are exactly the ones that used to be prose.
    proves nothing:
 
    ```bash
-   pane_pid=$(tmux display-message -p -t "console-happy-path-mvp" '#{pane_pid}')
+   pane_pid=$(tmux display-message -p -t '=console-happy-path-mvp:' '#{pane_pid}')
    ps -o pid=,comm=,args= --ppid "$pane_pid" --pid "$pane_pid" -H
    # PASS only if a live `claude` or `codex` process appears in that tree.
    ```
@@ -198,7 +198,7 @@ checks are exactly the ones that used to be prose.
 3. **Supervisor session exists** — the session you are in:
 
    ```bash
-   tmux has-session -t "console-happy-path-mvp-supervisor"
+   tmux has-session -t '=console-happy-path-mvp-supervisor:'
    ```
 
 4. **The plan thread exists inside the target repo.** Absolute path: a bare
@@ -212,8 +212,9 @@ checks are exactly the ones that used to be prose.
    first — a symlinked path that merely LOOKS contained is a HALT:
 
    ```bash
-   pane_cwd=$(tmux display-message -p -t "console-happy-path-mvp" '#{pane_current_path}')
-   case "$(readlink -f "$pane_cwd")" in
+   pane_cwd=$(tmux display-message -p -t '=console-happy-path-mvp:' '#{pane_current_path}')
+   [ -n "$pane_cwd" ] || { echo "HALT: empty pane cwd"; echo "REMEDY: re-check the exact target before resolving its path"; exit 1; }
+   case "$(readlink -f -- "$pane_cwd")" in
      /data/projects/livespec-console-beads-fabro|/data/projects/livespec-console-beads-fabro/*) echo "PASS: $pane_cwd" ;;
      *) echo "HALT: pane cwd $pane_cwd is outside the target repo" ;;
    esac
@@ -296,7 +297,7 @@ Every command here is copy-pasteable as written.
 Inspect read-only — last 40 lines of the worker pane:
 
 ```sh
-tmux capture-pane -p -t console-happy-path-mvp -S -40
+tmux capture-pane -p -t '=console-happy-path-mvp:' -S -40
 ```
 
 `-S -40` starts 40 lines back. Do NOT pipe to `tail -N` — `-N` is a placeholder
@@ -305,9 +306,9 @@ and `tail` rejects it.
 Short instruction — send the text, VERIFY, then send Enter SEPARATELY:
 
 ```sh
-tmux send-keys -t console-happy-path-mvp -- '<one line>'
-tmux capture-pane -p -t console-happy-path-mvp -S -10   # confirm it landed
-tmux send-keys -t console-happy-path-mvp Enter          # only after verifying
+tmux send-keys -t '=console-happy-path-mvp:' -- '<one line>'
+tmux capture-pane -p -t '=console-happy-path-mvp:' -S -10   # confirm it landed
+tmux send-keys -t '=console-happy-path-mvp:' Enter          # only after verifying
 ```
 
 Do NOT use the one-shot `… -- '<line>' Enter` form. Measured on this very pane:
@@ -319,9 +320,9 @@ Longer text — load, paste, VERIFY, then Enter separately:
 
 ```sh
 tmux load-buffer -b sup /tmp/msg.txt
-tmux paste-buffer -b sup -t console-happy-path-mvp
-tmux capture-pane -p -t console-happy-path-mvp -S -20   # confirm it landed
-tmux send-keys -t console-happy-path-mvp Enter          # only after verifying
+tmux paste-buffer -b sup -t '=console-happy-path-mvp:'
+tmux capture-pane -p -t '=console-happy-path-mvp:' -S -20   # confirm it landed
+tmux send-keys -t '=console-happy-path-mvp:' Enter          # only after verifying
 ```
 
 A landed paste renders as `[Pasted text #N +M lines]`; anything else means it
@@ -455,13 +456,15 @@ precisely when you are the only moving part.
 
 ```sh
 # Pane watcher — worker mid-flight. Detect busy by pane CHANGE, not status text.
-prev=""; stable=0
+prev="__OVERSEER_NO_CAPTURE_YET__"; stable=0
 for i in $(seq 1 180); do            # ~60 min ceiling
   sleep 20
-  pane=$(tmux capture-pane -p -t console-happy-path-mvp -S -40) || { echo "WAKE: pane gone"; exit 0; }
-  case "$pane" in
-    *"Enter to select"*) echo "WAKE: picker open"; exit 0 ;;
-  esac
+  pane=$(tmux capture-pane -p -t '=console-happy-path-mvp:') || { echo "WAKE: pane gone"; exit 0; }
+  [ -z "$pane" ] && { echo "WAKE: pane unreadable — session may be gone"; exit 0; }
+  if printf '%s\n' "$pane" | tail -8 \
+       | grep -qE '^[[:space:]]*Enter to (select|confirm)[[:space:]]*(.*)?$'; then
+    echo "WAKE: picker open"; exit 0
+  fi
   if [ "$pane" = "$prev" ]; then stable=$((stable+1)); else stable=0; prev="$pane"; fi
   if [ "$stable" -ge 3 ]; then echo "WAKE: pane unchanged ~60s — worker idle"; exit 0; fi
 done
