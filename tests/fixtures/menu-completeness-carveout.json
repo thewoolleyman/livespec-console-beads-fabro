@@ -1,0 +1,55 @@
+{
+  "_comment": "Operator-reachable behaviours DELIBERATELY excluded from the menu-completeness gate. The gate quantifies over BEHAVIOURS, not registry rows — that is what makes it a verifier rather than a tautology, since menus are generated from the registry. Every exclusion below carries a mandatory reason. The gate FAILS CLOSED: a key handled in key_event_to_terminal_input that is neither a registry hotkey nor listed here is a RED BUILD. Adding an entry is a design decision, not a fix — see plan/02-menu-shell-primacy/handoff.md § 3b.",
+  "_posture": "REGISTER BY DEFAULT (maintainer, 2026-08-03). Exclusion is the exception and must be argued. If a behaviour could plausibly sit in a menu, it belongs in the registry, not here.",
+  "excluded": [
+    {
+      "key": "Up",
+      "reason": "MENU MECHANICS. Moving the selection is how a menu is operated. Requiring it to be reachable VIA a menu is circular — you would need a menu to move within a menu. Navigation, not an action; mutates nothing."
+    },
+    {
+      "key": "Down",
+      "reason": "MENU MECHANICS. The counterpart of Up, same rationale: it drives the menu rather than being an item within one."
+    },
+    {
+      "key": "Enter",
+      "reason": "MENU MECHANICS. Enter is how a menu item is ACTIVATED. An Enter reachable only by activating a menu item could never be pressed the first time. It is the substrate menus run on."
+    },
+    {
+      "key": "Esc",
+      "reason": "MENU MECHANICS. Dismissal must remain reachable when a menu is open and possibly mis-navigated; routing escape THROUGH the surface it escapes is precisely the trap it exists to undo."
+    },
+    {
+      "key": "Tab",
+      "reason": "PURE FOCUS MOVEMENT. Moves focus between panes and changes no state a work-item or the factory can observe."
+    },
+    {
+      "key": "BackTab",
+      "reason": "PURE FOCUS MOVEMENT. The reverse of Tab, same rationale."
+    },
+    {
+      "key": "Left",
+      "reason": "PURE FOCUS MOVEMENT (and header panning). Walks focus across body panes or scrolls the focused header; no operator action is taken."
+    },
+    {
+      "key": "Right",
+      "reason": "PURE FOCUS MOVEMENT (and header panning). The counterpart of Left, same rationale."
+    },
+    {
+      "key": "Char(' ')",
+      "reason": "PURE FOCUS MOVEMENT / row activation within a pane. Structural residue explicitly named excludable by the 2026-08-03 ruling."
+    },
+    {
+      "key": "PageUp",
+      "reason": "VIEWPORT PAGING. Scrolls the content already on screen. A menu entry for 'look further down' describes the viewport, not an operator action."
+    },
+    {
+      "key": "PageDown",
+      "reason": "VIEWPORT PAGING. The counterpart of PageUp, same rationale."
+    },
+    {
+      "key": "Backspace",
+      "reason": "TEXT ENTRY. Edits the search / palette query character by character. Text editing inside a field is not a menu item, and a menu cannot express per-character editing."
+    }
+  ],
+  "_inert_note": "Keys the handler maps to None (Home, End, Delete, Insert, F(_), Null, CapsLock, ScrollLock, NumLock, PrintScreen, Pause, Menu, KeypadBegin, Media, Modifier) are NOT listed: they carry no operator-reachable behaviour, so there is nothing for the gate to cover. The gate treats an arm returning None as inert by construction rather than by this fixture, so a key that GAINS behaviour later stops being inert and must then be registered or argued here."
+}
