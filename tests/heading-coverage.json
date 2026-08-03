@@ -989,7 +989,7 @@
   "reason": "TUI unit coverage proves Scenario 26 at the key/render/effect boundary: eligible backlog and host-only ready selections open the full-width handoff overlay with the id-only groom/implement invocation, the overlay wording avoids claimed copy success, Enter produces a copy-only non-persisted effect, and ineligible states suppress the handoff key and hint.",
   "clauses": [
    {
-    "gap_id": "gap-hlfu7ucc",
+    "gap_id": "gap-vvl5pllp",
     "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session"
    }
   ]
