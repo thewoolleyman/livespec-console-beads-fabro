@@ -158,7 +158,94 @@ only), `-ccycuk`, `-koykn7`. Blocks: `-et3` (02) and `-1df` (03).
    no console→driver dependency).
 
 
-## RESUME HERE — state at 2026-08-03T~01:4xZ (SUPERSEDES every block below)
+## RESUME HERE — state at 2026-08-03T~00:4xZ UTC (SUPERSEDES every block below)
+
+**THE `factory_safety` DISPOSITION IS DECIDED AND THE CONSOLE HALF IS MERGED. THE DOGFOOD
+LEG IS BLOCKED ON UPSTREAM — it is NOT unfinished console work, and it must not be
+re-read as such.**
+
+Maintainer decision, 2026-08-03: **option (a)** — the orchestrator's per-item read surface
+gains an explicit refusal / awaits-scope-override signal, written when dispatch refuses,
+**consumed by the console AS DATA** (the `-0uw` consume-don't-re-derive precedent).
+REJECTED: retrofitting refusal-state onto `factory_safety`, and the regex point-fix.
+
+### Landed: PR #600 -> `f627dfb` — the no-regrets console half
+
+- **The dead arm is gone.** `driver_handoff_command` tested
+  `factory_safety == Some("host-only-refused")` — a dispatcher STAGE name, not a member of
+  the published `FactorySafety` vocabulary — so it could never fire on real data. It now
+  keys on the marking being PRESENT, matching the dispatcher's own first refusal arm and
+  immune to that vocabulary growing.
+- **The seam is in.** `set-workflow-scope-override` availability now reads a dedicated
+  `awaits_scope_override`, ingested from the wire (`record_flag`) and inert until upstream
+  publishes it. **It is deliberately NOT derived from `factory_safety`** — see below.
+- **All ten invented fixtures re-pointed**, plus the invented `"safe"` marker: factory-SAFE
+  is the ABSENCE of a marking, not a marking spelling "safe".
+- **Mutation-demonstrated RED**: restoring the dead literal fails two tests (RC=101) that
+  PASSED with it before. That delta is the vacuity, measured.
+
+### The design correction that the decision's framing did not contain — do not undo it
+
+The obvious implementation is "offer the override when the item is factory-refused". **That
+is wrong, and it took reading the dispatcher's arm ORDER to see it.**
+`is_host_only_item` refuses on three arms in sequence: (1) `factory_safety is not None`;
+(2) allow on the recorded override label; (3) a regex over the item's own text. **Arm 2 is
+consulted only after arm 1 has already refused**, so the override CANNOT clear an arm-1
+refusal. An item admitting the driver handoff is therefore precisely one the override is
+useless on — offering it there would be the `-0uw` defect wearing a different hat.
+Hence two independent dimensions, with both halves pinned by tests.
+
+### The dogfood leg — BLOCKED ON UPSTREAM, wired as a LEDGER EDGE
+
+    bd dep add livespec-console-beads-fabro-w7d \
+      --blocked-by external:livespec-orchestrator-beads-fabro:work-item-awaits-scope-override-signal
+
+**`bd dep list` DOES NOT SHOW IT — and reports "no dependencies".** Verified both ways:
+`bd dep list --json` returns `[]` while `bd show --json` reports `dependency_count: 1`.
+So `dep list` does not surface `external:` references at all; only the count does. **A
+successor checking this edge with `dep list` will wrongly conclude it was never created
+and re-add it.** This is a sharper instance of the dep-list gotcha this repo already
+recorded — check `dependency_count`, not `dep list`.
+
+The invoker half of the milestone is PROVEN live and that evidence stands (§ below):
+roster rendered, `[menu]` marker on the hotkey-less entry, palette hint verified byte-wise
+at the real cockpit. What is unreachable is the override itself, pending the upstream
+signal. **`-ccycuk` is still untouched** (`updated_at 2026-07-30T18:01:11Z`).
+
+### STILL OWED — one item, and it is cross-repo so it cannot be inferred from this repo
+
+**File the orchestrator-side propose-change** in
+`livespec-orchestrator-beads-fabro`'s `SPECIFICATION/proposed_changes/` (the repo is at
+`/data/projects/livespec-orchestrator-beads-fabro`). **FILING ONLY** — their `revise` pass
+ratifies; do NOT implement orchestrator-side ahead of ratification, the same
+file-then-ratify route the menu-primary constraint took. Everything it must record is
+already measured and banked as TWO ledger comments on **`-w7d`**: the unreachable arm, the
+real `FactorySafety` vocabulary, the proof that nothing writes the field on an arm-3
+refusal, and the Attention-pane / record-modal source divergence.
+
+### One finding this pass created and did not fix
+
+`docs/detailed-usage.md` labels a Status context **"Lanes, drilled into a host-only-refused
+ready item"**, and `docs_status_hint_lockstep.rs` hardcodes that exact string in its
+fourteen-context completeness list. The label is now a MISNOMER — the real condition is
+"a ready item carrying any factory-safety marking". The gate passes because the string is
+only a table label, which is precisely why nothing catches it. Renaming it means editing
+the doc and the gate's required-contexts array together.
+
+### Spec-tree state, VERIFIED and it contradicts the brief I was given
+
+**PR #594 has NOT merged — it is `OPEN` and `mergeStateStatus: DIRTY`** (conflicts with
+today's master; auto-merge is armed but cannot fire, and no checks have reported). So
+**v038 is NOT on master**: `SPECIFICATION/history/` still ends at `v037` and
+`menu-primary-operator-ux.md` is still pending in `proposed_changes/`. The ratification
+exists on that branch only. It is another session's worktree
+(`~/.worktrees/.../spec-menu-primary-revise`), so it was left alone — it needs a rebase by
+its owner. `proposed_changes/archived-plan-thread-citations.md` stays in flight
+deliberately; do not process or remove it.
+
+---
+
+## Earlier block — state at 2026-08-03T~01:4xZ (HISTORICAL)
 
 **MILESTONE 2 IS COMPLETE — A, B AND C ARE ALL MERGED. The only thing plan 01 still owes
 is the DOGFOOD LEG, which is blocked on a maintainer disposition (below), not on work.**
