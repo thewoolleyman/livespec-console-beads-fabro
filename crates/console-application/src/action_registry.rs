@@ -58,6 +58,18 @@ pub struct ActionContext {
     /// Whether the selected item admits the driver-handoff verb (its lane and
     /// factory-safety marker admit it, per [`driver_handoff_command`]).
     pub has_driver_handoff: bool,
+    /// Whether the item is waiting on a workflow-scope override, consumed from
+    /// the ledger.
+    ///
+    /// A SEPARATE dimension from [`has_driver_handoff`] on purpose, even
+    /// though both concern factory safety. The dispatcher refuses on three
+    /// ordered arms and **the override only clears the third**; the first
+    /// (a non-null `factory_safety`) refuses before the override is ever
+    /// consulted. So an item that admits the driver handoff is precisely one
+    /// the override CANNOT help, and deriving one from the other would offer
+    /// the action exactly where it is useless — the `-0uw` defect wearing a
+    /// different hat.
+    pub awaits_scope_override: bool,
     /// Which per-item surface the selection lives on.
     pub surface: ActionSurface,
 }
@@ -71,6 +83,7 @@ impl ActionContext {
             admission_policy: item.admission_policy(),
             acceptance_policy: item.acceptance_policy(),
             has_driver_handoff: driver_handoff_command(item).is_some(),
+            awaits_scope_override: item.detail().awaits_scope_override,
             surface,
         }
     }
@@ -340,7 +353,14 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "scope",
             choices: &["citation-only"],
         }),
-        availability: |ctx| ctx.lane == Lane::Ready && ctx.has_driver_handoff,
+        // Gated on the item ACTUALLY awaiting an override, which only the
+        // orchestrator can know: the refusal this clears is computed at
+        // dispatch time from the item's own text, and re-deriving that regex
+        // here would violate the consume-don't-re-derive rule. Inert until
+        // that signal is published (`-w7d`), which is honest — an operator is
+        // told the action is unavailable rather than handed one that cannot
+        // fire.
+        availability: |ctx| ctx.lane == Lane::Ready && ctx.awaits_scope_override,
         staging: ActionStaging::Valve(|_ctx| Some(PendingValve::SetWorkflowScopeOverride)),
     },
 ];
@@ -425,12 +445,17 @@ pub fn action_offered_on_surface(spec: &ActionSpec, surface: ActionSurface) -> b
             .iter()
             .any(|admission| {
                 [false, true].iter().any(|handoff| {
-                    (spec.availability)(&ActionContext {
-                        lane: *lane,
-                        admission_policy: *admission,
-                        acceptance_policy: AcceptancePolicy::AiThenHuman,
-                        has_driver_handoff: *handoff,
-                        surface,
+                    // Both scope-override states, or an action gated on it
+                    // would read as "offered nowhere" on every surface.
+                    [false, true].iter().any(|awaiting| {
+                        (spec.availability)(&ActionContext {
+                            lane: *lane,
+                            admission_policy: *admission,
+                            acceptance_policy: AcceptancePolicy::AiThenHuman,
+                            has_driver_handoff: *handoff,
+                            awaits_scope_override: *awaiting,
+                            surface,
+                        })
                     })
                 })
             })
@@ -553,15 +578,18 @@ mod tests {
                 for lane in Lane::all() {
                     for admission in [AdmissionPolicy::Manual, AdmissionPolicy::Auto] {
                         for handoff in [false, true] {
-                            let ctx = ActionContext {
-                                lane: *lane,
-                                admission_policy: admission,
-                                acceptance_policy: AcceptancePolicy::AiThenHuman,
-                                has_driver_handoff: handoff,
-                                surface,
-                            };
-                            if (spec.availability)(&ctx) {
-                                staged_somewhere |= stage_action(spec, &ctx).is_some();
+                            for awaiting in [false, true] {
+                                let ctx = ActionContext {
+                                    lane: *lane,
+                                    admission_policy: admission,
+                                    acceptance_policy: AcceptancePolicy::AiThenHuman,
+                                    has_driver_handoff: handoff,
+                                    awaits_scope_override: awaiting,
+                                    surface,
+                                };
+                                if (spec.availability)(&ctx) {
+                                    staged_somewhere |= stage_action(spec, &ctx).is_some();
+                                }
                             }
                         }
                     }
@@ -578,6 +606,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Manual,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: false,
+            awaits_scope_override: false,
             surface: ActionSurface::Attention,
         };
         let auto = ActionContext {
@@ -598,6 +627,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Manual,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: false,
+            awaits_scope_override: false,
             surface: ActionSurface::LaneDrill,
         };
         // A move staged from a lane the item is NOT in is refused outright.
@@ -638,19 +668,35 @@ mod tests {
             PendingValve::SetOverride(DispatcherOverride::AcceptanceReworkCap(OverrideInt::Clear)),
             &ready_drill
         ));
-        // The scope override needs the factory-safety dimension, not the lane
-        // alone.
+        // The scope override needs the awaiting-an-override dimension, not the
+        // lane alone.
         assert!(!valve_is_available(
             PendingValve::SetWorkflowScopeOverride,
             &ready_drill
         ));
-        let refused_ready = ActionContext {
-            has_driver_handoff: true,
+        let awaiting_override = ActionContext {
+            awaits_scope_override: true,
             ..ready_drill
         };
         assert!(valve_is_available(
             PendingValve::SetWorkflowScopeOverride,
-            &refused_ready
+            &awaiting_override
+        ));
+        // THE DEFECT THIS CATCHES, on real producer output: the override is
+        // gated on the DEDICATED signal and NOT on the driver-handoff /
+        // factory-safety dimension. An item marked factory-unsafe is refused
+        // by the dispatcher's FIRST arm, which runs before the override label
+        // is consulted — so offering the override there would advertise an
+        // action that provably cannot clear the refusal. Deriving one from the
+        // other is the mistake; this pins that they are independent.
+        let host_only_ready = ActionContext {
+            has_driver_handoff: true,
+            awaits_scope_override: false,
+            ..ready_drill
+        };
+        assert!(!valve_is_available(
+            PendingValve::SetWorkflowScopeOverride,
+            &host_only_ready
         ));
     }
 }

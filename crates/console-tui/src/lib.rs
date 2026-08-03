@@ -4294,14 +4294,17 @@ mod tests {
 
     #[test]
     fn the_invoker_reaches_the_hotkeyless_scope_override_on_a_refused_ready_item() {
-        // The whole point of the hotkey-less entry: on a drilled-in
-        // host-only-refused ready item, the invoker stages the workflow-scope
-        // override no key can reach.
-        let events = [driver_handoff_event(
-            "console-refused",
-            Lane::Ready,
-            Some("host-only-refused"),
-        )];
+        // The whole point of the hotkey-less entry: on a drilled-in ready item
+        // the orchestrator says is awaiting a scope override, the invoker
+        // stages the workflow-scope override no key can reach.
+        //
+        // THE DEFECT THIS CATCHES on real producer output: the availability is
+        // read from the PUBLISHED signal, not inferred from `factory_safety`.
+        // An item marked factory-unsafe is refused by the dispatcher's first
+        // arm, before the override label is consulted, so inferring it there
+        // would stage an action that cannot clear the refusal. The sibling
+        // assertion in `action_registry` pins the negative half.
+        let events = [scope_override_pending_event("console-refused")];
         let scope_index = action_registry::ACTION_REGISTRY
             .iter()
             .position(|spec| spec.id == "set-workflow-scope-override")
@@ -4601,7 +4604,7 @@ mod tests {
                 r#""spec_commitment_hint":"scenario-23-work-item-drill-in","#,
                 r#""acceptance_criteria":"it renders","notes":"an operator note","#,
                 r#""supersedes":"console-older","blocked_reason":"waiting on review","#,
-                r#""factory_safety":"safe","admission_policy":"auto"}}}}"#,
+                r#""factory_safety":"needs-host-secrets","admission_policy":"auto"}}}}"#,
             ),
             Lane::Ready.label(),
             escaped,
@@ -4660,7 +4663,7 @@ mod tests {
             "an operator note",
             "console-older",
             "waiting on review",
-            "safe",
+            "needs-host-secrets",
             // The policy the orchestrator DID emit renders verbatim...
             "auto",
         ] {
@@ -4705,6 +4708,32 @@ mod tests {
             assert!(text.contains(label), "record label missing: {label}");
         }
         Ok(())
+    }
+
+    /// A `ready` snapshot on which the orchestrator HAS published
+    /// `awaits_scope_override`.
+    ///
+    /// The field is a consumption seam: the producer does not emit it yet (the
+    /// decision that it should was taken 2026-08-03, `-w7d`), so this fixture
+    /// stands in for the wire once it does. That is deliberate and is the
+    /// point — it exercises the console's half AS DATA, so when the signal
+    /// ships nothing here changes.
+    fn scope_override_pending_event(work_item_id: &str) -> ConsoleEvent {
+        let payload = format!(
+            concat!(
+                r#"{{"repo":"console","work_item_id":"{}","#,
+                r#""lane":"ready","lane_reason":null,"rank":"a0","status":"ready","#,
+                r#""source_version":1,"detail":{{"title":"Scope override pending fixture","#,
+                r#""factory_safety":null,"awaits_scope_override":true}}}}"#,
+            ),
+            work_item_id,
+        );
+        ConsoleEvent::fixture(
+            &format!("evt_{work_item_id}"),
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
     }
 
     fn driver_handoff_event(
@@ -4767,7 +4796,7 @@ mod tests {
     fn driver_handoff_attention_selection_resolves_the_handoff_command() {
         let work_item_id = "livespec-console-beads-fabro-attention-ready";
         let events = [
-            driver_handoff_event(work_item_id, Lane::Ready, Some("host-only-refused")),
+            driver_handoff_event(work_item_id, Lane::Ready, Some("needs-privileged-host")),
             driver_handoff_attention_event(work_item_id),
         ];
         let model = build_tui_model_for_state(
@@ -4801,7 +4830,7 @@ mod tests {
             (
                 "livespec-console-beads-fabro-unsafe",
                 Lane::Ready,
-                Some("host-only-refused"),
+                Some("needs-privileged-host"),
                 "implement",
             ),
         ] {
@@ -4845,12 +4874,11 @@ mod tests {
     fn driver_handoff_is_suppressed_outside_backlog_and_host_only_ready() {
         for (lane, factory_safety) in [
             (Lane::Ready, None),
-            (Lane::Ready, Some("safe")),
             (Lane::PendingApproval, None),
-            (Lane::Active, Some("host-only-refused")),
-            (Lane::Acceptance, Some("host-only-refused")),
-            (Lane::Blocked, Some("host-only-refused")),
-            (Lane::Done, Some("host-only-refused")),
+            (Lane::Active, Some("needs-privileged-host")),
+            (Lane::Acceptance, Some("needs-privileged-host")),
+            (Lane::Blocked, Some("needs-privileged-host")),
+            (Lane::Done, Some("needs-privileged-host")),
         ] {
             let model =
                 driver_handoff_model("livespec-console-beads-fabro-safe", lane, factory_safety);

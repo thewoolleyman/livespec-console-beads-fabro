@@ -3977,7 +3977,11 @@ mod tests {
             r#"{"repo":"livespec-console-beads-fabro","work_item_id":"wi-refused","#,
             r#""lane":"ready","lane_reason":null,"rank":"a0","status":"ready","#,
             r#""source_version":1,"detail":{"title":"Refused ready fixture","#,
-            r#""factory_safety":"host-only-refused"}}"#,
+            // Awaiting a scope override is the PUBLISHED signal, and it is
+            // independent of `factory_safety` — the dispatcher refuses a
+            // marked item on an earlier arm than the one this override
+            // clears, so the two must not be conflated.
+            r#""factory_safety":null,"awaits_scope_override":true}}"#,
         );
         let event = ConsoleEvent::new(
             "evt_wi_refused".to_owned(),
