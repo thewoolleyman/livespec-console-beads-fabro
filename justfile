@@ -21,12 +21,16 @@ default:
 # Prefer this over typing the raw hyphenated binary path (which splits on
 # copy-paste). It builds the release binary and launches the interactive TUI
 # under the family credential wrapper (injecting the bare BEADS_DOLT_PASSWORD).
-# Extra args pass through after `serve` (e.g. `just tui --preview` prints the
+# Extra args pass through after `serve` (e.g. `just tui -- --preview` prints the
 # one-shot text summary); `just serve` is an alias for the same recipe.
 # Build + launch the interactive operator TUI (the primary launch path).
+# errexit is deliberately omitted; the build is guarded before argv pass-through.
+[positional-arguments]
 tui *ARGS:
-    cargo build --release --package livespec-console-beads-fabro
-    /usr/local/bin/with-livespec-env.sh -- "{{justfile_directory()}}/target/release/livespec-console-beads-fabro" serve {{ARGS}}
+    #!/usr/bin/env bash
+    set -uo pipefail
+    cargo build --release --package livespec-console-beads-fabro || exit $?
+    /usr/local/bin/with-livespec-env.sh -- ./target/release/livespec-console-beads-fabro serve "$@"
 
 alias serve := tui
 
@@ -58,15 +62,16 @@ build-release:
 # ever dropped, the run reports "0 passed ... N filtered out" and still greens).
 # So we require the summary to report at least one passing test, failing the gate
 # if the E2E suite silently ran nothing.
+# errexit is deliberately omitted so captured test output is emitted on failure.
 check-e2e-tmux:
     #!/usr/bin/env bash
     set -uo pipefail
-    cargo build --release --package livespec-console-beads-fabro
+    cargo build --release --package livespec-console-beads-fabro || exit $?
     # Respect CARGO_TARGET_DIR (the self-hosted CI runner redirects it to a shared
-    # cache, e.g. /opt/ci-cache/target); a hardcoded {{justfile_directory()}}/target
+    # cache, e.g. /opt/ci-cache/target); a hardcoded repository target path
     # path resolves to nothing when the redirect is in effect, so the E2E test cannot
     # find the release binary it just built.
-    target_dir="${CARGO_TARGET_DIR:-{{justfile_directory()}}/target}"
+    target_dir="${CARGO_TARGET_DIR:-target}"
     output="$(LIVESPEC_CONSOLE_E2E_BIN="$target_dir/release/livespec-console-beads-fabro" \
       cargo test --package livespec-console-beads-fabro --test tmux_tui_e2e -- --ignored 2>&1)"
     status=$?
@@ -93,9 +98,12 @@ check-e2e-tmux:
 # + branch-protection.sh + the `.just` recipe fragments) and keeps the tracked
 # worktree-hydrate.sh executable — neither is a verb obligation row, so both
 # MUST survive the rewire. The verb's uv-sync row precedes the tail's `uv run`.
+# errexit is deliberately omitted; each first-touch command is guarded directly.
 bootstrap:
-    uv run python -m livespec_dev_tooling.fleet.local_reconcile
-    just install-worktree-pack
+    #!/usr/bin/env bash
+    set -uo pipefail
+    uv run python -m livespec_dev_tooling.fleet.local_reconcile || exit $?
+    just install-worktree-pack || exit $?
     chmod +x dev-tooling/worktree-hydrate.sh
 
 # Idempotent: marketplace add / install / update all exit 0 when the target is
@@ -109,21 +117,22 @@ bootstrap:
 ensure-plugins:
     mise exec -- uv run --no-sync python -m livespec_dev_tooling.fleet.ensure_plugins
 
+# errexit is deliberately omitted; the optional codex probe can skip cleanly.
 ensure-codex-plugins:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
     if ! command -v codex >/dev/null 2>&1; then
         echo "codex CLI not found; skipping host-wide Codex plugin install." >&2
         exit 0
     fi
-    codex plugin marketplace add thewoolleyman/livespec --ref release
-    codex plugin marketplace add thewoolleyman/livespec-driver-codex --ref release
-    codex plugin marketplace add thewoolleyman/livespec-orchestrator-beads-fabro --ref release
-    codex plugin marketplace upgrade livespec
-    codex plugin marketplace upgrade livespec-driver-codex
-    codex plugin marketplace upgrade livespec-orchestrator-beads-fabro
-    codex plugin add livespec@livespec
-    codex plugin add livespec@livespec-driver-codex
+    codex plugin marketplace add thewoolleyman/livespec --ref release || exit $?
+    codex plugin marketplace add thewoolleyman/livespec-driver-codex --ref release || exit $?
+    codex plugin marketplace add thewoolleyman/livespec-orchestrator-beads-fabro --ref release || exit $?
+    codex plugin marketplace upgrade livespec || exit $?
+    codex plugin marketplace upgrade livespec-driver-codex || exit $?
+    codex plugin marketplace upgrade livespec-orchestrator-beads-fabro || exit $?
+    codex plugin add livespec@livespec || exit $?
+    codex plugin add livespec@livespec-driver-codex || exit $?
     codex plugin add livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro
 
 # Install the canonical livespec commit-refuse hook by REUSING the shared
@@ -165,10 +174,11 @@ install-worktree-pack:
 # the peer at livespec-dev-tooling `justfile` rather than the orchestrator's
 # `workflow_guard.py` form, which resolves a `.claude-plugin/` script this
 # consumer repo does not carry.
+# errexit is deliberately omitted to report workflow-file violations explicitly.
 check-no-workflow-edits:
     #!/usr/bin/env bash
-    set -euo pipefail
-    base=$(git merge-base HEAD origin/master 2>/dev/null || git merge-base HEAD master)
+    set -uo pipefail
+    base=$(git merge-base HEAD origin/master 2>/dev/null || git merge-base HEAD master) || exit $?
     if git diff --quiet --name-only "$base"...HEAD -- .github/workflows; then
         exit 0
     fi
@@ -176,6 +186,7 @@ check-no-workflow-edits:
     git diff --name-only "$base"...HEAD -- .github/workflows >&2
     exit 1
 
+# errexit is deliberately omitted so all checks run before failure reporting.
 check:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -190,6 +201,7 @@ check:
         check-behavior-coverage
         check-completeness
         check-baseline
+        check-shell-quality
         check-plugin-resolution
         check-doctor-static
         check-fork-drift
@@ -215,8 +227,11 @@ check-clippy:
 check-test:
     cargo test --workspace --all-features
 
+# errexit is deliberately omitted; the tool installer is guarded directly.
 check-nextest:
-    just ensure-rust-quality-tools
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-rust-quality-tools || exit $?
     cargo nextest run --workspace --all-features
 
 # Line coverage. The 100% requirement for ATTRIBUTABLE lines is unchanged; a
@@ -226,10 +241,11 @@ check-nextest:
 # capped by a recorded, reasoned disposition. See
 # tests/fixtures/coverage-unnameable-disposition.json and ledger item
 # livespec-console-beads-fabro-3yx.
+# errexit is deliberately omitted so coverage output is printed before failure.
 check-coverage:
     #!/usr/bin/env bash
     set -uo pipefail
-    just ensure-rust-quality-tools
+    just ensure-rust-quality-tools || exit $?
     export_json="$(mktemp)"
     missing_txt="$(mktemp)"
     trap 'rm -f "${export_json}" "${missing_txt}"' EXIT
@@ -239,9 +255,12 @@ check-coverage:
     python3 dev-tooling/coverage-gate.py \
         "${export_json}" "${missing_txt}" tests/fixtures/coverage-unnameable-disposition.json
 
+# errexit is deliberately omitted; dependency checks are guarded directly.
 check-deps:
-    just ensure-rust-quality-tools
-    cargo deny check
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-rust-quality-tools || exit $?
+    cargo deny check || exit $?
     cargo machete
 
 check-arch:
@@ -273,10 +292,14 @@ check-completeness:
 # from the LIVE orchestrator drive surface, DIGEST-STAMPED with the declared key
 # set. Run after an orchestrator dispatcher key set change; requires the
 # orchestrator plugin + credential wrapper on PATH. DRIVE defaults to the family
-# drive CLI. The --refresh mode stamps captured_key_set_digest so the gate fails
-# until a changed key set is refreshed.
-refresh-config-manifest DRIVE="livespec-orchestrator-drive":
-    {{DRIVE}} --action config-manifest --json | cargo run --quiet --package console-completeness-check -- --refresh
+# drive CLI via the DRIVE environment variable. The --refresh mode stamps
+# captured_key_set_digest so the gate fails until a changed key set is refreshed.
+# errexit is deliberately omitted; pipefail owns the manifest refresh pipeline.
+refresh-config-manifest:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    drive="${DRIVE:-livespec-orchestrator-drive}"
+    "$drive" --action config-manifest --json | cargo run --quiet --package console-completeness-check -- --refresh
 
 # Baseline worktree-discipline verifier — the `baseline` profile's Verifier,
 # REUSED from livespec-dev-tooling (NOT re-implemented). Fail-closed: exit 4
@@ -296,6 +319,12 @@ check-baseline:
 # concern #2 (Plugin-resolution).
 check-plugin-resolution:
     uv run python -m livespec_dev_tooling.checks.plugin_resolution
+
+# Canonical fleet shell-quality verifier: ShellCheck 0.11.0 over tracked shell
+# files plus the governed justfile recipe policy. The recipe body is deliberately
+# a one-line module invocation so the gate also validates its own wiring.
+check-shell-quality:
+    uv run python -m livespec_dev_tooling.checks.shell_quality
 
 # livespec core's doctor STATIC phase (reference-discipline + out-of-band
 # invariants) against THIS repo's SPECIFICATION/ tree, wired fleet-wide per
@@ -325,9 +354,10 @@ check-fork-drift:
 refresh-fork-upstream-pins:
     cargo run --quiet --package console-fork-drift-check -- --refresh
 
+# errexit is deliberately omitted; core resolution steps are guarded directly.
 check-doctor-static:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
     core_root="${LIVESPEC_CORE_PLUGIN_ROOT:-}"
     if [ -z "$core_root" ]; then
       # Resolve the CURRENT released core build (== marketplace clone HEAD), NOT
@@ -342,17 +372,26 @@ check-doctor-static:
     fi
     python3 "$core_root/scripts/bin/doctor_static.py" --project-root .
 
+# errexit is deliberately omitted; fuzz tooling install is guarded directly.
 check-fuzz-smoke:
-    just ensure-fuzz-tooling
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-fuzz-tooling || exit $?
     cargo +nightly fuzz run event_envelope -- -max_total_time=5
 
+# errexit is deliberately omitted; mutants tooling install is guarded directly.
 check-mutants-smoke:
-    just ensure-mutants-tooling
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-mutants-tooling || exit $?
     cargo mutants --workspace --list --package console-domain --package console-application
 
+# errexit is deliberately omitted; fast hook checks are guarded directly.
 check-pre-commit:
-    just check-format
-    just check-clippy
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just check-format || exit $?
+    just check-clippy || exit $?
     just check-arch
 
 check-pre-push:
