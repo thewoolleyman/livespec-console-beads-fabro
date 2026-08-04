@@ -68,10 +68,10 @@ check-e2e-tmux:
     set -uo pipefail
     cargo build --release --package livespec-console-beads-fabro || exit $?
     # Respect CARGO_TARGET_DIR (the self-hosted CI runner redirects it to a shared
-    # cache, e.g. /opt/ci-cache/target); a hardcoded repository target path
-    # path resolves to nothing when the redirect is in effect, so the E2E test cannot
-    # find the release binary it just built.
-    target_dir="${CARGO_TARGET_DIR:-target}"
+    # cache, e.g. /opt/ci-cache/target); when it is absent, keep the fallback
+    # absolute so the shebang recipe finds the release binary from any invocation
+    # directory without reintroducing just interpolation.
+    target_dir="${CARGO_TARGET_DIR:-$(pwd)/target}"
     output="$(LIVESPEC_CONSOLE_E2E_BIN="$target_dir/release/livespec-console-beads-fabro" \
       cargo test --package livespec-console-beads-fabro --test tmux_tui_e2e -- --ignored 2>&1)"
     status=$?
