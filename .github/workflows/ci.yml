@@ -75,6 +75,7 @@ jobs:
           # verifier runs (mirroring livespec-dev-tooling's own CI).
           - check-baseline
           - check-shell-quality
+          - check-plan-thread-no-tombstone
           - check-plugin-resolution
     steps:
       - name: Checkout
