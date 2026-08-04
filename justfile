@@ -202,6 +202,7 @@ check:
         check-completeness
         check-baseline
         check-shell-quality
+        check-plan-thread-no-tombstone
         check-plugin-resolution
         check-doctor-static
         check-fork-drift
@@ -317,6 +318,14 @@ check-baseline:
 # declaration; fail-closed on a malformed declaration. Per
 # livespec/SPECIFICATION/non-functional-requirements.md §"Conformance Pattern"
 # concern #2 (Plugin-resolution).
+# Plan-lifecycle tombstone ban: a topic must not exist at BOTH
+# plan/<topic>/ and plan/archive/<topic>/. Fail-closed with no opt-in
+# lever. Wired by hand because this repo carries no
+# check-aggregate-completeness gate, so a new canonical check never
+# arrives on its own with a dev-tooling pin bump.
+check-plan-thread-no-tombstone:
+    uv run python -m livespec_dev_tooling.checks.plan_thread_no_tombstone
+
 check-plugin-resolution:
     uv run python -m livespec_dev_tooling.checks.plugin_resolution
 
