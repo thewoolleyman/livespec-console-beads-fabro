@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.3.0...v0.4.0) (2026-08-05)
+
+
+### Features
+
+* **check:** gate the committed .fabro fork against upstream drift ([842a316](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/842a3162a3dcf214e331a85f2490c2d2ad8a94b6))
+* cover driver handoff overlay ([4d98f6e](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/4d98f6eb62939796b0268e12f5a350e26726de2d))
+* derive Status-line hints from a new operator action registry ([5ad4de9](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/5ad4de97a869bc323d64bf2f8190b4b38ee502f2))
+* gate the unnameable-miss signature explicitly instead of --fail-under-lines ([82ed394](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/82ed39409deb1c69f6a2ecd64c8ebe256de1867f))
+* kill the vacuous factory-safety arm and seam in the real refusal signal ([f627dfb](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/f627dfbece082daea12a38f1ae12dbfe46f08e57))
+* pin per-state verb suppression ([2d5ce11](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/2d5ce1141bdf5e0d00e9379b50f3761495b3ea68))
+* route hotkeys, valve staging, and Help rosters through the registry ([c3bff4a](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/c3bff4ab70eac237567af12168fc24574564eb5f))
+* slice A — the cross-repo parity gate and the set-workflow-scope-override valve ([52f4b94](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/52f4b9455a74051c72b85bf267266af1ab1f80b7))
+* surface a refused action instead of discarding it at the port boundary ([67c58d4](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/67c58d4140a6cbfe5d18dda8c445861c5d9f496f))
+* the action invoker — every registered action reachable without a hotkey ([d9fc67d](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/d9fc67d683f30533e10f6d1888e737e6784d3765))
+
+
+### Bug Fixes
+
+* align lanes help with handoff verbs ([21ff727](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/21ff7273f0518926105e6c2bbd67685ed212be71))
+* derive status hints from per-item verbs ([514a326](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/514a326e48cbafad5e135e9a2bc75f1ce8b1d88a))
+* distinguish every repeatable operator action, not only move ([940647b](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/940647b99ed72f645bde65bb9e75e81acc13d15e))
+* **e2e+docs:** slice-A CI red — walkthrough hints ride this slice; test navigation bug; live assertions ([77ed854](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/77ed854cb4ed84ea50b397a51b888f427f22f192))
+* **fabro:** sync the fork's behavioural drift back to the orchestrator ([bb53f53](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/bb53f53fd63b3f5c08c96c3894ed4bd1b418059b))
+* **fabro:** sync the forked pr.md publish leg from upstream ([6b3c434](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/6b3c43417a86a5e22ee17de114329c830f9e760e))
+* **factory:** port upstream's checkpoint commit_timeout into the fork ([da2d1eb](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/da2d1ebd91914634d4980b63f617e037fda323c2))
+* **gate:** re-pin fork digests to this host's resolved plugin build ([5a6148a](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/5a6148aa2884c6a7f8b5dfda0abc07c4c2d4ef64))
+* **gate:** seventh drift firing — upstream docker pin bump, not ported, re-pinned ([301b9da](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/301b9dab25fe1c9cd37c879aaab5dfc940cd4f2b))
+* **gates:** ground-truth count for the v038 clauses + sixth drift firing ([57f2a5f](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/57f2a5fbffcac85aec46ac6723e967f7aea3aea4))
+* give the command queue single-consumer claim semantics ([2665cad](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/2665cade7e215bad316275a08cabedd5e74d9b56))
+* narrow move-status picker tests ([57e94a4](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/57e94a493e7c6c6dd7ff714b53db298ed3714c3d))
+* page help overlay by focused pane ([886011d](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/886011d2219f8f9bd23a8b6fb593d91ec8e92bd2))
+* preserve active move command target ([46783ad](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/46783adf17c5186a67e63dd273c448dab8817233))
+* reject active move command targets ([f5efdab](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/f5efdab9d16c8f3d0e071187fa774020fd2d7468))
+* **release:** auto-enable release PR merge ([a2a5e13](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/a2a5e13cf098eb47798fe6988b49236e02ac56a5))
+* require explicit TODO coverage tier ([2132155](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/2132155ee4b25cf76a98c90742c2abb3e928c48d))
+* restrict driver handoff to host-only safety ([7b2ddd6](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/7b2ddd644c034f2189408fb0c45b4269b29ad030))
+* retry failed approve valve commands ([c540a96](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/c540a96278473d88119bc11dac6b946861334250))
+
 ## [0.3.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.2.0...v0.3.0) (2026-07-21)
 
 
