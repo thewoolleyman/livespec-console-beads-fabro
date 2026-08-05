@@ -140,11 +140,38 @@ jobs:
       # cache barely helped them even before this change.)
 
       # ---- baseline (worktree-discipline) reuse: uv env + hook install ----
-      - name: Install commit-refuse hook + worktree pack (satisfy baseline verifier)
+      - name: Install commit-refuse hook (satisfy baseline verifier)
         if: matrix.target == 'check-baseline'
-        run: |
-          just install-commit-refuse-hooks
-          just install-worktree-pack
+        run: just install-commit-refuse-hooks
+
+      # SPLIT OUT of the combined step above so the pack can be installed for a
+      # SECOND target without also installing commit-refuse hooks into a job
+      # that has no use for them.
+      #
+      # check-shell-quality NEEDS the pack, and without it that check was passing
+      # VACUOUSLY here. `dev-tooling/*.just` is gitignored and the root justfile
+      # imports it OPTIONALLY (`import? 'dev-tooling/worktree.just'`), so on a
+      # fresh `actions/checkout` the `worktree-*` recipes DO NOT EXIST and the
+      # scan had no subject — green for work it never did. This holds for THIS
+      # repo despite its product being Rust: the worktree-discipline pack and the
+      # justfile that imports it are language-independent, and both are present
+      # here (measured, not assumed).
+      #
+      # Propagation of livespec-dev-tooling-9ywf, which fixed exactly this in the
+      # producer on 2026-08-03 and was never carried to consumers; work-item
+      # livespec-dev-tooling-y6e2, per-repo item
+      # livespec-console-beads-fabro-g0u. Adoption precedes this enforcement:
+      # with the current canonical pack installed, `just check-shell-quality`
+      # exits 0 with ZERO violations in all nine fleet repos, measured
+      # individually before the change. The control proving the gate can still
+      # fail is real rather than synthetic — the PREVIOUS pack (sha256
+      # 4fcac10a…) yields six violations across `worktree-create`,
+      # `worktree-land` and `worktree-reap`.
+      - name: Install canonical worktree pack (satisfy pack invariant)
+        if: >-
+          matrix.target == 'check-baseline'
+          || matrix.target == 'check-shell-quality'
+        run: just install-worktree-pack
 
       # Prebuild ALL FOUR quality tools (not just the target's own) for every job
       # that calls `just ensure-rust-quality-tools`. That recipe does
