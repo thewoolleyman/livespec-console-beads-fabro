@@ -200,6 +200,7 @@ check:
         check-arch
         check-behavior-coverage
         check-completeness
+        check-spec-governance-default-block
         check-baseline
         check-shell-quality
         check-plan-thread-no-tombstone
@@ -288,6 +289,9 @@ check-behavior-coverage:
 # live orchestrator). Refresh the capture with `just refresh-config-manifest`.
 check-completeness:
     cargo run --quiet --package console-completeness-check
+
+check-spec-governance-default-block:
+    uv run python dev-tooling/check-spec-governance-default-block.py
 
 # Refresh the captured orchestrator config-manifest the completeness gate reads,
 # from the LIVE orchestrator drive surface, DIGEST-STAMPED with the declared key
