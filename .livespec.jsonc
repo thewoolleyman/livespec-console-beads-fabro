@@ -33,6 +33,15 @@
     }
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
+  // ACTIVE spec_governance overrides. Only the entries this repo intentionally
+  // overrides appear here; every other key keeps the safe default documented in
+  // the commented reference block below.
+  //   2026-08-14 — propose_change_mode set to "batch", maintainer-directed
+  //     fleet-wide autonomy lever rollout: /livespec:propose-change files
+  //     without an interactive dialogue.
+  "spec_governance": {
+    "propose_change_mode": "batch"
+  },
   // Optional — spec_governance: policy levers for livespec's spec-side
   // operations. The commented defaults below are derived from the shipped
   // spec-governance manifest; leaving this block commented arms nothing, so
@@ -99,10 +108,13 @@
     //     2026-07-21 reasoning above for the acceptance half. That reasoning is
     //     preserved rather than deleted so the next reader sees a decision was
     //     reversed, not that it never existed.
-    // Current, and note the two halves now differ on purpose:
-    //   auto_approve_ready: false   — a human still ADMITS at the approve valve.
-    //     Left alone: it is a different lever and was not part of the 07-29
-    //     direction, which named acceptance only.
+    //   2026-08-14 — auto_approve_ready set BACK to true, maintainer-directed:
+    //     this repo was the last core-fleet holdout with the lever off, and the
+    //     maintainer confirmed the flip after being told every other core-fleet
+    //     repo already has it true. This DELIBERATELY overrides the 2026-07-21
+    //     reasoning above for the admission half; both halves are now autonomous.
+    // Current — both halves autonomous:
+    //   auto_approve_ready: true    — ready items dispatch without a human ADMIT.
     //   acceptance_mode: "ai-only"  — post-merge acceptance without a human.
     // The third lever, `merge_on_review_cap`, stays at its safe `false`
     // default: a review that cannot converge within `review_fix_cap` rounds is
@@ -113,7 +125,7 @@
     // that surface round-trips the file through json.dumps and silently strips
     // every comment here while reporting green — tracked as bd-ib-lmi5.
     "dispatcher": {
-      "auto_approve_ready": false,
+      "auto_approve_ready": true,
       "acceptance_mode": "ai-only"
     }
   }
