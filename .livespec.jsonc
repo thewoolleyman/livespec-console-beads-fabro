@@ -1,4 +1,10 @@
 {
+  // Worktree-discipline pack policy. "required" — the DEFAULT, and what an
+  // absent key means — makes `just check` fail when the canonical pack is not
+  // installed and imported by the root justfile. "optional" is the sanctioned,
+  // reviewable opt-out. Written explicitly at install time so the obligation is
+  // readable here rather than inferred from a verifier failure.
+  "worktree_discipline": { "pack": "required" },
   "template": "livespec-with-diagrams",
   "spec_root": "SPECIFICATION",
   // Conformance profile(s) this governed repo satisfies — the LOCAL
