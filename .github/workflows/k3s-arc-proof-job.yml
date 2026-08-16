@@ -1,0 +1,30 @@
+# k3s-arc-proof-job.yml — livespec-s43svm.16 first non-gating cutover
+# lane proof. Manual dispatch only (workflow_dispatch, no push/
+# pull_request trigger) is the non-gating guarantee: this can never
+# become a required status check because nothing routes a PR event to
+# it. Pattern copied from livespec-dev-tooling
+# ci-runner/k3s/test-job/proof-job.yml (livespec-s43svm.14's phase-1
+# proof), adapted to THIS repo's own ARC scale set
+# (livespec-console-beads-fabro-local-ci-k3s, installed 2026-08-16).
+#
+# In ARC's gha-runner-scale-set mode a workflow selects the pool by the
+# scale set NAME, as a bare string — not by a label array (see the
+# livespec-dev-tooling PR #1431 fix this pattern already avoids).
+name: k3s-arc-proof-job (livespec-s43svm.16, non-gating)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  proof:
+    runs-on: livespec-console-beads-fabro-local-ci-k3s
+    steps:
+      - name: prove the path end-to-end
+        run: |
+          echo "k3s + ARC + Kueue livespec-s43svm.16 non-gating lane proof"
+          echo "host: $(hostname)"
+          echo "kernel: $(uname -r)"
+          id
+          echo "this job proves the new path can execute a real job for"
+          echo "livespec-console-beads-fabro; it does not yet route any"
+          echo "gating CI traffic."
