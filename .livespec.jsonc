@@ -67,8 +67,18 @@
   //   2026-08-14 — propose_change_mode set to "batch", maintainer-directed
   //     fleet-wide autonomy lever rollout: /livespec:propose-change files
   //     without an interactive dialogue.
+  //   2026-08-16 — critique_mode, in_flight_alignment, revise_decision_mode,
+  //     ratification_review, spec_pr_merge armed to their safe fully-autonomous
+  //     values (epic livespec-jvdvx4 fleet-wide rollout, child livespec-jvdvx4.15).
+  //     doctor_dispositions and dispatcher.merge_on_review_cap are deliberately
+  //     out of scope for this pass (see the child item for why).
   "spec_governance": {
-    "propose_change_mode": "batch"
+    "propose_change_mode": "batch",
+    "critique_mode": "batch",
+    "in_flight_alignment": "default-align",
+    "revise_decision_mode": "delegated",
+    "ratification_review": "auto-spawn",
+    "spec_pr_merge": "auto-on-green"
   },
   // Optional — spec_governance: policy levers for livespec's spec-side
   // operations. The commented defaults below are derived from the shipped
