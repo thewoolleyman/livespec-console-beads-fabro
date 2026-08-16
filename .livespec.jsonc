@@ -33,6 +33,18 @@
     }
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
+  // livespec-overseer foreman config. foreman_valve_disposition governs how the
+  // per-repo foreman handles blocked sessions and human valves it observes:
+  //   "report-only" (default) — surface to the maintainer, take no action.
+  //   "consensus"              — may convene the cross-vendor foreman-consensus
+  //     panel (2 Anthropic + 1 non-Anthropic reviewer, dissent-forcing on the
+  //     non-Anthropic seat) and act on its typed verdict via foreman-act.
+  //     Decisions that are human-gated by design, or where the panel disagrees
+  //     or evidence is insufficient, still escalate regardless of this setting.
+  //   2026-08-16 — set to "consensus", maintainer-directed.
+  "livespec-overseer": {
+    "foreman_valve_disposition": "consensus"
+  },
   // ACTIVE spec_governance overrides. Only the entries this repo intentionally
   // overrides appear here; every other key keeps the safe default documented in
   // the commented reference block below.
