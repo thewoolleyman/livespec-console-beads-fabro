@@ -39,7 +39,8 @@ use console_application::{
     handle_work_item_move_command, handle_work_item_reject_command,
     handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
     handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
-    handle_work_item_set_workflow_scope_override_command, project_attention,
+    handle_work_item_set_workflow_scope_override_command, plan_page_url, project_attention,
+    project_plan_page, render_plan_page_html,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
@@ -136,6 +137,7 @@ pub fn run_with_store(
             "backfill",
         ),
         Some("events") => run_events_with_store(args, store),
+        Some("plans") => run_plans_with_store(args, store),
         Some("snapshot") => run_store_result(snapshot_report(store), "snapshot"),
         Some("doctor") => run_store_result(doctor_report(store), "doctor"),
         _other => run_static(args),
@@ -156,6 +158,10 @@ fn run_static(values: &[String]) -> RunOutput {
             let subcommand = values.get(2).map(String::as_str);
             run_events(subcommand)
         }
+        Some("plans") => RunOutput::new(
+            2,
+            "usage: livespec-console-beads-fabro plans <epic-id>".to_owned(),
+        ),
         Some("snapshot") => RunOutput::new(0, "snapshot mode bootstrap: not yet wired".to_owned()),
         Some("doctor") => RunOutput::new(0, "doctor bootstrap: no findings".to_owned()),
         Some("arch-check") => RunOutput::new(
@@ -949,6 +955,14 @@ pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
         commands.len(),
         attention_count
     ))
+}
+
+/// Return the plan page report value.
+pub fn plan_page_report(store: &SqliteEventStore, epic_id: &str) -> EventStoreResult<String> {
+    let events = store.list_console_events()?;
+    let page = project_plan_page(&events, epic_id);
+    let html = render_plan_page_html(epic_id, &page);
+    Ok(format!("url: {}\n{html}", plan_page_url(epic_id)))
 }
 
 /// Return the serve report value.
@@ -2244,6 +2258,18 @@ fn run_events_with_store(values: &[String], store: &SqliteEventStore) -> RunOutp
     }
 }
 
+fn run_plans_with_store(values: &[String], store: &SqliteEventStore) -> RunOutput {
+    match values.get(2).map(String::as_str) {
+        Some(epic_id) if !epic_id.trim().is_empty() => {
+            run_store_result(plan_page_report(store, epic_id), "plans")
+        }
+        _other => RunOutput::new(
+            2,
+            "usage: livespec-console-beads-fabro plans <epic-id>".to_owned(),
+        ),
+    }
+}
+
 fn tui_preview() -> String {
     let events = demo_events();
     let model = build_tui_model(&events, 0);
@@ -2295,6 +2321,7 @@ fn help_text() -> String {
         "  serve",
         "  backfill",
         "  events tail",
+        "  plans <epic-id>",
         "  snapshot",
         "  doctor",
         "  arch-check",
@@ -2349,15 +2376,15 @@ mod tests {
         StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
         backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
-        demo_events, distinguish_repeatable_command, doctor_report, events_tail_report,
-        factory_command_from_stored, handle_pending_config_commands,
-        handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
-        initial_source_seed, is_failed_once_only_valve_retry, live_source_adapters,
-        load_tui_events_from_store, observe_and_reflect_autonomous_decisions,
-        persist_tui_runtime_effects, python_normalized_invocation, refresh_sources,
-        render_tui_preview, resolve_console_repo, run, run_store_backed_tui_session,
-        run_with_store, serve_report, snapshot_report, source_polls_from_seed,
-        work_item_command_from_stored,
+        demo_events, distinguish_repeatable_command, doctor_report,
+        event_append_from_console_event, events_tail_report, factory_command_from_stored,
+        handle_pending_config_commands, handle_pending_factory_commands,
+        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
+        is_failed_once_only_valve_retry, live_source_adapters, load_tui_events_from_store,
+        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects, plan_page_report,
+        python_normalized_invocation, refresh_sources, render_tui_preview, resolve_console_repo,
+        run, run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
+        source_polls_from_seed, work_item_command_from_stored,
     };
 
     #[test]
@@ -2697,6 +2724,17 @@ mod tests {
         assert_eq!(
             output.message(),
             "usage: livespec-console-beads-fabro events tail"
+        );
+    }
+
+    #[test]
+    fn plans_without_epic_id_is_usage_error() {
+        let output = run(["bin", "plans"]);
+
+        assert_eq!(output.code(), 2);
+        assert_eq!(
+            output.message(),
+            "usage: livespec-console-beads-fabro plans <epic-id>"
         );
     }
 
@@ -3081,6 +3119,63 @@ mod tests {
         assert_eq!(
             output.message(),
             "snapshot: events 2, attention 0, commands 1, pending 1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_plan_page_renders_persisted_epic_children_and_handoffs()
+    -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        for event in [
+            plan_snapshot_event(
+                "evt_plan_epic",
+                "plan-epic",
+                "a0",
+                "open",
+                r#"{"title":"Migrated Plan","item_type":"epic","depends_on":[],"comments":[{"id":"c1","author":"operator","created_at":"2026-08-16T08:00:00Z","text":"handoff entry one"}]}"#,
+            ),
+            plan_snapshot_event(
+                "evt_plan_child",
+                "plan-child",
+                "a1",
+                "blocked",
+                r#"{"title":"Child Work","depends_on":["plan-epic"]}"#,
+            ),
+        ] {
+            store.append_event(&event_append_from_console_event(
+                &event,
+                "2026-08-16T08:30:00Z",
+            ))?;
+        }
+
+        let output = run_with_store_scripted(
+            &command_args(&["bin", "plans", "plan-epic"]),
+            &mut store,
+            "unused",
+        );
+
+        assert_eq!(output.code(), 0);
+        assert!(output.message().contains("url: /plans/plan-epic"));
+        assert!(output.message().contains("Migrated Plan"));
+        assert!(output.message().contains("plan-child"));
+        assert!(output.message().contains("status: blocked"));
+        assert!(output.message().contains("handoff entry one"));
+        assert_eq!(plan_page_report(&store, "plan-epic")?, output.message());
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_plan_page_usage_requires_an_epic_id() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "plans"]), &mut store, "unused");
+
+        assert_eq!(output.code(), 2);
+        assert_eq!(
+            output.message(),
+            "usage: livespec-console-beads-fabro plans <epic-id>"
         );
         Ok(())
     }
@@ -6541,6 +6636,24 @@ mod tests {
 
     fn command_args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn plan_snapshot_event(
+        event_id: &str,
+        work_item_id: &str,
+        rank: &str,
+        status: &str,
+        detail_json: &str,
+    ) -> ConsoleEvent {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"ready","lane_reason":null,"rank":"{rank}","status":"{status}","source_version":1,"detail":{detail_json}}}"#
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
     }
 
     /// Test double standing in for a real Dispatcher port that completes a

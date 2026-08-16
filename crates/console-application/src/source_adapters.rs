@@ -499,6 +499,9 @@ pub struct WorkItemDetail {
     pub admission_policy: Option<String>,
     /// The acceptance policy AS EMITTED. See [`Self::admission_policy`].
     pub acceptance_policy: Option<String>,
+    /// Ledger comments carried with a work-item when the observed surface
+    /// includes them, oldest first.
+    pub comments: Vec<WorkItemComment>,
 }
 
 impl WorkItemDetail {
@@ -527,7 +530,12 @@ impl WorkItemDetail {
             .iter()
             .map(|dependency| length_prefixed(dependency))
             .collect::<String>();
-        let fields: [Option<&str>; 19] = [
+        let comments = self
+            .comments
+            .iter()
+            .map(WorkItemComment::digest)
+            .collect::<String>();
+        let fields: [Option<&str>; 20] = [
             self.title.as_deref(),
             self.description.as_deref(),
             self.item_type.as_deref(),
@@ -547,6 +555,7 @@ impl WorkItemDetail {
             self.factory_safety.as_deref(),
             self.admission_policy.as_deref(),
             self.acceptance_policy.as_deref(),
+            Some(&comments),
         ];
         let mut encoded = String::new();
         for field in fields {
@@ -555,6 +564,33 @@ impl WorkItemDetail {
         // `depends_on` is a list, never absent, so it is always tagged present.
         encoded.push_str(&presence_tagged(Some(&dependencies)));
         stable_version(&[&encoded]).to_string()
+    }
+}
+
+/// One attributed ledger comment on a work-item.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WorkItemComment {
+    /// Stable comment id when the backing ledger emits one.
+    pub id: Option<String>,
+    /// Author recorded by the backing ledger.
+    pub author: Option<String>,
+    /// Creation timestamp recorded by the backing ledger.
+    pub created_at: Option<String>,
+    /// Comment body, carried verbatim.
+    pub text: String,
+}
+
+impl WorkItemComment {
+    fn digest(&self) -> String {
+        let encoded = [
+            presence_tagged(self.id.as_deref()),
+            presence_tagged(self.author.as_deref()),
+            presence_tagged(self.created_at.as_deref()),
+            presence_tagged(Some(&self.text)),
+        ]
+        .join("");
+        presence_tagged(Some(&encoded))
     }
 }
 
@@ -1989,6 +2025,28 @@ fn record_dependencies(
         .unwrap_or_default()
 }
 
+fn record_comments(record: &serde_json::Map<String, serde_json::Value>) -> Vec<WorkItemComment> {
+    record
+        .get("comments")
+        .and_then(serde_json::Value::as_array)
+        .map(|elements| {
+            elements
+                .iter()
+                .filter_map(|element| {
+                    let object = element.as_object()?;
+                    let text = record_text(object, "text")?;
+                    Some(WorkItemComment {
+                        id: record_text(object, "id"),
+                        author: record_text(object, "author"),
+                        created_at: record_text(object, "created_at"),
+                        text,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Flatten one `depends_on` element into the id the operator reads.
 ///
 /// The orchestrator emits `{"kind": "local", "work_item_id": "<id>"}`. `local`
@@ -2095,6 +2153,7 @@ pub fn parse_orchestrator_observation(
             awaits_scope_override: record_flag(&raw, "awaits_scope_override"),
             admission_policy: record_text(&raw, "admission_policy"),
             acceptance_policy: record_text(&raw, "acceptance_policy"),
+            comments: record_comments(&raw),
         };
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
@@ -4137,7 +4196,13 @@ mod tests {
         "notes": "an operator note",
         "supersedes": "livespec-console-beads-fabro-older",
         "blocked_reason": "waiting on review",
-        "factory_safety": "needs-host-secrets"
+        "factory_safety": "needs-host-secrets",
+        "comments": [
+            {"id": "comment-1", "author": "operator", "created_at": "2026-08-16T08:00:00Z", "text": "first handoff"},
+            {"id": 2, "text": "second handoff"},
+            {"author": "no text"},
+            "not an object"
+        ]
     }]"#;
 
     fn only_snapshot(parsed: &ParsedObservation) -> &WorkItemSnapshot {
@@ -4193,6 +4258,16 @@ mod tests {
         );
         assert_eq!(detail.blocked_reason.as_deref(), Some("waiting on review"));
         assert_eq!(detail.factory_safety.as_deref(), Some("needs-host-secrets"));
+        assert_eq!(detail.comments.len(), 2);
+        assert_eq!(detail.comments[0].id.as_deref(), Some("comment-1"));
+        assert_eq!(detail.comments[0].author.as_deref(), Some("operator"));
+        assert_eq!(
+            detail.comments[0].created_at.as_deref(),
+            Some("2026-08-16T08:00:00Z")
+        );
+        assert_eq!(detail.comments[0].text, "first handoff");
+        assert_eq!(detail.comments[1].id.as_deref(), Some("2"));
+        assert_eq!(detail.comments[1].text, "second handoff");
         // `audit` arrives as an OBJECT and is flattened to its JSON text.
         assert_eq!(detail.audit.as_deref(), Some(r#"{"commits":["abc123"]}"#));
         // `depends_on` arrives as objects: a `local` kind shows the bare id, a

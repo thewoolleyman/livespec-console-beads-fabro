@@ -32,7 +32,7 @@ pub mod source_adapters;
 
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
-    SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
+    SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail, WorkItemSnapshot,
     attention_item_snapshot_from_payload_json, fabro_run_snapshot_from_payload_json,
     materialize_attention_items, work_item_snapshot_from_payload_json,
 };
@@ -2638,6 +2638,288 @@ impl LaneBoard {
     pub fn total(&self) -> usize {
         self.columns.iter().map(LaneColumn::count).sum()
     }
+}
+
+/// Read model for one stable plan page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanPage {
+    epic: Option<PlanWorkItem>,
+    children: Vec<PlanWorkItem>,
+    handoff_entries: Vec<PlanHandoffEntry>,
+}
+
+impl PlanPage {
+    /// The plan epic, when it has been observed.
+    #[must_use]
+    pub const fn epic(&self) -> Option<&PlanWorkItem> {
+        self.epic.as_ref()
+    }
+
+    /// Child work-items that depend on the plan epic, rank ordered.
+    #[must_use]
+    pub fn children(&self) -> &[PlanWorkItem] {
+        &self.children
+    }
+
+    /// Handoff entries from the epic's ledger comments, in ledger order.
+    #[must_use]
+    pub fn handoff_entries(&self) -> &[PlanHandoffEntry] {
+        &self.handoff_entries
+    }
+}
+
+/// Work-item summary rendered on a plan page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanWorkItem {
+    work_item_id: String,
+    title: Option<String>,
+    status: String,
+    lane: Lane,
+    rank: String,
+}
+
+impl PlanWorkItem {
+    fn from_snapshot(snapshot: &WorkItemSnapshot) -> Self {
+        Self {
+            work_item_id: snapshot.work_item_id().to_owned(),
+            title: snapshot.detail().title.clone(),
+            status: snapshot.status().to_owned(),
+            lane: snapshot.lane(),
+            rank: snapshot.rank().to_owned(),
+        }
+    }
+
+    /// Work-item id.
+    #[must_use]
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    /// Human title, when the ledger emitted one.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Stored lifecycle status.
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Projected lane.
+    #[must_use]
+    pub const fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    /// Rank key.
+    #[must_use]
+    pub fn rank(&self) -> &str {
+        &self.rank
+    }
+}
+
+/// One handoff entry rendered from a plan epic ledger comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanHandoffEntry {
+    id: Option<String>,
+    author: Option<String>,
+    created_at: Option<String>,
+    text: String,
+}
+
+impl PlanHandoffEntry {
+    fn from_comment(comment: &WorkItemComment) -> Self {
+        Self {
+            id: comment.id.clone(),
+            author: comment.author.clone(),
+            created_at: comment.created_at.clone(),
+            text: comment.text.clone(),
+        }
+    }
+
+    /// Comment id, when the backing ledger emitted one.
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Comment author.
+    #[must_use]
+    pub fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+
+    /// Comment creation timestamp.
+    #[must_use]
+    pub fn created_at(&self) -> Option<&str> {
+        self.created_at.as_deref()
+    }
+
+    /// Comment body.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Project one plan page from persisted work-item observations.
+#[must_use]
+pub fn project_plan_page(events: &[ConsoleEvent], epic_id: &str) -> PlanPage {
+    let mut latest: BTreeMap<String, WorkItemSnapshot> = BTreeMap::new();
+    for event in events {
+        if *event.event_type() != EventType::WorkItemSnapshotObserved {
+            continue;
+        }
+        let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) else {
+            continue;
+        };
+        latest.insert(snapshot.work_item_id().to_owned(), snapshot);
+    }
+    let epic = latest.get(epic_id).map(PlanWorkItem::from_snapshot);
+    let mut children = latest
+        .values()
+        .filter(|snapshot| snapshot.detail().depends_on.iter().any(|id| id == epic_id))
+        .map(PlanWorkItem::from_snapshot)
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| {
+        left.rank()
+            .cmp(right.rank())
+            .then_with(|| left.work_item_id().cmp(right.work_item_id()))
+    });
+    let handoff_entries = latest
+        .get(epic_id)
+        .map(|snapshot| {
+            snapshot
+                .detail()
+                .comments
+                .iter()
+                .map(PlanHandoffEntry::from_comment)
+                .collect()
+        })
+        .unwrap_or_default();
+    PlanPage {
+        epic,
+        children,
+        handoff_entries,
+    }
+}
+
+/// The stable console URL path for a plan page.
+#[must_use]
+pub fn plan_page_url(epic_id: &str) -> String {
+    format!("/plans/{}", escape_url_path_segment(epic_id))
+}
+
+/// Render one plan page as standalone HTML.
+#[must_use]
+pub fn render_plan_page_html(epic_id: &str, page: &PlanPage) -> String {
+    let title = page.epic().and_then(PlanWorkItem::title).unwrap_or("Plan");
+    let mut html = String::new();
+    html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+    html.push_str("<title>");
+    html.push_str(&escape_html(title));
+    html.push_str("</title><style>body{font-family:system-ui,sans-serif;max-width:920px;margin:32px auto;padding:0 20px;color:#1f2933;background:#fafafa}h1{font-size:30px;margin:0 0 6px}h2{font-size:20px;margin-top:30px;border-bottom:1px solid #d8dee4;padding-bottom:6px}.meta{color:#52606d}.item,.entry{border:1px solid #d8dee4;background:#fff;border-radius:6px;padding:14px;margin:12px 0}.row{display:flex;gap:12px;flex-wrap:wrap}.pill{font-size:13px;border:1px solid #bcccdc;border-radius:999px;padding:2px 8px;background:#f0f4f8}pre{white-space:pre-wrap;font:14px ui-monospace,monospace;line-height:1.5}</style></head><body>");
+    html.push_str("<h1>");
+    html.push_str(&escape_html(title));
+    html.push_str("</h1><div class=\"meta\">");
+    html.push_str(&escape_html(epic_id));
+    html.push_str(" at ");
+    html.push_str(&escape_html(&plan_page_url(epic_id)));
+    html.push_str("</div>");
+    html.push_str("<h2>Epic</h2>");
+    if let Some(epic) = page.epic() {
+        render_plan_work_item(&mut html, epic);
+    } else {
+        html.push_str("<div class=\"item\">");
+        html.push_str(&escape_html(epic_id));
+        html.push_str(" has not been observed.</div>");
+    }
+    html.push_str("<h2>Children</h2>");
+    if page.children().is_empty() {
+        html.push_str("<div class=\"item\">No child work-items observed.</div>");
+    } else {
+        for child in page.children() {
+            render_plan_work_item(&mut html, child);
+        }
+    }
+    html.push_str("<h2>Handoff Entries</h2>");
+    if page.handoff_entries().is_empty() {
+        html.push_str("<div class=\"entry\">No handoff entries observed.</div>");
+    } else {
+        for entry in page.handoff_entries() {
+            render_plan_handoff_entry(&mut html, entry);
+        }
+    }
+    html.push_str("</body></html>");
+    html
+}
+
+fn render_plan_work_item(html: &mut String, item: &PlanWorkItem) {
+    html.push_str("<div class=\"item\"><strong>");
+    html.push_str(&escape_html(item.work_item_id()));
+    html.push_str("</strong>");
+    if let Some(title) = item.title() {
+        html.push_str("<div>");
+        html.push_str(&escape_html(title));
+        html.push_str("</div>");
+    }
+    html.push_str("<div class=\"row\"><span class=\"pill\">status: ");
+    html.push_str(&escape_html(item.status()));
+    html.push_str("</span><span class=\"pill\">lane: ");
+    html.push_str(item.lane().label());
+    html.push_str("</span><span class=\"pill\">rank: ");
+    html.push_str(&escape_html(item.rank()));
+    html.push_str("</span></div></div>");
+}
+
+fn render_plan_handoff_entry(html: &mut String, entry: &PlanHandoffEntry) {
+    html.push_str("<article class=\"entry\"><div class=\"row\">");
+    if let Some(created_at) = entry.created_at() {
+        html.push_str("<span class=\"pill\">");
+        html.push_str(&escape_html(created_at));
+        html.push_str("</span>");
+    }
+    if let Some(author) = entry.author() {
+        html.push_str("<span class=\"pill\">");
+        html.push_str(&escape_html(author));
+        html.push_str("</span>");
+    }
+    if let Some(id) = entry.id() {
+        html.push_str("<span class=\"pill\">");
+        html.push_str(&escape_html(id));
+        html.push_str("</span>");
+    }
+    html.push_str("</div><pre>");
+    html.push_str(&escape_html(entry.text()));
+    html.push_str("</pre></article>");
+}
+
+fn escape_html(text: &str) -> String {
+    text.chars()
+        .flat_map(|character| match character {
+            '&' => "&amp;".chars().collect::<Vec<_>>(),
+            '<' => "&lt;".chars().collect(),
+            '>' => "&gt;".chars().collect(),
+            '"' => "&quot;".chars().collect(),
+            '\'' => "&#39;".chars().collect(),
+            other => vec![other],
+        })
+        .collect()
+}
+
+fn escape_url_path_segment(text: &str) -> String {
+    text.chars()
+        .flat_map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                vec![character]
+            } else {
+                format!("%{:02X}", u32::from(character)).chars().collect()
+            }
+        })
+        .collect()
 }
 
 /// Project the seven-lane board by reducing the work-item snapshot observations.
@@ -6279,11 +6561,12 @@ mod tests {
         handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
         handle_work_item_set_workflow_scope_override_command, header_help_section,
         help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
-        per_item_verb_is_state_valid, project_action_failures, project_attention,
-        project_lane_board, reduce_tui_interaction, resolve_command_palette_action,
-        resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
-        validate_operator_action, work_item_failure_event, work_item_override_outcome,
+        per_item_verb_is_state_valid, plan_page_url, project_action_failures, project_attention,
+        project_lane_board, project_plan_page, reduce_tui_interaction, render_plan_page_html,
+        resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
+        work_item_failure_event, work_item_override_outcome,
     };
 
     #[test]
@@ -11223,6 +11506,156 @@ mod tests {
         assert_eq!(detail.description.as_deref(), Some("body text"));
         assert_eq!(detail.item_type.as_deref(), Some("bug"));
         assert_eq!(detail.depends_on, vec!["console-dep".to_owned()]);
+    }
+
+    #[test]
+    fn plan_page_projects_epic_children_and_handoff_comments() {
+        let events = [
+            plan_snapshot_event(
+                "evt_epic",
+                "plan-epic",
+                "a0",
+                "open",
+                r#"{"title":"Planning Lane","item_type":"epic","depends_on":[],"comments":[{"id":"c1","author":"alice","created_at":"2026-08-16T08:00:00Z","text":"first handoff"},{"id":"c2","author":"bob","created_at":"2026-08-16T09:00:00Z","text":"second <handoff>"}]}"#,
+            ),
+            plan_snapshot_event(
+                "evt_child_b",
+                "child-b",
+                "b0",
+                "ready",
+                r#"{"title":"Second child","depends_on":["plan-epic"]}"#,
+            ),
+            plan_snapshot_event(
+                "evt_child_a",
+                "child-a",
+                "a1",
+                "blocked",
+                r#"{"title":"First child","depends_on":["plan-epic"]}"#,
+            ),
+            plan_snapshot_event(
+                "evt_child_c",
+                "child-c",
+                "a1",
+                "ready",
+                r#"{"depends_on":["plan-epic"]}"#,
+            ),
+            plan_snapshot_event(
+                "evt_unrelated",
+                "other",
+                "a0",
+                "ready",
+                r#"{"title":"Other","depends_on":[]}"#,
+            ),
+        ];
+
+        let page = project_plan_page(&events, "plan-epic");
+
+        assert_eq!(
+            page.epic().map(super::PlanWorkItem::title),
+            Some(Some("Planning Lane"))
+        );
+        assert_eq!(
+            page.children()
+                .iter()
+                .map(|child| (child.work_item_id(), child.status()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("child-a", "blocked"),
+                ("child-c", "ready"),
+                ("child-b", "ready")
+            ]
+        );
+        assert_eq!(page.children()[1].title(), None);
+        assert_eq!(
+            page.handoff_entries()
+                .iter()
+                .map(super::PlanHandoffEntry::text)
+                .collect::<Vec<_>>(),
+            vec!["first handoff", "second <handoff>"]
+        );
+        assert!(render_plan_page_html("plan-epic", &page).contains("child-c"));
+    }
+
+    #[test]
+    fn plan_page_html_has_stable_url_and_escaped_ledger_text() {
+        let events = [plan_snapshot_event(
+            "evt_epic",
+            "plan-epic",
+            "a0",
+            "open",
+            r#"{"title":"Plan <One>","item_type":"epic","depends_on":[],"comments":[{"id":"c1","author":"alice","created_at":"2026-08-16T08:00:00Z","text":"handoff with <tag> & detail"}]}"#,
+        )];
+        let page = project_plan_page(&events, "plan-epic");
+
+        let html = render_plan_page_html("plan-epic", &page);
+
+        assert_eq!(plan_page_url("plan-epic"), "/plans/plan-epic");
+        assert!(html.contains("Plan &lt;One&gt;"));
+        assert!(html.contains("/plans/plan-epic"));
+        assert!(html.contains("handoff with &lt;tag&gt; &amp; detail"));
+        assert!(!html.contains("handoff with <tag> & detail"));
+    }
+
+    #[test]
+    fn plan_page_skips_foreign_events_and_renders_empty_placeholders() {
+        let events = [
+            ConsoleEvent::fixture("evt_command", EventType::CommandAccepted, "console")
+                .with_payload_json("{}".to_owned()),
+            ConsoleEvent::fixture(
+                "evt_bad_snapshot",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            )
+            .with_payload_json("{}".to_owned()),
+        ];
+
+        let page = project_plan_page(&events, "plan with spaces");
+        let html = render_plan_page_html("plan with spaces", &page);
+
+        assert_eq!(page.epic(), None);
+        assert!(page.children().is_empty());
+        assert!(page.handoff_entries().is_empty());
+        assert_eq!(
+            plan_page_url("plan with spaces"),
+            "/plans/plan%20with%20spaces"
+        );
+        assert!(html.contains("plan with spaces has not been observed."));
+        assert!(html.contains("No handoff entries observed."));
+    }
+
+    #[test]
+    fn plan_page_escapes_quotes_and_apostrophes() {
+        let events = [plan_snapshot_event(
+            "evt_epic",
+            "plan-epic",
+            "a0",
+            "open",
+            r#"{"title":"Plan \"quoted\"","item_type":"epic","depends_on":[],"comments":[{"text":"operator's \"handoff\""}]}"#,
+        )];
+        let page = project_plan_page(&events, "plan-epic");
+
+        let html = render_plan_page_html("plan-epic", &page);
+
+        assert!(html.contains("Plan &quot;quoted&quot;"));
+        assert!(html.contains("operator&#39;s &quot;handoff&quot;"));
+    }
+
+    fn plan_snapshot_event(
+        event_id: &str,
+        work_item_id: &str,
+        rank: &str,
+        status: &str,
+        detail_json: &str,
+    ) -> ConsoleEvent {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","lane":"ready","lane_reason":null,"rank":"{rank}","status":"{status}","source_version":1,"detail":{detail_json}}}"#
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
     }
 
     /// A model whose active view is `view`, driven there through the reducer.
