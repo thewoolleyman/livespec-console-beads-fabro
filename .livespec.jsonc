@@ -36,6 +36,16 @@
       "github_url": "https://github.com/thewoolleyman/livespec-orchestrator-beads-fabro",
       "local_clone": "/data/projects/livespec-orchestrator-beads-fabro",
       "default_branch": "master"
+    },
+    "livespec": {
+      "github_url": "https://github.com/thewoolleyman/livespec",
+      "local_clone": "/data/projects/livespec",
+      "default_branch": "master"
+    },
+    "livespec-overseer": {
+      "github_url": "https://github.com/thewoolleyman/livespec-overseer",
+      "local_clone": "/data/projects/livespec-overseer",
+      "default_branch": "master"
     }
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
