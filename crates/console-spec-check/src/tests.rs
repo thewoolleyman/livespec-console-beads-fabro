@@ -149,10 +149,15 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // refusal rendering) and five non-functional-requirements.md clauses
     // (the cross-repo action-surface parity check: red on unbound published
     // actions, allowlist-with-reasons omissions, and a required born-red
-    // demonstration): 194 normative clauses, 15/100/22/57.
+    // demonstration): 194 normative clauses, 15/100/22/57. The v040
+    // console-overseer-foreman-orthogonal-scope revision added two spec.md
+    // Scope Boundary clauses (the console MUST NOT be treated as a control
+    // surface for the overseer/foreman layer, and SHOULD NOT gain UI to
+    // observe or edit foreman/overseer configuration or state): 196
+    // normative clauses, 17/100/22/57.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
-        ("spec.md", 15_usize),
+        ("spec.md", 17_usize),
         ("contracts.md", 100),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 57),
@@ -165,7 +170,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 194,
+        total, 196,
         "total normative clauses across the console spec"
     );
     Ok(())
