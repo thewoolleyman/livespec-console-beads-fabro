@@ -1069,5 +1069,21 @@
     "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
    }
   ]
+ },
+ {
+  "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
+  "scenario_file": "scenarios.md",
+  "test": "TODO",
+  "reason": "Test tier: a top-of-pyramid acceptance test would need to prove a UI absence -- that the console's Settings surface never gains a `livespec-overseer` foreman/overseer configuration lever (for example `foreman_valve_disposition`) and that no console code path invokes the overseer/foreman layer. This v040 Scope Boundary clause is bound here because Scenario 11 is the console's other orthogonal-system boundary case (the orchestrator's ratified action surface, which the console maps commands onto and never bypasses); the overseer/foreman clause is the same shape of boundary against a second, independent system. Coverage today is structural rather than behavioral: console-arch-check enforces that the Settings surface stays limited to the orchestrator-declared `dispatcher.*` levers (Scenario 14), and no `livespec-overseer` client exists in this crate tree for a test to invoke. Registered now, pending, per the console-spec-check requirement that every live clause bind to a scenario.",
+  "clauses": [
+   {
+    "gap_id": "gap-bhrwmgth",
+    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
+   },
+   {
+    "gap_id": "gap-vwuzqptl",
+    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
+   }
+  ]
  }
 ]
