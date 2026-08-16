@@ -105,7 +105,7 @@ fn should_run_store_backed_command(args: &[String]) -> bool {
     let command = args.get(1).map(String::as_str);
     matches!(
         command,
-        Some("serve" | "backfill" | "events" | "snapshot" | "doctor")
+        Some("serve" | "backfill" | "events" | "snapshot" | "doctor" | "plans")
     )
 }
 
