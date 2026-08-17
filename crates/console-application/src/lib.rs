@@ -1519,6 +1519,7 @@ pub struct TuiScreenModel {
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: PluginResolution,
     unavailable_sources: Vec<String>,
+    factory_activity: Option<String>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
 }
@@ -1776,6 +1777,7 @@ impl TuiScreenModel {
             header_repo_label(&self.selected_repo),
             self.active_view.label(),
             self.attention_items.len(),
+            self.factory_activity.as_deref(),
             &self.unavailable_sources,
             width,
         )
@@ -3200,6 +3202,7 @@ pub fn build_tui_model_for_state(
         ),
         _ => None,
     };
+    let factory_activity = factory_drain_activity(events);
     TuiScreenModel {
         active_view,
         navigation: TuiView::all().to_vec(),
@@ -3226,13 +3229,15 @@ pub fn build_tui_model_for_state(
         // constants and eliding source names — while the operationally-important
         // repo / view / attention fields survive. See `header_line`.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
             attention_count,
+            factory_activity_segment(factory_activity.as_deref()),
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
+        factory_activity,
     }
 }
 
@@ -3308,6 +3313,28 @@ fn source_health_header_segment(unavailable_sources: &[String]) -> String {
     }
 }
 
+fn factory_activity_segment(activity: Option<&str>) -> String {
+    activity.map_or_else(String::new, |value| format!(" | factory: {value}"))
+}
+
+fn factory_drain_activity(events: &[ConsoleEvent]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event.event_type() {
+            EventType::FactoryDrainRequested | EventType::FactoryDrainStarted => {
+                Some("drain in flight".to_owned())
+            }
+            EventType::FactoryDrainCompleted => Some("drain completed".to_owned()),
+            EventType::FactoryDrainFailed => Some("drain failed".to_owned()),
+            EventType::FactoryDrainNotWired => Some("drain not wired".to_owned()),
+            EventType::CommandRejected if event.stream_id() == "fleet:livespec" => {
+                Some("drain rejected".to_owned())
+            }
+            _other => None,
+        })
+}
+
 /// The source-health segment's degradation forms, widest first, for the header
 /// fitter: full names, then the first name plus a `+N more` overflow marker,
 /// then a bare count. Each is a whole, never-mid-truncated string carrying its
@@ -3360,22 +3387,24 @@ fn fit_header_line(
     repo: &str,
     view: &str,
     attention: usize,
+    factory_activity: Option<&str>,
     unavailable_sources: &[String],
     width: usize,
 ) -> String {
     // Fixed display order; `Some` = present, `None` = dropped to make room. Each
     // field is atomic — kept or dropped whole, never mid-truncated.
-    let mut fields: [Option<String>; 5] = [
+    let mut fields: [Option<String>; 6] = [
         Some("fleet: livespec".to_owned()),      // 0 — constant identity
         Some("mode: tui".to_owned()),            // 1 — constant
         Some(format!("repo: {repo}")),           // 2 — never dropped
         Some(format!("view: {view}")),           // 3
         Some(format!("attention: {attention}")), // 4
+        factory_activity.map(|activity| format!("factory: {activity}")), // 5
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<String>; 5], source_idx: usize| -> String {
+    let compose = |fields: &[Option<String>; 6], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_deref())
@@ -3398,6 +3427,7 @@ fn fit_header_line(
         Shrink::DegradeSource, // full names -> +N more
         Shrink::DegradeSource, // +N more -> count only
         Shrink::DropField(3),  // view (already shown, highlighted, in the nav pane)
+        Shrink::DropField(5),  // factory activity (also visible in Events)
         Shrink::DropField(4),  // attention count
     ];
 
@@ -7857,6 +7887,64 @@ mod tests {
     }
 
     #[test]
+    fn header_surfaces_factory_drain_in_flight_and_terminal_status() {
+        let requested = ConsoleEvent::fixture(
+            "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_requested",
+            EventType::FactoryDrainRequested,
+            "console:factory-command-handler",
+        );
+        let completed = ConsoleEvent::fixture(
+            "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_completed",
+            EventType::FactoryDrainCompleted,
+            "console:factory-command-handler",
+        );
+        let failed = ConsoleEvent::fixture(
+            "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_failed",
+            EventType::FactoryDrainFailed,
+            "console:factory-command-handler",
+        );
+        let not_wired = ConsoleEvent::fixture(
+            "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_not_wired",
+            EventType::FactoryDrainNotWired,
+            "console:factory-command-handler",
+        );
+        let rejected = ConsoleEvent::new(
+            "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_rejected".to_owned(),
+            1,
+            "command".to_owned(),
+            EventType::CommandRejected,
+            "console:factory-command-handler".to_owned(),
+            "fleet:livespec".to_owned(),
+            1,
+        );
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let in_flight = build_tui_model_for_state(std::slice::from_ref(&requested), &state);
+        assert!(in_flight.header().contains("factory: drain in flight"));
+        assert!(
+            in_flight
+                .header_line(120)
+                .contains("factory: drain in flight")
+        );
+
+        let terminal = build_tui_model_for_state(&[requested, completed], &state);
+        assert!(terminal.header().contains("factory: drain completed"));
+
+        let failed_model = build_tui_model_for_state(&[failed], &state);
+        assert!(failed_model.header().contains("factory: drain failed"));
+
+        let not_wired_model = build_tui_model_for_state(&[not_wired], &state);
+        assert!(
+            not_wired_model
+                .header()
+                .contains("factory: drain not wired")
+        );
+
+        let rejected_model = build_tui_model_for_state(&[rejected], &state);
+        assert!(rejected_model.header().contains("factory: drain rejected"));
+    }
+
+    #[test]
     fn open_help_from_the_focused_header_opens_the_header_section() {
         // Scenario 20 / B4 consistency: `?` while the header is focused opens Help
         // auto-focused to the header section, which is the LAST section (after
@@ -8641,6 +8729,7 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
+            factory_activity: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
         };
@@ -8895,6 +8984,7 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
+            factory_activity: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
         };
@@ -14009,6 +14099,7 @@ mod tests {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
+            factory_activity: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
         };
