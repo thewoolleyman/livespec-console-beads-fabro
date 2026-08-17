@@ -151,6 +151,54 @@ impl TuiView {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// The resolved orchestrator plugin root/build selected for backing programs.
+pub struct PluginResolution {
+    source: String,
+    root: Option<String>,
+    version: Option<String>,
+}
+
+impl PluginResolution {
+    #[must_use]
+    /// Build a resolved plugin summary.
+    pub const fn resolved(source: String, root: String, version: Option<String>) -> Self {
+        Self {
+            source,
+            root: Some(root),
+            version,
+        }
+    }
+
+    #[must_use]
+    /// Build an unresolved plugin summary.
+    pub const fn unresolved() -> Self {
+        Self {
+            source: String::new(),
+            root: None,
+            version: None,
+        }
+    }
+
+    #[must_use]
+    /// Return the resolution source label.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Return the resolved plugin root, if any.
+    pub fn root(&self) -> Option<&str> {
+        self.root.as_deref()
+    }
+
+    #[must_use]
+    /// Return the resolved plugin build/version, if known.
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+}
+
 /// Which lane sub-view the `Lanes` view is showing: the cross-lane overview
 /// home, or a single lane drilled into for its full rank-ordered list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -874,6 +922,7 @@ pub struct TuiInteractionState {
     selected_repo: String,
     selected_setting_index: usize,
     dispatcher_settings: DispatcherSettingsRead,
+    plugin_resolution: PluginResolution,
 }
 
 impl TuiInteractionState {
@@ -899,6 +948,7 @@ impl TuiInteractionState {
             selected_repo: String::new(),
             selected_setting_index: 0,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
         }
     }
 
@@ -928,6 +978,7 @@ impl TuiInteractionState {
             selected_repo: String::new(),
             selected_setting_index: 0,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
         }
     }
 
@@ -1095,6 +1146,13 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the resolved orchestrator plugin summary replaced.
+    pub fn with_plugin_resolution(mut self, plugin_resolution: PluginResolution) -> Self {
+        self.plugin_resolution = plugin_resolution;
+        self
+    }
+
+    #[must_use]
     /// Return the stored value.
     pub const fn active_view(&self) -> TuiView {
         self.active_view
@@ -1213,6 +1271,12 @@ impl TuiInteractionState {
     /// Return the dispatcher settings the console observed for the selected repo.
     pub const fn dispatcher_settings(&self) -> &DispatcherSettingsRead {
         &self.dispatcher_settings
+    }
+
+    #[must_use]
+    /// Return the resolved orchestrator plugin summary displayed in Settings.
+    pub const fn plugin_resolution(&self) -> &PluginResolution {
+        &self.plugin_resolution
     }
 }
 
@@ -1426,6 +1490,7 @@ pub struct TuiScreenModel {
     selected_repo: String,
     selected_setting_index: Option<usize>,
     dispatcher_settings: DispatcherSettingsRead,
+    plugin_resolution: PluginResolution,
     unavailable_sources: Vec<String>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
@@ -1634,6 +1699,12 @@ impl TuiScreenModel {
     /// own; an unreadable read surface stays `NotObserved`.
     pub const fn dispatcher_settings(&self) -> &DispatcherSettingsRead {
         &self.dispatcher_settings
+    }
+
+    #[must_use]
+    /// Return the resolved orchestrator plugin summary displayed in Settings.
+    pub const fn plugin_resolution(&self) -> &PluginResolution {
+        &self.plugin_resolution
     }
 
     #[must_use]
@@ -3032,6 +3103,7 @@ pub fn build_tui_model_for_state(
         selected_repo: state.selected_repo().to_owned(),
         selected_setting_index,
         dispatcher_settings: state.dispatcher_settings().clone(),
+        plugin_resolution: state.plugin_resolution().clone(),
         action_failures: project_action_failures(events),
         // The canonical, untruncated header. The source-health segment sits LAST
         // (after attention) so that when a narrow terminal cannot hold every
@@ -6550,10 +6622,10 @@ mod tests {
         FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
         HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem,
         OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, RejectMode, SettingRow,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
-        build_tui_model, build_tui_model_for_state, command_palette_query_opens_action_invoker,
-        dispatcher_setting_rows, drilldown_item_count,
+        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, PluginResolution,
+        RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, action_registry, build_tui_model, build_tui_model_for_state,
+        command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
         handle_work_item_move_command, handle_work_item_reject_command,
@@ -8341,6 +8413,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
@@ -8594,6 +8667,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
@@ -13606,6 +13680,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),

@@ -128,6 +128,7 @@ impl CommandShape {
 pub struct BackingCliResolution {
     selected_repo_path: PathBuf,
     programs: BackingCliPrograms,
+    plugin_resolution: PluginResolution,
 }
 
 impl BackingCliResolution {
@@ -154,9 +155,9 @@ impl BackingCliResolution {
     /// plugin cache entry is malformed.
     pub fn resolve(inputs: &ResolveInputs) -> Result<Self, BackingCliResolutionError> {
         let selected_repo_path = selected_repo_path(inputs);
-        let plugin_root = resolve_plugin_root(inputs, &selected_repo_path)?;
-        let mut programs = plugin_root
-            .as_deref()
+        let plugin_resolution = resolve_plugin_root(inputs, &selected_repo_path)?;
+        let mut programs = plugin_resolution
+            .root()
             .and_then(plugin_bin_dir)
             .as_deref()
             .map(programs_from_plugin_bin)
@@ -171,6 +172,7 @@ impl BackingCliResolution {
         Ok(Self {
             selected_repo_path,
             programs,
+            plugin_resolution,
         })
     }
 
@@ -196,6 +198,12 @@ impl BackingCliResolution {
     }
 
     #[must_use]
+    /// Return the resolved orchestrator plugin root/build shown to operators.
+    pub const fn plugin_resolution(&self) -> &PluginResolution {
+        &self.plugin_resolution
+    }
+
+    #[must_use]
     /// Return the ABSOLUTE Dispatcher journal path the dispatch source reads:
     /// the selected repo checkout joined with the repo-relative journal location
     /// ([`crate::DISPATCHER_JOURNAL_PATH`]). Resolving it against the selected
@@ -207,6 +215,54 @@ impl BackingCliResolution {
             .join(crate::DISPATCHER_JOURNAL_PATH)
             .display()
             .to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// The orchestrator plugin root/build selected for backing CLI programs.
+pub struct PluginResolution {
+    source: String,
+    root: Option<PathBuf>,
+    version: Option<String>,
+}
+
+impl PluginResolution {
+    #[must_use]
+    /// Build a resolved plugin summary.
+    pub const fn resolved(source: String, root: PathBuf, version: Option<String>) -> Self {
+        Self {
+            source,
+            root: Some(root),
+            version,
+        }
+    }
+
+    #[must_use]
+    /// Build an unresolved plugin summary.
+    pub const fn unresolved(source: String) -> Self {
+        Self {
+            source,
+            root: None,
+            version: None,
+        }
+    }
+
+    #[must_use]
+    /// Return the resolution source label.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Return the resolved plugin root, if any.
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
+    #[must_use]
+    /// Return the resolved plugin build/version, if known.
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 }
 
@@ -251,27 +307,40 @@ fn selected_repo_path(inputs: &ResolveInputs) -> PathBuf {
 fn resolve_plugin_root(
     inputs: &ResolveInputs,
     selected_repo_path: &Path,
-) -> Result<Option<PathBuf>, BackingCliResolutionError> {
+) -> Result<PluginResolution, BackingCliResolutionError> {
     if let Some(root) = inputs.env.get(PLUGIN_ROOT_ENV).map(PathBuf::from) {
         validate_plugin_root(&root)?;
-        return Ok(Some(root));
+        return Ok(PluginResolution::resolved(
+            PLUGIN_ROOT_ENV.to_owned(),
+            root,
+            None,
+        ));
     }
 
     if plugin_bin_dir(selected_repo_path).is_some() {
         validate_plugin_root(selected_repo_path)?;
-        return Ok(Some(selected_repo_path.to_path_buf()));
+        return Ok(PluginResolution::resolved(
+            "selected repo checkout".to_owned(),
+            selected_repo_path.to_path_buf(),
+            None,
+        ));
     }
 
-    let Some(root) = installed_plugin_root(inputs)? else {
-        return Ok(None);
+    let Some((root, version)) = installed_plugin_root(inputs, selected_repo_path)? else {
+        return Ok(PluginResolution::unresolved("not resolved".to_owned()));
     };
     validate_plugin_root(&root)?;
-    Ok(Some(root))
+    Ok(PluginResolution::resolved(
+        "installed Claude plugin cache".to_owned(),
+        root,
+        version,
+    ))
 }
 
 fn installed_plugin_root(
     inputs: &ResolveInputs,
-) -> Result<Option<PathBuf>, BackingCliResolutionError> {
+    selected_repo_path: &Path,
+) -> Result<Option<(PathBuf, Option<String>)>, BackingCliResolutionError> {
     let Some(home_dir) = &inputs.home_dir else {
         return Ok(None);
     };
@@ -288,23 +357,83 @@ fn installed_plugin_root(
     let Some(plugins) = value.get("plugins").and_then(serde_json::Value::as_object) else {
         return Ok(None);
     };
+    let selected_repo = selected_repo_path.to_string_lossy();
+    let mut selected: Option<InstalledPluginCandidate> = None;
     for (name, installs) in plugins {
         if !name.starts_with(&format!("{ORCHESTRATOR_PLUGIN_NAME}@")) {
             continue;
         }
-        let Some(install_path) = installs
-            .as_array()
-            .and_then(|entries| entries.first())
-            .and_then(|entry| entry.get("installPath"))
-            .and_then(serde_json::Value::as_str)
-        else {
+        let Some(entries) = installs.as_array() else {
             return Err(BackingCliResolutionError::new(format!(
-                "Claude plugin cache entry {name} has no installPath"
+                "Claude plugin cache entry {name} is not an array"
             )));
         };
-        return Ok(Some(PathBuf::from(install_path)));
+        for (index, entry) in entries.iter().enumerate() {
+            let applicability = installed_plugin_applicability(entry, &selected_repo);
+            let candidate = InstalledPluginCandidate {
+                name,
+                index,
+                applicability,
+                entry,
+            };
+            if selected
+                .as_ref()
+                .is_none_or(|current| candidate.is_newer_than(current))
+            {
+                selected = Some(candidate);
+            }
+        }
     }
-    Ok(None)
+    let Some(candidate) = selected else {
+        return Ok(None);
+    };
+    let Some(install_path) = candidate
+        .entry
+        .get("installPath")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Err(BackingCliResolutionError::new(format!(
+            "Claude plugin cache entry {}[{}] has no installPath",
+            candidate.name, candidate.index
+        )));
+    };
+    let version = candidate
+        .entry
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Ok(Some((PathBuf::from(install_path), version)))
+}
+
+struct InstalledPluginCandidate<'a> {
+    name: &'a str,
+    index: usize,
+    applicability: InstalledPluginApplicability,
+    entry: &'a serde_json::Value,
+}
+
+impl InstalledPluginCandidate<'_> {
+    fn is_newer_than(&self, other: &Self) -> bool {
+        (self.applicability, self.index) > (other.applicability, other.index)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum InstalledPluginApplicability {
+    AnyProject,
+    Global,
+    SelectedProject,
+}
+
+fn installed_plugin_applicability(
+    entry: &serde_json::Value,
+    selected_repo: &str,
+) -> InstalledPluginApplicability {
+    match entry.get("projectPath").and_then(serde_json::Value::as_str) {
+        Some(path) if path == selected_repo => InstalledPluginApplicability::SelectedProject,
+        None => InstalledPluginApplicability::Global,
+        Some(_other) => InstalledPluginApplicability::AnyProject,
+    }
 }
 
 /// Return the backing-CLI `bin` directory under a plugin root, accepting BOTH

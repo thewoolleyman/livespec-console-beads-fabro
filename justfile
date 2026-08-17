@@ -24,13 +24,19 @@ default:
 # Extra args pass through after `serve` (e.g. `just tui -- --preview` prints the
 # one-shot text summary); `just serve` is an alias for the same recipe.
 # Build + launch the interactive operator TUI (the primary launch path).
+# Ambient LIVESPEC_CONSOLE_* overrides are re-injected INSIDE the credential
+# wrapper because the wrapper runs with a clean environment.
 # errexit is deliberately omitted; the build is guarded before argv pass-through.
 [positional-arguments]
 tui *ARGS:
     #!/usr/bin/env bash
     set -uo pipefail
     cargo build --release --package livespec-console-beads-fabro || exit $?
-    /usr/local/bin/with-livespec-env.sh -- ./target/release/livespec-console-beads-fabro serve "$@"
+    env_args=()
+    while IFS= read -r name; do
+      env_args+=("$name=${!name}")
+    done < <(compgen -e LIVESPEC_CONSOLE_ | sort)
+    /usr/local/bin/with-livespec-env.sh -- env "${env_args[@]}" ./target/release/livespec-console-beads-fabro serve "$@"
 
 alias serve := tui
 

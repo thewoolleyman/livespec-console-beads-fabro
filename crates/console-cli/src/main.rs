@@ -30,6 +30,7 @@ use console_application::source_adapters::{
 use console_application::{
     DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, DispatcherSettingsPort,
     DispatcherSettingsRead, JournalAutonomousDecisionsPort,
+    PluginResolution as TuiPluginResolution,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
@@ -195,6 +196,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo.clone(),
         dispatcher_settings,
+        plugin_resolution: plugin_resolution_for_tui(resolution.plugin_resolution()),
     };
     // Move the SLOW CLI-shelling source polls onto a background thread so the UI
     // thread never blocks on them (dropped keystrokes were the move-doesn't-land
@@ -381,6 +383,7 @@ fn console_repo() -> String {
 struct InteractiveTuiRunner {
     selected_repo: String,
     dispatcher_settings: DispatcherSettingsRead,
+    plugin_resolution: TuiPluginResolution,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -396,10 +399,25 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             requested_by,
             &self.selected_repo,
             self.dispatcher_settings.clone(),
+            self.plugin_resolution.clone(),
             session,
         )
         .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
     }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn plugin_resolution_for_tui(
+    resolution: &livespec_console_beads_fabro::PluginResolution,
+) -> TuiPluginResolution {
+    TuiPluginResolution::resolved(
+        resolution.source().to_owned(),
+        resolution.root().map_or_else(
+            || "not resolved".to_owned(),
+            |root| root.display().to_string(),
+        ),
+        resolution.version().map(str::to_owned),
+    )
 }
 
 #[cfg(all(not(test), not(coverage)))]

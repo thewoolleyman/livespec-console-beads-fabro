@@ -324,12 +324,15 @@ pub fn resolve_upstream_dir(home: &Path, project_root: &Path) -> Result<(PathBuf
     let wanted = project_root.to_string_lossy();
     let install = installs
         .iter()
-        .find(|entry| {
+        .enumerate()
+        .filter(|(_index, entry)| {
             entry
                 .get("projectPath")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|path| path == wanted)
         })
+        .max_by_key(|(index, _entry)| *index)
+        .map(|(_index, entry)| entry)
         .ok_or_else(|| format!("no orchestrator install recorded for projectPath {wanted}"))?;
     let install_path = install
         .get("installPath")
@@ -591,6 +594,34 @@ mod tests {
         let (dir, version) = resolve_upstream_dir(&home, Path::new("/repo")).unwrap_or_default();
         assert_eq!(dir, install.join(FORK_DIR));
         assert_eq!(version, "cafe1234");
+    }
+
+    #[test]
+    fn resolve_upstream_dir_uses_newest_install_for_this_project() {
+        let stale = scratch("resolve-newest-stale-install");
+        let newest = scratch("resolve-newest-current-install");
+        let other = scratch("resolve-newest-other-install");
+        let _ = std::fs::create_dir_all(stale.join(FORK_DIR));
+        let _ = std::fs::create_dir_all(newest.join(FORK_DIR));
+        let _ = std::fs::create_dir_all(other.join(FORK_DIR));
+        let home = fake_home(
+            "resolve-newest",
+            &format!(
+                r#"{{"plugins":{{"livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro":[
+                    {{"projectPath":"/repo","installPath":"{}","version":"stale-first"}},
+                    {{"projectPath":"/other","installPath":"{}","version":"other-project"}},
+                    {{"projectPath":"/repo","installPath":"{}","version":"newest-applicable"}}
+                ]}}}}"#,
+                stale.to_string_lossy(),
+                other.to_string_lossy(),
+                newest.to_string_lossy()
+            ),
+        );
+
+        let (dir, version) = resolve_upstream_dir(&home, Path::new("/repo")).unwrap_or_default();
+
+        assert_eq!(dir, newest.join(FORK_DIR));
+        assert_eq!(version, "newest-applicable");
     }
 
     #[test]

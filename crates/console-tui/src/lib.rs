@@ -21,9 +21,9 @@ use console_application::source_adapters::Lane;
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
     HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
-    OperatorActionOutcome, PendingValve, SettingRow, TimelineEntry, TuiInteraction,
-    TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, action_registry,
-    build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
+    OperatorActionOutcome, PendingValve, PluginResolution, SettingRow, TimelineEntry,
+    TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
+    action_registry, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
     reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
     resolve_selected_operator_action, resolve_valve_action,
 };
@@ -82,6 +82,7 @@ pub fn run_interactive_tui(
         requested_by,
         selected_repo,
         dispatcher_settings,
+        PluginResolution::unresolved(),
         &mut effect_sink,
     )
 }
@@ -97,6 +98,7 @@ pub fn run_interactive_tui_with_effect_sink(
     requested_by: &str,
     selected_repo: &str,
     dispatcher_settings: DispatcherSettingsRead,
+    plugin_resolution: PluginResolution,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
@@ -119,6 +121,7 @@ pub fn run_interactive_tui_with_effect_sink(
         requested_by,
         selected_repo,
         dispatcher_settings,
+        plugin_resolution,
         session,
     );
     let raw_mode_result = disable_raw_mode();
@@ -137,11 +140,13 @@ fn run_terminal_loop(
     requested_by: &str,
     selected_repo: &str,
     dispatcher_settings: DispatcherSettingsRead,
+    plugin_resolution: PluginResolution,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
         .with_selected_repo(selected_repo.to_owned())
-        .with_dispatcher_settings(dispatcher_settings);
+        .with_dispatcher_settings(dispatcher_settings)
+        .with_plugin_resolution(plugin_resolution);
     // The event log is OWNED and re-projected every iteration (Bug B fix): each
     // projection reduces over the LATEST events, not a snapshot frozen at
     // startup, so the board and detail panes stay live.
@@ -2194,24 +2199,40 @@ fn render_settings(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     match model.dispatcher_settings() {
         DispatcherSettingsRead::Observed(settings) => {
             let rows = dispatcher_setting_rows(settings);
-            let items = rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| settings_row_line(model, index, row))
+            let items = std::iter::once(plugin_resolution_row(model.plugin_resolution()))
+                .chain(
+                    rows.iter()
+                        .enumerate()
+                        .map(|(index, row)| settings_row_line(model, index, row)),
+                )
                 .collect::<Vec<_>>();
             let count = items.len();
             let list = List::new(items).block(block);
             let mut list_state = ListState::default();
-            list_state.select(model.selected_setting_index());
+            list_state.select(model.selected_setting_index().map(|index| index + 1));
             StatefulWidget::render(list, area, buffer, &mut list_state);
             render_vertical_scrollbar(area, buffer, count, list_state.offset());
         }
         DispatcherSettingsRead::NotObserved => {
-            Paragraph::new(vec![Line::from("Dispatcher settings not observed")])
-                .block(block)
-                .render(area, buffer);
+            Paragraph::new(vec![
+                plugin_resolution_line(model.plugin_resolution()),
+                Line::from("Dispatcher settings not observed"),
+            ])
+            .block(block)
+            .render(area, buffer);
         }
     }
+}
+
+fn plugin_resolution_row(plugin: &PluginResolution) -> ListItem<'static> {
+    ListItem::new(plugin_resolution_line(plugin))
+}
+
+fn plugin_resolution_line(plugin: &PluginResolution) -> Line<'static> {
+    Line::from(format!(
+        "  Orchestrator plugin  [ {} ]",
+        plugin.version().unwrap_or("unknown build")
+    ))
 }
 
 /// One `Settings` content row: `> label  [ value ]`, with a compact `(dangerous)`
@@ -2245,23 +2266,42 @@ fn render_settings_detail(
 /// blank line, then the row's inline help. A standalone builder so the content
 /// can be exercised directly.
 fn settings_detail_lines(model: &TuiScreenModel) -> Vec<Line<'static>> {
+    let mut lines = plugin_resolution_detail_lines(model.plugin_resolution());
     let DispatcherSettingsRead::Observed(settings) = model.dispatcher_settings() else {
-        return vec![Line::from("Dispatcher settings not observed")];
+        lines.push(Line::from(String::new()));
+        lines.push(Line::from("Dispatcher settings not observed"));
+        return lines;
     };
     let rows = dispatcher_setting_rows(settings);
-    model
-        .selected_setting_index()
-        .and_then(|index| rows.get(index))
-        .map_or_else(
-            || vec![Line::from("No setting selected")],
-            |row| {
-                vec![
-                    Line::from(format!("{}: {}", row.label(), row.value())),
-                    Line::from(String::new()),
-                    Line::from(row.help().to_owned()),
-                ]
-            },
-        )
+    lines.push(Line::from(String::new()));
+    lines.extend(
+        model
+            .selected_setting_index()
+            .and_then(|index| rows.get(index))
+            .map_or_else(
+                || vec![Line::from("No setting selected")],
+                |row| {
+                    vec![
+                        Line::from(format!("{}: {}", row.label(), row.value())),
+                        Line::from(String::new()),
+                        Line::from(row.help().to_owned()),
+                    ]
+                },
+            ),
+    );
+    lines
+}
+
+fn plugin_resolution_detail_lines(plugin: &PluginResolution) -> Vec<Line<'static>> {
+    vec![
+        Line::from("Orchestrator plugin"),
+        Line::from(format!("Source: {}", plugin.source())),
+        Line::from(format!(
+            "Build: {}",
+            plugin.version().unwrap_or("unknown build")
+        )),
+        Line::from(format!("Root: {}", plugin.root().unwrap_or("not resolved"))),
+    ]
 }
 
 fn render_detail(
@@ -2372,10 +2412,10 @@ mod tests {
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
         DispatcherSettingsRead, FocusPane, HelpFocus, LaneFocus, LaneWorkItem, OperatorAction,
-        OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, RejectMode, TimelineEntry,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
-        build_tui_model, build_tui_model_for_state, header_help_section, help_section_for_view,
-        reduce_tui_interaction,
+        OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, PluginResolution,
+        RejectMode, TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, action_registry, build_tui_model, build_tui_model_for_state, header_help_section,
+        help_section_for_view, reduce_tui_interaction,
     };
 
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -5464,6 +5504,12 @@ mod tests {
             .with_focus(FocusPane::Content)
             .with_selected_setting_index(selected)
             .with_dispatcher_settings(DispatcherSettingsRead::Observed(observed_settings()))
+            .with_plugin_resolution(PluginResolution::resolved(
+                "installed Claude plugin cache".to_owned(),
+                "/home/operator/.claude/plugins/marketplaces/livespec-orchestrator-beads-fabro"
+                    .to_owned(),
+                Some("newest-build".to_owned()),
+            ))
     }
 
     /// The Settings-view model for row `selected`.
@@ -5558,6 +5604,17 @@ mod tests {
     }
 
     #[test]
+    fn renders_the_resolved_orchestrator_plugin_build_in_settings() {
+        let rendered = render_to_text(&settings_model(0), 120, 24);
+        let text = rendered.unwrap_or_default();
+
+        assert!(text.contains("Orchestrator plugin"), "{text}");
+        assert!(text.contains("newest-build"), "{text}");
+        assert!(text.contains("Root:"), "{text}");
+        assert!(text.contains("/home/operator/.claude/plugins/marketplaces/livespec-o"));
+    }
+
+    #[test]
     fn renders_the_not_observed_placeholder_when_settings_are_unreadable() {
         let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
             .with_selected_repo(CONFIRM_REPO.to_owned());
@@ -5578,10 +5635,7 @@ mod tests {
             .with_dispatcher_settings(DispatcherSettingsRead::Observed(observed_settings()));
         let model = build_tui_model_for_state(&[], &state);
         assert_eq!(model.selected_setting_index(), None);
-        assert_eq!(
-            settings_detail_lines(&model),
-            vec![Line::from("No setting selected")]
-        );
+        assert!(settings_detail_lines(&model).contains(&Line::from("No setting selected")));
     }
 
     #[test]
