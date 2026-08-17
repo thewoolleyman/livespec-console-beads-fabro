@@ -1,6 +1,6 @@
 # Event-identity integrity — console event/version derivation
 
-**Epic anchor:** `livespec-console-beads-fabro-czcjh5`
+**Ledger anchor:** `livespec-console-beads-fabro-czcjh5`
 
 **Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
 carries the routing table showing how these items landed here. Do NOT resume the

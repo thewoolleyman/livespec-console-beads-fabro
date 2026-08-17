@@ -1,6 +1,6 @@
 # 01-action-registry-and-invoker — handoff
 
-**Epic anchor:** `livespec-console-beads-fabro-dvv` — status is READ from the ledger
+**Ledger anchor:** `livespec-console-beads-fabro-dvv` — status is READ from the ledger
 (`list-work-items` / `next`), never stored here.
 Opened 2026-08-02 on the maintainer's menu-primary decision.
 

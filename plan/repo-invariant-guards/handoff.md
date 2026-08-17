@@ -1,6 +1,6 @@
 # Repo-invariant guards — mechanical checks for invariants nothing currently enforces
 
-**Epic anchor:** `livespec-console-beads-fabro-thu6gp`
+**Ledger anchor:** `livespec-console-beads-fabro-thu6gp`
 
 **Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
 carries the routing table showing how these items landed here. Do NOT resume the

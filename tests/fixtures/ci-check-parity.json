@@ -12,6 +12,11 @@
       "reason": "Runs in the janitor/local aggregate because its upstream lane depends on installed orchestrator plugin state that CI does not provision; the gate itself prints a loud skip when that lane cannot resolve."
     },
     {
+      "name": "check-plan-thread-anchor-declared",
+      "present_in_ci": false,
+      "reason": "Runs in the janitor/local aggregate to enforce the opt-in plan lifecycle anchor convention; this factory slice may not edit .github/workflows/ to add a new CI job."
+    },
+    {
       "name": "check-spec-governance-default-block",
       "present_in_ci": false,
       "reason": "Runs in the janitor/local aggregate as a hermetic spec-governance guard; CI's matrix predates this target and this factory slice may not edit .github/workflows/ to add a new CI job."
