@@ -67,7 +67,7 @@ mod backing_cli;
 
 pub use backing_cli::{
     BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
-    ResolveInputs, python_normalized_invocation,
+    PluginResolution, ResolveInputs, python_normalized_invocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2371,9 +2371,9 @@ mod tests {
     use super::{
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
         ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
-        NeedsAttentionIngest, PendingCommandOutcome, ResolveInputs, ScriptedSource,
-        SharedSqliteStore, SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog,
-        StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
+        NeedsAttentionIngest, PendingCommandOutcome, PluginResolution, ResolveInputs,
+        ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
+        SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
         backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
         demo_events, distinguish_repeatable_command, doctor_report,
@@ -6059,6 +6059,121 @@ mod tests {
     }
 
     #[test]
+    fn backing_cli_resolution_uses_newest_applicable_installed_plugin_record()
+    -> Result<(), Box<dyn Error>> {
+        // Claude's plugin cache is append-only for updates: one plugin key may
+        // hold many records with mixed versions. The console must not take the
+        // stale first record when a newer record applies to the selected repo.
+        let temp = resolver_temp_root("cache-newest-applicable")?;
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo)?;
+        let home = temp.join("home");
+        let stale = resolver_plugin_root(&temp, "stale-plugin")?;
+        let other_project = resolver_plugin_root(&temp, "other-project-plugin")?;
+        let newest = resolver_plugin_root(&temp, "newest-plugin")?;
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        let cache = serde_json::json!({
+            "plugins": {
+                "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": [
+                    {
+                        "projectPath": repo.display().to_string(),
+                        "installPath": stale.display().to_string(),
+                        "version": "stale-first"
+                    },
+                    {
+                        "projectPath": temp.join("other-repo").display().to_string(),
+                        "installPath": other_project.display().to_string(),
+                        "version": "other-project"
+                    },
+                    {
+                        "projectPath": repo.display().to_string(),
+                        "installPath": newest.display().to_string(),
+                        "version": "newest-applicable"
+                    }
+                ]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(home),
+        ))?;
+
+        let bin = newest.join(".claude-plugin/scripts/bin");
+        assert_eq!(
+            resolution.programs().dispatcher(),
+            bin.join("dispatcher.py").display().to_string()
+        );
+        assert_eq!(
+            resolution.plugin_resolution(),
+            &PluginResolution::resolved(
+                "installed Claude plugin cache".to_owned(),
+                newest,
+                Some("newest-applicable".to_owned()),
+            )
+        );
+        assert_eq!(
+            resolution.plugin_resolution().source(),
+            "installed Claude plugin cache"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_is_deterministic_for_a_heterogeneous_cache()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("cache-deterministic")?;
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo)?;
+        let home = temp.join("home");
+        let first = resolver_plugin_root(&temp, "first-plugin")?;
+        let second = resolver_plugin_root(&temp, "second-plugin")?;
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        let cache = serde_json::json!({
+            "plugins": {
+                "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": [
+                    {
+                        "projectPath": repo.display().to_string(),
+                        "installPath": first.display().to_string(),
+                        "version": "build-a"
+                    },
+                    {
+                        "projectPath": repo.display().to_string(),
+                        "installPath": second.display().to_string(),
+                        "version": "build-b"
+                    }
+                ]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+
+        let first_resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            Some(home.clone()),
+        ))?;
+        let second_resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(home),
+        ))?;
+
+        assert_eq!(
+            first_resolution.plugin_resolution(),
+            second_resolution.plugin_resolution()
+        );
+        assert_eq!(
+            first_resolution.plugin_resolution().version(),
+            Some("build-b")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn backing_cli_resolution_degrades_to_defaults_when_plugin_absent() -> Result<(), Box<dyn Error>>
     {
         let temp = resolver_temp_root("absent")?;
@@ -6360,6 +6475,35 @@ mod tests {
         assert!(matches!(
             BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home))),
             Err(error) if error.to_string().contains("orchestrator plugin root")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_resolution_fails_loudly_for_cached_install_list_that_is_not_an_array()
+    -> Result<(), Box<dyn Error>> {
+        let temp = resolver_temp_root("cache-non-array")?;
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo)?;
+        let home = temp.join("home-non-array");
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir)?;
+        let cache = serde_json::json!({
+            "plugins": {
+                "livespec-orchestrator-beads-fabro@github": {
+                    "installPath": temp.join("cached-plugin").display().to_string()
+                }
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+
+        assert!(matches!(
+            BackingCliResolution::resolve(&resolver_inputs(
+                resolver_empty_env(),
+                repo,
+                Some(home),
+            )),
+            Err(error) if error.to_string().contains("is not an array")
         ));
         Ok(())
     }
