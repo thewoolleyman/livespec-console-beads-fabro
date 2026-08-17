@@ -1152,9 +1152,10 @@ fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer)
         let is_selected = Some(index) == selected;
         let marker = if is_selected { ">" } else { " " };
         let header = Line::from(format!(
-            "{marker} {} ({})",
+            "{marker} {} ({}){}",
             column.lane().label(),
-            column.count()
+            column.count(),
+            lane_execution_summary(column),
         ));
         if is_selected {
             selected_line = Some(items.len());
@@ -1225,9 +1226,10 @@ fn lane_item_line(item: &LaneWorkItem, selected: bool) -> ListItem<'static> {
 /// blocked) its lane reason.
 fn lane_item_summary(item: &LaneWorkItem) -> String {
     format!(
-        "    - {} [{}]  {}{}",
+        "    - {} [{}]{}  {}{}",
         item.work_item_id(),
         item.status(),
+        lane_execution_state_suffix(item),
         lane_item_title(item),
         lane_reason_suffix(item)
     )
@@ -1238,10 +1240,11 @@ fn lane_item_summary(item: &LaneWorkItem) -> String {
 /// fields operators scan first: id, rank, status, and title.
 fn lane_item_detail_text(item: &LaneWorkItem) -> String {
     format!(
-        "{}  rank {}  [{}]  {}  repo {}{}",
+        "{}  rank {}  [{}]{}  {}  repo {}{}",
         item.work_item_id(),
         item.rank(),
         item.status(),
+        lane_execution_state_suffix(item),
         lane_item_title(item),
         item.repo(),
         lane_reason_suffix(item)
@@ -1259,6 +1262,25 @@ fn lane_reason_suffix(item: &LaneWorkItem) -> String {
     item.lane_reason()
         .map(|reason| format!(" ({})", reason.label()))
         .unwrap_or_default()
+}
+
+fn lane_execution_summary(column: &LaneColumn) -> String {
+    if column.lane() != Lane::Active || column.count() == 0 {
+        return String::new();
+    }
+    format!(
+        "; executing {} claimed {}",
+        column.executing_count(),
+        column.claimed_count()
+    )
+}
+
+fn lane_execution_state_suffix(item: &LaneWorkItem) -> String {
+    if item.lane() == Lane::Active {
+        format!(" {}", item.execution_state().label())
+    } else {
+        String::new()
+    }
 }
 
 fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
@@ -1538,6 +1560,7 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
         ("repo", item.repo().to_owned()),
         ("type", optional_field(detail.item_type.as_deref())),
         ("status", item.status().to_owned()),
+        ("execution_state", item.execution_state().label().to_owned()),
         ("lane", item.lane().label().to_owned()),
         ("rank", item.rank().to_owned()),
         (
@@ -4565,6 +4588,36 @@ mod tests {
         ]
     }
 
+    fn active_claim_execution_events() -> Vec<ConsoleEvent> {
+        vec![
+            lane_event(
+                "evt_claimed_a",
+                "console-claimed-a",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            lane_event(
+                "evt_claimed_b",
+                "console-claimed-b",
+                Lane::Active,
+                None,
+                "a2",
+                "active",
+            ),
+            lane_event(
+                "evt_executing",
+                "console-executing",
+                Lane::Active,
+                None,
+                "a3",
+                "active",
+            ),
+            dispatcher_execution_event("evt_dispatch", "console-executing", "dispatch_1"),
+        ]
+    }
+
     // Build a snapshot-observation event by writing the canonical `payload_json`
     // directly, mirroring the orchestrator emission the lane board rebuilds from.
     fn lane_event_title(work_item_id: &str) -> &str {
@@ -4599,6 +4652,49 @@ mod tests {
             "orchestrator",
         )
         .with_payload_json(payload)
+    }
+
+    fn dispatcher_execution_event(
+        event_id: &str,
+        work_item_id: &str,
+        dispatch_id: &str,
+    ) -> ConsoleEvent {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","dispatch_id":"{dispatch_id}","kind":"backlog-bounce","source_version":2}}"#
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::DispatcherBacklogBounceObserved,
+            "dispatcher",
+        )
+        .with_payload_json(payload)
+    }
+
+    #[test]
+    fn active_lane_render_distinguishes_claimed_from_executing() -> TuiRenderResult<()> {
+        let events = active_claim_execution_events();
+        let overview = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_selected_lane_index(3),
+        );
+        let overview_text = render_to_text(&overview, 120, 30)?;
+
+        assert!(overview_text.contains("active (3); executing 1 claimed 2"));
+        assert!(overview_text.contains("console-claimed-a [active] claimed"));
+        assert!(overview_text.contains("console-executing [active] executing"));
+
+        let drilled = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(Lane::Active))
+                .with_focus(FocusPane::Content),
+        );
+        let drilled_text = render_to_text(&drilled, 120, 30)?;
+
+        assert!(drilled_text.contains("console-claimed-b  rank a2  [active] claimed"));
+        assert!(drilled_text.contains("console-executing  rank a3  [active] executing"));
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
