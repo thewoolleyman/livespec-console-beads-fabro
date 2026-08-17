@@ -2,6 +2,7 @@
 members = [
   "crates/console-application",
   "crates/console-arch-check",
+  "crates/console-ci-parity-check",
   "crates/console-cli",
   "crates/console-completeness-check",
   "crates/console-domain",
