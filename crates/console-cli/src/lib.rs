@@ -1649,7 +1649,14 @@ fn finalize_pending_command(
     // empty object that used to discard the diagnostic at the store boundary.
     let failure_payload = events
         .iter()
-        .find(|event| *event.event_type() == EventType::WorkItemActionFailed)
+        .find(|event| {
+            matches!(
+                event.event_type(),
+                EventType::WorkItemActionFailed
+                    | EventType::FactoryDrainFailed
+                    | EventType::CommandRejected
+            )
+        })
         .map(ConsoleEvent::payload_json);
     let error_json = if matches!(command_status, "failed" | "rejected") {
         Some(failure_payload.unwrap_or("{}"))
@@ -4161,13 +4168,21 @@ mod tests {
             handle_pending_work_item_commands(&mut store, "2026-08-02T00:00:02Z", &mut port)?;
         assert_eq!(outcomes[0].command_status(), "failed");
         let events = store.list_console_events()?;
+        let commands = store.list_commands()?;
         let payload = events
             .iter()
             .find(|event| *event.event_type() == EventType::WorkItemActionFailed)
             .map(ConsoleEvent::payload_json)
             .unwrap_or_default();
-        assert!(payload.contains("invalid-source-state"), "{payload}");
-        assert!(payload.contains("effective-manual"), "{payload}");
+        let expected = serde_json::json!({
+            "action_id": "approve:wi-1",
+            "domain_error": "invalid-source-state",
+            "status": "failed",
+            "summary": "approve requires an effective-manual pending-approval item."
+        })
+        .to_string();
+        assert_eq!(payload, expected,);
+        assert_eq!(commands[0].error_json(), Some(payload));
         Ok(())
     }
 
@@ -4902,12 +4917,22 @@ mod tests {
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
         let commands = store.list_commands()?;
         let events = store.list_console_events()?;
+        let expected = serde_json::json!({
+            "summary": "factory-safety refusal",
+            "domain_error": "host-only-refused"
+        })
+        .to_string();
 
         assert_eq!(outcomes[0].command_status(), "failed");
         assert_eq!(commands[0].status(), "failed");
+        assert_eq!(commands[0].error_json(), Some(expected.as_str()));
         assert_eq!(
             events.last().map(ConsoleEvent::event_type),
             Some(&EventType::FactoryDrainFailed)
+        );
+        assert_eq!(
+            events.last().map(ConsoleEvent::payload_json),
+            commands[0].error_json()
         );
         Ok(())
     }
@@ -7067,7 +7092,10 @@ mod tests {
             &mut self,
             _request: &FactoryDrainRequest,
         ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
-            Ok(FactoryDrainPortOutcome::failed())
+            Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
+                r#"{"summary":"factory-safety refusal","domain_error":"host-only-refused"}"#
+                    .to_owned(),
+            ))
         }
     }
 

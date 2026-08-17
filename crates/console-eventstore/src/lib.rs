@@ -258,6 +258,7 @@ pub struct StoredCommand {
     /// [`Self::with_payload_json`] when a command is loaded, so a handler can
     /// read a command's payload (for example a reject command's `mode`).
     payload_json: Option<String>,
+    error_json: Option<String>,
 }
 
 impl StoredCommand {
@@ -284,6 +285,7 @@ impl StoredCommand {
             requested_by,
             status,
             payload_json: None,
+            error_json: None,
         }
     }
 
@@ -292,6 +294,14 @@ impl StoredCommand {
     /// loader so a handler can read a command's payload.
     pub fn with_payload_json(mut self, payload_json: String) -> Self {
         self.payload_json = Some(payload_json);
+        self
+    }
+
+    #[must_use]
+    /// Re-attach the persisted `error_json` to a stored command, used by the
+    /// loader so tests and projections can inspect terminal diagnostics.
+    pub fn with_error_json(mut self, error_json: Option<String>) -> Self {
+        self.error_json = error_json;
         self
     }
 
@@ -342,6 +352,12 @@ impl StoredCommand {
     /// `{}` when no payload was attached.
     pub fn payload_json(&self) -> &str {
         self.payload_json.as_deref().unwrap_or("{}")
+    }
+
+    #[must_use]
+    /// Return the persisted command error payload, when present.
+    pub fn error_json(&self) -> Option<&str> {
+        self.error_json.as_deref()
     }
 }
 
@@ -639,7 +655,7 @@ impl SqliteEventStore {
     pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         let sql = r"
             select command_id, context, type, aggregate_id, idempotency_key, requested_by, status,
-                   payload_json
+                   payload_json, error_json
             from commands
             order by requested_at, command_id
         ";
@@ -657,7 +673,8 @@ impl SqliteEventStore {
                     row.get(5)?,
                     row.get(6)?,
                 )
-                .with_payload_json(row.get::<_, String>(7)?),
+                .with_payload_json(row.get::<_, String>(7)?)
+                .with_error_json(row.get(8)?),
             );
         }
         Ok(commands)
