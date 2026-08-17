@@ -37,6 +37,32 @@ use source_adapters::{
     materialize_attention_items, work_item_snapshot_from_payload_json,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether an `active` lane item has an observed run signal behind it.
+pub enum LaneExecutionState {
+    /// The item is not in the `active` lane, so the claim/execution split does
+    /// not apply.
+    NotActive,
+    /// The item is in the `active` lane, but no dispatcher/Fabro execution
+    /// observation has been ingested for it.
+    Claimed,
+    /// The item is in the `active` lane and has an observed dispatcher or Fabro
+    /// execution signal.
+    Executing,
+}
+
+impl LaneExecutionState {
+    #[must_use]
+    /// Return the stable display label for this value.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::NotActive => "-",
+            Self::Claimed => "claimed",
+            Self::Executing => "executing",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents attention item data used by the console.
 pub struct AttentionItem {
@@ -2595,6 +2621,7 @@ pub struct LaneWorkItem {
     repo: String,
     lane: Lane,
     lane_reason: Option<LaneReason>,
+    execution_state: LaneExecutionState,
     rank: String,
     status: String,
     admission_policy: AdmissionPolicy,
@@ -2603,12 +2630,13 @@ pub struct LaneWorkItem {
 }
 
 impl LaneWorkItem {
-    fn from_snapshot(snapshot: &WorkItemSnapshot) -> Self {
+    fn from_snapshot(snapshot: &WorkItemSnapshot, execution_state: LaneExecutionState) -> Self {
         Self {
             work_item_id: snapshot.work_item_id().to_owned(),
             repo: snapshot.repo().to_owned(),
             lane: snapshot.lane(),
             lane_reason: snapshot.lane_reason(),
+            execution_state,
             rank: snapshot.rank().to_owned(),
             status: snapshot.status().to_owned(),
             admission_policy: snapshot.admission_policy(),
@@ -2661,6 +2689,13 @@ impl LaneWorkItem {
     }
 
     #[must_use]
+    /// Whether this lane row is merely claimed or has an observed execution
+    /// signal. Non-active rows return [`LaneExecutionState::NotActive`].
+    pub const fn execution_state(&self) -> LaneExecutionState {
+        self.execution_state
+    }
+
+    #[must_use]
     /// Return the rank value.
     pub fn rank(&self) -> &str {
         &self.rank
@@ -2697,6 +2732,24 @@ impl LaneColumn {
     /// Return the stored value.
     pub const fn count(&self) -> usize {
         self.items.len()
+    }
+
+    #[must_use]
+    /// Count rows that have been claimed but have no observed execution signal.
+    pub fn claimed_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.execution_state() == LaneExecutionState::Claimed)
+            .count()
+    }
+
+    #[must_use]
+    /// Count rows that have an observed dispatcher/Fabro execution signal.
+    pub fn executing_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.execution_state() == LaneExecutionState::Executing)
+            .count()
     }
 }
 
@@ -3020,6 +3073,7 @@ fn escape_url_path_segment(text: &str) -> String {
 /// complete snapshot are skipped.
 #[must_use]
 pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
+    let executing = observed_executing_work_items(events);
     let mut latest: BTreeMap<String, LaneWorkItem> = BTreeMap::new();
     for event in events {
         if *event.event_type() != EventType::WorkItemSnapshotObserved {
@@ -3028,9 +3082,10 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
         let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) else {
             continue;
         };
+        let execution_state = execution_state_for_snapshot(&snapshot, &executing);
         latest.insert(
             snapshot.work_item_id().to_owned(),
-            LaneWorkItem::from_snapshot(&snapshot),
+            LaneWorkItem::from_snapshot(&snapshot, execution_state),
         );
     }
     let columns = Lane::all()
@@ -3050,6 +3105,54 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
         })
         .collect();
     LaneBoard { columns }
+}
+
+#[derive(serde::Deserialize)]
+struct DispatcherJournalPayload {
+    repo: String,
+    work_item_id: String,
+}
+
+fn observed_executing_work_items(events: &[ConsoleEvent]) -> BTreeSet<(String, String)> {
+    let mut executing = BTreeSet::new();
+    for event in events {
+        match event.event_type() {
+            EventType::DispatcherBacklogBounceObserved => {
+                if let Ok(payload) =
+                    serde_json::from_str::<DispatcherJournalPayload>(event.payload_json())
+                {
+                    executing.insert((payload.repo, payload.work_item_id));
+                }
+            }
+            EventType::FabroHumanGateObserved => {
+                if let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json()) {
+                    executing.insert((
+                        snapshot.repo().to_owned(),
+                        snapshot.work_item_id().to_owned(),
+                    ));
+                }
+            }
+            _other => {}
+        }
+    }
+    executing
+}
+
+fn execution_state_for_snapshot(
+    snapshot: &WorkItemSnapshot,
+    executing: &BTreeSet<(String, String)>,
+) -> LaneExecutionState {
+    if snapshot.lane() != Lane::Active {
+        return LaneExecutionState::NotActive;
+    }
+    if executing.contains(&(
+        snapshot.repo().to_owned(),
+        snapshot.work_item_id().to_owned(),
+    )) {
+        LaneExecutionState::Executing
+    } else {
+        LaneExecutionState::Claimed
+    }
 }
 
 #[must_use]
@@ -6671,11 +6774,11 @@ mod tests {
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
         DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
         FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
-        HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort, LaneFocus, LaneWorkItem,
-        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, PluginResolution,
-        RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, action_registry, build_tui_model, build_tui_model_for_state,
+        HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort, LaneExecutionState,
+        LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome,
+        OrchestratorActionPort, OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve,
+        PluginResolution, RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay,
+        TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
         command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
         handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
         handle_work_item_accept_command, handle_work_item_approve_command,
@@ -7082,6 +7185,22 @@ mod tests {
         .with_payload_json(payload)
     }
 
+    fn dispatcher_execution_event(
+        event_id: &str,
+        work_item_id: &str,
+        dispatch_id: &str,
+    ) -> ConsoleEvent {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","dispatch_id":"{dispatch_id}","kind":"backlog-bounce","source_version":2}}"#
+        );
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::DispatcherBacklogBounceObserved,
+            "dispatcher",
+        )
+        .with_payload_json(payload)
+    }
+
     fn ready_work_item_ids(column: &super::LaneColumn) -> Vec<String> {
         column
             .items()
@@ -7175,6 +7294,58 @@ mod tests {
             Some("active")
         );
         assert_eq!(board.total(), 1);
+    }
+
+    #[test]
+    fn active_lane_distinguishes_claimed_items_from_executing_items() {
+        let events = [
+            lane_event(
+                "evt_claimed_a",
+                "console-claimed-a",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            lane_event(
+                "evt_claimed_b",
+                "console-claimed-b",
+                Lane::Active,
+                None,
+                "a2",
+                "active",
+            ),
+            lane_event(
+                "evt_executing",
+                "console-executing",
+                Lane::Active,
+                None,
+                "a3",
+                "active",
+            ),
+            dispatcher_execution_event("evt_dispatch", "console-executing", "dispatch_1"),
+        ];
+
+        let board = project_lane_board(&events);
+        let active = &board.columns()[3];
+        assert_eq!(active.lane(), Lane::Active);
+        let states: Vec<(&str, LaneExecutionState)> = active
+            .items()
+            .iter()
+            .map(|item| (item.work_item_id(), item.execution_state()))
+            .collect();
+
+        assert_eq!(active.count(), 3);
+        assert_eq!(active.claimed_count(), 2);
+        assert_eq!(active.executing_count(), 1);
+        assert_eq!(
+            states,
+            [
+                ("console-claimed-a", LaneExecutionState::Claimed),
+                ("console-claimed-b", LaneExecutionState::Claimed),
+                ("console-executing", LaneExecutionState::Executing),
+            ]
+        );
     }
 
     #[test]
