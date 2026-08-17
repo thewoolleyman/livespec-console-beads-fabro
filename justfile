@@ -212,6 +212,7 @@ check:
         check-plan-thread-no-tombstone
         check-plugin-resolution
         check-doctor-static
+        check-e2e-tmux
         check-ci-parity
         check-fork-drift
     )
