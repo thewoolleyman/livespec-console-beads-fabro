@@ -471,19 +471,18 @@ pub struct WorkItemDetail {
     /// factory-safety refusal it earned from its DESCRIPTION rather than from
     /// this field.
     ///
-    /// SEAM, deliberately inert today. The dispatcher refuses on three arms in
-    /// order: a non-null `factory_safety`; then an allow on the recorded
-    /// override label; then a regex over the item's own text. **The override
-    /// only clears the THIRD arm** — it is consulted after the first has
-    /// already refused — so "may I offer the override?" is NOT answerable from
-    /// `factory_safety`, and deriving it from there would offer the action
-    /// exactly where it cannot help.
+    /// The dispatcher refuses on three arms in order: a non-null
+    /// `factory_safety`; then an allow on the recorded override label; then a
+    /// regex over the item's own text. **The override only clears the THIRD
+    /// arm** — it is consulted after the first has already refused — so "may I
+    /// offer the override?" is NOT answerable from `factory_safety`, and
+    /// deriving it from there would offer the action exactly where it cannot
+    /// help.
     ///
-    /// The orchestrator does not publish this yet; the decision that it should
-    /// was taken 2026-08-03 (`-w7d`). Until the field appears on the wire this
-    /// reads `false` and the action is correctly never offered. When it
-    /// appears, it is consumed AS DATA with no predicate change — the
-    /// consume-don't-re-derive rule the `-0uw` fix established.
+    /// The orchestrator publishes this field as the materialized signal for
+    /// that third-arm refusal. The console consumes it AS DATA with no local
+    /// regex or factory-safety string match — the consume-don't-re-derive rule
+    /// the `-0uw` fix established.
     pub awaits_scope_override: bool,
     /// The admission policy AS EMITTED, kept separate from the collapsed enum
     /// the action paths use.
@@ -2000,9 +1999,9 @@ fn record_text(record: &serde_json::Map<String, serde_json::Value>, key: &str) -
 /// Read a boolean record field, treating absent / null / non-boolean as
 /// `false`.
 ///
-/// A field the producer does not emit yet must read as "no", not as an error
-/// and not as a synthesized "yes": that is what lets a consumption seam sit
-/// inert until the producer starts publishing it.
+/// A field the producer omits on older records must read as "no", not as an
+/// error and not as a synthesized "yes": that is what lets a consumption seam
+/// default safely across mixed producer versions.
 fn record_flag(record: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
     record
         .get(key)
@@ -4197,6 +4196,7 @@ mod tests {
         "supersedes": "livespec-console-beads-fabro-older",
         "blocked_reason": "waiting on review",
         "factory_safety": "needs-host-secrets",
+        "awaits_scope_override": true,
         "comments": [
             {"id": "comment-1", "author": "operator", "created_at": "2026-08-16T08:00:00Z", "text": "first handoff"},
             {"id": 2, "text": "second handoff"},
@@ -4258,6 +4258,7 @@ mod tests {
         );
         assert_eq!(detail.blocked_reason.as_deref(), Some("waiting on review"));
         assert_eq!(detail.factory_safety.as_deref(), Some("needs-host-secrets"));
+        assert!(detail.awaits_scope_override);
         assert_eq!(detail.comments.len(), 2);
         assert_eq!(detail.comments[0].id.as_deref(), Some("comment-1"));
         assert_eq!(detail.comments[0].author.as_deref(), Some("operator"));

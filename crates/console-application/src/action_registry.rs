@@ -356,10 +356,10 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         // Gated on the item ACTUALLY awaiting an override, which only the
         // orchestrator can know: the refusal this clears is computed at
         // dispatch time from the item's own text, and re-deriving that regex
-        // here would violate the consume-don't-re-derive rule. Inert until
-        // that signal is published (`-w7d`), which is honest — an operator is
-        // told the action is unavailable rather than handed one that cannot
-        // fire.
+        // here would violate the consume-don't-re-derive rule. The
+        // orchestrator publishes `awaits_scope_override` as the materialized
+        // signal for this case; the console consumes it directly and stays
+        // inert everywhere else.
         availability: |ctx| ctx.lane == Lane::Ready && ctx.awaits_scope_override,
         staging: ActionStaging::Valve(|_ctx| Some(PendingValve::SetWorkflowScopeOverride)),
     },
