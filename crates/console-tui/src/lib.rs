@@ -4753,11 +4753,9 @@ mod tests {
     /// A `ready` snapshot on which the orchestrator HAS published
     /// `awaits_scope_override`.
     ///
-    /// The field is a consumption seam: the producer does not emit it yet (the
-    /// decision that it should was taken 2026-08-03, `-w7d`), so this fixture
-    /// stands in for the wire once it does. That is deliberate and is the
-    /// point — it exercises the console's half AS DATA, so when the signal
-    /// ships nothing here changes.
+    /// The field is a consumption seam: the producer publishes the
+    /// third-arm-refusal signal, and the console consumes it AS DATA instead of
+    /// re-deriving the dispatcher's workflow-path regex.
     fn scope_override_pending_event(work_item_id: &str) -> ConsoleEvent {
         let payload = format!(
             concat!(
