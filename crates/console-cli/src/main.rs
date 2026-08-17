@@ -36,8 +36,8 @@ use console_application::{
 use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
-    BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef,
-    SourcePollRequester, TuiSessionRunner,
+    BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, PendingCommandRequester,
+    SourceAdapterRef, SourcePollRequester, TuiSessionRunner,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -49,6 +49,13 @@ enum PollMessage {
     PollNow,
     /// Stop the poller and let it join.
     Shutdown,
+}
+
+/// A message to the off-thread pending-command worker.
+#[cfg(all(not(test), not(coverage)))]
+enum CommandMessage {
+    /// Claim and handle pending command rows at once.
+    HandleNow,
 }
 
 /// How long the off-thread source poller waits between (slow, CLI-shelling)
@@ -210,6 +217,11 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let requester = ChannelPollRequester {
         tx: poll_tx.clone(),
     };
+    let (command_tx, command_rx) = std::sync::mpsc::channel::<CommandMessage>();
+    let command_worker = std::thread::spawn(move || command_worker_loop(&command_rx));
+    let command_requester = ChannelCommandRequester {
+        tx: command_tx.clone(),
+    };
     let session_result = livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
         &observed_at,
@@ -221,11 +233,19 @@ fn run_interactive_store_tui() -> Result<(), String> {
         &decisions,
         &needs_attention,
         &requester,
+        &command_requester,
     );
     // Stop the poller (wake it if it is mid-`recv_timeout`) and join before
     // returning, so no source poll outlives the session.
     let _ = poll_tx.send(PollMessage::Shutdown);
     let _ = poller.join();
+    drop(command_tx);
+    if command_worker.is_finished() {
+        let _ = command_worker.join();
+    } else {
+        // Do not join an in-flight mutating command: a factory drain may be
+        // running for hours, and graceful cockpit quit must not wait on it.
+    }
     session_result.map_err(|error| format!("{error:?}"))?;
     Ok(())
 }
@@ -290,6 +310,62 @@ struct ChannelPollRequester {
 impl SourcePollRequester for ChannelPollRequester {
     fn request_poll(&self) {
         let _ = self.tx.send(PollMessage::PollNow);
+    }
+}
+
+/// Backs [`PendingCommandRequester`] with the channel to the command worker.
+#[cfg(all(not(test), not(coverage)))]
+struct ChannelCommandRequester {
+    tx: Sender<CommandMessage>,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl PendingCommandRequester for ChannelCommandRequester {
+    fn request_pending_command_handling(&self) {
+        let _ = self.tx.send(CommandMessage::HandleNow);
+    }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn command_worker_loop(command_rx: &Receiver<CommandMessage>) {
+    while matches!(command_rx.recv(), Ok(CommandMessage::HandleNow)) {
+        let Ok(resolution) = BackingCliResolution::from_environment() else {
+            continue;
+        };
+        let path = console_store_path();
+        let Ok(mut store) = SqliteEventStore::open(&path) else {
+            continue;
+        };
+        let Ok(observed_at) = current_requested_at() else {
+            continue;
+        };
+        let repo_path = resolution.drive_repo_arg();
+        let probe = SystemSourceProbe::new(resolution.selected_repo_path());
+        let mut drain = DispatcherFactoryDrainPort::new(
+            &probe,
+            resolution.programs().dispatcher(),
+            &["loop", "--repo", repo_path.as_str()],
+        );
+        let mut drive = DispatcherOrchestratorActionPort::new(
+            &probe,
+            resolution.programs().drive(),
+            &["--repo", repo_path.as_str(), "--json"],
+        );
+        let _ = livespec_console_beads_fabro::handle_pending_factory_commands(
+            &mut store,
+            &observed_at,
+            &mut drain,
+        );
+        let _ = livespec_console_beads_fabro::handle_pending_work_item_commands(
+            &mut store,
+            &observed_at,
+            &mut drive,
+        );
+        let _ = livespec_console_beads_fabro::handle_pending_config_commands(
+            &mut store,
+            &observed_at,
+            &mut drive,
+        );
     }
 }
 

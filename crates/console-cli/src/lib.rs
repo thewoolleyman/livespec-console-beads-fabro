@@ -300,6 +300,21 @@ pub trait SourcePollRequester {
     fn request_poll(&self);
 }
 
+/// Port for requesting out-of-band pending-command handling from the UI thread
+/// without blocking it on mutating backing CLIs.
+pub trait PendingCommandRequester {
+    /// Request pending command handling. Non-blocking and best-effort — a
+    /// dropped request (for example, after shutdown) is ignored.
+    fn request_pending_command_handling(&self);
+
+    /// Whether the store-backed sink should execute pending handlers inline
+    /// after the request. Production requesters return `false`; synchronous test
+    /// doubles return `true` to keep existing end-to-end unit coverage local.
+    fn handles_pending_commands_inline(&self) -> bool {
+        false
+    }
+}
+
 struct StoreBackedTuiRuntimeEffectSink<'a> {
     store: &'a mut SqliteEventStore,
     observed_at: &'a str,
@@ -314,6 +329,10 @@ struct StoreBackedTuiRuntimeEffectSink<'a> {
     // The out-of-band poll requester: after a ledger-mutating effect the sink
     // pings it so the off-thread poller re-polls sources at once.
     poll_requester: &'a dyn SourcePollRequester,
+    // The out-of-band command handler: mutating backing CLIs run off the UI
+    // thread, so `handle_runtime_effect` only appends the command row and asks
+    // this worker to claim and handle it.
+    command_requester: &'a dyn PendingCommandRequester,
     persisted_command_count: usize,
     handled_command_count: usize,
 }
@@ -326,6 +345,7 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
         work_item_port: &'a mut dyn OrchestratorActionPort,
         decisions_port: &'a dyn AutonomousDecisionsPort,
         poll_requester: &'a dyn SourcePollRequester,
+        command_requester: &'a dyn PendingCommandRequester,
     ) -> Self {
         Self {
             store,
@@ -334,6 +354,7 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
             work_item_port,
             decisions_port,
             poll_requester,
+            command_requester,
             persisted_command_count: 0,
             handled_command_count: 0,
         }
@@ -356,19 +377,75 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
         let persisted =
             persist_tui_runtime_effects(self.store, std::slice::from_ref(effect), self.observed_at)
                 .map_err(effect_sink_io_error)?;
-        let factory_handled =
-            handle_pending_factory_commands(self.store, self.observed_at, self.factory_port)
+        if !persisted.is_empty() {
+            if !self.command_requester.handles_pending_commands_inline() {
+                append_factory_drain_requested_events(self.store, &persisted, self.observed_at)
+                    .map_err(effect_sink_io_error)?;
+            }
+            self.command_requester.request_pending_command_handling();
+            if self.command_requester.handles_pending_commands_inline() {
+                let factory_handled = handle_pending_factory_commands(
+                    self.store,
+                    self.observed_at,
+                    self.factory_port,
+                )
                 .map_err(effect_sink_io_error)?;
-        let _work_item_handled =
-            handle_pending_work_item_commands(self.store, self.observed_at, self.work_item_port)
+                let _work_item_handled = handle_pending_work_item_commands(
+                    self.store,
+                    self.observed_at,
+                    self.work_item_port,
+                )
                 .map_err(effect_sink_io_error)?;
-        let _config_handled =
-            handle_pending_config_commands(self.store, self.observed_at, self.work_item_port)
+                let _config_handled = handle_pending_config_commands(
+                    self.store,
+                    self.observed_at,
+                    self.work_item_port,
+                )
                 .map_err(effect_sink_io_error)?;
+                self.handled_command_count += factory_handled.len();
+            }
+        }
         self.persisted_command_count += persisted.len();
-        self.handled_command_count += factory_handled.len();
         Ok(TuiRuntimeEffectSinkOutcome::Applied)
     }
+}
+
+fn append_factory_drain_requested_events(
+    store: &mut SqliteEventStore,
+    command_outcomes: &[CommandAppendOutcome],
+    observed_at: &str,
+) -> ConsoleRuntimeResult<usize> {
+    let inserted_command_ids = command_outcomes
+        .iter()
+        .filter(|outcome| outcome.status() == CommandAppendStatus::Inserted)
+        .map(CommandAppendOutcome::command_id)
+        .collect::<Vec<_>>();
+    if inserted_command_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut appended = 0;
+    for stored in store.list_commands()? {
+        if !inserted_command_ids.contains(&stored.command_id()) {
+            continue;
+        }
+        let Some(command) = factory_command_from_stored(&stored)? else {
+            continue;
+        };
+        let event = ConsoleEvent::new(
+            format!("evt_{}_requested", command.command_id()),
+            1,
+            "factory".to_owned(),
+            EventType::FactoryDrainRequested,
+            "console:factory-command-handler".to_owned(),
+            command.aggregate_id().to_owned(),
+            0,
+        );
+        let append = event_append_from_command_event(&event, &command, observed_at);
+        if store.append_event(&append)?.status() == AppendStatus::Inserted {
+            appended += 1;
+        }
+    }
+    Ok(appended)
 }
 
 impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
@@ -519,6 +596,7 @@ pub fn run_store_backed_tui_session(
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
     poll_requester: &dyn SourcePollRequester,
+    command_requester: &dyn PendingCommandRequester,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
     // Run the full ingest/reflect sequence once on launch (Bug A fix): the first
     // frame must reduce over the CURRENT ledger, not a snapshot frozen at the
@@ -536,6 +614,7 @@ pub fn run_store_backed_tui_session(
             work_item_port,
             decisions_port,
             poll_requester,
+            command_requester,
         );
         let effects = runner.run_tui(&presented_events, requested_by, &mut effect_sink)?;
         (
@@ -2354,8 +2433,8 @@ mod tests {
         AutonomousDecisionsPort, DispatcherOverride, FactoryDrainPort, FactoryDrainPortOutcome,
         FactoryDrainRequest, LaneColumn, LaneFocus, OrchestratorActionOutcome,
         OrchestratorActionPort, OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode,
-        TuiInteractionState, TuiOverlay, TuiView, build_tui_model, project_attention,
-        project_lane_board,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiView, build_tui_model,
+        project_attention, project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
             AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, DispatcherJournalEntry,
@@ -2379,12 +2458,12 @@ mod tests {
     use super::{
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
         ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
-        NeedsAttentionIngest, PendingCommandOutcome, PluginResolution, ResolveInputs,
-        ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
+        NeedsAttentionIngest, PendingCommandOutcome, PendingCommandRequester, PluginResolution,
+        ResolveInputs, ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
         SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
-        append_demo_events_to_store, backfill_demo_report, backfill_source_adapters,
-        backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
-        demo_events, distinguish_repeatable_command, doctor_report,
+        append_demo_events_to_store, append_factory_drain_requested_events, backfill_demo_report,
+        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
+        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_console_event, events_tail_report, factory_command_from_stored,
         handle_pending_config_commands, handle_pending_factory_commands,
         handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
@@ -3346,6 +3425,7 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
             &poll_requester(),
+            &command_requester(),
         );
         let commands = store.list_commands()?;
 
@@ -3414,6 +3494,7 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
             &poll_requester(),
+            &command_requester(),
         );
         assert!(outcome.is_ok());
 
@@ -3441,6 +3522,48 @@ mod tests {
             events
                 .iter()
                 .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn store_backed_tui_session_services_input_after_queued_drain_before_port_runs()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let mut runner = DrainThenInputTuiSessionRunner::new(Rc::clone(&calls));
+        let mut factory_port = CountingFactoryDrainPort::new(Rc::clone(&calls));
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let scripted = scripted_source_list_with_ready_work();
+        let sources = scripted_source_refs(&scripted);
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        let commands = async_command_requester();
+
+        let outcome = run_store_backed_tui_session(
+            &mut store,
+            "2026-08-17T23:50:00Z",
+            "operator",
+            &mut runner,
+            &sources,
+            &mut factory_port,
+            &mut work_item_port,
+            &empty_decisions_port(),
+            &needs_attention,
+            &poll_requester(),
+            &commands,
+        );
+        assert!(outcome.is_ok());
+
+        assert_eq!(runner.port_calls_after_drain_effect, Some(0));
+        assert!(runner.serviced_input_after_drain_effect);
+        assert_eq!(commands.request_count(), 1);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            outcome
+                .map(|outcome| outcome.handled_command_count())
+                .unwrap_or_default(),
+            1
         );
         Ok(())
     }
@@ -3474,6 +3597,7 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
             &poll_requester(),
+            &command_requester(),
         );
 
         let commands = store.list_commands()?;
@@ -3520,6 +3644,7 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
             &poll_requester(),
+            &command_requester(),
         );
 
         assert!(matches!(
@@ -3559,6 +3684,7 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
             &poll_requester(),
+            &command_requester(),
         );
 
         assert!(matches!(
@@ -3704,6 +3830,7 @@ mod tests {
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
         let requester = poll_requester();
+        let commands = command_requester();
         {
             let mut sink = StoreBackedTuiRuntimeEffectSink::new(
                 &mut store,
@@ -3712,6 +3839,7 @@ mod tests {
                 &mut work_item_port,
                 &decisions,
                 &requester,
+                &commands,
             );
 
             // A cheap re-list (request_poll = false) carries no drain outcome yet
@@ -3746,6 +3874,98 @@ mod tests {
     }
 
     #[test]
+    fn store_backed_effect_sink_queues_factory_drain_without_running_port_inline()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut factory_port = RecordingFactoryDrainPort::default();
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions = empty_decisions_port();
+        let poller = poll_requester();
+        let commands = async_command_requester();
+        {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                &mut store,
+                "2026-08-17T23:45:00Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &poller,
+                &commands,
+            );
+            let render_outcome = sink
+                .handle_runtime_effect(&TuiRuntimeEffect::Render)
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+            assert_eq!(render_outcome, TuiRuntimeEffectSinkOutcome::Applied);
+            assert_eq!(commands.request_count(), 0);
+
+            let outcome = sink
+                .handle_runtime_effect(&factory_drain_effect())
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+
+            assert_eq!(outcome, TuiRuntimeEffectSinkOutcome::Applied);
+            assert_eq!(sink.persisted_command_count(), 1);
+            assert_eq!(sink.handled_command_count(), 0);
+        }
+
+        let commands_in_store = store.list_commands()?;
+        assert_eq!(commands_in_store.len(), 1);
+        assert_eq!(commands_in_store[0].status(), "pending");
+        assert_eq!(commands.request_count(), 1);
+        assert_eq!(factory_port.observed_aggregate_ids, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn factory_drain_requested_event_helper_ignores_non_inserted_missing_and_non_factory_commands()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let duplicate = [CommandAppendOutcome::new(
+            "cmd_missing".to_owned(),
+            CommandAppendStatus::Duplicate,
+        )];
+        assert_eq!(
+            append_factory_drain_requested_events(&mut store, &duplicate, "2026-08-17T23:55:00Z")?,
+            0
+        );
+        let persisted = persist_tui_runtime_effects(
+            &mut store,
+            &[dispatcher_setting_set_effect()],
+            "2026-08-17T23:55:02Z",
+        );
+        assert!(persisted.is_ok());
+        let persisted = persisted.unwrap_or_default();
+        let missing = [CommandAppendOutcome::new(
+            "cmd_missing".to_owned(),
+            CommandAppendStatus::Inserted,
+        )];
+        assert_eq!(
+            append_factory_drain_requested_events(&mut store, &missing, "2026-08-17T23:55:01Z")?,
+            0
+        );
+        assert_eq!(
+            append_factory_drain_requested_events(&mut store, &persisted, "2026-08-17T23:55:03Z")?,
+            0
+        );
+        assert!(store.list_console_events()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pending_command_requester_default_is_non_inline() {
+        struct DefaultRequester;
+
+        impl PendingCommandRequester for DefaultRequester {
+            fn request_pending_command_handling(&self) {
+                let _ = self;
+            }
+        }
+
+        let requester = DefaultRequester;
+        requester.request_pending_command_handling();
+        assert!(!requester.handles_pending_commands_inline());
+    }
+
+    #[test]
     fn store_backed_refresh_reflects_autonomous_decisions_on_every_refresh()
     -> Result<(), ConsoleRuntimeError> {
         // Scenario 15 + Bug B (folds PR #256): the CHEAP local-journal reflection
@@ -3777,6 +3997,7 @@ mod tests {
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let requester = poll_requester();
+        let commands = command_requester();
 
         let events = {
             let mut sink = StoreBackedTuiRuntimeEffectSink::new(
@@ -3786,6 +4007,7 @@ mod tests {
                 &mut work_item_port,
                 &decisions,
                 &requester,
+                &commands,
             );
             // A CHEAP refresh (request_poll = false) still runs the reflection.
             refreshed_events(sink.refresh_events(false))?
@@ -3883,6 +4105,7 @@ mod tests {
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
         let requester = poll_requester();
+        let commands = command_requester();
         {
             let mut sink = StoreBackedTuiRuntimeEffectSink::new(
                 store,
@@ -3891,6 +4114,7 @@ mod tests {
                 &mut work_item_port,
                 &decisions,
                 &requester,
+                &commands,
             );
             for effect in effects {
                 let outcome = sink.handle_runtime_effect(effect).ok();
@@ -4345,6 +4569,7 @@ mod tests {
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
         let requester = poll_requester();
+        let commands = command_requester();
         {
             let mut sink = StoreBackedTuiRuntimeEffectSink::new(
                 &mut store,
@@ -4353,6 +4578,7 @@ mod tests {
                 &mut work_item_port,
                 &decisions,
                 &requester,
+                &commands,
             );
             for effect in [
                 &move_to_backlog,
@@ -4429,6 +4655,7 @@ mod tests {
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
         let requester = poll_requester();
+        let commands = command_requester();
         {
             let mut sink = StoreBackedTuiRuntimeEffectSink::new(
                 store,
@@ -4437,6 +4664,7 @@ mod tests {
                 &mut work_item_port,
                 &decisions,
                 &requester,
+                &commands,
             );
             for _gesture in 0..count {
                 let applied = sink
@@ -4617,6 +4845,7 @@ mod tests {
             &empty_decisions_port(),
             &needs_attention,
             &poll_requester(),
+            &command_requester(),
         );
 
         assert!(matches!(
@@ -6890,6 +7119,26 @@ mod tests {
         }
     }
 
+    struct CountingFactoryDrainPort {
+        calls: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl CountingFactoryDrainPort {
+        fn new(calls: Rc<std::cell::Cell<usize>>) -> Self {
+            Self { calls }
+        }
+    }
+
+    impl FactoryDrainPort for CountingFactoryDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(FactoryDrainPortOutcome::completed(1))
+        }
+    }
+
     /// Test double standing in for the real orchestrator-action port. It
     /// records the action-ids it was asked to run and returns a configurable
     /// outcome so the work-item command machinery can be exercised without a
@@ -6986,6 +7235,42 @@ mod tests {
 
     fn poll_requester() -> RecordingPollRequester {
         RecordingPollRequester::new()
+    }
+
+    struct RecordingPendingCommandRequester {
+        requests: std::cell::Cell<usize>,
+        inline: bool,
+    }
+
+    impl RecordingPendingCommandRequester {
+        const fn new(inline: bool) -> Self {
+            Self {
+                requests: std::cell::Cell::new(0),
+                inline,
+            }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.get()
+        }
+    }
+
+    impl PendingCommandRequester for RecordingPendingCommandRequester {
+        fn request_pending_command_handling(&self) {
+            self.requests.set(self.requests.get() + 1);
+        }
+
+        fn handles_pending_commands_inline(&self) -> bool {
+            self.inline
+        }
+    }
+
+    fn command_requester() -> RecordingPendingCommandRequester {
+        RecordingPendingCommandRequester::new(true)
+    }
+
+    fn async_command_requester() -> RecordingPendingCommandRequester {
+        RecordingPendingCommandRequester::new(false)
     }
 
     #[test]
@@ -7168,6 +7453,53 @@ mod tests {
             self.observed_event_count = events.len();
             self.observed_requested_by = requested_by.to_owned();
             Ok(self.effects.clone())
+        }
+    }
+
+    struct DrainThenInputTuiSessionRunner {
+        port_calls: Rc<std::cell::Cell<usize>>,
+        port_calls_after_drain_effect: Option<usize>,
+        serviced_input_after_drain_effect: bool,
+    }
+
+    impl DrainThenInputTuiSessionRunner {
+        fn new(port_calls: Rc<std::cell::Cell<usize>>) -> Self {
+            Self {
+                port_calls,
+                port_calls_after_drain_effect: None,
+                serviced_input_after_drain_effect: false,
+            }
+        }
+    }
+
+    impl TuiSessionRunner for DrainThenInputTuiSessionRunner {
+        fn run_tui(
+            &mut self,
+            events: &[ConsoleEvent],
+            _requested_by: &str,
+            session: &mut dyn TuiLiveSession,
+        ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
+            session
+                .handle_runtime_effect(&factory_drain_effect())
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+            self.port_calls_after_drain_effect = Some(self.port_calls.get());
+            let state = TuiInteractionState::new(
+                0,
+                TuiOverlay::CommandPalette {
+                    query: String::new(),
+                },
+            );
+            let step = console_tui::step_tui_runtime(
+                &state,
+                events,
+                TuiTerminalInput::Interaction(TuiInteraction::TypeChar('x')),
+                "operator",
+            );
+            self.serviced_input_after_drain_effect = matches!(
+                step.state().overlay(),
+                TuiOverlay::CommandPalette { query } if query == "x"
+            );
+            Ok(Vec::new())
         }
     }
 

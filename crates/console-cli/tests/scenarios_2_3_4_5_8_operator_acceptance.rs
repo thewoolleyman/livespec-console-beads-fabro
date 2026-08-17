@@ -12,9 +12,9 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{CommandAppend, EventAppend, SqliteEventStore};
 use console_tui::{TuiLiveSession, TuiRuntimeEffect};
 use livespec_console_beads_fabro::{
-    ConsoleRuntimeError, NeedsAttentionIngest, SourceAdapterRef, SourcePollRequester,
-    TuiSessionOutcome, TuiSessionRunner, backfill_source_report, handle_pending_factory_commands,
-    run_store_backed_tui_session,
+    ConsoleRuntimeError, NeedsAttentionIngest, PendingCommandRequester, SourceAdapterRef,
+    SourcePollRequester, TuiSessionOutcome, TuiSessionRunner, backfill_source_report,
+    handle_pending_factory_commands, run_store_backed_tui_session,
 };
 
 /// A poll requester that drops every request — this scenario does not exercise
@@ -23,6 +23,14 @@ struct NoopPollRequester;
 
 impl SourcePollRequester for NoopPollRequester {
     fn request_poll(&self) {}
+}
+
+/// A command requester that drops every request — this scenario drives deferred
+/// effects returned from the runner, so end-of-session handling remains enough.
+struct NoopCommandRequester;
+
+impl PendingCommandRequester for NoopCommandRequester {
+    fn request_pending_command_handling(&self) {}
 }
 
 #[test]
@@ -143,6 +151,7 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
         &decisions_port,
         &needs_attention,
         &NoopPollRequester,
+        &NoopCommandRequester,
     )?;
 
     assert_eq!(outcome, TuiSessionOutcome::new(2, 2, 1, 1, 5, 0));
