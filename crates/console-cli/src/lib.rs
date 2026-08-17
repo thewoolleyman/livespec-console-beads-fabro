@@ -47,10 +47,11 @@ use console_application::{
         NormalizeObservation, NormalizedSourceEvent, ObservedSourceAdapter, PullSourcePort,
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
-        diff_needs_attention, fabro_run_snapshot_payload_json, materialize_attention_items,
-        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_payload_json,
+        diff_needs_attention, dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
+        materialize_attention_items, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
+        work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -2140,8 +2141,8 @@ fn normalized_payload_json(payload: &SourcePayload) -> String {
         SourcePayload::AttentionItemResolved(id) => attention_resolved_payload_json(id),
         SourcePayload::NotObservedFinding(finding) => not_observed_finding_payload_json(finding),
         SourcePayload::FabroRunSnapshot(snapshot) => fabro_run_snapshot_payload_json(snapshot),
+        SourcePayload::DispatcherJournalEntry(entry) => dispatcher_journal_payload_json(entry),
         SourcePayload::CompletenessFinding(_)
-        | SourcePayload::DispatcherJournalEntry(_)
         | SourcePayload::GithubPullRequestSnapshot(_)
         | SourcePayload::LivespecNextSnapshot(_)
         | SourcePayload::ObservedIdle => "{}".to_owned(),
@@ -2357,11 +2358,11 @@ mod tests {
         project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
-            AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
-            NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
-            NotObservedFinding, PullSourcePort, SourceAdapterKind, SourceEventAppendPort,
-            SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
-            normalize_work_item_snapshot,
+            AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, DispatcherJournalEntry,
+            DispatcherJournalKind, Lane, LaneReason, NeedsAttentionReadOutcome,
+            NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, PullSourcePort,
+            SourceAdapterKind, SourceEventAppendPort, SourcePayload, SourceProbe,
+            SourceProbeOutcome, WorkItemSnapshot, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -2388,9 +2389,10 @@ mod tests {
         handle_pending_config_commands, handle_pending_factory_commands,
         handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
         is_failed_once_only_valve_retry, live_source_adapters, load_tui_events_from_store,
-        observe_and_reflect_autonomous_decisions, persist_tui_runtime_effects, plan_page_report,
-        python_normalized_invocation, refresh_sources, render_tui_preview, resolve_console_repo,
-        run, run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
+        normalized_payload_json, observe_and_reflect_autonomous_decisions,
+        persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
+        refresh_sources, render_tui_preview, resolve_console_repo, run,
+        run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
         source_polls_from_seed, work_item_command_from_stored,
     };
 
@@ -6690,6 +6692,28 @@ mod tests {
         assert_eq!(blocked_items[0].lane_reason(), Some(LaneReason::NeedsHuman));
         assert_eq!(board.total(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn normalized_dispatcher_journal_payload_persists_projection_fields() {
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            "console-1",
+            "dispatch-1",
+            DispatcherJournalKind::BacklogBounce,
+            3,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0].clone();
+        let payload_json = normalized_payload_json(&SourcePayload::DispatcherJournalEntry(entry));
+
+        assert!(payload_json.contains(r#""repo":"console""#));
+        assert!(payload_json.contains(r#""work_item_id":"console-1""#));
+        assert!(payload_json.contains(r#""dispatch_id":"dispatch-1""#));
+        assert!(payload_json.contains(r#""kind":"backlog-bounce""#));
     }
 
     /// The demo events as they are read back from the store, where the load

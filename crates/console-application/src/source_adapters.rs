@@ -910,7 +910,8 @@ impl LivespecNextSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 /// Variants for dispatcher journal kind state or outcome values.
 pub enum DispatcherJournalKind {
     /// Backlog bounce variant.
@@ -930,6 +931,15 @@ impl DispatcherJournalKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents dispatcher journal entry data used by the console.
 pub struct DispatcherJournalEntry {
+    repo: String,
+    work_item_id: String,
+    dispatch_id: String,
+    kind: DispatcherJournalKind,
+    source_version: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct DispatcherJournalPayload {
     repo: String,
     work_item_id: String,
     dispatch_id: String,
@@ -987,6 +997,33 @@ impl DispatcherJournalEntry {
     pub const fn source_version(&self) -> u64 {
         self.source_version
     }
+}
+
+/// Serialize a dispatcher journal entry into its canonical persisted
+/// `payload_json`.
+#[must_use]
+pub fn dispatcher_journal_payload_json(entry: &DispatcherJournalEntry) -> String {
+    let mut object = serde_json::Map::new();
+    object.insert("repo".to_owned(), entry.repo.clone().into());
+    object.insert("work_item_id".to_owned(), entry.work_item_id.clone().into());
+    object.insert("dispatch_id".to_owned(), entry.dispatch_id.clone().into());
+    object.insert("kind".to_owned(), entry.kind.label().into());
+    object.insert("source_version".to_owned(), entry.source_version.into());
+    serde_json::Value::Object(object).to_string()
+}
+
+/// Rebuild a dispatcher journal entry from a persisted `payload_json`.
+#[must_use]
+pub fn dispatcher_journal_from_payload_json(payload_json: &str) -> Option<DispatcherJournalEntry> {
+    let payload: DispatcherJournalPayload = serde_json::from_str(payload_json).ok()?;
+    DispatcherJournalEntry::new(
+        &payload.repo,
+        &payload.work_item_id,
+        &payload.dispatch_id,
+        payload.kind,
+        payload.source_version,
+    )
+    .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -2809,6 +2846,7 @@ mod tests {
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
         attention_item_snapshot_from_payload_json, diff_needs_attention,
+        dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
         fabro_run_snapshot_payload_json, materialize_attention_items,
         normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
         normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
@@ -4741,6 +4779,28 @@ mod tests {
         let rebuilt = work_item_snapshot_from_payload_json(&payload_json);
 
         assert_eq!(rebuilt.as_ref(), Some(&snapshot));
+    }
+
+    #[test]
+    fn dispatcher_journal_payload_round_trips() {
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            "console-1",
+            "dispatch-1",
+            DispatcherJournalKind::BacklogBounce,
+            3,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0].clone();
+        let payload_json = dispatcher_journal_payload_json(&entry);
+        let rebuilt = dispatcher_journal_from_payload_json(&payload_json);
+
+        assert_eq!(rebuilt.as_ref(), Some(&entry));
+        assert_eq!(dispatcher_journal_from_payload_json("{}"), None);
+        assert_eq!(dispatcher_journal_from_payload_json("not json"), None);
     }
 
     #[test]

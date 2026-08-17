@@ -2430,7 +2430,8 @@ mod tests {
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{
         AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
-        AttentionSourceRef, Lane, attention_item_payload_json,
+        AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane,
+        attention_item_payload_json, dispatcher_journal_payload_json,
     };
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
@@ -4588,8 +4589,8 @@ mod tests {
         ]
     }
 
-    fn active_claim_execution_events() -> Vec<ConsoleEvent> {
-        vec![
+    fn active_claim_execution_events() -> Option<Vec<ConsoleEvent>> {
+        Some(vec![
             lane_event(
                 "evt_claimed_a",
                 "console-claimed-a",
@@ -4614,8 +4615,8 @@ mod tests {
                 "a3",
                 "active",
             ),
-            dispatcher_execution_event("evt_dispatch", "console-executing", "dispatch_1"),
-        ]
+            dispatcher_execution_event("evt_dispatch", "console-executing", "dispatch_1")?,
+        ])
     }
 
     // Build a snapshot-observation event by writing the canonical `payload_json`
@@ -4658,21 +4659,30 @@ mod tests {
         event_id: &str,
         work_item_id: &str,
         dispatch_id: &str,
-    ) -> ConsoleEvent {
-        let payload = format!(
-            r#"{{"repo":"console","work_item_id":"{work_item_id}","dispatch_id":"{dispatch_id}","kind":"backlog-bounce","source_version":2}}"#
+    ) -> Option<ConsoleEvent> {
+        let payload = dispatcher_journal_payload_json(
+            &DispatcherJournalEntry::new(
+                "console",
+                work_item_id,
+                dispatch_id,
+                DispatcherJournalKind::BacklogBounce,
+                2,
+            )
+            .ok()?,
         );
-        ConsoleEvent::fixture(
-            event_id,
-            EventType::DispatcherBacklogBounceObserved,
-            "dispatcher",
+        Some(
+            ConsoleEvent::fixture(
+                event_id,
+                EventType::DispatcherBacklogBounceObserved,
+                "dispatcher",
+            )
+            .with_payload_json(payload),
         )
-        .with_payload_json(payload)
     }
 
     #[test]
     fn active_lane_render_distinguishes_claimed_from_executing() -> TuiRenderResult<()> {
-        let events = active_claim_execution_events();
+        let events = active_claim_execution_events().ok_or(TuiRenderError::EmptyArea)?;
         let overview = build_tui_model_for_state(
             &events,
             &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
