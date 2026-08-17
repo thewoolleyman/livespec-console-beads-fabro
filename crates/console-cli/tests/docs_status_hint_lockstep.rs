@@ -423,3 +423,27 @@ fn every_documented_selected_item_hint_equals_the_rendered_derivation() -> std::
     );
     Ok(())
 }
+
+#[test]
+fn driver_handoff_behavior_is_documented() -> std::io::Result<()> {
+    let doc = read(SETTINGS_DOC)?;
+    let doc = collapse_whitespace(&doc);
+    for required in [
+        "### Driver handoff",
+        "`h` opens the full-width **Driver Handoff** overlay",
+        "drilled-in `backlog` item renders the groom invocation",
+        "drilled-in `ready` item with a non-null `factory_safety` marking",
+        "renders the driver-implement invocation",
+        "suppressed everywhere else",
+        "carries only the selected work-item id",
+        "does not write a prompt file, execute the driver, spawn a process, monitor a driver session, or wait for one",
+        "`copy sent to terminal`",
+        "MUST NOT claim an unobservable result such as `Copied!`",
+    ] {
+        assert!(
+            doc.contains(required),
+            "{SETTINGS_DOC} must document the driver-handoff behavior phrase:\n  {required}"
+        );
+    }
+    Ok(())
+}

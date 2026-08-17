@@ -385,6 +385,24 @@ The statuses `s` offers depend on the lane the item is in:
 | `blocked` | backlog, ready — through resolve-blocked |
 | `done` | *nothing* — a shipped item offers no onward move |
 
+### Driver handoff
+
+`h` opens the full-width **Driver Handoff** overlay only where the
+driver-handoff verb applies: a drilled-in `backlog` item renders the groom
+invocation, and a drilled-in `ready` item with a non-null `factory_safety`
+marking renders the driver-implement invocation. The verb is suppressed
+everywhere else.
+
+The rendered command carries only the selected work-item id. It does not write
+a prompt file, execute the driver, spawn a process, monitor a driver session,
+or wait for one. The console is only handing the command text to the operator;
+the driver session records its own work through the orchestrator surface.
+
+Press `Enter` in the overlay to send the command to the terminal copy path;
+press `Esc` to cancel. The overlay wording is normative: it says
+`copy sent to terminal`, describing what the console attempted, and MUST NOT
+claim an unobservable result such as `Copied!`.
+
 ### The command palette
 
 `:` opens it. It accepts exactly three commands: `drain` and
