@@ -9,15 +9,20 @@
 # (the single canonical source) via `just install-worktree-pack` / bootstrap,
 # NOT tracked here. The from-package installer writes byte-identical copies
 # into dev-tooling/ at bootstrap, mirroring how the commit-refuse hooks are
-# installed into the untracked .git/hooks/ dir. The pack is four files: the
-# two executable shell scripts plus the `worktree.just` and
+# installed into the untracked .git/hooks/ dir. The pack is five files: the
+# three executable shell scripts plus the `worktree.just` and
 # `branch-protection.just` recipe fragments the root justfile `import?`s. The
 # per-ecosystem dev-tooling/worktree-hydrate.sh stub stays TRACKED (it is not
 # part of the package pack); the rest of dev-tooling/ (e.g.
 # ensure-rust-quality-tools.sh) is tracked too — these anchored globs ignore
-# ONLY the four pack files.
+# ONLY the five pack files.
+#
+# gate-run.sh joined the pack after this repo's pin froze at v1.19.0, so it
+# arrived untracked-and-unignored with the v1.28.4 adoption
+# (livespec-dev-tooling-y23f).
 /dev-tooling/worktree-lib.sh
 /dev-tooling/branch-protection.sh
+/dev-tooling/gate-run.sh
 /dev-tooling/worktree.just
 /dev-tooling/branch-protection.just
 
