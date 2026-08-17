@@ -2087,7 +2087,10 @@ pub enum FactoryDrainPortOutcome {
         dispatched_items: u16,
     },
     /// Failed variant.
-    Failed,
+    Failed {
+        /// The child surface's captured stdout, when it emitted one.
+        diagnostic: Option<String>,
+    },
     /// The drain was requested but no real Dispatcher port is wired, so no
     /// drain was attempted. Reported honestly instead of fabricating success.
     NotWired,
@@ -2103,7 +2106,15 @@ impl FactoryDrainPortOutcome {
     #[must_use]
     /// Return the stored value.
     pub const fn failed() -> Self {
-        Self::Failed
+        Self::Failed { diagnostic: None }
+    }
+
+    #[must_use]
+    /// A failure carrying the diagnostic payload the drain surface emitted.
+    pub const fn failed_with_diagnostic(diagnostic: String) -> Self {
+        Self::Failed {
+            diagnostic: Some(diagnostic),
+        }
     }
 
     #[must_use]
@@ -2207,8 +2218,16 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
                 stdout,
                 success: true,
             } => FactoryDrainPortOutcome::completed(dispatched_item_count(&stdout)),
-            SourceProbeOutcome::Observed { success: false, .. } => {
-                FactoryDrainPortOutcome::failed()
+            SourceProbeOutcome::Observed {
+                success: false,
+                stdout,
+            } => {
+                let diagnostic = stdout.trim();
+                if diagnostic.is_empty() {
+                    FactoryDrainPortOutcome::failed()
+                } else {
+                    FactoryDrainPortOutcome::failed_with_diagnostic(diagnostic.to_owned())
+                }
             }
             SourceProbeOutcome::Unavailable { .. } => FactoryDrainPortOutcome::not_wired(),
         })
@@ -4126,17 +4145,16 @@ pub fn handle_factory_drain_command(
             ));
             "completed"
         }
-        FactoryDrainPortOutcome::Failed => {
+        FactoryDrainPortOutcome::Failed { diagnostic } => {
             events.push(factory_command_event(
                 command,
                 EventType::FactoryDrainStarted,
                 "started",
                 2,
             ));
-            events.push(factory_command_event(
+            events.push(factory_drain_failure_event(
                 command,
-                EventType::FactoryDrainFailed,
-                "failed",
+                diagnostic.as_deref(),
                 3,
             ));
             "failed"
@@ -4184,6 +4202,23 @@ fn factory_command_event(
         command.aggregate_id().to_owned(),
         stream_seq,
     )
+}
+
+fn factory_drain_failure_event(
+    command: &CommandEnvelope,
+    diagnostic: Option<&str>,
+    stream_seq: u64,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        format!("evt_{}_failed", command.command_id()),
+        1,
+        command_event_context(EventType::FactoryDrainFailed).to_owned(),
+        EventType::FactoryDrainFailed,
+        "console:factory-command-handler".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+    .with_payload_json(serde_json::Value::Object(diagnostic_event_payload(diagnostic)).to_string())
 }
 
 const fn command_event_context(event_type: EventType) -> &'static str {
@@ -4802,11 +4837,8 @@ fn work_item_failure_event(
     refusal: Option<&str>,
     stream_seq: u64,
 ) -> ConsoleEvent {
-    let mut payload = serde_json::Map::new();
+    let mut payload = diagnostic_event_payload(refusal);
     payload.insert("action_id".to_owned(), action_id.to_owned().into());
-    if let Some(refusal) = refusal {
-        payload.insert("refusal".to_owned(), refusal.to_owned().into());
-    }
     ConsoleEvent::new(
         format!("evt_{}_failed", command.command_id()),
         1,
@@ -4817,6 +4849,25 @@ fn work_item_failure_event(
         stream_seq,
     )
     .with_payload_json(serde_json::Value::Object(payload).to_string())
+}
+
+fn diagnostic_event_payload(
+    diagnostic: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let Some(diagnostic) = diagnostic
+        .map(str::trim)
+        .filter(|diagnostic| !diagnostic.is_empty())
+    else {
+        return serde_json::Map::new();
+    };
+    match serde_json::from_str::<serde_json::Value>(diagnostic) {
+        Ok(serde_json::Value::Object(payload)) => payload,
+        _other => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("refusal".to_owned(), diagnostic.to_owned().into());
+            payload
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9356,7 +9407,10 @@ mod tests {
             &mut self,
             _request: &FactoryDrainRequest,
         ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
-            Ok(FactoryDrainPortOutcome::failed())
+            Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
+                r#"{"summary":"factory-safety refusal","domain_error":"host-only-refused"}"#
+                    .to_owned(),
+            ))
         }
     }
 
@@ -9425,9 +9479,54 @@ mod tests {
     }
 
     #[test]
+    fn factory_drain_handler_threads_json_diagnostic_fields_into_the_failure_event()
+    -> super::ApplicationResult<()> {
+        let command = factory_drain_test_command();
+        let mut port = FailingDrainPort;
+
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port)?;
+        let failed_payloads = outcome
+            .events()
+            .iter()
+            .filter(|event| *event.event_type() == EventType::FactoryDrainFailed)
+            .map(ConsoleEvent::payload_json)
+            .collect::<Vec<_>>();
+
+        let expected = serde_json::json!({
+            "summary": "factory-safety refusal",
+            "domain_error": "host-only-refused"
+        })
+        .to_string();
+        assert_eq!(failed_payloads, [expected.as_str()]);
+        Ok(())
+    }
+
+    #[test]
     fn dispatcher_drain_port_fails_on_non_zero_run() {
         let probe = StubDrainProbe {
-            outcome: SourceProbeOutcome::observed("drain error", false),
+            outcome: SourceProbeOutcome::observed(
+                r#"{"summary":"held manual admission","domain_error":"invalid-source-state"}"#,
+                false,
+            ),
+        };
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
+
+        let outcome = port.drain_ready_queue(&drain_request());
+
+        assert_eq!(
+            outcome,
+            Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
+                r#"{"summary":"held manual admission","domain_error":"invalid-source-state"}"#
+                    .to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn dispatcher_drain_port_failure_without_stdout_carries_no_diagnostic() {
+        let probe = StubDrainProbe {
+            outcome: SourceProbeOutcome::observed("   ", false),
         };
         let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
 
@@ -10484,7 +10583,10 @@ mod tests {
     #[test]
     fn dispatcher_action_port_fails_on_non_zero_run() {
         let probe = StubDrainProbe {
-            outcome: SourceProbeOutcome::observed("approve error", false),
+            outcome: SourceProbeOutcome::observed(
+                r#"{"summary":"approve requires an effective-manual pending-approval item.","domain_error":"invalid-source-state"}"#,
+                false,
+            ),
         };
         let mut port = DispatcherOrchestratorActionPort::new(&probe, "drive", &["--repo", "/repo"]);
 
@@ -10493,7 +10595,7 @@ mod tests {
         assert_eq!(
             outcome,
             Ok(OrchestratorActionOutcome::failed_with_refusal(
-                "approve error".to_owned()
+                r#"{"summary":"approve requires an effective-manual pending-approval item.","domain_error":"invalid-source-state"}"#.to_owned()
             ))
         );
     }
@@ -10592,6 +10694,34 @@ mod tests {
                 .any(|event| event.payload_json().contains("domain_error"))
         });
         assert!(carries_refusal);
+    }
+
+    #[test]
+    fn a_failed_approve_threads_json_diagnostic_fields_into_the_failure_event()
+    -> super::ApplicationResult<()> {
+        let command = approve_command();
+        let mut port = RecordingActionPort::returning(
+            OrchestratorActionOutcome::failed_with_refusal(
+                r#"{"summary":"approve requires an effective-manual pending-approval item.","domain_error":"invalid-source-state"}"#.to_owned(),
+            ),
+        );
+
+        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+        let failed_payloads = outcome
+            .events()
+            .iter()
+            .filter(|event| *event.event_type() == EventType::WorkItemActionFailed)
+            .map(ConsoleEvent::payload_json)
+            .collect::<Vec<_>>();
+
+        let expected = serde_json::json!({
+            "action_id": "approve:wi-1",
+            "summary": "approve requires an effective-manual pending-approval item.",
+            "domain_error": "invalid-source-state"
+        })
+        .to_string();
+        assert_eq!(failed_payloads, [expected.as_str()]);
+        Ok(())
     }
 
     #[test]
