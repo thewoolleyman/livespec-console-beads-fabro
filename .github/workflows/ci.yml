@@ -35,14 +35,24 @@
 # forbidden-trigger check.
 #
 # livespec-s43svm.16 CUTOVER NOTE (2026-08-17): CI_RUNNER_LABELS now points at
-# the ARC scale set `livespec-console-beads-fabro-local-ci-k3s`
-# (single-element JSON array — confirmed live that this routes correctly to an
-# ARC gha-runner-scale-set, unlike a multi-label array combined with
-# `self-hosted`, which PR #1431 in livespec-dev-tooling found unroutable).
-# This is real production traffic on the k3s/ARC path, not a proof-of-life
-# dispatch; the podman pool remains configured and otherwise idle for this
-# repo. See livespec/plan/fleet-ci-runner-pool/research/k3s-arc-kueue-migration.md
-# and the livespec-s43svm.16 ledger comments for the full cutover record.
+# the ARC scale set `livespec-console-beads-k3s` (single-element JSON array —
+# confirmed live that this routes correctly to an ARC gha-runner-scale-set,
+# unlike a multi-label array combined with `self-hosted`, which PR #1431 in
+# livespec-dev-tooling found unroutable). This is real production traffic on
+# the k3s/ARC path, not a proof-of-life dispatch; the podman pool remains
+# configured and otherwise idle for this repo.
+#
+# RENAMED from `livespec-console-beads-fabro-local-ci-k3s` (41 chars) the same
+# day: that name triggered livespec-s43svm.22, an ARC workflow-pod naming
+# collision (runner-container-hooks truncates the per-job pod name at 63
+# characters on the FULL runner-pod name, eating the per-runner unique suffix
+# past ~35 characters of scale-set name — upstream
+# actions/actions-runner-controller#4368, closed won't-fix). This job matrix's
+# own concurrent dispatch is livespec-s43svm.22's controlled proof that the
+# short name (26 chars) does not collide.
+#
+# See livespec/plan/fleet-ci-runner-pool/research/k3s-arc-kueue-migration.md
+# and the livespec-s43svm.16 / .22 ledger comments for the full record.
 #
 # ci-green stays ubuntu-latest so the branch-protection context is reportable
 # host-down.
