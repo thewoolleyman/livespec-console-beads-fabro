@@ -2189,9 +2189,6 @@ pub struct DispatcherFactoryDrainPort<'a> {
     args: Vec<String>,
 }
 
-/// Ready-candidate consideration cap for one operator-initiated drain pass.
-const OPERATOR_DRAIN_BUDGET: u32 = 50;
-
 impl<'a> DispatcherFactoryDrainPort<'a> {
     #[must_use]
     /// Construct a new value from its required fields.
@@ -2207,12 +2204,15 @@ impl<'a> DispatcherFactoryDrainPort<'a> {
 impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
     fn drain_ready_queue(
         &mut self,
-        _request: &FactoryDrainRequest,
+        request: &FactoryDrainRequest,
     ) -> ApplicationResult<FactoryDrainPortOutcome> {
         let mut arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
-        let budget = OPERATOR_DRAIN_BUDGET.to_string();
+        let budget = request.budget().to_string();
+        let parallel = request.parallel().to_string();
         arg_refs.push("--budget");
         arg_refs.push(budget.as_str());
+        arg_refs.push("--parallel");
+        arg_refs.push(parallel.as_str());
         Ok(match self.probe.run_command(&self.program, &arg_refs) {
             SourceProbeOutcome::Observed {
                 stdout,
@@ -9600,9 +9600,31 @@ mod tests {
         let outcome = port.drain_ready_queue(&drain_request());
 
         // Even with the permission armed, the drain passes NO `--mode` flag:
-        // the Dispatcher owns its own mode. Every drain builds the same argv.
+        // the Dispatcher owns its own mode.
         assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(2)));
-        assert_eq!(*probe.observed_args.borrow(), ["loop", "--budget", "50"]);
+        assert_eq!(
+            *probe.observed_args.borrow(),
+            ["loop", "--budget", "1", "--parallel", "1"]
+        );
+    }
+
+    #[test]
+    fn dispatcher_drain_port_threads_requested_budget_and_parallel() {
+        let probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::observed("drain: dispatched 7 items", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let request = FactoryDrainRequest::new("fleet:livespec".to_owned(), 7, 3);
+        let mut port = DispatcherFactoryDrainPort::new(&probe, "dispatcher", &["loop"]);
+
+        let outcome = port.drain_ready_queue(&request);
+
+        assert_eq!(outcome, Ok(FactoryDrainPortOutcome::completed(7)));
+        assert_eq!(
+            *probe.observed_args.borrow(),
+            ["loop", "--budget", "7", "--parallel", "3"]
+        );
     }
 
     // A journal line for one auto-disposition, in the exact wire shape the
