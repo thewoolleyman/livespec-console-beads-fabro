@@ -212,6 +212,7 @@ check:
         check-plan-thread-no-tombstone
         check-plugin-resolution
         check-doctor-static
+        check-ci-parity
         check-fork-drift
     )
     failed=()
@@ -338,6 +339,9 @@ check-plan-thread-no-tombstone:
 
 check-plugin-resolution:
     uv run python -m livespec_dev_tooling.checks.plugin_resolution
+
+check-ci-parity:
+    cargo run --quiet --package console-ci-parity-check
 
 # Canonical fleet shell-quality verifier: ShellCheck 0.11.0 over tracked shell
 # files plus the governed justfile recipe policy. The recipe body is deliberately

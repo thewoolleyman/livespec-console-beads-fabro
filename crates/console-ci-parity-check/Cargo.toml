@@ -1,0 +1,17 @@
+[package]
+name = "console-ci-parity-check"
+description = "Parity gate between just check targets and CI check jobs"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+# Internal check crate — never published.
+publish = false
+
+[dependencies]
+serde_json = "1"
+serde_yaml = "0.9"
+
+[lints]
+workspace = true
