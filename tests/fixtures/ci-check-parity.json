@@ -20,6 +20,11 @@
       "name": "ci-green",
       "present_in_just_check": false,
       "reason": "Aggregate branch-protection rollup job, not an executable check target."
+    },
+    {
+      "name": "export-telemetry",
+      "present_in_just_check": false,
+      "reason": "Closed-loop Honeycomb CI telemetry export (the fleet-standard export-ci-telemetry.sh); needs gh API access to the run's own job data and a Honeycomb ingest secret, neither of which a local `just check` invocation has."
     }
   ]
 }
