@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use console_fork_drift_check::{
-    FORK_DIR, PIN_MANIFEST, UpstreamLane, check_local, check_upstream, digest, parse_pins,
-    resolve_upstream_dir,
+    FORK_DIR, PIN_MANIFEST, UpstreamLane, check_local, check_upstream, digest, digest_for_pin,
+    parse_pins, resolve_upstream_dir,
 };
 
 fn main() -> ExitCode {
@@ -150,16 +150,18 @@ fn refresh_pins(repo_root: &Path, home: &Path) -> Result<(), String> {
         .map(|path| {
             let upstream_sha = std::fs::read(upstream_dir.join(path))
                 .ok()
-                .map(|bytes| digest(&bytes));
+                .map(|bytes| upstream_sha_field(path, &bytes));
             let present_in_fork = fork_dir.join(path).is_file();
             let reason = previous.iter().find(|pin| &pin.path == path).map_or_else(
                 || "TODO: explain this divergence".to_owned(),
                 |pin| pin.reason.clone(),
             );
-            let sha_field = upstream_sha
-                .map_or_else(|| "null".to_owned(), |sha| format!("\"{sha}\""));
+            let (sha_key, sha_field) = upstream_sha.map_or_else(
+                || ("upstream_sha256", "null".to_owned()),
+                |(key, sha)| (key, format!("\"{sha}\"")),
+            );
             format!(
-                "    {{\n      \"path\": \"{path}\",\n      \"upstream_sha256\": {sha_field},\n      \"present_in_fork\": {present_in_fork},\n      \"reason\": {}\n    }}",
+                "    {{\n      \"path\": \"{path}\",\n      \"{sha_key}\": {sha_field},\n      \"present_in_fork\": {present_in_fork},\n      \"reason\": {}\n    }}",
                 serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".to_owned())
             )
         })
@@ -196,4 +198,14 @@ fn walk(dir: &Path) -> Vec<String> {
     recurse(dir, dir, &mut out);
     out.sort();
     out
+}
+
+fn upstream_sha_field(path: &str, bytes: &[u8]) -> (&'static str, String) {
+    if path == "workflow.toml" {
+        return (
+            "upstream_sha256_ignoring_docker_pin",
+            digest_for_pin(path, bytes),
+        );
+    }
+    ("upstream_sha256", digest(bytes))
 }

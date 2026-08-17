@@ -15,7 +15,7 @@
 //! LEG WAS PRESENT — `.fabro/` was covered by no gate at all. This crate is that
 //! missing assertion.
 //!
-//! # Why a hash pin and not byte-equality-modulo-allowlist
+//! # Why mostly hash pins and not byte-equality-modulo-allowlist
 //!
 //! The obvious design — assert the fork equals upstream except for a small
 //! allowlist — does NOT work here, and adopting it would recreate the very
@@ -28,10 +28,14 @@
 //!
 //! So this pins, per file, the UPSTREAM digest last reconciled against, plus a
 //! human reason for the divergence. The gate fires when UPSTREAM MOVES, naming
-//! the file, which forces a conscious sync-or-re-pin. It is deliberately
-//! indifferent to how far our copy has diverged — that is the point of a fork —
-//! and it is immune to our own `workflow.toml` being rewritten by the pin-bump
-//! automation, because it pins upstream's bytes, never ours.
+//! the file, which forces a conscious sync-or-re-pin. The one narrower exception
+//! is `workflow.toml`: its upstream docker value is a known-permanent Python-only
+//! image pin that moves on upstream's cadence, so that single quoted value is
+//! normalized before hashing. Every other byte in `workflow.toml` remains pinned.
+//! The gate is deliberately indifferent to how far our copy has diverged — that
+//! is the point of a fork — and it is immune to our own `workflow.toml` being
+//! rewritten by the pin-bump automation, because it pins upstream's bytes, never
+//! ours.
 //!
 //! # Two lanes, and an honest gap
 //!
@@ -74,6 +78,10 @@ pub struct Pin {
     /// SHA-256 of the UPSTREAM file's bytes at the last reconciliation, or
     /// `None` when upstream is expected NOT to carry this path.
     pub upstream_sha256: Option<String>,
+    /// SHA-256 of the UPSTREAM file after applying this crate's single
+    /// path-scoped normalizer. Used only for `workflow.toml`, where the
+    /// upstream Python-only docker image value is deliberately ignored.
+    pub upstream_sha256_ignoring_docker_pin: Option<String>,
     /// Whether our fork is expected to carry this path. `false` records a
     /// deliberate omission (upstream has it, we do not).
     pub present_in_fork: bool,
@@ -195,6 +203,10 @@ pub fn parse_pins(manifest_json: &str) -> Result<Vec<Pin>, String> {
                 .get("upstream_sha256")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
+            let upstream_sha256_ignoring_docker_pin = entry
+                .get("upstream_sha256_ignoring_docker_pin")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
             let present_in_fork = entry
                 .get("present_in_fork")
                 .and_then(serde_json::Value::as_bool)
@@ -207,6 +219,7 @@ pub fn parse_pins(manifest_json: &str) -> Result<Vec<Pin>, String> {
             Ok(Pin {
                 path,
                 upstream_sha256,
+                upstream_sha256_ignoring_docker_pin,
                 present_in_fork,
                 reason,
             })
@@ -262,6 +275,48 @@ pub fn check_local(pins: &[Pin], fork_dir: &Path) -> Vec<Finding> {
     findings
 }
 
+const WORKFLOW_TOML: &str = "workflow.toml";
+const UPSTREAM_DOCKER_PREFIX: &str =
+    r#"docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-"#;
+const NORMALIZED_UPSTREAM_DOCKER_LINE: &str =
+    r#"docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-<ignored>""#;
+
+#[must_use]
+pub fn digest_for_pin(path: &str, bytes: &[u8]) -> String {
+    if path == WORKFLOW_TOML {
+        return digest(&normalize_workflow_docker_pin(bytes));
+    }
+    digest(bytes)
+}
+
+fn pinned_digest(pin: &Pin) -> Option<&String> {
+    pin.upstream_sha256_ignoring_docker_pin
+        .as_ref()
+        .or(pin.upstream_sha256.as_ref())
+}
+
+fn normalize_workflow_docker_pin(bytes: &[u8]) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return bytes.to_vec();
+    };
+    let mut normalized = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = line
+            .strip_suffix('\n')
+            .map_or((line, ""), |body| (body, "\n"));
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        let carriage_return = if line.ends_with("\r\n") { "\r" } else { "" };
+        if body.starts_with(UPSTREAM_DOCKER_PREFIX) && body.ends_with('"') {
+            normalized.push_str(NORMALIZED_UPSTREAM_DOCKER_LINE);
+        } else {
+            normalized.push_str(body);
+        }
+        normalized.push_str(carriage_return);
+        normalized.push_str(newline);
+    }
+    normalized.into_bytes()
+}
+
 /// The upstream lane: compare live upstream digests against the pins.
 #[must_use]
 pub fn check_upstream(pins: &[Pin], upstream_dir: &Path) -> Vec<Finding> {
@@ -270,8 +325,10 @@ pub fn check_upstream(pins: &[Pin], upstream_dir: &Path) -> Vec<Finding> {
 
     for pin in pins {
         let path = upstream_dir.join(&pin.path);
-        let live = std::fs::read(&path).ok().map(|bytes| digest(&bytes));
-        match (&pin.upstream_sha256, live) {
+        let live = std::fs::read(&path)
+            .ok()
+            .map(|bytes| digest_for_pin(&pin.path, &bytes));
+        match (pinned_digest(pin), live) {
             (Some(pinned), Some(live)) if *pinned != live => {
                 findings.push(Finding::UpstreamMoved {
                     path: pin.path.clone(),
@@ -358,8 +415,19 @@ mod tests {
         Pin {
             path: path.to_owned(),
             upstream_sha256: sha.map(str::to_owned),
+            upstream_sha256_ignoring_docker_pin: None,
             present_in_fork: present,
             reason: reason.to_owned(),
+        }
+    }
+
+    fn workflow_pin(sha: &str) -> Pin {
+        Pin {
+            path: WORKFLOW_TOML.to_owned(),
+            upstream_sha256: None,
+            upstream_sha256_ignoring_docker_pin: Some(sha.to_owned()),
+            present_in_fork: true,
+            reason: "Rust fork keeps its own docker value".to_owned(),
         }
     }
 
@@ -385,13 +453,12 @@ mod tests {
     #[test]
     fn parse_pins_reads_every_field() {
         let parsed = parse_pins(
-            r#"{"files":[{"path":"prompts/pr.md","upstream_sha256":"aa","present_in_fork":true,"reason":"synced"}]}"#,
+            r#"{"files":[{"path":"prompts/pr.md","upstream_sha256":"aa","upstream_sha256_ignoring_docker_pin":"bb","present_in_fork":true,"reason":"synced"}]}"#,
         )
         .unwrap_or_default();
-        assert_eq!(
-            parsed,
-            vec![pin("prompts/pr.md", Some("aa"), true, "synced")]
-        );
+        let mut expected = pin("prompts/pr.md", Some("aa"), true, "synced");
+        expected.upstream_sha256_ignoring_docker_pin = Some("bb".to_owned());
+        assert_eq!(parsed, vec![expected]);
     }
 
     #[test]
@@ -425,6 +492,50 @@ mod tests {
             &dir,
         );
         assert_eq!(findings, vec![]);
+    }
+
+    #[test]
+    fn workflow_upstream_docker_pin_value_changes_are_clean() {
+        let old = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\ncommit_timeout = \"10m\"\n";
+        let new = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\ncommit_timeout = \"10m\"\n";
+        let dir = scratch("workflow-docker-clean");
+        let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
+        let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
+        assert_eq!(findings, vec![]);
+    }
+
+    #[test]
+    fn workflow_upstream_non_docker_changes_still_move_the_pin() {
+        let old = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\ncommit_timeout = \"10m\"\n";
+        let new = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\ncommit_timeout = \"15m\"\n";
+        let dir = scratch("workflow-real-drift");
+        let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
+        let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
+        assert!(matches!(
+            findings.as_slice(),
+            [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
+        ));
+    }
+
+    #[test]
+    fn workflow_docker_pin_key_or_spacing_changes_still_move_the_pin() {
+        let old =
+            b"docker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\n";
+        let new = b"docker=\"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\n";
+        let dir = scratch("workflow-spacing-drift");
+        let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
+        let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
+        assert!(matches!(
+            findings.as_slice(),
+            [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
+        ));
+    }
+
+    #[test]
+    fn workflow_digest_falls_back_to_raw_bytes_for_non_utf8() {
+        let bytes =
+            b"docker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\xff\n";
+        assert_eq!(digest_for_pin(WORKFLOW_TOML, bytes), digest(bytes));
     }
 
     #[test]
