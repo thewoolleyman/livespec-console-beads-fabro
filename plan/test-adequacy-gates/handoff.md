@@ -1,6 +1,6 @@
 # Test-adequacy gates — region coverage, fuzz, mutation
 
-**Epic anchor:** `livespec-console-beads-fabro-4jb3kl`
+**Ledger anchor:** `livespec-console-beads-fabro-4jb3kl`
 
 **Supersedes:** `plan/archive/impl-dispatch/SUPERSEDED-BY.md` (split 2026-07-19), which
 carries the routing table showing how these items landed here. Do NOT resume the

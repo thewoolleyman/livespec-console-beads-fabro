@@ -1,6 +1,6 @@
 # 04-mvp-unbroken-walk-and-close — charter
 
-**Epic anchor:** `livespec-console-beads-fabro-9nb` — status is READ from the ledger.
+**Ledger anchor:** `livespec-console-beads-fabro-9nb` — status is READ from the ledger.
 **Blocked by:** `livespec-console-beads-fabro-et3` (02) **AND**
 `livespec-console-beads-fabro-1df` (03) — LEDGER EDGES.
 Opened 2026-08-02.

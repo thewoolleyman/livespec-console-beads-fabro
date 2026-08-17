@@ -210,6 +210,7 @@ check:
         check-baseline
         check-shell-quality
         check-plan-thread-no-tombstone
+        check-plan-thread-anchor-declared
         check-plugin-resolution
         check-doctor-static
         check-e2e-tmux
@@ -337,6 +338,9 @@ check-baseline:
 # arrives on its own with a dev-tooling pin bump.
 check-plan-thread-no-tombstone:
     uv run python -m livespec_dev_tooling.checks.plan_thread_no_tombstone
+
+check-plan-thread-anchor-declared:
+    uv run python -m livespec_dev_tooling.checks.plan_thread_anchor_declared
 
 check-plugin-resolution:
     uv run python -m livespec_dev_tooling.checks.plugin_resolution

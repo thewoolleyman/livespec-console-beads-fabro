@@ -1,6 +1,6 @@
 # 03-dispatch-ux-and-outcome-surfacing — charter
 
-**Epic anchor:** `livespec-console-beads-fabro-1df` — status is READ from the ledger.
+**Ledger anchor:** `livespec-console-beads-fabro-1df` — status is READ from the ledger.
 **Blocked by:** `livespec-console-beads-fabro-dvv` (plan 01) — a LEDGER EDGE.
 Opened 2026-08-02.
 

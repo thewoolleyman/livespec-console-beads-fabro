@@ -1,6 +1,6 @@
 # 02-menu-shell-primacy — charter
 
-**Epic anchor:** `livespec-console-beads-fabro-et3` — status is READ from the ledger.
+**Ledger anchor:** `livespec-console-beads-fabro-et3` — status is READ from the ledger.
 **Blocked by:** `livespec-console-beads-fabro-dvv` (plan 01) — a LEDGER EDGE, not prose.
 Opened 2026-08-02.
 
