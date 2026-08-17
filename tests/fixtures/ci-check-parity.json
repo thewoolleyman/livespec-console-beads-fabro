@@ -7,11 +7,6 @@
       "reason": "This is the janitor/local aggregate guard introduced by livespec-console-beads-fabro-ccycuk. It reads CI's committed workflow but this factory slice may not edit .github/workflows/ to add a new CI job."
     },
     {
-      "name": "check-e2e-tmux",
-      "present_in_just_check": false,
-      "reason": "Deliberately CI-only for this slice. Whether to promote it into `just check` belongs to the sibling measurement slice named in livespec-console-beads-fabro-ccycuk."
-    },
-    {
       "name": "check-fork-drift",
       "present_in_ci": false,
       "reason": "Runs in the janitor/local aggregate because its upstream lane depends on installed orchestrator plugin state that CI does not provision; the gate itself prints a loud skip when that lane cannot resolve."
