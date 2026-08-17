@@ -33,8 +33,9 @@ pub mod source_adapters;
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
     SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail, WorkItemSnapshot,
-    attention_item_snapshot_from_payload_json, fabro_run_snapshot_from_payload_json,
-    materialize_attention_items, work_item_snapshot_from_payload_json,
+    attention_item_snapshot_from_payload_json, dispatcher_journal_from_payload_json,
+    fabro_run_snapshot_from_payload_json, materialize_attention_items,
+    work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3107,21 +3108,13 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
     LaneBoard { columns }
 }
 
-#[derive(serde::Deserialize)]
-struct DispatcherJournalPayload {
-    repo: String,
-    work_item_id: String,
-}
-
 fn observed_executing_work_items(events: &[ConsoleEvent]) -> BTreeSet<(String, String)> {
     let mut executing = BTreeSet::new();
     for event in events {
         match event.event_type() {
             EventType::DispatcherBacklogBounceObserved => {
-                if let Ok(payload) =
-                    serde_json::from_str::<DispatcherJournalPayload>(event.payload_json())
-                {
-                    executing.insert((payload.repo, payload.work_item_id));
+                if let Some(entry) = dispatcher_journal_from_payload_json(event.payload_json()) {
+                    executing.insert((entry.repo().to_owned(), entry.work_item_id().to_owned()));
                 }
             }
             EventType::FabroHumanGateObserved => {
@@ -6764,8 +6757,9 @@ mod tests {
 
     use super::source_adapters::{
         AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
-        AttentionSourceRef, Lane, LaneReason, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
-        attention_item_payload_json, attention_resolved_payload_json,
+        AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
+        SourceProbe, SourceProbeOutcome, WorkItemSnapshot, attention_item_payload_json,
+        attention_resolved_payload_json, dispatcher_journal_payload_json,
     };
     use super::{
         ActionFailure, ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
@@ -7190,9 +7184,19 @@ mod tests {
         work_item_id: &str,
         dispatch_id: &str,
     ) -> ConsoleEvent {
-        let payload = format!(
-            r#"{{"repo":"console","work_item_id":"{work_item_id}","dispatch_id":"{dispatch_id}","kind":"backlog-bounce","source_version":2}}"#
-        );
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            work_item_id,
+            dispatch_id,
+            DispatcherJournalKind::BacklogBounce,
+            2,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0].clone();
+        let payload = dispatcher_journal_payload_json(&entry);
         ConsoleEvent::fixture(
             event_id,
             EventType::DispatcherBacklogBounceObserved,
