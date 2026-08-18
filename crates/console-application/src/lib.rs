@@ -1491,6 +1491,25 @@ fn project_action_failures(events: &[ConsoleEvent]) -> BTreeMap<String, ActionFa
             EventType::WorkItemActionCompleted => {
                 failures.remove(event.stream_id());
             }
+            EventType::DispatcherRefusalObserved => {
+                if let Some(entry) = dispatcher_journal_from_payload_json(event.payload_json())
+                    && let Some(diagnostic) = entry.diagnostic()
+                {
+                    failures.insert(
+                        entry.work_item_id().to_owned(),
+                        ActionFailure {
+                            action_id: format!("dispatch:{}", entry.dispatch_id()),
+                            refusal: Some(
+                                serde_json::json!({
+                                    "domain_error": entry.kind().label(),
+                                    "summary": diagnostic,
+                                })
+                                .to_string(),
+                            ),
+                        },
+                    );
+                }
+            }
             _other => {}
         }
     }
@@ -3280,6 +3299,7 @@ fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
             | EventType::WorkItemSnapshotObserved
             | EventType::SourceCompletenessFindingObserved
             | EventType::DispatcherBacklogBounceObserved
+            | EventType::DispatcherRefusalObserved
             | EventType::FabroHumanGateObserved
             | EventType::GithubPullRequestSnapshotObserved
             | EventType::LivespecNextSnapshotObserved
@@ -4397,6 +4417,7 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         }
         EventType::WorkItemSnapshotObserved
         | EventType::DispatcherBacklogBounceObserved
+        | EventType::DispatcherRefusalObserved
         | EventType::FabroHumanGateObserved
         | EventType::GithubPullRequestSnapshotObserved
         | EventType::LivespecNextSnapshotObserved
@@ -6794,6 +6815,7 @@ impl AttentionEvent for EventType {
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
             Self::DispatcherBacklogBounceObserved => "Dispatcher backlog bounce",
+            Self::DispatcherRefusalObserved => "Dispatcher refusal",
             Self::FactoryDrainRequested => "Factory drain requested",
             Self::FactoryDrainStarted => "Factory drain started",
             Self::WorkItemActionStarted => "Work-item action started",
@@ -9631,6 +9653,10 @@ mod tests {
         assert_eq!(
             EventType::DispatcherBacklogBounceObserved.label(),
             "Dispatcher backlog bounce"
+        );
+        assert_eq!(
+            EventType::DispatcherRefusalObserved.label(),
+            "Dispatcher refusal"
         );
         assert_eq!(
             EventType::FabroHumanGateObserved.label(),
@@ -12631,6 +12657,51 @@ mod tests {
         )
         .with_payload_json("{}".to_owned());
         assert!(project_action_failures(&[malformed]).is_empty());
+        let dispatcher_entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            "console-af",
+            "dispatch-without-detail",
+            DispatcherJournalKind::HostOnlyRefused,
+            5,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(dispatcher_entries.len(), 1);
+        let dispatcher_without_detail = ConsoleEvent::new(
+            "evt_dispatch_without_detail".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::DispatcherRefusalObserved,
+            "dispatcher".to_owned(),
+            "repo:console".to_owned(),
+            5,
+        )
+        .with_payload_json(dispatcher_journal_payload_json(&dispatcher_entries[0]));
+        assert!(project_action_failures(&[dispatcher_without_detail]).is_empty());
+        let dispatcher_with_detail = ConsoleEvent::new(
+            "evt_dispatch_with_detail".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::DispatcherRefusalObserved,
+            "dispatcher".to_owned(),
+            "repo:console".to_owned(),
+            6,
+        )
+        .with_payload_json(dispatcher_journal_payload_json(
+            &dispatcher_entries[0]
+                .clone()
+                .with_diagnostic("factory-safety refusal requires host-only execution"),
+        ));
+        let dispatcher_failures = project_action_failures(&[dispatcher_with_detail]);
+        assert_eq!(
+            dispatcher_failures
+                .get("console-af")
+                .map(ActionFailure::display_line),
+            Some(
+                "dispatch:dispatch-without-detail refused — host-only-refused: factory-safety refusal requires host-only execution".to_owned()
+            )
+        );
         // A later completed action against the SAME item clears the failure.
         let completed = super::work_item_command_event(
             &command,

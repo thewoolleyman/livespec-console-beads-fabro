@@ -140,6 +140,8 @@ pub enum EventType {
     CommandRejected,
     /// Dispatcher backlog bounce observed.
     DispatcherBacklogBounceObserved,
+    /// Dispatcher refusal observed from its journal.
+    DispatcherRefusalObserved,
     /// Fabro run reached a human gate.
     FabroHumanGateObserved,
     /// Factory drain completed successfully.
@@ -209,6 +211,7 @@ impl EventType {
             Self::CommandAccepted => "command.accepted",
             Self::CommandRejected => "command.rejected",
             Self::DispatcherBacklogBounceObserved => "dispatch.backlog_bounce_observed",
+            Self::DispatcherRefusalObserved => "dispatch.refusal_observed",
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
             Self::FactoryDrainFailed => "factory.drain.failed",
@@ -244,6 +247,7 @@ impl EventType {
             "command.accepted" => Some(Self::CommandAccepted),
             "command.rejected" => Some(Self::CommandRejected),
             "dispatch.backlog_bounce_observed" => Some(Self::DispatcherBacklogBounceObserved),
+            "dispatch.refusal_observed" => Some(Self::DispatcherRefusalObserved),
             "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
@@ -524,6 +528,10 @@ mod tests {
             "dispatch.backlog_bounce_observed"
         );
         assert_eq!(
+            EventType::DispatcherRefusalObserved.contract_name(),
+            "dispatch.refusal_observed"
+        );
+        assert_eq!(
             EventType::FabroHumanGateObserved.contract_name(),
             "fabro.human_gate_observed"
         );
@@ -624,6 +632,7 @@ mod tests {
             EventType::CommandAccepted,
             EventType::CommandRejected,
             EventType::DispatcherBacklogBounceObserved,
+            EventType::DispatcherRefusalObserved,
             EventType::FabroHumanGateObserved,
             EventType::FactoryDrainCompleted,
             EventType::FactoryDrainFailed,

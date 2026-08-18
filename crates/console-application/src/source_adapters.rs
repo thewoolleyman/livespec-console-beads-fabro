@@ -916,6 +916,12 @@ impl LivespecNextSnapshot {
 pub enum DispatcherJournalKind {
     /// Backlog bounce variant.
     BacklogBounce,
+    /// Dispatcher refused a stale dispatch.
+    DispatcherStalenessRefused,
+    /// Dispatcher refused because the source state is invalid for the action.
+    InvalidSourceState,
+    /// Dispatcher refused a host-only dispatch.
+    HostOnlyRefused,
 }
 
 impl DispatcherJournalKind {
@@ -924,6 +930,20 @@ impl DispatcherJournalKind {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::BacklogBounce => "backlog-bounce",
+            Self::DispatcherStalenessRefused => "dispatcher-staleness-refused",
+            Self::InvalidSourceState => "invalid-source-state",
+            Self::HostOnlyRefused => "host-only-refused",
+        }
+    }
+
+    #[must_use]
+    /// Whether this journal kind carries a refusal diagnostic.
+    pub const fn is_refusal(&self) -> bool {
+        match self {
+            Self::BacklogBounce => false,
+            Self::DispatcherStalenessRefused | Self::InvalidSourceState | Self::HostOnlyRefused => {
+                true
+            }
         }
     }
 }
@@ -935,6 +955,7 @@ pub struct DispatcherJournalEntry {
     work_item_id: String,
     dispatch_id: String,
     kind: DispatcherJournalKind,
+    diagnostic: Option<String>,
     source_version: u64,
 }
 
@@ -944,6 +965,8 @@ struct DispatcherJournalPayload {
     work_item_id: String,
     dispatch_id: String,
     kind: DispatcherJournalKind,
+    #[serde(default)]
+    diagnostic: Option<String>,
     source_version: u64,
 }
 
@@ -964,8 +987,19 @@ impl DispatcherJournalEntry {
             work_item_id: required_text(work_item_id, AdapterError::EmptyWorkItemId)?,
             dispatch_id: required_text(dispatch_id, AdapterError::EmptyDispatchId)?,
             kind,
+            diagnostic: None,
             source_version,
         })
+    }
+
+    #[must_use]
+    /// Return this entry with an attached human-readable diagnostic.
+    pub fn with_diagnostic(mut self, diagnostic: &str) -> Self {
+        let diagnostic = diagnostic.trim();
+        if !diagnostic.is_empty() {
+            self.diagnostic = Some(diagnostic.to_owned());
+        }
+        self
     }
 
     #[must_use]
@@ -993,6 +1027,12 @@ impl DispatcherJournalEntry {
     }
 
     #[must_use]
+    /// Return the human-readable diagnostic carried by refusal journal entries.
+    pub fn diagnostic(&self) -> Option<&str> {
+        self.diagnostic.as_deref()
+    }
+
+    #[must_use]
     /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
@@ -1008,6 +1048,9 @@ pub fn dispatcher_journal_payload_json(entry: &DispatcherJournalEntry) -> String
     object.insert("work_item_id".to_owned(), entry.work_item_id.clone().into());
     object.insert("dispatch_id".to_owned(), entry.dispatch_id.clone().into());
     object.insert("kind".to_owned(), entry.kind.label().into());
+    if let Some(diagnostic) = &entry.diagnostic {
+        object.insert("diagnostic".to_owned(), diagnostic.clone().into());
+    }
     object.insert("source_version".to_owned(), entry.source_version.into());
     serde_json::Value::Object(object).to_string()
 }
@@ -1016,14 +1059,18 @@ pub fn dispatcher_journal_payload_json(entry: &DispatcherJournalEntry) -> String
 #[must_use]
 pub fn dispatcher_journal_from_payload_json(payload_json: &str) -> Option<DispatcherJournalEntry> {
     let payload: DispatcherJournalPayload = serde_json::from_str(payload_json).ok()?;
-    DispatcherJournalEntry::new(
+    let entry = DispatcherJournalEntry::new(
         &payload.repo,
         &payload.work_item_id,
         &payload.dispatch_id,
         payload.kind,
         payload.source_version,
     )
-    .ok()
+    .ok()?;
+    Some(match payload.diagnostic {
+        Some(diagnostic) => entry.with_diagnostic(&diagnostic),
+        None => entry,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -1544,6 +1591,11 @@ fn livespec_next_event(snapshot: LivespecNextSnapshot) -> NormalizedSourceEvent 
 }
 
 fn dispatcher_journal_event(entry: DispatcherJournalEntry) -> NormalizedSourceEvent {
+    let event_type = if entry.kind().is_refusal() {
+        EventType::DispatcherRefusalObserved
+    } else {
+        EventType::DispatcherBacklogBounceObserved
+    };
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
             format!(
@@ -1555,7 +1607,7 @@ fn dispatcher_journal_event(entry: DispatcherJournalEntry) -> NormalizedSourceEv
             ),
             1,
             "factory".to_owned(),
-            EventType::DispatcherBacklogBounceObserved,
+            event_type,
             SourceAdapterKind::Dispatcher.source_name().to_owned(),
             repo_stream(entry.repo()),
             entry.source_version(),
@@ -2335,24 +2387,100 @@ pub fn parse_dispatcher_observation(
         .rev()
         .find(|line| !line.trim().is_empty())
         .ok_or_else(|| "empty dispatcher journal".to_owned())?;
-    let work_item_id = first_json_string(line, "work_item_id")
-        .ok_or_else(|| "no work-item in journal entry".to_owned())?;
-    let dispatch_id = first_json_string(line, "dispatch_id")
-        .ok_or_else(|| "no dispatch id in journal entry".to_owned())?;
+    let observed_entry = observed_dispatcher_journal_entry(line)?;
+    let work_item_id = observed_entry.work_item_id;
+    let dispatch_id = observed_entry.dispatch_id;
     let version = source_stream_seq(&[&work_item_id, &dispatch_id]);
-    let entry = DispatcherJournalEntry::new(
+    let mut entry = DispatcherJournalEntry::new(
         observed.repo(),
         &work_item_id,
         &dispatch_id,
-        DispatcherJournalKind::BacklogBounce,
+        observed_entry.kind,
         version,
     )
     .map_err(|_error| "invalid journal entry".to_owned())?;
+    if let Some(diagnostic) = observed_entry.diagnostic {
+        entry = entry.with_diagnostic(&diagnostic);
+    }
     let poll = normalize_dispatcher_journal_entry(entry);
     Ok(ParsedObservation::new(
         &version.to_string(),
         poll.events().to_vec(),
     ))
+}
+
+struct ObservedDispatcherJournalEntry {
+    work_item_id: String,
+    dispatch_id: String,
+    kind: DispatcherJournalKind,
+    diagnostic: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawDispatcherJournalEntry {
+    work_item_id: Option<String>,
+    dispatch_id: Option<String>,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    outcome: Option<RawDispatcherJournalOutcome>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawDispatcherJournalOutcome {
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJournalEntry, String> {
+    let raw: RawDispatcherJournalEntry = serde_json::from_str(line)
+        .map_err(|_error| "invalid dispatcher journal JSON".to_owned())?;
+    let work_item_id = raw
+        .work_item_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "no work-item in journal entry".to_owned())?;
+    let dispatch_id = raw
+        .dispatch_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "no dispatch id in journal entry".to_owned())?;
+    let Some(outcome) = raw.outcome else {
+        return Ok(ObservedDispatcherJournalEntry {
+            work_item_id,
+            dispatch_id,
+            kind: DispatcherJournalKind::BacklogBounce,
+            diagnostic: None,
+        });
+    };
+    let stage = outcome.stage.as_deref().unwrap_or_default();
+    let status = outcome.status.as_deref().unwrap_or_default();
+    if raw.stage.as_deref() != Some("outcome") || status != "failed" {
+        return Ok(ObservedDispatcherJournalEntry {
+            work_item_id,
+            dispatch_id,
+            kind: DispatcherJournalKind::BacklogBounce,
+            diagnostic: None,
+        });
+    }
+    let kind = match stage {
+        "dispatcher-staleness-refused" => DispatcherJournalKind::DispatcherStalenessRefused,
+        "invalid-source-state" | "admission-held" => DispatcherJournalKind::InvalidSourceState,
+        "host-only-refused" => DispatcherJournalKind::HostOnlyRefused,
+        _other => DispatcherJournalKind::BacklogBounce,
+    };
+    let diagnostic = outcome
+        .detail
+        .map(|detail| detail.trim().to_owned())
+        .filter(|detail| !detail.is_empty());
+    Ok(ObservedDispatcherJournalEntry {
+        work_item_id,
+        dispatch_id,
+        kind,
+        diagnostic,
+    })
 }
 
 /// Normalize real `fabro ps`/run output into a Fabro run snapshot.
@@ -3725,6 +3853,10 @@ mod tests {
             Ok(9)
         );
         assert_eq!(
+            entry.map(|entry| entry.with_diagnostic("  ").diagnostic().is_none()),
+            Ok(true)
+        );
+        assert_eq!(
             DispatcherJournalEntry::new(
                 " ",
                 "item",
@@ -3999,6 +4131,35 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_refusal_entry_normalizes_to_payload_carrying_refusal_event() {
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "livespec-console-beads-fabro",
+            "livespec-console-beads-fabro-y45jhj",
+            "dispatch_held",
+            DispatcherJournalKind::InvalidSourceState,
+            9,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0]
+            .clone()
+            .with_diagnostic("approval held: work-item stays pending-approval");
+
+        let poll = normalize_dispatcher_journal_entry(entry.clone());
+
+        assert_eq!(
+            poll.events()[0].event().event_type(),
+            &EventType::DispatcherRefusalObserved
+        );
+        assert_eq!(
+            poll.events()[0].payload(),
+            &SourcePayload::DispatcherJournalEntry(entry)
+        );
+    }
+
+    #[test]
     fn fabro_snapshot_normalizes_to_human_gate_event() {
         let snapshot = fabro_snapshot_fixture();
         let poll = normalize_fabro_run_snapshot(snapshot);
@@ -4067,6 +4228,7 @@ mod tests {
             work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
             dispatch_id: "dispatch_1".to_owned(),
             kind: DispatcherJournalKind::BacklogBounce,
+            diagnostic: None,
             source_version: 8,
         }
     }
@@ -4277,6 +4439,14 @@ mod tests {
 
     fn first_payload(parsed: &ParsedObservation) -> &SourcePayload {
         parsed.events[0].payload()
+    }
+
+    fn parsed_dispatcher(stdout: &str) -> Result<ParsedObservation, String> {
+        parse_dispatcher_observation(&observed_for(
+            SourceAdapterKind::Dispatcher,
+            "console",
+            stdout,
+        ))
     }
 
     /// One `list-work-items --json` record with EVERY descriptive field
@@ -4879,6 +5049,30 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_refusal_payload_round_trips_diagnostic_text() {
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            "console-1",
+            "dispatch-1",
+            DispatcherJournalKind::HostOnlyRefused,
+            3,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0]
+            .clone()
+            .with_diagnostic("factory-safety refusal requires host-only execution");
+
+        let payload_json = dispatcher_journal_payload_json(&entry);
+        let rebuilt = dispatcher_journal_from_payload_json(&payload_json);
+
+        assert_eq!(rebuilt.as_ref(), Some(&entry));
+        assert!(payload_json.contains("factory-safety refusal"));
+    }
+
+    #[test]
     fn work_item_snapshot_payload_defaults_absent_optional_fields() {
         // A leaner payload (no rank/status/policies) still rebuilds, defaulting
         // to the bottom sentinel, an empty status, manual admission, and
@@ -4978,6 +5172,94 @@ mod tests {
                 work_item_id: "console-1".to_owned(),
                 dispatch_id: "dispatch_9".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
+                diagnostic: None,
+                source_version: version,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dispatcher_refusal_corpus_carries_diagnostic_text() -> Result<(), String> {
+        for (stage, expected_kind, detail) in [
+            (
+                "dispatcher-staleness-refused",
+                DispatcherJournalKind::DispatcherStalenessRefused,
+                "executing build predates latest release",
+            ),
+            (
+                "admission-held",
+                DispatcherJournalKind::InvalidSourceState,
+                "approval held: work-item rests at pending-approval until a human explicitly approves it",
+            ),
+            (
+                "host-only-refused",
+                DispatcherJournalKind::HostOnlyRefused,
+                "factory-safety refusal requires host-only execution",
+            ),
+        ] {
+            let stdout = format!(
+                r#"{{"work_item_id":"console-1","dispatch_id":"dispatch-{stage}","stage":"outcome","outcome":{{"stage":"{stage}","status":"failed","detail":"{detail}"}}}}"#
+            );
+            let parsed = parsed_dispatcher(&stdout)?;
+            let version = super::source_stream_seq(&["console-1", &format!("dispatch-{stage}")]);
+            let expected_entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+                "console",
+                "console-1",
+                &format!("dispatch-{stage}"),
+                expected_kind,
+                version,
+            )
+            .ok()
+            .into_iter()
+            .collect();
+            assert_eq!(expected_entries.len(), 1);
+            let expected = expected_entries[0].clone().with_diagnostic(detail);
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::DispatcherJournalEntry(expected.clone())
+            );
+            assert_eq!(
+                parsed.events[0].event().event_type(),
+                &EventType::DispatcherRefusalObserved
+            );
+            assert!(dispatcher_journal_payload_json(&expected).contains(detail));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dispatcher_non_refusal_outcomes_remain_backlog_bounces() -> Result<(), String> {
+        for (stage, status) in [("outcome", "completed"), ("progress", "failed")] {
+            let stdout = format!(
+                r#"{{"work_item_id":"console-1","dispatch_id":"dispatch-{stage}-{status}","stage":"{stage}","outcome":{{"stage":"{status}","status":"{status}","detail":"not a refusal"}}}}"#
+            );
+            let parsed = parsed_dispatcher(&stdout)?;
+            let version =
+                super::source_stream_seq(&["console-1", &format!("dispatch-{stage}-{status}")]);
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                    repo: "console".to_owned(),
+                    work_item_id: "console-1".to_owned(),
+                    dispatch_id: format!("dispatch-{stage}-{status}"),
+                    kind: DispatcherJournalKind::BacklogBounce,
+                    diagnostic: None,
+                    source_version: version,
+                })
+            );
+        }
+        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-unknown","stage":"outcome","outcome":{"stage":"unknown-refused","status":"failed","detail":"unknown refusal detail"}}"#;
+        let parsed = parsed_dispatcher(stdout)?;
+        let version = super::source_stream_seq(&["console-1", "dispatch-unknown"]);
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: "dispatch-unknown".to_owned(),
+                kind: DispatcherJournalKind::BacklogBounce,
+                diagnostic: Some("unknown refusal detail".to_owned()),
                 source_version: version,
             })
         );
@@ -5002,6 +5284,7 @@ mod tests {
                 work_item_id: "console-1".to_owned(),
                 dispatch_id: "dispatch-high".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
+                diagnostic: None,
                 source_version: version,
             })
         );
@@ -5017,6 +5300,14 @@ mod tests {
                 "   \n  "
             )),
             Err("empty dispatcher journal".to_owned())
+        );
+        assert_eq!(
+            parse_dispatcher_observation(&observed_for(
+                SourceAdapterKind::Dispatcher,
+                "console",
+                "not json"
+            )),
+            Err("invalid dispatcher journal JSON".to_owned())
         );
         assert_eq!(
             parse_dispatcher_observation(&observed_for(
