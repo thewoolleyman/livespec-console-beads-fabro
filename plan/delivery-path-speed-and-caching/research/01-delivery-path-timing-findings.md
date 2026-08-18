@@ -100,6 +100,35 @@ before a job gets a runner**, not per-job compute or missing dependency
 caches. This points at self-hosted runner-pool concurrency (scale-set size)
 vs. the 18-wide job matrix, not caching, as the lever.
 
+### Measurement closure: runner-pool admission resize
+
+The runner-pool escalation leg is discharged by fleet work item
+`livespec-s43svm.24`: all eight fleet ClusterQueues, including
+`livespec-console-beads-fabro-cq`, now have `nominalQuota=1` churn slot
+for a summed guaranteed floor of eight real node slots, with cohort borrowing
+allowing burst-to-eight behavior when other repos are idle. This in-repo
+measurement leg does not reopen runner-pool sizing.
+
+Fresh GitHub Actions job timestamps after the resize-live handoff verified
+first-job-start under the two-minute target on at least three console CI runs.
+Measured via the Actions API run `created_at` and the minimum job `started_at`:
+
+| Run | Event | Created | First job started | Queue delay | Result |
+|-----|-------|---------|-------------------|-------------|--------|
+| 32195331926 | push | 2026-08-18T23:00:54Z | 2026-08-18T23:01:05Z | 11s | success |
+| 32194334812 | pull_request | 2026-08-18T22:47:40Z | 2026-08-18T22:48:11Z | 31s | success |
+| 32185531047 | push | 2026-08-18T21:01:43Z | 2026-08-18T21:01:45Z | 2s | success |
+| 32185135716 | pull_request | 2026-08-18T20:57:25Z | 2026-08-18T20:57:39Z | 14s | success |
+| 32184768287 | push | 2026-08-18T20:53:22Z | 2026-08-18T20:53:41Z | 19s | success |
+
+The widest observed delay in the sampled completed runs was 31s, so the
+acceptance target is met with margin. Full-matrix wall-clock comparisons are
+still fleet-load-sensitive because the guaranteed floor is one slot with
+borrowing, but the first-job-start queue symptom that motivated this item is
+no longer reproducing. No HTTP 429 `actions/checkout` download failure was
+observed in these completed successful samples; runner-side action caching
+remains a separate follow-up only if that failure mode reappears.
+
 ## Requirement carriers vs. explicit deferrals (draft, for the scoping event)
 
 **Requirement carriers (in-scope for this plan's ledger children):**
