@@ -22,6 +22,11 @@
       "reason": "Runs in the janitor/local aggregate as a hermetic spec-governance guard; CI's matrix predates this target and this factory slice may not edit .github/workflows/ to add a new CI job."
     },
     {
+      "name": "check-test",
+      "present_in_just_check": false,
+      "reason": "The local aggregate uses check-nextest as the canonical non-coverage workspace harness, avoiding a serial cargo test duplicate before the llvm-cov pass. CI still carries this target only because factory branches may not edit .github/workflows/; remove this divergence when the maintainer-side workflow diff drops the matrix entry."
+    },
+    {
       "name": "ci-green",
       "present_in_just_check": false,
       "reason": "Aggregate branch-protection rollup job, not an executable check target."
