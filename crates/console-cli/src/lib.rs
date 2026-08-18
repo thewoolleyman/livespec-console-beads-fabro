@@ -5252,6 +5252,30 @@ mod tests {
     }
 
     #[test]
+    fn pending_factory_commands_record_human_valve_park_without_failure()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [factory_drain_effect()];
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z")?;
+        let mut port = ParkedFactoryDrainPort;
+
+        let outcomes =
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+        let commands = store.list_commands()?;
+        let events = store.list_console_events()?;
+
+        assert_eq!(outcomes[0].command_status(), "parked-awaiting-human");
+        assert_eq!(commands[0].status(), "parked-awaiting-human");
+        assert_eq!(commands[0].error_json(), None);
+        assert_eq!(
+            events.last().map(ConsoleEvent::event_type),
+            Some(&EventType::FactoryDrainAwaitingHuman)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn pending_factory_commands_return_status_update_errors() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::StatusUpdateFails);
         let mut port = SimulatedFactoryDrainPort;
@@ -7487,6 +7511,19 @@ mod tests {
             Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
                 r#"{"summary":"factory-safety refusal","domain_error":"host-only-refused"}"#
                     .to_owned(),
+            ))
+        }
+    }
+
+    struct ParkedFactoryDrainPort;
+
+    impl FactoryDrainPort for ParkedFactoryDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
+            Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
+                "parked in acceptance under acceptance_policy ai-then-human".to_owned(),
             ))
         }
     }

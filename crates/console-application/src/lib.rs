@@ -3327,6 +3327,7 @@ fn factory_drain_activity(events: &[ConsoleEvent]) -> Option<String> {
             }
             EventType::FactoryDrainCompleted => Some("drain completed".to_owned()),
             EventType::FactoryDrainFailed => Some("drain failed".to_owned()),
+            EventType::FactoryDrainAwaitingHuman => Some("drain awaiting human".to_owned()),
             EventType::FactoryDrainNotWired => Some("drain not wired".to_owned()),
             EventType::CommandRejected if event.stream_id() == "fleet:livespec" => {
                 Some("drain rejected".to_owned())
@@ -4278,12 +4279,22 @@ pub fn handle_factory_drain_command(
                 "started",
                 2,
             ));
-            events.push(factory_drain_failure_event(
-                command,
-                diagnostic.as_deref(),
-                3,
-            ));
-            "failed"
+            if drain_failure_is_human_valve_park(diagnostic.as_deref()) {
+                events.push(factory_command_event(
+                    command,
+                    EventType::FactoryDrainAwaitingHuman,
+                    "awaiting_human",
+                    3,
+                ));
+                "parked-awaiting-human"
+            } else {
+                events.push(factory_drain_failure_event(
+                    command,
+                    diagnostic.as_deref(),
+                    3,
+                ));
+                "failed"
+            }
         }
         FactoryDrainPortOutcome::NotWired => {
             // No real Dispatcher port is wired, so the drain never started.
@@ -4311,6 +4322,27 @@ fn rejected_factory_command_event(command: &CommandEnvelope, reason: &str) -> Co
         })
         .to_string(),
     )
+}
+
+fn drain_failure_is_human_valve_park(diagnostic: Option<&str>) -> bool {
+    let Some(diagnostic) = diagnostic else {
+        return false;
+    };
+    let lower = diagnostic.to_ascii_lowercase();
+    let compact = lower.split_whitespace().collect::<String>();
+    lower.contains("held manual admission")
+        || lower.contains("parked in acceptance")
+        || lower.contains("parked at acceptance")
+        || lower.contains("parked in pending-approval")
+        || lower.contains("parked at pending-approval")
+        || lower.contains("lane=acceptance")
+        || lower.contains("lane=pending-approval")
+        || lower.contains("status=acceptance")
+        || lower.contains("status=pending-approval")
+        || compact.contains(r#""lane":"acceptance""#)
+        || compact.contains(r#""lane":"pending-approval""#)
+        || compact.contains(r#""status":"acceptance""#)
+        || compact.contains(r#""status":"pending-approval""#)
 }
 
 fn factory_command_event(
@@ -4352,6 +4384,7 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         EventType::CommandAccepted | EventType::CommandRejected => "command",
         EventType::FactoryDrainCompleted
         | EventType::FactoryDrainFailed
+        | EventType::FactoryDrainAwaitingHuman
         | EventType::FactoryDrainNotWired
         | EventType::FactoryDrainRequested
         | EventType::FactoryDrainStarted => "factory",
@@ -6755,6 +6788,7 @@ impl AttentionEvent for EventType {
             Self::FabroHumanGateObserved => "Fabro human gate",
             Self::FactoryDrainCompleted => "Factory drain completed",
             Self::FactoryDrainFailed => "Factory drain failed",
+            Self::FactoryDrainAwaitingHuman => "Factory drain awaiting human",
             Self::FactoryDrainNotWired => "Factory drain not wired",
             Self::GithubPullRequestSnapshotObserved => "GitHub pull request snapshot",
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
@@ -7903,6 +7937,11 @@ mod tests {
             EventType::FactoryDrainFailed,
             "console:factory-command-handler",
         );
+        let awaiting_human = ConsoleEvent::fixture(
+            "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_awaiting_human",
+            EventType::FactoryDrainAwaitingHuman,
+            "console:factory-command-handler",
+        );
         let not_wired = ConsoleEvent::fixture(
             "evt_cmd_factory_drain_requested_budget_1_parallel_1_0_not_wired",
             EventType::FactoryDrainNotWired,
@@ -7932,6 +7971,13 @@ mod tests {
 
         let failed_model = build_tui_model_for_state(&[failed], &state);
         assert!(failed_model.header().contains("factory: drain failed"));
+
+        let awaiting_human_model = build_tui_model_for_state(&[awaiting_human], &state);
+        assert!(
+            awaiting_human_model
+                .header()
+                .contains("factory: drain awaiting human")
+        );
 
         let not_wired_model = build_tui_model_for_state(&[not_wired], &state);
         assert!(
@@ -8921,6 +8967,59 @@ mod tests {
     }
 
     #[test]
+    fn factory_drain_handler_keeps_no_diagnostic_failure_failed() {
+        let command = factory_drain_test_command();
+        let mut port = NoDiagnosticFailingDrainPort;
+
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port);
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("failed")
+        );
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .and_then(|events| {
+                    events
+                        .last()
+                        .map(ConsoleEvent::event_type)
+                        .ok_or(&ApplicationError::NoSelectedAttentionItem)
+                }),
+            Ok(&EventType::FactoryDrainFailed)
+        );
+    }
+
+    #[test]
+    fn factory_drain_handler_records_acceptance_park_as_awaiting_human()
+    -> super::ApplicationResult<()> {
+        let command = factory_drain_test_command();
+        let mut port = AcceptanceParkDrainPort;
+
+        let outcome =
+            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port)?;
+
+        assert_eq!(outcome.command_status(), "parked-awaiting-human");
+        assert_eq!(
+            outcome
+                .events()
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDrainStarted,
+                &EventType::FactoryDrainAwaitingHuman,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn factory_drain_handler_propagates_port_error() {
         let command = factory_drain_test_command();
         let mut port = ErrorDrainPort;
@@ -9548,6 +9647,10 @@ mod tests {
             "Factory drain failed"
         );
         assert_eq!(
+            EventType::FactoryDrainAwaitingHuman.label(),
+            "Factory drain awaiting human"
+        );
+        assert_eq!(
             EventType::FactoryDrainNotWired.label(),
             "Factory drain not wired"
         );
@@ -9675,6 +9778,30 @@ mod tests {
             Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
                 r#"{"summary":"factory-safety refusal","domain_error":"host-only-refused"}"#
                     .to_owned(),
+            ))
+        }
+    }
+
+    struct NoDiagnosticFailingDrainPort;
+
+    impl FactoryDrainPort for NoDiagnosticFailingDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
+            Ok(FactoryDrainPortOutcome::failed())
+        }
+    }
+
+    struct AcceptanceParkDrainPort;
+
+    impl FactoryDrainPort for AcceptanceParkDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
+            Ok(FactoryDrainPortOutcome::failed_with_diagnostic(
+                "parked in acceptance under acceptance_policy ai-then-human".to_owned(),
             ))
         }
     }
