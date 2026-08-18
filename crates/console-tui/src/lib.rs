@@ -4462,6 +4462,52 @@ mod tests {
     }
 
     #[test]
+    fn the_record_modal_renders_dispatcher_journalled_refusals() {
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            "console-pending",
+            "dispatch-journal-refusal",
+            DispatcherJournalKind::HostOnlyRefused,
+            9,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0]
+            .clone()
+            .with_diagnostic("factory-safety refusal requires host-only execution");
+        let failed = ConsoleEvent::new(
+            "evt_dispatch_refused".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::DispatcherRefusalObserved,
+            "dispatcher".to_owned(),
+            "repo:console".to_owned(),
+            9,
+        )
+        .with_payload_json(dispatcher_journal_payload_json(&entry));
+        let mut events: Vec<ConsoleEvent> = pending_events().into_iter().collect();
+        events.push(failed);
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::WorkItemDetail {
+                work_item_id: "console-pending".to_owned(),
+                scroll: 10_000,
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert!(model.action_failure_for("console-pending").is_some());
+        let rendered = render_to_text(&model, 110, 40).unwrap_or_default();
+        assert!(rendered.contains("Last action:"));
+        assert!(rendered.contains("refused"));
+        assert!(rendered.contains("host-only-refused"));
+        assert!(rendered.contains("factory-safety refusal"));
+        assert!(rendered.contains("requires host-only execution"));
+    }
+
+    #[test]
     fn render_action_invoker_lists_every_action_with_availability_markers() {
         let state = TuiInteractionState::new(0, TuiOverlay::ActionInvoker { selected_action: 0 });
         let model = build_tui_model_for_state(&pending_events(), &state);
