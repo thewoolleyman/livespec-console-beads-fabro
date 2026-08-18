@@ -146,6 +146,8 @@ pub enum EventType {
     FactoryDrainCompleted,
     /// Factory drain failed.
     FactoryDrainFailed,
+    /// Factory drain reached a human valve and parked awaiting operator action.
+    FactoryDrainAwaitingHuman,
     /// Factory drain command could not reach a wired Dispatcher.
     FactoryDrainNotWired,
     /// Operator requested a factory drain.
@@ -210,6 +212,7 @@ impl EventType {
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
             Self::FactoryDrainFailed => "factory.drain.failed",
+            Self::FactoryDrainAwaitingHuman => "factory.drain.awaiting_human",
             Self::FactoryDrainNotWired => "factory.drain.not_wired",
             Self::FactoryDrainRequested => "factory.drain_requested",
             Self::FactoryDrainStarted => "factory.drain.started",
@@ -244,6 +247,7 @@ impl EventType {
             "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
+            "factory.drain.awaiting_human" => Some(Self::FactoryDrainAwaitingHuman),
             "factory.drain.not_wired" => Some(Self::FactoryDrainNotWired),
             "factory.drain_requested" => Some(Self::FactoryDrainRequested),
             "factory.drain.started" => Some(Self::FactoryDrainStarted),
@@ -532,6 +536,10 @@ mod tests {
             "factory.drain.failed"
         );
         assert_eq!(
+            EventType::FactoryDrainAwaitingHuman.contract_name(),
+            "factory.drain.awaiting_human"
+        );
+        assert_eq!(
             EventType::FactoryDrainNotWired.contract_name(),
             "factory.drain.not_wired"
         );
@@ -619,6 +627,7 @@ mod tests {
             EventType::FabroHumanGateObserved,
             EventType::FactoryDrainCompleted,
             EventType::FactoryDrainFailed,
+            EventType::FactoryDrainAwaitingHuman,
             EventType::FactoryDrainNotWired,
             EventType::FactoryDrainRequested,
             EventType::FactoryDrainStarted,
