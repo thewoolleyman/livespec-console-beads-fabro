@@ -1342,6 +1342,81 @@ pub fn normalize_work_item_snapshot(snapshot: &WorkItemSnapshot) -> AdapterPoll 
 }
 
 #[must_use]
+/// Normalize an implementation needs-attention item into a Ready work-item
+/// snapshot.
+///
+/// The needs-attention surface is an independently-polled source. When it
+/// reports an `impl:` row for a concrete work-item, the ledger has work ready
+/// for implementation even if the last work-item lane snapshot in the local
+/// store is stale. Emit a canonical Ready observation keyed by the attention
+/// row's content so the lane board and drain policy consume the same repaired
+/// projection while repeated polls stay idempotent.
+pub fn normalize_impl_attention_ready_snapshot(
+    item: &AttentionItemSnapshot,
+) -> Option<NormalizedSourceEvent> {
+    let work_item_id = item.source_ref().work_item()?;
+    if !item.id().starts_with("impl:") {
+        return None;
+    }
+    let source_version = source_stream_seq(&[
+        "needs-attention-ready",
+        item.id(),
+        item.source_ref().repo(),
+        work_item_id,
+        item.kind(),
+        item.urgency(),
+        item.summary(),
+        item.handoff().kind(),
+        item.handoff().action_id().unwrap_or_default(),
+        item.handoff().command(),
+    ]);
+    let detail = WorkItemDetail {
+        title: Some(item.summary().to_owned()),
+        ..WorkItemDetail::default()
+    };
+    let snapshot = WorkItemSnapshot::new(
+        item.source_ref().repo(),
+        work_item_id,
+        Lane::Ready,
+        None,
+        &rank_bottom_sentinel(),
+        "ready",
+        AdmissionPolicy::Manual,
+        AcceptancePolicy::AiThenHuman,
+        source_version,
+    )
+    .ok()?
+    .with_detail(detail);
+    Some(needs_attention_work_item_snapshot_event(&snapshot))
+}
+
+fn needs_attention_work_item_snapshot_event(snapshot: &WorkItemSnapshot) -> NormalizedSourceEvent {
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!(
+                "evt:needs-attention:{}:{}:{}:ready-snapshot",
+                snapshot.repo(),
+                snapshot.work_item_id(),
+                snapshot.source_version()
+            ),
+            1,
+            "factory".to_owned(),
+            EventType::WorkItemSnapshotObserved,
+            SourceAdapterKind::NeedsAttention.source_name().to_owned(),
+            repo_stream(snapshot.repo()),
+            snapshot.source_version(),
+        ),
+        format!(
+            "needs-attention:{}:{}:{}:ready-snapshot",
+            snapshot.repo(),
+            snapshot.work_item_id(),
+            snapshot.source_version()
+        ),
+        SourcePayload::WorkItemSnapshot(snapshot.clone()),
+    )
+}
+
+#[must_use]
 /// Normalize livespec next snapshot into canonical source events.
 pub fn normalize_livespec_next_snapshot(snapshot: LivespecNextSnapshot) -> AdapterPoll {
     let source_version = snapshot.source_version();
