@@ -48,10 +48,10 @@ use console_application::{
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
         diff_needs_attention, dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
-        materialize_attention_items, not_observed_finding_payload_json,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
-        work_item_snapshot_payload_json,
+        materialize_attention_items, normalize_impl_attention_ready_snapshot,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
+        run_adapter_poll, work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -907,6 +907,15 @@ pub fn ingest_needs_attention(
     let mut inserted = 0;
     for event in &events {
         let append = event_append_from_normalized_source_event(event, observed_at);
+        if store.append_event(&append)?.status() == AppendStatus::Inserted {
+            inserted += 1;
+        }
+    }
+    for item in &next {
+        let Some(event) = normalize_impl_attention_ready_snapshot(item) else {
+            continue;
+        };
+        let append = event_append_from_normalized_source_event(&event, observed_at);
         if store.append_event(&append)?.status() == AppendStatus::Inserted {
             inserted += 1;
         }
@@ -3805,6 +3814,80 @@ mod tests {
         let second = store.list_console_events()?;
         assert_eq!(lane_work_item_ids(&second, Lane::Backlog), ["wi-live"]);
         assert!(lane_work_item_ids(&second, Lane::Ready).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn needs_attention_impl_row_refreshes_stale_lane_and_drain_policy()
+    -> Result<(), ConsoleRuntimeError> {
+        // Regression for aw6z: a non-orchestrator ledger update made the
+        // needs-attention source see ready implementation work while the lane
+        // stream still held an older Active snapshot. Ingesting the fresher
+        // `impl:` attention row must repair the lane projection before the drain
+        // policy gates a valid dispatch.
+        let mut store = SqliteEventStore::open_in_memory()?;
+        assert!(
+            append_work_item_lane(
+                &mut store,
+                "livespec-console-beads-fabro-0c5",
+                "active",
+                1,
+                "2026-08-17T12:18:00Z",
+            )
+            .is_ok()
+        );
+        let attention_item = AttentionItemSnapshot::new(
+            "impl:livespec-console-beads-fabro-0c5",
+            "implementation",
+            "high",
+            "Ready implementation work",
+            AttentionSourceRef::new(
+                "livespec-console-beads-fabro",
+                Some("livespec-console-beads-fabro-0c5"),
+                None,
+            ),
+            AttentionHandoff::new(
+                "implement",
+                None,
+                "implement:livespec-console-beads-fabro-0c5",
+            ),
+        );
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let before = store.list_console_events()?;
+        assert_eq!(
+            lane_work_item_ids(&before, Lane::Active),
+            ["livespec-console-beads-fabro-0c5"]
+        );
+        assert!(lane_work_item_ids(&before, Lane::Ready).is_empty());
+        assert_eq!(
+            super::FactoryDrainPolicy::from_events(&before).rejection_reason(),
+            Some("no ready implementation work")
+        );
+
+        let inserted =
+            ingest_needs_attention(&mut store, &needs_attention, "2026-08-17T21:28:00Z")?;
+        assert_eq!(inserted, 2);
+        let after = store.list_console_events()?;
+        assert_eq!(
+            lane_work_item_ids(&after, Lane::Ready),
+            ["livespec-console-beads-fabro-0c5"]
+        );
+        assert!(lane_work_item_ids(&after, Lane::Active).is_empty());
+        let policy = super::FactoryDrainPolicy::from_events(&after);
+        assert_eq!(policy.rejection_reason(), None);
+        let mut port = RecordingFactoryDrainPort::default();
+        let command = CommandEnvelope::new(
+            "cmd_drain".to_owned(),
+            CommandType::FactoryDrainRequested,
+            "fleet:livespec".to_owned(),
+            "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+            "operator".to_owned(),
+        );
+        let outcome = super::handle_factory_drain_command(&command, &policy, &mut port)?;
+        assert_eq!(outcome.command_status(), "completed");
+        assert_eq!(port.observed_aggregate_ids, ["fleet:livespec"]);
         Ok(())
     }
 
