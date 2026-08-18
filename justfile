@@ -196,10 +196,13 @@ check-no-workflow-edits:
 check:
     #!/usr/bin/env bash
     set -uo pipefail
+    # Canonical workspace test harness: nextest. It exercises the same Rust test
+    # inventory as `cargo test` with better scheduling/reporting, so the local
+    # aggregate does not run both harnesses serially. Coverage remains a separate
+    # instrumented pass because llvm-cov needs its own profile and profdata.
     targets=(
         check-format
         check-clippy
-        check-test
         check-nextest
         check-coverage
         check-deps
@@ -238,6 +241,9 @@ check-clippy:
 check-test:
     cargo test --workspace --all-features
 
+# Standalone fallback and legacy CI target. `just check` uses check-nextest as
+# the canonical non-coverage harness so local full-suite execution stays at two
+# passes: nextest plus llvm-cov.
 # errexit is deliberately omitted; the tool installer is guarded directly.
 check-nextest:
     #!/usr/bin/env bash
