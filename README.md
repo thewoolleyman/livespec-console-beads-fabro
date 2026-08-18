@@ -71,6 +71,10 @@ Per the specification's User Documentation Contract the settings doc is
 [`docs/detailed-usage.md`](docs/detailed-usage.md), not this README.
 Refresh the captured manifest with `just refresh-config-manifest` after the
 orchestrator's dispatcher key set changes.
+When those Rust quality tools are missing locally, `just check` installs them
+through `cargo-binstall` with its source-build strategy disabled; it first
+downloads `cargo-binstall` from its prebuilt release if needed, so the local
+ensure path does not fall back to multi-minute `cargo install` source builds.
 
 Two higher-cost probes are exposed as explicit smoke targets:
 
