@@ -6682,14 +6682,16 @@ fn menu_move_top(overlay: &TuiOverlay, forward: bool) -> TuiOverlay {
     let TuiOverlay::Menu { top, .. } = overlay else {
         return overlay.clone();
     };
+    // Wrapping is expressed as clamp-then-fall-back rather than modular
+    // arithmetic over a separately-guarded count: `% count` needs an
+    // `if count == 0` guard that no test can reach, because ACTION_REGISTRY is
+    // a non-empty const and so the tree always has at least one node.
     let count = action_registry::menu_tree().len();
-    if count == 0 {
-        return overlay.clone();
-    }
     let next = if forward {
-        (top + 1) % count
+        top.checked_add(1).filter(|next| *next < count).unwrap_or(0)
     } else {
-        (top + count - 1) % count
+        top.checked_sub(1)
+            .unwrap_or_else(|| count.saturating_sub(1))
     };
     TuiOverlay::Menu {
         top: next,
@@ -14422,6 +14424,173 @@ mod tests {
         );
         assert_eq!(super::move_action_up(&at_second), at_first);
         assert_eq!(super::move_action_up(&at_first), at_first);
+    }
+
+    #[test]
+    fn menu_selection_moves_and_clamps_to_the_open_node() {
+        // Clamped to the OPEN node's own action count, not the registry's: the
+        // bar nodes hold different numbers of actions, so a registry-wide bound
+        // would let the cursor run off the end of a short menu and select an
+        // action that node does not contain.
+        let top = 0;
+        let last = action_registry::menu_actions(top).len().saturating_sub(1);
+        // One-line assert on a bound local, per the llvm-cov pincer
+        // `action_registry.rs` documents: a wrapped failure-only message lands
+        // on a line llvm-cov counts as never executed.
+        assert!(last >= 1, "{last}");
+        let at_first = TuiOverlay::Menu { top, selected: 0 };
+        let at_second = TuiOverlay::Menu { top, selected: 1 };
+        let at_last = TuiOverlay::Menu {
+            top,
+            selected: last,
+        };
+
+        assert_eq!(super::move_action_down(&at_first, None), at_second);
+        assert_eq!(super::move_action_down(&at_last, None), at_last);
+        assert_eq!(super::move_action_up(&at_second), at_first);
+        assert_eq!(super::move_action_up(&at_first), at_first);
+    }
+
+    #[test]
+    fn the_menu_bar_walk_wraps_both_ways_and_resets_the_selection() {
+        // The selection RESETS on every bar move. Carrying an index across
+        // nodes would land the cursor on an unrelated action, and the nodes
+        // hold different numbers of actions so the index may not even exist.
+        let events: [ConsoleEvent; 0] = [];
+        let count = action_registry::menu_tree().len();
+        assert!(count >= 2, "the bar must not be a single degenerate node");
+        let opened = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::Menu {
+                top: 0,
+                selected: 3,
+            },
+        );
+
+        let forward = reduce_tui_interaction(&opened, &events, TuiInteraction::MenuNextTop);
+        let back = reduce_tui_interaction(&forward, &events, TuiInteraction::MenuPreviousTop);
+        // Back from the FIRST node wraps to the last; forward from the LAST
+        // wraps to the first. Both ends, because a walk that wraps one way only
+        // strands the operator at whichever end it does not.
+        let wrapped_back = reduce_tui_interaction(&back, &events, TuiInteraction::MenuPreviousTop);
+        let wrapped_forward =
+            reduce_tui_interaction(&wrapped_back, &events, TuiInteraction::MenuNextTop);
+
+        assert_eq!(
+            forward.overlay(),
+            &TuiOverlay::Menu {
+                top: 1,
+                selected: 0
+            }
+        );
+        assert_eq!(
+            back.overlay(),
+            &TuiOverlay::Menu {
+                top: 0,
+                selected: 0
+            }
+        );
+        assert_eq!(
+            wrapped_back.overlay(),
+            &TuiOverlay::Menu {
+                top: count - 1,
+                selected: 0
+            }
+        );
+        assert_eq!(
+            wrapped_forward.overlay(),
+            &TuiOverlay::Menu {
+                top: 0,
+                selected: 0
+            }
+        );
+    }
+
+    #[test]
+    fn opening_the_menu_starts_at_the_first_node_and_first_action() {
+        // Opening is a DIFFERENT reducer path from the bar walks, and it must
+        // start from a known place: resuming a stale (top, selected) would open
+        // the menu wherever the last session left it, on an action the operator
+        // never chose.
+        let events: [ConsoleEvent; 0] = [];
+        let closed = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let opened = reduce_tui_interaction(&closed, &events, TuiInteraction::OpenMenu);
+
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::Menu {
+                top: 0,
+                selected: 0
+            }
+        );
+    }
+
+    #[test]
+    fn every_overlay_owns_a_distinct_status_hint_while_it_holds_focus() {
+        // TUI Contract / Scenario 19: an open overlay REPLACES the pane's hints
+        // with the keys that act in it. Quantified over every variant, because
+        // an overlay that inherits another's hints tells the operator to press
+        // keys that do nothing there.
+        let overlays = [
+            TuiOverlay::None,
+            TuiOverlay::Search {
+                query: String::new(),
+            },
+            TuiOverlay::CommandPalette {
+                query: String::new(),
+            },
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+            TuiOverlay::ActionInvoker { selected_action: 0 },
+            TuiOverlay::Menu {
+                top: 0,
+                selected: 0,
+            },
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+            },
+            TuiOverlay::DriverHandoff {
+                command: String::new(),
+            },
+            TuiOverlay::WorkItemDetail {
+                work_item_id: String::new(),
+                scroll: 0,
+            },
+            TuiOverlay::Help {
+                focus: HelpFocus::Menu,
+                selected_section: 0,
+                scroll: 0,
+            },
+        ];
+
+        let hints: Vec<&'static str> = overlays.iter().map(super::overlay_footer_hint).collect();
+
+        let distinct: std::collections::BTreeSet<&&str> = hints.iter().collect();
+        assert_eq!(distinct.len(), hints.len(), "{hints:?}");
+        // The open overlays all say how to LEAVE; only the closed state does not.
+        for (overlay, hint) in overlays.iter().zip(&hints) {
+            let escapable = hint.contains("esc") || !overlay.is_open();
+            assert!(escapable, "{overlay:?}: {hint}");
+        }
+    }
+
+    #[test]
+    fn a_bar_walk_with_no_menu_open_is_inert() {
+        // The bar walks describe a move WITHIN the bar, so with no menu open
+        // they must not conjure one: only OpenMenu opens the menu, and a walk
+        // that opened it would give the bar two entry points with different
+        // starting nodes.
+        let events: [ConsoleEvent; 0] = [];
+        let closed = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let forward = reduce_tui_interaction(&closed, &events, TuiInteraction::MenuNextTop);
+        let back = reduce_tui_interaction(&closed, &events, TuiInteraction::MenuPreviousTop);
+
+        assert_eq!(forward.overlay(), &TuiOverlay::None);
+        assert_eq!(back.overlay(), &TuiOverlay::None);
     }
 
     #[test]

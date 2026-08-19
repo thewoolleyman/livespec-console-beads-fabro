@@ -557,15 +557,22 @@ pub fn menu_tree() -> Vec<MenuTop> {
         // taxonomy is shallow.
         let top_label = spec.menu_path.first().copied().unwrap_or(spec.label);
         let group_label = spec.menu_path.get(1).copied().unwrap_or(top_label);
-        if !tops.iter().any(|top| top.label == top_label) {
+        // Resolved as an INDEX rather than a second `find` after the push: a
+        // fallible re-lookup would need an unreachable fallback arm, and an
+        // unreachable arm is a line no test can ever name.
+        // The position is bound BEFORE the fallback so the closure may borrow
+        // `tops` mutably: an `Option<usize>` holds no borrow, while matching on
+        // `tops.iter().position(..)` directly would keep the immutable borrow
+        // alive across the push.
+        let existing = tops.iter().position(|top| top.label == top_label);
+        let top_index = existing.unwrap_or_else(|| {
             tops.push(MenuTop {
                 label: top_label,
                 groups: Vec::new(),
             });
-        }
-        let Some(top) = tops.iter_mut().find(|top| top.label == top_label) else {
-            continue;
-        };
+            tops.len() - 1
+        });
+        let top = &mut tops[top_index];
         if let Some(group) = top
             .groups
             .iter_mut()
