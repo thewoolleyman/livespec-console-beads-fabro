@@ -39,8 +39,9 @@
 //! genuinely emits.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use super::{HarnessResult, make_executable};
+use super::{HarnessResult, POLL_INTERVAL, make_executable};
 
 /// The dummy work-item every walkthrough step acts on.
 pub const ITEM_ID: &str = "livespec-console-beads-fabro-dummy1";
@@ -141,6 +142,45 @@ impl LifecycleFixture {
         std::fs::read_to_string(self.dir.join("lane"))
             .map(|value| value.trim().to_owned())
             .map_err(|error| format!("read lane failed: {error}"))
+    }
+
+    /// Wait until the drive log contains `action`, then return the whole log.
+    ///
+    /// # Why a bounded wait and not a bare read
+    ///
+    /// The console does NOT run drive actions on its render thread. `main.rs`
+    /// spawns a `command_worker` thread and the TUI merely sends it
+    /// `CommandMessage::HandleNow`, so a settled frame is NOT evidence that the
+    /// stub has run, let alone that it has appended to the log.
+    ///
+    /// For the lane-changing verbs that is harmless: the walk waits for the new
+    /// lane to appear on screen, and the lane can only change after the stub
+    /// ran, so the screen IS the synchronisation. `set-acceptance` is the
+    /// exception that made this necessary — it leaves the lane untouched, so
+    /// the screen is byte-identical before and after the stub runs and offers
+    /// nothing to wait on. Reading the log once therefore sampled an arbitrary
+    /// moment and passed or failed on subprocess timing.
+    ///
+    /// This does not weaken the assertion: the action must still appear, and a
+    /// log that never receives it still fails, with the log contents attached.
+    /// It only stops the test asserting a side effect before its producer has
+    /// had the chance to produce it.
+    pub fn wait_for_action(&self, action: &str, timeout: Duration) -> HarnessResult<Vec<String>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let actions = self.actions()?;
+            if actions.iter().any(|entry| entry == action) {
+                return Ok(actions);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out after {timeout:?} waiting for drive action {action:?}.\n\
+                     ---- drive log ----\n{log}\n---- end drive log ----",
+                    log = actions.join("\n")
+                ));
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 
     /// Every drive action id the console has issued, oldest first.

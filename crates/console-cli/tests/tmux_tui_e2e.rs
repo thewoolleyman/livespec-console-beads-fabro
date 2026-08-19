@@ -1047,12 +1047,21 @@ fn set_human_acceptance_leg(
         accepted_policy.contains("attention: 1"),
         "step 3: setting acceptance policy must keep the item in the inbox for {tenant}:\n{accepted_policy}"
     );
-    assert!(
-        fixture
-            .actions()?
-            .contains(&format!("set-acceptance:{ITEM_ID}:ai-then-human")),
-        "step 3: setting acceptance policy must emit the per-item override for {tenant}"
-    );
+    // Bounded wait, not a bare read: `set-acceptance` does not change the lane,
+    // so nothing on screen marks the moment the drive stub ran, and the command
+    // runs on `main.rs`'s command_worker thread rather than the render thread.
+    // See `LifecycleFixture::wait_for_action`.
+    fixture
+        .wait_for_action(
+            &format!("set-acceptance:{ITEM_ID}:ai-then-human"),
+            RENDER_TIMEOUT,
+        )
+        .map_err(|error| {
+            format!(
+                "step 3: setting acceptance policy must emit the per-item override \
+                 for {tenant}: {error}"
+            )
+        })?;
     Ok(())
 }
 
@@ -1165,7 +1174,14 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     // --- The drive actions the walk issued, in order -------------------------
     // Asserting the ACTION IDS (not just the screen) proves the documented
     // keystrokes reach the orchestrator as the documented verbs.
-    let actions = fixture.actions()?;
+    // Wait for the LAST action before comparing the whole sequence: `accept` is
+    // what turns the board `done`, and the board is what the step above waited
+    // on, so this is belt-and-braces rather than a second race — but it costs
+    // one poll and removes the assumption that the screen change and the log
+    // append are ordered.
+    let actions = fixture
+        .wait_for_action(&format!("accept:{ITEM_ID}"), RENDER_TIMEOUT)
+        .map_err(|error| format!("the walk must issue accept for {tenant}: {error}"))?;
     assert_eq!(
         actions,
         vec![
