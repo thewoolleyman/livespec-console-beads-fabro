@@ -70,7 +70,9 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
     - [`.ai/spec-check-and-ci-discipline.md`](.ai/spec-check-and-ci-discipline.md)
       — why a "spec-only" change can break Rust CI (the `console-spec-check`
       spec-ground-truth coupling), reading CI logs (incl. the empty
-      `gh run view --log-failed` gotcha), and verifying the CI'd commit before
+      `gh run view --log-failed` gotcha), telling a WEDGED self-hosted runner
+      apart from real saturation when jobs sit queued (opposite fixes; capacity
+      signals cannot see a wedge), and verifying the CI'd commit before
       trusting a local test run.
     - [`.ai/fleet-repo-naming.md`](.ai/fleet-repo-naming.md)
       — never use bare "beads-fabro" (two sibling repos end in it); the
