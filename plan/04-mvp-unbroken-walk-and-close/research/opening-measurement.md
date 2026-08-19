@@ -5,24 +5,56 @@ Written 2026-08-19 when this thread was first OPENED (epic
 Everything below is measured against master `5b5f736`, not narrated from the
 charter.
 
-## 1. The charter's milestone requires MENUS. Menus do not exist yet.
+## 1. The charter's milestone requires MENUS. Menus still do not RENDER.
+
+**Re-measured against master `80d2cc6`, superseding this section's first draft.**
+Plan 02 has been moving underneath this note, so the numbers here are stated with
+the commit they were measured at rather than left to rot.
 
 `menu_path` is declared on every `ACTION_REGISTRY` entry
-(`crates/console-application/src/action_registry.rs:119`, ten entries across
-`Work item > Hand off`, `Work item > Lifecycle`, `Work item > Policy dials`,
-`Work item > Factory safety`), and the registry test at `:532` asserts it is
-non-empty per entry.
+(`crates/console-application/src/action_registry.rs`). The count has moved twice
+and the first draft got it wrong even for its own day:
 
-**Nothing consumes it.** Grepping `menu_path` across `crates/` returns only the
-registry definitions and that one test. The only `Menu` token in
-`crates/console-tui/src/lib.rs` is `HelpFocus::Menu` — the HELP overlay's section
-focus, unrelated to action navigation. So the taxonomy field shipped (plan 01's
-requirement 1) but the surface that renders it (plan 02's mission) has not.
+| measured at | entries | top-level nodes |
+| --- | --- | --- |
+| first draft of this note (claimed) | 10 | 1 (`Work item`) |
+| master `4748daf`, actual | 11 | 1 (`Work item`) |
+| master `80d2cc6`, after PR #694 | **15** | **4** (`File`, `Help`, `View`, `Work item`) |
 
-Consequence, and this is the thread's central fact: milestone acceptance 1 —
-"one unbroken pass, single item, **menus-only**, real stack, one sitting" — is
-not merely blocked by policy, it is **unperformable**, because there is no menu
-to perform it through.
+The "ten" was simply wrong — an under-count of a taxonomy this thread's successor
+reads against — and is corrected rather than quietly dropped. Current distribution,
+from `grep -o 'menu_path: &\[[^]]*\]' | sort | uniq -c`: one `File > Quit`, one
+`Help > Keys and actions`, one `View > Command palette`, one `View > Search`, one
+`Work item > Hand off`, four `Work item > Lifecycle`, five
+`Work item > Policy dials`, one `Work item > Factory safety`.
+
+**The unpark this earns is a RE-PLAN unpark, not a walk-available one** — plan 02's
+framing, adopted here. PR #694 made every operator-reachable behaviour CARRY a menu
+path and grew the taxonomy to four top-level nodes, i.e. the structural keys now
+dispatch THROUGH the registry as chords rather than being matched ahead of it. What
+it did not do is render anything: re-measured at `80d2cc6`, `menu_path` still has
+**no consumer outside the registry and its own tests** — `grep -rn menu_path` over
+`crates/console-tui/src/` and `crates/console-cli/src/` returns nothing. The two
+`Menu` tokens in `crates/console-tui/src/lib.rs` remain what they were: 14
+occurrences of `HelpFocus::Menu` (the HELP overlay's section focus) and one inert
+`KeyCode::Menu` arm. Neither is an action menu.
+
+So milestone acceptance 1 — "one unbroken pass, single item, **menus-only**, real
+stack, one sitting" — is **still unperformable**, and for the same reason as
+before: there is no menu to perform it through. What changed is the distance to
+performable. It is now gated on exactly one thing, plan 02's rendering slice, which
+is that plan's next work and a precondition for both this milestone and plan 02's
+own inherited walk. The `blocks: -et3` edge on `-9nb` stays until that surface
+actually exists.
+
+**The gate's provenance is now checkable on master as commits, not prose.** The
+born-red work this note flagged in section 6 as unpushed and single-machine has
+landed intact, banked red first, in three steps: `26843ee` (the gate, born red
+against five unregistered keys) -> `62d6efd` (unify the two tokenizers, so
+`F`/`Media`/`Modifier` drop out as the parser defect they were) -> `80d2cc6`
+(chords, so the structural keys dispatch through the registry). Cite those commits
+rather than this paragraph. `crates/console-cli/tests/menu_completeness.rs` and
+`tests/fixtures/menu-completeness-carveout.json` are both on master.
 
 ## 2. What HAS been walked, and why it is not this milestone
 
@@ -54,6 +86,28 @@ but is not a clean one. The 2026-08-17 walk needed interventions and was not
 menus-driven; recording it here so a successor does not mistake it for this
 plan's deliverable, and equally does not re-walk it from scratch believing
 nothing has been proven.
+
+## 2a. Milestone 1 is PROTECTED, not pre-discharged — ruled by plan 02, 2026-08-19
+
+The scoping question section 2 raises — whether the menus-only walk is one walk or
+two — was put to plan 02 rather than resolved from this parked thread, and plan 02
+ruled it **two walks**:
+
+- Plan 02's own dogfood leg and plan 03's transferred leg **collapse into one
+  shared walk** performed in plan 02, because plan 03's leg is strictly contained
+  in a menus-only lifecycle SEGMENT.
+- **Plan 04's milestone 1 stays SEPARATE and is explicitly NOT discharged by it.**
+  A full unbroken lifecycle in one sitting is a strictly stronger claim than a
+  segment, and folding the two together would let a segment-sized walk be reported
+  as a full-pass proof.
+
+It is recorded as **deferral D1 on `-et3`**, naming this plan's epic `-9nb` as
+where it is reconsidered. The foreman accepted the ruling.
+
+So this thread inherits a protected milestone, not a pre-discharged one. A
+successor must not treat plan 02's shared walk as satisfying milestone acceptance
+1 — the charter's "not assembled from legs walked separately" clause is exactly
+what D1 preserves.
 
 ## 3. Dependency state, measured
 
@@ -142,6 +196,11 @@ and it is already `ready` (Dispatcher-admitted). It stays standalone; this plan
 does not adopt it.
 
 ## 6. Correction to §1, found after the first draft: plan 02 is half-built, unpushed
+
+> **SUPERSEDED 2026-08-19 by section 1's re-measurement.** This section is kept
+> as the record of how the branch was found and why it was unpushed. The work
+> itself has since landed on master as `26843ee` -> `62d6efd` -> `80d2cc6`; the
+> rescue bundle it prompted is no longer load-bearing.
 
 §1 stands as a statement about master. But plan 02 is not the blank charter its
 handoff makes it look like, and the thread that resumes this arc must not
