@@ -76,6 +76,7 @@ bd.db
 # under .beads/. metadata.json is local/regenerable, and JSONL exports are
 # server-tenant-derived artifacts rather than source of truth.
 metadata.json
+tenant-verification-cache.json
 issues.jsonl
 events.jsonl
 interactions.jsonl
