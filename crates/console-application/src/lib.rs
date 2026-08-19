@@ -50,6 +50,9 @@ pub enum LaneExecutionState {
     /// The item is in the `active` lane and has an observed dispatcher or Fabro
     /// execution signal.
     Executing,
+    /// The item is still in the `active` lane, but a terminal dispatcher
+    /// outcome has been observed before ledger reconciliation moved the row.
+    FinishedUnreconciled,
 }
 
 impl LaneExecutionState {
@@ -60,6 +63,7 @@ impl LaneExecutionState {
             Self::NotActive => "-",
             Self::Claimed => "claimed",
             Self::Executing => "executing",
+            Self::FinishedUnreconciled => "finished?",
         }
     }
 }
@@ -2773,6 +2777,15 @@ impl LaneColumn {
             .filter(|item| item.execution_state() == LaneExecutionState::Executing)
             .count()
     }
+
+    #[must_use]
+    /// Count active rows whose run has finished before ledger reconciliation.
+    pub fn finished_unreconciled_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.execution_state() == LaneExecutionState::FinishedUnreconciled)
+            .count()
+    }
 }
 
 /// The seven-lane board: every lane with its rank-ordered items.
@@ -3095,7 +3108,7 @@ fn escape_url_path_segment(text: &str) -> String {
 /// complete snapshot are skipped.
 #[must_use]
 pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
-    let executing = observed_executing_work_items(events);
+    let execution_states = observed_execution_states(events);
     let mut latest: BTreeMap<String, LaneWorkItem> = BTreeMap::new();
     for event in events {
         if *event.event_type() != EventType::WorkItemSnapshotObserved {
@@ -3104,7 +3117,7 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
         let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) else {
             continue;
         };
-        let execution_state = execution_state_for_snapshot(&snapshot, &executing);
+        let execution_state = execution_state_for_snapshot(&snapshot, &execution_states);
         latest.insert(
             snapshot.work_item_id().to_owned(),
             LaneWorkItem::from_snapshot(&snapshot, execution_state),
@@ -3129,44 +3142,56 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
     LaneBoard { columns }
 }
 
-fn observed_executing_work_items(events: &[ConsoleEvent]) -> BTreeSet<(String, String)> {
-    let mut executing = BTreeSet::new();
+fn observed_execution_states(
+    events: &[ConsoleEvent],
+) -> BTreeMap<(String, String), LaneExecutionState> {
+    let mut execution_states = BTreeMap::new();
     for event in events {
         match event.event_type() {
             EventType::DispatcherBacklogBounceObserved => {
                 if let Some(entry) = dispatcher_journal_from_payload_json(event.payload_json()) {
-                    executing.insert((entry.repo().to_owned(), entry.work_item_id().to_owned()));
+                    let state = if entry.terminal_status().is_some() {
+                        LaneExecutionState::FinishedUnreconciled
+                    } else {
+                        LaneExecutionState::Executing
+                    };
+                    execution_states.insert(
+                        (entry.repo().to_owned(), entry.work_item_id().to_owned()),
+                        state,
+                    );
                 }
             }
             EventType::FabroHumanGateObserved => {
                 if let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json()) {
-                    executing.insert((
-                        snapshot.repo().to_owned(),
-                        snapshot.work_item_id().to_owned(),
-                    ));
+                    execution_states.insert(
+                        (
+                            snapshot.repo().to_owned(),
+                            snapshot.work_item_id().to_owned(),
+                        ),
+                        LaneExecutionState::Executing,
+                    );
                 }
             }
             _other => {}
         }
     }
-    executing
+    execution_states
 }
 
 fn execution_state_for_snapshot(
     snapshot: &WorkItemSnapshot,
-    executing: &BTreeSet<(String, String)>,
+    execution_states: &BTreeMap<(String, String), LaneExecutionState>,
 ) -> LaneExecutionState {
     if snapshot.lane() != Lane::Active {
         return LaneExecutionState::NotActive;
     }
-    if executing.contains(&(
-        snapshot.repo().to_owned(),
-        snapshot.work_item_id().to_owned(),
-    )) {
-        LaneExecutionState::Executing
-    } else {
-        LaneExecutionState::Claimed
-    }
+    execution_states
+        .get(&(
+            snapshot.repo().to_owned(),
+            snapshot.work_item_id().to_owned(),
+        ))
+        .copied()
+        .unwrap_or(LaneExecutionState::Claimed)
 }
 
 #[must_use]
@@ -7291,6 +7316,20 @@ mod tests {
         .with_payload_json(payload)
     }
 
+    fn dispatcher_terminal_events(work_item_id: &str, dispatch_id: &str) -> Vec<ConsoleEvent> {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","dispatch_id":"{dispatch_id}","kind":"backlog-bounce","terminal_status":"completed","source_version":3}}"#
+        );
+        vec![
+            ConsoleEvent::fixture(
+                "evt_terminal",
+                EventType::DispatcherBacklogBounceObserved,
+                "dispatcher",
+            )
+            .with_payload_json(payload),
+        ]
+    }
+
     fn ready_work_item_ids(column: &super::LaneColumn) -> Vec<String> {
         column
             .items()
@@ -7436,6 +7475,35 @@ mod tests {
                 ("console-executing", LaneExecutionState::Executing),
             ]
         );
+    }
+
+    #[test]
+    fn active_lane_marks_terminal_signalled_items_finished_unreconciled() {
+        let mut events = vec![
+            lane_event(
+                "evt_finished",
+                "console-finished",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            dispatcher_execution_event("evt_dispatch", "console-finished", "dispatch_done"),
+        ];
+        events.extend(dispatcher_terminal_events(
+            "console-finished",
+            "dispatch_done",
+        ));
+
+        let board = project_lane_board(&events);
+        let active = &board.columns()[3];
+        let item = &active.items()[0];
+
+        assert_eq!(active.count(), 1);
+        assert_eq!(active.claimed_count(), 0);
+        assert_eq!(active.executing_count(), 0);
+        assert_eq!(item.lane(), Lane::Active);
+        assert_eq!(item.execution_state().label(), "finished?");
     }
 
     #[test]

@@ -1268,10 +1268,18 @@ fn lane_execution_summary(column: &LaneColumn) -> String {
     if column.lane() != Lane::Active || column.count() == 0 {
         return String::new();
     }
+    if column.finished_unreconciled_count() == 0 {
+        return format!(
+            "; executing {} claimed {}",
+            column.executing_count(),
+            column.claimed_count()
+        );
+    }
     format!(
-        "; executing {} claimed {}",
+        "; executing {} claimed {} finished? {}",
         column.executing_count(),
-        column.claimed_count()
+        column.claimed_count(),
+        column.finished_unreconciled_count()
     )
 }
 
@@ -4726,6 +4734,20 @@ mod tests {
         )
     }
 
+    fn dispatcher_terminal_events(work_item_id: &str, dispatch_id: &str) -> Vec<ConsoleEvent> {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","dispatch_id":"{dispatch_id}","kind":"backlog-bounce","terminal_status":"completed","source_version":3}}"#
+        );
+        vec![
+            ConsoleEvent::fixture(
+                "evt_terminal",
+                EventType::DispatcherBacklogBounceObserved,
+                "dispatcher",
+            )
+            .with_payload_json(payload),
+        ]
+    }
+
     #[test]
     fn active_lane_render_distinguishes_claimed_from_executing() -> TuiRenderResult<()> {
         let events = active_claim_execution_events().ok_or(TuiRenderError::EmptyArea)?;
@@ -4750,6 +4772,50 @@ mod tests {
 
         assert!(drilled_text.contains("console-claimed-b  rank a2  [active] claimed"));
         assert!(drilled_text.contains("console-executing  rank a3  [active] executing"));
+        Ok(())
+    }
+
+    #[test]
+    fn active_lane_render_marks_terminal_signalled_item_finished() -> TuiRenderResult<()> {
+        let mut events = vec![
+            lane_event(
+                "evt_finished",
+                "console-finished",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            dispatcher_execution_event("evt_dispatch", "console-finished", "dispatch_done")
+                .ok_or(TuiRenderError::EmptyArea)?,
+        ];
+        events.extend(dispatcher_terminal_events(
+            "console-finished",
+            "dispatch_done",
+        ));
+        let overview = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_selected_lane_index(3),
+        );
+        let overview_text = render_to_text(&overview, 120, 30)?;
+
+        assert!(overview_text.contains("active (1); executing 0 claimed 0 finished? 1"));
+        assert!(overview_text.contains("console-finished [active] finished?"));
+
+        let detail = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(Lane::Active))
+                .with_focus(FocusPane::Content)
+                .with_overlay(TuiOverlay::WorkItemDetail {
+                    work_item_id: "console-finished".to_owned(),
+                    scroll: 0,
+                }),
+        );
+        let detail_text = render_to_text(&detail, 120, 30)?;
+
+        assert!(detail_text.contains("execution_state      finished?"));
         Ok(())
     }
 

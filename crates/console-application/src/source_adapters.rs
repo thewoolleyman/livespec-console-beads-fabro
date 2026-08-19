@@ -956,6 +956,7 @@ pub struct DispatcherJournalEntry {
     dispatch_id: String,
     kind: DispatcherJournalKind,
     diagnostic: Option<String>,
+    terminal_status: Option<String>,
     source_version: u64,
 }
 
@@ -967,6 +968,8 @@ struct DispatcherJournalPayload {
     kind: DispatcherJournalKind,
     #[serde(default)]
     diagnostic: Option<String>,
+    #[serde(default)]
+    terminal_status: Option<String>,
     source_version: u64,
 }
 
@@ -988,6 +991,7 @@ impl DispatcherJournalEntry {
             dispatch_id: required_text(dispatch_id, AdapterError::EmptyDispatchId)?,
             kind,
             diagnostic: None,
+            terminal_status: None,
             source_version,
         })
     }
@@ -998,6 +1002,16 @@ impl DispatcherJournalEntry {
         let diagnostic = diagnostic.trim();
         if !diagnostic.is_empty() {
             self.diagnostic = Some(diagnostic.to_owned());
+        }
+        self
+    }
+
+    #[must_use]
+    /// Return this entry with a terminal dispatcher outcome status.
+    pub fn with_terminal_status(mut self, status: &str) -> Self {
+        let status = status.trim();
+        if !status.is_empty() {
+            self.terminal_status = Some(status.to_owned());
         }
         self
     }
@@ -1033,6 +1047,12 @@ impl DispatcherJournalEntry {
     }
 
     #[must_use]
+    /// Return the terminal dispatcher outcome status, when this entry observed one.
+    pub fn terminal_status(&self) -> Option<&str> {
+        self.terminal_status.as_deref()
+    }
+
+    #[must_use]
     /// Return the stored value.
     pub const fn source_version(&self) -> u64 {
         self.source_version
@@ -1051,6 +1071,9 @@ pub fn dispatcher_journal_payload_json(entry: &DispatcherJournalEntry) -> String
     if let Some(diagnostic) = &entry.diagnostic {
         object.insert("diagnostic".to_owned(), diagnostic.clone().into());
     }
+    if let Some(terminal_status) = &entry.terminal_status {
+        object.insert("terminal_status".to_owned(), terminal_status.clone().into());
+    }
     object.insert("source_version".to_owned(), entry.source_version.into());
     serde_json::Value::Object(object).to_string()
 }
@@ -1067,8 +1090,12 @@ pub fn dispatcher_journal_from_payload_json(payload_json: &str) -> Option<Dispat
         payload.source_version,
     )
     .ok()?;
-    Some(match payload.diagnostic {
+    let entry = match payload.diagnostic {
         Some(diagnostic) => entry.with_diagnostic(&diagnostic),
+        None => entry,
+    };
+    Some(match payload.terminal_status {
+        Some(terminal_status) => entry.with_terminal_status(&terminal_status),
         None => entry,
     })
 }
@@ -2402,6 +2429,9 @@ pub fn parse_dispatcher_observation(
     if let Some(diagnostic) = observed_entry.diagnostic {
         entry = entry.with_diagnostic(&diagnostic);
     }
+    if let Some(terminal_status) = observed_entry.terminal_status {
+        entry = entry.with_terminal_status(&terminal_status);
+    }
     let poll = normalize_dispatcher_journal_entry(entry);
     Ok(ParsedObservation::new(
         &version.to_string(),
@@ -2414,6 +2444,7 @@ struct ObservedDispatcherJournalEntry {
     dispatch_id: String,
     kind: DispatcherJournalKind,
     diagnostic: Option<String>,
+    terminal_status: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2453,16 +2484,27 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
             dispatch_id,
             kind: DispatcherJournalKind::BacklogBounce,
             diagnostic: None,
+            terminal_status: None,
         });
     };
     let stage = outcome.stage.as_deref().unwrap_or_default();
     let status = outcome.status.as_deref().unwrap_or_default();
+    if raw.stage.as_deref() == Some("outcome") && status == "completed" {
+        return Ok(ObservedDispatcherJournalEntry {
+            work_item_id,
+            dispatch_id,
+            kind: DispatcherJournalKind::BacklogBounce,
+            diagnostic: None,
+            terminal_status: Some(status.to_owned()),
+        });
+    }
     if raw.stage.as_deref() != Some("outcome") || status != "failed" {
         return Ok(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
             kind: DispatcherJournalKind::BacklogBounce,
             diagnostic: None,
+            terminal_status: None,
         });
     }
     let kind = match stage {
@@ -2475,11 +2517,13 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
         .detail
         .map(|detail| detail.trim().to_owned())
         .filter(|detail| !detail.is_empty());
+    let terminal_status = (!kind.is_refusal()).then(|| status.to_owned());
     Ok(ObservedDispatcherJournalEntry {
         work_item_id,
         dispatch_id,
         kind,
         diagnostic,
+        terminal_status,
     })
 }
 
@@ -4229,6 +4273,7 @@ mod tests {
             dispatch_id: "dispatch_1".to_owned(),
             kind: DispatcherJournalKind::BacklogBounce,
             diagnostic: None,
+            terminal_status: None,
             source_version: 8,
         }
     }
@@ -5173,6 +5218,7 @@ mod tests {
                 dispatch_id: "dispatch_9".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
                 diagnostic: None,
+                terminal_status: None,
                 source_version: version,
             })
         );
@@ -5237,17 +5283,22 @@ mod tests {
             let parsed = parsed_dispatcher(&stdout)?;
             let version =
                 super::source_stream_seq(&["console-1", &format!("dispatch-{stage}-{status}")]);
+            let expected = DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: format!("dispatch-{stage}-{status}"),
+                kind: DispatcherJournalKind::BacklogBounce,
+                diagnostic: None,
+                terminal_status: (stage == "outcome").then(|| status.to_owned()),
+                source_version: version,
+            };
             assert_eq!(
                 first_payload(&parsed),
-                &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
-                    repo: "console".to_owned(),
-                    work_item_id: "console-1".to_owned(),
-                    dispatch_id: format!("dispatch-{stage}-{status}"),
-                    kind: DispatcherJournalKind::BacklogBounce,
-                    diagnostic: None,
-                    source_version: version,
-                })
+                &SourcePayload::DispatcherJournalEntry(expected.clone())
             );
+            if stage == "outcome" {
+                assert!(dispatcher_journal_payload_json(&expected).contains("terminal_status"));
+            }
         }
         let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-unknown","stage":"outcome","outcome":{"stage":"unknown-refused","status":"failed","detail":"unknown refusal detail"}}"#;
         let parsed = parsed_dispatcher(stdout)?;
@@ -5260,6 +5311,7 @@ mod tests {
                 dispatch_id: "dispatch-unknown".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
                 diagnostic: Some("unknown refusal detail".to_owned()),
+                terminal_status: Some("failed".to_owned()),
                 source_version: version,
             })
         );
@@ -5285,6 +5337,7 @@ mod tests {
                 dispatch_id: "dispatch-high".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
                 diagnostic: None,
+                terminal_status: None,
                 source_version: version,
             })
         );
