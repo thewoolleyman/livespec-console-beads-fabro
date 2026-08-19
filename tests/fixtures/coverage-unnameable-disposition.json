@@ -12,9 +12,22 @@
     "What is dispositioned is narrower: llvm-cov's own summary sometimes counts MORE",
     "missed lines than any listing surface can name. Five surfaces were proven blind to",
     "it (--show-missing-lines, JSON segment reconstruction, zero-count segments",
-    "intersected with the diff, the --text annotated listing, and the lcov export), and",
-    "a designed compilation-count experiment failed to move it and is recorded as",
-    "INCONCLUSIVE. An operator cannot act on a miss the tooling will not name.",
+    "intersected with the diff, the --text annotated listing, and the lcov export).",
+    "",
+    "AS OF 2026-08-19 THE SIGNATURE IS EXPLAINED, and the gate now ATTRIBUTES it.",
+    "llvm-cov's file line summary is a SUM OVER INSTANTIATION GROUPS of each group's",
+    "own (NumLines, Covered) pair, and a group merges its instantiations by taking the",
+    "SCALAR MAXIMUM of each field independently (CoverageInfo::merge) rather than a",
+    "per-line union. Instantiations at (12 lines, 11 covered) and (12 lines, 10",
+    "covered) therefore report 12/11 -- one missed line -- while the union of covered",
+    "lines is all twelve. The residue corresponds to NO source line, which is exactly",
+    "why no listing surface can name one, and no test can cover it.",
+    "",
+    "dev-tooling/coverage-gate.py now reproduces that arithmetic exactly and REFUSES",
+    "to pass an unnameable miss it cannot attribute to a specific instantiation group,",
+    "printing the group and its per-instantiation stats on every passing run. That is",
+    "strictly stricter than the 2026-08-02 disposition, which capped the count without",
+    "explaining it.",
     "",
     "The allowance below caps how many such unnameable lines may pass. It does NOT",
     "hide a nameable one: the gate reports and fails on every line it can name, and",
@@ -24,15 +37,16 @@
   "max_unnameable_missed_lines": 1,
   "authorized_by": "maintainer",
   "authorized_on": "2026-08-02",
-  "reason": "llvm-cov reports one missed line in console-application that no listing surface can attribute to a source line. Filed as livespec-console-beads-fabro-3yx with the full forensic record and a falsifiable prediction; the prediction's own experiment ran and was inconclusive. Authorized narrowly by the maintainer on 2026-08-02 so plan-01 milestone 2 can land as the A/B/C split, on the explicit condition that ordinary nameable misses continue to block everything.",
+  "reason": "llvm-cov reports one missed line in console-application that no listing surface can attribute to a source line. Authorized narrowly by the maintainer on 2026-08-02 so plan-01 milestone 2 could land as the A/B/C split, on the explicit condition that ordinary nameable misses continue to block everything. On 2026-08-19 the cause was measured and identified (livespec-console-beads-fabro-3yx): llvm-cov sums per-instantiation-group scalars and merges a group's instantiations by independent scalar maxima, so a group whose instantiations cover different subsets of its lines reports a missed line that is an arithmetic residue rather than a source line. The single instance here is `overlay_footer_hint` in crates/console-application/src/lib.rs, whose two compilations cover 11 and 10 of its 12 lines respectively while their union covers all 12. The gate now reproduces that arithmetic and refuses to pass any unnameable miss it cannot attribute.",
   "tracking_item": "livespec-console-beads-fabro-3yx",
   "forensics": [
     "plan/01-action-registry-and-invoker/research/coverage-phantom-bounded-pass.md",
+    "plan/01-action-registry-and-invoker/research/coverage-phantom-explained.md",
     "plan/01-action-registry-and-invoker/research/slice-split-test-partition.md"
   ],
   "review_when": [
-    "The allowance must be REDUCED, never raised, as slices land. Raising it needs a new maintainer authorization recorded here with its own reason.",
-    "If a slice shows a NAMEABLE miss, fix it. This disposition does not apply.",
-    "If -3yx is ever explained or fixed, delete this file and restore the plain --fail-under-lines 100 invocation."
+    "The allowance must be REDUCED, never raised. Raising it needs a new maintainer authorization recorded here with its own reason.",
+    "If a run shows a NAMEABLE miss, fix it. This disposition does not apply.",
+    "The 2026-08-02 clause 'if -3yx is ever explained, delete this file and restore the plain --fail-under-lines 100 invocation' is SUPERSEDED and was factually wrong: -3yx is now explained, and the explanation is precisely why a bare --fail-under-lines 100 CANNOT be restored. llvm-cov's own summary reports 99.99% for an artifact that corresponds to no source line and that no test can cover, so the bare flag would fail a fully-covered workspace. Delete this file only if llvm-cov changes its group arithmetic to a per-line union, which the gate would then observe as 0 unnameable misses."
   ]
 }
