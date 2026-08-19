@@ -4764,6 +4764,186 @@ mod tests {
     }
 
     #[test]
+    fn every_action_is_reachable_by_menu_navigation_with_no_hotkeys() {
+        // R4, THE MILESTONE PROPERTY: hotkeys are ADDITIONAL. Disable every
+        // registry hotkey and every action must STILL be reachable, by walking
+        // the menu with navigation keys alone.
+        //
+        // Walked through the REAL key layer -- `press` -> key_event_to_terminal_
+        // input -> step_tui_runtime -- rather than by indexing the registry. That
+        // is the whole point: indexing menu_actions would prove the taxonomy
+        // contains everything, which the tree test already says, and would prove
+        // nothing about whether an operator pressing arrow keys can GET there.
+        //
+        // Right walks the bar, Down walks the actions. Rights come FIRST because
+        // a bar move resets the selection, so interleaving them would silently
+        // land somewhere else.
+        let events: [ConsoleEvent; 0] = [];
+        let tree = action_registry::menu_tree();
+        let mut reached: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
+
+        for top_index in 0..tree.len() {
+            for action_index in 0..action_registry::menu_actions(top_index).len() {
+                let mut state = TuiInteractionState::for_view(
+                    TuiView::Lanes,
+                    0,
+                    TuiOverlay::Menu {
+                        top: 0,
+                        selected: 0,
+                    },
+                );
+                for _ in 0..top_index {
+                    state = press(&state, &events, KeyCode::Right);
+                }
+                for _ in 0..action_index {
+                    state = press(&state, &events, KeyCode::Down);
+                }
+                // The walk must LAND where it aimed. Without this the set
+                // comparison below would pass on a menu whose navigation never
+                // moved at all.
+                let landed = TuiOverlay::Menu {
+                    top: top_index,
+                    selected: action_index,
+                };
+                assert_eq!(state.overlay(), &landed);
+                reached.insert(action_registry::menu_actions(top_index)[action_index].id);
+            }
+        }
+
+        let registered: std::collections::BTreeSet<&'static str> = action_registry::ACTION_REGISTRY
+            .iter()
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(reached, registered);
+    }
+
+    #[test]
+    fn the_menu_navigation_keys_are_not_themselves_registry_hotkeys() {
+        // Without this the R4 claim is CIRCULAR: "every action is reachable by
+        // navigation once hotkeys are disabled" is worthless if a navigation key
+        // is itself a hotkey, because disabling hotkeys would disable the
+        // navigation the claim depends on.
+        //
+        // KeyChord carries a `char` plus Control, so an arrow or Enter cannot be
+        // expressed as a chord by construction. Asserted against the RESOLVER
+        // rather than against that type argument, because the type could widen
+        // (F10/Alt is an open question on this plan) and silently make an arrow
+        // claimable.
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::Menu {
+                top: 0,
+                selected: 0,
+            },
+        );
+        let events: [ConsoleEvent; 0] = [];
+        let model = build_tui_model_for_state(&events, &state);
+
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Enter,
+        ] {
+            let resolved = key_event_to_terminal_input(key(code), &model);
+            let navigates = matches!(
+                resolved,
+                Some(
+                    TuiTerminalInput::Interaction(
+                        TuiInteraction::MenuNextTop
+                            | TuiInteraction::MenuPreviousTop
+                            | TuiInteraction::SelectNextAction
+                            | TuiInteraction::SelectPreviousAction
+                    ) | TuiTerminalInput::Confirm
+                )
+            );
+            assert!(navigates, "{code:?} resolved to {resolved:?}");
+        }
+    }
+
+    #[test]
+    fn menu_reachability_is_not_a_claim_that_every_action_applies() {
+        // THE LIMIT OF R4 MOST LIKELY TO BE MISREAD. REACHABLE and APPLICABLE are
+        // different properties: this slice proves every action can be NAVIGATED
+        // TO, and nothing whatever about whether invoking it does anything.
+        //
+        // It matters because the menu, unlike the ActionInvoker, does NOT mark
+        // unavailable rows and swallows Enter on them silently
+        // (render_menu_overlay consults availability nowhere; menu_confirm_step
+        // returns an unchanged state with a Render effect when staging yields
+        // None). So a green R4 must never be cited as evidence that the menu
+        // works as a primary surface. That gap is tracked as its own defect.
+        //
+        // Asserted as an INEQUALITY rather than by pinning today's behaviour, so
+        // it survives the fix: once unavailable rows are marked, the two counts
+        // are still different and this still passes.
+        let events = [lane_event(
+            "evt_menu_applies",
+            "console-menu-applies",
+            Lane::Backlog,
+            None,
+            "a0",
+            "backlog",
+        )];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
+            .with_selected_lane_item_index(0);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let reachable: usize = action_registry::menu_tree()
+            .iter()
+            .flat_map(|top| top.groups.iter())
+            .map(|group| group.actions.len())
+            .sum();
+        let applicable = action_registry::ACTION_REGISTRY
+            .iter()
+            .filter(|spec| registry_action_input(&model, spec, ' ').is_some())
+            .count();
+
+        // Everything is reachable -- that is R4.
+        assert_eq!(reachable, action_registry::ACTION_REGISTRY.len());
+        // But not everything applies to this selection, and some do.
+        assert!(applicable < reachable, "{applicable} of {reachable}");
+        assert!(applicable > 0, "{applicable}");
+    }
+
+    #[test]
+    fn the_menu_opener_is_the_single_key_that_is_not_additional() {
+        // THE HONEST LIMIT OF R4, pinned as a test so it cannot quietly vanish.
+        // Every action is menu-reachable, but the MENU is opened by a registry
+        // chord, so with literally every hotkey disabled the menu could not be
+        // opened at all and nothing would be reachable.
+        //
+        // "Hotkeys are additional" therefore means: additional for every action
+        // EXCEPT one irreducible opener. Stating it is what keeps the claim
+        // true; leaving it implicit would make R4 overclaim.
+        let openers: Vec<&'static action_registry::ActionSpec> = action_registry::ACTION_REGISTRY
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.staging,
+                    action_registry::ActionStaging::Global(action_registry::GlobalAction::OpenMenu)
+                )
+            })
+            .collect();
+
+        // Exactly one: two openers would be two entry points into the bar with
+        // different starting nodes, and the operator could not predict either.
+        let count = openers.len();
+        assert_eq!(count, 1);
+        let opener = openers[0];
+        let keyed = !opener.hotkeys.is_empty();
+        assert!(keyed, "{}", opener.id);
+        // And it carries a menu path like everything else, so it appears in the
+        // menu it opens rather than being a privileged hidden key.
+        let pathed = !opener.menu_path.is_empty();
+        assert!(pathed, "{}", opener.id);
+    }
+
+    #[test]
     fn the_invoker_reaches_a_global_action_with_nothing_selected() {
         // A global action needs NO work-item, and the invoker must reach it on
         // an EMPTY event set — no lane, no selection, no action context. The
