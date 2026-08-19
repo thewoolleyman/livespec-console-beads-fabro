@@ -69,18 +69,68 @@ nothing has been proven.
 So of plan 04's two ledger-edge blockers, 03 is satisfied in substance and 02 is
 untouched.
 
-## 4. The archive-gate bug this thread inherits
+## 4. The archive gate this thread inherits — MEASURED 2026-08-19, superseding the first draft
 
-Plan 04 "also owns" archive sequencing for the whole 01–04 arc. That sequencing
-is currently obstructed by a confirmed UPSTREAM bug, not by anything in this
-repo: `_undisposed_plan_children` / `_has_blocks_edge_to_epic` in
-livespec-orchestrator-beads-fabro's `_plan_archive_review.py` conflates a
-downstream consumer's `blocks` edge with an actual undisposed child, so plan 01
-reads as having undisposed children `-1df` and `-et3` when those are in fact its
-DOWNSTREAM consumers. A 3/3 consensus panel confirmed the direction of the bug
-after reading the source. Filed as `bd-ib-r6tjhr` against
-livespec-orchestrator-beads-fabro, manual-admission, pending maintainer triage.
-Not dispatchable from this repo.
+An earlier draft of this section asserted, as settled fact, that
+`_plan_archive_review.py` "conflates a downstream consumer's `blocks` edge with
+an actual undisposed child, so plan 01 reads as having undisposed children
+`-1df` and `-et3` when those are in fact its DOWNSTREAM consumers", citing
+`bd-ib-r6tjhr` and a 3/3 consensus panel. **That claim does not reproduce.** It
+is corrected here rather than quietly deleted, because a successor reading
+`bd-ib-r6tjhr` will otherwise go hunting for a shape that is not there.
+
+What the source actually does, read at plugin build `becb27fc76c4`.
+`_plan_child_records` builds its "child" set from exactly two inclusion paths:
+`_has_parent_child_edge_to_epic` (records carrying a `parent_child` edge whose
+`depends_on_id` is the epic — legitimate), unioned with `_blocking_ids_for_epic`,
+which finds THE EPIC'S OWN record and returns `blocking_dependency_ids(record=epic)`
+— every id the epic itself depends on through a `blocks` edge. `tracks` edges
+are not an input to either path. `is_blocks_dependency_edge` is a deliberate,
+documented type check, so the gate IS edge-type-aware.
+
+Because `blocking_dependency_ids` only ever reads the epic's own dependencies,
+this path can surface UPSTREAM BLOCKERS only. A downstream-consumer variant is
+not expressible in it. Measured live against the tenant, running the gate's own
+functions rather than inferring from the ledger:
+
+```text
+undisposed_plan_child_ids(-dvv)  -> ()                    # plan 01 reads CLEAN
+_blocking_ids_for_epic(-dvv)     -> []                    # -dvv has NO blocks edges
+undisposed_plan_child_ids(-1df)  -> ('-dvv',)             # from -1df's own blocks edge
+undisposed_plan_child_ids(-9nb)  -> ('-1df', '-et3')      # THIS plan's epic
+```
+
+So the epic that reads as having undisposed children `-1df`/`-et3` is `-9nb` —
+plan 04, this one — which is the epic that carries `blocks` edges to both. Plan
+01 reads empty. The original report appears to have attributed `-9nb`'s edges to
+`-dvv`.
+
+**Two live consequences, both still true after the correction.**
+
+First, plan 03's archive gate refused on 2026-08-19 with
+`undisposed child work-items: livespec-console-beads-fabro-dvv`, reproduced
+exactly by the run above. `-dvv` is `-1df`'s upstream blocker, reached solely
+through `-1df`'s own `blocks` edge; there is no parent-child edge and no direct
+child anywhere in that refusal. Whether an upstream blocker SHOULD count under a
+gate whose prose reads "refuse archive if any CHILD of the plan epic is not
+disposed" is a design question for the tooling owner, not a defect this repo
+should assert. It is recorded here as contested and left there.
+
+Second, and independent of that design question: **the gate does not check this
+repo's plan epics' actual work-items.** `tracks` is the relation plan epics here
+use for their children, and it is excluded. `-dvv` tracks six items, one of
+which (`-3yx`) is open at `backlog` right now, and its undisposed set is still
+empty — plan 01 could pass the mechanical leg over a live open tracked child.
+Plan 03 is not exposed to this in fact (all seven of its tracked items are
+closed), but that is circumstance, not the gate working. This may be the
+converse-gap item `livespec-dev-tooling-q3emww`; if so, the reproduction above
+is a concrete one.
+
+Disposition: `bd-ib-r6tjhr` remains filed against
+livespec-orchestrator-beads-fabro, manual-admission, pending maintainer triage,
+and the `-dvv` disposition question is escalated to the maintainer through the
+foreman. Neither is dispatchable from this repo. What this thread owns is the
+correction above, not the fix.
 
 ## 5. Out of scope, decided here
 
