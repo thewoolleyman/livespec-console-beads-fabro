@@ -44,6 +44,43 @@ fn read(relative: &str) -> std::io::Result<String> {
     std::fs::read_to_string(repo_root()?.join(relative))
 }
 
+/// The ONE tokenizer both scanners use.
+///
+/// # Why this is shared rather than written twice
+///
+/// It used to be written twice, and the two copies disagreed. The handled
+/// scanner kept `Char(...)` whole but truncated `F(_)` to `F`; the inert
+/// scanner kept the parens and produced `F(_)`. The tokens therefore never
+/// compared equal for any parenthesised arm, so every inert `F(_)`, `Media(_)`
+/// and `Modifier(_)` surfaced as an uncovered behaviour — three false
+/// positives in a gate whose entire value is that its red output is
+/// trustworthy.
+///
+/// Carving those three out in the fixture would have papered over the defect
+/// AND weakened the fixture, since they are not behaviours at all. One
+/// tokenizer is the fix: two encodings of "what a key arm is called" is the
+/// same second-encoding defect this arc exists to retire, in miniature.
+///
+/// `Char('X')` must survive whole: X is frequently a punctuation key
+/// (`/`, `:`, `?`), so an alphanumeric-only scan silently truncates the very
+/// arms this gate exists to name.
+fn key_token(raw: &str) -> String {
+    let split = raw
+        .char_indices()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .map_or(raw.len(), |(index, _)| index);
+    let (name, rest) = raw.split_at(split);
+    rest.strip_prefix('(').map_or_else(
+        || name.to_owned(),
+        |inner| {
+            inner.find(')').map_or_else(
+                || name.to_owned(),
+                |end| format!("{name}({})", &inner[..end]),
+            )
+        },
+    )
+}
+
 /// Every `KeyCode::…` arm of `key_event_to_terminal_input`, in source order.
 ///
 /// Parsed from the match rather than hand-listed: a hand-listed population is
@@ -58,21 +95,7 @@ fn handled_key_arms(source: &str) -> Vec<String> {
     let body = body.split_once("\n}\n").map_or(body, |(head, _)| head);
     let mut arms = Vec::new();
     for raw in body.split("KeyCode::").skip(1) {
-        // `Char('X')` must survive whole: X is frequently a punctuation key
-        // (`/`, `:`, `?`), so an alphanumeric-only scan silently truncates the
-        // very arms this gate exists to name.
-        let token = raw.strip_prefix("Char(").map_or_else(
-            || {
-                raw.chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect()
-            },
-            |rest| {
-                rest.find(')')
-                    .map_or_else(String::new, |end| format!("Char({})", &rest[..end]))
-            },
-        );
-        let token = token.trim().to_owned();
+        let token = key_token(raw);
         if token.is_empty() {
             continue;
         }
@@ -96,11 +119,7 @@ fn inert_arms(source: &str) -> Vec<String> {
     head[tail_start..]
         .split("KeyCode::")
         .filter_map(|raw| {
-            let token: String = raw
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '(' || *c == ')')
-                .collect();
-            let token = token.trim().to_owned();
+            let token = key_token(raw);
             (!token.is_empty()).then_some(token)
         })
         .collect()

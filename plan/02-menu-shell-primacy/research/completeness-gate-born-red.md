@@ -50,3 +50,64 @@ red by design, so pre-push (which runs the full suite) correctly refuses it, and
 3. Re-run: green. Then MUTATION-DEMONSTRATE by deleting one carve-out entry and one
    registration, exit codes unpiped, tree restored.
 4. Only then push, as one PR carrying this banked red.
+
+---
+
+## STEP 1 DONE — rebased and tokenizers unified, 2026-08-19
+
+**Rebased first, and the red survived unchanged.** The branch sat unpushed for 16 days;
+`feat/menu-completeness-gate` was rebased from its old parent `2924915` onto master
+`4748daf` and the gate re-run BEFORE any edit, `cargo test --test menu_completeness`,
+**RC=101 read unpiped** — byte-identical to the 2026-08-03 banking, all eight names. That
+re-banking matters: a red banked against a 16-day-old tree proves nothing about today's
+key handler, and the whole point of banking is that the evidence is trustworthy.
+
+**Then step 1: one shared tokenizer.** `handled_key_arms` and `inert_arms` both now call a
+single `key_token`, which takes the identifier chars and then, if the next character is
+`(`, everything through the matching `)`. Re-run, **RC=101 read unpiped**:
+
+    Operator-reachable behaviours with NO menu path and NO argued exclusion:
+      - KeyCode::Char('c')
+      - KeyCode::Char('/')
+      - KeyCode::Char(':')
+      - KeyCode::Char('?')
+      - KeyCode::Char('q')
+    Registry currently holds 11 entries.
+
+**The red now names exactly the five real keys and nothing else**, which is what step 1
+was for. `F(_)`, `Media(_)` and `Modifier(_)` drop out as inert, without a single
+carve-out entry — the fixture is unchanged and therefore un-weakened. `check-format` and
+`check-clippy` both RC=0.
+
+## STEP 2 IS NOT MECHANICAL — a schema decision surfaced, 2026-08-19
+
+Step 2 as written ("register those five with `menu_path`s") cannot be done as a data edit.
+Measured on the current tree:
+
+1. **`hotkey: Some(k)` is refused for four of the five.** `action_registry.rs:536` asserts
+   no registry hotkey is one of `/ : ? q space`. The assertion is right — the handler
+   matches those arms BEFORE the registry lookup, so a registry claim on them would be a
+   lie.
+2. **`hotkey: None` erases the Status-band hint.** `action_registry.rs:531` asserts
+   `hint_token.is_empty() == hotkey.is_none()`. So a `hotkey: None` registration for `q`
+   MUST carry an empty hint token, and the live band's `q quit` would have to come from
+   somewhere else.
+3. **`Ctrl-C` is not expressible either way.** `hotkey: Option<char>` cannot carry a
+   modifier.
+4. **Registering without rewiring creates a SECOND ENCODING.** `/`, `:`, `?` and `q` are
+   matched at `console-tui/src/lib.rs:571-574`, ahead of the
+   `KeyCode::Char(value) => action_for_hotkey(value)` arm at `:576`. A registry row for
+   `/` that the handler never consults is exactly the parallel-encoding defect this arc
+   exists to retire — the gate would go green while the defect got worse.
+
+**The root cause is one conflated field.** `hotkey` currently means BOTH "the key that
+dispatches this action" and "the key we print next to it". Those are different concerns,
+and every one of the four problems above is that conflation showing:  a display-only
+accelerator (`Ctrl-C`, `q`) has no business claiming the dispatch slot, and the assertion
+at :536 exists precisely because the dispatch meaning must stay honest.
+
+Separating them — keeping `hotkey` as DISPATCH and adding an accelerator for DISPLAY — is
+also exactly what the charter's "hotkeys displayed beside menu items as accelerators"
+requirement needs, so the split is owed by the mission regardless. This is a change to the
+registry schema, which is this plan's spine, so it goes to the maintainer rather than being
+picked in-session.
