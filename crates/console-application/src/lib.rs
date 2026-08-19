@@ -12987,7 +12987,8 @@ mod tests {
     #[test]
     fn a_dispatcher_admitted_item_neither_hints_nor_stages_the_approve_valve() {
         use action_registry::{
-            ActionContext, ActionSurface, action_for_hotkey, selected_item_hint, stage_action,
+            ActionContext, ActionSurface, KeyChord, action_for_chord, selected_item_hint,
+            stage_action,
         };
         // The approve valve fires only on an effective-manual pending-approval
         // item; a dispatcher-admitted (`auto`) one must not advertise a key
@@ -13006,7 +13007,7 @@ mod tests {
             hint,
             "up/down move | enter open | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         );
-        let approve = action_for_hotkey('p').map(|spec| stage_action(spec, &auto));
+        let approve = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &auto));
         assert_eq!(approve, Some(None));
 
         let drilled_auto = ActionContext {
@@ -13024,7 +13025,7 @@ mod tests {
             ..auto
         };
         assert!(selected_item_hint(&manual).contains("p approve"));
-        let staged = action_for_hotkey('p').map(|spec| stage_action(spec, &manual));
+        let staged = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &manual));
         assert_eq!(
             staged,
             Some(Some(action_registry::StagedAction::Valve(

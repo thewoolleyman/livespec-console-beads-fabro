@@ -465,13 +465,18 @@ fn invoker_confirm_step(
 ) -> TuiRuntimeStep {
     let staged = action_registry::ACTION_REGISTRY
         .get(selected_action)
-        .zip(model.selected_action_context())
-        .and_then(|(spec, ctx)| action_registry::stage_action(spec, &ctx));
+        .and_then(|spec| staged_without_selection(model, spec));
     let interaction = match staged {
         Some(action_registry::StagedAction::Valve(valve)) => {
             TuiInteraction::OpenValveConfirm(valve)
         }
         Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
+        // Quit is the one global that is not an interaction: it ends the
+        // session rather than transforming its state.
+        Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
+            Some(global) => global,
+            None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
+        },
         None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Render),
     };
     TuiRuntimeStep::new(
@@ -553,6 +558,50 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
     }
 }
 
+/// The interaction a global registry action reduces to, or `None` for the one
+/// global that is not an interaction at all: quitting ends the session rather
+/// than transforming its state.
+///
+/// Split out from [`global_input`] so the invoker roster can branch on
+/// "interaction or quit" without carrying a `TuiTerminalInput::Confirm` arm
+/// that nothing can reach.
+const fn global_interaction(action: action_registry::GlobalAction) -> Option<TuiInteraction> {
+    match action {
+        action_registry::GlobalAction::OpenSearch => Some(TuiInteraction::OpenSearch),
+        action_registry::GlobalAction::OpenCommandPalette => {
+            Some(TuiInteraction::OpenCommandPalette)
+        }
+        action_registry::GlobalAction::OpenHelp => Some(TuiInteraction::OpenHelp),
+        action_registry::GlobalAction::Quit => None,
+    }
+}
+
+/// The terminal input a global registry action produces.
+fn global_input(action: action_registry::GlobalAction) -> TuiTerminalInput {
+    global_interaction(action).map_or(TuiTerminalInput::Quit, TuiTerminalInput::Interaction)
+}
+
+/// A Control-held chord, resolved THROUGH the registry.
+///
+/// Honoured regardless of which overlay is open: `Ctrl-C` must quit from
+/// anywhere, including mid-typing in the search field, which is why it is
+/// checked before the overlay-sensitive match rather than inside it.
+///
+/// Deliberately defined ABOVE `key_event_to_terminal_input`: the
+/// menu-completeness gate parses that function's body for its behaviour
+/// population, and a helper's `KeyCode::` mention inside that span would be
+/// double-counted as an arm.
+fn control_chord_input(event: KeyEvent) -> Option<TuiTerminalInput> {
+    if !event.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    let KeyCode::Char(value) = event.code else {
+        return None;
+    };
+    let action = action_registry::global_action_for_chord(action_registry::KeyChord::ctrl(value))?;
+    Some(global_input(action))
+}
+
 #[must_use]
 /// Return the key event to terminal input value.
 pub fn key_event_to_terminal_input(
@@ -560,8 +609,8 @@ pub fn key_event_to_terminal_input(
     model: &TuiScreenModel,
 ) -> Option<TuiTerminalInput> {
     let overlay = model.overlay();
-    if event.modifiers.contains(KeyModifiers::CONTROL) && matches!(event.code, KeyCode::Char('c')) {
-        return Some(TuiTerminalInput::Quit);
+    if let Some(input) = control_chord_input(event) {
+        return Some(input);
     }
     match event.code {
         KeyCode::Up => up_interaction(model).map(TuiTerminalInput::Interaction),
@@ -569,15 +618,19 @@ pub fn key_event_to_terminal_input(
         KeyCode::Esc => Some(TuiTerminalInput::Interaction(esc_interaction(model))),
         KeyCode::Enter => enter_input(model),
         KeyCode::Backspace => Some(TuiTerminalInput::Interaction(TuiInteraction::Backspace)),
-        KeyCode::Char('/') => slash_input(overlay),
-        KeyCode::Char(':') => colon_input(overlay),
-        KeyCode::Char('?') => question_input(overlay),
-        KeyCode::Char('q') => q_input(overlay),
+        // `/`, `:`, `?` and `q` USED to be matched here, ahead of the registry
+        // lookup below. That shadowing was a second encoding of the
+        // key-to-action mapping and made those four unreachable from a
+        // generated menu; they are registry entries now, so the generic arm
+        // resolves them. Space stays: it is argued out in the gate's carve-out
+        // fixture as pure focus movement, so it has no registry entry to find.
         KeyCode::Char(' ') => space_input(model, overlay),
-        KeyCode::Char(value) => action_registry::action_for_hotkey(value).map_or_else(
-            || text_input(value, overlay),
-            |spec| registry_action_input(model, spec, value),
-        ),
+        KeyCode::Char(value) => {
+            action_registry::action_for_chord(action_registry::KeyChord::plain(value)).map_or_else(
+                || text_input(value, overlay),
+                |spec| registry_action_input(model, spec, value),
+            )
+        }
         KeyCode::Left => left_input(model),
         KeyCode::Right => right_input(model),
         KeyCode::Tab => tab_input(model, true),
@@ -820,43 +873,6 @@ const fn tab_input(model: &TuiScreenModel, forward: bool) -> Option<TuiTerminalI
     }))
 }
 
-const fn slash_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
-    if matches!(overlay, TuiOverlay::None) {
-        return Some(TuiTerminalInput::Interaction(TuiInteraction::OpenSearch));
-    }
-    text_input('/', overlay)
-}
-
-const fn colon_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
-    if matches!(overlay, TuiOverlay::None) {
-        return Some(TuiTerminalInput::Interaction(
-            TuiInteraction::OpenCommandPalette,
-        ));
-    }
-    text_input(':', overlay)
-}
-
-/// `?`: with no overlay open, open the modal Help overlay. While Help is open
-/// `?` is INERT -- the modal closes ONLY on `Esc`, so `?` no longer toggles it
-/// shut (per the TUI Contract: no other key, command, valve, or view-switch
-/// dismisses it). Behind an open text overlay it is a literal character.
-const fn question_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
-    match overlay {
-        TuiOverlay::None => Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp)),
-        // Esc-only close: `?` while Help is open is inert (does NOT dismiss it).
-        // The item and handoff modals likewise close on Esc, so `?` is inert
-        // over them too.
-        TuiOverlay::Help { .. }
-        | TuiOverlay::WorkItemDetail { .. }
-        | TuiOverlay::ActionInvoker { .. }
-        | TuiOverlay::DriverHandoff { .. } => None,
-        TuiOverlay::Search { .. }
-        | TuiOverlay::CommandPalette { .. }
-        | TuiOverlay::CommandModal { .. }
-        | TuiOverlay::ValveConfirm { .. } => text_input('?', overlay),
-    }
-}
-
 /// `PageUp` / `PageDown`: while the modal Help overlay or the work-item detail
 /// modal is open they page that surface's text up/down; everywhere else they are
 /// inert. Both surfaces scroll UP and DOWN only, so no horizontal counterpart
@@ -881,13 +897,6 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => None,
     }
-}
-
-const fn q_input(overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
-    if matches!(overlay, TuiOverlay::None) {
-        return Some(TuiTerminalInput::Quit);
-    }
-    text_input('q', overlay)
 }
 
 /// Space: with no overlay open, edit the selected Settings row (the `Enter`
@@ -918,15 +927,35 @@ fn registry_action_input(
     if !matches!(overlay, TuiOverlay::None) {
         return text_input(character, overlay);
     }
-    let ctx = model.selected_action_context()?;
-    match action_registry::stage_action(spec, &ctx)? {
+    // Global actions are answered BEFORE a selection is demanded: search, the
+    // palette, help and quit are reachable with nothing selected, which is
+    // exactly why they lived outside the registry before chords existed.
+    match staged_without_selection(model, spec)? {
         action_registry::StagedAction::Valve(valve) => Some(TuiTerminalInput::Interaction(
             TuiInteraction::OpenValveConfirm(valve),
         )),
         action_registry::StagedAction::DriverHandoff => Some(TuiTerminalInput::Interaction(
             TuiInteraction::OpenDriverHandoff,
         )),
+        action_registry::StagedAction::Global(action) => Some(global_input(action)),
     }
+}
+
+/// Stage `spec`, demanding a selection only where the action needs one.
+///
+/// A global action needs NO selection: requiring one would make search, the
+/// palette, help and quit inert on an empty lane — and inert in the invoker
+/// roster, the one surface whose entire purpose is that every registered
+/// action is reachable.
+fn staged_without_selection(
+    model: &TuiScreenModel,
+    spec: &'static action_registry::ActionSpec,
+) -> Option<action_registry::StagedAction> {
+    if let action_registry::ActionStaging::Global(action) = spec.staging {
+        return Some(action_registry::StagedAction::Global(action));
+    }
+    let ctx = model.selected_action_context()?;
+    action_registry::stage_action(spec, &ctx)
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -1895,9 +1924,7 @@ fn registry_help_lines(surface: action_registry::ActionSurface) -> Vec<Line<'sta
                     )
                 },
             );
-            let key_display = spec
-                .hotkey
-                .map_or_else(|| "menu".to_owned(), |key| key.to_string());
+            let key_display = action_registry::accelerator_display(spec);
             Line::from(format!("{key_display:<13}{text}"))
         })
         .collect()
@@ -2002,9 +2029,7 @@ fn render_action_invoker(
         .enumerate()
         .map(|(index, spec)| {
             let marker = if index == selected_action { ">" } else { " " };
-            let key_display = spec
-                .hotkey
-                .map_or_else(|| "menu".to_owned(), |key| key.to_string());
+            let key_display = action_registry::accelerator_display(spec);
             let availability = match ctx.as_ref() {
                 Some(ctx) if (spec.availability)(ctx) => "",
                 _unavailable => "  (unavailable here)",
@@ -2460,9 +2485,10 @@ mod tests {
         DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
         TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
         TuiTerminalInput, action_outcome_effect, attention_item_line, buffer_to_text, detail_lines,
-        effect_triggers_source_poll, help_lines_for_view, key_event_to_terminal_input,
-        render_command_modal, render_detail, render_model, render_summary_detail, render_to_text,
-        render_work_item_detail, settings_detail_lines, step_tui_runtime,
+        effect_triggers_source_poll, global_input, help_lines_for_view,
+        key_event_to_terminal_input, render_command_modal, render_detail, render_model,
+        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
+        step_tui_runtime,
     };
 
     #[test]
@@ -4197,6 +4223,17 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
+    /// The key event for a registered chord, Control included when it carries
+    /// one. Chords are why `ctrl-c` is expressible at all.
+    fn chord_event(chord: action_registry::KeyChord) -> KeyEvent {
+        let modifiers = if chord.ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::empty()
+        };
+        KeyEvent::new(KeyCode::Char(chord.key), modifiers)
+    }
+
     fn persisted_command(effect: &TuiRuntimeEffect) -> Option<&console_domain::CommandEnvelope> {
         match effect {
             TuiRuntimeEffect::PersistCommand(command)
@@ -4273,21 +4310,20 @@ mod tests {
             let model = build_tui_model_for_state(&events, &state);
             let ctx = model.selected_action_context();
             assert!(ctx.is_some(), "{label}: no action context");
-            for (ctx, spec, hotkey) in ctx.iter().flat_map(|ctx| {
+            for (ctx, spec, chord) in ctx.iter().flat_map(|ctx| {
                 action_registry::ACTION_REGISTRY
                     .iter()
-                    .filter_map(move |spec| spec.hotkey.map(|hotkey| (ctx, spec, hotkey)))
+                    .flat_map(move |spec| spec.hotkeys.iter().map(move |chord| (ctx, spec, *chord)))
             }) {
-                let input = key_event_to_terminal_input(key(KeyCode::Char(hotkey)), &model);
-                let staged = action_registry::stage_action(spec, ctx).map(|staged| {
-                    TuiTerminalInput::Interaction(match staged {
-                        action_registry::StagedAction::Valve(valve) => {
-                            TuiInteraction::OpenValveConfirm(valve)
-                        }
-                        action_registry::StagedAction::DriverHandoff => {
-                            TuiInteraction::OpenDriverHandoff
-                        }
-                    })
+                let input = key_event_to_terminal_input(chord_event(chord), &model);
+                let staged = action_registry::stage_action(spec, ctx).map(|staged| match staged {
+                    action_registry::StagedAction::Valve(valve) => {
+                        TuiTerminalInput::Interaction(TuiInteraction::OpenValveConfirm(valve))
+                    }
+                    action_registry::StagedAction::DriverHandoff => {
+                        TuiTerminalInput::Interaction(TuiInteraction::OpenDriverHandoff)
+                    }
+                    action_registry::StagedAction::Global(action) => global_input(action),
                 });
                 assert_eq!(input, staged, "{label}/{}", spec.id);
             }
@@ -4397,6 +4433,72 @@ mod tests {
                 valve: PendingValve::SetWorkflowScopeOverride
             }
         );
+    }
+
+    fn invoker_state_for(action_id: &str) -> TuiInteractionState {
+        let index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == action_id)
+            .unwrap_or_default();
+        TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ActionInvoker {
+                selected_action: index,
+            },
+        )
+    }
+
+    #[test]
+    fn the_invoker_reaches_a_global_action_with_nothing_selected() {
+        // A global action needs NO work-item, and the invoker must reach it on
+        // an EMPTY event set — no lane, no selection, no action context. The
+        // roster's whole claim is that every registered action is reachable;
+        // demanding a selection would quietly except the four globals from it.
+        let staged = step_tui_runtime(
+            &invoker_state_for("open-search"),
+            &[],
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        // Bound as a local so the assert fits on ONE line: a failure-only
+        // message on its own line is a line llvm-cov counts as never executed,
+        // the same pincer `action_registry.rs` documents.
+        let overlay = staged.state().overlay();
+        assert!(matches!(overlay, TuiOverlay::Search { .. }), "{overlay:?}");
+    }
+
+    #[test]
+    fn the_invoker_quits_from_the_quit_row() {
+        // Quit is the ONE global that is not an interaction: it ends the
+        // session rather than transforming its state, so the invoker returns
+        // the Quit EFFECT rather than an overlay transition.
+        let staged = step_tui_runtime(
+            &invoker_state_for("quit"),
+            &[],
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+        assert_eq!(staged.effect(), &TuiRuntimeEffect::Quit);
+    }
+
+    #[test]
+    fn a_control_chord_on_a_non_character_key_is_inert() {
+        // `control_chord_input` resolves Control-held CHARACTER chords through
+        // the registry. Ctrl with a non-character key reaches no chord at all
+        // and must fall through to the normal arm rather than being swallowed.
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&[], &state);
+        let control_up = KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL);
+        // ctrl-Up must behave exactly as Up: no chord is bound to it. Stated
+        // here rather than as an assert message, which llvm-cov counts as an
+        // unexecuted line.
+        let plain_up = key_event_to_terminal_input(key(KeyCode::Up), &model);
+        assert_eq!(key_event_to_terminal_input(control_up, &model), plain_up);
+        // And a Control chord that IS a character but is bound to no action is
+        // likewise inert rather than firing the plain-key action.
+        let control_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(key_event_to_terminal_input(control_z, &model), None);
     }
 
     #[test]

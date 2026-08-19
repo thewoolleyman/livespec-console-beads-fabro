@@ -96,6 +96,71 @@ pub enum ActionStaging {
     Valve(fn(&ActionContext) -> Option<PendingValve>),
     /// Open the driver-handoff overlay for the selected item.
     DriverHandoff,
+    /// Perform a global action, which needs no selection.
+    Global(GlobalAction),
+}
+
+/// A key chord: the key itself plus whether Control is held.
+///
+/// # Why a chord and not a bare `char`
+///
+/// `hotkey: Option<char>` conflated two things and could express neither
+/// cleanly. It could not carry `Ctrl-C` at all, and it forced the structural
+/// keys (`/`, `:`, `?`, `q`) to stay outside the registry — matched ahead of
+/// the registry lookup in the key handler, which is a SECOND ENCODING of the
+/// key-to-action mapping and the exact defect the action registry exists to
+/// retire.
+///
+/// The chord also removes a collision that was previously only avoided by
+/// keeping `Ctrl-C` out: `c` accepts a work-item and `Ctrl-C` quits. As bare
+/// chars those are the same key; as chords they are distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyChord {
+    /// Whether Control is held.
+    pub ctrl: bool,
+    /// The key itself.
+    pub key: char,
+}
+
+impl KeyChord {
+    /// The chord for `key` pressed on its own.
+    #[must_use]
+    pub const fn plain(key: char) -> Self {
+        Self { ctrl: false, key }
+    }
+
+    /// The chord for `key` pressed with Control held.
+    #[must_use]
+    pub const fn ctrl(key: char) -> Self {
+        Self { ctrl: true, key }
+    }
+}
+
+impl core::fmt::Display for KeyChord {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.ctrl {
+            write!(formatter, "ctrl-{}", self.key)
+        } else {
+            write!(formatter, "{}", self.key)
+        }
+    }
+}
+
+/// A global action: one that needs no work-item selection.
+///
+/// The per-item verbs stage a valve or the driver handoff against a selection.
+/// These four are reachable with nothing selected, which is why they were
+/// handled outside the registry before chords existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalAction {
+    /// Open the search overlay.
+    OpenSearch,
+    /// Open the command palette.
+    OpenCommandPalette,
+    /// Open the modal Help overlay.
+    OpenHelp,
+    /// Quit the console.
+    Quit,
 }
 
 /// One registered operator action.
@@ -108,11 +173,15 @@ pub struct ActionSpec {
     pub label: &'static str,
     /// The exact Status-line hint fragment for this action.
     pub hint_token: &'static str,
-    /// The hotkey that invokes this action — a power-user convenience only,
-    /// never the sole route once menus exist. `None` is a menu/invoker-only
+    /// The chords that invoke this action — a power-user convenience only,
+    /// never the sole route once menus exist. EMPTY is a menu/invoker-only
     /// action: reachable without any key, the living proof that hotkeys are
     /// additional.
-    pub hotkey: Option<char>,
+    ///
+    /// A SLICE rather than one chord because an action can honestly have more
+    /// than one accelerator: `q` and `Ctrl-C` are both quit. Modelling that as
+    /// two registry entries would render quit twice in every generated menu.
+    pub hotkeys: &'static [KeyChord],
     /// The menu path this action lives under. Menus are GENERATED from this
     /// taxonomy; it is carried from day one so the menu shell inherits no
     /// schema migration.
@@ -147,7 +216,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "driver-handoff",
         label: "Driver handoff",
         hint_token: "h handoff",
-        hotkey: Some('h'),
+        hotkeys: &[KeyChord::plain('h')],
         menu_path: &["Work item", "Hand off"],
         parameter: None,
         availability: |ctx| {
@@ -159,7 +228,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "move",
         label: "Move status",
         hint_token: "s move-status",
-        hotkey: Some('s'),
+        hotkeys: &[KeyChord::plain('s')],
         menu_path: &["Work item", "Lifecycle"],
         parameter: Some(ActionParameter {
             name: "target status",
@@ -190,7 +259,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "approve",
         label: "Approve work-item",
         hint_token: "p approve",
-        hotkey: Some('p'),
+        hotkeys: &[KeyChord::plain('p')],
         menu_path: &["Work item", "Lifecycle"],
         parameter: None,
         // Lane AND effective admission policy: the approve valve fires only on
@@ -207,7 +276,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "accept",
         label: "Accept work-item",
         hint_token: "c accept",
-        hotkey: Some('c'),
+        hotkeys: &[KeyChord::plain('c')],
         menu_path: &["Work item", "Lifecycle"],
         parameter: None,
         availability: |ctx| per_item_verb_is_state_valid(ctx.lane, PendingValve::Accept),
@@ -217,7 +286,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "reject",
         label: "Reject work-item",
         hint_token: "r reject",
-        hotkey: Some('r'),
+        hotkeys: &[KeyChord::plain('r')],
         menu_path: &["Work item", "Lifecycle"],
         parameter: Some(ActionParameter {
             name: "mode",
@@ -232,7 +301,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-admission",
         label: "Set admission",
         hint_token: "m set-admission",
-        hotkey: Some('m'),
+        hotkeys: &[KeyChord::plain('m')],
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "policy",
@@ -252,7 +321,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-merge-on-review-cap",
         label: "Set override",
         hint_token: "g merge cap",
-        hotkey: Some('g'),
+        hotkeys: &[KeyChord::plain('g')],
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "merge_on_review_cap",
@@ -276,7 +345,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-review-fix-cap",
         label: "Set override",
         hint_token: "f fix cap",
-        hotkey: Some('f'),
+        hotkeys: &[KeyChord::plain('f')],
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "review_fix_cap",
@@ -298,7 +367,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-acceptance",
         label: "Set acceptance",
         hint_token: "n set-acceptance",
-        hotkey: Some('n'),
+        hotkeys: &[KeyChord::plain('n')],
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "policy",
@@ -318,7 +387,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-acceptance-rework-cap",
         label: "Set override",
         hint_token: "k rework cap",
-        hotkey: Some('k'),
+        hotkeys: &[KeyChord::plain('k')],
         menu_path: &["Work item", "Policy dials"],
         parameter: Some(ActionParameter {
             name: "acceptance_rework_cap",
@@ -347,7 +416,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         id: "set-workflow-scope-override",
         label: "Set workflow scope override",
         hint_token: "",
-        hotkey: None,
+        hotkeys: &[],
         menu_path: &["Work item", "Factory safety"],
         parameter: Some(ActionParameter {
             name: "scope",
@@ -363,14 +432,99 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         availability: |ctx| ctx.lane == Lane::Ready && ctx.awaits_scope_override,
         staging: ActionStaging::Valve(|_ctx| Some(PendingValve::SetWorkflowScopeOverride)),
     },
+    // THE GLOBAL ACTIONS. Registered 2026-08-19 on the maintainer's chord
+    // ruling, closing the menu-completeness gate's five red names.
+    //
+    // These were handled outside the registry until chords existed, matched
+    // ahead of the registry lookup in `key_event_to_terminal_input`. That was a
+    // SECOND ENCODING of the key-to-action mapping, and it made the four keys
+    // unreachable from a generated menu — the plain contradiction of "menus are
+    // the PRIMARY navigation mechanism".
+    //
+    // They introduce the FIRST top-level menu nodes beyond `Work item`, so the
+    // menu bar becomes real rather than a single-node degenerate case.
+    ActionSpec {
+        id: "open-search",
+        label: "Search",
+        hint_token: "/ search",
+        hotkeys: &[KeyChord::plain('/')],
+        menu_path: &["View", "Search"],
+        parameter: None,
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::OpenSearch),
+    },
+    ActionSpec {
+        id: "open-command-palette",
+        label: "Command palette",
+        hint_token: ": palette",
+        hotkeys: &[KeyChord::plain(':')],
+        menu_path: &["View", "Command palette"],
+        parameter: None,
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::OpenCommandPalette),
+    },
+    ActionSpec {
+        id: "open-help",
+        label: "Help",
+        hint_token: "? help",
+        hotkeys: &[KeyChord::plain('?')],
+        menu_path: &["Help", "Keys and actions"],
+        parameter: None,
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::OpenHelp),
+    },
+    // TWO chords, and this is the case that forced `hotkeys` to be a slice:
+    // `q` and `Ctrl-C` are the same action. `Ctrl-C` is also why the chord type
+    // exists at all — `Option<char>` could not express it.
+    ActionSpec {
+        id: "quit",
+        label: "Quit",
+        hint_token: "q quit",
+        hotkeys: &[KeyChord::plain('q'), KeyChord::ctrl('c')],
+        menu_path: &["File", "Quit"],
+        parameter: None,
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::Quit),
+    },
 ];
 
-/// The registered action bound to `hotkey`, if any.
+/// The registered action bound to `chord`, if any.
 #[must_use]
-pub fn action_for_hotkey(hotkey: char) -> Option<&'static ActionSpec> {
+pub fn action_for_chord(chord: KeyChord) -> Option<&'static ActionSpec> {
     ACTION_REGISTRY
         .iter()
-        .find(|spec| spec.hotkey == Some(hotkey))
+        .find(|spec| spec.hotkeys.contains(&chord))
+}
+
+/// The GLOBAL action bound to `chord`, if the chord is bound to one at all.
+///
+/// Answering the global question here rather than at the call site keeps the
+/// caller free of a `Valve | DriverHandoff => None` arm that nothing can reach:
+/// no per-item verb carries a Control chord, so such an arm would be
+/// structurally dead code in the TUI. Here it is reachable and tested — a plain
+/// `p` resolves to the approve VALVE, which is not a global.
+#[must_use]
+pub fn global_action_for_chord(chord: KeyChord) -> Option<GlobalAction> {
+    match action_for_chord(chord)?.staging {
+        ActionStaging::Global(action) => Some(action),
+        ActionStaging::Valve(_) | ActionStaging::DriverHandoff => None,
+    }
+}
+
+/// How this action's accelerators render beside its label.
+///
+/// `menu` marks an action with no accelerator at all — reachable only through
+/// a menu or the invoker, which is the point of allowing an empty chord set.
+#[must_use]
+pub fn accelerator_display(spec: &ActionSpec) -> String {
+    if spec.hotkeys.is_empty() {
+        return "menu".to_owned();
+    }
+    spec.hotkeys
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// The registered action with the given stable id, if any.
@@ -388,7 +542,16 @@ pub fn available_hint_tokens(ctx: &ActionContext) -> Vec<&'static str> {
         .iter()
         // Hint tokens are KEY hints: a menu/invoker-only action has no key to
         // hint, so it renders in menus and the invoker roster instead.
-        .filter(|spec| spec.hotkey.is_some() && (spec.availability)(ctx))
+        //
+        // Globals are excluded because this composes the PER-ITEM hint row.
+        // Their tokens are carried on their specs and the Status band still
+        // hard-codes `? help | q quit` alongside; re-pointing the band at these
+        // tokens is the Status-band slice's job, not this one's.
+        .filter(|spec| {
+            !matches!(spec.staging, ActionStaging::Global(_))
+                && !spec.hotkeys.is_empty()
+                && (spec.availability)(ctx)
+        })
         .map(|spec| spec.hint_token)
         .collect()
 }
@@ -430,6 +593,7 @@ pub fn stage_action(spec: &ActionSpec, ctx: &ActionContext) -> Option<StagedActi
     match spec.staging {
         ActionStaging::Valve(stager) => stager(ctx).map(StagedAction::Valve),
         ActionStaging::DriverHandoff => Some(StagedAction::DriverHandoff),
+        ActionStaging::Global(action) => Some(StagedAction::Global(action)),
     }
 }
 
@@ -501,13 +665,15 @@ pub enum StagedAction {
     Valve(PendingValve),
     /// Open the driver-handoff overlay.
     DriverHandoff,
+    /// Perform a global action, which needed no selection to stage.
+    Global(GlobalAction),
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTION_REGISTRY, ActionContext, ActionSurface, action_for_hotkey, action_for_id,
-        action_offered_on_surface,
+        ACTION_REGISTRY, ActionContext, ActionSurface, GlobalAction, KeyChord, action_for_chord,
+        action_for_id, action_offered_on_surface, global_action_for_chord,
     };
     use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 
@@ -527,13 +693,19 @@ mod tests {
             // fn_call_width would otherwise break the args across lines and put
             // the failure-only `spec.id` message on a line llvm-cov counts as
             // never executed. Same pincer PR #573 restructured out.
-            let keyed = spec.hotkey.is_some();
+            let keyed = !spec.hotkeys.is_empty();
             assert_eq!(spec.hint_token.is_empty(), !keyed, "{}", spec.id);
             assert!(!spec.menu_path.is_empty(), "{}", spec.id);
             assert!(ids.insert(spec.id), "{}", spec.id);
-            if let Some(key) = spec.hotkey {
-                assert!(hotkeys.insert(key), "{}", key);
-                assert!(!['/', ':', '?', 'q', ' '].contains(&key), "{}", spec.id);
+            for chord in spec.hotkeys {
+                assert!(hotkeys.insert(*chord), "{chord}");
+                // Space is still refused as a registry chord: the key handler
+                // matches it ahead of the registry lookup, so a registry claim
+                // on it would be a lie. `/ : ? q` USED to be refused for the
+                // same reason and are now genuinely registry-dispatched, so
+                // they are no longer forbidden — the handler arms that shadowed
+                // them are gone.
+                assert!(chord.key != ' ', "{}", spec.id);
             }
         }
     }
@@ -541,16 +713,47 @@ mod tests {
     #[test]
     fn hotkey_and_id_lookups_round_trip_every_entry() {
         for spec in ACTION_REGISTRY {
-            if let Some(key) = spec.hotkey {
-                assert_eq!(action_for_hotkey(key).map(|found| found.id), Some(spec.id));
+            for chord in spec.hotkeys {
+                assert_eq!(
+                    action_for_chord(*chord).map(|found| found.id),
+                    Some(spec.id)
+                );
             }
             assert_eq!(
-                action_for_id(spec.id).map(|found| found.hotkey),
-                Some(spec.hotkey)
+                action_for_id(spec.id).map(|found| found.hotkeys),
+                Some(spec.hotkeys)
             );
         }
-        assert!(action_for_hotkey('z').is_none());
+        assert!(action_for_chord(KeyChord::plain('z')).is_none());
+        // The chord's whole point: `c` accepts, `ctrl-c` quits. As bare chars
+        // these were the same key, which is why `ctrl-c` could not be
+        // registered at all.
+        assert_eq!(
+            action_for_chord(KeyChord::plain('c')).map(|found| found.id),
+            Some("accept")
+        );
+        assert_eq!(
+            action_for_chord(KeyChord::ctrl('c')).map(|found| found.id),
+            Some("quit")
+        );
         assert!(action_for_id("no-such-action").is_none());
+    }
+
+    #[test]
+    fn only_global_staged_actions_answer_the_global_chord_lookup() {
+        assert_eq!(
+            global_action_for_chord(KeyChord::ctrl('c')),
+            Some(GlobalAction::Quit)
+        );
+        assert_eq!(
+            global_action_for_chord(KeyChord::plain('?')),
+            Some(GlobalAction::OpenHelp)
+        );
+        // A per-item VALVE is bound to `p`, so the global lookup declines it.
+        assert_eq!(global_action_for_chord(KeyChord::plain('p')), None);
+        // And the driver handoff, the other non-global staging.
+        assert_eq!(global_action_for_chord(KeyChord::plain('h')), None);
+        assert_eq!(global_action_for_chord(KeyChord::plain('z')), None);
     }
 
     #[test]
