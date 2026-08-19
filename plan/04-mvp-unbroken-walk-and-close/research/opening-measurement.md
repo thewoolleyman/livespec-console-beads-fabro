@@ -5,24 +5,42 @@ Written 2026-08-19 when this thread was first OPENED (epic
 Everything below is measured against master `5b5f736`, not narrated from the
 charter.
 
-## 1. The charter's milestone requires MENUS. Menus do not exist yet.
+## 1. Menus now EXIST and RENDER — re-measured 2026-08-20 at master `a0b380c`
 
-`menu_path` is declared on every `ACTION_REGISTRY` entry
-(`crates/console-application/src/action_registry.rs:119`, ten entries across
-`Work item > Hand off`, `Work item > Lifecycle`, `Work item > Policy dials`,
-`Work item > Factory safety`), and the registry test at `:532` asserts it is
-non-empty per entry.
+This section has been re-measured twice as plan 02 moved underneath it. Numbers
+are stated with the commit they were taken at, because every earlier version of
+this section went stale within a day.
 
-**Nothing consumes it.** Grepping `menu_path` across `crates/` returns only the
-registry definitions and that one test. The only `Menu` token in
-`crates/console-tui/src/lib.rs` is `HelpFocus::Menu` — the HELP overlay's section
-focus, unrelated to action navigation. So the taxonomy field shipped (plan 01's
-requirement 1) but the surface that renders it (plan 02's mission) has not.
+**Registry entry count**, and the first draft was wrong even for its own day:
 
-Consequence, and this is the thread's central fact: milestone acceptance 1 —
-"one unbroken pass, single item, **menus-only**, real stack, one sitting" — is
-not merely blocked by policy, it is **unperformable**, because there is no menu
-to perform it through.
+| measured at | entries | top-level nodes |
+| --- | --- | --- |
+| first draft of this note (claimed) | 10 | 1 (`Work item`) |
+| master `4748daf`, actual | 11 | 1 (`Work item`) |
+| master `80d2cc6` (PR #694, chords) | 15 | 4 |
+| master `a0b380c` (PR #703, rendering) | **16** | **4** — 11 `Work item`, 3 `View`, 1 `Help`, 1 `File` |
+
+**`menu_path` now has consumers, and a menu renders.** The first draft's central
+finding — declared but unconsumed — held through `80d2cc6` and is now obsolete.
+Re-measured at `a0b380c`:
+
+- `action_registry::menu_tree()` (`action_registry.rs:552`) derives the bar and
+  submenus from `menu_path`.
+- `crates/console-tui/src/lib.rs` consumes it (`:2117`) and renders it as
+  `TuiOverlay::Menu { top, selected }` (`:1404`), with its own selection and
+  navigation arms.
+- Opening it is a registry action like any other: `id: "open-menu"`, label
+  `Menu bar`, `hotkeys: &[KeyChord::plain('v')]`, `menu_path: &["View", "Menu bar"]`.
+- Menu items stage through `menu_confirm_step` (`console-tui/src/lib.rs:492`),
+  which `console-arch-check` enforces as one of exactly three permitted
+  registry-staging functions (`REGISTRY_STAGING_FNS` at
+  `console-arch-check/src/main.rs:994`, alongside `registry_action_input` and
+  `invoker_confirm_step`). So menu invocation is the same staging path as hotkeys
+  and the invoker, mechanically, not by convention.
+
+**So milestone 1 is no longer unperformable for want of a menu.** What now gates
+it is a different and narrower thing, recorded in §2b: the menu that exists is an
+OVERLAY, and the maintainer has ruled menu primacy to mean a PERMANENT BAR.
 
 ## 2. What HAS been walked, and why it is not this milestone
 
@@ -54,6 +72,63 @@ but is not a clean one. The 2026-08-17 walk needed interventions and was not
 menus-driven; recording it here so a successor does not mistake it for this
 plan's deliverable, and equally does not re-walk it from scratch believing
 nothing has been proven.
+
+## 2a. Milestone 1 is PROTECTED, not pre-discharged — ruled by plan 02, 2026-08-19
+
+The scoping question §2 raises — whether the menus-only walk is one walk or two —
+was put to plan 02 rather than resolved from this parked thread, and plan 02 ruled
+it **two walks**:
+
+- Plan 02's own dogfood leg and plan 03's transferred leg **collapse into one
+  shared walk** performed in plan 02, because plan 03's leg is strictly contained
+  in a menus-only lifecycle SEGMENT.
+- **Plan 04's milestone 1 stays SEPARATE and is explicitly NOT discharged by it.**
+  A full unbroken lifecycle in one sitting is a strictly stronger claim than a
+  segment, and folding the two together would let a segment-sized walk be reported
+  as a full-pass proof.
+
+Recorded as **deferral D1 on `-et3`**, naming this plan's epic `-9nb` as where it
+is reconsidered; the foreman accepted the ruling. A successor must not treat plan
+02's shared walk as satisfying milestone acceptance 1 — the charter's "not
+assembled from legs walked separately" clause is exactly what D1 preserves.
+
+## 2b. What the rendering slice unblocked, and what it did NOT — 2026-08-20
+
+Three maintainer rulings landed with the rendering slice and this plan must be
+designed against them, not against what shipped:
+
+- **(a) Menu primacy means a PERMANENT BAR** — a permanently-visible screen
+  region with submenus on demand, acknowledged as a real slice of its own (a
+  layout change to every view plus a Status-band rework). What `-5tlleh` shipped
+  is an OVERLAY.
+- **(b) The menu key stays `v`** for now.
+- **(c) Plan 02's next slice is R4** (hotkeys-provably-additional), factory probe
+  first. The permanent-bar slice is RULED but NOT YET SCHEDULED, and its
+  sequencing against this plan's milestone 1 is still open.
+
+**UNBLOCKED NOW: milestone acceptance 2's design.** Milestone 2 requires capturing
+the offered-actions state BEFORE each invocation, the confirmation's exact target
+read back before committing, and a ledger check after. That was undesignable while
+nothing rendered, because "the offered actions" is only observable once a surface
+offers them. It is designable now. Design it against the PERMANENT BAR per ruling
+(a): the bar is a persistent region whose contents are visible without opening
+anything, so "the offered-actions state before invocation" is a different capture
+against a bar than against an overlay that must first be opened.
+
+**NOT unblocked: milestone 1's walk, and this is a judgement this plan owns.**
+The menu exists and stages correctly, so a walk is mechanically possible today
+through the `v` overlay. It should still wait for the permanent bar. Ruling (a)
+makes the overlay a surface that is going away, and milestone 1's whole content is
+a PRIMACY claim — one unbroken pass driven by menus as the primary navigation
+mechanism. A pass driven through an overlay that must be summoned by a hotkey
+before each use proves primacy of the hotkey at least as much as of the menu, and
+it would have to be re-walked once the bar lands. Walking it twice is precisely
+what the charter's "not assembled from legs walked separately" clause and D1 exist
+to prevent one level up.
+
+This is not a maintainer question; it follows from ruling (a) plus D1. What IS
+open, and belongs to plan 02 and the maintainer rather than here, is whether the
+permanent-bar slice is scheduled before or after R4.
 
 ## 3. Dependency state, measured
 
@@ -142,6 +217,12 @@ and it is already `ready` (Dispatcher-admitted). It stays standalone; this plan
 does not adopt it.
 
 ## 6. Correction to §1, found after the first draft: plan 02 is half-built, unpushed
+
+> **SUPERSEDED by §1's re-measurements.** Kept as the record of how the
+> unpushed branch was found and why it was unpushed. That work has since landed
+> on master, banked red first, as `26843ee` (born red) -> `62d6efd` (tokenizers)
+> -> `80d2cc6` (chords) -> `5a8be56` (rendering). The rescue bundle it prompted
+> is no longer load-bearing.
 
 §1 stands as a statement about master. But plan 02 is not the blank charter its
 handoff makes it look like, and the thread that resumes this arc must not
