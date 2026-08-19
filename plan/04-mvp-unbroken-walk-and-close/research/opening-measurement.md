@@ -90,3 +90,65 @@ archived delivery-path-speed-and-caching thread and offered to this thread. It
 is CI-harness hygiene with no bearing on the MVP walk or on archive sequencing,
 and it is already `ready` (Dispatcher-admitted). It stays standalone; this plan
 does not adopt it.
+
+## 6. Correction to §1, found after the first draft: plan 02 is half-built, unpushed
+
+§1 stands as a statement about master. But plan 02 is not the blank charter its
+handoff makes it look like, and the thread that resumes this arc must not
+re-derive what already exists.
+
+Auditing this repo's ~40 stale worktrees turned up branch
+`feat/menu-completeness-gate` (worktree `slice-b`, commit `8bc1e3e`,
+2026-08-03), **committed local-only and never pushed**, verified absent from
+master. It carries `crates/console-cli/tests/menu_completeness.rs` (199 lines),
+`tests/fixtures/menu-completeness-carveout.json`, and
+`plan/02-menu-shell-primacy/research/completeness-gate-born-red.md`.
+
+That research note banks the gate's RED output per the standing born-red rule
+(`cargo test --test menu_completeness`, RC=101 read unpiped):
+
+```text
+Operator-reachable behaviours with NO menu path and NO argued exclusion:
+  - KeyCode::Char('c')
+  - KeyCode::Char('/')
+  - KeyCode::Char(':')
+  - KeyCode::Char('?')
+  - KeyCode::Char('q')
+  - KeyCode::F
+  - KeyCode::Media
+  - KeyCode::Modifier
+Registry currently holds 11 entries.
+```
+
+Two things follow, both load-bearing for this arc:
+
+1. **Plan 02's "do not pick this silently" scoping question was already ruled**,
+   on 2026-08-03, in favour of *every operator-reachable BEHAVIOUR* rather than
+   *every REGISTERED action* — and the ruling is implemented, not merely
+   recorded. The five real names above (`Ctrl-C` quit, `/` search, `:` palette,
+   `?` help, `q` quit) are precisely the ones a registry-row-quantified gate
+   could never have produced, because it would quantify over its own input and
+   pass. That is the verifier-vs-tautology distinction measured rather than
+   argued. `F` / `Media` / `Modifier` are called out in the note as a PARSER
+   DEFECT and explicitly NOT to be papered over with carve-out entries:
+   `handled_key_arms` keeps `Char(...)` whole while `inert_arms` keeps the
+   parens, so the two scanners tokenize differently and need one shared
+   tokenizer.
+2. **The remaining work is enumerated and ordered** in that note: unify the
+   tokenizers; register the five keys with `menu_path`s — which introduces the
+   first top-level nodes beyond `Work item` and therefore the first real menu
+   BAR, on the already-approved ">= 2 top-level nodes" design basis, with an
+   open sub-question on whether the `Ctrl-C` chord is expressible at all given
+   `hotkey: Option<char>` cannot carry a modifier; re-run green; then
+   mutation-demonstrate by deleting one carve-out entry and one registration;
+   and only then push, as one PR carrying the banked red.
+
+It was never pushed for a legitimate reason rather than neglect: the gate is red
+by design, pre-push runs the full suite and correctly refuses it, and
+`--no-verify` is never an option here.
+
+None of this changes §1's conclusion — menus still do not exist on master, so
+milestone 1 remains unperformable. What it changes is the price of fixing that:
+plan 02 opens onto banked red evidence plus a four-step plan. It also makes
+landing that branch worthwhile on its own merits, since as of this note the work
+survives only as an unpushed commit in one worktree on one machine.
