@@ -67,33 +67,49 @@ starting — and they have **opposite** fixes:
 
 **Rule: before attributing a stall to capacity, prove it.** Zero gated
 pods plus spare capacity plus a job sitting queued with an empty
-`runner_name` means wedge, not saturation. Confirm on the cluster host
-(`poweredge-xubuntu`, `KUBECONFIG=/etc/rancher/k3s/k3s.yaml`) by
-scanning each `Running` non-`-workflow` runner pod:
+`runner_name` means wedge, not saturation. A fleet detector
+(`livespec-s43svm.30`) now scans runner-pod logs on a 5-minute timer and
+auto-clears wedges, guarded so it cannot delete a pod that has claimed a
+job; because it reads the pod's own log rather than job-start patterns,
+it catches a wedge regardless of how the stall presents. To confirm by
+hand, on the cluster host (`poweredge-xubuntu`,
+`KUBECONFIG=/etc/rancher/k3s/k3s.yaml`) scan each `Running`
+non-`-workflow` runner pod:
 
 ```bash
 kubectl logs <pod> -n arc-runners --tail=40 | grep "was not found"
 ```
 
-Any hit is wedged with certainty. Deleting that pod is safe by
-construction — it is ephemeral and can never do work — and ARC creates a
-healthy replacement within seconds. The runner pool is owned by the
-fleet track, so report what the scan shows rather than resizing anything
-from this repo.
+Any hit is wedged with certainty — the runner emits that line only after
+the broker told it its registration does not exist, and it has no code
+path that re-registers. Deleting that pod is safe by construction — it is
+ephemeral and can never do work — and ARC creates a healthy replacement
+within seconds. The runner pool is owned by the fleet track, so report
+what the scan shows rather than resizing anything from this repo.
 
 Captured 2026-08-19 after the delivery-path-speed-and-caching plan
 misread its own stall. The observed shape was a **trickling serial
 drain**, not a hard freeze: on CI run 32199534021 (PR #682, created
 00:00:34Z) jobs started at 00:11:10Z, 00:17:17Z, 00:29:40Z, then a
 42-minute gap to 01:11:42Z. A point-in-time "N queued, zero
-in_progress" reading was taken between jobs and reported as a total
-freeze — **sample the same run twice before calling it stopped.** The
-stall was first diagnosed fleet-wide as capacity starvation and the pool
-was resized 8→16 on that basis; a later maintainer-directed
-investigation (fleet item `livespec-s43svm.30`) verified live that at
-least one wedged pod was sitting on this repo's own scale set during the
-window, so the capacity story was at best partial. An automated wedge
-detector is being built there; until it lands, run the log scan.
+in_progress" reading was taken between jobs and reported to the fleet
+track as a total freeze — **sample the same run twice before calling it
+stopped.**
+
+**That gap's cause was never established, and this note deliberately does
+not claim one.** It was first diagnosed fleet-wide as capacity starvation
+and the pool was resized 8→16 on that basis; that diagnosis was later
+retracted as asserted-from-an-earlier-incident rather than verified. A
+wedged pod was independently confirmed on this repo's own scale set
+during the window, but console's `nominalQuota` was 1 at the time, so
+quota-floor-plus-borrowing contention fits the same evidence, and the
+capacity raise landed near the end of the gap. Several causes fit; none
+was proven. Recording it as unresolved is the point — the expensive part
+of this incident was successive confident attributions, not the stall.
+A complementary "abnormal inter-job gap with spare capacity" alarm would
+catch this class of unknown-unknown; it belongs to the CI observability
+work (`livespec-s43svm.20`), which carries the 42-minute gap as a seed
+measurement.
 
 ## A local test run is only evidence if it's the SAME commit CI tested
 
