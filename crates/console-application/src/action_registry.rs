@@ -159,6 +159,8 @@ pub enum GlobalAction {
     OpenCommandPalette,
     /// Open the modal Help overlay.
     OpenHelp,
+    /// Open the menu bar.
+    OpenMenu,
     /// Quit the console.
     Quit,
 }
@@ -463,6 +465,24 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         availability: |_ctx| true,
         staging: ActionStaging::Global(GlobalAction::OpenCommandPalette),
     },
+    // The menu bar's own opener. It is a REGISTRY entry rather than a literal
+    // key arm so it obeys the same rule as everything else: no behaviour is
+    // reachable outside the registry.
+    //
+    // `v` is a compromise, recorded rather than hidden. The conventional menu-bar
+    // keys are F10 and Alt, and `KeyChord` can express neither — it carries a
+    // `char` plus Control only. Widening it further is deliberately NOT bundled
+    // into this slice; the binding can move without touching the menu tree.
+    ActionSpec {
+        id: "open-menu",
+        label: "Menu bar",
+        hint_token: "v menu",
+        hotkeys: &[KeyChord::plain('v')],
+        menu_path: &["View", "Menu bar"],
+        parameter: None,
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::OpenMenu),
+    },
     ActionSpec {
         id: "open-help",
         label: "Help",
@@ -494,6 +514,89 @@ pub fn action_for_chord(chord: KeyChord) -> Option<&'static ActionSpec> {
     ACTION_REGISTRY
         .iter()
         .find(|spec| spec.hotkeys.contains(&chord))
+}
+
+/// One group inside a top-level menu, e.g. `Lifecycle` under `Work item`.
+#[derive(Debug, Clone)]
+pub struct MenuGroup {
+    /// The group's label — the SECOND element of its members' `menu_path`.
+    pub label: &'static str,
+    /// The actions in this group, in registry order.
+    pub actions: Vec<&'static ActionSpec>,
+}
+
+/// One top-level menu — a node of the menu BAR.
+#[derive(Debug, Clone)]
+pub struct MenuTop {
+    /// The bar label — the FIRST element of its members' `menu_path`.
+    pub label: &'static str,
+    /// The groups under this bar node, in registry order.
+    pub groups: Vec<MenuGroup>,
+}
+
+/// The menu tree, DERIVED from `menu_path`.
+///
+/// # Why this is derived and not authored
+///
+/// Menus are the PRIMARY navigation mechanism, and the registry is the single
+/// source of truth for what an operator can do. A hand-authored menu tree would
+/// be a SECOND encoding of the same taxonomy: it could drift from the registry
+/// silently, and the completeness gate would be quantifying over the wrong
+/// thing. Deriving the tree means a new registry entry appears in the menus by
+/// construction, and cannot be forgotten.
+///
+/// Ordering is REGISTRY ORDER throughout — first appearance wins for both bar
+/// nodes and groups — so the menus inherit the registry's canonical order rather
+/// than imposing a second one.
+#[must_use]
+pub fn menu_tree() -> Vec<MenuTop> {
+    let mut tops: Vec<MenuTop> = Vec::new();
+    for spec in ACTION_REGISTRY {
+        // A one-element path degenerates to a group of its own name rather than
+        // being dropped: an action must never vanish from the menus because its
+        // taxonomy is shallow.
+        let top_label = spec.menu_path.first().copied().unwrap_or(spec.label);
+        let group_label = spec.menu_path.get(1).copied().unwrap_or(top_label);
+        if !tops.iter().any(|top| top.label == top_label) {
+            tops.push(MenuTop {
+                label: top_label,
+                groups: Vec::new(),
+            });
+        }
+        let Some(top) = tops.iter_mut().find(|top| top.label == top_label) else {
+            continue;
+        };
+        if let Some(group) = top
+            .groups
+            .iter_mut()
+            .find(|group| group.label == group_label)
+        {
+            group.actions.push(spec);
+        } else {
+            top.groups.push(MenuGroup {
+                label: group_label,
+                actions: vec![spec],
+            });
+        }
+    }
+    tops
+}
+
+/// The actions under one bar node, flattened in registry order.
+///
+/// The menu renders group HEADERS but selection moves over actions only, so the
+/// selection index addresses this flattened list rather than the rendered rows.
+#[must_use]
+pub fn menu_actions(top_index: usize) -> Vec<&'static ActionSpec> {
+    menu_tree()
+        .get(top_index)
+        .map(|top| {
+            top.groups
+                .iter()
+                .flat_map(|group| group.actions.iter().copied())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The GLOBAL action bound to `chord`, if the chord is bound to one at all.
@@ -673,7 +776,7 @@ pub enum StagedAction {
 mod tests {
     use super::{
         ACTION_REGISTRY, ActionContext, ActionSurface, GlobalAction, KeyChord, action_for_chord,
-        action_for_id, action_offered_on_surface, global_action_for_chord,
+        action_for_id, action_offered_on_surface, global_action_for_chord, menu_actions, menu_tree,
     };
     use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 
@@ -737,6 +840,65 @@ mod tests {
             Some("quit")
         );
         assert!(action_for_id("no-such-action").is_none());
+    }
+
+    #[test]
+    fn the_menu_tree_reaches_every_registered_action_exactly_once() {
+        // THE COMPLETENESS PROPERTY, quantified GENERICALLY over the registry
+        // rather than a hand-listed set. A hand-listed expectation would be the
+        // same second-encoding defect the derived tree exists to retire, and it
+        // would go stale the moment an entry is added — which is exactly the
+        // case this must catch.
+        let mut reached: Vec<&str> = menu_tree()
+            .iter()
+            .flat_map(|top| top.groups.iter())
+            .flat_map(|group| group.actions.iter())
+            .map(|spec| spec.id)
+            .collect();
+        let mut registered: Vec<&str> = ACTION_REGISTRY.iter().map(|spec| spec.id).collect();
+        let reached_count = reached.len();
+        reached.sort_unstable();
+        registered.sort_unstable();
+        assert_eq!(reached, registered);
+        // EXACTLY once: a duplicated entry would still satisfy set equality
+        // while rendering the same action twice in the menus.
+        assert_eq!(reached_count, ACTION_REGISTRY.len());
+    }
+
+    #[test]
+    fn the_menu_bar_carries_every_top_level_node_in_registry_order() {
+        let tree = menu_tree();
+        let labels: Vec<&str> = tree.iter().map(|top| top.label).collect();
+        // Derived from the registry, not asserted as a fixed list: the point is
+        // that first appearance in ACTION_REGISTRY orders the bar.
+        let mut expected: Vec<&str> = Vec::new();
+        for spec in ACTION_REGISTRY {
+            let top = spec.menu_path.first().copied().unwrap_or(spec.label);
+            if !expected.contains(&top) {
+                expected.push(top);
+            }
+        }
+        assert_eq!(labels, expected);
+        // The bar must be a REAL bar, not a degenerate single node — the design
+        // basis the 2026-08-03 ruling predicted once the globals were registered.
+        assert!(tree.len() >= 2, "{labels:?}");
+    }
+
+    #[test]
+    fn flattened_menu_actions_match_the_tree_for_every_bar_node() {
+        for (index, top) in menu_tree().iter().enumerate() {
+            let flattened: Vec<&str> = menu_actions(index).iter().map(|spec| spec.id).collect();
+            let walked: Vec<&str> = top
+                .groups
+                .iter()
+                .flat_map(|group| group.actions.iter())
+                .map(|spec| spec.id)
+                .collect();
+            assert_eq!(flattened, walked, "{}", top.label);
+        }
+        // Out of range is empty, not a panic: the renderer clamps, and a
+        // panicking accessor would turn a clamp bug into a crash.
+        assert!(menu_actions(menu_tree().len()).is_empty());
     }
 
     #[test]

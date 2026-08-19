@@ -685,6 +685,18 @@ pub enum TuiOverlay {
         /// changes, and clamped by the renderer to the section's wrapped height.
         scroll: usize,
     },
+    /// Menu variant: the menu bar plus the open top-level node's submenu,
+    /// GENERATED from the action registry's `menu_path` taxonomy. It carries
+    /// only cursor state — which bar node is open and which action is selected
+    /// within it — never the tree itself, which is derived on render so a new
+    /// registry entry appears without any state migration.
+    Menu {
+        /// Index of the open top-level bar node.
+        top: usize,
+        /// Index of the selected action within that node's FLATTENED action
+        /// list (group headers render but are not selectable).
+        selected: usize,
+    },
     /// Driver-handoff variant: the full-width render-only overlay showing the
     /// copy-paste-safe LLM-driver invocation for the selected work-item. It
     /// carries only the command string; confirming it copies via the terminal
@@ -754,7 +766,8 @@ impl TuiOverlay {
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
-            | Self::Help { .. } => None,
+            | Self::Help { .. }
+            | Self::Menu { .. } => None,
         }
     }
 
@@ -771,7 +784,8 @@ impl TuiOverlay {
             | Self::ActionInvoker { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
-            | Self::Help { .. } => None,
+            | Self::Help { .. }
+            | Self::Menu { .. } => None,
         }
     }
 
@@ -789,7 +803,8 @@ impl TuiOverlay {
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
-            | Self::Help { .. } => None,
+            | Self::Help { .. }
+            | Self::Menu { .. } => None,
         }
     }
 
@@ -806,7 +821,8 @@ impl TuiOverlay {
             | Self::ActionInvoker { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
-            | Self::Help { .. } => None,
+            | Self::Help { .. }
+            | Self::Menu { .. } => None,
         }
     }
 }
@@ -826,6 +842,12 @@ pub enum TuiInteraction {
     OpenCommandModal,
     /// Open the generic action-invoker roster for the current selection.
     OpenActionInvoker,
+    /// Open the generated menu bar.
+    OpenMenu,
+    /// Move to the next top-level menu node.
+    MenuNextTop,
+    /// Move to the previous top-level menu node.
+    MenuPreviousTop,
     /// Close overlay variant.
     CloseOverlay,
     /// Select next view variant.
@@ -1873,6 +1895,7 @@ const fn overlay_footer_hint(overlay: &TuiOverlay) -> &'static str {
         TuiOverlay::CommandPalette { .. } => "type a command | esc cancel",
         TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
         TuiOverlay::ActionInvoker { .. } => "up/down select | enter stage | esc cancel",
+        TuiOverlay::Menu { .. } => "left/right menu | up/down select | enter stage | esc cancel",
         TuiOverlay::ValveConfirm { .. } => "up/down change | enter confirm | esc cancel",
         TuiOverlay::DriverHandoff { .. } => "enter copy sent to terminal | esc cancel",
         TuiOverlay::WorkItemDetail { .. } => "up/down scroll | PgUp/PgDn page | esc close item",
@@ -3575,6 +3598,9 @@ pub fn reduce_tui_interaction(
             })
         }
         TuiInteraction::OpenCommandModal => state.clone().with_overlay(open_command_modal(&model)),
+        TuiInteraction::OpenMenu
+        | TuiInteraction::MenuNextTop
+        | TuiInteraction::MenuPreviousTop => menu_interaction_state(state, interaction),
         TuiInteraction::OpenActionInvoker => state
             .clone()
             .with_overlay(TuiOverlay::ActionInvoker { selected_action: 0 }),
@@ -6361,7 +6387,8 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
-        | TuiOverlay::Help { .. } => None,
+        | TuiOverlay::Help { .. }
+        | TuiOverlay::Menu { .. } => None,
     }
 }
 
@@ -6379,7 +6406,8 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
-        | TuiOverlay::Help { .. } => overlay.clone(),
+        | TuiOverlay::Help { .. }
+        | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
 
@@ -6490,7 +6518,8 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
-        | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
+        | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
 
@@ -6519,7 +6548,8 @@ fn help_scroll(overlay: &TuiOverlay, rows: usize, down: bool, max_scroll: usize)
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
-        | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
+        | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
 
@@ -6542,7 +6572,8 @@ fn help_focus(overlay: &TuiOverlay, focus: HelpFocus) -> TuiOverlay {
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
-        | TuiOverlay::WorkItemDetail { .. } => overlay.clone(),
+        | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
 
@@ -6560,7 +6591,8 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
-        | TuiOverlay::Help { .. } => overlay.clone(),
+        | TuiOverlay::Help { .. }
+        | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
 
@@ -6578,7 +6610,8 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
-        | TuiOverlay::Help { .. } => overlay.clone(),
+        | TuiOverlay::Help { .. }
+        | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
 
@@ -6601,6 +6634,14 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
             selected_action: (selected_action + 1)
                 .min(action_registry::ACTION_REGISTRY.len().saturating_sub(1)),
         },
+        // Clamped to the OPEN node's own action count, not the registry's:
+        // each bar node holds a different number of actions, so a registry-wide
+        // bound would let the cursor run off the end of a short menu.
+        TuiOverlay::Menu { top, selected } => TuiOverlay::Menu {
+            top: *top,
+            selected: (selected + 1)
+                .min(action_registry::menu_actions(*top).len().saturating_sub(1)),
+        },
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
@@ -6608,6 +6649,51 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
+    }
+}
+
+/// The state each menu interaction produces.
+///
+/// Opening always starts at the first bar node with its first action selected;
+/// the two walks delegate to [`menu_move_top`]. Kept together because they are
+/// one concern, and because splitting them across three reducer arms pushed
+/// `reduce_tui_interaction` past its line budget for no readability gain.
+fn menu_interaction_state(
+    state: &TuiInteractionState,
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
+    let overlay = match interaction {
+        TuiInteraction::MenuNextTop => menu_move_top(state.overlay(), true),
+        TuiInteraction::MenuPreviousTop => menu_move_top(state.overlay(), false),
+        _open => TuiOverlay::Menu {
+            top: 0,
+            selected: 0,
+        },
+    };
+    state.clone().with_overlay(overlay)
+}
+
+/// Walk the menu bar one node forward or back, wrapping at both ends.
+///
+/// The selection RESETS to the first action of the newly opened node: carrying
+/// an index across nodes would land the cursor on an unrelated action, and the
+/// nodes hold different numbers of actions so the index may not even exist.
+fn menu_move_top(overlay: &TuiOverlay, forward: bool) -> TuiOverlay {
+    let TuiOverlay::Menu { top, .. } = overlay else {
+        return overlay.clone();
+    };
+    let count = action_registry::menu_tree().len();
+    if count == 0 {
+        return overlay.clone();
+    }
+    let next = if forward {
+        (top + 1) % count
+    } else {
+        (top + count - 1) % count
+    };
+    TuiOverlay::Menu {
+        top: next,
+        selected: 0,
     }
 }
 
@@ -6620,6 +6706,10 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         },
         TuiOverlay::ActionInvoker { selected_action } => TuiOverlay::ActionInvoker {
             selected_action: selected_action.saturating_sub(1),
+        },
+        TuiOverlay::Menu { top, selected } => TuiOverlay::Menu {
+            top: *top,
+            selected: selected.saturating_sub(1),
         },
         TuiOverlay::None
         | TuiOverlay::Search { .. }

@@ -485,6 +485,37 @@ fn invoker_confirm_step(
     )
 }
 
+/// Enter on a menu item: stage the selected action's normal confirm flow,
+/// through the SAME `staged_without_selection` path the hotkey and the invoker
+/// row use. A menu that staged actions its own way would be a third encoding of
+/// invocation, which is the defect this plan exists to retire.
+fn menu_confirm_step(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    model: &TuiScreenModel,
+    top: usize,
+    selected: usize,
+) -> TuiRuntimeStep {
+    let staged = action_registry::menu_actions(top)
+        .get(selected)
+        .and_then(|spec| staged_without_selection(model, spec));
+    let interaction = match staged {
+        Some(action_registry::StagedAction::Valve(valve)) => {
+            TuiInteraction::OpenValveConfirm(valve)
+        }
+        Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
+        Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
+            Some(global) => global,
+            None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
+        },
+        None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Render),
+    };
+    TuiRuntimeStep::new(
+        reduce_tui_interaction(state, events, interaction),
+        TuiRuntimeEffect::Render,
+    )
+}
+
 fn confirm_operator_action(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
@@ -505,6 +536,11 @@ fn confirm_operator_action(
     if let TuiOverlay::ActionInvoker { selected_action } = model.overlay() {
         return invoker_confirm_step(state, events, &model, *selected_action);
     }
+    // A menu item stages through the SAME path as its hotkey and the invoker
+    // row. Anything else would be a third invocation route for one action.
+    if let TuiOverlay::Menu { top, selected } = model.overlay() {
+        return menu_confirm_step(state, events, &model, *top, *selected);
+    }
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
         TuiOverlay::ValveConfirm { .. } => resolve_valve_action(&model, requested_by),
@@ -524,6 +560,8 @@ fn confirm_operator_action(
         // The work-item detail modal is READ-ONLY: `enter_input` yields no
         // `Confirm` while it is open, so it never actually reaches here.
         | TuiOverlay::WorkItemDetail { .. }
+        // The menu confirm returned above; this arm is unreachable for it.
+        | TuiOverlay::Menu { .. }
         | TuiOverlay::Help { .. } => resolve_selected_operator_action(&model, requested_by),
     };
     let effect = match outcome {
@@ -572,6 +610,7 @@ const fn global_interaction(action: action_registry::GlobalAction) -> Option<Tui
             Some(TuiInteraction::OpenCommandPalette)
         }
         action_registry::GlobalAction::OpenHelp => Some(TuiInteraction::OpenHelp),
+        action_registry::GlobalAction::OpenMenu => Some(TuiInteraction::OpenMenu),
         action_registry::GlobalAction::Quit => None,
     }
 }
@@ -662,9 +701,9 @@ pub fn key_event_to_terminal_input(
 /// other overlay it is the harmless content move.
 const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     Some(match model.overlay() {
-        TuiOverlay::CommandModal { .. } | TuiOverlay::ActionInvoker { .. } => {
-            TuiInteraction::SelectPreviousAction
-        }
+        TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::Menu { .. } => TuiInteraction::SelectPreviousAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(false),
         TuiOverlay::Help { focus, .. } => match focus {
             HelpFocus::Menu => TuiInteraction::HelpSelectPreviousSection,
@@ -691,9 +730,9 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
 /// Down: the mirror of [`up_interaction`].
 const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
     Some(match model.overlay() {
-        TuiOverlay::CommandModal { .. } | TuiOverlay::ActionInvoker { .. } => {
-            TuiInteraction::SelectNextAction
-        }
+        TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::Menu { .. } => TuiInteraction::SelectNextAction,
         TuiOverlay::ValveConfirm { .. } => TuiInteraction::CycleValveOption(true),
         TuiOverlay::Help { focus, .. } => match focus {
             HelpFocus::Menu => TuiInteraction::HelpSelectNextSection,
@@ -720,6 +759,7 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::Menu { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => Some(TuiTerminalInput::Confirm),
         TuiOverlay::Search { .. } | TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => {
@@ -808,6 +848,11 @@ fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     if matches!(model.overlay(), TuiOverlay::Help { .. }) {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusMenu));
     }
+    if matches!(model.overlay(), TuiOverlay::Menu { .. }) {
+        return Some(TuiTerminalInput::Interaction(
+            TuiInteraction::MenuPreviousTop,
+        ));
+    }
     if model.overlay().is_open() {
         return None;
     }
@@ -829,6 +874,9 @@ fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     if matches!(model.overlay(), TuiOverlay::Help { .. }) {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusText));
+    }
+    if matches!(model.overlay(), TuiOverlay::Menu { .. }) {
+        return Some(TuiTerminalInput::Interaction(TuiInteraction::MenuNextTop));
     }
     if model.overlay().is_open() {
         return None;
@@ -894,6 +942,7 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::Menu { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => None,
     }
@@ -1350,6 +1399,10 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> Ov
                 overlay_rect(area),
                 buffer,
             );
+            OverlayScrollExtents::ZERO
+        }
+        TuiOverlay::Menu { top, selected } => {
+            render_menu_overlay(*top, *selected, area, buffer);
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::DriverHandoff { command } => {
@@ -2048,6 +2101,80 @@ fn render_action_invoker(
     );
 }
 
+/// Render the menu BAR plus the open node's submenu, both GENERATED from the
+/// registry's `menu_path` taxonomy.
+///
+/// The bar is the full top row so every top-level node is visible at once —
+/// menus are the PRIMARY navigation mechanism, and a bar you must already be
+/// inside to see does not navigate. Group labels render as headers but are not
+/// selectable; selection addresses the flattened action list, which is what
+/// `menu_actions` returns.
+///
+/// Accelerators render BESIDE their items. That is what makes "hotkeys are only
+/// additional" visible to an operator rather than merely asserted: the menu is
+/// the route, the key is a shortcut printed next to it.
+fn render_menu_overlay(top: usize, selected: usize, area: Rect, buffer: &mut Buffer) {
+    let tree = action_registry::menu_tree();
+    if tree.is_empty() {
+        return;
+    }
+    let top = top.min(tree.len() - 1);
+    let bar: String = tree
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            if index == top {
+                format!("[{}]", node.label)
+            } else {
+                format!(" {} ", node.label)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let bar_rect = Rect::new(area.x, area.y, area.width, 1.min(area.height));
+    Clear.render(bar_rect, buffer);
+    Widget::render(Line::from(format!("Menu: {bar}")), bar_rect, buffer);
+
+    if area.height <= 1 {
+        return;
+    }
+    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    Clear.render(body, buffer);
+
+    let mut rows: Vec<ListItem<'static>> = Vec::new();
+    let mut action_index = 0usize;
+    for group in &tree[top].groups {
+        rows.push(
+            ListItem::new(format!("  {}", group.label))
+                .style(Style::new().add_modifier(Modifier::DIM)),
+        );
+        for spec in &group.actions {
+            let marker = if action_index == selected { ">" } else { " " };
+            let accelerator = action_registry::accelerator_display(spec);
+            rows.push(
+                ListItem::new(format!("{marker}   {} [{accelerator}]", spec.label)).style(
+                    if action_index == selected {
+                        Style::new().add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new()
+                    },
+                ),
+            );
+            action_index += 1;
+        }
+    }
+    Widget::render(
+        List::new(rows).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(tree[top].label.to_owned()),
+        ),
+        body,
+        buffer,
+    );
+}
+
 fn render_command_modal(
     detail: Option<&AttentionDetail>,
     selected_action_index: usize,
@@ -2486,9 +2613,9 @@ mod tests {
         TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
         TuiTerminalInput, action_outcome_effect, attention_item_line, buffer_to_text, detail_lines,
         effect_triggers_source_poll, global_input, help_lines_for_view,
-        key_event_to_terminal_input, render_command_modal, render_detail, render_model,
-        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        step_tui_runtime,
+        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
+        render_command_modal, render_detail, render_model, render_summary_detail, render_to_text,
+        render_work_item_detail, settings_detail_lines, step_tui_runtime,
     };
 
     #[test]
@@ -4447,6 +4574,96 @@ mod tests {
                 selected_action: index,
             },
         )
+    }
+
+    /// Render the menu overlay at `top` and return the screen text.
+    fn menu_screen(top: usize) -> String {
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected: 0 });
+        let model = build_tui_model_for_state(&[], &state);
+        // Empty on a render error rather than panicking: the caller's assertions
+        // then fail naming the missing label, which is the useful message.
+        render_to_text(&model, 120, 40).unwrap_or_default()
+    }
+
+    #[test]
+    fn every_registered_action_is_reachable_by_walking_the_rendered_menu() {
+        // THE MILESTONE PROPERTY, quantified over the RENDERED surface and
+        // derived generically from the registry. A hand-listed expectation
+        // would be the same second-encoding defect the generated menu exists to
+        // retire, and would go stale the moment an entry is added.
+        //
+        // Rendering is what makes this stronger than the registry-level tree
+        // test: a taxonomy that walks correctly but never reaches a pane would
+        // satisfy that one and still leave the operator with no menu.
+        let tree = action_registry::menu_tree();
+        for (top_index, top) in tree.iter().enumerate() {
+            let screen = menu_screen(top_index);
+            for group in &top.groups {
+                for spec in &group.actions {
+                    assert!(
+                        screen.contains(spec.label),
+                        "{}/{} missing from the rendered menu:\n{screen}",
+                        top.label,
+                        spec.label
+                    );
+                }
+            }
+        }
+        // And nothing is reachable ONLY by walking: the rendered set is the
+        // registry set, so the menu cannot quietly omit an action.
+        let rendered: usize = tree
+            .iter()
+            .flat_map(|top| top.groups.iter())
+            .map(|group| group.actions.len())
+            .sum();
+        assert_eq!(rendered, action_registry::ACTION_REGISTRY.len());
+    }
+
+    #[test]
+    fn the_rendered_menu_bar_shows_every_top_level_node_at_once() {
+        // The bar is the navigation surface, so every node must be visible
+        // without first entering one: a bar you must already be inside to see
+        // does not navigate.
+        let screen = menu_screen(0);
+        let tree = action_registry::menu_tree();
+        for top in &tree {
+            assert!(screen.contains(top.label), "{}:\n{screen}", top.label);
+        }
+        assert!(
+            tree.len() >= 2,
+            "the bar must not be a single degenerate node"
+        );
+    }
+
+    #[test]
+    fn a_menu_item_stages_exactly_what_its_hotkey_stages() {
+        // The menu is a ROUTE to the registry, not a second invocation path.
+        // If these ever diverge, the menu has become a parallel encoding of
+        // invocation -- the defect this plan exists to retire.
+        let events = [lane_event(
+            "evt_menu_parity",
+            "console-menu-parity",
+            Lane::PendingApproval,
+            None,
+            "a0",
+            "pending-approval",
+        )];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::PendingApproval))
+            .with_selected_lane_item_index(0);
+        let model = build_tui_model_for_state(&events, &state);
+        for (top_index, _) in action_registry::menu_tree().iter().enumerate() {
+            for (action_index, spec) in action_registry::menu_actions(top_index).iter().enumerate()
+            {
+                let via_menu = menu_confirm_step(&state, &events, &model, top_index, action_index);
+                let via_registry = registry_action_input(&model, spec, ' ');
+                // A menu row that stages nothing must correspond to a registry
+                // action that stages nothing for this selection, and vice versa.
+                let menu_staged = !matches!(via_menu.effect(), TuiRuntimeEffect::Render if via_menu.state() == &state);
+                assert_eq!(menu_staged, via_registry.is_some(), "{}", spec.id);
+            }
+        }
     }
 
     #[test]

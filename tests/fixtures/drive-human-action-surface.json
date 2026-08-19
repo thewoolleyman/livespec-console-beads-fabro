@@ -97,6 +97,10 @@
     {
       "action": "quit",
       "reason": "Console-side GLOBAL action: it opens a console surface (or ends the session) and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-08-19 so it carries a menu_path and is reachable from a generated menu \u2014 before chords existed it was matched ahead of the registry lookup in the key handler, which made it unreachable from any menu at all."
+    },
+    {
+      "action": "open-menu",
+      "reason": "Console-side GLOBAL action: it opens the console's own menu bar and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered rather than bound as a literal key arm so the menu opener obeys the same rule as everything else it exposes: no operator behaviour is reachable outside the registry."
     }
   ]
 }
