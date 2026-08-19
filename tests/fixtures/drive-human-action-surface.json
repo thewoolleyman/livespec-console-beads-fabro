@@ -81,6 +81,22 @@
     {
       "action": "driver-handoff",
       "reason": "Console-side verb: renders the driver invocation for copy/paste; the driver session journals its own dispatch through the orchestrator's driver-dispatch surface. Not a drive action-id."
+    },
+    {
+      "action": "open-search",
+      "reason": "Console-side GLOBAL action: it opens a console surface (or ends the session) and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-08-19 so it carries a menu_path and is reachable from a generated menu \u2014 before chords existed it was matched ahead of the registry lookup in the key handler, which made it unreachable from any menu at all."
+    },
+    {
+      "action": "open-command-palette",
+      "reason": "Console-side GLOBAL action: it opens a console surface (or ends the session) and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-08-19 so it carries a menu_path and is reachable from a generated menu \u2014 before chords existed it was matched ahead of the registry lookup in the key handler, which made it unreachable from any menu at all."
+    },
+    {
+      "action": "open-help",
+      "reason": "Console-side GLOBAL action: it opens a console surface (or ends the session) and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-08-19 so it carries a menu_path and is reachable from a generated menu \u2014 before chords existed it was matched ahead of the registry lookup in the key handler, which made it unreachable from any menu at all."
+    },
+    {
+      "action": "quit",
+      "reason": "Console-side GLOBAL action: it opens a console surface (or ends the session) and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-08-19 so it carries a menu_path and is reachable from a generated menu \u2014 before chords existed it was matched ahead of the registry lookup in the key handler, which made it unreachable from any menu at all."
     }
   ]
 }

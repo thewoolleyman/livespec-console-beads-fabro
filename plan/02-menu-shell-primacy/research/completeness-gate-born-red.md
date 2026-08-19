@@ -111,3 +111,146 @@ also exactly what the charter's "hotkeys displayed beside menu items as accelera
 requirement needs, so the split is owed by the mission regardless. This is a change to the
 registry schema, which is this plan's spine, so it goes to the maintainer rather than being
 picked in-session.
+
+## STEP 2 DONE — chords, and the gate goes GREEN, 2026-08-19
+
+**Maintainer ruling: widen to a chord type.** `hotkey: Option<char>` is replaced by
+`hotkeys: &'static [KeyChord]`, where `KeyChord { ctrl: bool, key: char }`.
+
+**Why a SLICE and not a single chord** — this was not in the ruling and is worth stating,
+because it is a forced consequence rather than a preference. `q` and `Ctrl-C` are the SAME
+action. Modelling them as two registry entries would render `Quit` twice in every generated
+menu, which is the thing menu generation exists to prevent. One entry, two accelerators.
+
+**The chord type paid for itself immediately, in a way the `char` field could not have.**
+`c` accepts a work-item; `Ctrl-C` quits. As bare chars those are the same key — so the old
+field could not have carried `Ctrl-C` even if the modifier problem were solved some other
+way. `action_for_chord(KeyChord::plain('c')) == accept` and
+`action_for_chord(KeyChord::ctrl('c')) == quit` are now both asserted.
+
+**The four handler arms are DELETED, not mirrored.** `KeyCode::Char('/')`,
+`Char(':')`, `Char('?')` and `Char('q')` at `console-tui/src/lib.rs` are gone, along with
+`slash_input`, `colon_input`, `question_input` and `q_input`; the generic
+`KeyCode::Char(value)` arm resolves all four through `action_for_chord`. The `Ctrl-C`
+pre-match is likewise gone, replaced by `control_chord_input`, which resolves any
+Control-held chord through the registry and is honoured regardless of overlay so `Ctrl-C`
+still quits from inside the search field.
+
+**That deletion is the whole point.** Registering the five while leaving the arms in place
+would have turned the gate green over a MIRROR — the key-to-action mapping would still
+have lived in the handler, with the registry merely restating it. The gate would have
+reported success while the defect got worse.
+
+**One behavioural equivalence had to be checked rather than assumed**, because
+`question_input` looked like it did something special. Its modal arm returned `None` for
+`Help`/`WorkItemDetail`/`ActionInvoker`/`DriverHandoff`, and `text_input` returns `None`
+for those same overlays (it yields `Some` only for `Search` and `CommandPalette`). So
+`question_input(overlay)` was already exactly `if overlay == None { OpenHelp } else {
+text_input('?', overlay) }` — the elaborate match was documentation, not different
+behaviour. The generic arm reproduces it precisely.
+
+**Global actions need no selection**, so `ActionStaging::Global(GlobalAction)` is answered
+before an `ActionContext` is demanded, in both the key path and the invoker roster. The
+invoker previously `zip`ped the spec with `selected_action_context()`; left alone, that
+would have made search, the palette, help and quit inert on an empty lane — in the one
+surface whose entire purpose is that every registered action is reachable.
+
+**The first top-level menu nodes beyond `Work item` now exist**: `View > Search`,
+`View > Command palette`, `Help > Keys and actions`, `File > Quit`. The menu bar is real
+rather than a single-node degenerate case, which is the ≥2-node design basis the ruling
+predicted.
+
+**Deliberately NOT done here:** the Status band still hard-codes `? help | q quit` at
+`console-application/src/lib.rs:1862+`. The four globals carry their `hint_token`s, but
+`available_hint_tokens` filters `ActionStaging::Global` out, so the per-item hint row and
+the six `docs_*_lockstep` gates are untouched. Re-pointing the band at those tokens is the
+Status-band slice's job; doing it here would have merged two slices and put the docs gates
+in play for no gain.
+
+Results: `cargo test --test menu_completeness` **RC=0, both tests green**. Full workspace
+suite: **42 test targets, 0 failures**. One fixture change was needed —
+`tests/fixtures/drive-human-action-surface.json` records the four globals under
+`console_local_actions` with reasons, since they have no orchestrator `drive` verb and
+never could.
+
+## STEP 3 — MUTATION DEMONSTRATION, 2026-08-19
+
+Four mutations, each applied to a green tree, exit codes read UNPIPED (`cargo`
+run bare, `$?` captured immediately, output redirected to a file rather than
+piped), tree restored after each and re-verified green.
+
+| # | mutation | completeness gate | other gates |
+|---|---|---|---|
+| — | baseline, unmutated | **RC=0** | registry invariants RC=0 |
+| A | delete the `Tab` carve-out entry | **RC=101**, names `KeyCode::Tab` | — |
+| B | delete `menu_path` from the `approve` entry | not applicable | registry invariants **RC=101** at `:698`, naming `approve` |
+| C | add `KeyCode::Char('X') => Some(Quit)` to the handler | **RC=101**, names `KeyCode::Char('X')` | — |
+| D | delete the whole `quit` registry entry | **RC=0 — GREEN** | registry invariants **RC=101**; console-tui **RC=101** |
+| — | restored | **RC=0** | registry invariants RC=0 |
+
+Mutation A proves the fixture arm fails when an argued exclusion is withdrawn.
+Mutation C proves the FAIL-CLOSED property, which is the one the gate exists for:
+a key arm added tomorrow that is neither registered nor argued is a red build.
+
+**MUTATION D IS THE FINDING, and it corrects an assumption in this plan's own
+milestone text.** The milestone says to mutation-demonstrate by "deleting one
+carve-out entry and one registration". Deleting a registration NO LONGER reddens
+this gate, and that is a direct consequence of doing step 2 honestly rather than
+a defect.
+
+The gate's population is the key handler's literal arms. Before the rewire, `/`,
+`:`, `?` and `q` WERE literal arms, so un-registering one put it back in the
+population and turned the gate red. After the rewire they are resolved by the
+generic `KeyCode::Char(value)` arm, which the gate special-cases as the registry
+dispatch arm — so deleting the `quit` entry makes `q` a plain literal character
+and the gate sees nothing to complain about.
+
+**That is sound, but only because two invariants COMPOSE, and neither is
+sufficient alone.** The gate covers the handler side: nothing outside the
+registry is operator-reachable without an argued exclusion. `action_registry.rs`
+covers the registry side: `assert!(!spec.menu_path.is_empty())` means everything
+INSIDE the registry carries a menu path by construction. Together they give the
+milestone's property. Measured, mutation D was caught by
+`hotkey_and_id_lookups_round_trip_every_entry` and
+`only_global_staged_actions_answer_the_global_chord_lookup` (both added in step
+2), and by `keymap_maps_quit_and_ignores_unhandled_keys` and
+`the_invoker_quits_from_the_quit_row` in console-tui.
+
+**Do not "fix" this by re-adding literal arms so the gate can see them** — that
+would reinstate exactly the second encoding step 2 deleted. Record it instead, so
+nobody reads a green completeness gate as proof that a registration still exists.
+
+## STEP 4 — coverage, and what it forced, 2026-08-19
+
+The first full `just check` failed `check-coverage` with 8 nameable uncovered
+lines, ALL of them this slice's new code. Four were genuinely untested reachable
+paths; four were structurally DEAD arms. The dead ones were removed by
+restructuring rather than covered by contrived tests:
+
+- `global_input` was split into `global_interaction` (returning
+  `Option<TuiInteraction>`, `None` for quit) plus a thin wrapper, so the invoker
+  can branch on interaction-or-quit without a `TuiTerminalInput::Confirm` arm
+  that nothing can reach.
+- `global_action_for_chord` moved into `action_registry`, so
+  `control_chord_input` no longer carries a `Valve | DriverHandoff => None` arm
+  that is unreachable in the TUI (no per-item verb has a Control chord). In the
+  registry that same arm IS reachable and is now tested: plain `p` resolves to
+  the approve VALVE, so the global lookup declines it.
+- `staged_without_selection` became one shared stager for both the key path and
+  the invoker, so the `StagedAction::Global` arm is reached from both instead of
+  being dead in one of them.
+
+The four genuinely-untested paths got real tests, each covering behaviour worth
+pinning on its own: the invoker reaching a global action with NOTHING selected
+and an EMPTY event set, the invoker returning the Quit effect from the quit row,
+and Control chords on a non-character key and on an unbound character both being
+inert rather than swallowed.
+
+**A miss worth recording about method, not code.** The registry test module's
+import line was patched by exact-string replacement AFTER `cargo fmt` had already
+rewrapped it, so the replacement silently matched nothing. `cargo test -p
+console-tui` still passed, because it does not build console-application's TEST
+target — the break was invisible until the mutation run's own BASELINE came back
+RC=101 on an unmutated tree. Banking the baseline is what caught it: had the
+mutation script only run the mutated case, its RC=101 would have read as a
+successful demonstration when it was really a compile error.
