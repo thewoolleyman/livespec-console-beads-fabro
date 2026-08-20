@@ -1161,7 +1161,26 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     console.send_keys(&["Escape"])?;
     console.wait_for_settled("Views [focus]", RENDER_TIMEOUT)?;
     console.send_keys(&["Down", "Down"])?;
-    let board = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    // WAIT ON THE ASSERTED DATA, NOT ON THE VIEW LABEL. `view: Lanes` is CHROME:
+    // it appears the instant the view switches, before the board's projection
+    // catches up with the store. And `wait_for_settled` returns on the first frame
+    // that contains its needle AND equals the previous capture -- so a STALE board
+    // is STABLE, reads as "settled", and satisfies a chrome wait that the assertion
+    // below then rejects.
+    //
+    // That mismatch reddened master twice on 4d67a55 (run 32312176318, attempts 1
+    // and 2), failing a DIFFERENT tenant each attempt -- beta then alpha, which is
+    // the signature of a race rather than a regression. See
+    // livespec-console-beads-fabro-3l4j.
+    //
+    // This is the same defect 1f7cf9c fixed at step 3 of this walk, one step
+    // further along. Its reasoning names the property step 9 was losing: for
+    // lane-changing verbs "the screen IS the synchronisation" -- but only when the
+    // waited-on token is the lane DATA.
+    //
+    // It does NOT weaken the gate: an item that never ships still fails, now on a
+    // bounded timeout with the capture attached instead of on a stale frame.
+    let board = console.wait_for_settled("done (1)", RENDER_TIMEOUT)?;
     assert!(
         board.contains("done (1)"),
         "step 9: the board must show the shipped item in `done` for {tenant}:\n{board}"
