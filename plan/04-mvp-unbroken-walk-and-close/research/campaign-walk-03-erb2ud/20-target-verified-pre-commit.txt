@@ -1,0 +1,55 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | repo: livespec-console-beads-fabro | view: Lanes | attention: 92 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec) │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Men┌Work item: livespec-console-beads-fabro-5zjk5b──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌Vi│Adopt the charter gate in livespec-console-beads-fabro                                                                                                  │──┐
+│  │                                                                                                                                                        │e-│
+│  │id                   livespec-console-beads-fabro-5zjk5b                                                                                                │  │
+│> │repo                 livespec-console-beads-fabro                                                                                                       │  │
+│  │type                 task                                                                                                                               │  │
+│  │status               acceptance                                                                                                                         │  │
+│  │execution_state      -                                                                                                                                  │  │
+│  │lane                 acceptance                                                                                                                         │  │
+│  │rank                 a0                                                                                                                                 │  │
+│  │lane_reason          —                                                                                                                                  │  │
+│  │admission_policy     auto                                                                                                                               │  │
+│  │acceptance_policy    ai-then-human                                                                                                                      │  │
+│  │origin               freeform                                                                                                                           │  │
+│  │gap_id               —                                                                                                                                  │  │
+│  │assignee             fabro                                                                                                                              │  │
+│  │depends_on           livespec-dev-tooling-lwzbh5 (sibling_work_item)                                                                                    │  │
+│  │captured_at          2026-08-04T10:20:52Z                                                                                                               │  │
+│  │resolution           —                                                                                                                                  │  │
+│  │reason               —                                                                                                                                  │  │
+│  │audit                —                                                                                                                                  │  │
+│  │superseded_by        —                                                                                                                                  │  │
+│  │spec_commitment_hint —                                                                                                                                  │  │
+│  │supersedes           —                                                                                                                                  │  │
+│  │blocked_reason       —                                                                                                                                  │  │
+│  │factory_safety       —                                                                                                                                  │  │
+│  │                                                                                                                                                        │  │
+│  │acceptance_criteria                                                                                                                                     │  │
+│  │AGENTS.md carries the three-way-control rider (with indented-literal-block escape) landed FIRST; a just check-charters target wired into the check list │  │
+│  │scans exactly 2 enumerated charters and reports 0 defects; just check green; NO pytest file, NO glob narrowing, NO .github/workflows/ edits (report any │  │
+│  │needed workflow/check-ci-parity diff for maintainer-side landing); pin bump dropped (already at v1.29.1).                                               │  │
+│  │                                                                                                                                                        │  │
+│  │notes                                                                                                                                                   │  │
+│  │SCOPE AMENDED BY MAINTAINER RULING (2026-08-20, panel-sharpened; full record                                                                            │  │
+│  │tmp/overseer/foreman/panels/livespec-console-beads-fabro-5zjk5b/panel-6a8fca67960fb010fd4931efbf86012b04fe789f05f44fe60d45014ae96223af.json). Approved  │  │
+│  │with changes, superseding the rotted 2026-08-04 measurements: (1) Blocker is MET — livespec-overseer's gate imports the shipped                         │  │
+│  │livespec_dev_tooling.charters surface, and this repo ALREADY pins v1.29.1 (pin bump + uv.lock refresh: DROPPED, already done). (2)                      │  │
+│  │.ai/supervisor-protocol.md exists since 2026-08-16 (1d5332d): the scan now finds 2 charters, not 1 — do NOT narrow globs to satisfy the old 'exactly 1' │  │
+│  │criterion. (3) This repo has NO pytest (no dependency, none in justfile or CI): the filed tests/prompts/*.py gate would be run by nothing. Land the gate│  │
+│  │as a `just check-charters` target wired into the `check` list instead. (4) The AGENTS.md three-way-control rider (+ indented-literal-block escape) lands│  │
+│  │FIRST, as filed and non-negotiable. (5) Factory slices never touch .github/workflows/ — report any needed workflow diff (incl. check-ci-parity          │  │
+│  │accounting) for maintainer-side landing.                                                                                                                │  │
+│  │                                                                                                                                                        │  │
+│  │description                                                                                                                                             │  │
+│  │Blocked by 'Re-point livespec-overseer's charter gate at the shipped detector module' (livespec-overseer tenant) - do not start until that slice proves │  │
+│  │the shipped surface.                                                                                                                                    │  │
+│  │                                                                                                                                                        │  │
+│  │up/down scroll | esc to close                                                                                                                           │  │
+└──└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘──┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down scroll | PgUp/PgDn page | esc close item                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

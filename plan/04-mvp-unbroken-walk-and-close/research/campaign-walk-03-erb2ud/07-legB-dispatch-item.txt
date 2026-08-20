@@ -1,0 +1,52 @@
+┌LiveSpec Console───────────────────────────────────────────────────────────────────────────────────────┐
+│repo: livespec-console-beads-fabro | attention: 94 | sources: 2 unavailable                            │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views───────────┐┌Lane: ready [focus]──────────────────────────────────────────────────────────────────┐
+│  Attention     ││  livespec-console-beads-fabro-ekb5vq  rank a0  [ready]  [bug] clippy match_same_arms│
+│  Spec          ││> livespec-console-beads-fabro-erb2ud  rank a0  [ready]  [bug] BacklogBounce is the a│
+│> Lanes         ││  livespec-console-beads-fabro-iofvz2  rank a0  [ready]  [bug] Operator commands queu│
+│  Events        ││  livespec-console-beads-fabro-qeqax3  rank a0  [ready]  [bug] Command-spine timestam│
+│  Repos         ││  livespec-console-beads-fabro-wnlcnj  rank a0  [ready]  Drop the redundant check-tes│
+│  Settings      ││  livespec-console-beads-fabro-zbnnlv  rank a0  [ready]  [bug] command_worker_loop ca│
+│                ││  livespec-console-beads-fabro-4s1h  rank ~  [ready]  [bug] The ready lane displays o│
+│                ││  livespec-console-beads-fabro-5zjk5b  rank ~  [ready]  ranked ready item (rank a0, o│
+│                ││  livespec-console-beads-fabro-zfcp  rank ~  [ready]  AGENTS.md's bd list survey form│
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+│                ││                                                                                     │
+└────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
+┌Status─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘

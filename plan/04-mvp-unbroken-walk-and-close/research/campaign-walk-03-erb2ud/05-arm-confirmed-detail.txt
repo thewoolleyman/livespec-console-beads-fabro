@@ -1,0 +1,52 @@
+┌LiveSpec Console───────────────────────────────────────────────────────────────────────────────────────┐
+│repo: livespec-console-beads-fabro | attention: 94 | factory: drain completed | sources: 2 unavailable │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Men┌Work item: livespec-console-beads-fabro-erb2ud───────────────────────────────────────────────────┐
+┌Vi│[bug] BacklogBounce is the adapter's FALLBACK event kind - every non-outcome dispatch journal    │──┐
+│  │entry renders as 'Dispatcher backlog bounce', a false lifecycle claim about a running item       │ms│
+│  │                                                                                                 │ a│
+│> │id                   livespec-console-beads-fabro-erb2ud                                         │eu│
+│  │repo                 livespec-console-beads-fabro                                                │am│
+│  │type                 bug                                                                         │es│
+│  │status               ready                                                                       │ca│
+│  │execution_state      -                                                                           │ o│
+│  │lane                 ready                                                                       │ o│
+│  │rank                 a0                                                                          │rm│
+│  │lane_reason          —                                                                           │  │
+│  │admission_policy     — (not emitted; console assumes manual)                                     │  │
+│  │acceptance_policy    ai-then-human                                                               │  │
+│  │origin               freeform                                                                    │  │
+│  │gap_id               —                                                                           │  │
+│  │assignee             —                                                                           │  │
+│  │depends_on           —                                                                           │  │
+│  │captured_at          2026-08-20T16:08:29Z                                                        │  │
+│  │resolution           —                                                                           │  │
+│  │reason               —                                                                           │  │
+│  │audit                —                                                                           │  │
+│  │superseded_by        —                                                                           │  │
+│  │spec_commitment_hint —                                                                           │  │
+│  │supersedes           —                                                                           │  │
+│  │blocked_reason       —                                                                           │  │
+│  │factory_safety       —                                                                           │  │
+│  │                                                                                                 │  │
+│  │acceptance_criteria                                                                              │  │
+│  │A sizing-warn, dispatch-id, or loop-pick journal entry processed by the adapter does not produce │  │
+│  │a BacklogBounce event.                                                                           │  │
+│  │BacklogBounce is emitted only for an entry that actually records a bounce to backlog.            │  │
+│  │A test forces at least one non-outcome journal entry through the adapter and fails if any        │  │
+│  │lifecycle-transition label renders for it.                                                       │  │
+│  │Existing bounce rendering for genuine bounces is unchanged.                                      │  │
+│  │just check green.                                                                                │  │
+│  │                                                                                                 │  │
+│  │notes                                                                                            │  │
+│  │—                                                                                                │  │
+│  │                                                                                                 │  │
+│  │description                                                                                      │  │
+│  │Repo: livespec-console-beads-fabro. Found live by plan 04's milestone-1 walk                     │  │
+│  │(2026-08-20T15:57:58Z) and confirmed from source; evidence lands with plan 04's walk record.     │  │
+│  │                                                                                                 │  │
+│  │up/down scroll | esc to close                                                                    │  │
+└──└─────────────────────────────────────────────────────────────────────────────────────────────────┘──┘
+┌Status─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down scroll | PgUp/PgDn page | esc close item                                                       │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘

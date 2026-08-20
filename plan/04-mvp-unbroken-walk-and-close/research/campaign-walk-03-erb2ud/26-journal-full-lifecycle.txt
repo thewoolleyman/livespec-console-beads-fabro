@@ -1,0 +1,30 @@
+2026-08-20T23:02:25Z ledger-admit {}
+2026-08-20T23:02:25Z loop-pick {}
+2026-08-20T23:02:28Z sizing-warn {}
+2026-08-20T23:02:29Z dispatch-id {}
+2026-08-20T23:17:44Z fabro-run {"exit_code": 0}
+2026-08-20T23:17:44Z fabro-inspect {"exit_code": 0}
+2026-08-20T23:17:45Z pr-view {"exit_code": 0}
+2026-08-20T23:17:46Z pr-view {"exit_code": 0}
+2026-08-20T23:18:17Z pr-view {"exit_code": 0}
+2026-08-20T23:18:48Z pr-view {"exit_code": 0}
+2026-08-20T23:19:19Z pr-view {"exit_code": 0}
+2026-08-20T23:19:50Z pr-view {"exit_code": 0}
+2026-08-20T23:19:51Z pull-primary {"exit_code": 0}
+2026-08-20T23:19:51Z janitor-checkout-preclean {"exit_code": 128}
+2026-08-20T23:19:51Z janitor-checkout-add {"exit_code": 0}
+2026-08-20T23:19:51Z janitor-checkout-trust {"exit_code": 0}
+2026-08-20T23:19:52Z janitor-checkout-bootstrap {"exit_code": 0}
+2026-08-20T23:19:54Z janitor-core-provision {"exit_code": 0}
+2026-08-20T23:30:51Z janitor-post-merge {"exit_code": 0}
+2026-08-20T23:30:53Z janitor-checkout-remove {"exit_code": 0}
+2026-08-20T23:30:54Z ledger-complete {}
+2026-08-20T23:30:54Z acceptance-ai-pass {}
+2026-08-20T23:30:54Z acceptance-parked {"acceptance_verdict": "PASS", "policy": "ai-then-human"}
+2026-08-20T23:30:54Z outcome {"outcome": {"detail": "merged, post-merge janitor green", "fabro_failure_category": null, "fabro_failure_cause": null, "fabro_failure_signature": null, "fabro_run_id": "01M0GPJSMYGV76MMJ10F7W1N3V", "merge_sha": "e073d76
+2026-08-20T23:30:55Z calibration {}
+2026-08-20T23:30:56Z review-gate-telemetry {}
+2026-08-20T23:30:57Z cost-gate-skipped {}
+2026-08-20T23:30:57Z self-update-skipped {}
+2026-08-20T23:30:57Z run-turn-telemetry-check {}
+2026-08-20T23:30:57Z reflection {}
