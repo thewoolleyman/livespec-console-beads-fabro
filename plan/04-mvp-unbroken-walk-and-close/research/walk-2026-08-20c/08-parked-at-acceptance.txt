@@ -1,0 +1,50 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Lanes | attention: 92 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec)                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views───────────┐┌Lanes [focus]───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Attention     ││  backlog (38)                                                                                                                                                                      │
+│  Spec          ││    - livespec-console-beads-fabro-b3k5hi [backlog]  console-happy-path-mvp — drive one filed backlog item through groom → approve → dispatch → active → acceptance entirely in the │
+│> Lanes         ││    - livespec-console-beads-fabro-czcjh5 [backlog]  Event-identity integrity — injective, transition-fresh event/version derivation                                                │
+│  Events        ││    - livespec-console-beads-fabro-vc7lmq [backlog]  Attention detail for 'blocked: needs-human' is useless — fabricates a non-working `fabro attach <event-id>`; detail pane should│
+│  Repos         ││  pending-approval (0)                                                                                                                                                              │
+│  Settings      ││> ready (10)                                                                                                                                                                        │
+│                ││    - livespec-console-beads-fabro-ekb5vq [ready]  [bug] clippy match_same_arms and the 100% llvm-cov line gate can each be satisfied only by violating the other, and the way out i│
+│                ││    - livespec-console-beads-fabro-erb2ud [ready]  [bug] BacklogBounce is the adapter's FALLBACK event kind - every non-outcome dispatch journal entry renders as 'Dispatcher backlo│
+│                ││    - livespec-console-beads-fabro-qeqax3 [ready]  [bug] Command-spine timestamps are degenerate: commands issued minutes apart share requested_at to the nanosecond, so the spine c│
+│                ││  active (0)                                                                                                                                                                        │
+│                ││  acceptance (1)                                                                                                                                                                    │
+│                ││    - livespec-console-beads-fabro-5deyqc [acceptance]  [bug] An acceptance policy armed mid-dispatch confirms as completed but silently cannot gate the run in flight - the human g│
+│                ││  blocked (0)                                                                                                                                                                       │
+│                ││  done (162)                                                                                                                                                                        │
+│                ││    - livespec-console-beads-fabro-25rvmd [done]  Source-availability tally: re-down after recovery deduplicates in a persistent cross-run store (transition-epoch follow-up to B1) │
+│                ││    - livespec-console-beads-fabro-2ckgiy [done]  [bug] The `h` driver-handoff verb shipped completely undocumented — docs/ never mentions it, and the hint lockstep gate cannot cat│
+│                ││    - livespec-console-beads-fabro-3lxx7t [done]  [bug] The drain marks every picked item `active` immediately but launches them serially, so `active` means CLAIMED not EXECUTING —│
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+└────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter drill | ? help | q quit                                                                                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
