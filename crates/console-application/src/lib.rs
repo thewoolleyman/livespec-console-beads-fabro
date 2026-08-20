@@ -1846,12 +1846,14 @@ impl TuiScreenModel {
         // overlay still owns the hint line first, so it is matched ahead of the
         // Header-focus branch.
         match (&self.overlay, self.focus) {
-            (TuiOverlay::None, FocusPane::Header) => Cow::Borrowed(HEADER_FOOTER_HINT),
+            (TuiOverlay::None, FocusPane::Header) => {
+                Cow::Owned(with_global_status_hint(HEADER_FOOTER_PREFIX))
+            }
             (TuiOverlay::CommandModal { .. }, _) if self.selected_operator_action().is_none() => {
                 model_pane_footer_hint(self)
             }
             (TuiOverlay::None, _) => model_pane_footer_hint(self),
-            (overlay, _) => Cow::Borrowed(overlay_footer_hint(overlay)),
+            (overlay, _) => overlay_footer_hint(overlay),
         }
     }
 
@@ -1881,26 +1883,42 @@ impl TuiScreenModel {
 /// The Status-line shortcut hints shown while the Header pane holds focus with no
 /// overlay open: the horizontal-scroll and leave keys that act on the focused
 /// header. Non-empty and context-specific, like every other focused-pane hint.
-const HEADER_FOOTER_HINT: &str = "left/right scroll | esc/tab leave | ? help | q quit";
+const HEADER_FOOTER_PREFIX: &str = "left/right scroll | esc/tab leave";
+
+fn with_global_status_hint(prefix: &str) -> String {
+    format!("{prefix} | {}", action_registry::global_status_hint())
+}
 
 /// The Status-line shortcut hints an open modal/overlay owns while it holds
 /// focus, per the TUI Contract / Scenario 19: the returned keys are the ones
 /// that act in that overlay, replacing the pane's hints until it closes. The
 /// `None` arm is the harmless fallback for a caller that routed a closed
 /// overlay here; the no-overlay hints come from [`model_pane_footer_hint`].
-const fn overlay_footer_hint(overlay: &TuiOverlay) -> &'static str {
+fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
     match overlay {
-        TuiOverlay::None => "? help | q quit",
-        TuiOverlay::Search { .. } => "type to search | esc cancel",
-        TuiOverlay::CommandPalette { .. } => "type a command | esc cancel",
-        TuiOverlay::CommandModal { .. } => "up/down select action | enter run | esc cancel",
-        TuiOverlay::ActionInvoker { .. } => "up/down select | enter stage | esc cancel",
-        TuiOverlay::Menu { .. } => "left/right menu | up/down select | enter stage | esc cancel",
-        TuiOverlay::ValveConfirm { .. } => "up/down change | enter confirm | esc cancel",
-        TuiOverlay::DriverHandoff { .. } => "enter copy sent to terminal | esc cancel",
-        TuiOverlay::WorkItemDetail { .. } => "up/down scroll | PgUp/PgDn page | esc close item",
+        TuiOverlay::None => Cow::Owned(action_registry::global_status_hint()),
+        TuiOverlay::Search { .. } => Cow::Borrowed("type to search | esc cancel"),
+        TuiOverlay::CommandPalette { .. } => Cow::Borrowed("type a command | esc cancel"),
+        TuiOverlay::CommandModal { .. } => {
+            Cow::Borrowed("up/down select action | enter run | esc cancel")
+        }
+        TuiOverlay::ActionInvoker { .. } => {
+            Cow::Borrowed("up/down select | enter stage | esc cancel")
+        }
+        TuiOverlay::Menu { .. } => {
+            Cow::Borrowed("left/right menu | up/down select | enter stage | esc cancel")
+        }
+        TuiOverlay::ValveConfirm { .. } => {
+            Cow::Borrowed("up/down change | enter confirm | esc cancel")
+        }
+        TuiOverlay::DriverHandoff { .. } => {
+            Cow::Borrowed("enter copy sent to terminal | esc cancel")
+        }
+        TuiOverlay::WorkItemDetail { .. } => {
+            Cow::Borrowed("up/down scroll | PgUp/PgDn page | esc close item")
+        }
         TuiOverlay::Help { .. } => {
-            "left/right pane | up/down act | PgUp/PgDn page | esc close help"
+            Cow::Borrowed("left/right pane | up/down act | PgUp/PgDn page | esc close help")
         }
     }
 }
@@ -1944,28 +1962,30 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
         // work-item selected (a non-item Attention row, the lane overview, an
         // empty drilled-in lane) the per-item keys are alike inert and none is
         // advertised.
-        TuiView::Attention => model
-            .selected_action_context()
-            .map_or(Cow::Borrowed("? help | q quit"), |ctx| {
-                Cow::Owned(action_registry::selected_item_hint(&ctx))
-            }),
+        TuiView::Attention => model.selected_action_context().map_or_else(
+            || Cow::Owned(action_registry::global_status_hint()),
+            |ctx| Cow::Owned(action_registry::selected_item_hint(&ctx)),
+        ),
         TuiView::Lanes => match model.lane_focus {
             // The lane OVERVIEW selects a LANE, never a work-item, so every
             // per-item key is inert here and none is advertised.
-            LaneFocus::Overview => Cow::Borrowed("up/down move | enter drill | ? help | q quit"),
+            LaneFocus::Overview => {
+                Cow::Owned(with_global_status_hint("up/down move | enter drill"))
+            }
             // An EMPTY drilled-in lane: nothing is selected, so `enter` opens
             // nothing, every per-item key is inert, AND up/down have no row to
             // move over. Only stepping back out does anything.
-            LaneFocus::Lane(_lane) => model
-                .selected_action_context()
-                .map_or(Cow::Borrowed("esc lane list | ? help | q quit"), |ctx| {
-                    Cow::Owned(action_registry::selected_item_hint(&ctx))
-                }),
+            LaneFocus::Lane(_lane) => model.selected_action_context().map_or_else(
+                || Cow::Owned(with_global_status_hint("esc lane list")),
+                |ctx| Cow::Owned(action_registry::selected_item_hint(&ctx)),
+            ),
         },
-        TuiView::Settings => Cow::Borrowed("up/down move | enter/space edit row | ? help | q quit"),
-        TuiView::Spec | TuiView::Events | TuiView::Repos => {
-            Cow::Borrowed("up/down move | left/right focus | / search | ? help | q quit")
-        }
+        TuiView::Settings => Cow::Owned(with_global_status_hint(
+            "up/down move | enter/space edit row",
+        )),
+        TuiView::Spec | TuiView::Events | TuiView::Repos => Cow::Owned(with_global_status_hint(
+            "up/down move | left/right focus | / search",
+        )),
     }
 }
 
@@ -14569,9 +14589,13 @@ mod tests {
             },
         ];
 
-        let hints: Vec<&'static str> = overlays.iter().map(super::overlay_footer_hint).collect();
+        let hints: Vec<String> = overlays
+            .iter()
+            .map(super::overlay_footer_hint)
+            .map(std::borrow::Cow::into_owned)
+            .collect();
 
-        let distinct: std::collections::BTreeSet<&&str> = hints.iter().collect();
+        let distinct: std::collections::BTreeSet<&String> = hints.iter().collect();
         assert_eq!(distinct.len(), hints.len(), "{hints:?}");
         // The open overlays all say how to LEAVE; only the closed state does not.
         for (overlay, hint) in overlays.iter().zip(&hints) {

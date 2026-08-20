@@ -23,17 +23,19 @@
 //! completeness because an omitted row cannot be caught by comparing only the
 //! hint strings that the doc chose to quote.
 //!
-//! Since the hints became a registry DERIVATION rather than string literals, a
-//! third arm binds every selected-work-item row to the availability context it
-//! documents and asserts the quoted hint EQUALS the derivation for that
+//! Since the hints became a registry DERIVATION rather than string literals,
+//! extra arms bind documented rows to the availability/model context they
+//! describe and assert the quoted hint EQUALS the rendered derivation for that
 //! context — bidirectional per documented row, which the grep arm cannot be.
-//! (The grep arm still guards the non-item rows, whose strings remain source
-//! literals.)
 
 use std::path::{Path, PathBuf};
 
 use console_application::action_registry::{ActionContext, ActionSurface, selected_item_hint};
 use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
+use console_application::{
+    FocusPane, LaneFocus, PendingValve, TuiInteractionState, TuiOverlay, TuiView,
+    build_tui_model_for_state,
+};
 
 /// Where the hints are produced (`footer_hint` / `pane_footer_hint`).
 const HINT_SOURCE: &str = "crates/console-application/src/lib.rs";
@@ -82,6 +84,68 @@ fn documented_hints(doc: &str) -> Vec<String> {
 /// insensitive to how a string literal was wrapped in the source.
 fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn documented_model_hint(label: &str) -> Option<String> {
+    let state = match label {
+        "Header focused" => {
+            TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Header)
+        }
+        "Attention, no work-item selected" => TuiInteractionState::new(0, TuiOverlay::None),
+        "Lanes, lane overview" => {
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+        }
+        "Lanes, drilled into an empty lane" => {
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
+        }
+        "Settings" => TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None),
+        "Spec, Events, Repos" => TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None),
+        "Search open" => TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: String::new(),
+            },
+        ),
+        "Command palette open" => TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandPalette {
+                query: String::new(),
+            },
+        ),
+        "Action invoker open" => {
+            TuiInteractionState::new(0, TuiOverlay::ActionInvoker { selected_action: 0 })
+        }
+        "Command modal open" => TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        ),
+        "Valve confirm open" => TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+            },
+        ),
+        "Work-item record open" => TuiInteractionState::new(
+            0,
+            TuiOverlay::WorkItemDetail {
+                work_item_id: String::new(),
+                scroll: 0,
+            },
+        ),
+        "Help open" => TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                focus: console_application::HelpFocus::Menu,
+                selected_section: 0,
+                scroll: 0,
+            },
+        ),
+        _other => return None,
+    };
+    Some(build_tui_model_for_state(&[], &state).footer().into_owned())
 }
 
 fn documented_contexts(doc: &str) -> Vec<String> {
@@ -155,10 +219,14 @@ fn every_documented_status_hint_exists_in_the_source() -> std::io::Result<()> {
     // whitespace. Collapse every whitespace run on both sides so the comparison
     // is about the WORDS, not about how the literal happens to be wrapped.
     let folded = collapse_whitespace(&source.replace("\\\n", " "));
-    let missing: Vec<String> = hints
-        .iter()
-        .filter(|hint| !folded.contains(&collapse_whitespace(hint)))
-        .cloned()
+    let missing: Vec<String> = documented_context_hints(&doc)
+        .into_iter()
+        .filter(|(_context, hint)| hint.contains('|'))
+        .filter(|(context, hint)| {
+            !folded.contains(&collapse_whitespace(hint))
+                && documented_model_hint(context).is_none_or(|rendered| rendered != *hint)
+        })
+        .map(|(_context, hint)| hint)
         .collect();
 
     assert!(
