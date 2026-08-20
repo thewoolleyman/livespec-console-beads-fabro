@@ -284,15 +284,20 @@ pub enum OperatorAction {
     OpenFabroAttach,
     /// Copy fabro attach variant.
     CopyFabroAttach,
+    /// A registered operator action, referenced by its stable registry id.
+    Registered(&'static str),
 }
 
 impl OperatorAction {
     #[must_use]
     /// Return the stable display label for this value.
-    pub const fn label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::OpenFabroAttach => "Open Fabro attach",
             Self::CopyFabroAttach => "Copy Fabro attach",
+            Self::Registered(id) => {
+                action_registry::action_for_id(id).map_or(id, |spec| spec.label)
+            }
         }
     }
 }
@@ -4157,6 +4162,7 @@ pub fn resolve_selected_operator_action(
                 .ok_or(ApplicationError::NoSelectedOperatorAction)?;
             OperatorActionOutcome::CopyAttachCommand(command.to_owned())
         }
+        OperatorAction::Registered(_id) => return Err(ApplicationError::UnavailableOperatorAction),
     })
 }
 
@@ -6972,14 +6978,35 @@ fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) ->
     let attach_command = fabro_run
         .as_deref()
         .map(|run_id| format!("fabro attach {run_id}"));
+    let actions = attention_detail_actions(entry);
     AttentionDetail::new(
         entry.snapshot.repo().to_owned(),
         entry.snapshot.work_item_id().to_owned(),
         fabro_run.unwrap_or_else(|| "-".to_owned()),
         attach_command,
         latest_timeline(events, event.stream_id(), 3),
-        Vec::new(),
+        actions,
     )
+}
+
+fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
+    let item = LaneWorkItem::from_snapshot(&entry.snapshot, LaneExecutionState::NotActive);
+    let ctx = action_registry::ActionContext::for_item(
+        &item,
+        action_registry::ActionSurface::Attention,
+        0,
+    );
+    action_registry::ACTION_REGISTRY
+        .iter()
+        .filter(|spec| {
+            matches!(
+                spec.staging,
+                action_registry::ActionStaging::Valve(_)
+                    | action_registry::ActionStaging::DriverHandoff
+            ) && (spec.availability)(&ctx)
+        })
+        .map(|spec| OperatorAction::Registered(spec.id))
+        .collect()
 }
 
 fn view_summary_items(active_view: TuiView, events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
@@ -7887,6 +7914,7 @@ mod tests {
         assert_eq!(model.focus(), FocusPane::Nav);
         assert_eq!(model.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
+        assert_eq!(registry_attention_actions_for_model(&model), []);
         assert_eq!(
             model.header(),
             "fleet: livespec | mode: tui | repo: - | view: Attention | attention: 0"
@@ -9070,7 +9098,7 @@ mod tests {
     fn tui_command_modal_stays_closed_without_attention_actions() {
         let events = fabro_gate_events();
         let state = reduce_tui_interaction(
-            &TuiInteractionState::new(0, TuiOverlay::None),
+            &TuiInteractionState::new(2, TuiOverlay::None),
             &events,
             TuiInteraction::OpenCommandModal,
         );
@@ -9088,20 +9116,26 @@ mod tests {
     fn tui_command_modal_clamps_to_available_actions() {
         let events = fabro_gate_events();
         let state = TuiInteractionState::new(
-            1,
+            0,
             TuiOverlay::CommandModal {
                 selected_action_index: 99,
             },
         );
         let model = build_tui_model_for_state(&events, &state);
+        let registry_actions = registry_attention_actions_for_model(&model);
+        let last_action = registry_actions.len().saturating_sub(1);
+        assert!(last_action > 0, "{last_action}");
 
         assert_eq!(
             model.overlay(),
             &TuiOverlay::CommandModal {
-                selected_action_index: 0
+                selected_action_index: last_action
             }
         );
-        assert_eq!(model.selected_operator_action(), None);
+        assert_eq!(
+            model.selected_operator_action(),
+            registry_actions.get(last_action).copied()
+        );
     }
 
     #[test]
@@ -9671,6 +9705,20 @@ mod tests {
                 overlay: TuiOverlay::CommandModal {
                     selected_action_index: 1,
                 },
+                ..model.clone()
+            },
+            "operator",
+        );
+        let registered = resolve_selected_operator_action(
+            &TuiScreenModel {
+                detail: Some(AttentionDetail::new(
+                    "repo".to_owned(),
+                    "work-item".to_owned(),
+                    "run".to_owned(),
+                    None,
+                    vec![],
+                    vec![OperatorAction::Registered("approve")],
+                )),
                 ..model
             },
             "operator",
@@ -9698,6 +9746,7 @@ mod tests {
                 .and_then(OperatorActionOutcome::attach_command),
             Some("fabro attach run")
         );
+        assert_eq!(registered, Err(ApplicationError::UnavailableOperatorAction));
         assert_eq!(
             OperatorActionOutcome::PersistCommand(factory_drain_test_command()).attach_command(),
             None
@@ -9940,8 +9989,25 @@ mod tests {
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
-            Some([].as_slice())
+            Some(registry_attention_actions_for_model(model).as_slice())
         );
+    }
+
+    fn registry_attention_actions_for_model(model: &super::TuiScreenModel) -> Vec<OperatorAction> {
+        let Some(ctx) = model.selected_action_context() else {
+            return Vec::new();
+        };
+        action_registry::ACTION_REGISTRY
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.staging,
+                    action_registry::ActionStaging::Valve(_)
+                        | action_registry::ActionStaging::DriverHandoff
+                ) && (spec.availability)(&ctx)
+            })
+            .map(|spec| OperatorAction::Registered(spec.id))
+            .collect()
     }
 
     fn assert_lane_attention_timeline(model: &super::TuiScreenModel) {
@@ -14853,26 +14919,33 @@ mod tests {
     }
 
     #[test]
-    fn command_modal_does_not_open_without_actions() {
+    fn command_modal_opens_for_registry_derived_attention_actions() {
         let events = [lane_event(
             "evt_1",
-            "console-blocked",
-            Lane::Blocked,
-            Some(LaneReason::NeedsHuman),
+            "console-pending",
+            Lane::PendingApproval,
+            None,
             "a1",
-            "blocked",
+            "pending-approval",
         )];
         let state = TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None)
             .with_focus(FocusPane::Content);
         let model = build_tui_model_for_state(&events, &state);
+        let registry_actions = registry_attention_actions_for_model(&model);
+        assert!(!registry_actions.is_empty());
         assert_eq!(
             model.detail().map(AttentionDetail::actions),
-            Some([].as_slice())
+            Some(registry_actions.as_slice())
         );
 
         let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenCommandModal);
 
-        assert_eq!(opened.overlay(), &TuiOverlay::None);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::CommandModal {
+                selected_action_index: 0
+            }
+        );
     }
 
     #[test]
