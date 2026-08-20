@@ -1,0 +1,46 @@
+{
+  "candidates": [
+    {
+      "action": "implement",
+      "dispatch_factory": null,
+      "origin": "freeform",
+      "rank": "a0",
+      "reason": "ranked ready item (rank a0, origin freeform)",
+      "urgency": "medium",
+      "work_item_ref": "livespec-console-beads-fabro-5zjk5b"
+    },
+    {
+      "action": "implement",
+      "dispatch_factory": null,
+      "origin": "freeform",
+      "rank": "a0",
+      "reason": "ranked ready item (rank a0, origin freeform)",
+      "urgency": "medium",
+      "work_item_ref": "livespec-console-beads-fabro-ekb5vq"
+    },
+    {
+      "action": "implement",
+      "dispatch_factory": null,
+      "origin": "freeform",
+      "rank": "a0",
+      "reason": "ranked ready item (rank a0, origin freeform)",
+      "urgency": "medium",
+      "work_item_ref": "livespec-console-beads-fabro-erb2ud"
+    },
+    {
+      "action": "implement",
+      "dispatch_factory": null,
+      "origin": "freeform",
+      "rank": "a0",
+      "reason": "ranked ready item (rank a0, origin freeform)",
+      "urgency": "medium",
+      "work_item_ref": "livespec-console-beads-fabro-iofvz2"
+    }
+  ],
+  "pagination": {
+    "has_more": true,
+    "limit": 4,
+    "offset": 0,
+    "total": 11
+  }
+}

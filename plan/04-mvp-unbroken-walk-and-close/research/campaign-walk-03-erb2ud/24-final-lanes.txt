@@ -1,0 +1,55 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | repo: livespec-console-beads-fabro | view: Lanes | attention: 93 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec) │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views───────────┐┌Lanes [focus]───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Attention     ││  backlog (37)                                                                                                                              │
+│  Spec          ││    - livespec-console-beads-fabro-b3k5hi [backlog]  console-happy-path-mvp — drive one filed backlog item through groom → approve → dispatc│
+│> Lanes         ││    - livespec-console-beads-fabro-czcjh5 [backlog]  Event-identity integrity — injective, transition-fresh event/version derivation        │
+│  Events        ││    - livespec-console-beads-fabro-p4bvrt [backlog]  arch-check has no falsifiable zero-Beads-knowledge rule — the console's load-bearing in│
+│  Repos         ││  pending-approval (0)                                                                                                                      │
+│  Settings      ││  ready (12)                                                                                                                                │
+│                ││    - livespec-console-beads-fabro-erb2ud [ready]  [bug] BacklogBounce is the adapter's FALLBACK event kind - every non-outcome dispatch jou│
+│                ││    - livespec-console-beads-fabro-iofvz2 [ready]  [bug] Operator commands queue behind a running drain on the serial command worker - accep│
+│                ││    - livespec-console-beads-fabro-qeqax3 [ready]  [bug] Command-spine timestamps are degenerate: commands issued minutes apart share reques│
+│                ││  active (0)                                                                                                                                │
+│                ││> acceptance (0)                                                                                                                            │
+│                ││  blocked (0)                                                                                                                               │
+│                ││  done (175)                                                                                                                                │
+│                ││    - livespec-console-beads-fabro-25rvmd [done]  Source-availability tally: re-down after recovery deduplicates in a persistent cross-run s│
+│                ││    - livespec-console-beads-fabro-2ckgiy [done]  [bug] The `h` driver-handoff verb shipped completely undocumented — docs/ never mentions i│
+│                ││    - livespec-console-beads-fabro-3lxx7t [done]  [bug] The drain marks every picked item `active` immediately but launches them serially, s│
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+│                ││                                                                                                                                            │
+└────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter drill | ? help | q quit                                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

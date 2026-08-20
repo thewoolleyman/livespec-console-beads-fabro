@@ -1,0 +1,4 @@
+command_id                                                                                   type                                aggregate_id                         status     requested_at                    updated_at                    
+-------------------------------------------------------------------------------------------  ----------------------------------  -----------------------------------  ---------  ------------------------------  ------------------------------
+cmd_work_item_set_acceptance_requested_livespec-console-beads-fabro-erb2ud_ai-then-human_89  work_item.set_acceptance_requested  livespec-console-beads-fabro-erb2ud  completed  2026-08-20T22:48:29.528869692Z  2026-08-20T22:50:44.19852016Z 
+cmd_factory_dispatch_item_requested_livespec-console-beads-fabro-erb2ud_90                   factory.dispatch_item_requested     livespec-console-beads-fabro-erb2ud  not_wired  2026-08-20T22:48:29.528869692Z  2026-08-20T22:52:37.680806245Z

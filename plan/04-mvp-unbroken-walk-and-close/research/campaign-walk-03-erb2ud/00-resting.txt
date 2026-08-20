@@ -1,0 +1,52 @@
+┌LiveSpec Console───────────────────────────────────────────────────────────────────────────────────────┐
+│repo: livespec-console-beads-fabro | attention: 94 | factory: drain completed | sources: 2 unavailable │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views [focus]───┐┌Attention─────────────────────────────┐┌Detail───────────────────────────────────────┐
+│> Attention     ││> Blocked: needs-human                █│Repo: livespec-console-beads-fabro           │
+│  Spec          ││  Host-route work-item livespec-consol█│Work item: livespec-console-beads-fabro-et3.7│
+│  Lanes         ││  Host-route work-item livespec-consol█│Fabro run: -                                 │
+│  Events        ││  Host-route work-item livespec-consol█│Timeline:                                    │
+│  Repos         ││  Release stranded active work-item li█│-                                            │
+│  Settings      ││  Open PR #317 (test: close four more █│evt:orchestrator:livespec-console-beads-fabro│
+│                ││  Remove clean worktree /home/ubuntu/.█│:9222046808729264585:completeness            │
+│                ││  Remove clean worktree /home/ubuntu/.█│[orchestrator] Source completeness finding   │
+│                ││  Remove clean worktree /home/ubuntu/.█│-                                            │
+│                ││  Remove clean worktree /home/ubuntu/.█│evt:orchestrator:livespec-console-beads-fabro│
+│                ││  Remove clean worktree /home/ubuntu/.█│:livespec-console-beads-fabro-nyh:92220468087│
+│                ││  Remove clean worktree /home/ubuntu/.█│29264585:snapshot [orchestrator] Work-item   │
+│                ││  Remove clean worktree /home/ubuntu/.█│snapshot                                     │
+│                ││  Remove clean worktree /home/ubuntu/.█│-                                            │
+│                ││  Remove clean worktree /home/ubuntu/.║│evt:orchestrator:livespec-console-beads-fabro│
+│                ││  Remove clean worktree /home/ubuntu/.║│:9215045139624301513:completeness            │
+│                ││  Remove clean worktree /home/ubuntu/.║│[orchestrator] Source completeness finding   │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Prune stale worktree metadata for /h║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+│                ││  Remove clean worktree /home/ubuntu/.║│                                             │
+└────────────────┘└──────────────────────────────────────┘└─────────────────────────────────────────────┘
+┌Status─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter open | ? help | q quit                                                            │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘

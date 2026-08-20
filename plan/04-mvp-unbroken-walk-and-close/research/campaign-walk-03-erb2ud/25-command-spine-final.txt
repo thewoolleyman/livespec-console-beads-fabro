@@ -1,0 +1,6 @@
+command_id                                                                                   type                                status     requested_at                    updated_at                    
+-------------------------------------------------------------------------------------------  ----------------------------------  ---------  ------------------------------  ------------------------------
+cmd_work_item_set_acceptance_requested_livespec-console-beads-fabro-erb2ud_ai-then-human_89  work_item.set_acceptance_requested  completed  2026-08-20T22:48:29.528869692Z  2026-08-20T22:50:44.19852016Z 
+cmd_factory_dispatch_item_requested_livespec-console-beads-fabro-erb2ud_90                   factory.dispatch_item_requested     not_wired  2026-08-20T22:48:29.528869692Z  2026-08-20T22:52:37.680806245Z
+cmd_work_item_set_acceptance_requested_livespec-console-beads-fabro-5zjk5b_ai-then-human_91  work_item.set_acceptance_requested  completed  2026-08-20T22:48:29.528869692Z  2026-08-20T23:01:20.420349089Z
+cmd_work_item_accept_requested_livespec-console-beads-fabro-5zjk5b                           work_item.accept_requested          completed  2026-08-20T22:48:29.528869692Z  2026-08-20T23:32:38.258035175Z

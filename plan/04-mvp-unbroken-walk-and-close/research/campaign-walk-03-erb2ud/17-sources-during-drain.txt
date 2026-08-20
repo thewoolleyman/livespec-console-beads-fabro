@@ -1,0 +1,2 @@
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Lanes | attention: 93 | factory: drain in flight | sources: 1 unavailable (livespec) │
+│fleet: livespec | repo: livespec-console-beads-fabro | view: Lanes | attention: 93 | factory: drain in flight | sources: 2 unavailable (dispatcher, livespec) │
