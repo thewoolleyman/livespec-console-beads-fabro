@@ -210,6 +210,7 @@ check:
         check-behavior-coverage
         check-completeness
         check-spec-governance-default-block
+        check-charters
         check-baseline
         check-shell-quality
         check-plan-no-tombstone
@@ -307,6 +308,58 @@ check-completeness:
 
 check-spec-governance-default-block:
     uv run python dev-tooling/check-spec-governance-default-block.py
+
+# errexit is deliberately omitted so every defect is printed before the gate fails.
+check-charters:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    uv run python - <<'PY'
+    from pathlib import Path
+    import sys
+
+    from returns.pipeline import is_successful
+
+    from livespec_dev_tooling.charters import CHARTER_GLOBS, DETECTORS, charters_in, defects_in
+
+
+    EXPECTED_CHARTERS = [
+        ".ai/supervisor-protocol.md",
+        "plan/archive/console-happy-path-mvp/supervisor-handoff.md",
+    ]
+
+
+    root = Path(".")
+    result = charters_in(root=root)
+    if not is_successful(result):
+        failure = result.failure()._inner_value
+        print(f"charter scan failed at {failure.path}: {failure.detail}", file=sys.stderr)
+        sys.exit(1)
+
+    charters = [path.relative_to(root).as_posix() for path in result.unwrap()._inner_value]
+    print(f"charter globs: {', '.join(CHARTER_GLOBS)}")
+    print(f"detectors: {len(DETECTORS)}")
+    print(f"charters scanned: {len(charters)}")
+    for charter in charters:
+        print(f"  {charter}")
+
+    if charters != EXPECTED_CHARTERS:
+        print(
+            "expected exactly these charters: "
+            + ", ".join(EXPECTED_CHARTERS),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    defects = []
+    for charter in charters:
+        text = (root / charter).read_text(encoding="utf-8")
+        defects.extend(f"{charter}: {defect}" for defect in defects_in(text=text))
+
+    print(f"defects: {len(defects)}")
+    if defects:
+        print("\n".join(defects), file=sys.stderr)
+        sys.exit(1)
+    PY
 
 # Refresh the captured orchestrator config-manifest the completeness gate reads,
 # from the LIVE orchestrator drive surface, DIGEST-STAMPED with the declared key
