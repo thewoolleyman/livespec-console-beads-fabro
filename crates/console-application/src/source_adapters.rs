@@ -1726,6 +1726,74 @@ fn optional_text(value: Option<&str>, error: AdapterError) -> AdapterResult<Opti
 /// (no previous checkpoint to carry forward). It does not advance any real
 /// source position; it only records that the adapter ran and observed nothing.
 const NOT_OBSERVED_CHECKPOINT: &str = "not_observed";
+const AVAILABILITY_CHECKPOINT_SCHEMA_VERSION: u64 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AvailabilityState {
+    Observed,
+    NotObserved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct AvailabilityCheckpoint {
+    schema_version: u64,
+    source_checkpoint: Option<String>,
+    availability: AvailabilityState,
+    transition_epoch: u64,
+}
+
+impl AvailabilityCheckpoint {
+    fn from_previous(previous_checkpoint: Option<&str>) -> (Option<String>, Option<Self>) {
+        let Some(previous) = previous_checkpoint else {
+            return (None, None);
+        };
+        match serde_json::from_str::<Self>(previous) {
+            Ok(checkpoint)
+                if checkpoint.schema_version == AVAILABILITY_CHECKPOINT_SCHEMA_VERSION =>
+            {
+                (checkpoint.source_checkpoint.clone(), Some(checkpoint))
+            }
+            // Legacy checkpoints, unsupported checkpoint schemas, and durable
+            // checkpoint resets fall back to the prior source position only.
+            // Without the availability epoch state, the next availability
+            // marker must start a fresh local epoch instead of pretending it can
+            // prove continuity with older marker rows.
+            Ok(_) | Err(_) => (Some(previous.to_owned()), None),
+        }
+    }
+}
+
+fn availability_transition(
+    previous_checkpoint: Option<&str>,
+    next_state: AvailabilityState,
+    next_source_checkpoint: &str,
+) -> (String, u64) {
+    let (_previous_source_checkpoint, previous) =
+        AvailabilityCheckpoint::from_previous(previous_checkpoint);
+    let transition_epoch = match previous {
+        Some(checkpoint) if checkpoint.availability == next_state => checkpoint.transition_epoch,
+        Some(checkpoint) => checkpoint.transition_epoch.saturating_add(1),
+        None => 1,
+    };
+    let availability = match next_state {
+        AvailabilityState::Observed => "observed",
+        AvailabilityState::NotObserved => "not_observed",
+    };
+    let checkpoint = serde_json::json!({
+        "schema_version": AVAILABILITY_CHECKPOINT_SCHEMA_VERSION,
+        "source_checkpoint": next_source_checkpoint,
+        "availability": availability,
+        "transition_epoch": transition_epoch,
+    });
+    (checkpoint.to_string(), transition_epoch)
+}
+
+fn source_checkpoint_or(previous_checkpoint: Option<&str>, fallback: &str) -> String {
+    let (source_checkpoint, _availability_checkpoint) =
+        AvailabilityCheckpoint::from_previous(previous_checkpoint);
+    source_checkpoint.unwrap_or_else(|| fallback.to_owned())
+}
 
 /// Outcome of probing a real source instance.
 ///
@@ -1927,11 +1995,20 @@ impl<'a> ObservedSourceAdapter<'a> {
     }
 
     fn not_observed_poll(&self, previous_checkpoint: Option<&str>, reason: &str) -> AdapterPoll {
-        let checkpoint = previous_checkpoint
-            .map_or_else(|| NOT_OBSERVED_CHECKPOINT.to_owned(), ToOwned::to_owned);
+        let source_checkpoint = source_checkpoint_or(previous_checkpoint, NOT_OBSERVED_CHECKPOINT);
+        let (checkpoint, transition_epoch) = availability_transition(
+            previous_checkpoint,
+            AvailabilityState::NotObserved,
+            &source_checkpoint,
+        );
         AdapterPoll {
             checkpoint,
-            events: vec![not_observed_event(self.source, &self.repo, reason)],
+            events: vec![not_observed_event(
+                self.source,
+                &self.repo,
+                reason,
+                transition_epoch,
+            )],
         }
     }
 
@@ -1943,11 +2020,19 @@ impl<'a> ObservedSourceAdapter<'a> {
     /// work-item ledger, zero open pull requests, or a factory that has not yet
     /// written a dispatch journal) is never dressed as a cockpit-blind screen.
     fn idle_poll(&self, previous_checkpoint: Option<&str>) -> AdapterPoll {
-        let checkpoint = previous_checkpoint
-            .map_or_else(|| OBSERVED_IDLE_CHECKPOINT.to_owned(), ToOwned::to_owned);
+        let source_checkpoint = source_checkpoint_or(previous_checkpoint, OBSERVED_IDLE_CHECKPOINT);
+        let (checkpoint, transition_epoch) = availability_transition(
+            previous_checkpoint,
+            AvailabilityState::Observed,
+            &source_checkpoint,
+        );
         AdapterPoll {
             checkpoint,
-            events: vec![source_observed_event(self.source, &self.repo)],
+            events: vec![source_observed_event(
+                self.source,
+                &self.repo,
+                transition_epoch,
+            )],
         }
     }
 }
@@ -1972,7 +2057,12 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 let observed = ObservedSource::new(self.source, &self.repo, &stdout);
                 match (self.normalize)(&observed) {
                     Ok(parsed) if !parsed.events.is_empty() => {
-                        AdapterPoll::new(&parsed.checkpoint, parsed.events)
+                        let (checkpoint, _transition_epoch) = availability_transition(
+                            previous,
+                            AvailabilityState::Observed,
+                            &parsed.checkpoint,
+                        );
+                        AdapterPoll::new(&checkpoint, parsed.events)
                     }
                     Ok(_empty) => {
                         Ok(self.not_observed_poll(previous, "source produced no records"))
@@ -2079,11 +2169,15 @@ fn not_observed_event(
     source: SourceAdapterKind,
     repo: &str,
     reason: &str,
+    transition_epoch: u64,
 ) -> NormalizedSourceEvent {
     let finding = NotObservedFinding::new(repo, source, reason);
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
-            format!("evt:{}:{repo}:not_observed", source.source_name()),
+            format!(
+                "evt:{}:{repo}:not_observed:{transition_epoch}",
+                source.source_name()
+            ),
             1,
             "source".to_owned(),
             EventType::SourceNotObservedFindingObserved,
@@ -2091,23 +2185,33 @@ fn not_observed_event(
             repo_stream(repo),
             1,
         ),
-        format!("{}:{repo}:not_observed", source.source_name()),
+        format!(
+            "{}:{repo}:not_observed:{transition_epoch}",
+            source.source_name()
+        ),
         SourcePayload::NotObservedFinding(finding),
     )
 }
 
 /// The positive `source.observed_finding_observed` marker for an
-/// observed-and-idle poll. Its identity is stable per (source, repo), so
-/// repeated idle polls deduplicate to one stored fact; a later cycle's marker
-/// still lands AFTER an intervening not-observed finding (higher `global_seq`),
-/// so the latest-per-source projection (the `unavailable_sources` fold in the
-/// crate root) clears the source. The observed source and repo travel on the
-/// event envelope (`source`, `stream_id`), so the marker payload carries no
-/// data of its own -- it persists as `{}`.
-fn source_observed_event(source: SourceAdapterKind, repo: &str) -> NormalizedSourceEvent {
+/// observed-and-idle poll. Its identity is stable within one observed epoch, so
+/// repeated idle polls deduplicate to one stored fact; after an intervening
+/// not-observed transition the next observed marker receives a fresh epoch and
+/// lands at a higher `global_seq`, letting the latest-per-source projection
+/// clear the source. The observed source and repo travel on the event envelope
+/// (`source`, `stream_id`), so the marker payload carries no data of its own --
+/// it persists as `{}`.
+fn source_observed_event(
+    source: SourceAdapterKind,
+    repo: &str,
+    transition_epoch: u64,
+) -> NormalizedSourceEvent {
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
-            format!("evt:{}:{repo}:observed_idle", source.source_name()),
+            format!(
+                "evt:{}:{repo}:observed_idle:{transition_epoch}",
+                source.source_name()
+            ),
             1,
             "source".to_owned(),
             EventType::SourceObservedFindingObserved,
@@ -2115,7 +2219,10 @@ fn source_observed_event(source: SourceAdapterKind, repo: &str) -> NormalizedSou
             repo_stream(repo),
             1,
         ),
-        format!("{}:{repo}:observed_idle", source.source_name()),
+        format!(
+            "{}:{repo}:observed_idle:{transition_epoch}",
+            source.source_name()
+        ),
         SourcePayload::ObservedIdle,
     )
 }
@@ -3282,7 +3389,10 @@ mod tests {
 
         let poll = adapter.poll(&cold_request()?)?;
 
-        assert_eq!(poll.checkpoint(), "ck-observed");
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("ck-observed")
+        );
         assert_eq!(poll.events().len(), 2);
         assert_eq!(
             poll.events()[0].event().event_type(),
@@ -3302,7 +3412,10 @@ mod tests {
 
         let poll = adapter.poll(&cold_request()?)?;
 
-        assert_eq!(poll.checkpoint(), "ck-observed");
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("ck-observed")
+        );
         assert_eq!(
             probe.calls.borrow().as_slice(),
             ["file:/var/log/dispatcher.jsonl"]
@@ -3340,6 +3453,28 @@ mod tests {
         assert_eq!(event.payload(), &SourcePayload::ObservedIdle);
     }
 
+    fn availability_checkpoint_field(checkpoint: &str, field: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(checkpoint)
+            .ok()
+            .and_then(|value| value.get(field).cloned())
+            .and_then(|value| value.as_str().map(str::to_owned))
+    }
+
+    fn availability_checkpoint_epoch(checkpoint: &str) -> Option<u64> {
+        serde_json::from_str::<serde_json::Value>(checkpoint)
+            .ok()
+            .and_then(|value| value.get("transition_epoch").cloned())
+            .and_then(|value| value.as_u64())
+    }
+
+    fn request_after(checkpoint: &str) -> AdapterPollRequest {
+        AdapterPollRequest {
+            adapter_id: "orchestrator:console".to_owned(),
+            checkpoint: Some(checkpoint.to_owned()),
+            safety_window: 1,
+        }
+    }
+
     #[test]
     fn observed_source_adapter_emits_not_observed_when_unavailable() -> AdapterResult<()> {
         let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
@@ -3347,7 +3482,15 @@ mod tests {
 
         let poll = adapter.poll(&cold_request()?)?;
 
-        assert_eq!(poll.checkpoint(), "not_observed");
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("not_observed")
+        );
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "availability").as_deref(),
+            Some("not_observed")
+        );
+        assert_eq!(availability_checkpoint_epoch(poll.checkpoint()), Some(1));
         assert_not_observed(&poll, "orchestrator not found");
         Ok(())
     }
@@ -3360,7 +3503,10 @@ mod tests {
 
         let poll = adapter.poll(&request)?;
 
-        assert_eq!(poll.checkpoint(), "prior-checkpoint");
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("prior-checkpoint")
+        );
         assert_not_observed(&poll, "orchestrator not found");
         Ok(())
     }
@@ -3415,7 +3561,10 @@ mod tests {
             assert_observed_idle(&poll);
             // The idle poll carries a stable checkpoint (cold start) and emits no
             // not-observed finding, so an empty source never bloats the header.
-            assert_eq!(poll.checkpoint(), "observed_idle");
+            assert_eq!(
+                availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+                Some("observed_idle")
+            );
         }
         Ok(())
     }
@@ -3431,7 +3580,48 @@ mod tests {
         let poll = adapter.poll(&request)?;
 
         assert_observed_idle(&poll);
-        assert_eq!(poll.checkpoint(), "ck-prior");
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("ck-prior")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn availability_transition_epoch_keys_only_state_changes() -> AdapterResult<()> {
+        let down_probe =
+            StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
+        let down_adapter = orchestrator_command_adapter(&down_probe)?;
+        let up_probe = StubProbe::command(SourceProbeOutcome::observed("[]", true));
+        let up_adapter = orchestrator_command_adapter(&up_probe)?;
+
+        let down_1 = down_adapter.poll(&cold_request()?)?;
+        let down_2 = down_adapter.poll(&request_after(down_1.checkpoint()))?;
+        let up_1 = up_adapter.poll(&request_after(down_2.checkpoint()))?;
+        let up_2 = up_adapter.poll(&request_after(up_1.checkpoint()))?;
+        let down_3 = down_adapter.poll(&request_after(up_2.checkpoint()))?;
+
+        let source_event_ids = [
+            down_1.events()[0].source_event_id(),
+            down_2.events()[0].source_event_id(),
+            up_1.events()[0].source_event_id(),
+            up_2.events()[0].source_event_id(),
+            down_3.events()[0].source_event_id(),
+        ];
+
+        assert_eq!(source_event_ids[0], source_event_ids[1]);
+        assert_eq!(source_event_ids[2], source_event_ids[3]);
+        assert_ne!(source_event_ids[0], source_event_ids[2]);
+        assert_ne!(source_event_ids[0], source_event_ids[4]);
+        assert_ne!(source_event_ids[2], source_event_ids[4]);
+        assert_eq!(
+            source_event_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
         Ok(())
     }
 
@@ -3444,7 +3634,10 @@ mod tests {
 
         let poll = adapter.poll(&cold_request()?)?;
 
-        assert_eq!(poll.checkpoint(), "ck-observed");
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("ck-observed")
+        );
         assert_eq!(
             poll.events()[0].event().event_type(),
             &EventType::WorkItemSnapshotObserved

@@ -12130,6 +12130,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unavailable_tally_counts_a_fresh_re_down_after_recovery() {
+        // Persistent stores deduplicate by (source, source_event_id), so a
+        // re-down transition must arrive as a fresh row after the recovery
+        // observation. Given that stream shape, the header reflects the latest
+        // poll outcome even when an older positive source snapshot exists.
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_livespec_down_epoch_1",
+                EventType::SourceNotObservedFindingObserved,
+                "livespec",
+            ),
+            ConsoleEvent::fixture(
+                "evt_livespec_snapshot_stale_positive",
+                EventType::LivespecNextSnapshotObserved,
+                "livespec",
+            ),
+            ConsoleEvent::fixture(
+                "evt_livespec_observed_epoch_2",
+                EventType::SourceObservedFindingObserved,
+                "livespec",
+            ),
+            ConsoleEvent::fixture(
+                "evt_livespec_down_epoch_3",
+                EventType::SourceNotObservedFindingObserved,
+                "livespec",
+            ),
+        ];
+
+        assert_eq!(
+            build_tui_model(&events, 0).unavailable_sources(),
+            ["livespec".to_owned()]
+        );
+    }
+
     /// A model whose selected repo is `repo` and whose header reports each name
     /// in `sources` as a not-observed (unavailable) backing source this cycle.
     fn blind_model(repo: &str, sources: &[&str]) -> TuiScreenModel {
