@@ -654,9 +654,8 @@ pub fn available_hint_tokens(ctx: &ActionContext) -> Vec<&'static str> {
         // hint, so it renders in menus and the invoker roster instead.
         //
         // Globals are excluded because this composes the PER-ITEM hint row.
-        // Their tokens are carried on their specs and the Status band still
-        // hard-codes `? help | q quit` alongside; re-pointing the band at these
-        // tokens is the Status-band slice's job, not this one's.
+        // Their tokens are carried on their specs and exposed through
+        // `global_status_hint_tokens` for the Status band's global suffix.
         .filter(|spec| {
             !matches!(spec.staging, ActionStaging::Global(_))
                 && !spec.hotkeys.is_empty()
@@ -666,25 +665,49 @@ pub fn available_hint_tokens(ctx: &ActionContext) -> Vec<&'static str> {
         .collect()
 }
 
+/// The global shortcut tokens the Status band carries for every pane.
+///
+/// The permanent menu bar makes the menu taxonomy continuously visible, so this
+/// row carries only the always-live modal/exit shortcuts that stay useful beside
+/// pane-local hints. It still derives from [`ACTION_REGISTRY`], not a parallel
+/// Status-band string.
+#[must_use]
+pub fn global_status_hint_tokens() -> Vec<&'static str> {
+    ACTION_REGISTRY
+        .iter()
+        .filter(|spec| {
+            matches!(
+                spec.staging,
+                ActionStaging::Global(GlobalAction::OpenHelp | GlobalAction::Quit)
+            )
+        })
+        .map(|spec| spec.hint_token)
+        .collect()
+}
+
+/// The joined global Status-band suffix, derived from the registry.
+#[must_use]
+pub fn global_status_hint() -> String {
+    global_status_hint_tokens().join(" | ")
+}
+
 /// The Status-line hint for a selected work-item, derived from the registry.
 ///
-/// The navigation prefix and the trailing help/quit keys are context data, not
-/// registered actions; the action tokens between them derive from
-/// [`available_hint_tokens`]. A drilled-in lane whose selection admits no
+/// The navigation prefix is pane context; the per-item action tokens derive from
+/// [`available_hint_tokens`], and the global suffix derives from
+/// [`global_status_hint_tokens`]. A drilled-in lane whose selection admits no
 /// action renders without the up/down fragment, reproducing the pinned
 /// terminal-lane hint exactly.
 #[must_use]
 pub fn selected_item_hint(ctx: &ActionContext) -> String {
     let tokens = available_hint_tokens(ctx);
-    let (prefix, suffix) = match ctx.surface {
-        ActionSurface::Attention => ("up/down move | enter open", "? help | q quit"),
+    let suffix = global_status_hint();
+    let prefix = match ctx.surface {
+        ActionSurface::Attention => "up/down move | enter open",
         ActionSurface::LaneDrill if tokens.is_empty() => {
-            return "enter item | esc lane list | ? help | q quit".to_owned();
+            return format!("enter item | esc lane list | {suffix}");
         }
-        ActionSurface::LaneDrill => (
-            "up/down move | enter item | esc lane list",
-            "? help | q quit",
-        ),
+        ActionSurface::LaneDrill => "up/down move | enter item | esc lane list",
     };
     if tokens.is_empty() {
         return format!("{prefix} | {suffix}");
@@ -782,8 +805,9 @@ pub enum StagedAction {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTION_REGISTRY, ActionContext, ActionSurface, GlobalAction, KeyChord, action_for_chord,
-        action_for_id, action_offered_on_surface, global_action_for_chord, menu_actions, menu_tree,
+        ACTION_REGISTRY, ActionContext, ActionStaging, ActionSurface, GlobalAction, KeyChord,
+        action_for_chord, action_for_id, action_offered_on_surface, global_action_for_chord,
+        global_status_hint_tokens, menu_actions, menu_tree,
     };
     use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 
@@ -923,6 +947,23 @@ mod tests {
         // And the driver handoff, the other non-global staging.
         assert_eq!(global_action_for_chord(KeyChord::plain('h')), None);
         assert_eq!(global_action_for_chord(KeyChord::plain('z')), None);
+    }
+
+    #[test]
+    fn global_status_hint_tokens_derive_from_the_registry() {
+        let tokens = global_status_hint_tokens();
+        let expected: Vec<&str> = ACTION_REGISTRY
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.staging,
+                    ActionStaging::Global(GlobalAction::OpenHelp | GlobalAction::Quit)
+                )
+            })
+            .map(|spec| spec.hint_token)
+            .collect();
+        assert_eq!(tokens, expected);
+        assert_eq!(tokens, ["? help", "q quit"]);
     }
 
     #[test]

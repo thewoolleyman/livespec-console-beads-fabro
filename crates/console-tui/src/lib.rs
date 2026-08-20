@@ -1104,14 +1104,22 @@ pub fn render_model(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(3),
         ])
         .split(area);
     let header_max_scroll = render_header(model, vertical[0], buffer);
-    let detail_max_scroll = render_body(model, vertical[1], buffer);
-    render_footer(model, vertical[2], buffer);
-    let overlay_extents = render_overlay(model, area, buffer);
+    render_menu_bar(model, vertical[1], buffer);
+    let detail_max_scroll = render_body(model, vertical[2], buffer);
+    render_footer(model, vertical[3], buffer);
+    let menu_area = Rect::new(
+        area.x,
+        vertical[1].y,
+        area.width,
+        vertical[1].height.saturating_add(vertical[2].height),
+    );
+    let overlay_extents = render_overlay(model, area, menu_area, buffer);
     RenderScrollExtents {
         detail_max_scroll,
         header_max_scroll,
@@ -1158,6 +1166,42 @@ fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usi
         .block(Block::new().borders(Borders::ALL).title(title))
         .render(area, buffer);
     max_scroll
+}
+
+fn render_menu_bar(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    let selected_top = match model.overlay() {
+        TuiOverlay::Menu { top, .. } => Some(*top),
+        TuiOverlay::None
+        | TuiOverlay::Search { .. }
+        | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::ValveConfirm { .. }
+        | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::Help { .. } => None,
+    };
+    render_menu_bar_for_top(selected_top, area, buffer);
+}
+
+fn render_menu_bar_for_top(selected_top: Option<usize>, area: Rect, buffer: &mut Buffer) {
+    let tree = action_registry::menu_tree();
+    let selected_top = selected_top.map(|top| top.min(tree.len().saturating_sub(1)));
+    let bar: String = tree
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            if Some(index) == selected_top {
+                format!("[{}]", node.label)
+            } else {
+                format!(" {} ", node.label)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bar_rect = Rect::new(area.x, area.y, area.width, 1.min(area.height));
+    Clear.render(bar_rect, buffer);
+    Widget::render(Line::from(format!("Menu: {bar}")), bar_rect, buffer);
 }
 
 /// Render the body panes and return the Detail pane's maximum scroll offset
@@ -1382,7 +1426,12 @@ fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> OverlayScrollExtents {
+fn render_overlay(
+    model: &TuiScreenModel,
+    area: Rect,
+    menu_area: Rect,
+    buffer: &mut Buffer,
+) -> OverlayScrollExtents {
     match model.overlay() {
         TuiOverlay::None => OverlayScrollExtents::ZERO,
         TuiOverlay::Search { query } => {
@@ -1409,7 +1458,7 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> Ov
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::Menu { top, selected } => {
-            render_menu_overlay(model, *top, *selected, area, buffer);
+            render_menu_overlay(model, *top, *selected, menu_area, buffer);
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::DriverHandoff { command } => {
@@ -2134,22 +2183,7 @@ fn render_menu_overlay(
     // guard is worse than a total expression that simply renders nothing.
     let top = top.min(tree.len().saturating_sub(1));
     let node = tree.get(top);
-    let bar: String = tree
-        .iter()
-        .enumerate()
-        .map(|(index, node)| {
-            if index == top {
-                format!("[{}]", node.label)
-            } else {
-                format!(" {} ", node.label)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let bar_rect = Rect::new(area.x, area.y, area.width, 1.min(area.height));
-    Clear.render(bar_rect, buffer);
-    Widget::render(Line::from(format!("Menu: {bar}")), bar_rect, buffer);
+    render_menu_bar_for_top(Some(top), area, buffer);
 
     if area.height <= 1 {
         return;
@@ -3784,6 +3818,19 @@ mod tests {
             output.as_ref().map(|rendered| rendered.contains("Status")),
             Ok(true)
         );
+    }
+
+    #[test]
+    fn render_to_text_draws_the_menu_bar_without_opening_the_menu() {
+        let model = build_tui_model(&demo_events(), 0);
+        assert_eq!(model.overlay(), &TuiOverlay::None);
+
+        let output = render_to_text(&model, 96, 24);
+
+        let rendered = output.unwrap_or_default();
+        for top in action_registry::menu_tree() {
+            assert!(rendered.contains(top.label), "{}:\n{rendered}", top.label);
+        }
     }
 
     #[test]
