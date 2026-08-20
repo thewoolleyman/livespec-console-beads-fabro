@@ -109,6 +109,8 @@ pub enum ActionStaging {
     DriverHandoff,
     /// Persist a factory drain command for ready work.
     FactoryDrain,
+    /// Persist a factory dispatch command for the selected ready work-item.
+    FactoryDispatchItem,
     /// Perform a global action, which needs no selection.
     Global(GlobalAction),
 }
@@ -462,6 +464,18 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         availability: |ctx| ctx.ready_work_item_count > 0,
         staging: ActionStaging::FactoryDrain,
     },
+    ActionSpec {
+        id: "dispatch-selected-item",
+        label: "Dispatch selected item",
+        hint_token: "",
+        hotkeys: &[],
+        menu_path: &["Factory", "Dispatch"],
+        parameter: None,
+        availability: |ctx| {
+            ctx.lane == Lane::Ready && matches!(ctx.surface, ActionSurface::LaneDrill)
+        },
+        staging: ActionStaging::FactoryDispatchItem,
+    },
     // THE GLOBAL ACTIONS. Registered 2026-08-19 on the maintainer's chord
     // ruling, closing the menu-completeness gate's five red names.
     //
@@ -645,9 +659,10 @@ pub fn menu_actions(top_index: usize) -> Vec<&'static ActionSpec> {
 pub fn global_action_for_chord(chord: KeyChord) -> Option<GlobalAction> {
     match action_for_chord(chord)?.staging {
         ActionStaging::Global(action) => Some(action),
-        ActionStaging::Valve(_) | ActionStaging::DriverHandoff | ActionStaging::FactoryDrain => {
-            None
-        }
+        ActionStaging::Valve(_)
+        | ActionStaging::DriverHandoff
+        | ActionStaging::FactoryDrain
+        | ActionStaging::FactoryDispatchItem => None,
     }
 }
 
@@ -757,6 +772,7 @@ pub fn stage_action(spec: &ActionSpec, ctx: &ActionContext) -> Option<StagedActi
         ActionStaging::Valve(stager) => stager(ctx).map(StagedAction::Valve),
         ActionStaging::DriverHandoff => Some(StagedAction::DriverHandoff),
         ActionStaging::FactoryDrain => Some(StagedAction::FactoryDrain),
+        ActionStaging::FactoryDispatchItem => Some(StagedAction::FactoryDispatchItem),
         ActionStaging::Global(action) => Some(StagedAction::Global(action)),
     }
 }
@@ -832,6 +848,8 @@ pub enum StagedAction {
     DriverHandoff,
     /// Persist a factory drain command.
     FactoryDrain,
+    /// Persist a factory dispatch command for the selected ready work-item.
+    FactoryDispatchItem,
     /// Perform a global action, which needed no selection to stage.
     Global(GlobalAction),
 }
@@ -1048,13 +1066,17 @@ mod tests {
 
     #[test]
     fn surface_offering_matches_the_documented_surface_split() {
-        // The move-status and driver-handoff verbs are drilled-lane-only;
-        // every other action is offered on both per-item surfaces.
+        // Move-status, driver-handoff, and selected-item dispatch are
+        // drilled-lane-only; every other action is offered on both per-item
+        // surfaces.
         for spec in ACTION_REGISTRY {
             let lane_drill = action_offered_on_surface(spec, ActionSurface::LaneDrill);
             let attention = action_offered_on_surface(spec, ActionSurface::Attention);
             assert!(lane_drill, "{}", spec.id);
-            let drill_only = spec.id == "move" || spec.id == "driver-handoff";
+            let drill_only = matches!(
+                spec.id,
+                "move" | "driver-handoff" | "dispatch-selected-item"
+            );
             assert_eq!(attention, !drill_only, "{}", spec.id);
         }
     }
@@ -1111,6 +1133,32 @@ mod tests {
         let approve = action_for_id("approve");
         assert_eq!(approve.map(|spec| (spec.availability)(&manual)), Some(true));
         assert_eq!(approve.map(|spec| (spec.availability)(&auto)), Some(false));
+    }
+
+    #[test]
+    fn dispatch_selected_item_is_gated_on_a_selected_ready_item() {
+        let selected_ready = ActionContext {
+            lane: Lane::Ready,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: false,
+            awaits_scope_override: false,
+            ready_work_item_count: 0,
+            surface: ActionSurface::LaneDrill,
+        };
+        let selected_backlog = ActionContext {
+            lane: Lane::Backlog,
+            ..selected_ready
+        };
+        let availability = action_for_id("dispatch-selected-item").map(|action| {
+            assert_eq!(action.menu_path, &["Factory", "Dispatch"]);
+            (
+                (action.availability)(&selected_ready),
+                (action.availability)(&selected_backlog),
+            )
+        });
+
+        assert_eq!(availability, Some((true, false)));
     }
 
     #[test]

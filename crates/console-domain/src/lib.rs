@@ -152,6 +152,16 @@ pub enum EventType {
     FactoryDrainAwaitingHuman,
     /// Factory drain command could not reach a wired Dispatcher.
     FactoryDrainNotWired,
+    /// Selected-item factory dispatch completed successfully.
+    FactoryDispatchItemCompleted,
+    /// Selected-item factory dispatch failed.
+    FactoryDispatchItemFailed,
+    /// Selected-item factory dispatch command could not reach a wired Dispatcher.
+    FactoryDispatchItemNotWired,
+    /// Operator requested dispatch for one selected ready work-item.
+    FactoryDispatchItemRequested,
+    /// Selected-item factory dispatch started.
+    FactoryDispatchItemStarted,
     /// Operator requested a factory drain.
     FactoryDrainRequested,
     /// Factory drain started.
@@ -217,6 +227,11 @@ impl EventType {
             Self::FactoryDrainFailed => "factory.drain.failed",
             Self::FactoryDrainAwaitingHuman => "factory.drain.awaiting_human",
             Self::FactoryDrainNotWired => "factory.drain.not_wired",
+            Self::FactoryDispatchItemCompleted => "factory.dispatch_item.completed",
+            Self::FactoryDispatchItemFailed => "factory.dispatch_item.failed",
+            Self::FactoryDispatchItemNotWired => "factory.dispatch_item.not_wired",
+            Self::FactoryDispatchItemRequested => "factory.dispatch_item_requested",
+            Self::FactoryDispatchItemStarted => "factory.dispatch_item.started",
             Self::FactoryDrainRequested => "factory.drain_requested",
             Self::FactoryDrainStarted => "factory.drain.started",
             Self::WorkItemActionStarted => "work_item.action.started",
@@ -253,6 +268,11 @@ impl EventType {
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
             "factory.drain.awaiting_human" => Some(Self::FactoryDrainAwaitingHuman),
             "factory.drain.not_wired" => Some(Self::FactoryDrainNotWired),
+            "factory.dispatch_item.completed" => Some(Self::FactoryDispatchItemCompleted),
+            "factory.dispatch_item.failed" => Some(Self::FactoryDispatchItemFailed),
+            "factory.dispatch_item.not_wired" => Some(Self::FactoryDispatchItemNotWired),
+            "factory.dispatch_item_requested" => Some(Self::FactoryDispatchItemRequested),
+            "factory.dispatch_item.started" => Some(Self::FactoryDispatchItemStarted),
             "factory.drain_requested" => Some(Self::FactoryDrainRequested),
             "factory.drain.started" => Some(Self::FactoryDrainStarted),
             "work_item.action.started" => Some(Self::WorkItemActionStarted),
@@ -340,6 +360,8 @@ impl CommandEnvelope {
 pub enum CommandType {
     /// Request to drain ready factory work through the Dispatcher.
     FactoryDrainRequested,
+    /// Request to dispatch one selected ready work-item through the Dispatcher.
+    FactoryDispatchItemRequested,
     /// Request to approve a `pending-approval` work-item -- the human approval
     /// act that maps onto the orchestrator's `approve:<work-item-id>` action.
     WorkItemApproveRequested,
@@ -405,6 +427,7 @@ impl CommandType {
     pub const fn contract_name(&self) -> &'static str {
         match self {
             Self::FactoryDrainRequested => "factory.drain_requested",
+            Self::FactoryDispatchItemRequested => "factory.dispatch_item_requested",
             Self::WorkItemApproveRequested => "work_item.approve_requested",
             Self::WorkItemAcceptRequested => "work_item.accept_requested",
             Self::WorkItemRejectRequested => "work_item.reject_requested",
@@ -427,7 +450,9 @@ impl CommandType {
     #[must_use]
     pub const fn context(&self) -> &'static str {
         match self {
-            Self::FactoryDrainRequested | Self::FactoryAutonomousDecisionReflected => "factory",
+            Self::FactoryDrainRequested
+            | Self::FactoryDispatchItemRequested
+            | Self::FactoryAutonomousDecisionReflected => "factory",
             Self::WorkItemApproveRequested
             | Self::WorkItemAcceptRequested
             | Self::WorkItemRejectRequested
@@ -626,6 +651,30 @@ mod tests {
     }
 
     #[test]
+    fn factory_dispatch_item_event_contract_names_are_stable() {
+        assert_eq!(
+            EventType::FactoryDispatchItemCompleted.contract_name(),
+            "factory.dispatch_item.completed"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemFailed.contract_name(),
+            "factory.dispatch_item.failed"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemNotWired.contract_name(),
+            "factory.dispatch_item.not_wired"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemRequested.contract_name(),
+            "factory.dispatch_item_requested"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemStarted.contract_name(),
+            "factory.dispatch_item.started"
+        );
+    }
+
+    #[test]
     fn event_type_contract_names_round_trip() {
         for event_type in [
             EventType::WorkItemSnapshotObserved,
@@ -638,6 +687,11 @@ mod tests {
             EventType::FactoryDrainFailed,
             EventType::FactoryDrainAwaitingHuman,
             EventType::FactoryDrainNotWired,
+            EventType::FactoryDispatchItemCompleted,
+            EventType::FactoryDispatchItemFailed,
+            EventType::FactoryDispatchItemNotWired,
+            EventType::FactoryDispatchItemRequested,
+            EventType::FactoryDispatchItemStarted,
             EventType::FactoryDrainRequested,
             EventType::FactoryDrainStarted,
             EventType::WorkItemActionStarted,
@@ -688,6 +742,10 @@ mod tests {
             "factory.drain_requested"
         );
         assert_eq!(
+            CommandType::FactoryDispatchItemRequested.contract_name(),
+            "factory.dispatch_item_requested"
+        );
+        assert_eq!(
             CommandType::WorkItemApproveRequested.contract_name(),
             "work_item.approve_requested"
         );
@@ -732,6 +790,10 @@ mod tests {
     #[test]
     fn command_type_contexts_are_bounded_context_names() {
         assert_eq!(CommandType::FactoryDrainRequested.context(), "factory");
+        assert_eq!(
+            CommandType::FactoryDispatchItemRequested.context(),
+            "factory"
+        );
         assert_eq!(CommandType::WorkItemApproveRequested.context(), "work_item");
         assert_eq!(CommandType::WorkItemAcceptRequested.context(), "work_item");
         assert_eq!(CommandType::WorkItemRejectRequested.context(), "work_item");
