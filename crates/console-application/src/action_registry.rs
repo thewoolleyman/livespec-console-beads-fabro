@@ -339,7 +339,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         id: "set-merge-on-review-cap",
-        label: "Set override",
+        label: "Set merge-on-review cap",
         hint_token: "g merge cap",
         hotkeys: &[KeyChord::plain('g')],
         menu_path: &["Work item", "Policy dials"],
@@ -363,7 +363,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         id: "set-review-fix-cap",
-        label: "Set override",
+        label: "Set review-fix cap",
         hint_token: "f fix cap",
         hotkeys: &[KeyChord::plain('f')],
         menu_path: &["Work item", "Policy dials"],
@@ -405,7 +405,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         id: "set-acceptance-rework-cap",
-        label: "Set override",
+        label: "Set acceptance-rework cap",
         hint_token: "k rework cap",
         hotkeys: &[KeyChord::plain('k')],
         menu_path: &["Work item", "Policy dials"],
@@ -852,9 +852,12 @@ mod tests {
         // a UNIQUE hotkey that cannot shadow a system key.
         let mut hotkeys = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
+        let mut labels = std::collections::BTreeMap::new();
         for spec in ACTION_REGISTRY {
             assert!(!spec.id.is_empty());
             assert!(!spec.label.is_empty());
+            let label_is_unique = labels.insert(spec.label, spec.id).is_none();
+            assert!(label_is_unique, "{}", spec.label);
             // A hint token is a KEY hint: keyed actions carry one, and a
             // menu/invoker-only action carries none.
             // Bound as a local so the assert fits on ONE line: rustfmt's
