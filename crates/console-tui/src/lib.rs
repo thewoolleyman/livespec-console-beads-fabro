@@ -20,12 +20,12 @@
 use console_application::source_adapters::Lane;
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
-    HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneFocus, LaneWorkItem, OperatorAction,
-    OperatorActionOutcome, PendingValve, PluginResolution, SettingRow, TimelineEntry,
-    TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
-    action_registry, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
-    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
-    resolve_selected_operator_action, resolve_valve_action,
+    HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus, LaneWorkItem,
+    OperatorAction, OperatorActionOutcome, PendingValve, PluginResolution, SettingRow,
+    TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
+    ViewSummaryItem, action_registry, build_tui_model_for_state, dispatcher_setting_rows,
+    header_help_section, reduce_tui_interaction, resolve_command_palette_action,
+    resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1521,6 +1521,7 @@ fn render_overlay(
             render_valve_confirm(
                 *valve,
                 model.selected_work_item_id().unwrap_or(""),
+                model.selected_work_item(),
                 overlay_rect(area),
                 buffer,
             );
@@ -1592,7 +1593,13 @@ fn full_width_overlay_rect(area: Rect) -> Rect {
     )
 }
 
-fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer: &mut Buffer) {
+fn render_valve_confirm(
+    valve: PendingValve,
+    work_item: &str,
+    selected_item: Option<&LaneWorkItem>,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
     Clear.render(area, buffer);
     let mut lines = vec![
         Line::from(format!("{} work-item", valve.valve_label())),
@@ -1609,10 +1616,28 @@ fn render_valve_confirm(valve: PendingValve, work_item: &str, area: Rect, buffer
                 .style(Style::new().add_modifier(Modifier::BOLD)),
         );
     }
+    if set_acceptance_cannot_gate_in_flight(valve, selected_item) {
+        lines.push(Line::from(
+            "Notice: this policy cannot gate the run in flight.",
+        ));
+    }
     lines.push(Line::from("Enter to confirm | Esc to cancel"));
     Paragraph::new(lines)
         .block(Block::new().borders(Borders::ALL).title("Valve"))
         .render(area, buffer);
+}
+
+fn set_acceptance_cannot_gate_in_flight(
+    valve: PendingValve,
+    selected_item: Option<&LaneWorkItem>,
+) -> bool {
+    matches!(valve, PendingValve::SetAcceptance(_))
+        && selected_item.is_some_and(|item| {
+            matches!(
+                item.execution_state(),
+                LaneExecutionState::Claimed | LaneExecutionState::Executing
+            )
+        })
 }
 
 /// The placeholder rendered for a record field the orchestrator did not emit.
@@ -7310,6 +7335,50 @@ mod tests {
                 .map(|r| r.contains("dangerous / use with caution")),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn set_acceptance_confirm_warns_when_selected_item_is_mid_dispatch() -> TuiRenderResult<()> {
+        let events = active_claim_execution_events().ok_or(TuiRenderError::EmptyArea)?;
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Active))
+            .with_selected_lane_item_index(2);
+        let hotkey_screen = build_tui_model_for_state(&events, &state);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Char('n')), &hotkey_screen),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenValveConfirm(PendingValve::SetAcceptance(
+                    AcceptancePolicy::AiThenHuman,
+                ))
+            ))
+        );
+
+        let modal_state = state.with_overlay(TuiOverlay::ValveConfirm {
+            valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+        });
+        let warning_screen = build_tui_model_for_state(&events, &modal_state);
+        let output = render_to_text(&warning_screen, 120, 30)?;
+
+        assert!(output.contains("Set acceptance work-item"));
+        assert!(output.contains("Target: console-executing"));
+        assert!(output.contains("Notice: this policy cannot gate the run in flight."));
+        Ok(())
+    }
+
+    #[test]
+    fn set_acceptance_confirm_on_idle_item_is_unchanged() -> TuiRenderResult<()> {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+            },
+        );
+        let modal = build_tui_model_for_state(&pending_events(), &state);
+        let output = render_to_text(&modal, 120, 30)?;
+
+        assert!(output.contains("Set acceptance work-item"));
+        assert!(!output.contains("cannot gate the run in flight"));
+        Ok(())
     }
 
     #[test]
