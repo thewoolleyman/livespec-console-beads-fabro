@@ -4695,16 +4695,22 @@ mod tests {
         Ok(())
     }
 
-    /// Build the `factory.drain_requested` effect the `:drain` command palette
-    /// produces, by driving the pure runtime's Confirm on a staged palette query —
-    /// the same key → palette → Confirm → effect path the interactive loop drives.
+    /// Build the `factory.drain_requested` effect the dispatch menu action
+    /// produces, by driving the pure runtime's Confirm on the registered menu
+    /// row — the same menu → Confirm → effect path the interactive loop drives.
     fn drain_effect(events: &[ConsoleEvent]) -> TuiRuntimeEffect {
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::CommandPalette {
-                query: "drain".to_owned(),
-            },
-        );
+        let (top, selected) = console_application::action_registry::menu_tree()
+            .iter()
+            .enumerate()
+            .find_map(|(top_index, _top)| {
+                console_application::action_registry::menu_actions(top_index)
+                    .iter()
+                    .position(|spec| spec.id == "dispatch-ready")
+                    .map(|action_index| (top_index, action_index))
+            })
+            .unwrap_or((0, 0));
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected });
         console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
             .effect()
             .clone()
@@ -4723,11 +4729,11 @@ mod tests {
         Ok(())
     }
 
-    /// Drive `count` `:drain` gestures through a store-backed sink and report the
-    /// drains the Dispatcher port observed alongside the drain commands that
-    /// actually landed in the store. The two together are what separates a drain
-    /// that LANDS from one the static-key dedupe swallowed: a deduped command
-    /// neither appends a row nor reaches the port.
+    /// Drive `count` dispatch-menu gestures through a store-backed sink and
+    /// report the drains the Dispatcher port observed alongside the drain
+    /// commands that actually landed in the store. The two together are what
+    /// separates a drain that LANDS from one the static-key dedupe swallowed: a
+    /// deduped command neither appends a row nor reaches the port.
     fn drive_drains(
         store: &mut SqliteEventStore,
         count: usize,
