@@ -1,10 +1,9 @@
-# Campaign lifecycle #2 — `4nrwmp` — PRE-ACCEPT LEGS ONLY
+# Campaign lifecycle #2 — `4nrwmp` — COMPLETE
 
-**Incomplete at the time these were landed.** The dispatch was still executing
-when this session wound down, so the human accept leg is NOT here. These captures
-are landed early precisely because they cannot be recreated: they record legs
-already performed, and they lived only in a session-local scratchpad that a
-restart destroys. The accept leg is the successor's to take and capture.
+**Complete.** The drain finished during session wind-down, so the human accept
+leg was taken before this session stopped. Every action was invoked from a menu,
+no hotkeys, no palette; the one non-menu step is the ranked-pick consult named
+below.
 
 Item: `livespec-console-beads-fabro-4nrwmp` — the R8 carrier (per-item dispatch).
 Walked 2026-08-20T21:50:55Z onward. `tmux capture-pane -p` (plain, no `-e`),
@@ -36,7 +35,16 @@ capstone clean by construction.
    work`, reached by `Left` then `Right`, no hotkey. Journal
    `loop-pick {budget: 1, picked: ["livespec-console-beads-fabro-4nrwmp"]}` at
    21:52:29Z — the armed item.
-3. **Executing** at wind-down: ~28 minutes elapsed, lock held, ledger `active`.
+3. **Ran ~40 minutes** to `completed`, then **parked at acceptance**
+   (`04-lanes.txt`: `acceptance (1)`; ledger `acceptance` at 22:32:39Z). The gate
+   held, because it was armed before the dispatch.
+4. **Accepted at the human valve, from the menu.** Leg A first
+   (`06-legA-acceptance.txt`): the acceptance lane offered `Accept work-item [c]`
+   and `Reject work-item [r]`, with `Approve` and the policy dials
+   `(unavailable here)`. Then leg B (`07-legB-accept.txt`): `Accept work-item` /
+   `Target: livespec-console-beads-fabro-4nrwmp`, read back before `Enter`.
+5. **Leg C**: `cmd_work_item_accept_requested_...4nrwmp` = `completed`; ledger
+   `closed` at 22:35:20Z — **by the human accept, not autonomously.**
 
 ## What leg B caught, on its first outing after the labels moved
 
@@ -77,3 +85,8 @@ parallel.
 | `01-ready-drilled.txt` | ready lane; target rendered **seventh** again |
 | `02-legB-arm.txt` | leg B — the read-back that caught the moved labels |
 | `03-dispatched.txt` | menu dispatch committed, `drain in flight` |
+| `04-lanes.txt` | parked at acceptance |
+| `05-acceptance-drilled.txt` | the item selected in the acceptance lane |
+| `06-legA-acceptance.txt` | leg A — exactly the two lane exits offered |
+| `07-legB-accept.txt` | leg B — target read back before commit |
+| `08-accepted.txt` / `08-timestamp.txt` | after the human accept |
