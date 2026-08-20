@@ -259,6 +259,15 @@ check-nextest:
 # capped by a recorded, reasoned disposition. See
 # tests/fixtures/coverage-unnameable-disposition.json and ledger item
 # livespec-console-beads-fabro-3yx.
+#
+# Coverage-pincer reminder: do not satisfy llvm-cov by fighting another gate. If
+# a grouped or-pattern arm (`A | B => ...`) is reported uncovered, keep the arm
+# grouped and exercise the untaken alternative; splitting identical arms trips
+# clippy `match_same_arms`. If rustfmt forces a failure-only assertion message
+# onto its own uncovered line, shrink the argument list so the assertion stays on
+# one line; a passing test suite cannot exercise a failing assert message. Never
+# weaken the coverage gate or relax the formatter/clippy gate to escape this
+# family of misses.
 # errexit is deliberately omitted so coverage output is printed before failure.
 check-coverage:
     #!/usr/bin/env bash

@@ -222,7 +222,9 @@ def main(argv: list[str]) -> int:
             print(row, file=sys.stderr)
         return _fail(
             f"{nameable} NAMEABLE uncovered line(s). The recorded disposition does NOT "
-            "cover these — cover them with tests."
+            "cover these — cover them with tests. For a grouped or-pattern arm, "
+            "exercise the untaken alternative; never split the arm or relax "
+            "clippy `match_same_arms`."
         )
 
     # 2. Whatever the summary counts beyond that is the dispositioned signature.
