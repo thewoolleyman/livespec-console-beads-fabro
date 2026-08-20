@@ -219,6 +219,60 @@ invocation rather than wrapping each command. Do not narrate into the ledger.
 Detail: the `livespec` repo's fleet agent-disciplines reference, §"Ledger-write
 economy under a shared secret wrapper".
 
+## Decision authority — when to ask, proceed, or self-resolve
+
+Fleet-standard guidance, ported from
+`livespec/AGENTS.md` §"When to ask, proceed, or self-resolve" and
+`livespec-orchestrator-beads-fabro/AGENTS.md` §"Drive authorized work to
+completion; do not over-ask". The default is to decide and report, not to
+escalate.
+
+**Why every governed member carries this.** On 2026-08-20 a track in this
+fleet sat roughly sixteen hours parked on a picker whose option 1 was its own
+recorded next action, and five self-decidable engineering calls were escalated
+as standing maintainer questions. The investigation found the guidance was
+real but partial: `AGENTS.md` is authored per repo and nothing propagates it,
+so sessions in the repos that lacked it were reading a file that never told
+them what they were allowed to decide.
+
+- **Drive authorized work to completion; do not over-ask.** When the maintainer
+  names a goal and says to finish or continue it, execute the WHOLE arc —
+  implement, dispatch, PR, merge, iterate, archive — without pausing to confirm
+  each already-authorized step. An operator-flow step that says "present
+  options and let the user select" is satisfied by a standing directive once
+  the goal is named; do not re-prompt. Default to acting, then reporting
+  outcomes.
+- **A recorded next action is an instruction, not a menu.** When a handoff, a
+  work-item, or a plan timeline names exactly one next action, take it.
+  Re-presenting it as option 1 of a picker is the stall shape above.
+- **Research before gating.** If a question is answerable by reading the code,
+  the spec, the docs, or by testing on a live system, do that, decide,
+  implement, and report for objection. Reserve gates for genuine product or
+  values calls, irreversible or outward-facing actions, and secret or
+  host-mutation authorization.
+- **Only ask on genuine doubt, one thing at a time.** Self-resolve trivial
+  wording fixes, internal-consistency repairs, and items clearly aligned with
+  established preferences, presenting each with its disposition. When a gate is
+  warranted, ask exactly one question per turn.
+- **One investigation, one finding, one question.** When a focused
+  investigation surfaces unrelated discrepancies, finish the original question
+  first and surface only the load-bearing finding; log side observations
+  briefly. Cosmetic drift never blocks on its own.
+- **Prescribed destructive ops are pre-authorized.** When a destructive git
+  operation is the codified mechanism of an adopted workflow — the
+  `git commit --amend` of the Red→Green step, for instance — the adoption is
+  the authorization. Keep per-instance gating for ad-hoc `--amend`,
+  force-push, `reset --hard`, or `branch -D` on unmerged branches.
+- **An unratified filter inside a check is conformance, not ratification.**
+  Narrowing, excluding, or filtering inside an enforcement check to match what
+  the ratified spec already says is a conformance fix — implement it and report
+  it. It only becomes a ratification question when the change would make the
+  check assert something the spec does not.
+- **A question you can answer with a recommendation is a finding, not a
+  maintainer question.** If you can state the options, the costs, and which one
+  you would pick, you have already done the deciding work. Decide it, record
+  the reasoning where the work is tracked, and report it as decided.
+
 ## Repository mutation protocol
 
 Every repo change uses a worktree → PR → merge → cleanup path. Treat leaving
