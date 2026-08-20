@@ -130,16 +130,58 @@ well be the right rendering vehicle for the refusal message once it exists, but
 the missing availability marking in the menu is a distinct defect and belongs to
 menu primacy.
 
-**Disposition.** Not filed unilaterally from this thread: the menu surface is
-plan 02's live slice, and filing into another plan's active design space risks a
-duplicate or a competing cut of work already ruled. Recorded here with evidence
-and reported to the foreman for plan 02 to take as a new item, an amendment to
-`-rha8` (R4), or part of `-yrs5` (the permanent bar). It also bears on R4's own
-premise: "every action reachable by menu with all hotkey bindings disabled" can
-be satisfied while the menu remains unusable as a primary surface, because
-reachable and applicable are different properties.
+**Disposition — SETTLED 2026-08-20.** The maintainer ruled **dim + honest
+refusal, not omission**: all actions render, unavailable ones are visibly
+marked in the invoker's `(unavailable here)` idiom, and invoking one surfaces an
+explicit refusal rather than a silent no-op. Plan 02 owns the item and is filing
+it, citing this section's evidence; this thread does not file it. Sequencing was
+ruled with it — the availability item lands with or before the permanent bar
+(`-yrs5`), which is next in plan 02's queue with nothing ahead of it.
 
-## 5. What this note does NOT settle
+The R4 observation above stands and was part of what the ruling addressed:
+"every action reachable by menu with all hotkey bindings disabled" can be
+satisfied while the menu remains unusable as a primary surface, because
+*reachable* and *applicable* are different properties.
+
+## 5. The marking must be TEXTUAL, or none of this is capturable
+
+Measured 2026-08-20. This is the one implementation constraint milestone 2 places
+on the availability item, and it is cheap at write time and expensive to retrofit.
+
+**A dimmed row is invisible to every capture this project takes.** The e2e
+harness captures with `tmux capture-pane -p` and **no `-e` flag**
+(`crates/console-cli/tests/support/mod.rs:184-198`). Without `-e`, tmux emits
+plain text and drops all ANSI attributes. So `Modifier::DIM` does not survive a
+capture — and this is already observable in the shipped menu, which dims group
+labels (`console-tui/src/lib.rs:2152`) and bolds the selected row, neither of
+which appears in any captured frame. The selection marker survives only because
+it is the literal text `">"` (`:2155`), not because of the `BOLD`.
+
+The invoker's convention the ruling points at is textual for exactly this
+reason: it appends the literal `"  (unavailable here)"` (`:2086-2090`), and its
+test asserts on that string (`:4935`).
+
+So "dimmed/marked" must be read as **marked with text**, with dimming as an
+additive visual nicety. If availability shipped as dimming alone:
+
+- no tmux or e2e test could assert the marking, leaving the honesty invariant
+  unfalsifiable by the project's own harness;
+- leg A could not record which actions were offered, which is that leg's entire
+  content;
+- and an operator on piped output or a screen reader would see rows that are
+  indistinguishable.
+
+**What a textual marker buys leg A.** Once unavailable rows carry text, the
+offered set becomes DERIVABLE from a single pane capture — it is the subset of
+rows without the marker. That is strictly better evidence than querying the
+availability predicate out of band, because it records what the operator actually
+saw rather than what the code says they should have seen. The ruling therefore
+does not change leg A's DEFINITION (§1 — still the availability-filtered set for
+the current `ActionContext`, since the rendered menu shows the full vocabulary),
+but it does collapse leg A's CAPTURE to one artifact, conditional on the marker
+being textual.
+
+## 6. What this note does NOT settle
 
 - The exact capture tooling for the walk (tmux `capture-pane` versus the e2e
   harness's fixture) — deliberately deferred until the bar exists, since the
