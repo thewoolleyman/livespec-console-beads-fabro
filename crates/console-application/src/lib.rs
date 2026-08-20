@@ -246,14 +246,15 @@ pub enum LaneFocus {
 /// menu, the middle **Content** pane (the active view's list), and the right
 /// **Detail** pane (the selected item's details) — above which sits the
 /// **Header** pane (the top status line). `left`/`right` walk focus spatially
-/// between the body panes, clamped at the ends (`right` stops on Detail, `left`
-/// stops on Nav); `up`/`down` act WITHIN the focused pane — moving the Views
-/// selection, the Content selection, or scrolling the Detail pane. `Tab`/`BackTab`
-/// cycle focus across EVERY pane including the Header. Focus starts on the Views
-/// nav so `up`/`down` walk the vertical Views menu intuitively. The `Lanes` view
-/// has no Detail pane, so `right` clamps at Content there and the focus cycle
-/// skips the Detail pane. While the Header holds focus, `left`/`right` scroll it
-/// horizontally rather than walking the body.
+/// between the body panes (`right` stops on Detail; `left` returns to Nav, then
+/// enters the rendered menu bar from that resting left edge); `up`/`down` act
+/// WITHIN the focused pane — moving the Views selection, the Content selection,
+/// or scrolling the Detail pane. `Tab`/`BackTab` cycle focus across EVERY pane
+/// including the Header. Focus starts on the Views nav so `up`/`down` walk the
+/// vertical Views menu intuitively. The `Lanes` view has no Detail pane, so
+/// `right` clamps at Content there and the focus cycle skips the Detail pane.
+/// While the Header holds focus, `left`/`right` scroll it horizontally rather
+/// than walking the body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
     /// The left Views navigation menu (the default focus).
