@@ -868,8 +868,10 @@ fn content_back_interaction(model: &TuiScreenModel) -> TuiInteraction {
 
 /// Left: inside Help it focuses the section menu; inside Menu it walks the
 /// top-level nodes; behind any other overlay it is inert. With no overlay open,
-/// it walks focus one pane toward the nav, then enters the visible menu bar from
-/// the resting left edge so the bar is reachable without its registry hotkey.
+/// it normally walks focus one pane toward the nav, then enters the visible menu
+/// bar from the resting left edge so the bar is reachable without its registry
+/// hotkey. A drilled-in lane is already at the Lanes view's left content edge,
+/// so Left opens the bar in place instead of discarding the item selection.
 fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     if matches!(model.overlay(), TuiOverlay::Help { .. }) {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusMenu));
@@ -885,6 +887,12 @@ fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     let interaction = match model.focus() {
         // Leftmost pane: enter the permanent bar that is rendered above it.
         FocusPane::Nav => TuiInteraction::OpenMenu,
+        FocusPane::Content
+            if model.active_view() == TuiView::Lanes
+                && matches!(model.lane_focus(), LaneFocus::Lane(_lane)) =>
+        {
+            TuiInteraction::OpenMenu
+        }
         FocusPane::Content => content_back_interaction(model),
         FocusPane::Detail => TuiInteraction::FocusContent,
         // On the focused Header pane, left/right scroll horizontally instead of
@@ -2709,11 +2717,12 @@ mod tests {
     use super::{
         DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
         TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
-        TuiTerminalInput, action_outcome_effect, attention_item_line, buffer_to_text, detail_lines,
-        effect_triggers_source_poll, help_lines_for_view, key_event_to_terminal_input,
-        menu_confirm_step, registry_action_input, render_command_modal, render_detail,
-        render_menu_overlay, render_model, render_summary_detail, render_to_text,
-        render_work_item_detail, settings_detail_lines, step_tui_runtime,
+        TuiTerminalInput, action_available_for_model, action_outcome_effect, attention_item_line,
+        buffer_to_text, detail_lines, effect_triggers_source_poll, help_lines_for_view,
+        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
+        render_command_modal, render_detail, render_menu_overlay, render_model,
+        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
+        step_tui_runtime,
     };
 
     #[test]
@@ -3579,12 +3588,11 @@ mod tests {
                 TuiInteraction::ReturnToLaneOverview
             ))
         );
-        // Left mirrors Esc: it also returns the drilled-in lane to its overview.
+        // Left enters the menu in place: Esc owns backing out to the lane
+        // overview, while hotkey-free menu entry preserves the item selection.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &drilled),
-            Some(TuiTerminalInput::Interaction(
-                TuiInteraction::ReturnToLaneOverview
-            ))
+            Some(TuiTerminalInput::Interaction(TuiInteraction::OpenMenu))
         );
 
         // With an overlay open, Esc closes it first even while drilled in.
@@ -4937,6 +4945,52 @@ mod tests {
             .map(|spec| spec.id)
             .collect();
         assert_eq!(reached, registered);
+    }
+
+    #[test]
+    fn hotkey_free_menu_entry_preserves_per_item_action_availability() {
+        // R4's hotkey-free route must prove USE, not just row reachability. A
+        // selected drilled-in item carries the per-item availability context;
+        // opening the menu with Left must preserve that context exactly as the
+        // registry hotkey does.
+        let events = pending_events();
+        let closed = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_focus(FocusPane::Content)
+            .with_lane_focus(LaneFocus::Lane(Lane::PendingApproval))
+            .with_selected_lane_item_index(0);
+        let before_model = build_tui_model_for_state(&events, &closed);
+        let before_id = before_model.selected_work_item_id().map(str::to_owned);
+        assert_eq!(before_id.as_deref(), Some("console-pending"));
+
+        let per_item_available: Vec<&'static action_registry::ActionSpec> =
+            action_registry::ACTION_REGISTRY
+                .iter()
+                .filter(|spec| {
+                    !matches!(
+                        spec.staging,
+                        action_registry::ActionStaging::Global(_)
+                            | action_registry::ActionStaging::FactoryDrain
+                    ) && action_available_for_model(&before_model, spec)
+                })
+                .collect();
+        let count = per_item_available.len();
+        assert!(count > 0, "{count}");
+
+        let opened = press(&closed, &events, KeyCode::Left);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::Menu {
+                top: 0,
+                selected: 0
+            }
+        );
+        let opened_model = build_tui_model_for_state(&events, &opened);
+        assert_eq!(opened_model.selected_work_item_id(), before_id.as_deref());
+
+        for spec in per_item_available {
+            let still_available = action_available_for_model(&opened_model, spec);
+            assert!(still_available, "{}", spec.id);
+        }
     }
 
     #[test]
