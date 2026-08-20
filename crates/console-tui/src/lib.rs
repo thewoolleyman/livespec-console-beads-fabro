@@ -866,9 +866,10 @@ fn content_back_interaction(model: &TuiScreenModel) -> TuiInteraction {
     TuiInteraction::FocusNav
 }
 
-/// Left: inside Help it focuses the section menu; behind any other overlay it
-/// is inert; otherwise it walks focus one pane toward the nav, clamped at the
-/// leftmost.
+/// Left: inside Help it focuses the section menu; inside Menu it walks the
+/// top-level nodes; behind any other overlay it is inert. With no overlay open,
+/// it walks focus one pane toward the nav, then enters the visible menu bar from
+/// the resting left edge so the bar is reachable without its registry hotkey.
 fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     if matches!(model.overlay(), TuiOverlay::Help { .. }) {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::HelpFocusMenu));
@@ -882,8 +883,8 @@ fn left_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         return None;
     }
     let interaction = match model.focus() {
-        // Leftmost pane: left clamps here.
-        FocusPane::Nav => return None,
+        // Leftmost pane: enter the permanent bar that is rendered above it.
+        FocusPane::Nav => TuiInteraction::OpenMenu,
         FocusPane::Content => content_back_interaction(model),
         FocusPane::Detail => TuiInteraction::FocusContent,
         // On the focused Header pane, left/right scroll horizontally instead of
@@ -2033,8 +2034,8 @@ fn global_help_lines() -> Vec<Line<'static>> {
         Line::from("Global actions -- available from every view:"),
         Line::from(""),
         Line::from("up / down    navigate the focused pane; in this help, the section menu"),
-        Line::from("left / right move focus across the body panes (Views -> Content -> Detail),"),
-        Line::from("             clamped; on the focused header, scroll it horizontally instead"),
+        Line::from("left / right move focus across the body panes (Views -> Content -> Detail);"),
+        Line::from("             left from Views opens the menu; focused header scrolls instead"),
         Line::from("tab / s-tab  cycle focus across every pane, including the top header"),
         Line::from("enter        dive from the nav into content, or open the selected item"),
         Line::from(
@@ -2098,7 +2099,7 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             Line::from("lifecycle state for the selected repo."),
             Line::from(""),
             Line::from("up / down    move the Content selection, or scroll the Detail pane"),
-            Line::from("left / right move focus across the panes (Views -> Content -> Detail)"),
+            Line::from("left / right move focus; left from Views opens the menu bar"),
         ],
         TuiView::Lanes => vec![
             Line::from("Lanes -- the work-item lane board: every lane column beside the nav."),
@@ -2125,14 +2126,14 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             Line::from("source events for the selected repo."),
             Line::from(""),
             Line::from("up / down    move the Content selection, or scroll the Detail pane"),
-            Line::from("left / right move focus across the panes (Views -> Content -> Detail)"),
+            Line::from("left / right move focus; left from Views opens the menu bar"),
         ],
         TuiView::Repos => vec![
             Line::from("Repos -- the fleet repo roster (read-only): the repos the console"),
             Line::from("observes, with the selected repo's detail on the right."),
             Line::from(""),
             Line::from("up / down    move the Content selection, or scroll the Detail pane"),
-            Line::from("left / right move focus across the panes (Views -> Content -> Detail)"),
+            Line::from("left / right move focus; left from Views opens the menu bar"),
         ],
         TuiView::Settings => vec![
             Line::from("Settings -- the dispatcher-settings surface: one row per orchestrator"),
@@ -2766,8 +2767,8 @@ mod tests {
     #[test]
     fn keymap_maps_views_nav_focus_navigation_and_dive_in() {
         // Default focus is the Views nav: up/down walk the vertical Views menu,
-        // Enter and Right dive focus into the Content pane, Left clamps at the
-        // leftmost pane (inert), and Esc is the inert close-overlay no-op.
+        // Enter and Right dive focus into the Content pane, Left enters the
+        // permanent menu bar, and Esc is the inert close-overlay no-op.
         let model = attention_model(TuiOverlay::None);
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &model),
@@ -2789,10 +2790,9 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Right), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent))
         );
-        // Left on the leftmost pane clamps: it produces no input.
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
-            None
+            Some(TuiTerminalInput::Interaction(TuiInteraction::OpenMenu))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Esc), &model),
@@ -3116,7 +3116,7 @@ mod tests {
     }
 
     #[test]
-    fn left_walks_focus_detail_to_content_to_nav_and_clamps_at_nav() {
+    fn left_walks_focus_detail_to_content_to_nav_and_enters_the_menu_from_nav() {
         let events = demo_events();
         let detail = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Detail);
 
@@ -3126,10 +3126,17 @@ mod tests {
         let nav = press(&content, &events, KeyCode::Left);
         assert_eq!(nav.focus(), FocusPane::Nav);
 
-        // Left clamps at the leftmost pane; the active view never changes.
-        let clamped = press(&nav, &events, KeyCode::Left);
-        assert_eq!(clamped.focus(), FocusPane::Nav);
-        assert_eq!(clamped.active_view(), TuiView::Attention);
+        // Left at the resting left edge enters the visible menu bar, so the
+        // primary menu surface is reachable without its registry hotkey.
+        let opened = press(&nav, &events, KeyCode::Left);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::Menu {
+                top: 0,
+                selected: 0
+            }
+        );
+        assert_eq!(opened.active_view(), TuiView::Attention);
     }
 
     #[test]
@@ -4871,8 +4878,9 @@ mod tests {
     #[test]
     fn every_action_is_reachable_by_menu_navigation_with_no_hotkeys() {
         // R4, THE MILESTONE PROPERTY: hotkeys are ADDITIONAL. Disable every
-        // registry hotkey and every action must STILL be reachable, by walking
-        // the menu with navigation keys alone.
+        // registry hotkey and every action must STILL be reachable, by entering
+        // the CLOSED rendered menu bar and then walking it with navigation keys
+        // alone.
         //
         // Walked through the REAL key layer -- `press` -> key_event_to_terminal_
         // input -> step_tui_runtime -- rather than by indexing the registry. That
@@ -4880,23 +4888,31 @@ mod tests {
         // contains everything, which the tree test already says, and would prove
         // nothing about whether an operator pressing arrow keys can GET there.
         //
-        // Right walks the bar, Down walks the actions. Rights come FIRST because
-        // a bar move resets the selection, so interleaving them would silently
-        // land somewhere else.
+        // Left from the resting left edge enters the closed bar. Right then walks
+        // the bar, and Down walks the actions. Rights come FIRST because a bar
+        // move resets the selection, so interleaving them would silently land
+        // somewhere else.
         let events: [ConsoleEvent; 0] = [];
         let tree = action_registry::menu_tree();
         let mut reached: std::collections::BTreeSet<&'static str> =
             std::collections::BTreeSet::new();
+        let closed = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let closed_screen = render_to_text(&build_tui_model_for_state(&events, &closed), 120, 40)
+            .unwrap_or_default();
+        for top in &tree {
+            let visible = closed_screen.contains(top.label);
+            assert!(visible, "{}:\n{closed_screen}", top.label);
+        }
 
         for top_index in 0..tree.len() {
             for action_index in 0..action_registry::menu_actions(top_index).len() {
-                let mut state = TuiInteractionState::for_view(
-                    TuiView::Lanes,
-                    0,
-                    TuiOverlay::Menu {
+                let mut state = press(&closed, &events, KeyCode::Left);
+                assert_eq!(
+                    state.overlay(),
+                    &TuiOverlay::Menu {
                         top: 0,
-                        selected: 0,
-                    },
+                        selected: 0
+                    }
                 );
                 for _ in 0..top_index {
                     state = press(&state, &events, KeyCode::Right);
@@ -5016,15 +5032,11 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_opener_is_the_single_key_that_is_not_additional() {
-        // THE HONEST LIMIT OF R4, pinned as a test so it cannot quietly vanish.
-        // Every action is menu-reachable, but the MENU is opened by a registry
-        // chord, so with literally every hotkey disabled the menu could not be
-        // opened at all and nothing would be reachable.
-        //
-        // "Hotkeys are additional" therefore means: additional for every action
-        // EXCEPT one irreducible opener. Stating it is what keeps the claim
-        // true; leaving it implicit would make R4 overclaim.
+    fn the_menu_opener_registry_key_is_additional_to_closed_bar_entry() {
+        // THE OLD LIMIT OF R4, re-pointed: the registry still has exactly one
+        // menu-opener chord, but it is now a shortcut TO the primary route, not
+        // the only way into it. With every registry hotkey disabled, Left from
+        // the resting left edge still opens the rendered bar.
         let openers: Vec<&'static action_registry::ActionSpec> = action_registry::ACTION_REGISTRY
             .iter()
             .filter(|spec| {
@@ -5046,6 +5058,17 @@ mod tests {
         // menu it opens rather than being a privileged hidden key.
         let pathed = !opener.menu_path.is_empty();
         assert!(pathed, "{}", opener.id);
+
+        let events: [ConsoleEvent; 0] = [];
+        let closed = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let entered_state = press(&closed, &events, KeyCode::Left);
+        assert_eq!(
+            entered_state.overlay(),
+            &TuiOverlay::Menu {
+                top: 0,
+                selected: 0
+            }
+        );
     }
 
     #[test]
