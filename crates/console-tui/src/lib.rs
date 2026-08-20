@@ -5406,6 +5406,42 @@ mod tests {
     }
 
     #[test]
+    fn rendered_menu_reaches_every_keyless_action_with_menu_accelerator() {
+        let mut keyless_count = 0usize;
+        for spec in action_registry::ACTION_REGISTRY
+            .iter()
+            .filter(|spec| spec.hotkeys.is_empty())
+        {
+            keyless_count += 1;
+            let position = menu_position_for(spec.id);
+            assert!(position.is_some(), "missing menu action {}", spec.id);
+            let (top, selected) = position.unwrap_or_default();
+            let state = TuiInteractionState::for_view(
+                TuiView::Lanes,
+                0,
+                TuiOverlay::Menu { top, selected },
+            )
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+            .with_selected_lane_item_index(0);
+            let ready_events = [lane_event(
+                "evt_keyless_menu",
+                "console-keyless-menu",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            )];
+            let model = build_tui_model_for_state(&ready_events, &state);
+            let rendered = render_to_text(&model, 110, 60).unwrap_or_default();
+            let row = format!("{} [menu]", spec.label);
+            let row_present = rendered.contains(&row);
+
+            assert!(row_present, "{}", spec.id);
+        }
+        assert!(keyless_count > 0);
+    }
+
+    #[test]
     fn rendered_menu_reaches_dispatch_and_marks_it_by_ready_work_availability() {
         let position = menu_position_for("dispatch-ready");
         assert!(position.is_some(), "missing menu action dispatch-ready");

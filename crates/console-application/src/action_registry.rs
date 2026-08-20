@@ -187,11 +187,16 @@ pub struct ActionSpec {
     /// The human label the confirm modal and menus render.
     pub label: &'static str,
     /// The exact Status-line hint fragment for this action.
+    ///
+    /// A hint token is a KEY hint, not a menu label. It is non-empty exactly
+    /// when [`ActionSpec::hotkeys`] is non-empty; a keyless action advertises
+    /// its route through [`accelerator_display`] and contributes no per-item
+    /// Status-band token.
     pub hint_token: &'static str,
     /// The chords that invoke this action — a power-user convenience only,
     /// never the sole route once menus exist. EMPTY is a menu/invoker-only
-    /// action: reachable without any key, the living proof that hotkeys are
-    /// additional.
+    /// action: reachable without any key, carries an EMPTY `hint_token`, and
+    /// is the living proof that hotkeys are additional.
     ///
     /// A SLICE rather than one chord because an action can honestly have more
     /// than one accelerator: `q` and `Ctrl-C` are both quit. Modelling that as
@@ -869,6 +874,49 @@ mod tests {
                 // they are no longer forbidden — the handler arms that shadowed
                 // them are gone.
                 assert!(chord.key != ' ', "{}", spec.id);
+            }
+        }
+    }
+
+    #[test]
+    fn keyless_actions_render_menu_accelerators_and_no_hint_tokens() {
+        let mut keyless_count = 0usize;
+        for spec in ACTION_REGISTRY
+            .iter()
+            .filter(|spec| spec.hotkeys.is_empty())
+        {
+            keyless_count += 1;
+            assert!(spec.hint_token.is_empty(), "{}", spec.id);
+            assert_eq!(super::accelerator_display(spec), "menu", "{}", spec.id);
+        }
+        assert!(keyless_count > 0);
+
+        for surface in [ActionSurface::Attention, ActionSurface::LaneDrill] {
+            for lane in Lane::all() {
+                for admission in [AdmissionPolicy::Manual, AdmissionPolicy::Auto] {
+                    for ready_work_item_count in [0, 1] {
+                        for awaiting in [false, true] {
+                            let ctx = ActionContext {
+                                lane: *lane,
+                                admission_policy: admission,
+                                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                                has_driver_handoff: false,
+                                awaits_scope_override: awaiting,
+                                ready_work_item_count,
+                                surface,
+                            };
+                            let tokens = super::available_hint_tokens(&ctx);
+                            let has_empty_token = tokens.iter().any(|token| token.is_empty());
+                            assert!(!has_empty_token, "{tokens:?}");
+                            for spec in ACTION_REGISTRY
+                                .iter()
+                                .filter(|spec| spec.hotkeys.is_empty())
+                            {
+                                assert!(!tokens.contains(&spec.hint_token), "{}", spec.id);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
