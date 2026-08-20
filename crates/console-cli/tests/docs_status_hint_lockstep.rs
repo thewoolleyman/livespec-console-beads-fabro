@@ -396,6 +396,7 @@ fn context_binding(label: &str) -> Option<ActionContext> {
         // so this cannot change a documented row either way — stated rather
         // than left for a reader to re-derive.
         awaits_scope_override: false,
+        ready_work_item_count: 1,
         surface,
     })
 }

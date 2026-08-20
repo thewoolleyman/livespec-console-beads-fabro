@@ -70,6 +70,12 @@ pub struct ActionContext {
     /// the action exactly where it is useless — the `-0uw` defect wearing a
     /// different hat.
     pub awaits_scope_override: bool,
+    /// Count of ready work-items on the current board.
+    ///
+    /// Selection-local actions ignore this, but the factory dispatch action is
+    /// selection-less and must be gated by the same ready-work fact the command
+    /// handler's [`crate::FactoryDrainPolicy`] enforces at execution time.
+    pub ready_work_item_count: usize,
     /// Which per-item surface the selection lives on.
     pub surface: ActionSurface,
 }
@@ -77,13 +83,18 @@ pub struct ActionContext {
 impl ActionContext {
     /// Build the availability context for a selected work-item on a surface.
     #[must_use]
-    pub fn for_item(item: &LaneWorkItem, surface: ActionSurface) -> Self {
+    pub fn for_item(
+        item: &LaneWorkItem,
+        surface: ActionSurface,
+        ready_work_item_count: usize,
+    ) -> Self {
         Self {
             lane: item.lane(),
             admission_policy: item.admission_policy(),
             acceptance_policy: item.acceptance_policy(),
             has_driver_handoff: driver_handoff_command(item).is_some(),
             awaits_scope_override: item.detail().awaits_scope_override,
+            ready_work_item_count,
             surface,
         }
     }
@@ -96,6 +107,8 @@ pub enum ActionStaging {
     Valve(fn(&ActionContext) -> Option<PendingValve>),
     /// Open the driver-handoff overlay for the selected item.
     DriverHandoff,
+    /// Persist a factory drain command for ready work.
+    FactoryDrain,
     /// Perform a global action, which needs no selection.
     Global(GlobalAction),
 }
@@ -434,6 +447,16 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         availability: |ctx| ctx.lane == Lane::Ready && ctx.awaits_scope_override,
         staging: ActionStaging::Valve(|_ctx| Some(PendingValve::SetWorkflowScopeOverride)),
     },
+    ActionSpec {
+        id: "dispatch-ready",
+        label: "Dispatch ready work",
+        hint_token: "",
+        hotkeys: &[],
+        menu_path: &["Factory", "Dispatch"],
+        parameter: None,
+        availability: |ctx| ctx.ready_work_item_count > 0,
+        staging: ActionStaging::FactoryDrain,
+    },
     // THE GLOBAL ACTIONS. Registered 2026-08-19 on the maintainer's chord
     // ruling, closing the menu-completeness gate's five red names.
     //
@@ -617,7 +640,9 @@ pub fn menu_actions(top_index: usize) -> Vec<&'static ActionSpec> {
 pub fn global_action_for_chord(chord: KeyChord) -> Option<GlobalAction> {
     match action_for_chord(chord)?.staging {
         ActionStaging::Global(action) => Some(action),
-        ActionStaging::Valve(_) | ActionStaging::DriverHandoff => None,
+        ActionStaging::Valve(_) | ActionStaging::DriverHandoff | ActionStaging::FactoryDrain => {
+            None
+        }
     }
 }
 
@@ -726,6 +751,7 @@ pub fn stage_action(spec: &ActionSpec, ctx: &ActionContext) -> Option<StagedActi
     match spec.staging {
         ActionStaging::Valve(stager) => stager(ctx).map(StagedAction::Valve),
         ActionStaging::DriverHandoff => Some(StagedAction::DriverHandoff),
+        ActionStaging::FactoryDrain => Some(StagedAction::FactoryDrain),
         ActionStaging::Global(action) => Some(StagedAction::Global(action)),
     }
 }
@@ -751,6 +777,7 @@ pub fn action_offered_on_surface(spec: &ActionSpec, surface: ActionSurface) -> b
                             acceptance_policy: AcceptancePolicy::AiThenHuman,
                             has_driver_handoff: *handoff,
                             awaits_scope_override: *awaiting,
+                            ready_work_item_count: 1,
                             surface,
                         })
                     })
@@ -798,6 +825,8 @@ pub enum StagedAction {
     Valve(PendingValve),
     /// Open the driver-handoff overlay.
     DriverHandoff,
+    /// Persist a factory drain command.
+    FactoryDrain,
     /// Perform a global action, which needed no selection to stage.
     Global(GlobalAction),
 }
@@ -998,6 +1027,7 @@ mod tests {
                                     acceptance_policy: AcceptancePolicy::AiThenHuman,
                                     has_driver_handoff: handoff,
                                     awaits_scope_override: awaiting,
+                                    ready_work_item_count: 1,
                                     surface,
                                 };
                                 if (spec.availability)(&ctx) {
@@ -1020,6 +1050,7 @@ mod tests {
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: false,
             awaits_scope_override: false,
+            ready_work_item_count: 1,
             surface: ActionSurface::Attention,
         };
         let auto = ActionContext {
@@ -1041,6 +1072,7 @@ mod tests {
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: false,
             awaits_scope_override: false,
+            ready_work_item_count: 1,
             surface: ActionSurface::LaneDrill,
         };
         // A move staged from a lane the item is NOT in is refused outright.

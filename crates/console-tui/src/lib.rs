@@ -464,6 +464,7 @@ fn invoker_confirm_step(
     events: &[ConsoleEvent],
     model: &TuiScreenModel,
     selected_action: usize,
+    requested_by: &str,
 ) -> TuiRuntimeStep {
     let staged = action_registry::ACTION_REGISTRY
         .get(selected_action)
@@ -473,6 +474,14 @@ fn invoker_confirm_step(
             TuiInteraction::OpenValveConfirm(valve)
         }
         Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
+        Some(action_registry::StagedAction::FactoryDrain) => {
+            return TuiRuntimeStep::new(
+                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+                TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
+                    requested_by,
+                )),
+            );
+        }
         // Quit is the one global that is not an interaction: it ends the
         // session rather than transforming its state.
         Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
@@ -497,6 +506,7 @@ fn menu_confirm_step(
     model: &TuiScreenModel,
     top: usize,
     selected: usize,
+    requested_by: &str,
 ) -> TuiRuntimeStep {
     let staged = action_registry::menu_actions(top)
         .get(selected)
@@ -506,6 +516,14 @@ fn menu_confirm_step(
             TuiInteraction::OpenValveConfirm(valve)
         }
         Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
+        Some(action_registry::StagedAction::FactoryDrain) => {
+            return TuiRuntimeStep::new(
+                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+                TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
+                    requested_by,
+                )),
+            );
+        }
         Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
             Some(global) => global,
             None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
@@ -541,12 +559,12 @@ fn confirm_operator_action(
         );
     }
     if let TuiOverlay::ActionInvoker { selected_action } = model.overlay() {
-        return invoker_confirm_step(state, events, &model, *selected_action);
+        return invoker_confirm_step(state, events, &model, *selected_action, requested_by);
     }
     // A menu item stages through the SAME path as its hotkey and the invoker
     // row. Anything else would be a third invocation route for one action.
     if let TuiOverlay::Menu { top, selected } = model.overlay() {
-        return menu_confirm_step(state, events, &model, *top, *selected);
+        return menu_confirm_step(state, events, &model, *top, *selected, requested_by);
     }
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
@@ -993,6 +1011,7 @@ fn registry_action_input(
         action_registry::StagedAction::DriverHandoff => Some(TuiTerminalInput::Interaction(
             TuiInteraction::OpenDriverHandoff,
         )),
+        action_registry::StagedAction::FactoryDrain => None,
         action_registry::StagedAction::Global(action) => Some(global_input(action)),
     }
 }
@@ -1007,11 +1026,29 @@ fn staged_without_selection(
     model: &TuiScreenModel,
     spec: &'static action_registry::ActionSpec,
 ) -> Option<action_registry::StagedAction> {
-    if let action_registry::ActionStaging::Global(action) = spec.staging {
-        return Some(action_registry::StagedAction::Global(action));
+    if matches!(
+        spec.staging,
+        action_registry::ActionStaging::Global(_) | action_registry::ActionStaging::FactoryDrain
+    ) {
+        return action_registry::stage_action(spec, &model.global_action_context());
     }
     let ctx = model.selected_action_context()?;
     action_registry::stage_action(spec, &ctx)
+}
+
+fn action_available_for_model(
+    model: &TuiScreenModel,
+    spec: &'static action_registry::ActionSpec,
+) -> bool {
+    if matches!(
+        spec.staging,
+        action_registry::ActionStaging::Global(_) | action_registry::ActionStaging::FactoryDrain
+    ) {
+        return (spec.availability)(&model.global_action_context());
+    }
+    model
+        .selected_action_context()
+        .is_some_and(|ctx| (spec.availability)(&ctx))
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
@@ -2132,16 +2169,16 @@ fn render_action_invoker(
     buffer: &mut Buffer,
 ) {
     Clear.render(area, buffer);
-    let ctx = model.selected_action_context();
     let items = action_registry::ACTION_REGISTRY
         .iter()
         .enumerate()
         .map(|(index, spec)| {
             let marker = if index == selected_action { ">" } else { " " };
             let key_display = action_registry::accelerator_display(spec);
-            let availability = match ctx.as_ref() {
-                Some(ctx) if (spec.availability)(ctx) => "",
-                _unavailable => UNAVAILABLE_HERE_MARKER,
+            let availability = if action_available_for_model(model, spec) {
+                ""
+            } else {
+                UNAVAILABLE_HERE_MARKER
             };
             let row = format!("{marker} {} [{key_display}]{availability}", spec.label);
             ListItem::new(row).style(if index == selected_action {
@@ -2191,7 +2228,6 @@ fn render_menu_overlay(
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
     Clear.render(body, buffer);
 
-    let ctx = model.selected_action_context();
     let mut rows: Vec<ListItem<'static>> = Vec::new();
     let mut action_index = 0usize;
     for group in node.into_iter().flat_map(|node| node.groups.iter()) {
@@ -2202,7 +2238,7 @@ fn render_menu_overlay(
         for spec in &group.actions {
             let marker = if action_index == selected { ">" } else { " " };
             let accelerator = action_registry::accelerator_display(spec);
-            let available = ctx.as_ref().is_some_and(|ctx| (spec.availability)(ctx));
+            let available = action_available_for_model(model, spec);
             let availability = if available {
                 ""
             } else {
@@ -2673,11 +2709,10 @@ mod tests {
         DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
         TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
         TuiTerminalInput, action_outcome_effect, attention_item_line, buffer_to_text, detail_lines,
-        effect_triggers_source_poll, global_input, help_lines_for_view,
-        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
-        render_command_modal, render_detail, render_menu_overlay, render_model,
-        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        step_tui_runtime,
+        effect_triggers_source_poll, help_lines_for_view, key_event_to_terminal_input,
+        menu_confirm_step, registry_action_input, render_command_modal, render_detail,
+        render_menu_overlay, render_model, render_summary_detail, render_to_text,
+        render_work_item_detail, settings_detail_lines, step_tui_runtime,
     };
 
     #[test]
@@ -3686,7 +3721,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_step_turns_command_palette_drain_into_persisted_command_effect() {
+    fn runtime_step_rejects_command_palette_drain_as_a_parallel_encoding() {
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::CommandPalette {
@@ -3700,14 +3735,11 @@ mod tests {
             "operator",
         );
 
-        let command = persisted_command(step.effect());
         assert_eq!(
-            command.map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::FactoryDrainRequested)
-        );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::aggregate_id),
-            Some("fleet:livespec")
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::UnknownCommandPaletteAction
+            )
         );
         assert_eq!(step.state().overlay(), &TuiOverlay::None);
     }
@@ -4512,21 +4544,13 @@ mod tests {
             let model = build_tui_model_for_state(&events, &state);
             let ctx = model.selected_action_context();
             assert!(ctx.is_some(), "{label}: no action context");
-            for (ctx, spec, chord) in ctx.iter().flat_map(|ctx| {
+            for (spec, chord) in ctx.iter().flat_map(|_ctx| {
                 action_registry::ACTION_REGISTRY
                     .iter()
-                    .flat_map(move |spec| spec.hotkeys.iter().map(move |chord| (ctx, spec, *chord)))
+                    .flat_map(move |spec| spec.hotkeys.iter().map(move |chord| (spec, *chord)))
             }) {
                 let input = key_event_to_terminal_input(chord_event(chord), &model);
-                let staged = action_registry::stage_action(spec, ctx).map(|staged| match staged {
-                    action_registry::StagedAction::Valve(valve) => {
-                        TuiTerminalInput::Interaction(TuiInteraction::OpenValveConfirm(valve))
-                    }
-                    action_registry::StagedAction::DriverHandoff => {
-                        TuiTerminalInput::Interaction(TuiInteraction::OpenDriverHandoff)
-                    }
-                    action_registry::StagedAction::Global(action) => global_input(action),
-                });
+                let staged = registry_action_input(&model, spec, chord.key);
                 assert_eq!(input, staged, "{label}/{}", spec.id);
             }
         }
@@ -4731,7 +4755,8 @@ mod tests {
         for (top_index, _) in action_registry::menu_tree().iter().enumerate() {
             for (action_index, spec) in action_registry::menu_actions(top_index).iter().enumerate()
             {
-                let via_menu = menu_confirm_step(&state, &events, &model, top_index, action_index);
+                let via_menu =
+                    menu_confirm_step(&state, &events, &model, top_index, action_index, "operator");
                 let via_registry = registry_action_input(&model, spec, ' ');
                 // A menu row that cannot stage its action must refuse
                 // explicitly; an unchanged Render is the old silent no-op.
@@ -5043,6 +5068,60 @@ mod tests {
     }
 
     #[test]
+    fn the_invoker_dispatches_ready_work_from_the_dispatch_row() {
+        let dispatch_index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == "dispatch-ready");
+        assert!(dispatch_index.is_some(), "missing dispatch-ready action");
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ActionInvoker {
+                selected_action: dispatch_index.unwrap_or_default(),
+            },
+        );
+        let ready_events = [lane_event(
+            "evt_invoker_dispatch",
+            "console-invoker-dispatch",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+
+        let staged = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+        let command = persisted_command(staged.effect());
+
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::FactoryDrainRequested)
+        );
+    }
+
+    #[test]
+    fn dispatch_ready_has_no_character_key_path() {
+        let spec = action_registry::ACTION_REGISTRY
+            .iter()
+            .find(|spec| spec.id == "dispatch-ready");
+        assert!(spec.is_some(), "missing dispatch-ready action");
+        let ready_events = [lane_event(
+            "evt_no_dispatch_key",
+            "console-no-dispatch-key",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&ready_events, &state);
+
+        assert_eq!(
+            spec.and_then(|spec| registry_action_input(&model, spec, 'd')),
+            None
+        );
+    }
+
+    #[test]
     fn the_invoker_quits_from_the_quit_row() {
         // Quit is the ONE global that is not an interaction: it ends the
         // session rather than transforming its state, so the invoker returns
@@ -5222,6 +5301,76 @@ mod tests {
         let rendered = render_to_text(&model, 110, 60).unwrap_or_default();
 
         assert!(rendered.contains("Accept work-item [c]  (unavailable here)"));
+    }
+
+    #[test]
+    fn rendered_menu_reaches_dispatch_and_marks_it_by_ready_work_availability() {
+        let position = menu_position_for("dispatch-ready");
+        assert!(position.is_some(), "missing menu action dispatch-ready");
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected });
+        let empty_model = build_tui_model_for_state(&[], &state);
+        let unavailable = render_to_text(&empty_model, 110, 60).unwrap_or_default();
+
+        assert!(unavailable.contains("Dispatch ready work [menu]  (unavailable here)"));
+
+        let ready_events = [lane_event(
+            "evt_dispatch_ready",
+            "console-dispatch-ready",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+        let ready_model = build_tui_model_for_state(&ready_events, &state);
+        let available = render_to_text(&ready_model, 110, 60).unwrap_or_default();
+
+        assert!(available.contains("Dispatch ready work [menu]"));
+        assert!(!available.contains("Dispatch ready work [menu]  (unavailable here)"));
+    }
+
+    #[test]
+    fn the_menu_dispatches_ready_work_from_its_rendered_row() {
+        let position = menu_position_for("dispatch-ready");
+        assert!(position.is_some(), "missing menu action dispatch-ready");
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected });
+        let ready_events = [lane_event(
+            "evt_dispatch_ready_enter",
+            "console-dispatch-ready-enter",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+
+        let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+        let command = persisted_command(step.effect());
+
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::FactoryDrainRequested)
+        );
+    }
+
+    #[test]
+    fn unavailable_menu_dispatch_refuses_instead_of_dispatching() {
+        let position = menu_position_for("dispatch-ready");
+        assert!(position.is_some(), "missing menu action dispatch-ready");
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected });
+        let step = step_tui_runtime(&state, &[], TuiTerminalInput::Confirm, "operator");
+
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::UnavailableOperatorAction
+            )
+        );
+        assert_eq!(step.state(), &state);
     }
 
     #[test]

@@ -1875,8 +1875,35 @@ impl TuiScreenModel {
                 _,
             ) => return None,
         };
-        self.selected_work_item()
-            .map(|item| action_registry::ActionContext::for_item(item, surface))
+        let ready_work_item_count = self
+            .lane_board
+            .column(Lane::Ready)
+            .map_or(0, LaneColumn::count);
+        self.selected_work_item().map(|item| {
+            action_registry::ActionContext::for_item(item, surface, ready_work_item_count)
+        })
+    }
+
+    /// The selection-less availability context used by factory/global menu
+    /// actions.
+    ///
+    /// Per-item actions still demand [`Self::selected_action_context`]; this
+    /// context exists only so a selection-less registry entry can consume board
+    /// facts such as ready-work count without a parallel menu predicate.
+    #[must_use]
+    pub fn global_action_context(&self) -> action_registry::ActionContext {
+        action_registry::ActionContext {
+            lane: Lane::Ready,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: false,
+            awaits_scope_override: false,
+            ready_work_item_count: self
+                .lane_board
+                .column(Lane::Ready)
+                .map_or(0, LaneColumn::count),
+            surface: action_registry::ActionSurface::LaneDrill,
+        }
     }
 }
 
@@ -4104,15 +4131,10 @@ pub fn resolve_command_palette_action(
     model: &TuiScreenModel,
     requested_by: &str,
 ) -> ApplicationResult<OperatorActionOutcome> {
-    let requested_by = validate_operator_action(requested_by)?;
-    let TuiOverlay::CommandPalette { query } = model.overlay() else {
+    let _requested_by = validate_operator_action(requested_by)?;
+    let TuiOverlay::CommandPalette { query: _ } = model.overlay() else {
         return Err(ApplicationError::NoSelectedOperatorAction);
     };
-    if command_palette_query_matches_drain(query) {
-        return Ok(OperatorActionOutcome::PersistCommand(
-            factory_drain_command(requested_by),
-        ));
-    }
     Err(ApplicationError::UnknownCommandPaletteAction)
 }
 
@@ -4313,12 +4335,9 @@ pub fn command_palette_query_opens_action_invoker(query: &str) -> bool {
     query.trim().eq_ignore_ascii_case("actions")
 }
 
-fn command_palette_query_matches_drain(query: &str) -> bool {
-    let normalized = query.trim().to_lowercase();
-    normalized == "drain" || normalized == "drain ready queue"
-}
-
-fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
+/// Build the canonical command envelope for dispatching one ready work item.
+#[must_use]
+pub fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
     CommandEnvelope::new(
         "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
         CommandType::FactoryDrainRequested,
@@ -8882,7 +8901,7 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_drain_resolves_to_factory_command() {
+    fn command_palette_drain_is_not_a_parallel_dispatch_encoding() {
         for query in ["drain", "Drain ready queue", "  drain  "] {
             let state = TuiInteractionState::new(
                 0,
@@ -8893,27 +8912,8 @@ mod tests {
             let model = build_tui_model_for_state(&fabro_gate_events(), &state);
 
             let outcome = resolve_command_palette_action(&model, "operator");
-            let command = outcome
-                .as_ref()
-                .ok()
-                .and_then(super::OperatorActionOutcome::command);
 
-            assert_eq!(
-                command.map(console_domain::CommandEnvelope::command_type),
-                Some(&CommandType::FactoryDrainRequested)
-            );
-            assert_eq!(
-                command.map(console_domain::CommandEnvelope::aggregate_id),
-                Some("fleet:livespec")
-            );
-            assert_eq!(
-                command.map(console_domain::CommandEnvelope::idempotency_key),
-                Some("fleet:livespec:factory.drain_requested:budget=1:parallel=1")
-            );
-            assert_eq!(
-                command.map(console_domain::CommandEnvelope::requested_by),
-                Some("operator")
-            );
+            assert_eq!(outcome, Err(ApplicationError::UnknownCommandPaletteAction));
         }
     }
 
@@ -12520,6 +12520,7 @@ mod tests {
             // The default test selection is not awaiting an override, which is
             // what a real item reads today — the signal is unpublished.
             awaits_scope_override: false,
+            ready_work_item_count: 1,
             surface,
         }
     }
@@ -12969,6 +12970,7 @@ mod tests {
                 acceptance_policy: AcceptancePolicy::AiThenHuman,
                 has_driver_handoff: handoff,
                 awaits_scope_override: false,
+                ready_work_item_count: 1,
                 surface: ActionSurface::LaneDrill,
             })
         };
@@ -12982,6 +12984,7 @@ mod tests {
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: true,
             awaits_scope_override: false,
+            ready_work_item_count: 1,
             surface: ActionSurface::Attention,
         });
         assert!(!attention_backlog.contains("h handoff"));
@@ -13093,6 +13096,7 @@ mod tests {
                 acceptance_policy: AcceptancePolicy::AiThenHuman,
                 has_driver_handoff: handoff,
                 awaits_scope_override: false,
+                ready_work_item_count: 1,
                 surface,
             };
             assert_eq!(action_registry::selected_item_hint(&ctx), expected);
@@ -13115,6 +13119,7 @@ mod tests {
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             has_driver_handoff: false,
             awaits_scope_override: false,
+            ready_work_item_count: 1,
             surface: ActionSurface::Attention,
         };
         let hint = selected_item_hint(&auto);
