@@ -1,0 +1,50 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Lanes | attention: 92 | factory: drain failed                                                                                │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   View   Help   File
+┌Views───────────┐┌Lanes [focus]───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Attention     ││  backlog (37)                                                                                                                                                                      │
+│  Spec          ││    - livespec-console-beads-fabro-b3k5hi [backlog]  console-happy-path-mvp — drive one filed backlog item through groom → approve → dispatch → active → acceptance entirely in the │
+│> Lanes         ││    - livespec-console-beads-fabro-czcjh5 [backlog]  Event-identity integrity — injective, transition-fresh event/version derivation                                                │
+│  Events        ││    - livespec-console-beads-fabro-vc7lmq [backlog]  Attention detail for 'blocked: needs-human' is useless — fabricates a non-working `fabro attach <event-id>`; detail pane should│
+│  Repos         ││  pending-approval (0)                                                                                                                                                              │
+│  Settings      ││  ready (7)                                                                                                                                                                         │
+│                ││    - livespec-console-beads-fabro-5zjk5b [ready]  Adopt the charter gate in livespec-console-beads-fabro                                                                           │
+│                ││    - livespec-console-beads-fabro-ekb5vq [ready]  [bug] clippy match_same_arms and the 100% llvm-cov line gate can each be satisfied only by violating the other, and the way out i│
+│                ││    - livespec-console-beads-fabro-tyeonw [ready]  Flaky top-tier gate: tmux_tui_e2e_lifecycle_walkthrough_two_repos intermittently fails at the acceptance-policy override step    │
+│                ││  active (1); executing 0 claimed 1                                                                                                                                                 │
+│                ││    - livespec-console-beads-fabro-2ckgiy [active] claimed  [bug] The `h` driver-handoff verb shipped completely undocumented — docs/ never mentions it, and the hint lockstep gate │
+│                ││  acceptance (0)                                                                                                                                                                    │
+│                ││> blocked (0)                                                                                                                                                                       │
+│                ││  done (157)                                                                                                                                                                        │
+│                ││    - livespec-console-beads-fabro-3lxx7t [done]  [bug] The drain marks every picked item `active` immediately but launches them serially, so `active` means CLAIMED not EXECUTING —│
+│                ││    - livespec-console-beads-fabro-3rdmqu [done]  Correct the overstated close_reason on 0tu (closed as 'met in full' while its relocation half was unmet)                          │
+│                ││    - livespec-console-beads-fabro-5kd56a [done]  Re-key the completeness staleness stamp to a digest of the orchestrator's declared key set, not the core pin                      │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+└────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter drill | ? help | q quit                                                                                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
