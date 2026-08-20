@@ -2056,6 +2056,9 @@ pub enum ApplicationError {
     NoSelectedWorkItem,
     /// No selected operator action variant.
     NoSelectedOperatorAction,
+    /// Unavailable operator action variant -- an action was visible as a
+    /// selectable operator route but does not apply in the current context.
+    UnavailableOperatorAction,
     /// Unknown command palette action variant.
     UnknownCommandPaletteAction,
 }

@@ -38,6 +38,8 @@ use ratatui::widgets::{
     ScrollbarState, StatefulWidget, Widget, Wrap,
 };
 
+const UNAVAILABLE_HERE_MARKER: &str = "  (unavailable here)";
+
 #[cfg(all(not(test), not(coverage)))]
 use std::io;
 // `Duration` backs the loop's keyboard poll only (source polling is off-thread
@@ -508,7 +510,12 @@ fn menu_confirm_step(
             Some(global) => global,
             None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
         },
-        None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Render),
+        None => {
+            return TuiRuntimeStep::new(
+                state.clone(),
+                TuiRuntimeEffect::ApplicationError(ApplicationError::UnavailableOperatorAction),
+            );
+        }
     };
     TuiRuntimeStep::new(
         reduce_tui_interaction(state, events, interaction),
@@ -1402,7 +1409,7 @@ fn render_overlay(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> Ov
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::Menu { top, selected } => {
-            render_menu_overlay(*top, *selected, area, buffer);
+            render_menu_overlay(model, *top, *selected, area, buffer);
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::DriverHandoff { command } => {
@@ -2085,7 +2092,7 @@ fn render_action_invoker(
             let key_display = action_registry::accelerator_display(spec);
             let availability = match ctx.as_ref() {
                 Some(ctx) if (spec.availability)(ctx) => "",
-                _unavailable => "  (unavailable here)",
+                _unavailable => UNAVAILABLE_HERE_MARKER,
             };
             let row = format!("{marker} {} [{key_display}]{availability}", spec.label);
             ListItem::new(row).style(if index == selected_action {
@@ -2113,7 +2120,13 @@ fn render_action_invoker(
 /// Accelerators render BESIDE their items. That is what makes "hotkeys are only
 /// additional" visible to an operator rather than merely asserted: the menu is
 /// the route, the key is a shortcut printed next to it.
-fn render_menu_overlay(top: usize, selected: usize, area: Rect, buffer: &mut Buffer) {
+fn render_menu_overlay(
+    model: &TuiScreenModel,
+    top: usize,
+    selected: usize,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
     let tree = action_registry::menu_tree();
     // The open node is addressed through `get` rather than an `is_empty` early
     // return plus indexing: ACTION_REGISTRY is a non-empty const, so an
@@ -2144,6 +2157,7 @@ fn render_menu_overlay(top: usize, selected: usize, area: Rect, buffer: &mut Buf
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
     Clear.render(body, buffer);
 
+    let ctx = model.selected_action_context();
     let mut rows: Vec<ListItem<'static>> = Vec::new();
     let mut action_index = 0usize;
     for group in node.into_iter().flat_map(|node| node.groups.iter()) {
@@ -2154,14 +2168,25 @@ fn render_menu_overlay(top: usize, selected: usize, area: Rect, buffer: &mut Buf
         for spec in &group.actions {
             let marker = if action_index == selected { ">" } else { " " };
             let accelerator = action_registry::accelerator_display(spec);
+            let available = ctx.as_ref().is_some_and(|ctx| (spec.availability)(ctx));
+            let availability = if available {
+                ""
+            } else {
+                UNAVAILABLE_HERE_MARKER
+            };
+            let mut style = Style::new();
+            if action_index == selected {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if !available {
+                style = style.add_modifier(Modifier::DIM);
+            }
             rows.push(
-                ListItem::new(format!("{marker}   {} [{accelerator}]", spec.label)).style(
-                    if action_index == selected {
-                        Style::new().add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::new()
-                    },
-                ),
+                ListItem::new(format!(
+                    "{marker}   {} [{accelerator}]{availability}",
+                    spec.label
+                ))
+                .style(style),
             );
             action_index += 1;
         }
@@ -4661,17 +4686,22 @@ mod tests {
             {
                 let via_menu = menu_confirm_step(&state, &events, &model, top_index, action_index);
                 let via_registry = registry_action_input(&model, spec, ' ');
-                // A menu row that stages nothing must correspond to a registry
-                // action that stages nothing for this selection, and vice versa.
-                let menu_staged = !matches!(via_menu.effect(), TuiRuntimeEffect::Render if via_menu.state() == &state);
-                assert_eq!(menu_staged, via_registry.is_some(), "{}", spec.id);
+                // A menu row that cannot stage its action must refuse
+                // explicitly; an unchanged Render is the old silent no-op.
+                let menu_unavailable = matches!(
+                    via_menu.effect(),
+                    TuiRuntimeEffect::ApplicationError(
+                        console_application::ApplicationError::UnavailableOperatorAction
+                    )
+                );
+                assert_eq!(menu_unavailable, via_registry.is_none(), "{}", spec.id);
             }
         }
     }
 
     /// The menu coordinates — bar node, then flattened action index — of the
     /// registered action `action_id`.
-    fn menu_position_for(action_id: &str) -> (usize, usize) {
+    fn menu_position_for(action_id: &str) -> Option<(usize, usize)> {
         action_registry::menu_tree()
             .iter()
             .enumerate()
@@ -4681,7 +4711,6 @@ mod tests {
                     .position(|spec| spec.id == action_id)
                     .map(|action_index| (top_index, action_index))
             })
-            .unwrap_or_default()
     }
 
     #[test]
@@ -4700,7 +4729,9 @@ mod tests {
             Lane::Backlog,
             None,
         )];
-        let (top, selected) = menu_position_for("driver-handoff");
+        let position = menu_position_for("driver-handoff");
+        assert!(position.is_some(), "missing menu action driver-handoff");
+        let (top, selected) = position.unwrap_or_default();
         let state =
             TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected })
                 .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
@@ -4752,7 +4783,9 @@ mod tests {
         let area = Rect::new(0, 0, 120, 1);
         let mut buffer = Buffer::empty(area);
 
-        render_menu_overlay(0, 0, area, &mut buffer);
+        let model = build_tui_model_for_state(&[], &TuiInteractionState::new(0, TuiOverlay::None));
+
+        render_menu_overlay(&model, 0, 0, area, &mut buffer);
 
         let screen = buffer_to_text(&buffer, area);
         let label = action_registry::menu_tree()
@@ -5127,6 +5160,46 @@ mod tests {
         assert!(rendered.contains("Accept work-item [c]  (unavailable here)"));
         // The overlay owns the Status hints while open.
         assert!(model.footer().contains("enter stage"));
+    }
+
+    #[test]
+    fn render_menu_overlay_marks_unavailable_actions_as_literal_text() {
+        let position = menu_position_for("accept");
+        assert!(position.is_some(), "missing menu action accept");
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected })
+                .with_lane_focus(LaneFocus::Lane(Lane::PendingApproval))
+                .with_selected_lane_item_index(0);
+        let model = build_tui_model_for_state(&pending_events(), &state);
+        let rendered = render_to_text(&model, 110, 60).unwrap_or_default();
+
+        assert!(rendered.contains("Accept work-item [c]  (unavailable here)"));
+    }
+
+    #[test]
+    fn unavailable_menu_confirmation_refuses_instead_of_silent_render() {
+        let position = menu_position_for("accept");
+        assert!(position.is_some(), "missing menu action accept");
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected })
+                .with_lane_focus(LaneFocus::Lane(Lane::PendingApproval))
+                .with_selected_lane_item_index(0);
+        let step = step_tui_runtime(
+            &state,
+            &pending_events(),
+            TuiTerminalInput::Confirm,
+            "operator",
+        );
+
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::UnavailableOperatorAction
+            )
+        );
+        assert_eq!(step.state(), &state);
     }
 
     /// A single manual-admission pending-approval item: the context that
