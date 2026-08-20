@@ -62,7 +62,7 @@
   "non_operator_actions": [
     {
       "action": "impl",
-      "reason": "Per-item dispatch stays PARKED per plan/archive/command-queue-semantics/ (-8aw): the queue-level dispatch-ready menu action is the MVP dispatch surface. Not a human valve upstream (dispatcher shell-out)."
+      "reason": "Upstream driver execution action, not a human valve. The console's per-item factory dispatch is registered separately as dispatch-selected-item and persists `factory.dispatch_item_requested` rather than an orchestrator `drive` action-id."
     },
     {
       "action": "config",
@@ -105,6 +105,10 @@
     {
       "action": "dispatch-ready",
       "reason": "Console-side factory action: it persists the console's `factory.drain_requested` command for the queue-level Dispatcher drain, not an orchestrator `drive` action-id. Registered 2026-08-20 so dispatch is reachable from the generated primary menu instead of a command-palette string special case."
+    },
+    {
+      "action": "dispatch-selected-item",
+      "reason": "Console-side factory action: it persists the console's `factory.dispatch_item_requested` command for the selected ready work-item, not an orchestrator `drive` action-id. Registered 2026-08-20 so per-item dispatch is reachable from the generated primary menu."
     }
   ]
 }

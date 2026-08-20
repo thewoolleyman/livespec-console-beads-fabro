@@ -482,6 +482,15 @@ fn invoker_confirm_step(
                 )),
             );
         }
+        Some(action_registry::StagedAction::FactoryDispatchItem) => {
+            let work_item_id = model.selected_work_item_id().unwrap_or("");
+            return TuiRuntimeStep::new(
+                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+                TuiRuntimeEffect::PersistCommand(
+                    console_application::factory_dispatch_item_command(work_item_id, requested_by),
+                ),
+            );
+        }
         // Quit is the one global that is not an interaction: it ends the
         // session rather than transforming its state.
         Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
@@ -522,6 +531,15 @@ fn menu_confirm_step(
                 TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
                     requested_by,
                 )),
+            );
+        }
+        Some(action_registry::StagedAction::FactoryDispatchItem) => {
+            let work_item_id = model.selected_work_item_id().unwrap_or("");
+            return TuiRuntimeStep::new(
+                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+                TuiRuntimeEffect::PersistCommand(
+                    console_application::factory_dispatch_item_command(work_item_id, requested_by),
+                ),
             );
         }
         Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
@@ -1020,7 +1038,8 @@ fn registry_action_input(
         action_registry::StagedAction::DriverHandoff => Some(TuiTerminalInput::Interaction(
             TuiInteraction::OpenDriverHandoff,
         )),
-        action_registry::StagedAction::FactoryDrain => None,
+        action_registry::StagedAction::FactoryDrain
+        | action_registry::StagedAction::FactoryDispatchItem => None,
         action_registry::StagedAction::Global(action) => Some(global_input(action)),
     }
 }
@@ -5490,6 +5509,84 @@ mod tests {
         assert_eq!(
             command.map(console_domain::CommandEnvelope::command_type),
             Some(&CommandType::FactoryDrainRequested)
+        );
+    }
+
+    #[test]
+    fn the_menu_dispatches_the_selected_ready_item() {
+        let position = menu_position_for("dispatch-selected-item");
+        assert!(position.is_some());
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected })
+                .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+                .with_selected_lane_item_index(1);
+        let ready_events = [
+            lane_event(
+                "evt_dispatch_selected_other",
+                "console-dispatch-other",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+            lane_event(
+                "evt_dispatch_selected_item",
+                "console-dispatch-selected",
+                Lane::Ready,
+                None,
+                "a1",
+                "ready",
+            ),
+        ];
+
+        let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+        let command = persisted_command(step.effect());
+
+        assert_eq!(
+            command.map(|command| command.command_type().contract_name()),
+            Some("factory.dispatch_item_requested")
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::aggregate_id),
+            Some("console-dispatch-selected")
+        );
+    }
+
+    #[test]
+    fn the_invoker_dispatches_the_selected_ready_item() {
+        let action_index = action_registry::ACTION_REGISTRY
+            .iter()
+            .position(|spec| spec.id == "dispatch-selected-item")
+            .unwrap_or_default();
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::ActionInvoker {
+                selected_action: action_index,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_selected_lane_item_index(0);
+        let ready_events = [lane_event(
+            "evt_invoker_dispatch_selected",
+            "console-invoker-dispatch-selected",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+
+        let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+        let command = persisted_command(step.effect());
+
+        assert_eq!(
+            command.map(|command| command.command_type().contract_name()),
+            Some("factory.dispatch_item_requested")
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::aggregate_id),
+            Some("console-invoker-dispatch-selected")
         );
     }
 

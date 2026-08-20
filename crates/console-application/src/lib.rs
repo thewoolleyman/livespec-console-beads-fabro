@@ -2097,6 +2097,8 @@ pub enum ApplicationError {
     NoSelectedDispatcherSetting,
     /// Factory drain port failed variant.
     FactoryDrainPortFailed,
+    /// Factory selected-item dispatch port failed variant.
+    FactoryDispatchItemPortFailed,
     /// No selected attention item variant.
     NoSelectedAttentionItem,
     /// No selected work-item variant -- a per-item valve was invoked with no
@@ -2205,6 +2207,26 @@ impl FactoryDrainRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Represents one selected work-item dispatch request.
+pub struct FactoryDispatchItemRequest {
+    work_item_id: String,
+}
+
+impl FactoryDispatchItemRequest {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(work_item_id: String) -> Self {
+        Self { work_item_id }
+    }
+
+    #[must_use]
+    /// Return the target work-item id.
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Variants for factory drain port outcome state or outcome values.
 pub enum FactoryDrainPortOutcome {
     /// Completed variant.
@@ -2250,6 +2272,49 @@ impl FactoryDrainPortOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Variants for selected-item factory dispatch port outcome state.
+pub enum FactoryDispatchItemPortOutcome {
+    /// Completed variant.
+    Completed,
+    /// Failed variant.
+    Failed {
+        /// The child surface's captured stdout, when it emitted one.
+        diagnostic: Option<String>,
+    },
+    /// The request was accepted but no real selected-item Dispatcher port is
+    /// wired, so no dispatch was attempted.
+    NotWired,
+}
+
+impl FactoryDispatchItemPortOutcome {
+    #[must_use]
+    /// Return the stored value.
+    pub const fn completed() -> Self {
+        Self::Completed
+    }
+
+    #[must_use]
+    /// Return the stored value.
+    pub const fn failed() -> Self {
+        Self::Failed { diagnostic: None }
+    }
+
+    #[must_use]
+    /// A failure carrying the diagnostic payload the dispatch surface emitted.
+    pub const fn failed_with_diagnostic(diagnostic: String) -> Self {
+        Self::Failed {
+            diagnostic: Some(diagnostic),
+        }
+    }
+
+    #[must_use]
+    /// Return the stored value.
+    pub const fn not_wired() -> Self {
+        Self::NotWired
+    }
+}
+
 /// Port interface for factory drain port behavior supplied by an outer layer.
 pub trait FactoryDrainPort {
     /// Drain ready work from the factory through the concrete Dispatcher port.
@@ -2260,6 +2325,18 @@ pub trait FactoryDrainPort {
         &mut self,
         request: &FactoryDrainRequest,
     ) -> ApplicationResult<FactoryDrainPortOutcome>;
+}
+
+/// Port interface for dispatching one selected ready item through a factory.
+pub trait FactoryDispatchItemPort {
+    /// Dispatch one ready work-item through the concrete Dispatcher port.
+    ///
+    /// # Errors
+    /// Returns an application error when the port cannot produce a trustworthy outcome.
+    fn dispatch_item(
+        &mut self,
+        request: &FactoryDispatchItemRequest,
+    ) -> ApplicationResult<FactoryDispatchItemPortOutcome>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2357,6 +2434,24 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
             }
             SourceProbeOutcome::Unavailable { .. } => FactoryDrainPortOutcome::not_wired(),
         })
+    }
+}
+
+/// Dispatcher selected-item port.
+///
+/// The current specification confirms the `factory.dispatch_item_requested`
+/// command contract but does not define a stable concrete Dispatcher argv for
+/// one-item dispatch. Until that lower-level surface exists, the real port is
+/// intentionally honest: it reports `not_wired` instead of fabricating success
+/// or silently falling back to a fleet drain.
+pub struct DispatcherFactoryDispatchItemPort;
+
+impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort {
+    fn dispatch_item(
+        &mut self,
+        _request: &FactoryDispatchItemRequest,
+    ) -> ApplicationResult<FactoryDispatchItemPortOutcome> {
+        Ok(FactoryDispatchItemPortOutcome::not_wired())
     }
 }
 
@@ -3444,10 +3539,16 @@ fn factory_drain_activity(events: &[ConsoleEvent]) -> Option<String> {
             EventType::FactoryDrainRequested | EventType::FactoryDrainStarted => {
                 Some("drain in flight".to_owned())
             }
+            EventType::FactoryDispatchItemRequested | EventType::FactoryDispatchItemStarted => {
+                Some("dispatch item in flight".to_owned())
+            }
             EventType::FactoryDrainCompleted => Some("drain completed".to_owned()),
             EventType::FactoryDrainFailed => Some("drain failed".to_owned()),
             EventType::FactoryDrainAwaitingHuman => Some("drain awaiting human".to_owned()),
             EventType::FactoryDrainNotWired => Some("drain not wired".to_owned()),
+            EventType::FactoryDispatchItemCompleted => Some("dispatch item completed".to_owned()),
+            EventType::FactoryDispatchItemFailed => Some("dispatch item failed".to_owned()),
+            EventType::FactoryDispatchItemNotWired => Some("dispatch item not wired".to_owned()),
             EventType::CommandRejected if event.stream_id() == "fleet:livespec" => {
                 Some("drain rejected".to_owned())
             }
@@ -4348,6 +4449,18 @@ pub fn factory_drain_command(requested_by: &str) -> CommandEnvelope {
     )
 }
 
+/// Build the canonical command envelope for dispatching the selected ready item.
+#[must_use]
+pub fn factory_dispatch_item_command(work_item_id: &str, requested_by: &str) -> CommandEnvelope {
+    CommandEnvelope::new(
+        format!("cmd_factory_dispatch_item_requested_{work_item_id}"),
+        CommandType::FactoryDispatchItemRequested,
+        work_item_id.to_owned(),
+        format!("{work_item_id}:factory.dispatch_item_requested"),
+        requested_by.to_owned(),
+    )
+}
+
 /// Handle factory drain command.
 pub fn handle_factory_drain_command(
     command: &CommandEnvelope,
@@ -4429,6 +4542,65 @@ pub fn handle_factory_drain_command(
     ))
 }
 
+/// Handle selected-item factory dispatch command.
+pub fn handle_factory_dispatch_item_command(
+    command: &CommandEnvelope,
+    port: &mut dyn FactoryDispatchItemPort,
+) -> ApplicationResult<FactoryCommandOutcome> {
+    let request = FactoryDispatchItemRequest::new(command.aggregate_id().to_owned());
+    let port_outcome = port.dispatch_item(&request)?;
+    let mut events = vec![factory_command_event(
+        command,
+        EventType::CommandAccepted,
+        "accepted",
+        1,
+    )];
+    let command_status = match port_outcome {
+        FactoryDispatchItemPortOutcome::Completed => {
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDispatchItemStarted,
+                "started",
+                2,
+            ));
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDispatchItemCompleted,
+                "completed",
+                3,
+            ));
+            "completed"
+        }
+        FactoryDispatchItemPortOutcome::Failed { diagnostic } => {
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDispatchItemStarted,
+                "started",
+                2,
+            ));
+            events.push(factory_dispatch_item_failure_event(
+                command,
+                diagnostic.as_deref(),
+                3,
+            ));
+            "failed"
+        }
+        FactoryDispatchItemPortOutcome::NotWired => {
+            events.push(factory_command_event(
+                command,
+                EventType::FactoryDispatchItemNotWired,
+                "not_wired",
+                2,
+            ));
+            "not_wired"
+        }
+    };
+    Ok(FactoryCommandOutcome::new(
+        command_status.to_owned(),
+        events,
+    ))
+}
+
 fn rejected_factory_command_event(command: &CommandEnvelope, reason: &str) -> ConsoleEvent {
     factory_command_event(command, EventType::CommandRejected, "rejected", 1).with_payload_json(
         serde_json::json!({
@@ -4493,6 +4665,23 @@ fn factory_drain_failure_event(
     .with_payload_json(serde_json::Value::Object(diagnostic_event_payload(diagnostic)).to_string())
 }
 
+fn factory_dispatch_item_failure_event(
+    command: &CommandEnvelope,
+    diagnostic: Option<&str>,
+    stream_seq: u64,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        format!("evt_{}_failed", command.command_id()),
+        1,
+        command_event_context(EventType::FactoryDispatchItemFailed).to_owned(),
+        EventType::FactoryDispatchItemFailed,
+        "console:factory-command-handler".to_owned(),
+        command.aggregate_id().to_owned(),
+        stream_seq,
+    )
+    .with_payload_json(serde_json::Value::Object(diagnostic_event_payload(diagnostic)).to_string())
+}
+
 const fn command_event_context(event_type: EventType) -> &'static str {
     match event_type {
         EventType::CommandAccepted | EventType::CommandRejected => "command",
@@ -4500,6 +4689,11 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::FactoryDrainFailed
         | EventType::FactoryDrainAwaitingHuman
         | EventType::FactoryDrainNotWired
+        | EventType::FactoryDispatchItemCompleted
+        | EventType::FactoryDispatchItemFailed
+        | EventType::FactoryDispatchItemNotWired
+        | EventType::FactoryDispatchItemRequested
+        | EventType::FactoryDispatchItemStarted
         | EventType::FactoryDrainRequested
         | EventType::FactoryDrainStarted => "factory",
         EventType::WorkItemActionStarted
@@ -6971,6 +7165,11 @@ impl AttentionEvent for EventType {
             Self::FactoryDrainFailed => "Factory drain failed",
             Self::FactoryDrainAwaitingHuman => "Factory drain awaiting human",
             Self::FactoryDrainNotWired => "Factory drain not wired",
+            Self::FactoryDispatchItemCompleted => "Factory dispatch item completed",
+            Self::FactoryDispatchItemFailed => "Factory dispatch item failed",
+            Self::FactoryDispatchItemNotWired => "Factory dispatch item not wired",
+            Self::FactoryDispatchItemRequested => "Factory dispatch item requested",
+            Self::FactoryDispatchItemStarted => "Factory dispatch item started",
             Self::GithubPullRequestSnapshotObserved => "GitHub pull request snapshot",
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
@@ -7009,22 +7208,26 @@ mod tests {
     };
     use super::{
         ActionFailure, ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
-        AutonomousAudit, AutonomousDecisionsPort, ConfigCommandOutcome, DispatcherFactoryDrainPort,
+        AutonomousAudit, AutonomousDecisionsPort, ConfigCommandOutcome,
+        DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
-        DispatcherSettingsPort, DispatcherSettingsRead, FactoryDrainPolicy, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP,
-        HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort, LaneExecutionState,
-        LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome,
-        OrchestratorActionPort, OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve,
-        PluginResolution, RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
-        command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
-        handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
-        handle_work_item_accept_command, handle_work_item_approve_command,
-        handle_work_item_move_command, handle_work_item_reject_command,
-        handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
-        handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
+        DispatcherSettingsPort, DispatcherSettingsRead, FactoryDispatchItemPort,
+        FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest, FactoryDrainPolicy,
+        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
+        HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort,
+        LaneExecutionState, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome,
+        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
+        OverrideInt, PendingValve, PluginResolution, RejectMode, SettingRow, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry, build_tui_model,
+        build_tui_model_for_state, command_palette_query_opens_action_invoker,
+        dispatcher_setting_rows, drilldown_item_count, factory_dispatch_item_command,
+        handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
+        handle_factory_drain_command, handle_work_item_accept_command,
+        handle_work_item_approve_command, handle_work_item_move_command,
+        handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
+        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+        handle_work_item_set_dispatcher_override_command,
         handle_work_item_set_workflow_scope_override_command, header_help_section,
         help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
         per_item_verb_is_state_valid, plan_page_url, project_action_failures, project_attention,
@@ -9083,6 +9286,174 @@ mod tests {
     }
 
     #[test]
+    fn factory_dispatch_item_command_targets_the_selected_item() {
+        let command = factory_dispatch_item_command("console-selected", "operator");
+
+        assert_eq!(
+            command.command_type(),
+            &CommandType::FactoryDispatchItemRequested
+        );
+        assert_eq!(command.aggregate_id(), "console-selected");
+        assert_eq!(
+            command.idempotency_key(),
+            "console-selected:factory.dispatch_item_requested"
+        );
+    }
+
+    #[test]
+    fn factory_dispatch_item_handler_accepts_and_records_not_wired() {
+        let command = factory_dispatch_item_command("console-selected", "operator");
+        let mut port = NotWiringDispatchItemPort::default();
+
+        let outcome = handle_factory_dispatch_item_command(&command, &mut port);
+
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("not_wired")
+        );
+        assert_eq!(port.requests, ["console-selected"]);
+        assert_eq!(
+            outcome
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events
+                    .iter()
+                    .map(ConsoleEvent::event_type)
+                    .collect::<Vec<_>>()),
+            Ok(vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDispatchItemNotWired,
+            ])
+        );
+    }
+
+    #[test]
+    fn factory_dispatch_item_handler_records_completed_and_failed_outcomes() {
+        let command = factory_dispatch_item_command("console-selected", "operator");
+        let mut completing = CompletingDispatchItemPort::default();
+        let completed = handle_factory_dispatch_item_command(&command, &mut completing);
+        assert_eq!(
+            completed
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("completed")
+        );
+        assert_eq!(
+            completed
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events
+                    .iter()
+                    .map(ConsoleEvent::event_type)
+                    .collect::<Vec<_>>()),
+            Ok(vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDispatchItemStarted,
+                &EventType::FactoryDispatchItemCompleted,
+            ])
+        );
+
+        let mut failing = FailingDispatchItemPort;
+        let failed = handle_factory_dispatch_item_command(&command, &mut failing);
+        assert_eq!(
+            failed
+                .as_ref()
+                .map(super::FactoryCommandOutcome::command_status),
+            Ok("failed")
+        );
+        assert_eq!(
+            failed
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .and_then(|events| {
+                    events
+                        .last()
+                        .map(ConsoleEvent::event_type)
+                        .ok_or(&ApplicationError::NoSelectedAttentionItem)
+                }),
+            Ok(&EventType::FactoryDispatchItemFailed)
+        );
+        assert_eq!(
+            failed
+                .as_ref()
+                .map(super::FactoryCommandOutcome::events)
+                .map(|events| events[2].payload_json()),
+            Ok(r#"{"refusal":"dispatch item refused"}"#)
+        );
+    }
+
+    #[test]
+    fn factory_dispatch_item_helpers_cover_default_outcomes_and_labels() {
+        let mut port = DispatcherFactoryDispatchItemPort;
+        let request = FactoryDispatchItemRequest::new("console-selected".to_owned());
+        assert_eq!(
+            port.dispatch_item(&request),
+            Ok(FactoryDispatchItemPortOutcome::not_wired())
+        );
+        assert_eq!(
+            FactoryDispatchItemPortOutcome::failed(),
+            FactoryDispatchItemPortOutcome::Failed { diagnostic: None }
+        );
+        assert_eq!(
+            FactoryDispatchItemPortOutcome::failed_with_diagnostic("held".to_owned()),
+            FactoryDispatchItemPortOutcome::Failed {
+                diagnostic: Some("held".to_owned())
+            }
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemCompleted.label(),
+            "Factory dispatch item completed"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemFailed.label(),
+            "Factory dispatch item failed"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemNotWired.label(),
+            "Factory dispatch item not wired"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemRequested.label(),
+            "Factory dispatch item requested"
+        );
+        assert_eq!(
+            EventType::FactoryDispatchItemStarted.label(),
+            "Factory dispatch item started"
+        );
+    }
+
+    #[test]
+    fn header_surfaces_factory_dispatch_item_statuses() {
+        for (event_type, expected) in [
+            (
+                EventType::FactoryDispatchItemRequested,
+                "dispatch item in flight",
+            ),
+            (
+                EventType::FactoryDispatchItemStarted,
+                "dispatch item in flight",
+            ),
+            (
+                EventType::FactoryDispatchItemCompleted,
+                "dispatch item completed",
+            ),
+            (EventType::FactoryDispatchItemFailed, "dispatch item failed"),
+            (
+                EventType::FactoryDispatchItemNotWired,
+                "dispatch item not wired",
+            ),
+        ] {
+            let event = ConsoleEvent::fixture("evt_dispatch_item", event_type, "console");
+            assert_eq!(
+                super::factory_drain_activity(&[event]),
+                Some(expected.to_owned())
+            );
+        }
+    }
+
+    #[test]
     fn command_event_context_falls_back_to_source_context() {
         assert_eq!(
             super::command_event_context(EventType::SourceCompletenessFindingObserved),
@@ -10035,6 +10406,49 @@ mod tests {
             _request: &FactoryDrainRequest,
         ) -> super::ApplicationResult<FactoryDrainPortOutcome> {
             Ok(FactoryDrainPortOutcome::not_wired())
+        }
+    }
+
+    #[derive(Default)]
+    struct NotWiringDispatchItemPort {
+        requests: Vec<String>,
+    }
+
+    impl FactoryDispatchItemPort for NotWiringDispatchItemPort {
+        fn dispatch_item(
+            &mut self,
+            request: &FactoryDispatchItemRequest,
+        ) -> super::ApplicationResult<FactoryDispatchItemPortOutcome> {
+            self.requests.push(request.work_item_id().to_owned());
+            Ok(FactoryDispatchItemPortOutcome::not_wired())
+        }
+    }
+
+    #[derive(Default)]
+    struct CompletingDispatchItemPort {
+        requests: Vec<String>,
+    }
+
+    impl FactoryDispatchItemPort for CompletingDispatchItemPort {
+        fn dispatch_item(
+            &mut self,
+            request: &FactoryDispatchItemRequest,
+        ) -> super::ApplicationResult<FactoryDispatchItemPortOutcome> {
+            self.requests.push(request.work_item_id().to_owned());
+            Ok(FactoryDispatchItemPortOutcome::completed())
+        }
+    }
+
+    struct FailingDispatchItemPort;
+
+    impl FactoryDispatchItemPort for FailingDispatchItemPort {
+        fn dispatch_item(
+            &mut self,
+            _request: &FactoryDispatchItemRequest,
+        ) -> super::ApplicationResult<FactoryDispatchItemPortOutcome> {
+            Ok(FactoryDispatchItemPortOutcome::failed_with_diagnostic(
+                "dispatch item refused".to_owned(),
+            ))
         }
     }
 

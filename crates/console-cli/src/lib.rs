@@ -31,14 +31,15 @@ use console_application::source_adapters::{
     normalize_work_item_snapshot,
 };
 use console_application::{
-    ApplicationError, AutonomousDecision, AutonomousDecisionsPort, DispatcherSettingsPort,
-    FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
-    autonomous_reflection_attention_id, build_tui_model,
-    handle_config_dispatcher_setting_set_command, handle_factory_drain_command,
-    handle_work_item_accept_command, handle_work_item_approve_command,
-    handle_work_item_move_command, handle_work_item_reject_command,
-    handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
-    handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
+    ApplicationError, AutonomousDecision, AutonomousDecisionsPort,
+    DispatcherFactoryDispatchItemPort, DispatcherSettingsPort, FactoryDrainPolicy,
+    FactoryDrainPort, OrchestratorActionPort, autonomous_reflection_attention_id, build_tui_model,
+    handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
+    handle_factory_drain_command, handle_work_item_accept_command,
+    handle_work_item_approve_command, handle_work_item_move_command,
+    handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
+    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+    handle_work_item_set_dispatcher_override_command,
     handle_work_item_set_workflow_scope_override_command, plan_page_url, project_attention,
     project_plan_page, render_plan_page_html,
     source_adapters::{
@@ -1357,7 +1358,12 @@ pub fn handle_pending_factory_commands(
         if !claim_pending_command(store, &command, handled_at)? {
             continue;
         }
-        let command_outcome = handle_factory_drain_command(&command, &policy, port)?;
+        let command_outcome = if *command.command_type() == CommandType::FactoryDrainRequested {
+            handle_factory_drain_command(&command, &policy, port)?
+        } else {
+            let mut dispatch_port = DispatcherFactoryDispatchItemPort;
+            handle_factory_dispatch_item_command(&command, &mut dispatch_port)?
+        };
         outcomes.push(finalize_pending_command(
             store,
             &command,
@@ -1854,6 +1860,7 @@ const fn is_repeatable_command(command_type: CommandType) -> bool {
         command_type,
         CommandType::WorkItemMoveRequested
             | CommandType::FactoryDrainRequested
+            | CommandType::FactoryDispatchItemRequested
             | CommandType::WorkItemRejectRequested
             | CommandType::WorkItemSetAdmissionRequested
             | CommandType::WorkItemSetAcceptanceRequested
@@ -1950,7 +1957,11 @@ fn command_correlation_id(command: &CommandEnvelope) -> String {
 fn factory_command_from_stored(
     stored_command: &StoredCommand,
 ) -> ConsoleRuntimeResult<Option<CommandEnvelope>> {
-    if stored_command.command_type() != CommandType::FactoryDrainRequested.contract_name() {
+    let is_drain =
+        stored_command.command_type() == CommandType::FactoryDrainRequested.contract_name();
+    let is_dispatch_item =
+        stored_command.command_type() == CommandType::FactoryDispatchItemRequested.contract_name();
+    if !(is_drain || is_dispatch_item) {
         return Ok(None);
     }
     let Some(aggregate_id) = stored_command.aggregate_id() else {
@@ -1960,7 +1971,11 @@ fn factory_command_from_stored(
     };
     Ok(Some(CommandEnvelope::new(
         stored_command.command_id().to_owned(),
-        CommandType::FactoryDrainRequested,
+        if is_drain {
+            CommandType::FactoryDrainRequested
+        } else {
+            CommandType::FactoryDispatchItemRequested
+        },
         aggregate_id.to_owned(),
         stored_command.idempotency_key().to_owned(),
         stored_command.requested_by().to_owned(),
@@ -5412,6 +5427,45 @@ mod tests {
 
         assert_eq!(outcomes, []);
         assert_eq!(store.list_console_events()?, []);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_factory_dispatch_item_command_records_not_wired() -> Result<(), ConsoleRuntimeError>
+    {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+            "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
+            CommandType::FactoryDispatchItemRequested,
+            "wi-1".to_owned(),
+            "wi-1:factory.dispatch_item_requested".to_owned(),
+            "operator".to_owned(),
+        ))];
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        let mut port = SimulatedFactoryDrainPort;
+
+        let outcomes =
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+
+        assert_eq!(
+            outcomes,
+            vec![PendingCommandOutcome::new(
+                "cmd_factory_dispatch_item_requested_wi_1_0".to_owned(),
+                "not_wired".to_owned(),
+                2,
+            )]
+        );
+        let events = store.list_console_events()?;
+        assert_eq!(
+            events
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDispatchItemNotWired,
+            ]
+        );
         Ok(())
     }
 
