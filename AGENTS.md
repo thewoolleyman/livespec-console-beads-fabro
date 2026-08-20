@@ -92,6 +92,18 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   `plan/archive/<topic>/`; legacy prompt handoffs live in `archive/prompts/`.
   Do not print a handoff body in the chat, and do not proliferate new handoff
   files.
+- **Charter-detector changes require three-way control.** Before changing a
+  charter to satisfy a known-defect detector, verify the suspect form, the same
+  thing written differently, and a known-real defect. If the suspect form and
+  the equivalent alternate form disagree, the DETECTOR is wrong; fix the
+  detector or report the detector defect rather than rewriting already-correct
+  charter code to appease a broken check.
+- **Legitimate charter counter-examples use indented literal blocks.** The
+  charter detectors read fenced code blocks only, so a legitimate example that
+  must preserve the exact bytes of a detector-shaped snippet belongs in an
+  indented literal block. Do not add a self-declared "skip this block" marker;
+  it becomes another convention to maintain and is not part of the detector
+  contract.
 
 ## Codex dogfooding (OpenAI Codex CLI/TUI)
 
