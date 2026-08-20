@@ -2,6 +2,11 @@
   "_comment": "Justified divergences between the `just check` target list and .github/workflows/ci.yml job names. Every entry MUST carry a non-empty reason; false records a known, deliberate omission.",
   "divergences": [
     {
+      "name": "check-charters",
+      "present_in_ci": false,
+      "reason": "Runs in the janitor/local aggregate to enforce shipped charter-defect detectors over this repo's two enumerated charters; this factory slice may not edit .github/workflows/ to add the matching CI matrix job."
+    },
+    {
       "name": "check-ci-parity",
       "present_in_ci": false,
       "reason": "This is the janitor/local aggregate guard introduced by livespec-console-beads-fabro-ccycuk. It reads CI's committed workflow but this factory slice may not edit .github/workflows/ to add a new CI job."
