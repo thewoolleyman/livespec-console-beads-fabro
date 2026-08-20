@@ -1,0 +1,19 @@
+{
+  "candidates": [
+    {
+      "action": "implement",
+      "dispatch_factory": null,
+      "origin": "freeform",
+      "rank": "a0",
+      "reason": "ranked ready item (rank a0, origin freeform)",
+      "urgency": "medium",
+      "work_item_ref": "livespec-console-beads-fabro-5deyqc"
+    }
+  ],
+  "pagination": {
+    "has_more": true,
+    "limit": 1,
+    "offset": 0,
+    "total": 11
+  }
+}
