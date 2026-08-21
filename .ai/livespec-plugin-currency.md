@@ -129,6 +129,51 @@ What to do when you see exit code 3 with this message:
    `15a4ae9aff88` -> `5dcbc6829ff9` move it stayed green, but that is a
    fact to verify, not to assume.
 
+### Better: resolve the pin AT DISPATCH TIME and the class disappears
+
+The three steps above handle one incident. Any script that dispatches more
+than once should not hold a plugin path at all — it should read the PIN each
+time it dispatches:
+
+```bash
+P=$(python3 -c "
+import json
+d = json.load(open('/home/ubuntu/.claude/plugins/installed_plugins.json'))
+for e in d['plugins']['livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro']:
+    if e.get('projectPath') == '/data/projects/livespec-console-beads-fabro':
+        print(e['installPath']); break
+")
+[ -d "$P" ] || { echo "FATAL: pinned plugin path not found: $P" >&2; exit 1; }
+```
+
+This needs no host mutation and no tracked-file write, and it survives the
+NEXT move as well as this one — which matters, because the marketplace moved
+THREE times on 2026-08-21 (`15a4ae9aff88` -> `5dcbc6829ff9` -> `ea71503fcf13`)
+and a session that reacted to each move by hand paid for it three times. A
+loop that read the pin per dispatch was refused once, before the fix, and never
+again.
+
+Note the pin and the executing build are DIFFERENT FACTS. `claude plugin
+update ... --scope project` reporting "already at the latest version" says the
+PIN is current; it says nothing about what a running session is executing.
+Confirm the build you are actually running, from the live process rather than
+from the pin:
+
+```bash
+ps -eo cmd | grep -o "livespec-orchestrator-beads-fabro/[0-9a-f]\{12\}" | sort -u
+```
+
+**The staleness refusals cannot be attributed from the journal.** They carry
+`work_item_id` null because they are LOOP-level rows rather than item rows —
+the same shape the reflection-row note in
+`.ai/factory-dispatch-and-merge-coupling.md` describes. Selecting on the field
+returns nothing for them, and a substring grep for an item id matches rows that
+item never produced. Two sessions on 2026-08-21 attributed a refusal to the
+wrong dispatch from co-occurrence alone. Which build the live chain executes,
+and how long it has been alive, is the instrument that settles it: a gate
+refusal exits in about twenty seconds, so a chain alive for minutes was not
+refused.
+
 Unrelated to ledger item `livespec-console-beads-fabro-3ej` ("livespec
 pin bumps cannot land here"), which concerns the `livespec` CORE pin in
 `.livespec.jsonc` frozen at v0.26.0 — same family, different pin,
