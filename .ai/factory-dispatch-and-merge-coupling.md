@@ -148,3 +148,26 @@ A cheap way to catch this: before dispatching, ask what the item would look like
 with every comment deleted. If the remaining title and description would lead a
 competent implementer to the wrong approach, the item is not ready to dispatch,
 however complete the ledger record looks to you.
+
+### Filter the journal by FIELD, not by substring
+
+Reading the journal is right; grepping it by work-item id is not. Fleet-wide
+rows list many ids inside a single field — a `reflection` row on 2026-08-21
+carried a `stage-retry` finding naming seventy-plus items in one string. A
+`grep <id> tmp/fabro-dispatch-journal.jsonl` matches those rows, so a dispatch
+that is still mid-flight appears to have reached `reflection`, which is the LAST
+stage of a completed run. The conclusion is exactly backwards and it looks
+authoritative.
+
+Those rows are identifiable: `work_item_id` is `null` on them, because they
+belong to the loop rather than to any one item. So select on the field:
+
+```python
+rows = [d for d in map(json.loads, open("tmp/fabro-dispatch-journal.jsonl"))
+        if d.get("work_item_id") == "<id>"]
+```
+
+The same caution applies to `outcome`: an item's real terminal row carries
+`stage: "outcome"` with an `outcome` object holding `status`, `pr_number`,
+`merge_sha` and `fabro_run_id`. Absence of that row means the run has not
+finished, whatever else the file appears to say about the id.
