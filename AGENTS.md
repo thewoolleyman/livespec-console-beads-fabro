@@ -191,16 +191,29 @@ run from this repo's root, or `bd` silently operates on the wrong tenant.
 launched under the wrapper"; the wrapper applies per command. The canonical
 invocation is `with-livespec-env.sh -- <command>`, e.g.
 
-    /data/projects/1password-env-wrapper/with-livespec-env.sh -- bd list -n 0
+    /data/projects/1password-env-wrapper/with-livespec-env.sh -- bd list --status all -n 0
 
-which injects the bare `BEADS_DOLT_PASSWORD` for that one command. **The `-n 0` is
-not optional decoration:** `bd list` silently truncates at 50 rows, `--json`
-included, with nothing in the output saying the set was cut — so a read without it
-under-reports the ledger and can make an existing item look absent. The same holds
-for the orchestrator `capture-work-item` / `list-work-items` / `next` skills: run
-the `bd`/python commands they drive under the wrapper. An **"Access denied" / "no
-beads database found" failure almost always means you ran OUTSIDE the wrapper**
-(the password is absent), not that a secret is missing — re-run under the wrapper.
+which injects the bare `BEADS_DOLT_PASSWORD` for that one command. **`bd list`
+silently truncates TWICE, and the two truncations need two different flags.**
+
+- **The row cap.** `bd list` stops at 50 rows, `--json` included, with nothing in
+  the output saying the set was cut. `-n 0` (or `--limit 0`) removes it.
+- **The status filter.** Without `--status all`, `bd list` returns only
+  NON-CLOSED items and reports that truncated set as a normal, plausible,
+  non-empty result. **`-n 0` does not fix this** — it lifts the row cap only.
+  Measured in this tenant 2026-08-21: 254 records with `--status all`, of which
+  209 are closed, so the bare form shows 45 — under a fifth of the ledger.
+
+Either read alone under-reports and can make an existing item look absent. Use
+`--status all -n 0` for any prior-art scan, any "have we already built this"
+check, and any completeness review — the item you are looking for is usually
+closed, which is exactly why it is invisible.
+
+The wrapper rule extends to the orchestrator `capture-work-item` /
+`list-work-items` / `next` skills: run the `bd`/python commands they drive under
+the wrapper too. An **"Access denied" / "no beads database found" failure almost
+always means you ran OUTSIDE the wrapper** (the password is absent), not that a
+secret is missing — re-run under the wrapper.
 Never hand-hunt the secret or reach around the seam with raw `mysql` / `dolt` /
 `sudo`, and never rely on a `!`-prefixed one-off in a Claude prompt (it does not
 persist env into later tool-call shells). A `CALL DOLT_BACKUP … command denied`
@@ -231,11 +244,11 @@ where a console pointed at another repo appeared to ignore its env override;
 **Budget your wrapper calls.** Each one is an `op run` against a 1Password daily
 quota that is shared **account-wide across every tenant**, not per-repo — a session
 that spends it blocks `git push` and every ledger write fleet-wide, for other
-sessions too. Batch: make one `bd list --json -n 0` and parse the cached result
-locally as often as needed, and loop multi-item work inside a single wrapper
-invocation rather than wrapping each command. Do not narrate into the ledger.
-Detail: the `livespec` repo's fleet agent-disciplines reference, §"Ledger-write
-economy under a shared secret wrapper".
+sessions too. Batch: make one `bd list --status all --json -n 0` and parse the
+cached result locally as often as needed, and loop multi-item work inside a
+single wrapper invocation rather than wrapping each command. Do not narrate into
+the ledger. Detail: the `livespec` repo's fleet agent-disciplines reference,
+§"Ledger-write economy under a shared secret wrapper".
 
 ## Decision authority — when to ask, proceed, or self-resolve
 
