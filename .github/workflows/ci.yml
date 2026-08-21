@@ -165,8 +165,10 @@ jobs:
         run: git config --global --add safe.directory '*'
 
       # The Rust toolchain is BAKED into the python-rust image (rustc/cargo/
-      # clippy/rustfmt 1.92.0 at /root/.cargo/bin, matching rust-toolchain.toml),
-      # so `mise install` is a near-no-op that just confirms the pinned versions.
+      # clippy/rustfmt at /root/.cargo/bin, at the channel rust-toolchain.toml
+      # pins — that agreement is asserted by console-arch-check's
+      # `check_fabro_image_rust_toolchain`, which probes the image itself), so
+      # `mise install` is a near-no-op that just confirms the pinned versions.
       # A fresh container does not TRUST the repo .mise.toml, so `mise trust` is
       # required for the shims to resolve.
       - name: mise trust + install (baked tools — install is a near-no-op)
