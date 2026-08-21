@@ -229,9 +229,7 @@ fn line_spans(source: &str) -> Vec<(usize, &str)> {
             start = index + 1;
         }
     }
-    if start <= source.len() {
-        spans.push((start, &source[start..]));
-    }
+    spans.push((start, &source[start..]));
     spans
 }
 
@@ -477,6 +475,20 @@ mod tests {
         format!("### Dispatcher settings\n\n{documented}\n\n### Acting on work\n\nunrelated\n")
     }
 
+    #[track_caller]
+    #[allow(clippy::manual_assert, clippy::panic)]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("check failed: {context}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "check failed")]
+    fn check_reports_failure() {
+        check(false, "deliberate failure");
+    }
+
     #[test]
     fn settings_row_exposes_its_key_and_help() {
         let row = row("wip_cap", "the per-repo ceiling");
@@ -616,6 +628,10 @@ mod tests {
             dispatcher_settings_section("no settings heading here\n"),
             ""
         );
+        check(
+            dispatcher_settings_section("").is_empty(),
+            "empty settings doc has no dispatcher-settings section",
+        );
     }
 
     #[test]
@@ -711,6 +727,10 @@ mod tests {
         );
         // A read error propagates.
         assert!(check_key_set_digest("{bad").is_err());
+        check(
+            check_key_set_digest(&manifest(&["wip_cap"])).is_err(),
+            "a missing captured digest propagates through the key-set check",
+        );
     }
 
     #[test]
@@ -730,5 +750,9 @@ mod tests {
         );
         assert!(stamp_manifest("[1, 2]").is_err());
         assert!(stamp_manifest("{not json").is_err());
+        check(
+            stamp_manifest("{\"kind\":\"config-manifest\"}").is_err(),
+            "a drive output without manifest keys is rejected",
+        );
     }
 }
