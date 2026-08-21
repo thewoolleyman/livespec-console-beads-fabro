@@ -462,6 +462,9 @@ check-shell-quality:
 check-fork-drift:
     cargo run --quiet --package console-fork-drift-check
 
+check-red-green-replay:
+    cargo run --quiet --package console-red-green-replay-check
+
 # Re-capture upstream digests for the fork after a conscious review of what
 # upstream changed. Needs the orchestrator plugin installed; preserves each
 # pin's `reason`.
