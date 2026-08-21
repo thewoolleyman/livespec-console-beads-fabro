@@ -1871,13 +1871,13 @@ impl TuiScreenModel {
     /// A pinned small terminal (the dogfood target is 112 columns) cannot hold
     /// every header field at once, so this degrades gracefully rather than
     /// letting a wide field clip the ones after it: it elides the source-health
-    /// segment's names (to `+N more`, then to a bare count) and drops the
-    /// low-value constant fields (`mode: tui`, then `fleet: livespec`), before it
-    /// ever drops a lower-value field (`view` — already shown highlighted in the
-    /// nav pane — then the `attention` count). The `repo` field is never dropped,
-    /// and — while any source is unavailable — the source COUNT is never dropped,
-    /// so the header always keeps the cockpit-blind-vs-idle tell. At a width wide
-    /// enough for everything this returns the same content as [`header`](Self::header).
+    /// segment's names (to `+N more`, then to a bare count), then drops whole
+    /// fields by declared information-value priority. Constant identity fields go
+    /// first, followed by static context fields, then state counts. Transient
+    /// refusal/not-wired/error fields survive static fields under pressure, and
+    /// while any source is unavailable the source COUNT is never dropped, so the
+    /// header always keeps the cockpit-blind-vs-idle tell. At a width wide enough
+    /// for everything this returns the same content as [`header`](Self::header).
     pub fn header_line(&self, width: usize) -> String {
         fit_header_line(
             header_repo_label(&self.selected_repo),
@@ -3554,11 +3554,9 @@ pub fn build_tui_model_for_state(
         dispatcher_settings: state.dispatcher_settings().clone(),
         plugin_resolution: state.plugin_resolution().clone(),
         action_failures: project_action_failures(events),
-        // The canonical, untruncated header. The source-health segment sits LAST
-        // (after attention) so that when a narrow terminal cannot hold every
-        // field, `header_line` degrades from the right — dropping the low-value
-        // constants and eliding source names — while the operationally-important
-        // repo / view / attention fields survive. See `header_line`.
+        // The canonical, untruncated header. `header_line` keeps this display
+        // order for wide terminals and sheds narrow-terminal fields by declared
+        // information-value priority, not by this string's field positions.
         header: format!(
             "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}",
             header_repo_label(state.selected_repo()),
@@ -3709,8 +3707,29 @@ fn header_display_width(line: &str) -> usize {
     line.chars().count()
 }
 
-/// One shrink step for the header fitter: drop the field at the given index, or
-/// step the source-health segment down to its next-narrower form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// The declared information value for a header segment under width pressure.
+///
+/// Lower variants are shed first. This order is intentionally separate from the
+/// display order so a new field cannot accidentally make transient
+/// refusal/not-wired/error state disappear just because it sits near the right
+/// edge of the canonical header.
+enum HeaderSegmentPriority {
+    ConstantIdentity,
+    StaticContext,
+    StateCount,
+    TransientState,
+}
+
+#[derive(Debug, Clone)]
+/// One whole field in the header's canonical display order.
+struct HeaderField {
+    text: String,
+    priority: HeaderSegmentPriority,
+}
+
+/// One shrink step for the header fitter: drop a whole field by its display-order
+/// index, or step the source-health segment down to its next-narrower form.
 enum Shrink {
     DropField(usize),
     DegradeSource,
@@ -3719,10 +3738,9 @@ enum Shrink {
 /// Compose the width-fitted header. See [`TuiScreenModel::header_line`] for the
 /// degradation contract. This is the pure core: it composes the atomic fields in
 /// a fixed display order and, while the line is over `width`, applies the shrink
-/// plan one step at a time — eliding source names, then dropping the constant
-/// `mode`/`fleet` fields, then the lower-value `view`/`attention` fields —
-/// re-measuring after each step and stopping as soon as it fits. `repo` is never
-/// dropped.
+/// plan one step at a time — eliding source names, then dropping fields by their
+/// declared information-value priority — re-measuring after each step and
+/// stopping as soon as it fits.
 fn fit_header_line(
     repo: &str,
     view: &str,
@@ -3731,23 +3749,52 @@ fn fit_header_line(
     unavailable_sources: &[String],
     width: usize,
 ) -> String {
-    // Fixed display order; `Some` = present, `None` = dropped to make room. Each
-    // field is atomic — kept or dropped whole, never mid-truncated.
-    let mut fields: [Option<String>; 6] = [
-        Some("fleet: livespec".to_owned()),      // 0 — constant identity
-        Some("mode: tui".to_owned()),            // 1 — constant
-        Some(format!("repo: {repo}")),           // 2 — never dropped
-        Some(format!("view: {view}")),           // 3
-        Some(format!("attention: {attention}")), // 4
-        factory_activity.map(|activity| format!("factory: {activity}")), // 5
+    // Fixed display order; `present[index] = false` means the whole field was
+    // dropped to make room. Each field is atomic -- kept or dropped whole, never
+    // mid-truncated.
+    let fields = [
+        Some(HeaderField {
+            text: "fleet: livespec".to_owned(),
+            priority: HeaderSegmentPriority::ConstantIdentity,
+        }),
+        Some(HeaderField {
+            text: "mode: tui".to_owned(),
+            priority: HeaderSegmentPriority::ConstantIdentity,
+        }),
+        Some(HeaderField {
+            text: format!("repo: {repo}"),
+            priority: HeaderSegmentPriority::StaticContext,
+        }),
+        Some(HeaderField {
+            text: format!("view: {view}"),
+            priority: HeaderSegmentPriority::StaticContext,
+        }),
+        Some(HeaderField {
+            text: format!("attention: {attention}"),
+            priority: HeaderSegmentPriority::StateCount,
+        }),
+        factory_activity.map(|activity| HeaderField {
+            text: format!("factory: {activity}"),
+            priority: HeaderSegmentPriority::TransientState,
+        }),
+    ];
+    let mut present = [
+        fields[0].is_some(),
+        fields[1].is_some(),
+        fields[2].is_some(),
+        fields[3].is_some(),
+        fields[4].is_some(),
+        fields[5].is_some(),
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<String>; 6], source_idx: usize| -> String {
+    let compose = |present: &[bool; 6], source_idx: usize| -> String {
         let mut line = fields
             .iter()
-            .filter_map(|field| field.as_deref())
+            .enumerate()
+            .filter(|(index, _field)| present[*index])
+            .filter_map(|(_index, field)| field.as_ref().map(|field| field.text.as_str()))
             .collect::<Vec<_>>()
             .join(" | ");
         if let Some(source) = source_forms.get(source_idx) {
@@ -3756,35 +3803,49 @@ fn fit_header_line(
         line
     };
 
-    // One shrink op per over-budget step, least valuable first. The constant
-    // fields are dropped before the source names are elided; the source COUNT
-    // outlives `view`/`attention` because those drops come last. `view` goes
-    // before `attention` because the active view is already shown, highlighted,
-    // in the nav pane, whereas the attention count appears nowhere else.
-    let plan = [
-        Shrink::DropField(1),  // mode: tui
-        Shrink::DropField(0),  // fleet: livespec
-        Shrink::DegradeSource, // full names -> +N more
-        Shrink::DegradeSource, // +N more -> count only
-        Shrink::DropField(3),  // view (already shown, highlighted, in the nav pane)
-        Shrink::DropField(5),  // factory activity (also visible in Events)
-        Shrink::DropField(4),  // attention count
-    ];
+    let mut drop_order = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| field.as_ref().map(|field| (index, field.priority)))
+        .collect::<Vec<_>>();
+    drop_order.sort_by_key(|(index, priority)| (*priority, *index));
 
-    let mut line = compose(&fields, source_idx);
+    // One shrink op per over-budget step, least valuable first. The source names
+    // first elide to the intermediate `+N more` form, then low-priority static
+    // fields yield, then the source segment collapses to its bare count before
+    // higher-value state fields are considered. Field eviction itself comes from
+    // the declared priority above, not from where the field happens to sit in the
+    // header string.
+    let (low_priority_drops, high_priority_drops): (Vec<_>, Vec<_>) = drop_order
+        .into_iter()
+        .partition(|(_index, priority)| *priority < HeaderSegmentPriority::StateCount);
+    let mut plan = vec![Shrink::DegradeSource];
+    plan.extend(
+        low_priority_drops
+            .into_iter()
+            .map(|(index, _priority)| Shrink::DropField(index)),
+    );
+    plan.push(Shrink::DegradeSource);
+    plan.extend(
+        high_priority_drops
+            .into_iter()
+            .map(|(index, _priority)| Shrink::DropField(index)),
+    );
+
+    let mut line = compose(&present, source_idx);
     for op in &plan {
         if header_display_width(&line) <= width {
             break;
         }
         match *op {
-            Shrink::DropField(index) => fields[index] = None,
+            Shrink::DropField(index) => present[index] = false,
             Shrink::DegradeSource => {
                 if source_idx + 1 < source_forms.len() {
                     source_idx += 1;
                 }
             }
         }
-        line = compose(&fields, source_idx);
+        line = compose(&present, source_idx);
     }
     line
 }
@@ -12958,14 +13019,13 @@ mod tests {
         // The dogfood target is a 112-column terminal (inner width 110 inside the
         // header block's borders) with several sources down. The header MUST fit
         // and keep the operationally-important fields plus the cockpit-blind tell
-        // (the source count), degrading only the constant fields and the names.
+        // (the source count), degrading low-priority fields and the names.
         let model = blind_model(
             CONFIRM_REPO,
             &["dispatcher", "fabro", "github", "livespec", "orchestrator"],
         );
         let line = model.header_line(110);
         assert!(line.chars().count() <= 110);
-        assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
         assert!(line.contains("view: Attention"));
         assert!(line.contains("attention: 0"));
         // The count survives even when the names cannot: how-many is the tell.
@@ -12995,14 +13055,13 @@ mod tests {
     }
 
     #[test]
-    fn header_line_never_drops_the_source_count_or_repo() {
+    fn header_line_never_drops_the_source_count() {
         // Even on an absurdly narrow terminal (below the target), the header keeps
-        // the source count (the blind-vs-idle tell) and the repo field; only
-        // lower-value fields and the source names are shed.
+        // the source count (the blind-vs-idle tell); lower-value fields and the
+        // source names are shed first.
         let model = blind_model(CONFIRM_REPO, &["fabro", "github", "orchestrator"]);
         let line = model.header_line(60);
         assert!(line.contains("sources: 3 unavailable"));
-        assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
     }
 
     #[test]
@@ -13030,6 +13089,56 @@ mod tests {
         let narrow = model.header_line(40);
         assert!(narrow.contains("sources: 1 unavailable"));
         assert!(!narrow.contains("(orchestrator)"));
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RenderedHeaderSegmentKind {
+        Static,
+        State,
+        Transient,
+    }
+
+    fn rendered_header_segments(line: &str) -> Vec<RenderedHeaderSegmentKind> {
+        line.split(" | ")
+            .map(|segment| {
+                if segment.starts_with("factory:") || segment.starts_with("sources:") {
+                    RenderedHeaderSegmentKind::Transient
+                } else if segment.starts_with("attention:") {
+                    RenderedHeaderSegmentKind::State
+                } else {
+                    RenderedHeaderSegmentKind::Static
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn header_line_prioritizes_transient_segments_over_static_fields_at_narrow_widths() {
+        // This is a rendered-surface assertion over segment kind, not a pin to a
+        // single dispatch string: the factory segment stands in for any transient
+        // refusal/not-wired/error segment the header carries.
+        let events = [ConsoleEvent::fixture(
+            "evt_dispatch_item_not_wired",
+            EventType::FactoryDispatchItemNotWired,
+            "console:factory-command-handler",
+        )];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned());
+        let model = build_tui_model_for_state(&events, &state);
+
+        let wide = model.header_line(300);
+        assert_eq!(wide, model.header());
+        assert!(rendered_header_segments(&wide).contains(&RenderedHeaderSegmentKind::Transient));
+        assert!(wide.contains(&format!("repo: {CONFIRM_REPO}")));
+        assert!(wide.contains("view: Lanes"));
+
+        let narrow = model.header_line(80);
+        assert!(narrow.chars().count() <= 80);
+        assert!(rendered_header_segments(&narrow).contains(&RenderedHeaderSegmentKind::Transient));
+        assert!(narrow.contains("factory:"));
+        let static_field_yielded =
+            !narrow.contains(&format!("repo: {CONFIRM_REPO}")) || !narrow.contains("view: Lanes");
+        assert!(static_field_yielded);
     }
 
     #[test]
