@@ -2615,26 +2615,27 @@ mod tests {
 
     use console_application::{
         ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
-        AutonomousDecisionsPort, DispatcherOverride, FactoryDispatchItemPort, FactoryDrainPort,
-        FactoryDrainPortOutcome, FactoryDrainRequest, LaneColumn, LaneFocus,
-        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideInt,
-        PendingValve, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay, TuiView,
-        build_tui_model, project_attention, project_lane_board,
+        AutonomousDecisionsPort, DispatcherOverride, FactoryCommandOutcome,
+        FactoryDispatchItemPort, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+        LaneColumn, LaneFocus, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiView, build_tui_model, project_attention,
+        project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll,
             AdapterPollRequest, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
             AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
             NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
-            NotObservedFinding, PullSourcePort, SourceAdapterKind, SourceEventAppendPort,
-            SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
-            normalize_work_item_snapshot,
+            NotObservedFinding, ObservedSourceAdapter, PullSourcePort, SourceAdapterKind,
+            SourceEventAppendPort, SourcePayload, SourceProbe, SourceProbeOutcome,
+            WorkItemSnapshot, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use console_eventstore::{
         AppendOutcome, AppendStatus, CommandAppend, CommandAppendOutcome, CommandAppendStatus,
         CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult,
-        SqliteEventStore, StoredCommand,
+        SqliteEventStore, StoredCommand, StoredEvent,
     };
     use console_tui::{
         TuiLiveSession, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
@@ -2665,12 +2666,12 @@ mod tests {
 
     #[test]
     fn resolve_console_repo_prefers_non_empty_env_override() {
-        assert_eq!(
-            resolve_console_repo(
+        check(
+            (resolve_console_repo(
                 Some("  livespec-orchestrator-beads-fabro  "),
                 Some(Path::new("/data/projects/livespec-console-beads-fabro")),
-            ),
-            "livespec-orchestrator-beads-fabro"
+            )) == ("livespec-orchestrator-beads-fabro"),
+            "assert_eq failed",
         );
     }
 
@@ -2679,14 +2680,14 @@ mod tests {
         // Matches how the orchestrator's needs-attention surface derives
         // `source_ref.repo` (its `project_root.name`), so the two agree and
         // "Repos observed" collapses to the single observed tenant.
-        assert_eq!(
-            resolve_console_repo(
+        check(
+            (resolve_console_repo(
                 None,
                 Some(Path::new(
-                    "/data/projects/livespec-orchestrator-beads-fabro"
+                    "/data/projects/livespec-orchestrator-beads-fabro",
                 )),
-            ),
-            "livespec-orchestrator-beads-fabro"
+            )) == ("livespec-orchestrator-beads-fabro"),
+            "assert_eq failed",
         );
     }
 
@@ -2694,13 +2695,14 @@ mod tests {
     fn resolve_console_repo_falls_back_when_no_basename() {
         // An empty / whitespace override does not win; a working directory with no
         // usable basename falls back to the console's own package name.
-        assert_eq!(
-            resolve_console_repo(Some("   "), Some(Path::new("/"))),
-            "livespec-console-beads-fabro"
+        check(
+            (resolve_console_repo(Some("   "), Some(Path::new("/"))))
+                == ("livespec-console-beads-fabro"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolve_console_repo(None, None),
-            "livespec-console-beads-fabro"
+        check(
+            (resolve_console_repo(None, None)) == ("livespec-console-beads-fabro"),
+            "assert_eq failed",
         );
     }
 
@@ -2760,7 +2762,7 @@ mod tests {
 
     fn scripted_source_list_with_ready_work() -> Vec<(String, ScriptedSource)> {
         let mut sources = scripted_source_list();
-        if let Ok(snapshot) = WorkItemSnapshot::new(
+        let snapshot = WorkItemSnapshot::new(
             "livespec-console-beads-fabro",
             "livespec-console-beads-fabro-ready",
             Lane::Ready,
@@ -2770,12 +2772,12 @@ mod tests {
             AdmissionPolicy::Manual,
             AcceptancePolicy::AiThenHuman,
             7,
-        ) {
-            sources.push((
-                "orchestrator-ready:livespec-console-beads-fabro".to_owned(),
-                ScriptedSource::new(normalize_work_item_snapshot(&snapshot)),
-            ));
-        }
+        )
+        .ok_test();
+        sources.push((
+            "orchestrator-ready:livespec-console-beads-fabro".to_owned(),
+            ScriptedSource::new(normalize_work_item_snapshot(&snapshot)),
+        ));
         sources
     }
 
@@ -2816,25 +2818,24 @@ mod tests {
         BTreeMap::new()
     }
 
-    fn resolver_temp_root(name: &str) -> Result<PathBuf, Box<dyn Error>> {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    fn resolver_temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok_test()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
             "livespec-console-backing-cli-{name}-{}-{nanos}",
             std::process::id()
         ));
         let _ignored = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path)?;
-        Ok(path)
+        fs::create_dir_all(&path).ok_test();
+        path
     }
 
-    fn resolver_plugin_root_with_bin(
-        base: &Path,
-        name: &str,
-        bin_rel: &str,
-    ) -> Result<PathBuf, Box<dyn Error>> {
+    fn resolver_plugin_root_with_bin(base: &Path, name: &str, bin_rel: &str) -> PathBuf {
         let root = base.join(name);
         let bin = root.join(bin_rel);
-        fs::create_dir_all(&bin)?;
+        fs::create_dir_all(&bin).ok_test();
         for script in [
             "needs_attention.py",
             "list_work_items.py",
@@ -2842,21 +2843,21 @@ mod tests {
             "dispatcher.py",
             "next.py",
         ] {
-            fs::write(bin.join(script), "#!/usr/bin/env python3\n")?;
+            fs::write(bin.join(script), "#!/usr/bin/env python3\n").ok_test();
         }
-        Ok(root)
+        root
     }
 
     /// Build a plugin root in the SOURCE layout (`<root>/.claude-plugin/scripts/bin`),
     /// the shape a governed spec checkout carries.
-    fn resolver_plugin_root(base: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    fn resolver_plugin_root(base: &Path, name: &str) -> PathBuf {
         resolver_plugin_root_with_bin(base, name, ".claude-plugin/scripts/bin")
     }
 
     /// Build a plugin root in the FLATTENED installed-marketplace-cache layout
     /// (`<root>/scripts/bin`), the shape the Claude plugin installer produces
     /// after collapsing `.claude-plugin/scripts/` to `scripts/`.
-    fn resolver_flattened_plugin_root(base: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    fn resolver_flattened_plugin_root(base: &Path, name: &str) -> PathBuf {
         resolver_plugin_root_with_bin(base, name, "scripts/bin")
     }
 
@@ -2913,12 +2914,15 @@ mod tests {
             u64::MAX,
         );
         let sibling = dispatcher_source_event("evt:dispatcher:console:console-2:dispatch-ok:2", 2);
-        let source = ScriptedSource::new(console_application::source_adapters::AdapterPoll::new(
+        let Ok(poll) = console_application::source_adapters::AdapterPoll::new(
             checkpoint,
             vec![skipped, sibling],
-        )?);
+        ) else {
+            return Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyCheckpoint));
+        };
+        let source = ScriptedSource::new(poll);
         let sources: [SourceAdapterRef<'_>; 1] = [("dispatcher:console", &source)];
-        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "console");
 
@@ -2929,20 +2933,24 @@ mod tests {
     fn help_lists_specified_command_shape() {
         let output = run(["bin", "help"]);
 
-        assert_eq!(output.code(), 0);
-        assert!(output.message().contains("events tail"));
-        assert!(output.message().contains("docs key-action-reference"));
-        assert!(output.message().contains("arch-check"));
+        check((output.code()) == (0), "assert_eq failed");
+        check(output.message().contains("events tail"), "assert failed");
+        check(
+            output.message().contains("docs key-action-reference"),
+            "assert failed",
+        );
+        check(output.message().contains("arch-check"), "assert failed");
     }
 
     #[test]
     fn docs_key_action_reference_command_prints_the_generated_reference() {
         let output = run(["bin", "docs", "key-action-reference"]);
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(
-            output.message(),
-            console_application::action_registry::operator_key_action_reference_markdown()
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message())
+                == (console_application::action_registry::operator_key_action_reference_markdown()),
+            "assert_eq failed",
         );
     }
 
@@ -2953,10 +2961,11 @@ mod tests {
             vec!["bin", "docs", "unknown-reference"],
         ] {
             let output = run(args);
-            assert_eq!(output.code(), 2);
-            assert_eq!(
-                output.message(),
-                "usage: livespec-console-beads-fabro docs key-action-reference"
+            check((output.code()) == (2), "assert_eq failed");
+            check(
+                (output.message())
+                    == ("usage: livespec-console-beads-fabro docs key-action-reference"),
+                "assert_eq failed",
             );
         }
     }
@@ -2965,31 +2974,43 @@ mod tests {
     fn tui_command_projects_demo_attention_items() {
         let output = run(["bin", "tui"]);
 
-        assert_eq!(output.code(), 0);
-        assert!(output.message().contains("LiveSpec Console"));
-        assert!(output.message().contains("> Attention"));
-        assert!(output.message().contains("> Blocked: needs-human"));
-        assert!(output.message().contains("Repo: console"));
-        assert!(output.message().contains("Fabro run: -"));
-        assert!(!output.message().contains("Attach: fabro attach evt_demo_1"));
-        assert!(!output.message().contains("Attach:"));
-        assert!(!output.message().contains("Actions:"));
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            output.message().contains("LiveSpec Console"),
+            "assert failed",
+        );
+        check(output.message().contains("> Attention"), "assert failed");
+        check(
+            output.message().contains("> Blocked: needs-human"),
+            "assert failed",
+        );
+        check(output.message().contains("Repo: console"), "assert failed");
+        check(output.message().contains("Fabro run: -"), "assert failed");
+        check(
+            !output.message().contains("Attach: fabro attach evt_demo_1"),
+            "assert failed",
+        );
+        check(!output.message().contains("Attach:"), "assert failed");
+        check(!output.message().contains("Actions:"), "assert failed");
     }
 
     #[test]
     fn unknown_command_is_usage_error() {
         let output = run(["bin", "bogus"]);
 
-        assert_eq!(output.code(), 2);
-        assert!(output.message().contains("unknown command: bogus"));
+        check((output.code()) == (2), "assert_eq failed");
+        check(
+            output.message().contains("unknown command: bogus"),
+            "assert failed",
+        );
     }
 
     #[test]
     fn no_command_prints_help() {
         let output = run(["bin"]);
 
-        assert_eq!(output.code(), 0);
-        assert!(output.message().contains("Commands:"));
+        check((output.code()) == (0), "assert_eq failed");
+        check(output.message().contains("Commands:"), "assert failed");
     }
 
     #[test]
@@ -3006,8 +3027,8 @@ mod tests {
         ] {
             let output = run(["bin", command]);
 
-            assert_eq!(output.code(), 0);
-            assert_eq!(output.message(), expected);
+            check((output.code()) == (0), "assert_eq failed");
+            check((output.message()) == (expected), "assert_eq failed");
         }
     }
 
@@ -3015,18 +3036,21 @@ mod tests {
     fn events_tail_reports_placeholder_mode() {
         let output = run(["bin", "events", "tail"]);
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(output.message(), "events tail bootstrap: not yet wired");
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message()) == ("events tail bootstrap: not yet wired"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
     fn events_without_tail_is_usage_error() {
         let output = run(["bin", "events"]);
 
-        assert_eq!(output.code(), 2);
-        assert_eq!(
-            output.message(),
-            "usage: livespec-console-beads-fabro events tail"
+        check((output.code()) == (2), "assert_eq failed");
+        check(
+            (output.message()) == ("usage: livespec-console-beads-fabro events tail"),
+            "assert_eq failed",
         );
     }
 
@@ -3034,17 +3058,16 @@ mod tests {
     fn plans_without_epic_id_is_usage_error() {
         let output = run(["bin", "plans"]);
 
-        assert_eq!(output.code(), 2);
-        assert_eq!(
-            output.message(),
-            "usage: livespec-console-beads-fabro plans <epic-id>"
+        check((output.code()) == (2), "assert_eq failed");
+        check(
+            (output.message()) == ("usage: livespec-console-beads-fabro plans <epic-id>"),
+            "assert_eq failed",
         );
     }
 
     #[test]
-    fn store_backed_backfill_command_reports_source_adapter_counts() -> Result<(), EventStoreError>
-    {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_backfill_command_reports_source_adapter_counts() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         let first = run_with_store_scripted(
             &command_args(&["bin", "backfill"]),
@@ -3057,91 +3080,122 @@ mod tests {
             "2026-06-23T00:00:00Z",
         );
 
-        assert_eq!(first.code(), 0);
-        assert_eq!(
-            first.message(),
-            "backfill source adapters: adapters 5, events 6"
+        check((first.code()) == (0), "assert_eq failed");
+        check(
+            (first.message()) == ("backfill source adapters: adapters 5, events 6"),
+            "assert_eq failed",
         );
-        assert_eq!(second.code(), 0);
-        assert_eq!(
-            second.message(),
-            "backfill source adapters: adapters 5, events 6"
+        check((second.code()) == (0), "assert_eq failed");
+        check(
+            (second.message()) == ("backfill source adapters: adapters 5, events 6"),
+            "assert_eq failed",
         );
-        assert_eq!(store.list_console_events()?.len(), 6);
-        assert_eq!(
-            store.load_checkpoint("orchestrator:livespec-console-beads-fabro")?,
-            Some("1".to_owned())
+        check(
+            (store.list_console_events().ok_test().len()) == (6),
+            "assert_eq failed",
         );
-        assert_eq!(
-            store.load_checkpoint("dispatcher:livespec-console-beads-fabro")?,
-            Some("2".to_owned())
+        check(
+            (store
+                .load_checkpoint("orchestrator:livespec-console-beads-fabro")
+                .ok_test())
+                == (Some("1".to_owned())),
+            "assert_eq failed",
         );
-        assert_eq!(
-            store.load_checkpoint("fabro:livespec-console-beads-fabro")?,
-            Some("3".to_owned())
+        check(
+            (store
+                .load_checkpoint("dispatcher:livespec-console-beads-fabro")
+                .ok_test())
+                == (Some("2".to_owned())),
+            "assert_eq failed",
         );
-        assert_eq!(
-            store.load_checkpoint("livespec:livespec-console-beads-fabro")?,
-            Some("4".to_owned())
+        check(
+            (store
+                .load_checkpoint("fabro:livespec-console-beads-fabro")
+                .ok_test())
+                == (Some("3".to_owned())),
+            "assert_eq failed",
         );
-        assert_eq!(
-            store.load_checkpoint("github:livespec-console-beads-fabro")?,
-            Some("5".to_owned())
+        check(
+            (store
+                .load_checkpoint("livespec:livespec-console-beads-fabro")
+                .ok_test())
+                == (Some("4".to_owned())),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (store
+                .load_checkpoint("github:livespec-console-beads-fabro")
+                .ok_test())
+                == (Some("5".to_owned())),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn source_backfill_report_names_skipped_source_record() -> ConsoleRuntimeResult<()> {
-        let report = source_backfill_report_for_dispatcher_events("ck", "2026-06-24T00:00:00Z")?;
+    fn source_backfill_report_names_skipped_source_record() {
+        let report =
+            source_backfill_report_for_dispatcher_events("ck", "2026-06-24T00:00:00Z").ok_test();
 
-        assert_eq!(
-            report,
-            "backfill source adapters: adapters 1, events 1, skipped evt:dispatcher:console:console-1:dispatch-too-large:18446744073709551615"
+        check(
+            (report)
+                == ("backfill source adapters: adapters 1, events 1, skipped evt:dispatcher:console:console-1:dispatch-too-large:18446744073709551615"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
     fn source_backfill_report_helper_covers_checkpoint_error() {
-        assert!(matches!(
-            source_backfill_report_for_dispatcher_events(" ", "2026-06-24T00:00:00Z"),
-            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyCheckpoint))
-        ));
+        check(
+            format!(
+                "{:?}",
+                source_backfill_report_for_dispatcher_events(" ", "2026-06-24T00:00:00Z")
+            )
+            .contains("EmptyCheckpoint"),
+            "assert failed",
+        );
     }
 
     #[test]
     fn source_backfill_report_helper_covers_observed_at_error() {
-        assert!(matches!(
-            source_backfill_report_for_dispatcher_events("ck", " "),
-            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyObservedAt))
-        ));
+        check(
+            format!(
+                "{:?}",
+                source_backfill_report_for_dispatcher_events("ck", " ")
+            )
+            .contains("EmptyObservedAt"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn sqlite_source_event_log_appends_top_bit_dispatcher_hash() -> Result<(), EventStoreError> {
+    fn sqlite_source_event_log_appends_top_bit_dispatcher_hash() {
         let high_hash = 10_161_696_490_713_690_059_u64;
         let event = dispatcher_source_event(
             "evt:dispatcher:console:console-1:dispatch-high:10161696490713690059",
             high_hash & 0x7fff_ffff_ffff_ffff,
         );
-        assert!(i64::try_from(event.event().stream_seq()).is_ok());
-
-        let mut store = SqliteEventStore::open_in_memory()?;
-        let shared = SharedSqliteStore::new(&mut store);
-        let mut event_log = SqliteSourceEventLog::new(shared);
-        assert_eq!(
-            event_log.append_normalized_event(&event, "2026-06-24T00:00:00Z"),
-            Ok(())
+        check(
+            i64::try_from(event.event().stream_seq()).is_ok(),
+            "assert failed",
         );
 
-        assert_eq!(store.list_events()?.len(), 1);
-        Ok(())
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let shared = SharedSqliteStore::new(&mut store);
+        let mut event_log = SqliteSourceEventLog::new(shared);
+        check(
+            (event_log.append_normalized_event(&event, "2026-06-24T00:00:00Z")) == (Ok(())),
+            "assert_eq failed",
+        );
+
+        check(
+            (store.list_events().ok_test().len()) == (1),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn source_backfill_rejects_empty_observed_at() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn source_backfill_rejects_empty_observed_at() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -3149,12 +3203,14 @@ mod tests {
 
         let result = backfill_source_report(&mut store, "", &sources, &needs_attention);
 
-        assert!(matches!(
-            result,
-            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyObservedAt))
-        ));
-        assert_eq!(store.list_console_events()?.len(), 0);
-        Ok(())
+        check(
+            format!("{result:?}").contains("EmptyObservedAt"),
+            "assert failed",
+        );
+        check(
+            store.list_console_events().ok_test().is_empty(),
+            "assert_eq failed",
+        );
     }
 
     #[test]
@@ -3191,29 +3247,34 @@ mod tests {
         ] {
             let result = source_polls_from_seed(&seed);
 
-            assert!(matches!(
-                result,
-                Err(ConsoleRuntimeError::Adapter(error)) if error == expected_error
-            ));
+            check(
+                format!("{result:?}").contains(&format!("{expected_error:?}")),
+                "assert failed",
+            );
         }
     }
 
     #[test]
-    fn demo_backfill_report_counts_inserted_and_duplicate_events() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn demo_backfill_report_counts_inserted_and_duplicate_events() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
-        let first = backfill_demo_report(&mut store, "2026-06-23T00:00:00Z")?;
-        let second = backfill_demo_report(&mut store, "2026-06-23T00:00:01Z")?;
+        let first = backfill_demo_report(&mut store, "2026-06-23T00:00:00Z").ok_test();
+        let second = backfill_demo_report(&mut store, "2026-06-23T00:00:01Z").ok_test();
 
-        assert_eq!(first, "backfill demo events: inserted 2, duplicate 0");
-        assert_eq!(second, "backfill demo events: inserted 0, duplicate 2");
-        Ok(())
+        check(
+            (first) == ("backfill demo events: inserted 2, duplicate 0"),
+            "assert_eq failed",
+        );
+        check(
+            (second) == ("backfill demo events: inserted 0, duplicate 2"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_events_tail_reports_persisted_events() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+    fn store_backed_events_tail_reports_persisted_events() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
 
         let output = run_with_store_scripted(
             &command_args(&["bin", "events", "tail"]),
@@ -3221,17 +3282,19 @@ mod tests {
             "unused",
         );
 
-        assert_eq!(output.code(), 0);
-        assert!(output.message().contains("events tail"));
-        assert!(output.message().contains("evt_demo_1"));
-        assert!(output.message().contains("work_item.snapshot_observed"));
-        assert!(output.message().contains("evt_demo_2"));
-        Ok(())
+        check((output.code()) == (0), "assert_eq failed");
+        check(output.message().contains("events tail"), "assert failed");
+        check(output.message().contains("evt_demo_1"), "assert failed");
+        check(
+            output.message().contains("work_item.snapshot_observed"),
+            "assert failed",
+        );
+        check(output.message().contains("evt_demo_2"), "assert failed");
     }
 
     #[test]
-    fn store_backed_serve_bootstraps_empty_store() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_serve_bootstraps_empty_store() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         let output = run_with_store_scripted(
             &command_args(&["bin", "serve"]),
@@ -3239,28 +3302,34 @@ mod tests {
             "2026-06-23T00:00:00Z",
         );
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(
-            output.message(),
-            "serve: store ready\nbackfill events: 6\nevents: 6\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message())
+                == ("serve: store ready\nbackfill events: 6\nevents: 6\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"),
+            "assert_eq failed",
         );
-        assert_eq!(store.list_console_events()?.len(), 6);
-        assert_eq!(
-            store.load_checkpoint("github:livespec-console-beads-fabro")?,
-            Some("5".to_owned())
+        check(
+            (store.list_console_events().ok_test().len()) == (6),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (store
+                .load_checkpoint("github:livespec-console-beads-fabro")
+                .ok_test())
+                == (Some("5".to_owned())),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_serve_threads_injected_drain_port() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_serve_threads_injected_drain_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let persistence = persist_tui_runtime_effects(
             &mut store,
             &[factory_drain_effect()],
             "2026-06-23T00:00:01Z",
         );
-        assert!(persistence.is_ok());
+        check(persistence.is_ok(), "assert failed");
 
         // The scripted run injects a completing drain double, so the pending
         // command is handled through the injected port: accepted + started +
@@ -3283,25 +3352,27 @@ mod tests {
             &needs_attention,
         );
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(
-            output.message(),
-            "serve: store ready\nbackfill events: 8\nevents: 11\nattention: 0\ncommands: 1\npending: 0\nfactory commands handled: 1\nwork-item commands handled: 0"
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message())
+                == ("serve: store ready\nbackfill events: 8\nevents: 11\nattention: 0\ncommands: 1\npending: 0\nfactory commands handled: 1\nwork-item commands handled: 0"),
+            "assert_eq failed",
         );
-        assert_eq!(store.list_commands()?[0].status(), "completed");
-        Ok(())
+        check(
+            (store.list_commands().ok_test()[0].status()) == ("completed"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_serve_reingests_sources_over_a_non_empty_store()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_serve_reingests_sources_over_a_non_empty_store() {
         // Bug A fix: serve re-ingests the source adapters on EVERY run, not only
         // when the log is empty, so the report reflects the CURRENT ledger. Here
         // the store already holds the 2 demo events; the scripted seed adds its 6
         // source events on top (checkpointed/idempotent per Scenario 3), so the
         // report tallies backfill events 6 over a store that grows to 8 events.
-        let mut store = SqliteEventStore::open_in_memory()?;
-        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut port = SimulatedFactoryDrainPort;
@@ -3319,16 +3390,16 @@ mod tests {
             &needs_attention,
         );
 
-        assert_eq!(
-            report?,
-            "serve: store ready\nbackfill events: 6\nevents: 8\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"
+        check(
+            (report.ok_test())
+                == ("serve: store ready\nbackfill events: 6\nevents: 8\nattention: 0\ncommands: 0\npending: 0\nfactory commands handled: 0\nwork-item commands handled: 0"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn store_backed_events_tail_reports_empty_store() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_events_tail_reports_empty_store() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         let output = run_with_store_scripted(
             &command_args(&["bin", "events", "tail"]),
@@ -3336,43 +3407,46 @@ mod tests {
             "unused",
         );
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(output.message(), "events tail: no events");
-        Ok(())
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message()) == ("events tail: no events"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_events_usage_keeps_error_code() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_events_usage_keeps_error_code() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         let output =
             run_with_store_scripted(&command_args(&["bin", "events"]), &mut store, "unused");
 
-        assert_eq!(output.code(), 2);
-        assert_eq!(
-            output.message(),
-            "usage: livespec-console-beads-fabro events tail"
+        check((output.code()) == (2), "assert_eq failed");
+        check(
+            (output.message()) == ("usage: livespec-console-beads-fabro events tail"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn store_backed_runner_falls_back_to_static_commands() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_runner_falls_back_to_static_commands() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         let output = run_with_store_scripted(&command_args(&["bin", "help"]), &mut store, "unused");
 
-        assert_eq!(output.code(), 0);
-        assert!(output.message().contains("Commands:"));
-        Ok(())
+        check((output.code()) == (0), "assert_eq failed");
+        check(output.message().contains("Commands:"), "assert failed");
     }
 
     #[test]
     fn store_result_reports_event_store_errors() {
         let output = super::run_store_result(Err(EventStoreError::InvalidSequence), "snapshot");
 
-        assert_eq!(output.code(), 1);
-        assert_eq!(output.message(), "snapshot error: InvalidSequence");
+        check((output.code()) == (1), "assert_eq failed");
+        check(
+            (output.message()) == ("snapshot error: InvalidSequence"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
@@ -3384,10 +3458,10 @@ mod tests {
             "serve",
         );
 
-        assert_eq!(output.code(), 1);
-        assert_eq!(
-            output.message(),
-            "serve error: Application(FactoryDrainPortFailed)"
+        check((output.code()) == (1), "assert_eq failed");
+        check(
+            (output.message()) == ("serve error: Application(FactoryDrainPortFailed)"),
+            "assert_eq failed",
         );
 
         let output = super::run_runtime_result(
@@ -3397,39 +3471,37 @@ mod tests {
             "serve",
         );
 
-        assert_eq!(output.code(), 1);
-        assert_eq!(
-            output.message(),
-            "serve error: BackingCliResolution(\"missing script\")"
+        check((output.code()) == (1), "assert_eq failed");
+        check(
+            (output.message()) == ("serve error: BackingCliResolution(\"missing script\")"),
+            "assert_eq failed",
         );
     }
 
     #[test]
-    fn store_backed_snapshot_reports_projection_counts() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+    fn store_backed_snapshot_reports_projection_counts() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
         let persistence = persist_tui_runtime_effects(
             &mut store,
             &[factory_drain_effect()],
             "2026-06-23T00:00:01Z",
         );
-        assert!(persistence.is_ok());
+        check(persistence.is_ok(), "assert failed");
 
         let output =
             run_with_store_scripted(&command_args(&["bin", "snapshot"]), &mut store, "unused");
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(
-            output.message(),
-            "snapshot: events 2, attention 0, commands 1, pending 1"
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message()) == ("snapshot: events 2, attention 0, commands 1, pending 1"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn store_backed_plan_page_renders_persisted_epic_children_and_handoffs()
-    -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_plan_page_renders_persisted_epic_children_and_handoffs() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         for event in [
             plan_snapshot_event(
                 "evt_plan_epic",
@@ -3446,10 +3518,12 @@ mod tests {
                 r#"{"title":"Child Work","depends_on":["plan-epic"]}"#,
             ),
         ] {
-            store.append_event(&event_append_from_console_event(
-                &event,
-                "2026-08-16T08:30:00Z",
-            ))?;
+            store
+                .append_event(&event_append_from_console_event(
+                    &event,
+                    "2026-08-16T08:30:00Z",
+                ))
+                .ok_test();
         }
 
         let output = run_with_store_scripted(
@@ -3458,50 +3532,60 @@ mod tests {
             "unused",
         );
 
-        assert_eq!(output.code(), 0);
-        assert!(output.message().contains("url: /plans/plan-epic"));
-        assert!(output.message().contains("Migrated Plan"));
-        assert!(output.message().contains("plan-child"));
-        assert!(output.message().contains("status: blocked"));
-        assert!(output.message().contains("handoff entry one"));
-        assert_eq!(plan_page_report(&store, "plan-epic")?, output.message());
-        Ok(())
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            output.message().contains("url: /plans/plan-epic"),
+            "assert failed",
+        );
+        check(output.message().contains("Migrated Plan"), "assert failed");
+        check(output.message().contains("plan-child"), "assert failed");
+        check(
+            output.message().contains("status: blocked"),
+            "assert failed",
+        );
+        check(
+            output.message().contains("handoff entry one"),
+            "assert failed",
+        );
+        check(
+            (plan_page_report(&store, "plan-epic").ok_test()) == (output.message()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_plan_page_usage_requires_an_epic_id() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_plan_page_usage_requires_an_epic_id() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         let output =
             run_with_store_scripted(&command_args(&["bin", "plans"]), &mut store, "unused");
 
-        assert_eq!(output.code(), 2);
-        assert_eq!(
-            output.message(),
-            "usage: livespec-console-beads-fabro plans <epic-id>"
+        check((output.code()) == (2), "assert_eq failed");
+        check(
+            (output.message()) == ("usage: livespec-console-beads-fabro plans <epic-id>"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn store_backed_doctor_reports_no_findings_with_store_counts() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+    fn store_backed_doctor_reports_no_findings_with_store_counts() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
 
         let output =
             run_with_store_scripted(&command_args(&["bin", "doctor"]), &mut store, "unused");
 
-        assert_eq!(output.code(), 0);
-        assert_eq!(
-            output.message(),
-            "doctor: no findings\nstore events: 2\ncommands: 0\nattention: 0"
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message())
+                == ("doctor: no findings\nstore events: 2\ncommands: 0\nattention: 0"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn store_report_helpers_match_command_output() -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_report_helpers_match_command_output() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
@@ -3513,35 +3597,44 @@ mod tests {
             &sources,
             &needs_attention,
         );
-        assert_eq!(backfill?, "backfill source adapters: adapters 5, events 6");
-        assert!(events_tail_report(&store, 1)?.contains("pr.snapshot_observed"));
+        check(
+            (backfill.ok_test()) == ("backfill source adapters: adapters 5, events 6"),
+            "assert_eq failed",
+        );
+        check(
+            events_tail_report(&store, 1)
+                .ok_test()
+                .contains("pr.snapshot_observed"),
+            "assert failed",
+        );
         // Attention is now sourced from the `attention_item.*` stream; a store of
         // work-item snapshots alone carries no attention items until the
         // needs-attention snapshot is ingested (Scenario 12).
-        assert_eq!(
-            snapshot_report(&store)?,
-            "snapshot: events 6, attention 0, commands 0, pending 0"
+        check(
+            (snapshot_report(&store).ok_test())
+                == ("snapshot: events 6, attention 0, commands 0, pending 0"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            doctor_report(&store)?,
-            "doctor: no findings\nstore events: 6\ncommands: 0\nattention: 0"
+        check(
+            (doctor_report(&store).ok_test())
+                == ("doctor: no findings\nstore events: 6\ncommands: 0\nattention: 0"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
     fn tui_preview_reports_render_errors() {
         let model = build_tui_model(&[], 0);
 
-        assert_eq!(
-            render_tui_preview(&model, 0, 28),
-            "TUI render error: empty area"
+        check(
+            (render_tui_preview(&model, 0, 28)) == ("TUI render error: empty area"),
+            "assert_eq failed",
         );
     }
 
     #[test]
-    fn tui_persistence_stores_command_effects() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn tui_persistence_stores_command_effects() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [
             TuiRuntimeEffect::OpenAttachCommand("fabro attach run_1".to_owned()),
             TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
@@ -3554,56 +3647,77 @@ mod tests {
             TuiRuntimeEffect::CopyAttachCommand("fabro attach run_1".to_owned()),
         ];
 
-        let outcomes = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        let commands = store.list_commands()?;
+        let outcomes =
+            persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        let commands = store.list_commands().ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].status(), CommandAppendStatus::Inserted);
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].status()) == (CommandAppendStatus::Inserted),
+            "assert_eq failed",
+        );
         // The drain is REPEATABLE, so it persists under a sequence-distinguished
         // identity (`_0` / `:0` at the first append into an empty command log)
         // rather than the static key it was authored with.
-        assert_eq!(
-            outcomes[0].command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1_0"
+        check(
+            (outcomes[0].command_id()) == ("cmd_factory_drain_requested_budget_1_parallel_1_0"),
+            "assert_eq failed",
         );
-        assert_eq!(commands.len(), 1);
-        assert_eq!(
-            commands[0].command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1_0"
+        check((commands.len()) == (1), "assert_eq failed");
+        check(
+            (commands[0].command_id()) == ("cmd_factory_drain_requested_budget_1_parallel_1_0"),
+            "assert_eq failed",
         );
-        assert_eq!(commands[0].command_type(), "factory.drain_requested");
-        assert_eq!(commands[0].aggregate_id(), Some("fleet:livespec"));
-        assert_eq!(
-            commands[0].idempotency_key(),
-            "fleet:livespec:factory.drain_requested:budget=1:parallel=1:0"
+        check(
+            (commands[0].command_type()) == ("factory.drain_requested"),
+            "assert_eq failed",
         );
-        assert_eq!(commands[0].requested_by(), "operator");
-        assert_eq!(commands[0].status(), "pending");
-        Ok(())
+        check(
+            (commands[0].aggregate_id()) == (Some("fleet:livespec")),
+            "assert_eq failed",
+        );
+        check(
+            (commands[0].idempotency_key())
+                == ("fleet:livespec:factory.drain_requested:budget=1:parallel=1:0"),
+            "assert_eq failed",
+        );
+        check(
+            (commands[0].requested_by()) == ("operator"),
+            "assert_eq failed",
+        );
+        check((commands[0].status()) == ("pending"), "assert_eq failed");
     }
 
     #[test]
-    fn tui_persistence_stamps_each_command_request_separately() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn tui_persistence_stamps_each_command_request_separately() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let first = [factory_drain_effect()];
         let second = [factory_drain_effect()];
 
-        persist_tui_runtime_effects(&mut store, &first, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &first, "2026-06-23T00:00:02Z").ok_test();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        persist_tui_runtime_effects(&mut store, &second, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &second, "2026-06-23T00:00:02Z").ok_test();
 
-        let commands = store.list_commands()?;
+        let commands = store.list_commands().ok_test();
 
-        assert_eq!(commands.len(), 2);
-        assert_ne!(commands[0].requested_at(), commands[1].requested_at());
-        assert_eq!(commands[0].requested_at(), commands[0].updated_at());
-        assert_eq!(commands[1].requested_at(), commands[1].updated_at());
-        Ok(())
+        check((commands.len()) == (2), "assert_eq failed");
+        check(
+            (commands[0].requested_at()) != (commands[1].requested_at()),
+            "assert_ne failed",
+        );
+        check(
+            (commands[0].requested_at()) == (commands[0].updated_at()),
+            "assert_eq failed",
+        );
+        check(
+            (commands[1].requested_at()) == (commands[1].updated_at()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn tui_persistence_ignores_local_only_effects() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn tui_persistence_ignores_local_only_effects() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [
             TuiRuntimeEffect::Render,
             TuiRuntimeEffect::OpenAttachCommand("fabro attach run_1".to_owned()),
@@ -3612,12 +3726,12 @@ mod tests {
             TuiRuntimeEffect::Quit,
         ];
 
-        let outcomes = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        let commands = store.list_commands()?;
+        let outcomes =
+            persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        let commands = store.list_commands().ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(commands, []);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check(commands.is_empty(), "assert_eq failed");
     }
 
     #[test]
@@ -3633,13 +3747,15 @@ mod tests {
 
         let outcome = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z");
 
-        assert!(matches!(outcome, Err(EventStoreError::InvalidSequence)));
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn store_backed_tui_session_backfills_runs_tui_and_handles_factory_command()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_tui_session_backfills_runs_tui_and_handles_factory_command() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -3661,54 +3777,36 @@ mod tests {
             &poll_requester(),
             &command_requester(),
         );
-        let commands = store.list_commands()?;
+        let commands = store.list_commands().ok_test();
 
-        assert!(matches!(
-            outcome,
-            Ok(ref value) if value == &TuiSessionOutcome::new(8, 8, 1, 1, 11, 0)
-        ));
-        assert!(matches!(
-            outcome
-                .as_ref()
-                .map(TuiSessionOutcome::backfilled_event_count),
-            Ok(8)
-        ));
-        assert!(matches!(
-            outcome
-                .as_ref()
-                .map(TuiSessionOutcome::presented_event_count),
-            Ok(8)
-        ));
-        assert!(matches!(
-            outcome
-                .as_ref()
-                .map(TuiSessionOutcome::persisted_command_count),
-            Ok(1)
-        ));
-        assert!(matches!(
-            outcome
-                .as_ref()
-                .map(TuiSessionOutcome::handled_command_count),
-            Ok(1)
-        ));
-        assert!(matches!(
-            outcome.as_ref().map(TuiSessionOutcome::final_event_count),
-            Ok(11)
-        ));
-        assert!(matches!(
-            outcome.as_ref().map(TuiSessionOutcome::attention_count),
-            Ok(0)
-        ));
-        assert_eq!(runner.observed_event_count(), 8);
-        assert_eq!(runner.observed_requested_by(), "operator");
-        assert_eq!(commands[0].status(), "completed");
-        Ok(())
+        let outcome = outcome.ok_test();
+        check(
+            (outcome) == (TuiSessionOutcome::new(8, 8, 1, 1, 11, 0)),
+            "assert_eq failed",
+        );
+        check(
+            (outcome.backfilled_event_count()) == (8),
+            "assert_eq failed",
+        );
+        check((outcome.presented_event_count()) == (8), "assert_eq failed");
+        check(
+            (outcome.persisted_command_count()) == (1),
+            "assert_eq failed",
+        );
+        check((outcome.handled_command_count()) == (1), "assert_eq failed");
+        check((outcome.final_event_count()) == (11), "assert_eq failed");
+        check((outcome.attention_count()) == (0), "assert_eq failed");
+        check((runner.observed_event_count()) == (8), "assert_eq failed");
+        check(
+            (runner.observed_requested_by()) == ("operator"),
+            "assert_eq failed",
+        );
+        check((commands[0].status()) == ("completed"), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_tui_session_persists_and_effects_a_payload_bearing_setting_write()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_tui_session_persists_and_effects_a_payload_bearing_setting_write() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let mut runner = ScriptedTuiSessionRunner::new(vec![dispatcher_setting_set_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -3730,40 +3828,42 @@ mod tests {
             &poll_requester(),
             &command_requester(),
         );
-        assert!(outcome.is_ok());
+        check(outcome.is_ok(), "assert failed");
 
         // The payload-bearing effect is persisted with its { repo, setting, value }
         // payload intact, so the Configuration handler parses it and completes the
         // command (an empty `{}` payload would be rejected).
-        let commands = store.list_commands()?;
+        let commands = store.list_commands().ok_test();
         let setting = commands.iter().find(|command| {
             command.command_type() == CommandType::ConfigDispatcherSettingSet.contract_name()
         });
-        assert_eq!(setting.map(StoredCommand::status), Some("completed"));
-        assert_eq!(
-            setting.map(|command| command.payload_json().contains(r#""value":true"#)),
-            Some(true)
+        check(
+            (setting.map(StoredCommand::status)) == (Some("completed")),
+            "assert_eq failed",
+        );
+        check(
+            setting.is_some_and(|command| command.payload_json().contains(r#""value":true"#)),
+            "assert failed",
         );
 
         // The setting write rode the shared orchestrator-action port, and the
         // change audit event is recorded through the same path.
-        assert_eq!(
-            work_item_port.observed_action_ids,
-            ["set-config:auto_approve_ready:true"]
+        check(
+            (work_item_port.observed_action_ids) == (["set-config:auto_approve_ready:true"]),
+            "assert_eq failed",
         );
-        let events = store.list_console_events()?;
-        assert!(
+        let events = store.list_console_events().ok_test();
+        check(
             events
                 .iter()
-                .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged)
+                .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged),
+            "assert failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn store_backed_tui_session_services_input_after_queued_drain_before_port_runs()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_tui_session_services_input_after_queued_drain_before_port_runs() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let calls = Rc::new(std::cell::Cell::new(0));
         let mut runner = DrainThenInputTuiSessionRunner::new(Rc::clone(&calls));
         let mut factory_port = CountingFactoryDrainPort::new(Rc::clone(&calls));
@@ -3787,25 +3887,27 @@ mod tests {
             &poll_requester(),
             &commands,
         );
-        assert!(outcome.is_ok());
+        check(outcome.is_ok(), "assert failed");
 
-        assert_eq!(runner.port_calls_after_drain_effect, Some(0));
-        assert!(runner.serviced_input_after_drain_effect);
-        assert_eq!(commands.request_count(), 1);
-        assert_eq!(calls.get(), 1);
-        assert_eq!(
-            outcome
-                .map(|outcome| outcome.handled_command_count())
-                .unwrap_or_default(),
-            1
+        check(
+            (runner.port_calls_after_drain_effect) == (Some(0)),
+            "assert_eq failed",
         );
-        Ok(())
+        check(runner.serviced_input_after_drain_effect, "assert failed");
+        check((commands.request_count()) == (1), "assert_eq failed");
+        check((calls.get()) == (1), "assert_eq failed");
+        check(
+            (outcome
+                .map(|outcome| outcome.handled_command_count())
+                .unwrap_or_default())
+                == (1),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_tui_session_applies_valve_effect_before_runner_returns()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_tui_session_applies_valve_effect_before_runner_returns() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let mut runner = ImmediateValveTuiSessionRunner;
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -3816,9 +3918,7 @@ mod tests {
             "Set admission policy",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        let seeded =
-            append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
-        assert!(seeded.is_ok());
+        append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -3834,25 +3934,27 @@ mod tests {
             &command_requester(),
         );
 
-        let commands = store.list_commands()?;
+        let commands = store.list_commands().ok_test();
         let command = commands.iter().find(|command| {
             command.command_type() == CommandType::WorkItemSetAdmissionRequested.contract_name()
         });
-        assert_eq!(command.map(StoredCommand::status), Some("completed"));
-        assert_eq!(
-            work_item_port.observed_action_ids,
-            ["set-admission:console-pending:auto"]
+        check(
+            (command.map(StoredCommand::status)) == (Some("completed")),
+            "assert_eq failed",
         );
-        assert!(matches!(
-            outcome,
-            Ok(outcome) if outcome.persisted_command_count() == 1
-        ));
-        Ok(())
+        check(
+            (work_item_port.observed_action_ids) == (["set-admission:console-pending:auto"]),
+            "assert_eq failed",
+        );
+        check(
+            (outcome.ok_test().persisted_command_count()) == (1),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_tui_session_maps_live_effect_sink_errors() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_tui_session_maps_live_effect_sink_errors() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let mut runner = ImmediateValveTuiSessionRunner;
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = ErroringWorkItemActionPort;
@@ -3863,9 +3965,7 @@ mod tests {
             "Set admission policy",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        let seeded =
-            append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
-        assert!(seeded.is_ok());
+        append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
 
         let outcome = run_store_backed_tui_session(
             &mut store,
@@ -3881,24 +3981,22 @@ mod tests {
             &command_requester(),
         );
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::TuiRuntimeFailed)
-        ));
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("TuiRuntimeFailed"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn store_backed_tui_session_reingests_sources_over_existing_events()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_tui_session_reingests_sources_over_existing_events() {
         // Bug A fix: the interactive launch re-ingests the source adapters on
         // EVERY run, not only when the log is empty, so the Lanes projection
         // reduces over the CURRENT ledger rather than a first-run snapshot. The
         // store starts with the 2 demo events; the scripted seed adds its 6
         // source events on top (idempotent per Scenario 3), so 8 events are
         // presented to the runner and left in the store.
-        let mut store = SqliteEventStore::open_in_memory()?;
-        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
         let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -3921,13 +4019,15 @@ mod tests {
             &command_requester(),
         );
 
-        assert!(matches!(
-            outcome,
-            Ok(ref value) if value == &TuiSessionOutcome::new(6, 8, 0, 0, 8, 0)
-        ));
-        assert_eq!(runner.observed_event_count(), 8);
-        assert_eq!(store.list_console_events()?.len(), 8);
-        Ok(())
+        check(
+            (outcome.ok_test()) == (TuiSessionOutcome::new(6, 8, 0, 0, 8, 0)),
+            "assert_eq failed",
+        );
+        check((runner.observed_event_count()) == (8), "assert_eq failed");
+        check(
+            (store.list_console_events().ok_test().len()) == (8),
+            "assert_eq failed",
+        );
     }
 
     /// A pull source returning a scripted SEQUENCE of polls — one per successive
@@ -4011,12 +4111,12 @@ mod tests {
     }
 
     #[test]
-    fn refresh_sources_reprojects_a_lane_change_across_polls() -> Result<(), ConsoleRuntimeError> {
+    fn refresh_sources_reprojects_a_lane_change_across_polls() {
         // Scenario 3 + Bug B: the off-thread poller runs `refresh_sources` on its
         // cadence. An item observed in one lane, then re-observed in another on a
         // subsequent poll (a higher `source_version`), reprojects to the NEW lane —
         // the poller keeping the board live without a restart.
-        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let source = sequenced_work_item_source(&[
             ("wi-live", Lane::Ready, "ready", 1),
             ("wi-live", Lane::Backlog, "backlog", 2),
@@ -4028,38 +4128,45 @@ mod tests {
         let (at1, at2) = ("2026-07-17T00:00:00Z", "2026-07-17T00:00:01Z");
 
         // First poll → item in the Ready lane.
-        refresh_sources(&mut store, at1, &sources, &needs_attention)?;
-        let first = store.list_console_events()?;
-        assert_eq!(lane_work_item_ids(&first, Lane::Ready), ["wi-live"]);
-        assert!(lane_work_item_ids(&first, Lane::Backlog).is_empty());
+        refresh_sources(&mut store, at1, &sources, &needs_attention).ok_test();
+        let first = store.list_console_events().ok_test();
+        check(
+            (lane_work_item_ids(&first, Lane::Ready)) == (["wi-live"]),
+            "assert_eq failed",
+        );
+        check(
+            lane_work_item_ids(&first, Lane::Backlog).is_empty(),
+            "assert failed",
+        );
 
         // A subsequent poll (poll 2, higher version) → the SAME item now projects
         // to the Backlog lane, with no restart.
-        refresh_sources(&mut store, at2, &sources, &needs_attention)?;
-        let second = store.list_console_events()?;
-        assert_eq!(lane_work_item_ids(&second, Lane::Backlog), ["wi-live"]);
-        assert!(lane_work_item_ids(&second, Lane::Ready).is_empty());
-        Ok(())
+        refresh_sources(&mut store, at2, &sources, &needs_attention).ok_test();
+        let second = store.list_console_events().ok_test();
+        check(
+            (lane_work_item_ids(&second, Lane::Backlog)) == (["wi-live"]),
+            "assert_eq failed",
+        );
+        check(
+            lane_work_item_ids(&second, Lane::Ready).is_empty(),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn needs_attention_impl_row_refreshes_stale_lane_and_drain_policy()
-    -> Result<(), ConsoleRuntimeError> {
+    fn needs_attention_impl_row_refreshes_stale_lane_and_drain_policy() {
         // Regression for aw6z: a non-orchestrator ledger update made the
         // needs-attention source see ready implementation work while the lane
         // stream still held an older Active snapshot. Ingesting the fresher
         // `impl:` attention row must repair the lane projection before the drain
         // policy gates a valid dispatch.
-        let mut store = SqliteEventStore::open_in_memory()?;
-        assert!(
-            append_work_item_lane(
-                &mut store,
-                "livespec-console-beads-fabro-0c5",
-                "active",
-                1,
-                "2026-08-17T12:18:00Z",
-            )
-            .is_ok()
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_work_item_lane(
+            &mut store,
+            "livespec-console-beads-fabro-0c5",
+            "active",
+            1,
+            "2026-08-17T12:18:00Z",
         );
         let attention_item = AttentionItemSnapshot::new(
             "impl:livespec-console-beads-fabro-0c5",
@@ -4080,28 +4187,35 @@ mod tests {
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
-        let before = store.list_console_events()?;
-        assert_eq!(
-            lane_work_item_ids(&before, Lane::Active),
-            ["livespec-console-beads-fabro-0c5"]
+        let before = store.list_console_events().ok_test();
+        check(
+            (lane_work_item_ids(&before, Lane::Active)) == (["livespec-console-beads-fabro-0c5"]),
+            "assert_eq failed",
         );
-        assert!(lane_work_item_ids(&before, Lane::Ready).is_empty());
-        assert_eq!(
-            super::FactoryDrainPolicy::from_events(&before).rejection_reason(),
-            Some("no ready implementation work")
+        check(
+            lane_work_item_ids(&before, Lane::Ready).is_empty(),
+            "assert failed",
+        );
+        check(
+            (super::FactoryDrainPolicy::from_events(&before).rejection_reason())
+                == (Some("no ready implementation work")),
+            "assert_eq failed",
         );
 
         let inserted =
-            ingest_needs_attention(&mut store, &needs_attention, "2026-08-17T21:28:00Z")?;
-        assert_eq!(inserted, 2);
-        let after = store.list_console_events()?;
-        assert_eq!(
-            lane_work_item_ids(&after, Lane::Ready),
-            ["livespec-console-beads-fabro-0c5"]
+            ingest_needs_attention(&mut store, &needs_attention, "2026-08-17T21:28:00Z").ok_test();
+        check((inserted) == (2), "assert_eq failed");
+        let after = store.list_console_events().ok_test();
+        check(
+            (lane_work_item_ids(&after, Lane::Ready)) == (["livespec-console-beads-fabro-0c5"]),
+            "assert_eq failed",
         );
-        assert!(lane_work_item_ids(&after, Lane::Active).is_empty());
+        check(
+            lane_work_item_ids(&after, Lane::Active).is_empty(),
+            "assert failed",
+        );
         let policy = super::FactoryDrainPolicy::from_events(&after);
-        assert_eq!(policy.rejection_reason(), None);
+        check(policy.rejection_reason().is_none(), "assert_eq failed");
         let mut port = RecordingFactoryDrainPort::default();
         let command = CommandEnvelope::new(
             "cmd_drain".to_owned(),
@@ -4110,21 +4224,25 @@ mod tests {
             "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
             "operator".to_owned(),
         );
-        let outcome = super::handle_factory_drain_command(&command, &policy, &mut port)?;
-        assert_eq!(outcome.command_status(), "completed");
-        assert_eq!(port.observed_aggregate_ids, ["fleet:livespec"]);
-        Ok(())
+        let outcome = super::handle_factory_drain_command(&command, &policy, &mut port).ok_test();
+        check(
+            (outcome.command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (port.observed_aggregate_ids) == (["fleet:livespec"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_refresh_reflects_the_operators_action_and_signals_a_poll()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_refresh_reflects_the_operators_action_and_signals_a_poll() {
         // Bug B: after the operator drains, a CHEAP `refresh_events` re-list (no
         // source poll on the UI thread) already reflects the operator's OWN
         // just-appended drain outcome. `refresh_events(true)` also pings the
         // off-thread poller to re-poll sources at once (so the ledger's lane
         // change appears promptly); `refresh_events(false)` never pings.
-        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         // Seed a ready work-item so the drain is accepted (not policy-rejected).
         let source = sequenced_work_item_source(&[("wi-ready", Lane::Ready, "ready", 1)]);
         let sources: Vec<SourceAdapterRef<'_>> =
@@ -4132,7 +4250,7 @@ mod tests {
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         let seed_at = "2026-07-17T00:00:00Z";
-        refresh_sources(&mut store, seed_at, &sources, &needs_attention)?;
+        refresh_sources(&mut store, seed_at, &sources, &needs_attention).ok_test();
 
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -4152,39 +4270,43 @@ mod tests {
 
             // A cheap re-list (request_poll = false) carries no drain outcome yet
             // and does NOT ping the poller.
-            let before = refreshed_events(sink.refresh_events(false))?;
-            assert!(
+            let before = refreshed_events(sink.refresh_events(false)).ok_test();
+            check(
                 !before
                     .iter()
-                    .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
+                    .any(|event| event.event_type() == &EventType::FactoryDrainCompleted),
+                "assert failed",
             );
-            assert_eq!(requester.poll_count(), 0);
+            check((requester.poll_count()) == (0), "assert_eq failed");
 
             // The operator drains: the effect persists the command and appends its
             // outcome events through the injected drain port.
             let applied = sink
                 .handle_runtime_effect(&factory_drain_effect())
                 .ok()
-                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
-            assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test();
+            check(
+                (applied) == (TuiRuntimeEffectSinkOutcome::Applied),
+                "assert_eq failed",
+            );
 
             // A ledger-mutating refresh (request_poll = true) re-lists the
             // operator's own outcome AND pings the poller exactly once.
-            let after = refreshed_events(sink.refresh_events(true))?;
-            assert!(
+            let after = refreshed_events(sink.refresh_events(true)).ok_test();
+            check(
                 after
                     .iter()
-                    .any(|event| event.event_type() == &EventType::FactoryDrainCompleted)
+                    .any(|event| event.event_type() == &EventType::FactoryDrainCompleted),
+                "assert failed",
             );
-            assert_eq!(requester.poll_count(), 1);
+            check((requester.poll_count()) == (1), "assert_eq failed");
         }
-        Ok(())
     }
 
     #[test]
-    fn store_backed_effect_sink_queues_factory_drain_without_running_port_inline()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_effect_sink_queues_factory_drain_without_running_port_inline() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let mut factory_port = RecordingFactoryDrainPort::default();
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
@@ -4202,60 +4324,81 @@ mod tests {
             );
             let render_outcome = sink
                 .handle_runtime_effect(&TuiRuntimeEffect::Render)
-                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
-            assert_eq!(render_outcome, TuiRuntimeEffectSinkOutcome::Applied);
-            assert_eq!(commands.request_count(), 0);
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test();
+            check(
+                (render_outcome) == (TuiRuntimeEffectSinkOutcome::Applied),
+                "assert_eq failed",
+            );
+            check((commands.request_count()) == (0), "assert_eq failed");
 
             let outcome = sink
                 .handle_runtime_effect(&factory_drain_effect())
-                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test();
 
-            assert_eq!(outcome, TuiRuntimeEffectSinkOutcome::Applied);
-            assert_eq!(sink.persisted_command_count(), 1);
-            assert_eq!(sink.handled_command_count(), 0);
+            check(
+                (outcome) == (TuiRuntimeEffectSinkOutcome::Applied),
+                "assert_eq failed",
+            );
+            check((sink.persisted_command_count()) == (1), "assert_eq failed");
+            check((sink.handled_command_count()) == (0), "assert_eq failed");
         }
 
-        let commands_in_store = store.list_commands()?;
-        assert_eq!(commands_in_store.len(), 1);
-        assert_eq!(commands_in_store[0].status(), "pending");
-        assert_eq!(commands.request_count(), 1);
-        assert_eq!(factory_port.observed_aggregate_ids, Vec::<String>::new());
-        Ok(())
+        let commands_in_store = store.list_commands().ok_test();
+        check((commands_in_store.len()) == (1), "assert_eq failed");
+        check(
+            (commands_in_store[0].status()) == ("pending"),
+            "assert_eq failed",
+        );
+        check((commands.request_count()) == (1), "assert_eq failed");
+        check(
+            (factory_port.observed_aggregate_ids) == (Vec::<String>::new()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
     fn factory_drain_requested_event_helper_ignores_non_inserted_missing_and_non_factory_commands()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let duplicate = [CommandAppendOutcome::new(
             "cmd_missing".to_owned(),
             CommandAppendStatus::Duplicate,
         )];
-        assert_eq!(
-            append_factory_drain_requested_events(&mut store, &duplicate, "2026-08-17T23:55:00Z")?,
-            0
+        check(
+            (append_factory_drain_requested_events(&mut store, &duplicate, "2026-08-17T23:55:00Z")
+                .ok_test())
+                == (0),
+            "assert_eq failed",
         );
         let persisted = persist_tui_runtime_effects(
             &mut store,
             &[dispatcher_setting_set_effect()],
             "2026-08-17T23:55:02Z",
         );
-        assert!(persisted.is_ok());
+        check(persisted.is_ok(), "assert failed");
         let persisted = persisted.unwrap_or_default();
         let missing = [CommandAppendOutcome::new(
             "cmd_missing".to_owned(),
             CommandAppendStatus::Inserted,
         )];
-        assert_eq!(
-            append_factory_drain_requested_events(&mut store, &missing, "2026-08-17T23:55:01Z")?,
-            0
+        check(
+            (append_factory_drain_requested_events(&mut store, &missing, "2026-08-17T23:55:01Z")
+                .ok_test())
+                == (0),
+            "assert_eq failed",
         );
-        assert_eq!(
-            append_factory_drain_requested_events(&mut store, &persisted, "2026-08-17T23:55:03Z")?,
-            0
+        check(
+            (append_factory_drain_requested_events(&mut store, &persisted, "2026-08-17T23:55:03Z")
+                .ok_test())
+                == (0),
+            "assert_eq failed",
         );
-        assert!(store.list_console_events()?.is_empty());
-        Ok(())
+        check(
+            store.list_console_events().ok_test().is_empty(),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -4270,25 +4413,30 @@ mod tests {
 
         let requester = DefaultRequester;
         requester.request_pending_command_handling();
-        assert!(!requester.handles_pending_commands_inline());
+        check(
+            !requester.handles_pending_commands_inline(),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn store_backed_refresh_reflects_autonomous_decisions_on_every_refresh()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_refresh_reflects_autonomous_decisions_on_every_refresh() {
         // Scenario 15 + Bug B (folds PR #256): the CHEAP local-journal reflection
         // runs on EVERY `refresh_events` — even a re-list that does not ping the
         // poller (`request_poll = false`) — so an auto-disposition that lands
         // mid-session leaves the needs-attention inbox live at once.
-        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         // The item is already surfaced in the needs-attention inbox.
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
             "valve:approve:wi-1",
             "Approve wi-1",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z").ok_test();
+        check(
+            (project_attention(&store.list_console_events().ok_test()).len()) == (1),
+            "assert_eq failed",
+        );
 
         // The plane's engine has now auto-approved wi-1.
         let decisions = SimulatedDecisionsPort::returning(AutonomousAudit::new(
@@ -4298,7 +4446,8 @@ mod tests {
                     "auto-approve",
                     vec!["auto_approve_ready".to_owned()],
                 )
-                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?,
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test(),
             ],
             Vec::new(),
         ));
@@ -4318,12 +4467,11 @@ mod tests {
                 &commands,
             );
             // A CHEAP refresh (request_poll = false) still runs the reflection.
-            refreshed_events(sink.refresh_events(false))?
+            refreshed_events(sink.refresh_events(false)).ok_test()
         };
 
         // The auto-resolved item left the inbox on the cheap refresh.
-        assert!(project_attention(&events).is_empty());
-        Ok(())
+        check(project_attention(&events).is_empty(), "assert failed");
     }
 
     #[test]
@@ -4342,8 +4490,14 @@ mod tests {
             "operator".to_owned(),
         );
         let unchanged = distinguish_repeatable_command(&once_only, 7);
-        assert_eq!(unchanged.command_id(), once_only.command_id());
-        assert_eq!(unchanged.idempotency_key(), once_only.idempotency_key());
+        check(
+            (unchanged.command_id()) == (once_only.command_id()),
+            "assert_eq failed",
+        );
+        check(
+            (unchanged.idempotency_key()) == (once_only.idempotency_key()),
+            "assert_eq failed",
+        );
 
         let repeatable = CommandEnvelope::new(
             "cmd_work_item_set_admission_requested_wi-1_auto".to_owned(),
@@ -4353,19 +4507,21 @@ mod tests {
             "operator".to_owned(),
         );
         let distinguished = distinguish_repeatable_command(&repeatable, 7);
-        assert_eq!(
-            distinguished.command_id(),
-            "cmd_work_item_set_admission_requested_wi-1_auto_7"
+        check(
+            (distinguished.command_id()) == ("cmd_work_item_set_admission_requested_wi-1_auto_7"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            distinguished.idempotency_key(),
-            "wi-1:work_item.set_admission_requested:policy=auto:7"
+        check(
+            (distinguished.idempotency_key())
+                == ("wi-1:work_item.set_admission_requested:policy=auto:7"),
+            "assert_eq failed",
         );
         // Same command, same sequence — an exact re-persist still dedupes, so
         // replay safety survives the widening.
-        assert_eq!(
-            distinguish_repeatable_command(&repeatable, 7).idempotency_key(),
-            distinguished.idempotency_key()
+        check(
+            (distinguish_repeatable_command(&repeatable, 7).idempotency_key())
+                == (distinguished.idempotency_key()),
+            "assert_eq failed",
         );
     }
 
@@ -4408,7 +4564,7 @@ mod tests {
         store: &mut SqliteEventStore,
         effects: &[TuiRuntimeEffect],
         kind: CommandType,
-    ) -> Result<(Vec<String>, usize), ConsoleRuntimeError> {
+    ) -> (Vec<String>, usize) {
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
         let decisions = empty_decisions_port();
@@ -4426,76 +4582,77 @@ mod tests {
             );
             for effect in effects {
                 let outcome = sink.handle_runtime_effect(effect).ok();
-                let applied = outcome.ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
-                assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+                let applied = outcome
+                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                    .ok_test();
+                check(
+                    (applied) == (TuiRuntimeEffectSinkOutcome::Applied),
+                    "assert_eq failed",
+                );
             }
         }
-        let commands = store.list_commands()?;
+        let commands = store.list_commands().ok_test();
         let landed = commands
             .iter()
             .filter(|command| command.command_type() == kind.contract_name())
             .count();
-        Ok((work_item_port.observed_action_ids, landed))
+        (work_item_port.observed_action_ids, landed)
     }
 
     /// A store seeded with one selectable work-item `wi-1` in the inbox.
-    fn store_with_selectable_item()
-    -> Result<(SqliteEventStore, Vec<ConsoleEvent>), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_with_selectable_item() -> (SqliteEventStore, Vec<ConsoleEvent>) {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
             "wi-1",
             "Repeatable actions on wi-1",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        ingest_needs_attention(&mut store, &needs_attention, "2026-07-19T00:00:00Z")?;
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-19T00:00:00Z").ok_test();
         // The row resolves to a manual-admission pending-approval board record,
         // the lane that admits every per-item valve these tests stage.
-        let seeded = append_work_item_lane(
+        append_work_item_lane(
             &mut store,
             "wi-1",
             "pending-approval",
             1,
             "2026-07-19T00:00:00Z",
         );
-        assert!(seeded.is_ok());
-        let events = store.list_console_events()?;
-        Ok((store, events))
+        let events = store.list_console_events().ok_test();
+        (store, events)
     }
 
     #[test]
-    fn store_backed_repeated_admission_edits_all_land_and_drive_set_admission()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_repeated_admission_edits_all_land_and_drive_set_admission() {
         // The same latent static-key bug PR #258 fixed for MOVE, on the admission
         // policy dial. Its key carries the VALUE
         // (`<id>:work_item.set_admission_requested:policy=<p>`) but no per-action
         // distinguisher, so auto -> manual -> auto dedupes the THIRD edit onto the
         // first and the operator's dial silently stops responding.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let effects = [
             valve_effect(&events, PendingValve::SetAdmission(AdmissionPolicy::Auto)),
             valve_effect(&events, PendingValve::SetAdmission(AdmissionPolicy::Manual)),
             valve_effect(&events, PendingValve::SetAdmission(AdmissionPolicy::Auto)),
         ];
         let kind = CommandType::WorkItemSetAdmissionRequested;
-        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
-        assert_eq!(
-            actions,
-            [
-                "set-admission:wi-1:auto",
-                "set-admission:wi-1:manual",
-                "set-admission:wi-1:auto"
-            ]
+        let (actions, landed) = drive_effects(&mut store, &effects, kind);
+        check(
+            (actions)
+                == ([
+                    "set-admission:wi-1:auto",
+                    "set-admission:wi-1:manual",
+                    "set-admission:wi-1:auto",
+                ]),
+            "assert_eq failed",
         );
-        assert_eq!(landed, 3);
-        Ok(())
+        check((landed) == (3), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_repeated_acceptance_edits_all_land_and_drive_set_acceptance()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_repeated_acceptance_edits_all_land_and_drive_set_acceptance() {
         // Same shape on the acceptance policy dial: ai-only -> human-only ->
         // ai-only must land three distinct edits.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let effects = [
             valve_effect(
                 &events,
@@ -4511,26 +4668,26 @@ mod tests {
             ),
         ];
         let kind = CommandType::WorkItemSetAcceptanceRequested;
-        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
-        assert_eq!(
-            actions,
-            [
-                "set-acceptance:wi-1:ai-only",
-                "set-acceptance:wi-1:human-only",
-                "set-acceptance:wi-1:ai-only"
-            ]
+        let (actions, landed) = drive_effects(&mut store, &effects, kind);
+        check(
+            (actions)
+                == ([
+                    "set-acceptance:wi-1:ai-only",
+                    "set-acceptance:wi-1:human-only",
+                    "set-acceptance:wi-1:ai-only",
+                ]),
+            "assert_eq failed",
         );
-        assert_eq!(landed, 3);
-        Ok(())
+        check((landed) == (3), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_set_clear_set_override_all_land() -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_set_clear_set_override_all_land() {
         // The per-item cap override is the clearest repeat case: set a cap, CLEAR
         // it back to inherit-global, then set the SAME cap again. The third edit
         // carries the same `{setting}={value}` as the first, so a value-only key
         // deduped it and the override stuck cleared.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let effects = [
             valve_effect(
                 &events,
@@ -4546,70 +4703,66 @@ mod tests {
             ),
         ];
         let kind = CommandType::WorkItemSetDispatcherOverrideRequested;
-        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
+        let (actions, landed) = drive_effects(&mut store, &effects, kind);
         // All three land, and the third re-issues the first's action-id — the
         // repeat a value-only key would have swallowed.
-        assert_eq!(actions.len(), 3);
-        assert_eq!(actions[0], actions[2]);
-        assert_eq!(landed, 3);
-        Ok(())
+        check((actions.len()) == (3), "assert_eq failed");
+        check((actions[0]) == (actions[2]), "assert_eq failed");
+        check((landed) == (3), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_repeated_rejects_all_land_and_drive_reject() -> Result<(), ConsoleRuntimeError>
-    {
+    fn store_backed_repeated_rejects_all_land_and_drive_reject() {
         // Reject is repeatable across modes: rework -> regroom -> rework.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let effects = [
             valve_effect(&events, PendingValve::Reject(RejectMode::Rework)),
             valve_effect(&events, PendingValve::Reject(RejectMode::Regroom)),
             valve_effect(&events, PendingValve::Reject(RejectMode::Rework)),
         ];
         let kind = CommandType::WorkItemRejectRequested;
-        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
-        assert_eq!(actions.len(), 3);
-        assert_eq!(actions[0], actions[2]);
-        assert_eq!(landed, 3);
-        Ok(())
+        let (actions, landed) = drive_effects(&mut store, &effects, kind);
+        check((actions.len()) == (3), "assert_eq failed");
+        check((actions[0]) == (actions[2]), "assert_eq failed");
+        check((landed) == (3), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_repeated_resolve_blocked_all_land() -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_repeated_resolve_blocked_all_land() {
         // An item can be blocked, resolved to ready, blocked AGAIN, and resolved to
         // ready again. The second resolve-to-ready repeats the first key.
-        let (mut store, _seeded) = store_with_selectable_item()?;
+        let (mut store, _seeded) = store_with_selectable_item();
         // The board holds the item BLOCKED throughout: resolving it does not
         // move the board row until the next source poll, so every staging sees
         // the blocked record the registry availability check requires.
-        append_work_item_lane(&mut store, "wi-1", "blocked", 2, "2026-07-19T00:00:00Z")?;
-        let events = store.list_console_events()?;
+        append_work_item_lane(&mut store, "wi-1", "blocked", 2, "2026-07-19T00:00:00Z");
+        let events = store.list_console_events().ok_test();
         let effects = [
             move_effect(&events, Lane::Blocked, Lane::Ready),
             move_effect(&events, Lane::Blocked, Lane::Backlog),
             move_effect(&events, Lane::Blocked, Lane::Ready),
         ];
         let kind = CommandType::WorkItemResolveBlockedRequested;
-        let (actions, landed) = drive_effects(&mut store, &effects, kind)?;
-        assert_eq!(
-            actions,
-            [
-                "resolve-blocked:wi-1:ready",
-                "resolve-blocked:wi-1:backlog",
-                "resolve-blocked:wi-1:ready"
-            ]
+        let (actions, landed) = drive_effects(&mut store, &effects, kind);
+        check(
+            (actions)
+                == ([
+                    "resolve-blocked:wi-1:ready",
+                    "resolve-blocked:wi-1:backlog",
+                    "resolve-blocked:wi-1:ready",
+                ]),
+            "assert_eq failed",
         );
-        assert_eq!(landed, 3);
-        Ok(())
+        check((landed) == (3), "assert_eq failed");
     }
 
     #[test]
-    fn the_workflow_scope_override_rides_the_spine_to_its_action_id()
-    -> Result<(), ConsoleRuntimeError> {
+    fn the_workflow_scope_override_rides_the_spine_to_its_action_id() {
         // The hotkey-less valve's full round trip: staged from a drilled-in
         // ready item the orchestrator reports as awaiting a scope override,
         // persisted, rebuilt from the store, and dispatched as
         // set-workflow-scope-override:<id>:citation-only.
-        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let payload = concat!(
             r#"{"repo":"livespec-console-beads-fabro","work_item_id":"wi-refused","#,
             r#""lane":"ready","lane_reason":null,"rank":"a0","status":"ready","#,
@@ -4630,18 +4783,20 @@ mod tests {
             1,
         )
         .with_payload_json(payload.to_owned());
-        store.append_event(&EventAppend::new(
-            event,
-            "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
-            "2026-08-02T00:00:00Z".to_owned(),
-            "2026-08-02T00:00:00Z".to_owned(),
-            None,
-            "corr_evt_wi_refused".to_owned(),
-            Some("evt_wi_refused".to_owned()),
-            payload.to_owned(),
-            "{}".to_owned(),
-        ))?;
-        let events = store.list_console_events()?;
+        store
+            .append_event(&EventAppend::new(
+                event,
+                "repo:livespec-console-beads-fabro:wi-refused".to_owned(),
+                "2026-08-02T00:00:00Z".to_owned(),
+                "2026-08-02T00:00:00Z".to_owned(),
+                None,
+                "corr_evt_wi_refused".to_owned(),
+                Some("evt_wi_refused".to_owned()),
+                payload.to_owned(),
+                "{}".to_owned(),
+            ))
+            .ok_test();
+        let events = store.list_console_events().ok_test();
         let state = TuiInteractionState::for_view(
             TuiView::Lanes,
             0,
@@ -4656,13 +4811,12 @@ mod tests {
                 .effect()
                 .clone();
         let kind = CommandType::WorkItemSetWorkflowScopeOverrideRequested;
-        let (actions, landed) = drive_effects(&mut store, &[effect], kind)?;
-        assert_eq!(
-            actions,
-            ["set-workflow-scope-override:wi-refused:citation-only"]
+        let (actions, landed) = drive_effects(&mut store, &[effect], kind);
+        check(
+            (actions) == (["set-workflow-scope-override:wi-refused:citation-only"]),
+            "assert_eq failed",
         );
-        assert_eq!(landed, 1);
-        Ok(())
+        check((landed) == (1), "assert_eq failed");
     }
 
     #[test]
@@ -4672,20 +4826,19 @@ mod tests {
         // inherited default is exercised where it is instantiated.
         let mut port = ErroringWorkItemActionPort;
         let reading = port.read_action(&OrchestratorActionRequest::new("config".to_owned()));
-        assert_eq!(
-            reading,
-            Ok(console_application::OrchestratorActionReading::not_wired())
+        check(
+            (reading) == (Ok(console_application::OrchestratorActionReading::not_wired())),
+            "assert_eq failed",
         );
     }
 
     #[test]
-    fn a_refused_valve_persists_its_refusal_into_the_failure_event()
-    -> Result<(), ConsoleRuntimeError> {
+    fn a_refused_valve_persists_its_refusal_into_the_failure_event() {
         // The action-invocation half of the silent-valve defect: the refusal
         // payload the drive surface emits rides the work_item.action.failed
         // event into the store, where the record modal renders it — instead of
         // being discarded at the port boundary.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let approve = valve_effect(&events, PendingValve::Approve);
         let refusal = concat!(
             r#"{"action_id":"approve:wi-1","domain_error":"invalid-source-state","#,
@@ -4696,13 +4849,17 @@ mod tests {
             OrchestratorActionOutcome::failed_with_refusal(refusal.to_owned()),
         );
         let persisted =
-            persist_tui_runtime_effects(&mut store, &[approve], "2026-08-02T00:00:01Z")?;
-        assert_eq!(persisted.len(), 1);
+            persist_tui_runtime_effects(&mut store, &[approve], "2026-08-02T00:00:01Z").ok_test();
+        check((persisted.len()) == (1), "assert_eq failed");
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-08-02T00:00:02Z", &mut port)?;
-        assert_eq!(outcomes[0].command_status(), "failed");
-        let events = store.list_console_events()?;
-        let commands = store.list_commands()?;
+            handle_pending_work_item_commands(&mut store, "2026-08-02T00:00:02Z", &mut port)
+                .ok_test();
+        check(
+            (outcomes[0].command_status()) == ("failed"),
+            "assert_eq failed",
+        );
+        let events = store.list_console_events().ok_test();
+        let commands = store.list_commands().ok_test();
         let payload = events
             .iter()
             .find(|event| *event.event_type() == EventType::WorkItemActionFailed)
@@ -4715,133 +4872,169 @@ mod tests {
             "summary": "approve requires an effective-manual pending-approval item."
         })
         .to_string();
-        assert_eq!(payload, expected,);
-        assert_eq!(commands[0].error_json(), Some(payload));
-        Ok(())
+        check((payload) == (expected), "assert_eq failed");
+        check(
+            (commands[0].error_json()) == (Some(payload)),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_once_only_valves_still_dedupe() -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_once_only_valves_still_dedupe() {
         // The other half of the audit, and the regression this fix must NOT cause.
         // Approve and accept are SEMANTICALLY once-per-item: approving twice is a
         // no-op, and their static per-item key is CORRECT while the original row
         // is not terminal-failed. Widening the retry path must not sweep healthy
         // valves in -- if it did, a double keypress would fire the valve twice.
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let approve = valve_effect(&events, PendingValve::Approve);
         let once = [approve];
         let kind = CommandType::WorkItemApproveRequested;
-        let (actions, landed) = drive_effects(&mut store, &once, kind)?;
-        assert_eq!(actions, ["approve:wi-1"]);
-        assert_eq!(landed, 1);
+        let (actions, landed) = drive_effects(&mut store, &once, kind);
+        check((actions) == (["approve:wi-1"]), "assert_eq failed");
+        check((landed) == (1), "assert_eq failed");
 
         // The SAME approve again dedupes: no second command, no second action.
         let kind = CommandType::WorkItemApproveRequested;
-        let (repeat_actions, still_landed) = drive_effects(&mut store, &once, kind)?;
-        assert!(repeat_actions.is_empty());
-        assert_eq!(still_landed, 1);
-        Ok(())
+        let (repeat_actions, still_landed) = drive_effects(&mut store, &once, kind);
+        check(repeat_actions.is_empty(), "assert failed");
+        check((still_landed) == (1), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_failed_approve_can_be_retried_without_losing_replay_safety()
-    -> Result<(), ConsoleRuntimeError> {
+    #[allow(clippy::too_many_lines)]
+    fn store_backed_failed_approve_can_be_retried_without_losing_replay_safety() {
         const FIRST_REQUESTED_AT: &str = "2026-07-19T00:00:01Z";
         const FIRST_HANDLED_AT: &str = "2026-07-19T00:00:02Z";
         const RETRY_REQUESTED_AT: &str = "2026-07-19T00:00:03Z";
         const RETRY_HANDLED_AT: &str = "2026-07-19T00:00:04Z";
         const AFTER_SUCCESS_REQUESTED_AT: &str = "2026-07-19T00:00:05Z";
 
-        let (mut store, events) = store_with_selectable_item()?;
+        let (mut store, events) = store_with_selectable_item();
         let approve = valve_effect(&events, PendingValve::Approve);
         let once = [approve];
 
-        let first = persist_tui_runtime_effects(&mut store, &once, FIRST_REQUESTED_AT)?;
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].status(), CommandAppendStatus::Inserted);
+        let first = persist_tui_runtime_effects(&mut store, &once, FIRST_REQUESTED_AT).ok_test();
+        check((first.len()) == (1), "assert_eq failed");
+        check(
+            (first[0].status()) == (CommandAppendStatus::Inserted),
+            "assert_eq failed",
+        );
 
         let mut failing_port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::failed());
         let first_outcomes =
-            handle_pending_work_item_commands(&mut store, FIRST_HANDLED_AT, &mut failing_port)?;
-        assert_eq!(first_outcomes.len(), 1);
-        assert_eq!(first_outcomes[0].command_status(), "failed");
-        assert_eq!(failing_port.observed_action_ids, ["approve:wi-1"]);
-        let commands_after_failure = store.list_commands()?;
-        assert_eq!(commands_after_failure.len(), 1);
-        assert_eq!(commands_after_failure[0].status(), "failed");
-        assert_eq!(
-            commands_after_failure[0].idempotency_key(),
-            "wi-1:work_item.approve_requested"
+            handle_pending_work_item_commands(&mut store, FIRST_HANDLED_AT, &mut failing_port)
+                .ok_test();
+        check((first_outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (first_outcomes[0].command_status()) == ("failed"),
+            "assert_eq failed",
+        );
+        check(
+            (failing_port.observed_action_ids) == (["approve:wi-1"]),
+            "assert_eq failed",
+        );
+        let commands_after_failure = store.list_commands().ok_test();
+        check((commands_after_failure.len()) == (1), "assert_eq failed");
+        check(
+            (commands_after_failure[0].status()) == ("failed"),
+            "assert_eq failed",
+        );
+        check(
+            (commands_after_failure[0].idempotency_key()) == ("wi-1:work_item.approve_requested"),
+            "assert_eq failed",
         );
 
-        let retry = persist_tui_runtime_effects(&mut store, &once, RETRY_REQUESTED_AT)?;
-        assert_eq!(retry.len(), 1);
-        assert_eq!(retry[0].status(), CommandAppendStatus::Inserted);
-        assert_eq!(
-            retry[0].command_id(),
-            "cmd_work_item_approve_requested_wi-1_1"
+        let retry = persist_tui_runtime_effects(&mut store, &once, RETRY_REQUESTED_AT).ok_test();
+        check((retry.len()) == (1), "assert_eq failed");
+        check(
+            (retry[0].status()) == (CommandAppendStatus::Inserted),
+            "assert_eq failed",
         );
-        let commands_after_retry = store.list_commands()?;
-        assert_eq!(commands_after_retry.len(), 2);
+        check(
+            (retry[0].command_id()) == ("cmd_work_item_approve_requested_wi-1_1"),
+            "assert_eq failed",
+        );
+        let commands_after_retry = store.list_commands().ok_test();
+        check((commands_after_retry.len()) == (2), "assert_eq failed");
         let retry_command = commands_after_retry
             .iter()
             .find(|command| command.command_id() == retry[0].command_id())
-            .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
-        assert_eq!(
-            retry_command.idempotency_key(),
-            "wi-1:work_item.approve_requested:1"
+            .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+            .ok_test();
+        check(
+            (retry_command.idempotency_key()) == ("wi-1:work_item.approve_requested:1"),
+            "assert_eq failed",
         );
-        assert_eq!(retry_command.status(), "pending");
+        check((retry_command.status()) == ("pending"), "assert_eq failed");
 
-        let replay = store.append_command(&CommandAppend::new(
-            CommandEnvelope::new(
-                retry_command.command_id().to_owned(),
-                CommandType::WorkItemApproveRequested,
-                retry_command.aggregate_id().unwrap_or_default().to_owned(),
-                retry_command.idempotency_key().to_owned(),
-                retry_command.requested_by().to_owned(),
-            ),
-            RETRY_REQUESTED_AT.to_owned(),
-            retry_command.aggregate_id().map(ToOwned::to_owned),
-            format!("corr_{}", retry_command.command_id()),
-            "{}".to_owned(),
-        ))?;
-        assert_eq!(replay.status(), CommandAppendStatus::Duplicate);
+        let replay = store
+            .append_command(&CommandAppend::new(
+                CommandEnvelope::new(
+                    retry_command.command_id().to_owned(),
+                    CommandType::WorkItemApproveRequested,
+                    retry_command.aggregate_id().unwrap_or_default().to_owned(),
+                    retry_command.idempotency_key().to_owned(),
+                    retry_command.requested_by().to_owned(),
+                ),
+                RETRY_REQUESTED_AT.to_owned(),
+                retry_command.aggregate_id().map(ToOwned::to_owned),
+                format!("corr_{}", retry_command.command_id()),
+                "{}".to_owned(),
+            ))
+            .ok_test();
+        check(
+            (replay.status()) == (CommandAppendStatus::Duplicate),
+            "assert_eq failed",
+        );
 
         let mut succeeding_port = SimulatedWorkItemActionPort::default();
         let retry_outcomes =
-            handle_pending_work_item_commands(&mut store, RETRY_HANDLED_AT, &mut succeeding_port)?;
-        assert_eq!(retry_outcomes.len(), 1);
-        assert_eq!(retry_outcomes[0].command_status(), "completed");
-        assert_eq!(succeeding_port.observed_action_ids, ["approve:wi-1"]);
-        let commands_after_success = store.list_commands()?;
-        assert_eq!(
-            commands_after_success
+            handle_pending_work_item_commands(&mut store, RETRY_HANDLED_AT, &mut succeeding_port)
+                .ok_test();
+        check((retry_outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (retry_outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (succeeding_port.observed_action_ids) == (["approve:wi-1"]),
+            "assert_eq failed",
+        );
+        let commands_after_success = store.list_commands().ok_test();
+        check(
+            (commands_after_success
                 .iter()
                 .find(|command| command.command_id() == "cmd_work_item_approve_requested_wi-1")
-                .map(StoredCommand::status),
-            Some("failed")
+                .map(StoredCommand::status))
+                == (Some("failed")),
+            "assert_eq failed",
         );
-        assert_eq!(
-            commands_after_success
+        check(
+            (commands_after_success
                 .iter()
                 .find(|command| command.command_id() == "cmd_work_item_approve_requested_wi-1_1")
-                .map(StoredCommand::status),
-            Some("completed")
+                .map(StoredCommand::status))
+                == (Some("completed")),
+            "assert_eq failed",
         );
 
         let after_success =
-            persist_tui_runtime_effects(&mut store, &once, AFTER_SUCCESS_REQUESTED_AT)?;
-        assert_eq!(after_success.len(), 1);
-        assert_eq!(after_success[0].status(), CommandAppendStatus::Duplicate);
-        assert_eq!(store.list_commands()?.len(), 2);
-        Ok(())
+            persist_tui_runtime_effects(&mut store, &once, AFTER_SUCCESS_REQUESTED_AT).ok_test();
+        check((after_success.len()) == (1), "assert_eq failed");
+        check(
+            (after_success[0].status()) == (CommandAppendStatus::Duplicate),
+            "assert_eq failed",
+        );
+        check(
+            (store.list_commands().ok_test().len()) == (2),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn store_backed_repeated_moves_all_land_and_drive_the_move_action()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_repeated_moves_all_land_and_drive_the_move_action() {
         // The regression the gate missed, plus the move idempotency-key fix: the
         // s-move valve → Confirm → effect → command → drive round-trip, exercised
         // for THREE moves of the SAME item (to backlog, back to ready, to backlog
@@ -4850,28 +5043,37 @@ mod tests {
         // and the third (repeat target) silently no-oped. Folding the monotonic
         // append sequence into the key makes every distinct move a distinct command
         // that lands and drives `move:<id>:<target>`.
-        let mut store = SqliteEventStore::open_in_memory()?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         // Surface a selectable work-item "wi-1" via the needs-attention inbox.
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
             "wi-1",
             "Move wi-1",
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z")?;
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-17T00:00:00Z").ok_test();
 
         // Each staging sees the board record ingestion would have produced by
         // then: ready before the first move, backlog before the second, ready
         // again before the third — the availability check requires the staged
         // `from` to BE the item's lane.
-        append_work_item_lane(&mut store, "wi-1", "ready", 1, "2026-07-17T00:00:00Z")?;
-        let move_to_backlog =
-            move_effect(&store.list_console_events()?, Lane::Ready, Lane::Backlog);
-        append_work_item_lane(&mut store, "wi-1", "backlog", 2, "2026-07-17T00:00:00Z")?;
-        let move_back_to_ready =
-            move_effect(&store.list_console_events()?, Lane::Backlog, Lane::Ready);
-        append_work_item_lane(&mut store, "wi-1", "ready", 3, "2026-07-17T00:00:00Z")?;
-        let move_to_backlog_again =
-            move_effect(&store.list_console_events()?, Lane::Ready, Lane::Backlog);
+        append_work_item_lane(&mut store, "wi-1", "ready", 1, "2026-07-17T00:00:00Z");
+        let move_to_backlog = move_effect(
+            &store.list_console_events().ok_test(),
+            Lane::Ready,
+            Lane::Backlog,
+        );
+        append_work_item_lane(&mut store, "wi-1", "backlog", 2, "2026-07-17T00:00:00Z");
+        let move_back_to_ready = move_effect(
+            &store.list_console_events().ok_test(),
+            Lane::Backlog,
+            Lane::Ready,
+        );
+        append_work_item_lane(&mut store, "wi-1", "ready", 3, "2026-07-17T00:00:00Z");
+        let move_to_backlog_again = move_effect(
+            &store.list_console_events().ok_test(),
+            Lane::Ready,
+            Lane::Backlog,
+        );
 
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -4896,28 +5098,33 @@ mod tests {
                 let applied = sink
                     .handle_runtime_effect(effect)
                     .ok()
-                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
-                assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                    .ok_test();
+                check(
+                    (applied) == (TuiRuntimeEffectSinkOutcome::Applied),
+                    "assert_eq failed",
+                );
             }
         }
 
         // All THREE distinct moves reached the orchestrator port as
         // `move:<id>:<target>` — including the repeat back to a prior target, which
         // the pre-fix static key would have silently deduped.
-        assert_eq!(
-            work_item_port.observed_action_ids,
-            ["move:wi-1:backlog", "move:wi-1:ready", "move:wi-1:backlog"]
+        check(
+            (work_item_port.observed_action_ids)
+                == (["move:wi-1:backlog", "move:wi-1:ready", "move:wi-1:backlog"]),
+            "assert_eq failed",
         );
         // Three distinct move commands landed (not deduped down to one).
         let move_commands = store
-            .list_commands()?
+            .list_commands()
+            .ok_test()
             .iter()
             .filter(|command| {
                 command.command_type() == CommandType::WorkItemMoveRequested.contract_name()
             })
             .count();
-        assert_eq!(move_commands, 3);
-        Ok(())
+        check((move_commands) == (3), "assert_eq failed");
     }
 
     /// Build the `factory.drain_requested` effect the dispatch menu action
@@ -4944,14 +5151,13 @@ mod tests {
     /// Seed one Ready-lane work-item so the drain policy ACCEPTS the drain — with
     /// an empty Ready lane every drain is policy-rejected before it ever reaches
     /// the Dispatcher port, which would make a repeatability assertion vacuous.
-    fn seed_ready_work_item(store: &mut SqliteEventStore) -> Result<(), ConsoleRuntimeError> {
+    fn seed_ready_work_item(store: &mut SqliteEventStore) {
         let source = sequenced_work_item_source(&[("wi-ready", Lane::Ready, "ready", 1)]);
         let sources: Vec<SourceAdapterRef<'_>> =
             vec![("orchestrator:livespec-console-beads-fabro", &source)];
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        refresh_sources(store, "2026-07-19T00:00:00Z", &sources, &needs_attention)?;
-        Ok(())
+        refresh_sources(store, "2026-07-19T00:00:00Z", &sources, &needs_attention).ok_test();
     }
 
     /// Drive `count` dispatch-menu gestures through a store-backed sink and
@@ -4959,11 +5165,8 @@ mod tests {
     /// commands that actually landed in the store. The two together are what
     /// separates a drain that LANDS from one the static-key dedupe swallowed: a
     /// deduped command neither appends a row nor reaches the port.
-    fn drive_drains(
-        store: &mut SqliteEventStore,
-        count: usize,
-    ) -> Result<(Vec<String>, usize), ConsoleRuntimeError> {
-        let events = store.list_console_events()?;
+    fn drive_drains(store: &mut SqliteEventStore, count: usize) -> (Vec<String>, usize) {
+        let events = store.list_console_events().ok_test();
         let effect = drain_effect(&events);
         let mut factory_port = RecordingFactoryDrainPort::default();
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -4984,23 +5187,27 @@ mod tests {
                 let applied = sink
                     .handle_runtime_effect(&effect)
                     .ok()
-                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?;
-                assert_eq!(applied, TuiRuntimeEffectSinkOutcome::Applied);
+                    .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                    .ok_test();
+                check(
+                    (applied) == (TuiRuntimeEffectSinkOutcome::Applied),
+                    "assert_eq failed",
+                );
             }
         }
         let drain_commands = store
-            .list_commands()?
+            .list_commands()
+            .ok_test()
             .iter()
             .filter(|command| {
                 command.command_type() == CommandType::FactoryDrainRequested.contract_name()
             })
             .count();
-        Ok((factory_port.observed_aggregate_ids, drain_commands))
+        (factory_port.observed_aggregate_ids, drain_commands)
     }
 
     #[test]
-    fn store_backed_repeated_drains_all_land_and_reach_the_drain_port()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_repeated_drains_all_land_and_reach_the_drain_port() {
         // The reported bug: the console could perform exactly ONE factory drain
         // per store, EVER. The drain command is payload-less and its aggregate is
         // the FLEET (`fleet:livespec`), so its key
@@ -5009,19 +5216,20 @@ mod tests {
         // idempotency_key made every later `:drain` a silent no-op that appended
         // no row and never reached the Dispatcher. Folding the monotonic append
         // sequence into the key makes each gesture a distinct command.
-        let mut store = SqliteEventStore::open_in_memory()?;
-        seed_ready_work_item(&mut store)?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        seed_ready_work_item(&mut store);
 
-        let (observed, drain_commands) = drive_drains(&mut store, 2)?;
+        let (observed, drain_commands) = drive_drains(&mut store, 2);
 
-        assert_eq!(observed, ["fleet:livespec", "fleet:livespec"]);
-        assert_eq!(drain_commands, 2);
-        Ok(())
+        check(
+            (observed) == (["fleet:livespec", "fleet:livespec"]),
+            "assert_eq failed",
+        );
+        check((drain_commands) == (2), "assert_eq failed");
     }
 
     #[test]
-    fn store_backed_drain_lands_despite_a_spent_terminal_drain_row()
-    -> Result<(), ConsoleRuntimeError> {
+    fn store_backed_drain_lands_despite_a_spent_terminal_drain_row() {
         // The RECOVERY property, and the difference between "fixed going forward"
         // and "this store is still bricked". `find_existing_command_id` matches on
         // idempotency_key with NO status filter, so under the static key a drain
@@ -5030,8 +5238,8 @@ mod tests {
         // to read the SQLite store directly. A sequence-distinguished key cannot
         // collide with that legacy row, so an existing store recovers with no
         // store surgery.
-        let mut store = SqliteEventStore::open_in_memory()?;
-        seed_ready_work_item(&mut store)?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        seed_ready_work_item(&mut store);
         let spent = CommandEnvelope::new(
             "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
             CommandType::FactoryDrainRequested,
@@ -5039,13 +5247,15 @@ mod tests {
             "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
             "operator".to_owned(),
         );
-        store.append_command(&CommandAppend::new(
-            spent.clone(),
-            "2026-07-18T00:00:00Z".to_owned(),
-            Some(spent.aggregate_id().to_owned()),
-            "corr_spent_drain".to_owned(),
-            "{}".to_owned(),
-        ))?;
+        store
+            .append_command(&CommandAppend::new(
+                spent.clone(),
+                "2026-07-18T00:00:00Z".to_owned(),
+                Some(spent.aggregate_id().to_owned()),
+                "corr_spent_drain".to_owned(),
+                "{}".to_owned(),
+            ))
+            .ok_test();
         let terminal_update = store.update_command_status(
             spent.command_id(),
             "failed",
@@ -5053,21 +5263,24 @@ mod tests {
             Some(r#"{"event_count":3}"#),
             Some("{}"),
         );
-        assert!(terminal_update.is_ok());
+        check(terminal_update.is_ok(), "assert failed");
 
-        let (observed, drain_commands) = drive_drains(&mut store, 1)?;
+        let (observed, drain_commands) = drive_drains(&mut store, 1);
 
         // The new drain reached the Dispatcher...
-        assert_eq!(observed, ["fleet:livespec"]);
+        check((observed) == (["fleet:livespec"]), "assert_eq failed");
         // ...as a SECOND row beside the spent one, which is left untouched.
-        assert_eq!(drain_commands, 2);
+        check((drain_commands) == (2), "assert_eq failed");
         let spent_status = store
-            .list_commands()?
+            .list_commands()
+            .ok_test()
             .into_iter()
             .find(|command| command.command_id() == spent.command_id())
             .map(|command| command.status().to_owned());
-        assert_eq!(spent_status.as_deref(), Some("failed"));
-        Ok(())
+        check(
+            (spent_status.as_deref()) == (Some("failed")),
+            "assert_eq failed",
+        );
     }
 
     #[test]
@@ -5084,19 +5297,21 @@ mod tests {
             "operator".to_owned(),
         );
         let distinguished = distinguish_repeatable_command(&drain, 7);
-        assert_eq!(
-            distinguished.command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1_7"
+        check(
+            (distinguished.command_id()) == ("cmd_factory_drain_requested_budget_1_parallel_1_7"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            distinguished.idempotency_key(),
-            "fleet:livespec:factory.drain_requested:budget=1:parallel=1:7"
+        check(
+            (distinguished.idempotency_key())
+                == ("fleet:livespec:factory.drain_requested:budget=1:parallel=1:7"),
+            "assert_eq failed",
         );
         // Replay safety: the same command at the same sequence is byte-identical,
         // so an exact re-persist still dedupes against its own earlier row.
-        assert_eq!(
-            distinguish_repeatable_command(&drain, 7).idempotency_key(),
-            distinguished.idempotency_key()
+        check(
+            (distinguish_repeatable_command(&drain, 7).idempotency_key())
+                == (distinguished.idempotency_key()),
+            "assert_eq failed",
         );
 
         // The once-per-item valves are NOT unconditionally widened into:
@@ -5123,8 +5338,11 @@ mod tests {
                 "operator".to_owned(),
             );
             let unchanged = distinguish_repeatable_command(&once_only, 7);
-            assert_eq!(unchanged.command_id(), command_id);
-            assert_eq!(unchanged.idempotency_key(), idempotency_key);
+            check((unchanged.command_id()) == (command_id), "assert_eq failed");
+            check(
+                (unchanged.idempotency_key()) == (idempotency_key),
+                "assert_eq failed",
+            );
         }
 
         let move_command = CommandEnvelope::new(
@@ -5134,12 +5352,15 @@ mod tests {
             "wi-1:work_item.move_requested:target_status=ready".to_owned(),
             "operator".to_owned(),
         );
-        assert!(!is_failed_once_only_valve_retry(&move_command, &[]));
+        check(
+            !is_failed_once_only_valve_retry(&move_command, &[]),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn store_backed_tui_session_reports_runner_errors() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn store_backed_tui_session_reports_runner_errors() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let mut runner = ErroringTuiSessionRunner;
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -5162,18 +5383,19 @@ mod tests {
             &command_requester(),
         );
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::TuiRuntimeFailed)
-        ));
-        assert_eq!(store.list_console_events()?.len(), 6);
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("TuiRuntimeFailed"),
+            "assert failed",
+        );
+        check(
+            (store.list_console_events().ok_test().len()) == (6),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn ingest_needs_attention_diffs_snapshot_into_stream_and_projects_inbox()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn ingest_needs_attention_diffs_snapshot_into_stream_and_projects_inbox() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
         // First ingest against an empty prior: both items appear.
         let first_port = ScriptedNeedsAttentionPort::observing(vec![
@@ -5181,21 +5403,28 @@ mod tests {
             attention_item_fixture("wi-accept", "Acceptance review"),
         ]);
         let first = NeedsAttentionIngest::new(&first_port, "livespec-console-beads-fabro");
-        let appeared = ingest_needs_attention(&mut store, &first, "2026-07-07T00:00:00Z")?;
-        assert_eq!(appeared, 2);
-        assert_eq!(
-            attention_event_count(
-                &store.list_console_events()?,
-                EventType::AttentionItemAppeared
-            ),
-            2
+        let appeared = ingest_needs_attention(&mut store, &first, "2026-07-07T00:00:00Z").ok_test();
+        check((appeared) == (2), "assert_eq failed");
+        check(
+            (attention_event_count(
+                &store.list_console_events().ok_test(),
+                EventType::AttentionItemAppeared,
+            )) == (2),
+            "assert_eq failed",
         );
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 2);
+        check(
+            (project_attention(&store.list_console_events().ok_test()).len()) == (2),
+            "assert_eq failed",
+        );
 
         // Re-ingest the identical snapshot: idempotent, emits nothing.
-        let unchanged = ingest_needs_attention(&mut store, &first, "2026-07-07T00:01:00Z")?;
-        assert_eq!(unchanged, 0);
-        assert_eq!(store.list_console_events()?.len(), 2);
+        let unchanged =
+            ingest_needs_attention(&mut store, &first, "2026-07-07T00:01:00Z").ok_test();
+        check((unchanged) == (0), "assert_eq failed");
+        check(
+            (store.list_console_events().ok_test().len()) == (2),
+            "assert_eq failed",
+        );
 
         // Second ingest: wi-approve changes, wi-accept resolves, wi-blocked appears.
         let second_port = ScriptedNeedsAttentionPort::observing(vec![
@@ -5203,59 +5432,64 @@ mod tests {
             attention_item_fixture("wi-blocked", "Blocked: needs-human"),
         ]);
         let second = NeedsAttentionIngest::new(&second_port, "livespec-console-beads-fabro");
-        let ingested = ingest_needs_attention(&mut store, &second, "2026-07-07T00:02:00Z")?;
-        assert_eq!(ingested, 3);
+        let ingested =
+            ingest_needs_attention(&mut store, &second, "2026-07-07T00:02:00Z").ok_test();
+        check((ingested) == (3), "assert_eq failed");
 
-        let events = store.list_console_events()?;
-        assert_eq!(
-            attention_event_count(&events, EventType::AttentionItemChanged),
-            1
+        let events = store.list_console_events().ok_test();
+        check(
+            (attention_event_count(&events, EventType::AttentionItemChanged)) == (1),
+            "assert_eq failed",
         );
-        assert_eq!(
-            attention_event_count(&events, EventType::AttentionItemResolved),
-            1
+        check(
+            (attention_event_count(&events, EventType::AttentionItemResolved)) == (1),
+            "assert_eq failed",
         );
-        assert_eq!(
-            attention_event_count(&events, EventType::AttentionItemAppeared),
-            3
+        check(
+            (attention_event_count(&events, EventType::AttentionItemAppeared)) == (3),
+            "assert_eq failed",
         );
 
         let inbox = project_attention(&events);
         let ids: Vec<&str> = inbox.iter().map(AttentionItem::id).collect();
-        assert_eq!(ids, ["wi-approve", "wi-blocked"]);
+        check((ids) == (["wi-approve", "wi-blocked"]), "assert_eq failed");
         let approve = &inbox[0];
-        assert_eq!(approve.title(), "Pending approval (urgent)");
-        assert_eq!(approve.source(), "human-valve");
-        assert_eq!(
-            approve.source_reference(),
-            "livespec-console-beads-fabro:wi-approve"
+        check(
+            (approve.title()) == ("Pending approval (urgent)"),
+            "assert_eq failed",
         );
-        Ok(())
+        check((approve.source()) == ("human-valve"), "assert_eq failed");
+        check(
+            (approve.source_reference()) == ("livespec-console-beads-fabro:wi-approve"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn ingest_needs_attention_preserves_inbox_when_source_unavailable()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn ingest_needs_attention_preserves_inbox_when_source_unavailable() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let present = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
             "wi-approve",
             "Pending approval",
         )]);
         let ingest = NeedsAttentionIngest::new(&present, "livespec-console-beads-fabro");
-        assert_eq!(
-            ingest_needs_attention(&mut store, &ingest, "2026-07-07T00:00:00Z")?,
-            1
+        check(
+            (ingest_needs_attention(&mut store, &ingest, "2026-07-07T00:00:00Z").ok_test()) == (1),
+            "assert_eq failed",
         );
 
         // An unavailable read must NOT resolve the inbox from a failed poll.
         let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
         let ingest_down = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
-        assert_eq!(
-            ingest_needs_attention(&mut store, &ingest_down, "2026-07-07T00:01:00Z")?,
-            0
+        check(
+            (ingest_needs_attention(&mut store, &ingest_down, "2026-07-07T00:01:00Z").ok_test())
+                == (0),
+            "assert_eq failed",
         );
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
-        Ok(())
+        check(
+            (project_attention(&store.list_console_events().ok_test()).len()) == (1),
+            "assert_eq failed",
+        );
     }
 
     fn attention_event_count(events: &[ConsoleEvent], event_type: EventType) -> usize {
@@ -5267,31 +5501,44 @@ mod tests {
 
     #[test]
     fn runtime_error_conversions_keep_source_context() {
-        assert!(matches!(
-            ConsoleRuntimeError::from(ApplicationError::FactoryDrainPortFailed),
-            ConsoleRuntimeError::Application(ApplicationError::FactoryDrainPortFailed)
-        ));
-        assert!(matches!(
-            ConsoleRuntimeError::from(EventStoreError::InvalidSequence),
-            ConsoleRuntimeError::EventStore(EventStoreError::InvalidSequence)
-        ));
+        check(
+            format!(
+                "{:?}",
+                ConsoleRuntimeError::from(ApplicationError::FactoryDrainPortFailed)
+            )
+            .contains("FactoryDrainPortFailed"),
+            "assert failed",
+        );
+        check(
+            format!(
+                "{:?}",
+                ConsoleRuntimeError::from(EventStoreError::InvalidSequence)
+            )
+            .contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
     fn effect_sink_io_error_formats_debug_context() {
         let error = effect_sink_io_error(EventStoreError::InvalidSequence);
 
-        assert_eq!(error.kind(), std::io::ErrorKind::Other);
-        assert_eq!(error.to_string(), "InvalidSequence");
+        check(
+            (error.kind()) == (std::io::ErrorKind::Other),
+            "assert_eq failed",
+        );
+        check(
+            (error.to_string()) == ("InvalidSequence"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn sqlite_factory_command_store_forwards_unguarded_status_updates()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn sqlite_factory_command_store_forwards_unguarded_status_updates() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [factory_drain_effect()];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        let command_id = store.list_commands()?[0].command_id().to_owned();
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        let command_id = store.list_commands().ok_test()[0].command_id().to_owned();
 
         let result_json = Some(r#"{"event_count":0}"#);
         let updated = FactoryCommandStore::update_command_status(
@@ -5303,9 +5550,14 @@ mod tests {
             None,
         );
 
-        assert!(matches!(updated, Ok(outcome) if outcome.status() == "completed"));
-        assert_eq!(store.list_commands()?[0].status(), "completed");
-        Ok(())
+        check(
+            (updated.ok_test().status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (store.list_commands().ok_test()[0].status()) == ("completed"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
@@ -5316,21 +5568,17 @@ mod tests {
         )));
         let failure = command_status_update_runtime_result(Err(EventStoreError::InvalidSequence));
 
-        assert!(matches!(
-            success,
-            Ok(outcome)
-                if outcome.command_id() == "cmd_1" && outcome.status() == "completed"
-        ));
-        assert!(matches!(
-            failure,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
+        let success = success.ok_test();
+        check((success.command_id()) == ("cmd_1"), "assert_eq failed");
+        check((success.status()) == ("completed"), "assert_eq failed");
+        check(
+            format!("{failure:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn two_factory_executors_claim_one_pending_command_once() -> Result<(), ConsoleRuntimeError> {
+    fn two_factory_executors_claim_one_pending_command_once() {
         struct ReentrantFactoryDrainPort {
             loser_store: Rc<RefCell<SqliteEventStore>>,
             calls: Rc<std::cell::Cell<usize>>,
@@ -5348,8 +5596,11 @@ mod tests {
                     "2026-06-23T00:00:03Z",
                     &mut nested_port,
                 );
-                assert!(matches!(nested, Ok(ref outcomes) if outcomes.is_empty()));
-                assert_eq!(nested_port.observed_aggregate_ids, Vec::<String>::new());
+                check(nested.ok_test().is_empty(), "assert failed");
+                check(
+                    (nested_port.observed_aggregate_ids) == (Vec::<String>::new()),
+                    "assert_eq failed",
+                );
                 Ok(FactoryDrainPortOutcome::completed(1))
             }
         }
@@ -5359,15 +5610,16 @@ mod tests {
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test()
                 .as_nanos()
         ));
         let _ignored = fs::remove_file(&path);
-        let mut winner_store = SqliteEventStore::open(&path)?;
+        let mut winner_store = SqliteEventStore::open(&path).ok_test();
         let effects = [factory_drain_effect()];
-        persist_tui_runtime_effects(&mut winner_store, &effects, "2026-06-23T00:00:02Z")?;
-        append_ready_work_item(&mut winner_store, "2026-06-23T00:00:02Z")?;
-        let loser_store = Rc::new(RefCell::new(SqliteEventStore::open(&path)?));
+        persist_tui_runtime_effects(&mut winner_store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        append_ready_work_item(&mut winner_store, "2026-06-23T00:00:02Z");
+        let loser_store = Rc::new(RefCell::new(SqliteEventStore::open(&path).ok_test()));
         let calls = Rc::new(std::cell::Cell::new(0));
         let mut port = ReentrantFactoryDrainPort {
             loser_store,
@@ -5375,135 +5627,167 @@ mod tests {
         };
 
         let outcomes =
-            handle_pending_factory_commands(&mut winner_store, "2026-06-23T00:00:03Z", &mut port)?;
+            handle_pending_factory_commands(&mut winner_store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(calls.get(), 1);
-        assert_eq!(winner_store.list_commands()?[0].status(), "completed");
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check((calls.get()) == (1), "assert_eq failed");
+        check(
+            (winner_store.list_commands().ok_test()[0].status()) == ("completed"),
+            "assert_eq failed",
+        );
         let _ignored = fs::remove_file(&path);
-        Ok(())
     }
 
     #[test]
-    fn stale_executing_factory_command_is_failed_without_reexecution()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn stale_executing_factory_command_is_failed_without_reexecution() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [factory_drain_effect()];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        let command_id = store.list_commands()?[0].command_id().to_owned();
-        assert!(store.claim_command(&command_id, "2026-06-22T00:00:00Z")?);
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        let command_id = store.list_commands().ok_test()[0].command_id().to_owned();
+        check(
+            store
+                .claim_command(&command_id, "2026-06-22T00:00:00Z")
+                .ok_test(),
+            "assert failed",
+        );
         let mut port = RecordingFactoryDrainPort::default();
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T01:00:01Z", &mut port)?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T01:00:01Z", &mut port)
+                .ok_test();
 
-        assert!(outcomes.is_empty());
-        assert_eq!(port.observed_aggregate_ids, Vec::<String>::new());
-        assert_eq!(store.list_commands()?[0].status(), "failed");
-        Ok(())
+        check(outcomes.is_empty(), "assert failed");
+        check(
+            (port.observed_aggregate_ids) == (Vec::<String>::new()),
+            "assert_eq failed",
+        );
+        check(
+            (store.list_commands().ok_test()[0].status()) == ("failed"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_factory_commands_append_lifecycle_events_and_complete()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_commands_append_lifecycle_events_and_complete() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [factory_drain_effect()];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z");
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
-        let commands = store.list_commands()?;
-        let events = store.list_console_events()?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
+        let commands = store.list_commands().ok_test();
+        let events = store.list_console_events().ok_test();
 
-        assert_eq!(outcomes.len(), 1);
+        check((outcomes.len()) == (1), "assert_eq failed");
         // Sequence-distinguished on persist (the drain is repeatable), so the
         // handled command carries the `_0` identity, not the authored static one.
-        assert_eq!(
-            outcomes[0],
-            super::PendingCommandOutcome::new(
-                "cmd_factory_drain_requested_budget_1_parallel_1_0".to_owned(),
-                "completed".to_owned(),
-                3,
-            )
+        check(
+            (outcomes[0])
+                == (super::PendingCommandOutcome::new(
+                    "cmd_factory_drain_requested_budget_1_parallel_1_0".to_owned(),
+                    "completed".to_owned(),
+                    3,
+                )),
+            "assert_eq failed",
         );
-        assert_eq!(
-            outcomes[0].command_id(),
-            "cmd_factory_drain_requested_budget_1_parallel_1_0"
+        check(
+            (outcomes[0].command_id()) == ("cmd_factory_drain_requested_budget_1_parallel_1_0"),
+            "assert_eq failed",
         );
-        assert_eq!(outcomes[0].command_status(), "completed");
-        assert_eq!(outcomes[0].appended_event_count(), 3);
-        assert_eq!(commands[0].status(), "completed");
-        assert_eq!(
-            events
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (outcomes[0].appended_event_count()) == (3),
+            "assert_eq failed",
+        );
+        check((commands[0].status()) == ("completed"), "assert_eq failed");
+        check(
+            (events
                 .iter()
                 .map(ConsoleEvent::event_type)
-                .collect::<Vec<_>>(),
-            [
-                &EventType::WorkItemSnapshotObserved,
-                &EventType::CommandAccepted,
-                &EventType::FactoryDrainStarted,
-                &EventType::FactoryDrainCompleted
-            ]
+                .collect::<Vec<_>>())
+                == ([
+                    &EventType::WorkItemSnapshotObserved,
+                    &EventType::CommandAccepted,
+                    &EventType::FactoryDrainStarted,
+                    &EventType::FactoryDrainCompleted,
+                ]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn pending_factory_commands_record_failed_port_outcome() -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_commands_record_failed_port_outcome() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [factory_drain_effect()];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z");
         let mut port = FailedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
-        let commands = store.list_commands()?;
-        let events = store.list_console_events()?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
+        let commands = store.list_commands().ok_test();
+        let events = store.list_console_events().ok_test();
         let expected = serde_json::json!({
             "summary": "factory-safety refusal",
             "domain_error": "host-only-refused"
         })
         .to_string();
 
-        assert_eq!(outcomes[0].command_status(), "failed");
-        assert_eq!(commands[0].status(), "failed");
-        assert_eq!(commands[0].error_json(), Some(expected.as_str()));
-        assert_eq!(
-            events.last().map(ConsoleEvent::event_type),
-            Some(&EventType::FactoryDrainFailed)
+        check(
+            (outcomes[0].command_status()) == ("failed"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            events.last().map(ConsoleEvent::payload_json),
-            commands[0].error_json()
+        check((commands[0].status()) == ("failed"), "assert_eq failed");
+        check(
+            (commands[0].error_json()) == (Some(expected.as_str())),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (events.last().map(ConsoleEvent::event_type)) == (Some(&EventType::FactoryDrainFailed)),
+            "assert_eq failed",
+        );
+        check(
+            (events.last().map(ConsoleEvent::payload_json)) == (commands[0].error_json()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_factory_commands_record_human_valve_park_without_failure()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_commands_record_human_valve_park_without_failure() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [factory_drain_effect()];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
-        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z");
         let mut port = ParkedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
-        let commands = store.list_commands()?;
-        let events = store.list_console_events()?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
+        let commands = store.list_commands().ok_test();
+        let events = store.list_console_events().ok_test();
 
-        assert_eq!(outcomes[0].command_status(), "parked-awaiting-human");
-        assert_eq!(commands[0].status(), "parked-awaiting-human");
-        assert_eq!(commands[0].error_json(), None);
-        assert_eq!(
-            events.last().map(ConsoleEvent::event_type),
-            Some(&EventType::FactoryDrainAwaitingHuman)
+        check(
+            (outcomes[0].command_status()) == ("parked-awaiting-human"),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (commands[0].status()) == ("parked-awaiting-human"),
+            "assert_eq failed",
+        );
+        check(commands[0].error_json().is_none(), "assert_eq failed");
+        check(
+            (events.last().map(ConsoleEvent::event_type))
+                == (Some(&EventType::FactoryDrainAwaitingHuman)),
+            "assert_eq failed",
+        );
     }
 
     #[test]
@@ -5514,13 +5798,11 @@ mod tests {
         let outcome =
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
-        assert_eq!(store.appended_event_count, 3);
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+        check((store.appended_event_count) == (3), "assert_eq failed");
     }
 
     #[test]
@@ -5531,12 +5813,10 @@ mod tests {
         let outcome =
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -5547,11 +5827,10 @@ mod tests {
         let outcome =
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id))
-                if command_id == "cmd_missing_aggregate"
-        ));
+        check(
+            format!("{outcome:?}").contains("cmd_missing_aggregate"),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -5562,13 +5841,11 @@ mod tests {
         let outcome =
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::FactoryDrainPortFailed
-            ))
-        ));
-        assert_eq!(store.appended_event_count, 0);
+        check(
+            format!("{outcome:?}").contains("FactoryDrainPortFailed"),
+            "assert failed",
+        );
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
@@ -5579,39 +5856,36 @@ mod tests {
         let outcome =
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn scripted_factory_command_store_supports_successful_handling()
-    -> Result<(), ConsoleRuntimeError> {
+    fn scripted_factory_command_store_supports_successful_handling() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::Completes);
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
 
-        assert_eq!(
-            outcomes,
-            vec![PendingCommandOutcome::new(
-                "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
-                "completed".to_owned(),
-                3,
-            )]
+        check(
+            (outcomes)
+                == (vec![PendingCommandOutcome::new(
+                    "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+                    "completed".to_owned(),
+                    3,
+                )]),
+            "assert_eq failed",
         );
-        assert_eq!(store.appended_event_count, 3);
-        Ok(())
+        check((store.appended_event_count) == (3), "assert_eq failed");
     }
 
     #[test]
-    fn pending_factory_command_handler_skips_non_factory_or_non_pending()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_command_handler_skips_non_factory_or_non_pending() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
             CommandType::FactoryDrainRequested,
@@ -5619,7 +5893,7 @@ mod tests {
             "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
             "operator".to_owned(),
         ))];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
         // The persisted id is sequence-distinguished (`_0`), so drive the status
         // update against THAT id rather than the authored static one.
         let update = store.update_command_status(
@@ -5629,21 +5903,23 @@ mod tests {
             Some("{}"),
             None,
         );
-        assert!(update.is_ok());
+        check(update.is_ok(), "assert failed");
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(store.list_console_events()?, []);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check(
+            store.list_console_events().ok_test().is_empty(),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_factory_dispatch_item_command_records_not_wired() -> Result<(), ConsoleRuntimeError>
-    {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_dispatch_item_command_records_not_wired() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
             CommandType::FactoryDispatchItemRequested,
@@ -5651,38 +5927,39 @@ mod tests {
             "wi-1:factory.dispatch_item_requested".to_owned(),
             "operator".to_owned(),
         ))];
-        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
 
-        assert_eq!(
-            outcomes,
-            vec![PendingCommandOutcome::new(
-                "cmd_factory_dispatch_item_requested_wi_1_0".to_owned(),
-                "not_wired".to_owned(),
-                2,
-            )]
+        check(
+            (outcomes)
+                == (vec![PendingCommandOutcome::new(
+                    "cmd_factory_dispatch_item_requested_wi_1_0".to_owned(),
+                    "not_wired".to_owned(),
+                    2,
+                )]),
+            "assert_eq failed",
         );
-        let events = store.list_console_events()?;
-        assert_eq!(
-            events
+        let events = store.list_console_events().ok_test();
+        check(
+            (events
                 .iter()
                 .map(ConsoleEvent::event_type)
-                .collect::<Vec<_>>(),
-            vec![
-                &EventType::CommandAccepted,
-                &EventType::FactoryDispatchItemNotWired,
-            ]
+                .collect::<Vec<_>>())
+                == (vec![
+                    &EventType::CommandAccepted,
+                    &EventType::FactoryDispatchItemNotWired,
+                ]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn pending_factory_dispatch_item_command_can_complete_through_wired_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_dispatch_item_command_can_complete_through_wired_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
             CommandType::FactoryDispatchItemRequested,
@@ -5690,7 +5967,10 @@ mod tests {
             "wi-1:factory.dispatch_item_requested".to_owned(),
             "operator".to_owned(),
         ))];
-        assert!(persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").is_ok());
+        check(
+            persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").is_ok(),
+            "assert failed",
+        );
         let mut drain_port = SimulatedFactoryDrainPort;
         let mut dispatch_item_port = CompletingFactoryDispatchItemPort::default();
 
@@ -5701,30 +5981,38 @@ mod tests {
             &mut dispatch_item_port,
         );
 
-        assert!(outcomes.is_ok());
+        check(outcomes.is_ok(), "assert failed");
         let outcomes = outcomes.unwrap_or_default();
-        assert_ne!(outcomes[0].command_status(), "not_wired");
-        assert_eq!(outcomes[0].command_status(), "completed");
-        assert_eq!(dispatch_item_port.observed_work_item_ids, ["wi-1"]);
+        check(
+            (outcomes[0].command_status()) != ("not_wired"),
+            "assert_ne failed",
+        );
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (dispatch_item_port.observed_work_item_ids) == (["wi-1"]),
+            "assert_eq failed",
+        );
         let events = store.list_console_events().unwrap_or_default();
-        assert_eq!(
-            events
+        check(
+            (events
                 .iter()
                 .map(ConsoleEvent::event_type)
-                .collect::<Vec<_>>(),
-            vec![
-                &EventType::CommandAccepted,
-                &EventType::FactoryDispatchItemStarted,
-                &EventType::FactoryDispatchItemCompleted,
-            ]
+                .collect::<Vec<_>>())
+                == (vec![
+                    &EventType::CommandAccepted,
+                    &EventType::FactoryDispatchItemStarted,
+                    &EventType::FactoryDispatchItemCompleted,
+                ]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn pending_factory_dispatch_item_command_propagates_port_errors() -> Result<(), EventStoreError>
-    {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_factory_dispatch_item_command_propagates_port_errors() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
             CommandType::FactoryDispatchItemRequested,
@@ -5733,7 +6021,8 @@ mod tests {
             "operator".to_owned(),
         ))];
         persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")
-            .map_err(|_error| EventStoreError::InvalidSequence)?;
+            .map_err(|_error| EventStoreError::InvalidSequence)
+            .ok_test();
         let mut drain_port = SimulatedFactoryDrainPort;
         let mut dispatch_item_port = ErroringFactoryDispatchItemPort;
 
@@ -5744,18 +6033,15 @@ mod tests {
             &mut dispatch_item_port,
         );
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::FactoryDispatchItemPortFailed
-            ))
-        ));
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("FactoryDispatchItemPortFailed"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn serve_report_with_dispatch_port_propagates_dispatch_errors() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn serve_report_with_dispatch_port_propagates_dispatch_errors() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
             CommandType::FactoryDispatchItemRequested,
@@ -5764,7 +6050,8 @@ mod tests {
             "operator".to_owned(),
         ))];
         persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")
-            .map_err(|_error| EventStoreError::InvalidSequence)?;
+            .map_err(|_error| EventStoreError::InvalidSequence)
+            .ok_test();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut factory_port = SimulatedFactoryDrainPort;
@@ -5784,19 +6071,15 @@ mod tests {
             &needs_attention,
         );
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::FactoryDispatchItemPortFailed
-            ))
-        ));
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("FactoryDispatchItemPortFailed"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn per_item_dispatch_request_event_uses_dispatch_item_event_type()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn per_item_dispatch_request_event_uses_dispatch_item_event_type() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
             "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
             CommandType::FactoryDispatchItemRequested,
@@ -5804,33 +6087,38 @@ mod tests {
             "wi-1:factory.dispatch_item_requested".to_owned(),
             "operator".to_owned(),
         ))];
-        let outcomes = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+        let outcomes =
+            persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").ok_test();
 
-        append_factory_drain_requested_events(&mut store, &outcomes, "2026-06-23T00:00:02Z")?;
+        append_factory_drain_requested_events(&mut store, &outcomes, "2026-06-23T00:00:02Z")
+            .ok_test();
 
-        let events = store.list_console_events()?;
-        assert_eq!(
-            events
+        let events = store.list_console_events().ok_test();
+        check(
+            (events
                 .iter()
                 .map(ConsoleEvent::event_type)
-                .collect::<Vec<_>>(),
-            vec![&EventType::FactoryDispatchItemRequested]
+                .collect::<Vec<_>>())
+                == (vec![&EventType::FactoryDispatchItemRequested]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn pending_factory_command_handler_ignores_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
+    fn pending_factory_command_handler_ignores_a_lost_claim() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::FactoryClaimMiss);
         let mut port = RecordingFactoryDrainPort::default();
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(port.observed_aggregate_ids, Vec::<String>::new());
-        assert_eq!(store.appended_event_count, 0);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check(
+            (port.observed_aggregate_ids) == (Vec::<String>::new()),
+            "assert_eq failed",
+        );
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
@@ -5841,40 +6129,39 @@ mod tests {
         let outcome =
             handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
-        assert_eq!(port.observed_aggregate_ids, Vec::<String>::new());
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+        check(
+            (port.observed_aggregate_ids) == (Vec::<String>::new()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_factory_commands_skip_stale_recovery_for_unparseable_time()
-    -> Result<(), ConsoleRuntimeError> {
+    fn pending_factory_commands_skip_stale_recovery_for_unparseable_time() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::NonFactoryPending);
         let mut port = RecordingFactoryDrainPort::default();
 
-        let outcomes = handle_pending_factory_commands(&mut store, "not-rfc3339", &mut port)?;
+        let outcomes =
+            handle_pending_factory_commands(&mut store, "not-rfc3339", &mut port).ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(store.appended_event_count, 0);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
-    fn pending_factory_command_handler_skips_pending_non_factory_commands()
-    -> Result<(), ConsoleRuntimeError> {
+    fn pending_factory_command_handler_skips_pending_non_factory_commands() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::NonFactoryPending);
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
-            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)?;
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(store.appended_event_count, 0);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
@@ -5889,10 +6176,10 @@ mod tests {
             "pending".to_owned(),
         );
 
-        assert!(matches!(
-            factory_command_from_stored(&stored_command),
-            Ok(None)
-        ));
+        check(
+            format!("{:?}", factory_command_from_stored(&stored_command)).contains("Ok(None)"),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -5909,38 +6196,40 @@ mod tests {
 
         let result = factory_command_from_stored(&stored_command);
 
-        assert!(matches!(
-            result,
-            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_1"
-        ));
+        check(format!("{result:?}").contains("cmd_1"), "assert failed");
     }
 
     #[test]
-    fn pending_work_item_commands_ignore_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
+    fn pending_work_item_commands_ignore_a_lost_claim() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemClaimMiss);
         let mut port = SimulatedWorkItemActionPort::default();
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(port.observed_action_ids, Vec::<String>::new());
-        assert_eq!(store.appended_event_count, 0);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check(
+            (port.observed_action_ids) == (Vec::<String>::new()),
+            "assert_eq failed",
+        );
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
-    fn pending_config_commands_ignore_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
+    fn pending_config_commands_ignore_a_lost_claim() {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigClaimMiss);
         let mut port = SimulatedWorkItemActionPort::default();
 
         let outcomes =
-            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port).ok_test();
 
-        assert_eq!(outcomes, []);
-        assert_eq!(port.observed_action_ids, Vec::<String>::new());
-        assert_eq!(store.appended_event_count, 0);
-        Ok(())
+        check(outcomes.is_empty(), "assert_eq failed");
+        check(
+            (port.observed_action_ids) == (Vec::<String>::new()),
+            "assert_eq failed",
+        );
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
@@ -5955,10 +6244,10 @@ mod tests {
             "pending".to_owned(),
         );
 
-        assert!(matches!(
-            work_item_command_from_stored(&stored_command),
-            Ok(None)
-        ));
+        let result =
+            work_item_command_from_stored(&stored_command).map(|command| command.is_none());
+
+        check(format!("{result:?}").contains("Ok(true)"), "assert failed");
     }
 
     #[test]
@@ -5973,12 +6262,12 @@ mod tests {
             "pending".to_owned(),
         );
 
-        let result = work_item_command_from_stored(&stored_command);
+        let result = work_item_command_from_stored(&stored_command).map(|_command| ());
 
-        assert!(matches!(
-            result,
-            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_approve"
-        ));
+        check(
+            format!("{result:?}").contains("cmd_approve"),
+            "assert failed",
+        );
     }
 
     fn config_command_append(payload_json: &str) -> CommandAppend {
@@ -5998,78 +6287,81 @@ mod tests {
     }
 
     #[test]
-    fn pending_config_dispatcher_setting_set_effects_through_port_and_is_idempotent()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_config_dispatcher_setting_set_effects_through_port_and_is_idempotent() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         store.append_command(&config_command_append(
             r#"{"repo":"livespec-console-beads-fabro","setting":"auto_approve_ready","value":true}"#,
-        ))?;
+        )).ok_test();
         let mut port = SimulatedWorkItemActionPort::default();
 
         let outcomes =
-            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port).ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
-        // The write was effected through the orchestrator's `set-config` action.
-        assert_eq!(
-            port.observed_action_ids,
-            ["set-config:auto_approve_ready:true"]
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
         );
-        let commands = store.list_commands()?;
-        assert_eq!(commands[0].command_type(), "config.dispatcher_setting_set");
-        assert_eq!(commands[0].status(), "completed");
+        // The write was effected through the orchestrator's `set-config` action.
+        check(
+            (port.observed_action_ids) == (["set-config:auto_approve_ready:true"]),
+            "assert_eq failed",
+        );
+        let commands = store.list_commands().ok_test();
+        check(
+            (commands[0].command_type()) == ("config.dispatcher_setting_set"),
+            "assert_eq failed",
+        );
+        check((commands[0].status()) == ("completed"), "assert_eq failed");
         // The change audit event was persisted.
-        let events = store.list_console_events()?;
-        assert!(
+        let events = store.list_console_events().ok_test();
+        check(
             events
                 .iter()
-                .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged)
+                .any(|event| event.event_type() == &EventType::ConfigDispatcherSettingChanged),
+            "assert failed",
         );
 
         // A second pass skips the already-completed command: no re-write.
-        let repeat = handle_pending_config_commands(&mut store, "2026-07-11T00:00:02Z", &mut port)?;
-        assert!(repeat.is_empty());
-        assert_eq!(
-            port.observed_action_ids,
-            ["set-config:auto_approve_ready:true"]
+        let repeat =
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:02Z", &mut port).ok_test();
+        check(repeat.is_empty(), "assert failed");
+        check(
+            (port.observed_action_ids) == (["set-config:auto_approve_ready:true"]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn pending_config_commands_ignore_non_config_commands() -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&approve_command_append())?;
+    fn pending_config_commands_ignore_non_config_commands() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store.append_command(&approve_command_append()).ok_test();
         let mut port = SimulatedWorkItemActionPort::default();
 
         let outcomes =
-            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port)?;
+            handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port).ok_test();
 
         // The non-config command is skipped; the settings port is never called.
-        assert!(outcomes.is_empty());
-        assert!(port.observed_action_ids.is_empty());
-        Ok(())
+        check(outcomes.is_empty(), "assert failed");
+        check(port.observed_action_ids.is_empty(), "assert failed");
     }
 
     #[test]
-    fn pending_config_commands_surface_a_malformed_payload_as_application_error()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&config_command_append("not json"))?;
+    fn pending_config_commands_surface_a_malformed_payload_as_application_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&config_command_append("not json"))
+            .ok_test();
         let mut port = SimulatedWorkItemActionPort::default();
 
         let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidDispatcherSettingPayload
-            ))
-        ));
+        check(
+            format!("{outcome:?}").contains("InvalidDispatcherSettingPayload"),
+            "assert failed",
+        );
         // The malformed command never reached the settings port.
-        assert!(port.observed_action_ids.is_empty());
-        Ok(())
+        check(port.observed_action_ids.is_empty(), "assert failed");
     }
 
     #[test]
@@ -6086,10 +6378,10 @@ mod tests {
 
         let result = config_command_from_stored(&stored_command);
 
-        assert!(matches!(
-            result,
-            Err(ConsoleRuntimeError::MissingCommandAggregate(command_id)) if command_id == "cmd_setting"
-        ));
+        check(
+            format!("{result:?}").contains("cmd_setting"),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -6099,12 +6391,10 @@ mod tests {
 
         let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     fn approve_command_append() -> CommandAppend {
@@ -6188,138 +6478,167 @@ mod tests {
     }
 
     #[test]
-    fn pending_work_item_accept_dispatches_through_port() -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&accept_command_append())?;
+    fn pending_work_item_accept_dispatches_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store.append_command(&accept_command_append()).ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
-        assert_eq!(port.observed_action_ids, ["accept:wi-1"]);
-        Ok(())
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (port.observed_action_ids) == (["accept:wi-1"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_reject_routes_mode_from_payload_through_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&reject_command_append(r#"{"mode":"regroom"}"#))?;
+    fn pending_work_item_reject_routes_mode_from_payload_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&reject_command_append(r#"{"mode":"regroom"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
         // The mode extracted from the stored payload lands in the action-id.
-        assert_eq!(port.observed_action_ids, ["reject:wi-1:regroom"]);
-        Ok(())
+        check(
+            (port.observed_action_ids) == (["reject:wi-1:regroom"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_reject_surfaces_invalid_mode_as_application_error()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&reject_command_append(r#"{"mode":"bogus"}"#))?;
+    fn pending_work_item_reject_surfaces_invalid_mode_as_application_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&reject_command_append(r#"{"mode":"bogus"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcome =
             handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidRejectMode
-            ))
-        ));
-        assert_eq!(port.observed_action_ids, [] as [String; 0]);
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("InvalidRejectMode"),
+            "assert failed",
+        );
+        check(
+            (port.observed_action_ids) == ([] as [String; 0]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_set_admission_routes_policy_from_payload_through_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&set_admission_command_append(r#"{"policy":"auto"}"#))?;
+    fn pending_work_item_set_admission_routes_policy_from_payload_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&set_admission_command_append(r#"{"policy":"auto"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
         // The policy extracted from the stored payload lands in the action-id.
-        assert_eq!(port.observed_action_ids, ["set-admission:wi-1:auto"]);
-        Ok(())
+        check(
+            (port.observed_action_ids) == (["set-admission:wi-1:auto"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_set_admission_surfaces_invalid_policy_as_application_error()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&set_admission_command_append(r#"{"policy":"bogus"}"#))?;
+    fn pending_work_item_set_admission_surfaces_invalid_policy_as_application_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&set_admission_command_append(r#"{"policy":"bogus"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcome =
             handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidAdmissionPolicy
-            ))
-        ));
-        assert_eq!(port.observed_action_ids, [] as [String; 0]);
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("InvalidAdmissionPolicy"),
+            "assert failed",
+        );
+        check(
+            (port.observed_action_ids) == ([] as [String; 0]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_set_acceptance_routes_policy_from_payload_through_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&set_acceptance_command_append(r#"{"policy":"ai-only"}"#))?;
+    fn pending_work_item_set_acceptance_routes_policy_from_payload_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&set_acceptance_command_append(r#"{"policy":"ai-only"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
         // The policy extracted from the stored payload lands in the action-id.
-        assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:ai-only"]);
-        Ok(())
+        check(
+            (port.observed_action_ids) == (["set-acceptance:wi-1:ai-only"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn control_commands_for_other_items_complete_while_factory_drain_is_executing()
-    -> Result<(), ConsoleRuntimeError> {
+    fn control_commands_for_other_items_complete_while_factory_drain_is_executing() {
         let path = std::env::temp_dir().join(format!(
             "livespec-console-overlap-{}-{}.sqlite",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test()
                 .as_nanos()
         ));
         let _ignored = fs::remove_file(&path);
-        let mut setup_store = SqliteEventStore::open(&path)?;
-        seed_running_drain_overlap_commands(&mut setup_store)?;
+        let mut setup_store = SqliteEventStore::open(&path).ok_test();
+        seed_running_drain_overlap_commands(&mut setup_store);
         drop(setup_store);
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let worker_path = path.clone();
         let factory_worker = std::thread::spawn(move || {
-            let mut store = SqliteEventStore::open(&worker_path)?;
+            let mut store = SqliteEventStore::open(&worker_path).ok_test();
             let mut port = BlockingFactoryDrainPort {
                 started_tx,
                 release_rx,
@@ -6328,46 +6647,54 @@ mod tests {
         });
         started_rx
             .recv()
-            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+            .ok_test();
 
-        let mut control_store = SqliteEventStore::open(&path)?;
+        let mut control_store = SqliteEventStore::open(&path).ok_test();
         let mut control_port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
         let control_outcomes =
-            handle_control_commands_for_test(&mut control_store, &mut control_port)?;
+            handle_control_commands_for_test(&mut control_store, &mut control_port).ok_test();
 
-        let commands_while_drain_runs = control_store.list_commands()?;
-        assert_eq!(control_outcomes.len(), 1);
-        assert_eq!(control_outcomes[0].command_status(), "completed");
-        assert_eq!(
-            control_port.observed_action_ids,
-            ["set-acceptance:wi-other:ai-then-human"]
+        let commands_while_drain_runs = control_store.list_commands().ok_test();
+        check((control_outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (control_outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            commands_while_drain_runs
+        check(
+            (control_port.observed_action_ids) == (["set-acceptance:wi-other:ai-then-human"]),
+            "assert_eq failed",
+        );
+        check(
+            (commands_while_drain_runs
                 .iter()
                 .find(|command| command.command_id() == "cmd_drain")
-                .map(StoredCommand::status),
-            Some("executing")
+                .map(StoredCommand::status))
+                == (Some("executing")),
+            "assert_eq failed",
         );
-        assert_eq!(
-            commands_while_drain_runs
+        check(
+            (commands_while_drain_runs
                 .iter()
                 .find(|command| command.command_id() == "cmd_set_acceptance_other")
-                .map(StoredCommand::status),
-            Some("completed")
+                .map(StoredCommand::status))
+                == (Some("completed")),
+            "assert_eq failed",
         );
 
         release_tx
             .send(())
-            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+            .ok_test();
         let factory_outcomes = factory_worker
             .join()
-            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)??;
-        assert_eq!(factory_outcomes.len(), 1);
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+            .ok_test()
+            .ok_test();
+        check((factory_outcomes.len()) == (1), "assert_eq failed");
 
         let _ignored = fs::remove_file(&path);
-        Ok(())
     }
 
     struct BlockingFactoryDrainPort {
@@ -6382,45 +6709,48 @@ mod tests {
         ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
             self.started_tx
                 .send(())
-                .map_err(|_error| ApplicationError::FactoryDrainPortFailed)?;
+                .map_err(|_error| ApplicationError::FactoryDrainPortFailed)
+                .ok_test();
             self.release_rx
                 .recv()
-                .map_err(|_error| ApplicationError::FactoryDrainPortFailed)?;
+                .map_err(|_error| ApplicationError::FactoryDrainPortFailed)
+                .ok_test();
             Ok(FactoryDrainPortOutcome::completed(1))
         }
     }
 
-    fn seed_running_drain_overlap_commands(
-        store: &mut SqliteEventStore,
-    ) -> Result<(), ConsoleRuntimeError> {
-        store.append_command(&CommandAppend::new(
-            CommandEnvelope::new(
-                "cmd_drain".to_owned(),
-                CommandType::FactoryDrainRequested,
-                "fleet:livespec".to_owned(),
-                "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
-                "operator".to_owned(),
-            ),
-            "2026-08-21T00:00:00Z".to_owned(),
-            Some("fleet:livespec".to_owned()),
-            "corr_cmd_drain".to_owned(),
-            "{}".to_owned(),
-        ))?;
-        store.append_command(&CommandAppend::new(
-            CommandEnvelope::new(
-                "cmd_set_acceptance_other".to_owned(),
-                CommandType::WorkItemSetAcceptanceRequested,
-                "wi-other".to_owned(),
-                "wi-other:work_item.set_acceptance_requested".to_owned(),
-                "operator".to_owned(),
-            ),
-            "2026-08-21T00:00:01Z".to_owned(),
-            Some("wi-other".to_owned()),
-            "corr_cmd_set_acceptance_other".to_owned(),
-            r#"{"policy":"ai-then-human"}"#.to_owned(),
-        ))?;
-        append_ready_work_item(store, "2026-08-21T00:00:01Z")?;
-        Ok(())
+    fn seed_running_drain_overlap_commands(store: &mut SqliteEventStore) {
+        store
+            .append_command(&CommandAppend::new(
+                CommandEnvelope::new(
+                    "cmd_drain".to_owned(),
+                    CommandType::FactoryDrainRequested,
+                    "fleet:livespec".to_owned(),
+                    "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+                    "operator".to_owned(),
+                ),
+                "2026-08-21T00:00:00Z".to_owned(),
+                Some("fleet:livespec".to_owned()),
+                "corr_cmd_drain".to_owned(),
+                "{}".to_owned(),
+            ))
+            .ok_test();
+        store
+            .append_command(&CommandAppend::new(
+                CommandEnvelope::new(
+                    "cmd_set_acceptance_other".to_owned(),
+                    CommandType::WorkItemSetAcceptanceRequested,
+                    "wi-other".to_owned(),
+                    "wi-other:work_item.set_acceptance_requested".to_owned(),
+                    "operator".to_owned(),
+                ),
+                "2026-08-21T00:00:01Z".to_owned(),
+                Some("wi-other".to_owned()),
+                "corr_cmd_set_acceptance_other".to_owned(),
+                r#"{"policy":"ai-then-human"}"#.to_owned(),
+            ))
+            .ok_test();
+        append_ready_work_item(store, "2026-08-21T00:00:01Z");
     }
 
     fn handle_control_commands_for_test(
@@ -6431,52 +6761,57 @@ mod tests {
     }
 
     #[test]
-    fn control_commands_do_not_overtake_older_same_item_factory_commands()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&CommandAppend::new(
-            CommandEnvelope::new(
-                "cmd_dispatch_item".to_owned(),
-                CommandType::FactoryDispatchItemRequested,
-                "wi-1".to_owned(),
-                "wi-1:factory.dispatch_item_requested".to_owned(),
-                "operator".to_owned(),
-            ),
-            "2026-08-21T00:00:00Z".to_owned(),
-            Some("wi-1".to_owned()),
-            "corr_cmd_dispatch_item".to_owned(),
-            "{}".to_owned(),
-        ))?;
-        store.append_command(&CommandAppend::new(
-            CommandEnvelope::new(
-                "cmd_set_acceptance".to_owned(),
-                CommandType::WorkItemSetAcceptanceRequested,
-                "wi-1".to_owned(),
-                "wi-1:work_item.set_acceptance_requested".to_owned(),
-                "operator".to_owned(),
-            ),
-            "2026-08-21T00:00:01Z".to_owned(),
-            Some("wi-1".to_owned()),
-            "corr_cmd_set_acceptance".to_owned(),
-            r#"{"policy":"ai-then-human"}"#.to_owned(),
-        ))?;
+    fn control_commands_do_not_overtake_older_same_item_factory_commands() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&CommandAppend::new(
+                CommandEnvelope::new(
+                    "cmd_dispatch_item".to_owned(),
+                    CommandType::FactoryDispatchItemRequested,
+                    "wi-1".to_owned(),
+                    "wi-1:factory.dispatch_item_requested".to_owned(),
+                    "operator".to_owned(),
+                ),
+                "2026-08-21T00:00:00Z".to_owned(),
+                Some("wi-1".to_owned()),
+                "corr_cmd_dispatch_item".to_owned(),
+                "{}".to_owned(),
+            ))
+            .ok_test();
+        store
+            .append_command(&CommandAppend::new(
+                CommandEnvelope::new(
+                    "cmd_set_acceptance".to_owned(),
+                    CommandType::WorkItemSetAcceptanceRequested,
+                    "wi-1".to_owned(),
+                    "wi-1:work_item.set_acceptance_requested".to_owned(),
+                    "operator".to_owned(),
+                ),
+                "2026-08-21T00:00:01Z".to_owned(),
+                Some("wi-1".to_owned()),
+                "corr_cmd_set_acceptance".to_owned(),
+                r#"{"policy":"ai-then-human"}"#.to_owned(),
+            ))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_control_commands(&mut store, "2026-08-21T00:00:01Z", &mut port)?;
+            handle_pending_control_commands(&mut store, "2026-08-21T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert!(outcomes.is_empty());
-        assert!(port.observed_action_ids.is_empty());
-        assert_eq!(
-            store
-                .list_commands()?
+        check(outcomes.is_empty(), "assert failed");
+        check(port.observed_action_ids.is_empty(), "assert failed");
+        check(
+            (store
+                .list_commands()
+                .ok_test()
                 .iter()
                 .map(StoredCommand::status)
-                .collect::<Vec<_>>(),
-            ["pending", "pending"]
+                .collect::<Vec<_>>())
+                == (["pending", "pending"]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
@@ -6518,39 +6853,46 @@ mod tests {
             "pending".to_owned(),
         );
 
-        assert!(older_factory_command_blocks_control_command(
-            &same_item_control,
-            std::slice::from_ref(&older_factory)
-        ));
-        assert!(!older_factory_command_blocks_control_command(
-            &other_item_control,
-            std::slice::from_ref(&older_factory)
-        ));
-        assert!(!older_factory_command_blocks_control_command(
-            &no_aggregate_control,
-            &[older_factory]
-        ));
+        check(
+            older_factory_command_blocks_control_command(
+                &same_item_control,
+                std::slice::from_ref(&older_factory),
+            ),
+            "assert failed",
+        );
+        check(
+            !older_factory_command_blocks_control_command(
+                &other_item_control,
+                std::slice::from_ref(&older_factory),
+            ),
+            "assert failed",
+        );
+        check(
+            !older_factory_command_blocks_control_command(&no_aggregate_control, &[older_factory]),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_set_acceptance_surfaces_invalid_policy_as_application_error()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&set_acceptance_command_append(r#"{"policy":"bogus"}"#))?;
+    fn pending_work_item_set_acceptance_surfaces_invalid_policy_as_application_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&set_acceptance_command_append(r#"{"policy":"bogus"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcome =
             handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidAcceptancePolicy
-            ))
-        ));
-        assert_eq!(port.observed_action_ids, [] as [String; 0]);
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("InvalidAcceptancePolicy"),
+            "assert failed",
+        );
+        check(
+            (port.observed_action_ids) == ([] as [String; 0]),
+            "assert_eq failed",
+        );
     }
 
     fn resolve_blocked_command_append(payload_json: &str) -> CommandAppend {
@@ -6570,46 +6912,54 @@ mod tests {
     }
 
     #[test]
-    fn pending_work_item_resolve_blocked_routes_target_from_payload_through_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&resolve_blocked_command_append(
-            r#"{"target_status":"ready"}"#,
-        ))?;
+    fn pending_work_item_resolve_blocked_routes_target_from_payload_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&resolve_blocked_command_append(
+                r#"{"target_status":"ready"}"#,
+            ))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
         // The target extracted from the stored payload lands in the action-id.
-        assert_eq!(port.observed_action_ids, ["resolve-blocked:wi-1:ready"]);
-        Ok(())
+        check(
+            (port.observed_action_ids) == (["resolve-blocked:wi-1:ready"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_resolve_blocked_surfaces_invalid_target_as_application_error()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&resolve_blocked_command_append(
-            r#"{"target_status":"active"}"#,
-        ))?;
+    fn pending_work_item_resolve_blocked_surfaces_invalid_target_as_application_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&resolve_blocked_command_append(
+                r#"{"target_status":"active"}"#,
+            ))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcome =
             handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidResolveBlockedTarget
-            ))
-        ));
-        assert_eq!(port.observed_action_ids, [] as [String; 0]);
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("InvalidResolveBlockedTarget"),
+            "assert failed",
+        );
+        check(
+            (port.observed_action_ids) == ([] as [String; 0]),
+            "assert_eq failed",
+        );
     }
 
     fn move_command_append(payload_json: &str) -> CommandAppend {
@@ -6629,21 +6979,28 @@ mod tests {
     }
 
     #[test]
-    fn pending_work_item_move_routes_target_from_payload_through_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&move_command_append(r#"{"target_status":"blocked"}"#))?;
+    fn pending_work_item_move_routes_target_from_payload_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&move_command_append(r#"{"target_status":"blocked"}"#))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
         // The target extracted from the stored payload lands in the move action-id.
-        assert_eq!(port.observed_action_ids, ["move:wi-1:blocked"]);
-        Ok(())
+        check(
+            (port.observed_action_ids) == (["move:wi-1:blocked"]),
+            "assert_eq failed",
+        );
     }
 
     fn set_override_command_append(payload_json: &str) -> CommandAppend {
@@ -6663,125 +7020,152 @@ mod tests {
     }
 
     #[test]
-    fn pending_work_item_set_dispatcher_override_routes_setting_and_value_through_port()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn pending_work_item_set_dispatcher_override_routes_setting_and_value_through_port() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         // A null value clears the per-item override back to inherit-global.
-        store.append_command(&set_override_command_append(
-            r#"{"setting":"review_fix_cap","value":null}"#,
-        ))?;
+        store
+            .append_command(&set_override_command_append(
+                r#"{"setting":"review_fix_cap","value":null}"#,
+            ))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
-        assert_eq!(port.observed_action_ids, ["set-review-fix-cap:wi-1:clear"]);
-        Ok(())
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (port.observed_action_ids) == (["set-review-fix-cap:wi-1:clear"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_set_dispatcher_override_surfaces_bad_setting_as_application_error()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&set_override_command_append(
-            r#"{"setting":"wip_cap","value":5}"#,
-        ))?;
+    fn pending_work_item_set_dispatcher_override_surfaces_bad_setting_as_application_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .append_command(&set_override_command_append(
+                r#"{"setting":"wip_cap","value":5}"#,
+            ))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcome =
             handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::Application(
-                ApplicationError::InvalidDispatcherOverrideSetting
-            ))
-        ));
-        assert_eq!(port.observed_action_ids, [] as [String; 0]);
-        Ok(())
+        check(
+            format!("{outcome:?}").contains("InvalidDispatcherOverrideSetting"),
+            "assert failed",
+        );
+        check(
+            (port.observed_action_ids) == ([] as [String; 0]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn pending_work_item_approve_dispatches_through_port_and_skips_others()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&approve_command_append())?;
+    fn pending_work_item_approve_dispatches_through_port_and_skips_others() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store.append_command(&approve_command_append()).ok_test();
         // A pending factory command must be skipped by the work-item handler.
-        store.append_command(&CommandAppend::new(
-            CommandEnvelope::new(
-                "cmd_drain".to_owned(),
-                CommandType::FactoryDrainRequested,
-                "fleet:livespec".to_owned(),
-                "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
-                "operator".to_owned(),
-            ),
-            "2026-07-10T00:00:00Z".to_owned(),
-            Some("fleet:livespec".to_owned()),
-            "corr_cmd_drain".to_owned(),
-            "{}".to_owned(),
-        ))?;
+        store
+            .append_command(&CommandAppend::new(
+                CommandEnvelope::new(
+                    "cmd_drain".to_owned(),
+                    CommandType::FactoryDrainRequested,
+                    "fleet:livespec".to_owned(),
+                    "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+                    "operator".to_owned(),
+                ),
+                "2026-07-10T00:00:00Z".to_owned(),
+                Some("fleet:livespec".to_owned()),
+                "corr_cmd_drain".to_owned(),
+                "{}".to_owned(),
+            ))
+            .ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].command_status(), "completed");
-        assert_eq!(outcomes[0].appended_event_count(), 3);
-        assert_eq!(port.observed_action_ids, ["approve:wi-1"]);
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (outcomes[0].command_status()) == ("completed"),
+            "assert_eq failed",
+        );
+        check(
+            (outcomes[0].appended_event_count()) == (3),
+            "assert_eq failed",
+        );
+        check(
+            (port.observed_action_ids) == (["approve:wi-1"]),
+            "assert_eq failed",
+        );
         // The skipped factory command produces no events, so the store carries
         // exactly the shared work_item outcome family for the approve.
-        let events = store.list_console_events()?;
-        assert_eq!(
-            events
+        let events = store.list_console_events().ok_test();
+        check(
+            (events
                 .iter()
                 .map(ConsoleEvent::event_type)
-                .collect::<Vec<_>>(),
-            [
-                &EventType::CommandAccepted,
-                &EventType::WorkItemActionStarted,
-                &EventType::WorkItemActionCompleted,
-            ]
+                .collect::<Vec<_>>())
+                == ([
+                    &EventType::CommandAccepted,
+                    &EventType::WorkItemActionStarted,
+                    &EventType::WorkItemActionCompleted,
+                ]),
+            "assert_eq failed",
         );
 
         // Second pass: the approve command is now non-pending and skipped, and
         // the factory command is still not a work-item command, so nothing runs.
         let second =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:02Z", &mut port)?;
-        assert!(second.is_empty());
-        Ok(())
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:02Z", &mut port)
+                .ok_test();
+        check(second.is_empty(), "assert failed");
     }
 
     #[test]
-    fn pending_work_item_approve_records_not_wired_without_fabricating_start()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.append_command(&approve_command_append())?;
+    fn pending_work_item_approve_records_not_wired_without_fabricating_start() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store.append_command(&approve_command_append()).ok_test();
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::not_wired());
 
         let outcomes =
-            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)?;
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port)
+                .ok_test();
 
-        assert_eq!(outcomes[0].command_status(), "not_wired");
-        assert_eq!(store.list_commands()?[0].status(), "not_wired");
-        assert_eq!(
-            store
-                .list_console_events()?
+        check(
+            (outcomes[0].command_status()) == ("not_wired"),
+            "assert_eq failed",
+        );
+        check(
+            (store.list_commands().ok_test()[0].status()) == ("not_wired"),
+            "assert_eq failed",
+        );
+        check(
+            (store
+                .list_console_events()
+                .ok_test()
                 .iter()
                 .map(ConsoleEvent::event_type)
-                .collect::<Vec<_>>(),
-            [
-                &EventType::CommandAccepted,
-                &EventType::WorkItemActionNotWired
-            ]
+                .collect::<Vec<_>>())
+                == ([
+                    &EventType::CommandAccepted,
+                    &EventType::WorkItemActionNotWired,
+                ]),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
@@ -6793,12 +7177,10 @@ mod tests {
         let outcome =
             handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:03Z", &mut port);
 
-        assert!(matches!(
-            outcome,
-            Err(ConsoleRuntimeError::EventStore(
-                EventStoreError::InvalidSequence
-            ))
-        ));
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -6808,21 +7190,26 @@ mod tests {
 
         let outcome = port.drain_ready_queue(&request);
 
-        assert_eq!(outcome, Err(ApplicationError::FactoryDrainPortFailed));
+        check(
+            (outcome) == (Err(ApplicationError::FactoryDrainPortFailed)),
+            "assert_eq failed",
+        );
 
         let request = FactoryDrainRequest::new("fleet:livespec".to_owned(), 1, 0);
 
         let outcome = port.drain_ready_queue(&request);
 
-        assert_eq!(outcome, Err(ApplicationError::FactoryDrainPortFailed));
+        check(
+            (outcome) == (Err(ApplicationError::FactoryDrainPortFailed)),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_uses_explicit_root_and_program_overrides()
-    -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("explicit")?;
-        let explicit = resolver_plugin_root(&temp, "explicit-plugin")?;
-        let repo = resolver_plugin_root(&temp, "repo-plugin")?;
+    fn backing_cli_resolution_uses_explicit_root_and_program_overrides() {
+        let temp = resolver_temp_root("explicit");
+        let explicit = resolver_plugin_root(&temp, "explicit-plugin");
+        let repo = resolver_plugin_root(&temp, "repo-plugin");
         let mut env = resolver_empty_env();
         env.insert(
             "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT".to_owned(),
@@ -6857,122 +7244,160 @@ mod tests {
             "/custom/gh".to_owned(),
         );
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, None))?;
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, None)).ok_test();
 
-        assert_eq!(resolution.programs().list_work_items(), "/custom/list");
-        assert_eq!(
-            resolution.programs().livespec().program(),
-            "/custom/livespec"
+        check(
+            (resolution.programs().list_work_items()) == ("/custom/list"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().livespec().args(),
-            &["next".to_owned(), "--json".to_owned()]
+        check(
+            (resolution.programs().livespec().program()) == ("/custom/livespec"),
+            "assert_eq failed",
         );
-        assert_eq!(resolution.programs().fabro(), "/custom/fabro");
-        assert_eq!(resolution.programs().dispatcher(), "/custom/dispatcher");
-        assert_eq!(resolution.programs().drive(), "/custom/drive");
-        assert_eq!(resolution.programs().needs_attention(), "/custom/needs");
-        assert_eq!(resolution.programs().github(), "/custom/gh");
-        Ok(())
+        check(
+            (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().fabro()) == ("/custom/fabro"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().dispatcher()) == ("/custom/dispatcher"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().drive()) == ("/custom/drive"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().needs_attention()) == ("/custom/needs"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().github()) == ("/custom/gh"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_uses_selected_repo_checkout() -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("repo")?;
-        let repo = resolver_plugin_root(&temp, "repo-plugin")?;
+    fn backing_cli_resolution_uses_selected_repo_checkout() {
+        let temp = resolver_temp_root("repo");
+        let repo = resolver_plugin_root(&temp, "repo-plugin");
 
         let resolution = BackingCliResolution::resolve(&resolver_inputs(
             resolver_empty_env(),
             repo.clone(),
             None,
-        ))?;
+        ))
+        .ok_test();
 
         let bin = repo.join(".claude-plugin/scripts/bin");
-        assert_eq!(resolution.selected_repo_path(), repo.as_path());
-        assert_eq!(
-            resolution.programs().list_work_items(),
-            bin.join("list_work_items.py").display().to_string()
+        check(
+            (resolution.selected_repo_path()) == (repo.as_path()),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().list_work_items())
+                == (bin.join("list_work_items.py").display().to_string()),
+            "assert_eq failed",
         );
         // The livespec source observes the SPEC-side `livespec next` action, NOT
         // the orchestrator plugin's impl-side `next.py` (which ranks work-items).
-        assert_eq!(resolution.programs().livespec().program(), "livespec");
-        assert_eq!(
-            resolution.programs().livespec().args(),
-            &["next".to_owned(), "--json".to_owned()]
+        check(
+            (resolution.programs().livespec().program()) == ("livespec"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
+            "assert_eq failed",
         );
         // The github source uses the `gh` CLI, overridable via
         // LIVESPEC_CONSOLE_GH_PROGRAM.
-        assert_eq!(resolution.programs().github(), "gh");
-        assert_eq!(
-            resolution.programs().drive(),
-            bin.join("drive.py").display().to_string()
+        check(
+            (resolution.programs().github()) == ("gh"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().dispatcher(),
-            bin.join("dispatcher.py").display().to_string()
+        check(
+            (resolution.programs().drive()) == (bin.join("drive.py").display().to_string()),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().needs_attention(),
-            bin.join("needs_attention.py").display().to_string()
+        check(
+            (resolution.programs().dispatcher())
+                == (bin.join("dispatcher.py").display().to_string()),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (resolution.programs().needs_attention())
+                == (bin.join("needs_attention.py").display().to_string()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_accepts_flattened_governed_checkout() -> Result<(), Box<dyn Error>> {
+    fn backing_cli_resolution_accepts_flattened_governed_checkout() {
         // The Claude plugin installer FLATTENS `.claude-plugin/scripts/` to
         // `scripts/`, so a resolved checkout may carry the bin scripts at
         // `<root>/scripts/bin` rather than `<root>/.claude-plugin/scripts/bin`.
         // The resolver MUST detect, validate, and build program paths against
         // the flattened layout too — otherwise the cockpit launch dies here.
-        let temp = resolver_temp_root("repo-flattened")?;
-        let repo = resolver_flattened_plugin_root(&temp, "repo-plugin-flattened")?;
+        let temp = resolver_temp_root("repo-flattened");
+        let repo = resolver_flattened_plugin_root(&temp, "repo-plugin-flattened");
 
         let resolution = BackingCliResolution::resolve(&resolver_inputs(
             resolver_empty_env(),
             repo.clone(),
             None,
-        ))?;
+        ))
+        .ok_test();
 
         let bin = repo.join("scripts/bin");
-        assert_eq!(resolution.selected_repo_path(), repo.as_path());
-        assert_eq!(
-            resolution.programs().list_work_items(),
-            bin.join("list_work_items.py").display().to_string()
+        check(
+            (resolution.selected_repo_path()) == (repo.as_path()),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().list_work_items())
+                == (bin.join("list_work_items.py").display().to_string()),
+            "assert_eq failed",
         );
         // Spec-side `livespec next`, not the orchestrator's impl-side `next.py`.
-        assert_eq!(resolution.programs().livespec().program(), "livespec");
-        assert_eq!(
-            resolution.programs().livespec().args(),
-            &["next".to_owned(), "--json".to_owned()]
+        check(
+            (resolution.programs().livespec().program()) == ("livespec"),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().drive(),
-            bin.join("drive.py").display().to_string()
+        check(
+            (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().dispatcher(),
-            bin.join("dispatcher.py").display().to_string()
+        check(
+            (resolution.programs().drive()) == (bin.join("drive.py").display().to_string()),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().needs_attention(),
-            bin.join("needs_attention.py").display().to_string()
+        check(
+            (resolution.programs().dispatcher())
+                == (bin.join("dispatcher.py").display().to_string()),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (resolution.programs().needs_attention())
+                == (bin.join("needs_attention.py").display().to_string()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_accepts_flattened_installed_cache() -> Result<(), Box<dyn Error>> {
+    fn backing_cli_resolution_accepts_flattened_installed_cache() {
         // The real installed orchestrator plugin cache carries the FLATTENED
         // `scripts/bin` layout, so the installed-cache resolution rung must
         // accept it exactly as a governed checkout would.
-        let temp = resolver_temp_root("cache-flattened")?;
+        let temp = resolver_temp_root("cache-flattened");
         let repo = temp.join("repo-without-plugin");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         let home = temp.join("home");
-        let cached = resolver_flattened_plugin_root(&temp, "cached-plugin-flattened")?;
+        let cached = resolver_flattened_plugin_root(&temp, "cached-plugin-flattened");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).ok_test();
         let cache = serde_json::json!({
             "plugins": {
                 "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": [
@@ -6980,60 +7405,58 @@ mod tests {
                 ]
             }
         });
-        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(
-            resolver_empty_env(),
-            repo,
-            Some(home),
-        ))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
 
         let bin = cached.join("scripts/bin");
-        assert_eq!(
-            resolution.programs().list_work_items(),
-            bin.join("list_work_items.py").display().to_string()
+        check(
+            (resolution.programs().list_work_items())
+                == (bin.join("list_work_items.py").display().to_string()),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().needs_attention(),
-            bin.join("needs_attention.py").display().to_string()
+        check(
+            (resolution.programs().needs_attention())
+                == (bin.join("needs_attention.py").display().to_string()),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn backing_cli_resolution_fails_loudly_when_neither_layout_present()
-    -> Result<(), Box<dyn Error>> {
+    fn backing_cli_resolution_fails_loudly_when_neither_layout_present() {
         // A plugin root that carries NEITHER the source `.claude-plugin/scripts/bin`
         // NOR the flattened `scripts/bin` directory is malformed; the resolver
         // must fail loudly and name both accepted layouts rather than silently
         // degrading to bare-name defaults.
-        let temp = resolver_temp_root("neither-layout")?;
+        let temp = resolver_temp_root("neither-layout");
         let explicit_root = temp.join("explicit-plugin-no-bin");
-        fs::create_dir_all(&explicit_root)?;
+        fs::create_dir_all(&explicit_root).ok_test();
         let mut env = resolver_empty_env();
         env.insert(
             "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT".to_owned(),
             explicit_root.display().to_string(),
         );
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(env, temp, None)),
-            Err(error)
-                if error.to_string().contains(
-                    "neither .claude-plugin/scripts/bin nor scripts/bin"
-                )
-        ));
-        Ok(())
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(env, temp, None))
+            )
+            .contains("neither .claude-plugin/scripts/bin nor scripts/bin"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_uses_installed_plugin_cache() -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("cache")?;
+    fn backing_cli_resolution_uses_installed_plugin_cache() {
+        let temp = resolver_temp_root("cache");
         let repo = temp.join("repo-without-plugin");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         let home = temp.join("home");
-        let cached = resolver_plugin_root(&temp, "cached-plugin")?;
+        let cached = resolver_plugin_root(&temp, "cached-plugin");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).ok_test();
         let cache = serde_json::json!({
             "plugins": {
                 "some-other-plugin@github": [
@@ -7044,41 +7467,39 @@ mod tests {
                 ]
             }
         });
-        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(
-            resolver_empty_env(),
-            repo,
-            Some(home),
-        ))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
 
         let bin = cached.join(".claude-plugin/scripts/bin");
-        assert_eq!(
-            resolution.programs().list_work_items(),
-            bin.join("list_work_items.py").display().to_string()
+        check(
+            (resolution.programs().list_work_items())
+                == (bin.join("list_work_items.py").display().to_string()),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.programs().needs_attention(),
-            bin.join("needs_attention.py").display().to_string()
+        check(
+            (resolution.programs().needs_attention())
+                == (bin.join("needs_attention.py").display().to_string()),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn backing_cli_resolution_uses_newest_applicable_installed_plugin_record()
-    -> Result<(), Box<dyn Error>> {
+    fn backing_cli_resolution_uses_newest_applicable_installed_plugin_record() {
         // Claude's plugin cache is append-only for updates: one plugin key may
         // hold many records with mixed versions. The console must not take the
         // stale first record when a newer record applies to the selected repo.
-        let temp = resolver_temp_root("cache-newest-applicable")?;
+        let temp = resolver_temp_root("cache-newest-applicable");
         let repo = temp.join("repo-without-plugin");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         let home = temp.join("home");
-        let stale = resolver_plugin_root(&temp, "stale-plugin")?;
-        let other_project = resolver_plugin_root(&temp, "other-project-plugin")?;
-        let newest = resolver_plugin_root(&temp, "newest-plugin")?;
+        let stale = resolver_plugin_root(&temp, "stale-plugin");
+        let other_project = resolver_plugin_root(&temp, "other-project-plugin");
+        let newest = resolver_plugin_root(&temp, "newest-plugin");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).ok_test();
         let cache = serde_json::json!({
             "plugins": {
                 "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": [
@@ -7100,45 +7521,43 @@ mod tests {
                 ]
             }
         });
-        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(
-            resolver_empty_env(),
-            repo,
-            Some(home),
-        ))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
 
         let bin = newest.join(".claude-plugin/scripts/bin");
-        assert_eq!(
-            resolution.programs().dispatcher(),
-            bin.join("dispatcher.py").display().to_string()
+        check(
+            (resolution.programs().dispatcher())
+                == (bin.join("dispatcher.py").display().to_string()),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.plugin_resolution(),
-            &PluginResolution::resolved(
-                "installed Claude plugin cache".to_owned(),
-                newest,
-                Some("newest-applicable".to_owned()),
-            )
+        check(
+            (resolution.plugin_resolution())
+                == (&PluginResolution::resolved(
+                    "installed Claude plugin cache".to_owned(),
+                    newest,
+                    Some("newest-applicable".to_owned()),
+                )),
+            "assert_eq failed",
         );
-        assert_eq!(
-            resolution.plugin_resolution().source(),
-            "installed Claude plugin cache"
+        check(
+            (resolution.plugin_resolution().source()) == ("installed Claude plugin cache"),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn backing_cli_resolution_is_deterministic_for_a_heterogeneous_cache()
-    -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("cache-deterministic")?;
+    fn backing_cli_resolution_is_deterministic_for_a_heterogeneous_cache() {
+        let temp = resolver_temp_root("cache-deterministic");
         let repo = temp.join("repo-without-plugin");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         let home = temp.join("home");
-        let first = resolver_plugin_root(&temp, "first-plugin")?;
-        let second = resolver_plugin_root(&temp, "second-plugin")?;
+        let first = resolver_plugin_root(&temp, "first-plugin");
+        let second = resolver_plugin_root(&temp, "second-plugin");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).ok_test();
         let cache = serde_json::json!({
             "plugins": {
                 "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro": [
@@ -7155,178 +7574,206 @@ mod tests {
                 ]
             }
         });
-        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
 
         let first_resolution = BackingCliResolution::resolve(&resolver_inputs(
             resolver_empty_env(),
             repo.clone(),
             Some(home.clone()),
-        ))?;
-        let second_resolution = BackingCliResolution::resolve(&resolver_inputs(
-            resolver_empty_env(),
-            repo,
-            Some(home),
-        ))?;
+        ))
+        .ok_test();
+        let second_resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
 
-        assert_eq!(
-            first_resolution.plugin_resolution(),
-            second_resolution.plugin_resolution()
+        check(
+            (first_resolution.plugin_resolution()) == (second_resolution.plugin_resolution()),
+            "assert_eq failed",
         );
-        assert_eq!(
-            first_resolution.plugin_resolution().version(),
-            Some("build-b")
+        check(
+            (first_resolution.plugin_resolution().version()) == (Some("build-b")),
+            "assert_eq failed",
         );
-        Ok(())
     }
 
     #[test]
-    fn backing_cli_resolution_degrades_to_defaults_when_plugin_absent() -> Result<(), Box<dyn Error>>
-    {
-        let temp = resolver_temp_root("absent")?;
+    fn backing_cli_resolution_degrades_to_defaults_when_plugin_absent() {
+        let temp = resolver_temp_root("absent");
         let repo = temp.join("repo-without-plugin");
         let home = temp.join("home");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&repo)?;
-        fs::create_dir_all(&cache_dir)?;
-        fs::write(cache_dir.join("installed_plugins.json"), "{}")?;
+        fs::create_dir_all(&repo).ok_test();
+        fs::create_dir_all(&cache_dir).ok_test();
+        fs::write(cache_dir.join("installed_plugins.json"), "{}").ok_test();
 
         let resolution = BackingCliResolution::resolve(&resolver_inputs(
             resolver_empty_env(),
             repo.clone(),
             Some(home),
-        ))?;
+        ))
+        .ok_test();
 
-        assert_eq!(resolution.selected_repo_path(), repo.as_path());
-        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
-        assert_eq!(resolution.programs().needs_attention(), "needs-attention");
-        assert_eq!(
-            resolution.programs().dispatcher(),
-            "livespec-dispatcher-drain"
+        check(
+            (resolution.selected_repo_path()) == (repo.as_path()),
+            "assert_eq failed",
         );
-        assert_eq!(resolution.programs().drive(), "livespec-orchestrator-drive");
+        check(
+            (resolution.programs().list_work_items()) == ("list-work-items"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().needs_attention()) == ("needs-attention"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().dispatcher()) == ("livespec-dispatcher-drain"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().drive()) == ("livespec-orchestrator-drive"),
+            "assert_eq failed",
+        );
         // No `fabro` under the injected (empty) home, so the bare default is
         // kept — resolution never touches the ambient filesystem.
-        assert_eq!(resolution.programs().fabro(), "fabro");
-        assert_eq!(resolution.programs().github(), "gh");
-        assert_eq!(resolution.programs().livespec().program(), "livespec");
-        assert_eq!(
-            resolution.programs().livespec().args(),
-            &["next".to_owned(), "--json".to_owned()]
+        check(
+            (resolution.programs().fabro()) == ("fabro"),
+            "assert_eq failed",
         );
-        Ok(())
+        check(
+            (resolution.programs().github()) == ("gh"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().livespec().program()) == ("livespec"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_resolves_fabro_under_the_injected_home() -> Result<(), Box<dyn Error>>
-    {
+    fn backing_cli_resolution_resolves_fabro_under_the_injected_home() {
         // A `fabro` binary at `~/.local/bin/fabro` resolves to its absolute
         // path so it spawns under the credential wrapper's scrubbed PATH, which
         // does not include `~/.local/bin`. Resolution reads ONLY the injected
         // home, so this is hermetic.
-        let temp = resolver_temp_root("fabro-home")?;
+        let temp = resolver_temp_root("fabro-home");
         let repo = temp.join("repo-without-plugin");
         let home = temp.join("home");
         let fabro_dir = home.join(".local/bin");
-        fs::create_dir_all(&repo)?;
-        fs::create_dir_all(&fabro_dir)?;
+        fs::create_dir_all(&repo).ok_test();
+        fs::create_dir_all(&fabro_dir).ok_test();
         let fabro = fabro_dir.join("fabro");
-        fs::write(&fabro, "#!/usr/bin/env bash\n")?;
+        fs::write(&fabro, "#!/usr/bin/env bash\n").ok_test();
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(
-            resolver_empty_env(),
-            repo,
-            Some(home),
-        ))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
 
-        assert_eq!(resolution.programs().fabro(), fabro.display().to_string());
-        Ok(())
+        check(
+            (resolution.programs().fabro()) == (fabro.display().to_string()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_fabro_env_override_wins_over_home_resolution()
-    -> Result<(), Box<dyn Error>> {
+    fn backing_cli_resolution_fabro_env_override_wins_over_home_resolution() {
         // An explicit LIVESPEC_CONSOLE_FABRO_PROGRAM override still wins over the
         // home-relative absolute resolution.
-        let temp = resolver_temp_root("fabro-override")?;
+        let temp = resolver_temp_root("fabro-override");
         let repo = temp.join("repo-without-plugin");
         let home = temp.join("home");
         let fabro_dir = home.join(".local/bin");
-        fs::create_dir_all(&repo)?;
-        fs::create_dir_all(&fabro_dir)?;
-        fs::write(fabro_dir.join("fabro"), "#!/usr/bin/env bash\n")?;
+        fs::create_dir_all(&repo).ok_test();
+        fs::create_dir_all(&fabro_dir).ok_test();
+        fs::write(fabro_dir.join("fabro"), "#!/usr/bin/env bash\n").ok_test();
         let mut env = resolver_empty_env();
         env.insert(
             "LIVESPEC_CONSOLE_FABRO_PROGRAM".to_owned(),
             "/custom/fabro".to_owned(),
         );
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, Some(home)))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(env, repo, Some(home))).ok_test();
 
-        assert_eq!(resolution.programs().fabro(), "/custom/fabro");
-        Ok(())
+        check(
+            (resolution.programs().fabro()) == ("/custom/fabro"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn dispatcher_journal_path_is_absolute_under_the_selected_repo() -> Result<(), Box<dyn Error>> {
+    fn dispatcher_journal_path_is_absolute_under_the_selected_repo() {
         // The dispatch source reads an ABSOLUTE journal path under the SELECTED
         // repo, not a working-directory-relative path, so it observes the right
         // tenant's journal regardless of the process working directory.
-        let temp = resolver_temp_root("journal")?;
+        let temp = resolver_temp_root("journal");
         let repo = temp.join("selected-repo");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
 
         let resolution = BackingCliResolution::resolve(&resolver_inputs(
             resolver_empty_env(),
             repo.clone(),
             None,
-        ))?;
+        ))
+        .ok_test();
 
         let journal = resolution.dispatcher_journal_path();
-        assert_eq!(
-            journal,
-            repo.join("tmp/fabro-dispatch-journal.jsonl")
-                .display()
-                .to_string()
+        check(
+            (journal)
+                == (repo
+                    .join("tmp/fabro-dispatch-journal.jsonl")
+                    .display()
+                    .to_string()),
+            "assert_eq failed",
         );
-        assert!(Path::new(&journal).is_absolute());
-        Ok(())
+        check(Path::new(&journal).is_absolute(), "assert failed");
     }
 
     #[test]
-    fn backing_cli_resolution_degrades_to_defaults_when_cache_file_absent()
-    -> Result<(), Box<dyn Error>> {
+    fn backing_cli_resolution_degrades_to_defaults_when_cache_file_absent() {
         // home_dir is present but `~/.claude/plugins/installed_plugins.json`
         // does not exist. The resolver must read the unreadable-cache case as
         // "no installed plugin" and degrade to bare-name program defaults,
         // deterministically — independent of whether the host running the test
         // happens to carry a real installed cache.
-        let temp = resolver_temp_root("cache-file-absent")?;
+        let temp = resolver_temp_root("cache-file-absent");
         let repo = temp.join("repo-without-plugin");
         let home = temp.join("home-without-cache-file");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         // Intentionally do NOT create home/.claude/plugins/installed_plugins.json.
 
         let resolution = BackingCliResolution::resolve(&resolver_inputs(
             resolver_empty_env(),
             repo.clone(),
             Some(home),
-        ))?;
+        ))
+        .ok_test();
 
-        assert_eq!(resolution.selected_repo_path(), repo.as_path());
-        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
-        assert_eq!(resolution.programs().needs_attention(), "needs-attention");
-        Ok(())
+        check(
+            (resolution.selected_repo_path()) == (repo.as_path()),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().list_work_items()) == ("list-work-items"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().needs_attention()) == ("needs-attention"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_ignores_cache_without_orchestrator_plugin()
-    -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("other-cache-only")?;
+    fn backing_cli_resolution_ignores_cache_without_orchestrator_plugin() {
+        let temp = resolver_temp_root("other-cache-only");
         let repo = temp.join("repo-without-plugin");
         let home = temp.join("home");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&repo)?;
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&repo).ok_test();
+        fs::create_dir_all(&cache_dir).ok_test();
         let cache = serde_json::json!({
             "plugins": {
                 "some-other-plugin@github": [
@@ -7334,50 +7781,52 @@ mod tests {
                 ]
             }
         });
-        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(
-            resolver_empty_env(),
-            repo,
-            Some(home),
-        ))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
 
-        assert_eq!(resolution.programs().list_work_items(), "list-work-items");
-        Ok(())
+        check(
+            (resolution.programs().list_work_items()) == ("list-work-items"),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_returns_selected_repo_path_override() -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("repo-path-env")?;
+    fn backing_cli_resolution_returns_selected_repo_path_override() {
+        let temp = resolver_temp_root("repo-path-env");
         let current_dir = temp.join("current");
         let selected = temp.join("selected");
-        fs::create_dir_all(&current_dir)?;
-        fs::create_dir_all(&selected)?;
+        fs::create_dir_all(&current_dir).ok_test();
+        fs::create_dir_all(&selected).ok_test();
         let mut env = resolver_empty_env();
         env.insert(
             "LIVESPEC_CONSOLE_REPO_PATH".to_owned(),
             selected.display().to_string(),
         );
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, current_dir, None))?;
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(env, current_dir, None)).ok_test();
 
-        assert_eq!(resolution.selected_repo_path(), selected.as_path());
-        Ok(())
+        check(
+            (resolution.selected_repo_path()) == (selected.as_path()),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_drive_repo_arg_is_resolved_path_not_id() -> Result<(), Box<dyn Error>>
-    {
-        let temp = resolver_temp_root("drive-repo-arg")?;
+    fn backing_cli_resolution_drive_repo_arg_is_resolved_path_not_id() {
+        let temp = resolver_temp_root("drive-repo-arg");
         let selected = temp.join("selected-repo");
-        fs::create_dir_all(&selected)?;
+        fs::create_dir_all(&selected).ok_test();
         let mut env = resolver_empty_env();
         env.insert(
             "LIVESPEC_CONSOLE_REPO_PATH".to_owned(),
             selected.display().to_string(),
         );
 
-        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, temp, None))?;
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, temp, None)).ok_test();
 
         // The `drive --repo` argument the console hands the orchestrator MUST be
         // the resolved repo filesystem PATH, not the repo id: the orchestrator's
@@ -7385,85 +7834,111 @@ mod tests {
         // when handed the id. So it must equal the resolved path, must not equal
         // the repo id, and must name an existing directory.
         let drive_repo_arg = resolution.drive_repo_arg();
-        assert_eq!(drive_repo_arg, selected.display().to_string());
-        assert_ne!(drive_repo_arg, "livespec-console-beads-fabro");
-        assert!(std::path::Path::new(&drive_repo_arg).is_dir());
-        Ok(())
+        check(
+            (drive_repo_arg) == (selected.display().to_string()),
+            "assert_eq failed",
+        );
+        check(
+            (drive_repo_arg) != ("livespec-console-beads-fabro"),
+            "assert_ne failed",
+        );
+        check(
+            std::path::Path::new(&drive_repo_arg).is_dir(),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_fails_loudly_for_malformed_roots_and_cache()
-    -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("malformed")?;
+    fn backing_cli_resolution_fails_loudly_for_malformed_roots_and_cache() {
+        let temp = resolver_temp_root("malformed");
         let explicit_root = temp.join("explicit-plugin");
-        fs::create_dir_all(explicit_root.join(".claude-plugin/scripts/bin"))?;
+        fs::create_dir_all(explicit_root.join(".claude-plugin/scripts/bin")).ok_test();
         let mut env = resolver_empty_env();
         env.insert(
             "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT".to_owned(),
             explicit_root.display().to_string(),
         );
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(env, temp.clone(), None)),
-            Err(error) if error.to_string().contains("orchestrator plugin root")
-        ));
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(env, temp.clone(), None))
+            )
+            .contains("orchestrator plugin root"),
+            "assert failed",
+        );
 
         let repo_root = temp.join("repo-plugin");
-        fs::create_dir_all(repo_root.join(".claude-plugin/scripts/bin"))?;
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo_root, None)),
-            Err(error) if error.to_string().contains("orchestrator plugin root")
-        ));
+        fs::create_dir_all(repo_root.join(".claude-plugin/scripts/bin")).ok_test();
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(
+                    resolver_empty_env(),
+                    repo_root,
+                    None
+                ))
+            )
+            .contains("orchestrator plugin root"),
+            "assert failed",
+        );
 
         let home = temp.join("home-invalid-json");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
-        fs::write(cache_dir.join("installed_plugins.json"), "not json")?;
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(
-                resolver_empty_env(),
-                temp.join("repo-without-plugin"),
-                Some(home),
-            )),
-            Err(error) if error.to_string().contains("invalid Claude plugin cache")
-        ));
-        Ok(())
+        fs::create_dir_all(&cache_dir).ok_test();
+        fs::write(cache_dir.join("installed_plugins.json"), "not json").ok_test();
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(
+                    resolver_empty_env(),
+                    temp.join("repo-without-plugin"),
+                    Some(home),
+                ))
+            )
+            .contains("invalid Claude plugin cache"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_fails_loudly_for_cached_install_without_path_or_scripts()
-    -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("cache-invalid")?;
+    fn backing_cli_resolution_fails_loudly_for_cached_install_without_path_or_scripts() {
+        let temp = resolver_temp_root("cache-invalid");
         let repo = temp.join("repo-without-plugin");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         let home = temp.join("home-missing-install-path");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).ok_test();
         let missing_install_path = serde_json::json!({
             "plugins": {
                 "livespec-orchestrator-beads-fabro@github": [{}]
             }
         });
-        assert!(
+        check(
             fs::write(
                 cache_dir.join("installed_plugins.json"),
                 missing_install_path.to_string(),
             )
-            .is_ok()
+            .is_ok(),
+            "assert failed",
         );
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(
-                resolver_empty_env(),
-                repo.clone(),
-                Some(home),
-            )),
-            Err(error) if error.to_string().contains("has no installPath")
-        ));
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(
+                    resolver_empty_env(),
+                    repo.clone(),
+                    Some(home),
+                ))
+            )
+            .contains("has no installPath"),
+            "assert failed",
+        );
 
         let home = temp.join("home-missing-scripts");
         let cached = temp.join("cached-plugin");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(cached.join(".claude-plugin/scripts/bin"))?;
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(cached.join(".claude-plugin/scripts/bin")).ok_test();
+        fs::create_dir_all(&cache_dir).ok_test();
         let missing_scripts = serde_json::json!({
             "plugins": {
                 "livespec-orchestrator-beads-fabro@github": [
@@ -7471,29 +7946,36 @@ mod tests {
                 ]
             }
         });
-        assert!(
+        check(
             fs::write(
                 cache_dir.join("installed_plugins.json"),
                 missing_scripts.to_string(),
             )
-            .is_ok()
+            .is_ok(),
+            "assert failed",
         );
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home))),
-            Err(error) if error.to_string().contains("orchestrator plugin root")
-        ));
-        Ok(())
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(
+                    resolver_empty_env(),
+                    repo,
+                    Some(home)
+                ))
+            )
+            .contains("orchestrator plugin root"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_fails_loudly_for_cached_install_list_that_is_not_an_array()
-    -> Result<(), Box<dyn Error>> {
-        let temp = resolver_temp_root("cache-non-array")?;
+    fn backing_cli_resolution_fails_loudly_for_cached_install_list_that_is_not_an_array() {
+        let temp = resolver_temp_root("cache-non-array");
         let repo = temp.join("repo-without-plugin");
-        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&repo).ok_test();
         let home = temp.join("home-non-array");
         let cache_dir = home.join(".claude/plugins");
-        fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).ok_test();
         let cache = serde_json::json!({
             "plugins": {
                 "livespec-orchestrator-beads-fabro@github": {
@@ -7501,26 +7983,34 @@ mod tests {
                 }
             }
         });
-        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string())?;
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
 
-        assert!(matches!(
-            BackingCliResolution::resolve(&resolver_inputs(
-                resolver_empty_env(),
-                repo,
-                Some(home),
-            )),
-            Err(error) if error.to_string().contains("is not an array")
-        ));
-        Ok(())
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(
+                    resolver_empty_env(),
+                    repo,
+                    Some(home),
+                ))
+            )
+            .contains("is not an array"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn backing_cli_resolution_from_process_environment_is_callable() -> Result<(), Box<dyn Error>> {
-        let resolution = BackingCliResolution::from_environment()?;
+    fn backing_cli_resolution_from_process_environment_is_callable() {
+        let resolution = BackingCliResolution::from_environment().ok_test();
 
-        assert!(!resolution.selected_repo_path().as_os_str().is_empty());
-        assert!(!resolution.programs().list_work_items().is_empty());
-        Ok(())
+        check(
+            !resolution.selected_repo_path().as_os_str().is_empty(),
+            "assert failed",
+        );
+        check(
+            !resolution.programs().list_work_items().is_empty(),
+            "assert failed",
+        );
     }
 
     #[test]
@@ -7533,8 +8023,8 @@ mod tests {
         let script = "/home/user/.claude/plugins/cache/orch/scripts/bin/needs_attention.py";
         let (program, args) = python_normalized_invocation(script, &["--json"]);
 
-        assert_eq!(program, "python3");
-        assert_eq!(args, vec![script, "--json"]);
+        check((program) == ("python3"), "assert_eq failed");
+        check((args) == (vec![script, "--json"]), "assert_eq failed");
     }
 
     #[test]
@@ -7544,34 +8034,40 @@ mod tests {
         // overrides and non-Python programs are never rewritten through python3.
         let (bare_program, bare_args) =
             python_normalized_invocation("needs-attention", &["--json"]);
-        assert_eq!(bare_program, "needs-attention");
-        assert_eq!(bare_args, vec!["--json"]);
+        check((bare_program) == ("needs-attention"), "assert_eq failed");
+        check((bare_args) == (vec!["--json"]), "assert_eq failed");
 
         let (override_program, override_args) =
             python_normalized_invocation("/usr/local/bin/custom-drive", &["--action", "approve:x"]);
-        assert_eq!(override_program, "/usr/local/bin/custom-drive");
-        assert_eq!(override_args, vec!["--action", "approve:x"]);
+        check(
+            (override_program) == ("/usr/local/bin/custom-drive"),
+            "assert_eq failed",
+        );
+        check(
+            (override_args) == (vec!["--action", "approve:x"]),
+            "assert_eq failed",
+        );
     }
 
     #[test]
-    fn live_source_adapters_observe_each_source_through_the_probe()
-    -> Result<(), ConsoleRuntimeError> {
+    fn live_source_adapters_observe_each_source_through_the_probe() {
         let probe = UnavailableProbe;
-        let adapters = live_source_adapters(&probe, "console")?;
+        let adapters = live_source_adapters(&probe, "console").ok_test();
 
         let adapter_ids: Vec<&str> = adapters
             .iter()
             .map(|(adapter_id, _adapter)| adapter_id.as_str())
             .collect();
-        assert_eq!(
-            adapter_ids,
-            [
-                "orchestrator:console",
-                "dispatcher:console",
-                "fabro:console",
-                "livespec:console",
-                "github:console",
-            ]
+        check(
+            (adapter_ids)
+                == ([
+                    "orchestrator:console",
+                    "dispatcher:console",
+                    "fabro:console",
+                    "livespec:console",
+                    "github:console",
+                ]),
+            "assert_eq failed",
         );
 
         // Polling every adapter exercises both probe capabilities (commands and
@@ -7582,44 +8078,49 @@ mod tests {
             .iter()
             .map(|(adapter_id, adapter)| (adapter_id.as_str(), adapter as &dyn PullSourcePort))
             .collect();
-        let mut store = SqliteEventStore::open_in_memory()?;
-        let summaries = backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &refs)?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let summaries =
+            backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &refs).ok_test();
 
-        assert_eq!(summaries.len(), 5);
-        assert_eq!(store.list_console_events()?.len(), 5);
-        for event in store.list_console_events()? {
-            assert_eq!(
-                event.event_type().contract_name(),
-                "source.not_observed_finding_observed"
+        check((summaries.len()) == (5), "assert_eq failed");
+        check(
+            (store.list_console_events().ok_test().len()) == (5),
+            "assert_eq failed",
+        );
+        for event in store.list_console_events().ok_test() {
+            check(
+                (event.event_type().contract_name()) == ("source.not_observed_finding_observed"),
+                "assert_eq failed",
             );
         }
-        Ok(())
     }
 
     #[test]
     fn live_source_adapters_rejects_empty_repo() {
         let probe = UnavailableProbe;
 
-        let result = live_source_adapters(&probe, "  ");
+        let result = live_source_adapters(&probe, "  ").map(|_adapters| ());
 
-        assert!(matches!(
-            result,
-            Err(ConsoleRuntimeError::Adapter(AdapterError::EmptyRepo))
-        ));
+        check(format!("{result:?}").contains("EmptyRepo"), "assert failed");
     }
 
     #[test]
-    fn demo_backfill_round_trips_through_event_store() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn demo_backfill_round_trips_through_event_store() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
-        let outcomes = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
-        let events = load_tui_events_from_store(&store)?;
+        let outcomes = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
+        let events = load_tui_events_from_store(&store).ok_test();
 
-        assert_eq!(outcomes.len(), 2);
-        assert_eq!(outcomes[0].status(), AppendStatus::Inserted);
-        assert_eq!(outcomes[1].status(), AppendStatus::Inserted);
-        assert_eq!(events, persisted_demo_events());
-        Ok(())
+        check((outcomes.len()) == (2), "assert_eq failed");
+        check(
+            (outcomes[0].status()) == (AppendStatus::Inserted),
+            "assert_eq failed",
+        );
+        check(
+            (outcomes[1].status()) == (AppendStatus::Inserted),
+            "assert_eq failed",
+        );
+        check((events) == (persisted_demo_events()), "assert_eq failed");
     }
 
     #[test]
@@ -7628,49 +8129,65 @@ mod tests {
 
         let outcome = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z");
 
-        assert!(matches!(outcome, Err(EventStoreError::InvalidSequence)));
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
     }
 
     #[test]
-    fn demo_backfill_is_idempotent_by_source_event_id() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn demo_backfill_is_idempotent_by_source_event_id() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
 
-        let first = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
-        let second = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z")?;
-        let events = load_tui_events_from_store(&store)?;
+        let first = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
+        let second = append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
+        let events = load_tui_events_from_store(&store).ok_test();
 
-        assert_eq!(first[0].status(), AppendStatus::Inserted);
-        assert_eq!(second[0].status(), AppendStatus::Duplicate);
-        assert_eq!(second[1].status(), AppendStatus::Duplicate);
-        assert_eq!(events, persisted_demo_events());
-        Ok(())
+        check(
+            (first[0].status()) == (AppendStatus::Inserted),
+            "assert_eq failed",
+        );
+        check(
+            (second[0].status()) == (AppendStatus::Duplicate),
+            "assert_eq failed",
+        );
+        check(
+            (second[1].status()) == (AppendStatus::Duplicate),
+            "assert_eq failed",
+        );
+        check((events) == (persisted_demo_events()), "assert_eq failed");
     }
 
     #[test]
-    fn backfilled_work_item_snapshot_rebuilds_into_its_lane() -> Result<(), ConsoleRuntimeError> {
+    fn backfilled_work_item_snapshot_rebuilds_into_its_lane() {
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
-        let mut store = SqliteEventStore::open_in_memory()?;
-        backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &sources)?;
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &sources).ok_test();
 
         // The lane board rebuilds purely from the persisted snapshot payloads:
         // the seeded work-item is emitted as blocked:needs-human at rank "a1".
-        let events = store.list_console_events()?;
+        let events = store.list_console_events().ok_test();
         let board = project_lane_board(&events);
 
-        assert_eq!(board.column(Lane::Blocked).map(LaneColumn::count), Some(1));
+        check(
+            (board.column(Lane::Blocked).map(LaneColumn::count)) == (Some(1)),
+            "assert_eq failed",
+        );
         let blocked_items = board
             .column(Lane::Blocked)
             .map(LaneColumn::items)
             .unwrap_or_default();
-        assert_eq!(
-            blocked_items[0].work_item_id(),
-            "livespec-console-beads-fabro-y45jhj"
+        check(
+            (blocked_items[0].work_item_id()) == ("livespec-console-beads-fabro-y45jhj"),
+            "assert_eq failed",
         );
-        assert_eq!(blocked_items[0].rank(), "a1");
-        assert_eq!(blocked_items[0].lane_reason(), Some(LaneReason::NeedsHuman));
-        assert_eq!(board.total(), 1);
-        Ok(())
+        check((blocked_items[0].rank()) == ("a1"), "assert_eq failed");
+        check(
+            (blocked_items[0].lane_reason()) == (Some(LaneReason::NeedsHuman)),
+            "assert_eq failed",
+        );
+        check((board.total()) == (1), "assert_eq failed");
     }
 
     #[test]
@@ -7685,14 +8202,26 @@ mod tests {
         .ok()
         .into_iter()
         .collect();
-        assert_eq!(entries.len(), 1);
+        check((entries.len()) == (1), "assert_eq failed");
         let entry = entries[0].clone();
         let payload_json = normalized_payload_json(&SourcePayload::DispatcherJournalEntry(entry));
 
-        assert!(payload_json.contains(r#""repo":"console""#));
-        assert!(payload_json.contains(r#""work_item_id":"console-1""#));
-        assert!(payload_json.contains(r#""dispatch_id":"dispatch-1""#));
-        assert!(payload_json.contains(r#""kind":"backlog-bounce""#));
+        check(
+            payload_json.contains(r#""repo":"console""#),
+            "assert failed",
+        );
+        check(
+            payload_json.contains(r#""work_item_id":"console-1""#),
+            "assert failed",
+        );
+        check(
+            payload_json.contains(r#""dispatch_id":"dispatch-1""#),
+            "assert failed",
+        );
+        check(
+            payload_json.contains(r#""kind":"backlog-bounce""#),
+            "assert failed",
+        );
     }
 
     /// The demo events as they are read back from the store, where the load
@@ -7702,10 +8231,7 @@ mod tests {
         demo_events().into_iter().collect()
     }
 
-    fn append_ready_work_item(
-        store: &mut SqliteEventStore,
-        observed_at: &str,
-    ) -> Result<(), EventStoreError> {
+    fn append_ready_work_item(store: &mut SqliteEventStore, observed_at: &str) {
         let event = ConsoleEvent::new(
             "evt_ready_work".to_owned(),
             1,
@@ -7719,19 +8245,20 @@ mod tests {
             r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
                 .to_owned(),
         );
-        store.append_event(&EventAppend::new(
-            event,
-            "fleet:livespec:ready-work".to_owned(),
-            observed_at.to_owned(),
-            observed_at.to_owned(),
-            None,
-            "corr_evt_ready_work".to_owned(),
-            Some("evt_ready_work".to_owned()),
-            r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
-                .to_owned(),
-            "{}".to_owned(),
-        ))?;
-        Ok(())
+        store
+            .append_event(&EventAppend::new(
+                event,
+                "fleet:livespec:ready-work".to_owned(),
+                observed_at.to_owned(),
+                observed_at.to_owned(),
+                None,
+                "corr_evt_ready_work".to_owned(),
+                Some("evt_ready_work".to_owned()),
+                r#"{"repo":"fleet:livespec","work_item_id":"work-ready","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","source_version":1}"#
+                    .to_owned(),
+                "{}".to_owned(),
+            ))
+            .ok_test();
     }
 
     /// The seed timestamp the session fixtures share.
@@ -7746,7 +8273,7 @@ mod tests {
         lane_label: &str,
         source_version: u64,
         observed_at: &str,
-    ) -> Result<(), EventStoreError> {
+    ) {
         let payload = format!(
             r#"{{"repo":"livespec-console-beads-fabro","work_item_id":"{work_item_id}","lane":"{lane_label}","lane_reason":null,"rank":"a0","status":"{lane_label}","source_version":{source_version}}}"#
         );
@@ -7762,18 +8289,19 @@ mod tests {
             source_version,
         )
         .with_payload_json(payload.clone());
-        store.append_event(&EventAppend::new(
-            event,
-            stream,
-            observed_at.to_owned(),
-            observed_at.to_owned(),
-            None,
-            format!("corr_{event_id}"),
-            Some(event_id),
-            payload,
-            "{}".to_owned(),
-        ))?;
-        Ok(())
+        store
+            .append_event(&EventAppend::new(
+                event,
+                stream,
+                observed_at.to_owned(),
+                observed_at.to_owned(),
+                None,
+                format!("corr_{event_id}"),
+                Some(event_id),
+                payload,
+                "{}".to_owned(),
+            ))
+            .ok_test();
     }
 
     fn factory_drain_effect() -> TuiRuntimeEffect {
@@ -8377,9 +8905,693 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "ok_eventstore_append_outcomes failed")]
+    fn ok_eventstore_append_outcomes_panics() {
+        let result: EventStoreResult<Vec<AppendOutcome>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_append_outcome failed")]
+    fn ok_eventstore_append_outcome_panics() {
+        let result: EventStoreResult<AppendOutcome> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_command_outcomes failed")]
+    fn ok_eventstore_command_outcomes_panics() {
+        let result: EventStoreResult<Vec<CommandAppendOutcome>> =
+            Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_command_outcome failed")]
+    fn ok_eventstore_command_outcome_panics() {
+        let result: EventStoreResult<CommandAppendOutcome> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_console_events failed")]
+    fn ok_eventstore_console_events_panics() {
+        let result: EventStoreResult<Vec<ConsoleEvent>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_commands failed")]
+    fn ok_eventstore_commands_panics() {
+        let result: EventStoreResult<Vec<StoredCommand>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_events failed")]
+    fn ok_eventstore_events_panics() {
+        let result: EventStoreResult<Vec<StoredEvent>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_optional_string failed")]
+    fn ok_eventstore_optional_string_panics() {
+        let result: EventStoreResult<Option<String>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_string failed")]
+    fn ok_eventstore_string_panics() {
+        let result: EventStoreResult<String> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_bool failed")]
+    fn ok_eventstore_bool_panics() {
+        let result: EventStoreResult<bool> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_status_update failed")]
+    fn ok_eventstore_status_update_panics() {
+        let result: EventStoreResult<CommandStatusUpdateOutcome> =
+            Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_unit failed")]
+    fn ok_runtime_unit_panics() {
+        let result: ConsoleRuntimeResult<()> = Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_usize failed")]
+    fn ok_runtime_usize_panics() {
+        let result: ConsoleRuntimeResult<usize> = Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_string failed")]
+    fn ok_runtime_string_panics() {
+        let result: ConsoleRuntimeResult<String> = Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_summaries failed")]
+    fn ok_runtime_summaries_panics() {
+        let result: ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_console_events failed")]
+    fn ok_runtime_console_events_panics() {
+        let result: ConsoleRuntimeResult<Vec<ConsoleEvent>> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_pending_outcomes failed")]
+    fn ok_runtime_pending_outcomes_panics() {
+        let result: ConsoleRuntimeResult<Vec<PendingCommandOutcome>> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_tui_effects failed")]
+    fn ok_runtime_tui_effects_panics() {
+        let result: ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_observed_adapters failed")]
+    fn ok_runtime_observed_adapters_panics() {
+        let result: ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'_>)>> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_tui_outcome failed")]
+    fn ok_runtime_tui_outcome_panics() {
+        let result: ConsoleRuntimeResult<TuiSessionOutcome> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_tui_effect_outcome failed")]
+    fn ok_runtime_tui_effect_outcome_panics() {
+        let result: ConsoleRuntimeResult<TuiRuntimeEffectSinkOutcome> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_status_update failed")]
+    fn ok_runtime_status_update_panics() {
+        let result: ConsoleRuntimeResult<CommandStatusUpdateOutcome> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_decision failed")]
+    fn ok_runtime_decision_panics() {
+        let result: ConsoleRuntimeResult<AutonomousDecision> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_stored_command_ref failed")]
+    fn ok_runtime_stored_command_ref_panics() {
+        let result: Result<&StoredCommand, ConsoleRuntimeError> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_application_factory_outcome failed")]
+    fn ok_application_factory_outcome_panics() {
+        let result: Result<FactoryCommandOutcome, ApplicationError> =
+            Err(ApplicationError::FactoryDrainPortFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_application_unit failed")]
+    fn ok_application_unit_panics() {
+        let result: Result<(), ApplicationError> = Err(ApplicationError::FactoryDrainPortFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_adapter_poll failed")]
+    fn ok_adapter_poll_panics() {
+        let result: Result<AdapterPoll, AdapterError> = Err(AdapterError::EmptyCheckpoint);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_work_item_snapshot failed")]
+    fn ok_work_item_snapshot_panics() {
+        let result: Result<WorkItemSnapshot, AdapterError> = Err(AdapterError::EmptyWorkItemId);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_duration failed")]
+    fn ok_runtime_duration_panics() {
+        let result: Result<std::time::Duration, ConsoleRuntimeError> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_runtime_pending_outcomes_result failed")]
+    fn ok_runtime_pending_outcomes_result_panics() {
+        let result: Result<ConsoleRuntimeResult<Vec<PendingCommandOutcome>>, ConsoleRuntimeError> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        let _ = result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_box_unit failed")]
+    fn ok_box_unit_panics() {
+        let result: Result<(), Box<dyn Error>> = Err(Box::new(std::io::Error::other("boom")));
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_backing_cli_resolution failed")]
+    fn ok_backing_cli_resolution_panics() {
+        let result: Result<BackingCliResolution, BackingCliResolutionError> =
+            Err(BackingCliResolutionError::new("boom".to_owned()));
+        result.ok_test();
+    }
+
+    #[test]
     fn helper_success_arms_are_covered() {
         check(true, "helper success");
         ok_io_unit(Ok(()));
+        let _count = (Ok(1_usize) as ConsoleRuntimeResult<usize>).ok_test();
+        let _summaries =
+            (Ok(Vec::new()) as ConsoleRuntimeResult<Vec<AdapterIngestionSummary>>).ok_test();
+        let _pending =
+            (Ok(Vec::new()) as ConsoleRuntimeResult<Vec<PendingCommandOutcome>>).ok_test();
+        let _effects = (Ok(Vec::new()) as ConsoleRuntimeResult<Vec<TuiRuntimeEffect>>).ok_test();
+        let _outcome =
+            (Ok(TuiSessionOutcome::new(0, 0, 0, 0, 0, 0)) as ConsoleRuntimeResult<_>).ok_test();
+        let command = StoredCommand::new(
+            "cmd_helper".to_owned(),
+            "factory".to_owned(),
+            "factory.drain_requested".to_owned(),
+            Some("fleet:livespec".to_owned()),
+            "idem_helper".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+        let _command = (Ok(&command) as Result<&StoredCommand, ConsoleRuntimeError>).ok_test();
+        let inner: ConsoleRuntimeResult<Vec<PendingCommandOutcome>> = Ok(Vec::new());
+        let _inner = (Ok(inner)
+            as Result<ConsoleRuntimeResult<Vec<PendingCommandOutcome>>, ConsoleRuntimeError>)
+            .ok_test();
+        let _poll = (Ok(AdapterPoll::new("checkpoint", Vec::new()).ok_test())
+            as Result<AdapterPoll, AdapterError>)
+            .ok_test();
+        (Ok(()) as Result<(), ApplicationError>).ok_test();
+        (Ok(()) as Result<(), Box<dyn Error>>).ok_test();
+    }
+
+    trait TestOk {
+        type Output;
+
+        fn ok_test(self) -> Self::Output;
+    }
+
+    impl TestOk for EventStoreResult<SqliteEventStore> {
+        type Output = SqliteEventStore;
+
+        #[track_caller]
+        fn ok_test(self) -> SqliteEventStore {
+            ok_store(self)
+        }
+    }
+
+    impl TestOk for EventStoreResult<Vec<AppendOutcome>> {
+        type Output = Vec<AppendOutcome>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<AppendOutcome> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_append_outcomes failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<AppendOutcome> {
+        type Output = AppendOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> AppendOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_append_outcome failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<Vec<CommandAppendOutcome>> {
+        type Output = Vec<CommandAppendOutcome>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<CommandAppendOutcome> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_command_outcomes failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<CommandAppendOutcome> {
+        type Output = CommandAppendOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> CommandAppendOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_command_outcome failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<Vec<ConsoleEvent>> {
+        type Output = Vec<ConsoleEvent>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<ConsoleEvent> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_console_events failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<Vec<StoredCommand>> {
+        type Output = Vec<StoredCommand>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<StoredCommand> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_commands failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<Vec<StoredEvent>> {
+        type Output = Vec<StoredEvent>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<StoredEvent> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_events failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<Option<String>> {
+        type Output = Option<String>;
+
+        #[track_caller]
+        fn ok_test(self) -> Option<String> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_optional_string failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<String> {
+        type Output = String;
+
+        #[track_caller]
+        fn ok_test(self) -> String {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_string failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<bool> {
+        type Output = bool;
+
+        #[track_caller]
+        fn ok_test(self) -> bool {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_bool failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<CommandStatusUpdateOutcome> {
+        type Output = CommandStatusUpdateOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> CommandStatusUpdateOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_status_update failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<()> {
+        type Output = ();
+
+        #[track_caller]
+        fn ok_test(self) {
+            match self {
+                Ok(()) => {}
+                Err(error) => panic!("ok_runtime_unit failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<usize> {
+        type Output = usize;
+
+        #[track_caller]
+        fn ok_test(self) -> usize {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_usize failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<String> {
+        type Output = String;
+
+        #[track_caller]
+        fn ok_test(self) -> String {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_string failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
+        type Output = Vec<AdapterIngestionSummary>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<AdapterIngestionSummary> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_summaries failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<Vec<ConsoleEvent>> {
+        type Output = Vec<ConsoleEvent>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<ConsoleEvent> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_console_events failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+        type Output = Vec<PendingCommandOutcome>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<PendingCommandOutcome> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_pending_outcomes failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
+        type Output = Vec<TuiRuntimeEffect>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<TuiRuntimeEffect> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_tui_effects failed: {error:?}"),
+            }
+        }
+    }
+
+    impl<'a> TestOk for ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
+        type Output = Vec<(String, ObservedSourceAdapter<'a>)>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<(String, ObservedSourceAdapter<'a>)> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_observed_adapters failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<TuiSessionOutcome> {
+        type Output = TuiSessionOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> TuiSessionOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_tui_outcome failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<TuiRuntimeEffectSinkOutcome> {
+        type Output = TuiRuntimeEffectSinkOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> TuiRuntimeEffectSinkOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_tui_effect_outcome failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<CommandStatusUpdateOutcome> {
+        type Output = CommandStatusUpdateOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> CommandStatusUpdateOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_status_update failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<AutonomousDecision> {
+        type Output = AutonomousDecision;
+
+        #[track_caller]
+        fn ok_test(self) -> AutonomousDecision {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_decision failed: {error:?}"),
+            }
+        }
+    }
+
+    impl<'a> TestOk for Result<&'a StoredCommand, ConsoleRuntimeError> {
+        type Output = &'a StoredCommand;
+
+        #[track_caller]
+        fn ok_test(self) -> &'a StoredCommand {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_stored_command_ref failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<FactoryCommandOutcome, ApplicationError> {
+        type Output = FactoryCommandOutcome;
+
+        #[track_caller]
+        fn ok_test(self) -> FactoryCommandOutcome {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_application_factory_outcome failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<(), ApplicationError> {
+        type Output = ();
+
+        #[track_caller]
+        fn ok_test(self) {
+            match self {
+                Ok(()) => {}
+                Err(error) => panic!("ok_application_unit failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<AdapterPoll, AdapterError> {
+        type Output = AdapterPoll;
+
+        #[track_caller]
+        fn ok_test(self) -> AdapterPoll {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_adapter_poll failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<WorkItemSnapshot, AdapterError> {
+        type Output = WorkItemSnapshot;
+
+        #[track_caller]
+        fn ok_test(self) -> WorkItemSnapshot {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_work_item_snapshot failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<std::time::Duration, ConsoleRuntimeError> {
+        type Output = std::time::Duration;
+
+        #[track_caller]
+        fn ok_test(self) -> std::time::Duration {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_duration failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<ConsoleRuntimeResult<Vec<PendingCommandOutcome>>, ConsoleRuntimeError> {
+        type Output = ConsoleRuntimeResult<Vec<PendingCommandOutcome>>;
+
+        #[track_caller]
+        fn ok_test(self) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_pending_outcomes_result failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<(), Box<dyn Error>> {
+        type Output = ();
+
+        #[track_caller]
+        fn ok_test(self) {
+            match self {
+                Ok(()) => {}
+                Err(error) => panic!("ok_box_unit failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<BackingCliResolution, BackingCliResolutionError> {
+        type Output = BackingCliResolution;
+
+        #[track_caller]
+        fn ok_test(self) -> BackingCliResolution {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_backing_cli_resolution failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for Result<std::time::Duration, std::time::SystemTimeError> {
+        type Output = std::time::Duration;
+
+        #[track_caller]
+        fn ok_test(self) -> std::time::Duration {
+            ok_duration(self)
+        }
+    }
+
+    impl TestOk for Result<(), std::io::Error> {
+        type Output = ();
+
+        #[track_caller]
+        fn ok_test(self) {
+            ok_io_unit(self);
+        }
     }
 
     #[track_caller]
@@ -8548,17 +9760,19 @@ mod tests {
     }
 
     #[test]
-    fn observe_and_reflect_resolves_auto_resolutions_and_surfaces_escalations()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn observe_and_reflect_resolves_auto_resolutions_and_surfaces_escalations() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         // Seed the inbox with the human-gate valve item the plane will
         // auto-resolve. The cap-exceeded escalation is sourced only from the
         // journal read leg.
         let approve_item = attention_item_fixture("valve:approve:wi-1", "Approve wi-1");
         let port = ScriptedNeedsAttentionPort::observing(vec![approve_item]);
         let needs_attention = NeedsAttentionIngest::new(&port, "fleet");
-        ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:00Z")?;
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
+        ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:00Z").ok_test();
+        check(
+            (project_attention(&store.list_console_events().ok_test()).len()) == (1),
+            "assert_eq failed",
+        );
 
         // The plane's engine auto-approved wi-1 and escalated wi-2 from the
         // journal read surface.
@@ -8569,7 +9783,8 @@ mod tests {
                     "auto-approve",
                     vec!["auto_approve_ready".to_owned()],
                 )
-                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?,
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test(),
             ],
             vec![
                 AutonomousDecision::from_auto_disposition(
@@ -8577,47 +9792,56 @@ mod tests {
                     "cap-exceeded-escalation",
                     vec!["acceptance_rework_cap".to_owned()],
                 )
-                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)?,
+                .ok_or(ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test(),
             ],
         );
         let decisions = SimulatedDecisionsPort::returning(audit);
 
         let now = "2026-07-11T00:00:01Z";
-        let reflected = observe_and_reflect_autonomous_decisions(&mut store, now, &decisions)?;
+        let reflected =
+            observe_and_reflect_autonomous_decisions(&mut store, now, &decisions).ok_test();
 
         // The auto-approved item left the inbox; the escalation is surfaced
         // using the needs-human valve identity.
-        assert_eq!(reflected, 2);
-        let remaining: Vec<String> = project_attention(&store.list_console_events()?)
+        check((reflected) == (2), "assert_eq failed");
+        let remaining: Vec<String> = project_attention(&store.list_console_events().ok_test())
             .iter()
             .map(|item| item.id().to_owned())
             .collect();
-        assert_eq!(remaining, ["valve:set-admission:wi-2"]);
+        check(
+            (remaining) == (["valve:set-admission:wi-2"]),
+            "assert_eq failed",
+        );
 
         // The reflection rode a command-plus-outcome-event path: a completed
         // `factory.autonomous_decision_reflected` command plus the resolved event.
-        let commands = store.list_commands()?;
-        assert!(commands.iter().any(|command| {
-            command.command_type() == "factory.autonomous_decision_reflected"
-                && command.status() == "completed"
-        }));
-        assert!(
-            store
-                .list_console_events()?
-                .iter()
-                .any(
-                    |event| *event.event_type() == EventType::AttentionItemResolved
-                        && event.source() == "console:autonomous-reflect"
-                )
+        let commands = store.list_commands().ok_test();
+        check(
+            commands.iter().any(|command| {
+                command.command_type() == "factory.autonomous_decision_reflected"
+                    && command.status() == "completed"
+            }),
+            "assert failed",
+        );
+        check(
+            store.list_console_events().ok_test().iter().any(|event| {
+                *event.event_type() == EventType::AttentionItemResolved
+                    && event.source() == "console:autonomous-reflect"
+            }),
+            "assert failed",
         );
 
         // A second run re-observing the same audit reflects nothing new (the
         // append-only journal is idempotent under content-stable command ids).
         let later = "2026-07-11T00:00:02Z";
-        let again = observe_and_reflect_autonomous_decisions(&mut store, later, &decisions)?;
-        assert_eq!(again, 0);
-        assert_eq!(project_attention(&store.list_console_events()?).len(), 1);
-        Ok(())
+        let again =
+            observe_and_reflect_autonomous_decisions(&mut store, later, &decisions).ok_test();
+        check((again) == (0), "assert_eq failed");
+        check(
+            (project_attention(&store.list_console_events().ok_test()).len()) == (1),
+            "assert_eq failed",
+        );
     }
 
     #[test]
@@ -8629,7 +9853,7 @@ mod tests {
             "auto-approve",
             vec!["auto_approve_ready".to_owned()],
         );
-        assert!(decision.is_some());
+        check(decision.is_some(), "assert failed");
         let audit = AutonomousAudit::new(decision.into_iter().collect(), Vec::new());
         let decisions = SimulatedDecisionsPort::returning(audit);
 
@@ -8639,14 +9863,13 @@ mod tests {
             &decisions,
         );
 
-        assert!(matches!(reflected, Ok(0)));
-        assert_eq!(store.appended_event_count, 0);
+        check((reflected.ok_test()) == (0), "assert_eq failed");
+        check((store.appended_event_count) == (0), "assert_eq failed");
     }
 
     #[test]
-    fn observe_and_reflect_skips_a_decision_with_no_reflectable_item()
-    -> Result<(), ConsoleRuntimeError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn observe_and_reflect_skips_a_decision_with_no_reflectable_item() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
         // A decision whose gate maps to no needs-attention valve id is skipped --
         // no command is recorded and nothing is fabricated.
         let audit = AutonomousAudit::new(
@@ -8661,11 +9884,11 @@ mod tests {
         let decisions = SimulatedDecisionsPort::returning(audit);
 
         let now = "2026-07-11T00:00:00Z";
-        let reflected = observe_and_reflect_autonomous_decisions(&mut store, now, &decisions)?;
+        let reflected =
+            observe_and_reflect_autonomous_decisions(&mut store, now, &decisions).ok_test();
 
-        assert_eq!(reflected, 0);
-        assert!(store.list_commands()?.is_empty());
-        Ok(())
+        check((reflected) == (0), "assert_eq failed");
+        check(store.list_commands().ok_test().is_empty(), "assert failed");
     }
 
     struct FailedFactoryDrainPort;
@@ -8768,7 +9991,8 @@ mod tests {
         ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
             session
                 .handle_runtime_effect(&factory_drain_effect())
-                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+                .ok_test();
             self.port_calls_after_drain_effect = Some(self.port_calls.get());
             let state = TuiInteractionState::new(
                 0,
@@ -8811,9 +10035,13 @@ mod tests {
                 TuiTerminalInput::Confirm,
                 requested_by,
             );
-            session
+            match session
                 .handle_runtime_effect(step.effect())
-                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+            {
+                Ok(_outcome) => {}
+                Err(error) => return Err(error),
+            }
             Ok(Vec::new())
         }
     }
