@@ -141,11 +141,17 @@ stage carries `dispatch_factory` (e.g. `"hp"`); map it through `.livespec.jsonc`
 `factories`. In the incident the field was quoted in the very analysis that
 concluded "no run was ever created".
 
-**Why the journal alone cannot settle it.** The rule above says absence of a
-terminal `outcome` row means the run has not finished. True — but *has not
-finished* covers BOTH *still running* AND *never started*, and collapsing it to
-the second is the whole error. The journal distinguishes finished from
-unfinished; only a live query distinguishes in-flight from phantom.
+**Why the journal alone cannot settle it.** Absence of a terminal `outcome` row
+means the run has not finished — but *has not finished* covers BOTH *still
+running* AND *never started*, and collapsing it to the second is the whole error.
+The journal distinguishes finished from unfinished; only a live query
+distinguishes in-flight from phantom.
+
+Note the compounding failure that made this worse in the original incident: the
+journal filter in use could not see terminal rows AT ALL (see "Filter the journal
+by FIELD" below), so "no outcome row" was guaranteed rather than informative.
+Build `term` correctly first — otherwise the journal leg of the test below is
+answering a question you did not ask.
 
 **The corrected test, all three legs required:**
 
@@ -245,10 +251,35 @@ rows = [d for d in map(json.loads, open("tmp/fabro-dispatch-journal.jsonl"))
         if d.get("work_item_id") == "<id>"]
 ```
 
-The same caution applies to `outcome`: an item's real terminal row carries
+**But that filter alone CANNOT SEE THE TERMINAL ROW, and the two rules together
+manufacture a false negative.** An item's real terminal row carries
 `stage: "outcome"` with an `outcome` object holding `status`, `pr_number`,
-`merge_sha` and `fabro_run_id`. Absence of that row means the run has not
-finished, whatever else the file appears to say about the id.
+`merge_sha` and `fabro_run_id` — and it nests the id INSIDE that object. It has
+NO top-level `work_item_id`, so the snippet above filters it out every time.
+
+Measured 2026-08-21 over the whole journal: **182 `outcome` rows, of which 0 have
+a top-level `work_item_id`.** Not a sampling artefact — the shape is universal.
+
+So a reader who follows the snippet above, finds no `stage: "outcome"` row, and
+applies "absence of that row means the run has not finished" will reach that
+conclusion for EVERY item, including ones that merged an hour ago. On 2026-08-21
+that combination contributed directly to a live, succeeded run being diagnosed as
+a phantom and its claim released (see the RIGHT SERVER trap above).
+
+**Select on BOTH shapes:**
+
+```python
+rows = [json.loads(l) for l in open("tmp/fabro-dispatch-journal.jsonl") if l.strip()]
+ID = "<id>"
+stages = [d for d in rows if d.get("work_item_id") == ID]              # progress rows
+term   = [d for d in rows if d.get("stage") == "outcome"
+          and isinstance(d.get("outcome"), dict)
+          and d["outcome"].get("work_item_id") == ID]                  # TERMINAL row
+```
+
+`term` is the one that answers "did this finish, and how". Absence of a row in
+`term` means the run has not finished — that claim is sound, but ONLY when `term`
+is built this way. Built the other way it means nothing at all.
 
 ## A gate written as prose is not a gate — dispatch also CLOSES the item
 
