@@ -285,7 +285,7 @@ close, so it always describes the current context rather than a fixed summary.
 | Search open | `type to search \| esc cancel` |
 | Command palette open | `type a command \| esc cancel` |
 | Action invoker open | `up/down select \| enter stage \| esc cancel` |
-| Command modal open | `up/down select action \| enter run \| esc cancel` |
+| Command modal open | `up/down select action \| enter explain \| esc cancel` |
 | Valve confirm open | `up/down change \| enter confirm \| esc cancel` |
 | Work-item record open | `up/down scroll \| PgUp/PgDn page \| esc close item` |
 | Help open | `left/right pane \| up/down act \| PgUp/PgDn page \| esc close help` |

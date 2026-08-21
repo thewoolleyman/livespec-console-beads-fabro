@@ -675,6 +675,11 @@ pub enum TuiOverlay {
         /// Index of the currently selected action within the modal's action list.
         selected_action_index: usize,
     },
+    /// Command explainer variant.
+    CommandExplainer {
+        /// Index of the selected action within the modal's action list.
+        selected_action_index: usize,
+    },
     /// Help variant: the navigable, pane-specific modal help overlay opened
     /// with `?`. It carries the selected left-menu section index and the
     /// right-pane vertical scroll offset. It closes ONLY on `Esc` -- no other
@@ -773,6 +778,7 @@ impl TuiOverlay {
             Self::Search { query } | Self::CommandPalette { query } => Some(query),
             Self::None
             | Self::CommandModal { .. }
+            | Self::CommandExplainer { .. }
             | Self::ActionInvoker { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
@@ -793,6 +799,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::CommandExplainer { .. }
             | Self::ActionInvoker { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
@@ -807,6 +814,9 @@ impl TuiOverlay {
     pub const fn selected_action_index(&self) -> Option<usize> {
         match self {
             Self::CommandModal {
+                selected_action_index,
+            }
+            | Self::CommandExplainer {
                 selected_action_index,
             } => Some(*selected_action_index),
             Self::None
@@ -832,6 +842,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
+            | Self::CommandExplainer { .. }
             | Self::ActionInvoker { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::DriverHandoff { .. }
@@ -855,6 +866,8 @@ pub enum TuiInteraction {
     OpenCommandPalette,
     /// Open command modal variant.
     OpenCommandModal,
+    /// Open the selected command's explainer.
+    OpenCommandExplainer,
     /// Open the generic action-invoker roster for the current selection.
     OpenActionInvoker,
     /// Open the generated menu bar.
@@ -1617,6 +1630,37 @@ impl TuiScreenModel {
         self.detail.as_ref()
     }
 
+    /// Build a focused fixture model for coverage-only cross-crate tests that
+    /// need to exercise private detail shapes through the public runtime API.
+    #[cfg(coverage)]
+    #[must_use]
+    pub fn coverage_fixture_with_detail(detail: AttentionDetail, overlay: TuiOverlay) -> Self {
+        Self {
+            active_view: TuiView::Attention,
+            navigation: vec![TuiView::Attention],
+            attention_items: vec![],
+            selected_attention_index: None,
+            detail: Some(detail),
+            view_items: vec![],
+            lane_board: project_lane_board(&[]),
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: None,
+            selected_lane_item_index: None,
+            focus: FocusPane::Content,
+            detail_scroll: 0,
+            header_scroll: 0,
+            overlay,
+            selected_repo: String::new(),
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
+            unavailable_sources: vec![],
+            factory_activity: None,
+            header: String::new(),
+            action_failures: BTreeMap::new(),
+        }
+    }
+
     #[must_use]
     /// Return the view items value.
     pub fn view_items(&self) -> &[ViewSummaryItem] {
@@ -1944,8 +1988,9 @@ fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
         TuiOverlay::Search { .. } => Cow::Borrowed("type to search | esc cancel"),
         TuiOverlay::CommandPalette { .. } => Cow::Borrowed("type a command | esc cancel"),
         TuiOverlay::CommandModal { .. } => {
-            Cow::Borrowed("up/down select action | enter run | esc cancel")
+            Cow::Borrowed("up/down select action | enter explain | esc cancel")
         }
+        TuiOverlay::CommandExplainer { .. } => Cow::Borrowed("enter continue | esc cancel"),
         TuiOverlay::ActionInvoker { .. } => {
             Cow::Borrowed("up/down select | enter stage | esc cancel")
         }
@@ -3824,6 +3869,7 @@ pub fn reduce_tui_interaction(
             })
         }
         TuiInteraction::OpenCommandModal => state.clone().with_overlay(open_command_modal(&model)),
+        TuiInteraction::OpenCommandExplainer => open_command_explainer_state(state, &model),
         TuiInteraction::OpenMenu
         | TuiInteraction::MenuNextTop
         | TuiInteraction::MenuPreviousTop => menu_interaction_state(state, interaction),
@@ -4002,6 +4048,29 @@ fn open_command_modal(model: &TuiScreenModel) -> TuiOverlay {
     } else {
         TuiOverlay::None
     }
+}
+
+fn open_command_explainer_state(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+) -> TuiInteractionState {
+    state.clone().with_overlay(open_command_explainer(model))
+}
+
+fn open_command_explainer(model: &TuiScreenModel) -> TuiOverlay {
+    model
+        .overlay()
+        .selected_action_index()
+        .filter(|index| {
+            model
+                .detail()
+                .is_some_and(|detail| detail.actions().get(*index).is_some())
+        })
+        .map_or(TuiOverlay::None, |selected_action_index| {
+            TuiOverlay::CommandExplainer {
+                selected_action_index,
+            }
+        })
 }
 
 fn open_help_overlay(state: &TuiInteractionState) -> TuiOverlay {
@@ -6713,6 +6782,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         TuiOverlay::None
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -6728,6 +6798,11 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         TuiOverlay::CommandModal {
             selected_action_index,
         } => TuiOverlay::CommandModal {
+            selected_action_index: clamp_action_index(detail, *selected_action_index),
+        },
+        TuiOverlay::CommandExplainer {
+            selected_action_index,
+        } => TuiOverlay::CommandExplainer {
             selected_action_index: clamp_action_index(detail, *selected_action_index),
         },
         TuiOverlay::None
@@ -6847,6 +6922,7 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -6878,6 +6954,7 @@ fn help_scroll(overlay: &TuiOverlay, rows: usize, down: bool, max_scroll: usize)
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -6903,6 +6980,7 @@ fn help_focus(overlay: &TuiOverlay, focus: HelpFocus) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -6922,6 +7000,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         },
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -6942,6 +7021,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         },
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -6982,6 +7062,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7054,6 +7135,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -15224,6 +15306,50 @@ mod tests {
     }
 
     #[test]
+    fn command_explainer_overlay_exposes_the_same_selected_action_and_hint() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            None,
+            vec![],
+            vec![OperatorAction::Registered("approve")],
+        );
+        let model = TuiScreenModel {
+            active_view: TuiView::Attention,
+            navigation: vec![TuiView::Attention],
+            attention_items: vec![],
+            selected_attention_index: None,
+            detail: Some(detail),
+            view_items: vec![],
+            lane_board: project_lane_board(&[]),
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: None,
+            selected_lane_item_index: None,
+            focus: FocusPane::Content,
+            detail_scroll: 0,
+            header_scroll: 0,
+            overlay: TuiOverlay::CommandExplainer {
+                selected_action_index: 0,
+            },
+            selected_repo: String::new(),
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
+            unavailable_sources: vec![],
+            factory_activity: None,
+            header: String::new(),
+            action_failures: std::collections::BTreeMap::new(),
+        };
+
+        assert_eq!(
+            model.selected_operator_action(),
+            Some(OperatorAction::Registered("approve"))
+        );
+        assert_eq!(model.footer(), "enter continue | esc cancel");
+    }
+
+    #[test]
     fn menu_selection_moves_and_clamps_to_the_open_node() {
         // Clamped to the OPEN node's own action count, not the registry's: the
         // bar nodes hold different numbers of actions, so a registry-wide bound
@@ -15446,7 +15572,7 @@ mod tests {
         );
         assert_eq!(
             opened_model.footer(),
-            "up/down select action | enter run | esc cancel"
+            "up/down select action | enter explain | esc cancel"
         );
     }
 
