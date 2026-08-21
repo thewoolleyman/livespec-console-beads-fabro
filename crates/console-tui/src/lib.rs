@@ -464,7 +464,7 @@ fn invoker_confirm_step(
     events: &[ConsoleEvent],
     model: &TuiScreenModel,
     selected_action: usize,
-    requested_by: &str,
+    _requested_by: &str,
 ) -> TuiRuntimeStep {
     let staged = action_registry::ACTION_REGISTRY
         .get(selected_action)
@@ -475,12 +475,7 @@ fn invoker_confirm_step(
         }
         Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
         Some(action_registry::StagedAction::FactoryDrain) => {
-            return TuiRuntimeStep::new(
-                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
-                TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
-                    requested_by,
-                )),
-            );
+            TuiInteraction::OpenFactoryDrainConfirm
         }
         Some(action_registry::StagedAction::FactoryDispatchItem) => {
             TuiInteraction::OpenFactoryDispatchItemConfirm
@@ -509,7 +504,7 @@ fn menu_confirm_step(
     model: &TuiScreenModel,
     top: usize,
     selected: usize,
-    requested_by: &str,
+    _requested_by: &str,
 ) -> TuiRuntimeStep {
     let staged = action_registry::menu_actions(top)
         .get(selected)
@@ -520,12 +515,7 @@ fn menu_confirm_step(
         }
         Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
         Some(action_registry::StagedAction::FactoryDrain) => {
-            return TuiRuntimeStep::new(
-                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
-                TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
-                    requested_by,
-                )),
-            );
+            TuiInteraction::OpenFactoryDrainConfirm
         }
         Some(action_registry::StagedAction::FactoryDispatchItem) => {
             TuiInteraction::OpenFactoryDispatchItemConfirm
@@ -592,6 +582,9 @@ fn confirm_operator_action(
     }
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
+        TuiOverlay::FactoryDrainConfirm { .. } => Ok(OperatorActionOutcome::PersistCommand(
+            console_application::factory_drain_command(requested_by),
+        )),
         TuiOverlay::FactoryDispatchItemConfirm { work_item_id } => {
             Ok(OperatorActionOutcome::PersistCommand(
                 console_application::factory_dispatch_item_command(work_item_id, requested_by),
@@ -700,7 +693,7 @@ fn staged_action_step(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
     staged: Option<action_registry::StagedAction>,
-    requested_by: &str,
+    _requested_by: &str,
 ) -> TuiRuntimeStep {
     let interaction = match staged {
         Some(action_registry::StagedAction::Valve(valve)) => {
@@ -708,12 +701,7 @@ fn staged_action_step(
         }
         Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
         Some(action_registry::StagedAction::FactoryDrain) => {
-            return TuiRuntimeStep::new(
-                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
-                TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
-                    requested_by,
-                )),
-            );
+            TuiInteraction::OpenFactoryDrainConfirm
         }
         Some(action_registry::StagedAction::FactoryDispatchItem) => {
             TuiInteraction::OpenFactoryDispatchItemConfirm
@@ -853,6 +841,7 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
         TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. } => return None,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
@@ -882,6 +871,7 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
         TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. } => return None,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
@@ -903,6 +893,7 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::Menu { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -1098,6 +1089,7 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::Menu { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => None,
@@ -1346,6 +1338,7 @@ fn render_menu_bar(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -1662,6 +1655,10 @@ fn render_overlay(
             render_factory_dispatch_item_confirm(work_item_id, overlay_rect(area), buffer);
             OverlayScrollExtents::ZERO
         }
+        TuiOverlay::FactoryDrainConfirm { work_item_id, rank } => {
+            render_factory_drain_confirm(work_item_id, rank, overlay_rect(area), buffer);
+            OverlayScrollExtents::ZERO
+        }
         TuiOverlay::ValveConfirm { valve } => {
             // The modal's consent target MUST read from the SAME source `Enter`
             // dispatches on (`selected_work_item_id` — the Attention detail OR the
@@ -1784,6 +1781,19 @@ fn render_factory_dispatch_item_confirm(work_item_id: &str, area: Rect, buffer: 
         Line::from("Dispatch selected work-item"),
         Line::from(format!("Target: {work_item_id}")),
         Line::from("Uses Dispatcher loop --budget 1 --parallel 1 --item"),
+        Line::from("Enter to dispatch | Esc to cancel"),
+    ])
+    .block(Block::new().borders(Borders::ALL).title("Factory Dispatch"))
+    .render(area, buffer);
+}
+
+fn render_factory_drain_confirm(work_item_id: &str, rank: &str, area: Rect, buffer: &mut Buffer) {
+    Clear.render(area, buffer);
+    Paragraph::new(vec![
+        Line::from("Dispatch ready work"),
+        Line::from(format!("Target: {work_item_id}")),
+        Line::from(format!("Next drain rank: rank {rank}")),
+        Line::from("Uses Dispatcher loop --budget 1 --parallel 1"),
         Line::from("Enter to dispatch | Esc to cancel"),
     ])
     .block(Block::new().borders(Borders::ALL).title("Factory Dispatch"))
@@ -5139,15 +5149,25 @@ mod tests {
 
         let drain = staged_action_step(
             &state,
-            &events,
+            &[lane_event(
+                "evt_staged_drain",
+                "console-staged-drain",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            )],
             Some(action_registry::StagedAction::FactoryDrain),
             "op",
         );
-        assert!(matches!(
-            drain.effect(),
-            TuiRuntimeEffect::PersistCommand(command)
-                if *command.command_type() == CommandType::FactoryDrainRequested
-        ));
+        assert_eq!(
+            drain.state().overlay(),
+            &TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "console-staged-drain".to_owned(),
+                rank: "a0".to_owned(),
+            }
+        );
+        assert_eq!(drain.effect(), &TuiRuntimeEffect::Render);
 
         let dispatch_item = staged_action_step(
             &state,
@@ -6017,12 +6037,15 @@ mod tests {
         )];
 
         let staged = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
-        let command = persisted_command(staged.effect());
 
         assert_eq!(
-            command.map(console_domain::CommandEnvelope::command_type),
-            Some(&CommandType::FactoryDrainRequested)
+            staged.state().overlay(),
+            &TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "console-invoker-dispatch".to_owned(),
+                rank: "a0".to_owned(),
+            }
         );
+        assert_eq!(staged.effect(), &TuiRuntimeEffect::Render);
     }
 
     #[test]
@@ -6370,12 +6393,85 @@ mod tests {
         )];
 
         let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+
+        assert_eq!(
+            step.state().overlay(),
+            &TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "console-dispatch-ready-enter".to_owned(),
+                rank: "a0".to_owned(),
+            }
+        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[test]
+    fn dispatch_ready_confirmation_enter_persists_the_drain_command() {
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "console-dispatch-ready-enter".to_owned(),
+                rank: "a0".to_owned(),
+            },
+        );
+        let ready_events = [lane_event(
+            "evt_dispatch_ready_confirm",
+            "console-dispatch-ready-enter",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+
+        let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
         let command = persisted_command(step.effect());
 
         assert_eq!(
             command.map(console_domain::CommandEnvelope::command_type),
             Some(&CommandType::FactoryDrainRequested)
         );
+    }
+
+    #[test]
+    fn dispatch_ready_confirmation_names_the_ranked_drain_target_on_the_rendered_surface() {
+        let position = menu_position_for("dispatch-ready");
+        assert!(position.is_some(), "missing menu action dispatch-ready");
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected });
+        let ready_events = [
+            lane_event(
+                "evt_dispatch_ready_later",
+                "console-ready-later",
+                Lane::Ready,
+                None,
+                "a1",
+                "ready",
+            ),
+            lane_event(
+                "evt_dispatch_ready_next",
+                "console-ready-next",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+        ];
+
+        let staged = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+        let rendered = render_to_text(
+            &build_tui_model_for_state(&ready_events, staged.state()),
+            110,
+            60,
+        )
+        .unwrap_or_default();
+
+        assert_eq!(staged.effect(), &TuiRuntimeEffect::Render);
+        assert!(rendered.contains("Dispatch ready work"));
+        assert!(rendered.contains("Target: console-ready-next"));
+        assert!(rendered.contains("rank a0"));
+        assert!(rendered.contains("Enter to dispatch | Esc to cancel"));
+        assert!(!rendered.contains("Target: console-ready-later"));
     }
 
     #[test]

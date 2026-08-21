@@ -5128,8 +5128,9 @@ mod tests {
     }
 
     /// Build the `factory.drain_requested` effect the dispatch menu action
-    /// produces, by driving the pure runtime's Confirm on the registered menu
-    /// row — the same menu → Confirm → effect path the interactive loop drives.
+    /// produces, by driving the pure runtime through the registered menu row and
+    /// the target readback confirmation — the same menu → Confirm → Confirm →
+    /// effect path the interactive loop drives.
     fn drain_effect(events: &[ConsoleEvent]) -> TuiRuntimeEffect {
         let (top, selected) = console_application::action_registry::menu_tree()
             .iter()
@@ -5143,9 +5144,16 @@ mod tests {
             .unwrap_or((0, 0));
         let state =
             TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected });
-        console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
-            .effect()
-            .clone()
+        let staged =
+            console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator");
+        console_tui::step_tui_runtime(
+            staged.state(),
+            events,
+            TuiTerminalInput::Confirm,
+            "operator",
+        )
+        .effect()
+        .clone()
     }
 
     /// Seed one Ready-lane work-item so the drain policy ACCEPTS the drain — with
