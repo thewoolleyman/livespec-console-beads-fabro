@@ -9,10 +9,10 @@
 //! the shared input both sides extract from.
 
 use super::{
-    Audience, ClauseLink, CoverageEntry, CoverageReport, Mode, NFR_FILE, SpecSource,
-    UnlinkedClause, UntestedScenario, contains_whole_word, derive_gap_id, evaluate, extract_rules,
-    nfr_scenarios, normalize_scenario, operator_scenarios, parse_heading, parse_registry,
-    push_heading, resolve_mode,
+    Audience, ClauseLink, CoverageEntry, CoverageReport, InvalidTestRegistration, Mode, NFR_FILE,
+    SpecSource, UnlinkedClause, UntestedScenario, contains_whole_word, derive_gap_id, evaluate,
+    extract_rules, nfr_scenarios, normalize_scenario, operator_scenarios, parse_heading,
+    parse_registry, push_heading, resolve_mode, validate_test_registrations,
 };
 
 const FIXTURE: &str = include_str!("../tests/data/parity_fixture.md");
@@ -290,6 +290,8 @@ fn parse_registry_reads_entries_and_defaults_clauses() -> Result<(), String> {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].reason, "covered by a top-of-pyramid test");
     assert_eq!(entries[1].reason, "", "missing reason defaults to empty");
+    assert_eq!(entries[0].tests, vec!["t::a".to_string()]);
+    assert_eq!(entries[1].tests, vec!["t::b".to_string()]);
     assert_eq!(
         entries[0].clauses,
         vec![ClauseLink {
@@ -298,6 +300,36 @@ fn parse_registry_reads_entries_and_defaults_clauses() -> Result<(), String> {
         }],
     );
     assert_eq!(entries[1].clauses, Vec::new());
+    Ok(())
+}
+
+#[test]
+fn parse_registry_accepts_list_tests_and_splits_legacy_semicolon_strings() -> Result<(), String> {
+    let json = r#"[
+      {"scenario":"S1","scenario_file":"scenarios.md",
+       "tests":["crates/a/tests/one.rs::first", "crates/a/tests/two.rs::second"]},
+      {"scenario":"S2","scenario_file":"scenarios.md",
+       "test":"crates/b/src/lib.rs::tests::alpha; crates/b/src/lib.rs::tests::beta"}
+    ]"#;
+
+    let entries = parse_registry(json)?;
+
+    assert_eq!(
+        entries[0].tests,
+        vec![
+            "crates/a/tests/one.rs::first".to_string(),
+            "crates/a/tests/two.rs::second".to_string()
+        ],
+        "list-valued registrations are accepted",
+    );
+    assert_eq!(
+        entries[1].tests,
+        vec![
+            "crates/b/src/lib.rs::tests::alpha".to_string(),
+            "crates/b/src/lib.rs::tests::beta".to_string()
+        ],
+        "legacy single-string registrations can carry semicolon-separated ids",
+    );
     Ok(())
 }
 
@@ -324,6 +356,7 @@ fn parse_registry_skips_malformed_entries() -> Result<(), String> {
         "non-object and field-missing entries are skipped"
     );
     assert_eq!(entries[0].scenario, "OK");
+    assert_eq!(entries[0].tests, vec!["t".to_string()]);
     assert_eq!(
         entries[0].clauses,
         vec![ClauseLink {
@@ -332,7 +365,11 @@ fn parse_registry_skips_malformed_entries() -> Result<(), String> {
         }],
     );
     assert_eq!(entries[1].scenario, "NoTestField");
-    assert_eq!(entries[1].test, "", "missing test field defaults to empty");
+    assert_eq!(
+        entries[1].tests,
+        Vec::<String>::new(),
+        "missing test field defaults to empty"
+    );
     assert_eq!(
         entries[1].reason, "",
         "missing reason field defaults to empty"
@@ -366,7 +403,7 @@ fn evaluate_flags_unlinked_and_resolves_links() {
     let linked = vec![CoverageEntry {
         scenario: "Scenario 1 -- A".to_string(),
         scenario_file: "scenarios.md".to_string(),
-        test: "t::a".to_string(),
+        tests: vec!["t::a".to_string()],
         reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap.clone(),
@@ -386,7 +423,7 @@ fn evaluate_flags_unlinked_and_resolves_links() {
     let stale = vec![CoverageEntry {
         scenario: "Ghost".to_string(),
         scenario_file: "scenarios.md".to_string(),
-        test: "t".to_string(),
+        tests: vec!["t".to_string()],
         reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap,
@@ -421,7 +458,7 @@ fn evaluate_partitions_clause_audiences() {
     let wrong = vec![CoverageEntry {
         scenario: "Op Scenario".to_string(),
         scenario_file: "scenarios.md".to_string(),
-        test: "t".to_string(),
+        tests: vec!["t".to_string()],
         reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap.clone(),
@@ -439,7 +476,7 @@ fn evaluate_partitions_clause_audiences() {
     let right = vec![CoverageEntry {
         scenario: "Nfr Theme".to_string(),
         scenario_file: NFR_FILE.to_string(),
-        test: "t".to_string(),
+        tests: vec!["t".to_string()],
         reason: String::new(),
         clauses: vec![ClauseLink {
             gap_id: gap,
@@ -463,14 +500,14 @@ fn evaluate_flags_untested_scenarios() {
         CoverageEntry {
             scenario: "Op A".to_string(),
             scenario_file: "scenarios.md".to_string(),
-            test: "t::opa".to_string(),
+            tests: vec!["t::opa".to_string()],
             reason: String::new(),
             clauses: Vec::new(),
         },
         CoverageEntry {
             scenario: "Op B".to_string(),
             scenario_file: "scenarios.md".to_string(),
-            test: "   ".to_string(),
+            tests: Vec::new(),
             reason: "ignored for blank tests".to_string(),
             clauses: Vec::new(),
         },
@@ -497,7 +534,7 @@ fn evaluate_accepts_reasoned_pending_todo_scenarios() {
         CoverageEntry {
             scenario: "Pending Op".to_string(),
             scenario_file: "scenarios.md".to_string(),
-            test: "TODO".to_string(),
+            tests: vec!["TODO".to_string()],
             reason: "Test tier: a top-of-pyramid acceptance test will cover this scenario."
                 .to_string(),
             clauses: Vec::new(),
@@ -505,7 +542,7 @@ fn evaluate_accepts_reasoned_pending_todo_scenarios() {
         CoverageEntry {
             scenario: "Pending Nfr".to_string(),
             scenario_file: NFR_FILE.to_string(),
-            test: "TODO".to_string(),
+            tests: vec!["TODO".to_string()],
             reason: "Test tier: integration coverage will land with the implementation slice."
                 .to_string(),
             clauses: Vec::new(),
@@ -527,7 +564,7 @@ fn evaluate_rejects_todo_reason_that_mentions_acceptance_lane_without_test_tier(
     let registry = vec![CoverageEntry {
         scenario: "Lane Mention".to_string(),
         scenario_file: "scenarios.md".to_string(),
-        test: "TODO".to_string(),
+        tests: vec!["TODO".to_string()],
         reason: "Pending because this covers the acceptance lane.".to_string(),
         clauses: Vec::new(),
     }];
@@ -558,21 +595,21 @@ fn evaluate_rejects_unreasoned_pending_todo_scenarios() {
         CoverageEntry {
             scenario: "No Reason".to_string(),
             scenario_file: "scenarios.md".to_string(),
-            test: "TODO".to_string(),
+            tests: vec!["TODO".to_string()],
             reason: "   ".to_string(),
             clauses: Vec::new(),
         },
         CoverageEntry {
             scenario: "No Tier".to_string(),
             scenario_file: "scenarios.md".to_string(),
-            test: "TODO".to_string(),
+            tests: vec!["TODO".to_string()],
             reason: "Pending until the implementation slice lands.".to_string(),
             clauses: Vec::new(),
         },
         CoverageEntry {
             scenario: "Concrete".to_string(),
             scenario_file: "scenarios.md".to_string(),
-            test: "crates/console-cli/tests/concrete.rs::scenario".to_string(),
+            tests: vec!["crates/console-cli/tests/concrete.rs::scenario".to_string()],
             reason: String::new(),
             clauses: Vec::new(),
         },
@@ -592,10 +629,135 @@ fn evaluate_rejects_unreasoned_pending_todo_scenarios() {
 }
 
 #[test]
+fn validate_test_registrations_accepts_file_only_and_function_ids()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_temp_root("valid");
+    let tests_dir = root.join("crates/console-cli/tests");
+    let src_dir = root.join("crates/console-tui/src");
+    std::fs::create_dir_all(&tests_dir)?;
+    std::fs::create_dir_all(&src_dir)?;
+    std::fs::write(
+        tests_dir.join("scenario.rs"),
+        "#[test]\nfn integration_case() {}\n",
+    )?;
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        "mod tests {\n    #[tokio::test]\n    async fn async_unit_case() {}\n}\n",
+    )?;
+
+    let registry = vec![CoverageEntry {
+        scenario: "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+            .to_string(),
+        scenario_file: "scenarios.md".to_string(),
+        tests: vec![
+            "crates/console-cli/tests/scenario.rs".to_string(),
+            "crates/console-cli/tests/scenario.rs::integration_case".to_string(),
+            "crates/console-tui/src/lib.rs::tests::async_unit_case".to_string(),
+        ],
+        reason: String::new(),
+        clauses: Vec::new(),
+    }];
+
+    assert_eq!(validate_test_registrations(&registry, &root), Vec::new());
+    let _ = std::fs::remove_dir_all(root);
+    Ok(())
+}
+
+#[test]
+fn validate_test_registrations_flags_missing_file_and_missing_function()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_temp_root("invalid");
+    let src_dir = root.join("crates/console-application/src");
+    std::fs::create_dir_all(&src_dir)?;
+    std::fs::write(src_dir.join("lib.rs"), "#[test]\nfn existing_case() {}\n")?;
+
+    let scenario =
+        "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item";
+    let registry = vec![CoverageEntry {
+        scenario: scenario.to_string(),
+        scenario_file: "scenarios.md".to_string(),
+        tests: vec![
+            "crates/console-application/src/lib.rs::this_function_does_not_exist".to_string(),
+            "crates/console-application/tests/missing.rs::missing_case".to_string(),
+        ],
+        reason: String::new(),
+        clauses: Vec::new(),
+    }];
+
+    let invalid = validate_test_registrations(&registry, &root);
+
+    assert_eq!(
+        invalid,
+        vec![
+            InvalidTestRegistration {
+                scenario_file: "scenarios.md".to_string(),
+                scenario: scenario.to_string(),
+                test: "crates/console-application/src/lib.rs::this_function_does_not_exist"
+                    .to_string(),
+                file: "crates/console-application/src/lib.rs".to_string(),
+                function: Some("this_function_does_not_exist".to_string()),
+                reason: "function does not appear in file".to_string(),
+            },
+            InvalidTestRegistration {
+                scenario_file: "scenarios.md".to_string(),
+                scenario: scenario.to_string(),
+                test: "crates/console-application/tests/missing.rs::missing_case".to_string(),
+                file: "crates/console-application/tests/missing.rs".to_string(),
+                function: Some("missing_case".to_string()),
+                reason: "file does not exist".to_string(),
+            }
+        ],
+        "diagnostics name the entry, file, and function when one was registered",
+    );
+    let _ = std::fs::remove_dir_all(root);
+    Ok(())
+}
+
+#[test]
+fn validate_test_registrations_flags_unreadable_test_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = unique_temp_root("unreadable");
+    let file_path = root.join("crates/console-application/tests/not_a_file.rs");
+    std::fs::create_dir_all(&file_path)?;
+
+    let registry = vec![CoverageEntry {
+        scenario: "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+            .to_string(),
+        scenario_file: "scenarios.md".to_string(),
+        tests: vec!["crates/console-application/tests/not_a_file.rs::case".to_string()],
+        reason: String::new(),
+        clauses: Vec::new(),
+    }];
+
+    let invalid = validate_test_registrations(&registry, &root);
+
+    assert_eq!(invalid.len(), 1);
+    assert_eq!(
+        invalid[0].file,
+        "crates/console-application/tests/not_a_file.rs"
+    );
+    assert_eq!(invalid[0].function, Some("case".to_string()));
+    assert!(
+        invalid[0].reason.starts_with("failed to read file:"),
+        "read error diagnostic should explain why the path could not be inspected",
+    );
+    let _ = std::fs::remove_dir_all(root);
+    Ok(())
+}
+
+fn unique_temp_root(label: &str) -> std::path::PathBuf {
+    let root =
+        std::env::temp_dir().join(format!("console-spec-check-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    root
+}
+
+#[test]
 fn coverage_report_is_clean_only_when_empty() {
     let clean = CoverageReport {
         unlinked_clauses: Vec::new(),
         untested_scenarios: Vec::new(),
+        invalid_test_registrations: Vec::new(),
     };
     assert!(clean.is_clean());
 
@@ -607,6 +769,7 @@ fn coverage_report_is_clean_only_when_empty() {
             clause: "c".to_string(),
         }],
         untested_scenarios: Vec::new(),
+        invalid_test_registrations: Vec::new(),
     };
     assert!(!with_unlinked.is_clean());
 
@@ -616,8 +779,23 @@ fn coverage_report_is_clean_only_when_empty() {
             scenario_file: "f".to_string(),
             scenario: "s".to_string(),
         }],
+        invalid_test_registrations: Vec::new(),
     };
     assert!(!with_untested.is_clean());
+
+    let with_invalid_test = CoverageReport {
+        unlinked_clauses: Vec::new(),
+        untested_scenarios: Vec::new(),
+        invalid_test_registrations: vec![InvalidTestRegistration {
+            scenario_file: "f".to_string(),
+            scenario: "s".to_string(),
+            test: "missing.rs::case".to_string(),
+            file: "missing.rs".to_string(),
+            function: Some("case".to_string()),
+            reason: "file does not exist".to_string(),
+        }],
+    };
+    assert!(!with_invalid_test.is_clean());
 }
 
 #[test]
