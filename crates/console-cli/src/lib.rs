@@ -1391,12 +1391,16 @@ pub fn handle_pending_work_item_commands(
     port: &mut dyn OrchestratorActionPort,
 ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
     let _recovered = recover_stale_executing_commands(store, handled_at)?;
+    let commands = store.list_commands()?;
     let mut outcomes = Vec::new();
-    for stored_command in store.list_commands()? {
+    for (index, stored_command) in commands.iter().enumerate() {
         if stored_command.status() != "pending" {
             continue;
         }
-        let Some(pending) = work_item_command_from_stored(&stored_command)? else {
+        if older_factory_command_blocks_control_command(stored_command, &commands[..index]) {
+            continue;
+        }
+        let Some(pending) = work_item_command_from_stored(stored_command)? else {
             continue;
         };
         if !claim_pending_command(store, pending.command(), handled_at)? {
@@ -1468,12 +1472,16 @@ pub fn handle_pending_config_commands(
 ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
     let _recovered = recover_stale_executing_commands(store, handled_at)?;
     let mut settings_port = DispatcherSettingsPort::new(action_port);
+    let commands = store.list_commands()?;
     let mut outcomes = Vec::new();
-    for stored_command in store.list_commands()? {
+    for (index, stored_command) in commands.iter().enumerate() {
         if stored_command.status() != "pending" {
             continue;
         }
-        let Some((command, payload_json)) = config_command_from_stored(&stored_command)? else {
+        if older_factory_command_blocks_control_command(stored_command, &commands[..index]) {
+            continue;
+        }
+        let Some((command, payload_json)) = config_command_from_stored(stored_command)? else {
             continue;
         };
         if !claim_pending_command(store, &command, handled_at)? {
@@ -1494,6 +1502,43 @@ pub fn handle_pending_config_commands(
         )?);
     }
     Ok(outcomes)
+}
+
+/// Handle pending short control-plane commands.
+///
+/// This lane intentionally excludes long-running factory drain and selected
+/// dispatch commands so policy/valve changes can complete while a drain is
+/// still executing. Same-aggregate ordering is still causal: a control command
+/// does not overtake an older pending/executing factory command for that
+/// aggregate.
+pub fn handle_pending_control_commands(
+    store: &mut dyn FactoryCommandStore,
+    handled_at: &str,
+    action_port: &mut dyn OrchestratorActionPort,
+) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let mut outcomes = handle_pending_work_item_commands(store, handled_at, action_port)?;
+    let config_outcomes = handle_pending_config_commands(store, handled_at, action_port)?;
+    outcomes.extend(config_outcomes);
+    Ok(outcomes)
+}
+
+fn older_factory_command_blocks_control_command(
+    control_command: &StoredCommand,
+    older_commands: &[StoredCommand],
+) -> bool {
+    let Some(aggregate_id) = control_command.aggregate_id() else {
+        return false;
+    };
+    older_commands.iter().any(|older| {
+        older.aggregate_id() == Some(aggregate_id)
+            && is_factory_command_type(older.command_type())
+            && matches!(older.status(), "pending" | "executing")
+    })
+}
+
+fn is_factory_command_type(command_type: &str) -> bool {
+    command_type == CommandType::FactoryDrainRequested.contract_name()
+        || command_type == CommandType::FactoryDispatchItemRequested.contract_name()
 }
 
 /// Rebuild a `config.dispatcher_setting_set` command and its stored
@@ -2489,10 +2534,11 @@ mod tests {
         backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
         config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_console_event, events_tail_report, factory_command_from_stored,
-        handle_pending_config_commands, handle_pending_factory_commands,
-        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
-        is_failed_once_only_valve_retry, live_source_adapters, load_tui_events_from_store,
-        normalized_payload_json, observe_and_reflect_autonomous_decisions,
+        handle_pending_config_commands, handle_pending_control_commands,
+        handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
+        initial_source_seed, is_failed_once_only_valve_retry, live_source_adapters,
+        load_tui_events_from_store, normalized_payload_json,
+        observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
         refresh_sources, render_tui_preview, resolve_console_repo, run,
         run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
@@ -5947,6 +5993,239 @@ mod tests {
         // The policy extracted from the stored payload lands in the action-id.
         assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:ai-only"]);
         Ok(())
+    }
+
+    #[test]
+    fn control_commands_for_other_items_complete_while_factory_drain_is_executing()
+    -> Result<(), ConsoleRuntimeError> {
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-overlap-{}-{}.sqlite",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?
+                .as_nanos()
+        ));
+        let _ignored = fs::remove_file(&path);
+        let mut setup_store = SqliteEventStore::open(&path)?;
+        seed_running_drain_overlap_commands(&mut setup_store)?;
+        drop(setup_store);
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker_path = path.clone();
+        let factory_worker = std::thread::spawn(move || {
+            let mut store = SqliteEventStore::open(&worker_path)?;
+            let mut port = BlockingFactoryDrainPort {
+                started_tx,
+                release_rx,
+            };
+            handle_pending_factory_commands(&mut store, "2026-08-21T00:00:02Z", &mut port)
+        });
+        started_rx
+            .recv()
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+
+        let mut control_store = SqliteEventStore::open(&path)?;
+        let mut control_port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+        let control_outcomes =
+            handle_control_commands_for_test(&mut control_store, &mut control_port)?;
+
+        let commands_while_drain_runs = control_store.list_commands()?;
+        assert_eq!(control_outcomes.len(), 1);
+        assert_eq!(control_outcomes[0].command_status(), "completed");
+        assert_eq!(
+            control_port.observed_action_ids,
+            ["set-acceptance:wi-other:ai-then-human"]
+        );
+        assert_eq!(
+            commands_while_drain_runs
+                .iter()
+                .find(|command| command.command_id() == "cmd_drain")
+                .map(StoredCommand::status),
+            Some("executing")
+        );
+        assert_eq!(
+            commands_while_drain_runs
+                .iter()
+                .find(|command| command.command_id() == "cmd_set_acceptance_other")
+                .map(StoredCommand::status),
+            Some("completed")
+        );
+
+        release_tx
+            .send(())
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)?;
+        let factory_outcomes = factory_worker
+            .join()
+            .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)??;
+        assert_eq!(factory_outcomes.len(), 1);
+
+        let _ignored = fs::remove_file(&path);
+        Ok(())
+    }
+
+    struct BlockingFactoryDrainPort {
+        started_tx: std::sync::mpsc::Sender<()>,
+        release_rx: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl FactoryDrainPort for BlockingFactoryDrainPort {
+        fn drain_ready_queue(
+            &mut self,
+            _request: &FactoryDrainRequest,
+        ) -> Result<FactoryDrainPortOutcome, ApplicationError> {
+            self.started_tx
+                .send(())
+                .map_err(|_error| ApplicationError::FactoryDrainPortFailed)?;
+            self.release_rx
+                .recv()
+                .map_err(|_error| ApplicationError::FactoryDrainPortFailed)?;
+            Ok(FactoryDrainPortOutcome::completed(1))
+        }
+    }
+
+    fn seed_running_drain_overlap_commands(
+        store: &mut SqliteEventStore,
+    ) -> Result<(), ConsoleRuntimeError> {
+        store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_drain".to_owned(),
+                CommandType::FactoryDrainRequested,
+                "fleet:livespec".to_owned(),
+                "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-08-21T00:00:00Z".to_owned(),
+            Some("fleet:livespec".to_owned()),
+            "corr_cmd_drain".to_owned(),
+            "{}".to_owned(),
+        ))?;
+        store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_set_acceptance_other".to_owned(),
+                CommandType::WorkItemSetAcceptanceRequested,
+                "wi-other".to_owned(),
+                "wi-other:work_item.set_acceptance_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-08-21T00:00:01Z".to_owned(),
+            Some("wi-other".to_owned()),
+            "corr_cmd_set_acceptance_other".to_owned(),
+            r#"{"policy":"ai-then-human"}"#.to_owned(),
+        ))?;
+        append_ready_work_item(store, "2026-08-21T00:00:01Z")?;
+        Ok(())
+    }
+
+    fn handle_control_commands_for_test(
+        store: &mut SqliteEventStore,
+        port: &mut SimulatedWorkItemActionPort,
+    ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+        handle_pending_control_commands(store, "2026-08-21T00:00:03Z", port)
+    }
+
+    #[test]
+    fn control_commands_do_not_overtake_older_same_item_factory_commands()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_dispatch_item".to_owned(),
+                CommandType::FactoryDispatchItemRequested,
+                "wi-1".to_owned(),
+                "wi-1:factory.dispatch_item_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-08-21T00:00:00Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_dispatch_item".to_owned(),
+            "{}".to_owned(),
+        ))?;
+        store.append_command(&CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_set_acceptance".to_owned(),
+                CommandType::WorkItemSetAcceptanceRequested,
+                "wi-1".to_owned(),
+                "wi-1:work_item.set_acceptance_requested".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-08-21T00:00:01Z".to_owned(),
+            Some("wi-1".to_owned()),
+            "corr_cmd_set_acceptance".to_owned(),
+            r#"{"policy":"ai-then-human"}"#.to_owned(),
+        ))?;
+        let mut port =
+            SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcomes =
+            handle_pending_control_commands(&mut store, "2026-08-21T00:00:01Z", &mut port)?;
+
+        assert!(outcomes.is_empty());
+        assert!(port.observed_action_ids.is_empty());
+        assert_eq!(
+            store
+                .list_commands()?
+                .iter()
+                .map(StoredCommand::status)
+                .collect::<Vec<_>>(),
+            ["pending", "pending"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn older_factory_command_guard_only_blocks_same_aggregate_control_commands() {
+        let older_factory = StoredCommand::new(
+            "cmd_dispatch_item".to_owned(),
+            "factory".to_owned(),
+            "factory.dispatch_item_requested".to_owned(),
+            Some("wi-1".to_owned()),
+            "wi-1:factory.dispatch_item_requested".to_owned(),
+            "operator".to_owned(),
+            "executing".to_owned(),
+        );
+        let same_item_control = StoredCommand::new(
+            "cmd_set_acceptance".to_owned(),
+            "work_item".to_owned(),
+            "work_item.set_acceptance_requested".to_owned(),
+            Some("wi-1".to_owned()),
+            "wi-1:work_item.set_acceptance_requested".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+        let other_item_control = StoredCommand::new(
+            "cmd_set_acceptance_other".to_owned(),
+            "work_item".to_owned(),
+            "work_item.set_acceptance_requested".to_owned(),
+            Some("wi-2".to_owned()),
+            "wi-2:work_item.set_acceptance_requested".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+        let no_aggregate_control = StoredCommand::new(
+            "cmd_no_aggregate".to_owned(),
+            "work_item".to_owned(),
+            "work_item.set_acceptance_requested".to_owned(),
+            None,
+            "missing:work_item.set_acceptance_requested".to_owned(),
+            "operator".to_owned(),
+            "pending".to_owned(),
+        );
+
+        assert!(older_factory_command_blocks_control_command(
+            &same_item_control,
+            std::slice::from_ref(&older_factory)
+        ));
+        assert!(!older_factory_command_blocks_control_command(
+            &other_item_control,
+            std::slice::from_ref(&older_factory)
+        ));
+        assert!(!older_factory_command_blocks_control_command(
+            &no_aggregate_control,
+            &[older_factory]
+        ));
     }
 
     #[test]

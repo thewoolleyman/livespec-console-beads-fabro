@@ -329,44 +329,76 @@ impl PendingCommandRequester for ChannelCommandRequester {
 #[cfg(all(not(test), not(coverage)))]
 fn command_worker_loop(command_rx: &Receiver<CommandMessage>) {
     while matches!(command_rx.recv(), Ok(CommandMessage::HandleNow)) {
-        let Ok(resolution) = BackingCliResolution::from_environment() else {
-            continue;
-        };
-        let path = console_store_path();
-        let Ok(mut store) = SqliteEventStore::open(&path) else {
-            continue;
-        };
-        let Ok(observed_at) = current_requested_at() else {
-            continue;
-        };
-        let repo_path = resolution.drive_repo_arg();
-        let probe = SystemSourceProbe::new(resolution.selected_repo_path());
-        let mut drain = DispatcherFactoryDrainPort::new(
-            &probe,
-            resolution.programs().dispatcher(),
-            &["loop", "--repo", repo_path.as_str()],
-        );
-        let mut drive = DispatcherOrchestratorActionPort::new(
-            &probe,
-            resolution.programs().drive(),
-            &["--repo", repo_path.as_str(), "--json"],
-        );
-        let _ = livespec_console_beads_fabro::handle_pending_factory_commands(
-            &mut store,
-            &observed_at,
-            &mut drain,
-        );
-        let _ = livespec_console_beads_fabro::handle_pending_work_item_commands(
-            &mut store,
-            &observed_at,
-            &mut drive,
-        );
-        let _ = livespec_console_beads_fabro::handle_pending_config_commands(
-            &mut store,
-            &observed_at,
-            &mut drive,
-        );
+        spawn_factory_command_worker();
+        handle_pending_control_command_lane();
     }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn spawn_factory_command_worker() {
+    let _ = std::thread::spawn(handle_pending_factory_command_lane);
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn handle_pending_factory_command_lane() {
+    let Ok(resolution) = BackingCliResolution::from_environment() else {
+        return;
+    };
+    let path = console_store_path();
+    let Ok(mut store) = SqliteEventStore::open(&path) else {
+        return;
+    };
+    let Ok(observed_at) = current_requested_at() else {
+        return;
+    };
+    let repo_path = resolution.drive_repo_arg();
+    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
+    let mut drain = DispatcherFactoryDrainPort::new(
+        &probe,
+        resolution.programs().dispatcher(),
+        &["loop", "--repo", repo_path.as_str()],
+    );
+    let mut drive = DispatcherOrchestratorActionPort::new(
+        &probe,
+        resolution.programs().drive(),
+        &["--repo", repo_path.as_str(), "--json"],
+    );
+    let _ = livespec_console_beads_fabro::handle_pending_factory_commands(
+        &mut store,
+        &observed_at,
+        &mut drain,
+    );
+    let _ = livespec_console_beads_fabro::handle_pending_control_commands(
+        &mut store,
+        &observed_at,
+        &mut drive,
+    );
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn handle_pending_control_command_lane() {
+    let Ok(resolution) = BackingCliResolution::from_environment() else {
+        return;
+    };
+    let path = console_store_path();
+    let Ok(mut store) = SqliteEventStore::open(&path) else {
+        return;
+    };
+    let Ok(observed_at) = current_requested_at() else {
+        return;
+    };
+    let repo_path = resolution.drive_repo_arg();
+    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
+    let mut drive = DispatcherOrchestratorActionPort::new(
+        &probe,
+        resolution.programs().drive(),
+        &["--repo", repo_path.as_str(), "--json"],
+    );
+    let _ = livespec_console_beads_fabro::handle_pending_control_commands(
+        &mut store,
+        &observed_at,
+        &mut drive,
+    );
 }
 
 #[cfg(all(not(test), not(coverage)))]
