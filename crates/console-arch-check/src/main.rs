@@ -68,8 +68,88 @@ fn run_checks(root: &Path) -> Vec<String> {
         findings.extend(check_crate_sources(crate_name, &crate_dir));
     }
     findings.extend(check_tmux_socket_scoping(root));
+    findings.extend(check_workspace_rust_version_matches_toolchain(root));
     findings.extend(check_fabro_image_rust_toolchain(root));
     findings
+}
+
+// ---------------------------------------------------------------------------
+// Workspace Rust MSRV/toolchain lockstep.
+// ---------------------------------------------------------------------------
+
+fn check_workspace_rust_version_matches_toolchain(root: &Path) -> Vec<String> {
+    match workspace_rust_version_matches_toolchain(root) {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![error],
+    }
+}
+
+fn workspace_rust_version_matches_toolchain(root: &Path) -> Result<(), String> {
+    let rust_version = workspace_rust_version(root)?;
+    let toolchain = expected_rust_toolchain(root)?;
+    let rust_version = VersionComponents::parse(&rust_version)
+        .map_err(|error| format!("Cargo.toml workspace.package.rust-version: {error}"))?;
+    let channel = VersionComponents::parse(&toolchain.channel)
+        .map_err(|error| format!("rust-toolchain.toml toolchain.channel: {error}"))?;
+    if !rust_version.is_component_prefix_of(&channel) {
+        return Err(format!(
+            "Cargo.toml workspace.package.rust-version `{}` does not agree with \
+             rust-toolchain.toml toolchain.channel `{}` by version component",
+            rust_version.raw, channel.raw
+        ));
+    }
+    Ok(())
+}
+
+fn workspace_rust_version(root: &Path) -> Result<String, String> {
+    let path = root.join("Cargo.toml");
+    let source = fs::read_to_string(&path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let value: toml::Value = toml::from_str(&source)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+    let workspace_package = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("package"))
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{}: missing workspace.package table", path.display()))?;
+    let rust_version = workspace_package
+        .get("rust-version")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| format!("{}: missing workspace.package.rust-version", path.display()))?;
+    Ok(rust_version.to_owned())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VersionComponents {
+    raw: String,
+    components: Vec<u64>,
+}
+
+impl VersionComponents {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let components = raw
+            .split('.')
+            .map(|component| {
+                if component.is_empty() {
+                    return Err(format!("version `{raw}` contains an empty component"));
+                }
+                component.parse::<u64>().map_err(|error| {
+                    format!("version `{raw}` contains non-numeric component `{component}`: {error}")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if components.is_empty() {
+            return Err("version is empty".to_owned());
+        }
+        Ok(Self {
+            raw: raw.to_owned(),
+            components,
+        })
+    }
+
+    fn is_component_prefix_of(&self, other: &Self) -> bool {
+        other.components.starts_with(&self.components)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,9 +1802,9 @@ mod tests {
         CrateNode, ObservedRustToolchain, check_adapter_isolation,
         check_fabro_image_rust_toolchain_with_probe, check_forbid_unsafe, check_layering,
         check_registry_bypass, check_tmux_socket_scoping, check_tmux_socket_scoping_source,
-        check_type_placement, check_unwrap_expect, fabro_python_rust_image,
-        observed_rust_toolchain, observed_rust_toolchain_from_image_config,
-        rust_files_for_tmux_scan,
+        check_type_placement, check_unwrap_expect, check_workspace_rust_version_matches_toolchain,
+        fabro_python_rust_image, observed_rust_toolchain,
+        observed_rust_toolchain_from_image_config, rust_files_for_tmux_scan,
     };
 
     fn node(name: &str, workspace_deps: &[&str], external_deps: &[&str]) -> CrateNode {
@@ -2586,6 +2666,130 @@ mod tests {
             format!("[environments.livespec-ci.image]\ndocker = \"{image}\"\n"),
         )?;
         Ok(root)
+    }
+
+    fn temp_workspace_toolchain_root(
+        name: &str,
+        rust_version: &str,
+        channel: &str,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let root = temp_scan_root(name)?;
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[workspace.package]\nrust-version = \"{rust_version}\"\n\
+                 [workspace]\nmembers = []\n"
+            ),
+        )?;
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            format!("[toolchain]\nchannel = \"{channel}\"\ncomponents = []\n"),
+        )?;
+        Ok(root)
+    }
+
+    #[test]
+    fn workspace_rust_version_two_component_prefix_matches_toolchain() -> std::io::Result<()> {
+        let root = temp_workspace_toolchain_root("workspace-rust-msrv-match", "1.92", "1.92.0")?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert!(findings.is_empty(), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_rust_version_component_mismatch_is_flagged() -> std::io::Result<()> {
+        let root = temp_workspace_toolchain_root("workspace-rust-msrv-mismatch", "1.91", "1.92.0")?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("1.91"), "{findings:?}");
+        assert!(findings[0].contains("1.92.0"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_rust_version_uses_component_prefix_not_string_prefix() -> std::io::Result<()> {
+        let root =
+            temp_workspace_toolchain_root("workspace-rust-msrv-string-prefix", "1.92", "1.920.0")?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("1.92"), "{findings:?}");
+        assert!(findings[0].contains("1.920.0"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn missing_workspace_rust_version_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("workspace-rust-msrv-missing-key")?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"0.0.0\"\n",
+        )?;
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.92.0\"\ncomponents = []\n",
+        )?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("missing workspace.package.rust-version"),
+            "{findings:?}"
+        );
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn missing_workspace_manifest_file_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("workspace-rust-msrv-missing-file")?;
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.92.0\"\ncomponents = []\n",
+        )?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("could not read"), "{findings:?}");
+        assert!(findings[0].contains("Cargo.toml"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn missing_rust_toolchain_file_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("workspace-rust-toolchain-missing-file")?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nrust-version = \"1.92\"\n",
+        )?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("could not read"), "{findings:?}");
+        assert!(findings[0].contains("rust-toolchain.toml"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn missing_rust_toolchain_channel_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("workspace-rust-toolchain-missing-channel")?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nrust-version = \"1.92\"\n",
+        )?;
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            "[toolchain]\ncomponents = []\n",
+        )?;
+        let findings = check_workspace_rust_version_matches_toolchain(&root);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("missing toolchain.channel"),
+            "{findings:?}"
+        );
+        fs::remove_dir_all(&root).ok();
+        Ok(())
     }
 
     #[test]
