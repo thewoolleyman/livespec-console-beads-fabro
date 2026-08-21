@@ -1,0 +1,4 @@
+{"action_id": "work_item_file", "at": "2026-08-20T16:29:43Z", "mutated": true, "outcome": "acted", "reason": "filed:livespec-console-beads-fabro-qeqax3:pending-approval", "stage": "foreman-act"}
+{"assignee": "fabro", "at": "2026-08-21T07:32:40Z", "stage": "ledger-admit", "work_item_id": "livespec-console-beads-fabro-qeqax3"}
+{"at": "2026-08-21T07:32:40Z", "budget": 1, "dry_run": false, "picked": ["livespec-console-beads-fabro-qeqax3"], "stage": "loop-pick"}
+{"at": "2026-08-21T07:32:43Z", "dispatch_factory": "hp", "dispatch_id": "9fe9c89ce0d845bcbe386f92512ca010", "stage": "dispatch-id", "started_at_epoch": 1787297563.943787, "work_item_id": "livespec-console-beads-fabro-qeqax3", "workflow_toml": "/data/projects/livespec-console-beads-fabro/.fabro/workf
