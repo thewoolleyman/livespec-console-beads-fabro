@@ -1,0 +1,76 @@
+{
+  "ported_from_upstream_commit": "87fd400dae07f537df9a200d54b2f4dc44c42971",
+  "upstream_modules": [
+    "livespec_dev_tooling/checks/red_green_replay.py",
+    "livespec_dev_tooling/checks/_red_green_replay_modes.py",
+    "livespec_dev_tooling/checks/_red_green_replay_trailers.py"
+  ],
+  "trailer_keys": [
+    "TDD-Red-Test",
+    "TDD-Red-Failure-Reason",
+    "TDD-Red-Test-File-Checksum",
+    "TDD-Red-Output-Checksum",
+    "TDD-Red-Captured-At",
+    "TDD-Green-Verified-At",
+    "TDD-Green-Parent-Reflog",
+    "TDD-Suite-Green-Scope",
+    "TDD-Suite-Green-Output-Checksum",
+    "TDD-Suite-Green-Captured-At"
+  ],
+  "decision_vectors": [
+    {
+      "upstream_branch": "1. nothing staged / no tests or impl bucket",
+      "subject": "docs: clarify proposal",
+      "tests": [],
+      "impls": [],
+      "head_red_awaiting_green": false,
+      "tests_pass": false,
+      "decision": "Pass"
+    },
+    {
+      "upstream_branch": "2. tests-only staged + test fails",
+      "subject": "chore: behavior-changing maintenance",
+      "tests": ["crates/console-cli/tests/new_behavior.rs"],
+      "impls": [],
+      "head_red_awaiting_green": false,
+      "tests_pass": false,
+      "decision": "Red"
+    },
+    {
+      "upstream_branch": "3. tests-only staged + test passes + feat/fix subject",
+      "subject": "feat: add behavior",
+      "tests": ["crates/console-cli/tests/new_behavior.rs"],
+      "impls": [],
+      "head_red_awaiting_green": false,
+      "tests_pass": true,
+      "decision": "TestPassedAtRedReject"
+    },
+    {
+      "upstream_branch": "3. tests-only staged + test passes + non-feat/fix subject",
+      "subject": "test: clean up fixture",
+      "tests": ["crates/console-cli/tests/new_behavior.rs"],
+      "impls": [],
+      "head_red_awaiting_green": false,
+      "tests_pass": true,
+      "decision": "SuiteGreen"
+    },
+    {
+      "upstream_branch": "4. impl staged with Red trailers and no Green trailers at HEAD",
+      "subject": "fix: satisfy red",
+      "tests": [],
+      "impls": ["crates/console-cli/src/lib.rs"],
+      "head_red_awaiting_green": true,
+      "tests_pass": false,
+      "decision": "Green"
+    },
+    {
+      "upstream_branch": "5. impl staged without a Red awaiting Green",
+      "subject": "chore: refactor",
+      "tests": [],
+      "impls": ["crates/console-cli/src/lib.rs"],
+      "head_red_awaiting_green": false,
+      "tests_pass": false,
+      "decision": "SuiteGreen"
+    }
+  ]
+}

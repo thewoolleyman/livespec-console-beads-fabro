@@ -1,0 +1,19 @@
+[package]
+name = "console-red-green-replay-check"
+description = "Red-Green-Replay checker for Rust product commits"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+# Internal check crate — never published.
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
