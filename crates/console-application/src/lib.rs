@@ -9688,6 +9688,63 @@ mod tests {
     }
 
     #[test]
+    fn selected_attach_actions_require_an_attach_command() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "-".to_owned(),
+            None,
+            vec![],
+            vec![
+                OperatorAction::OpenFabroAttach,
+                OperatorAction::CopyFabroAttach,
+            ],
+        );
+        let mut model = TuiScreenModel {
+            active_view: TuiView::Attention,
+            navigation: vec![TuiView::Attention],
+            attention_items: Vec::new(),
+            selected_attention_index: None,
+            detail: Some(detail),
+            view_items: Vec::new(),
+            lane_board: project_lane_board(&[]),
+            lane_focus: LaneFocus::Overview,
+            selected_lane_index: None,
+            selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
+            focus: FocusPane::Content,
+            detail_scroll: 0,
+            header_scroll: 0,
+            overlay: TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+            selected_repo: String::new(),
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
+            unavailable_sources: Vec::new(),
+            factory_activity: None,
+            header: String::new(),
+            action_failures: std::collections::BTreeMap::new(),
+        };
+
+        let open = resolve_selected_operator_action(&model, "operator");
+        model.overlay = TuiOverlay::CommandModal {
+            selected_action_index: 1,
+        };
+        let copy = resolve_selected_operator_action(&model, "operator");
+
+        check(
+            open == Err(ApplicationError::NoSelectedOperatorAction),
+            "open attach should require a concrete command",
+        );
+        check(
+            copy == Err(ApplicationError::NoSelectedOperatorAction),
+            "copy attach should require a concrete command",
+        );
+    }
+
+    #[test]
     fn factory_drain_handler_accepts_starts_and_completes_command() {
         let command = factory_drain_test_command();
         let mut port = CompletingDrainPort::default();
@@ -10395,6 +10452,30 @@ mod tests {
                 .detail()
                 .and_then(super::AttentionDetail::attach_command),
             Some("fabro attach run_17")
+        );
+    }
+
+    #[test]
+    fn attention_detail_ignores_malformed_fabro_gate_payloads() {
+        let lane = lane_event(
+            "evt_blocked",
+            "console-blocked",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            "a0",
+            "blocked",
+        );
+        let entries = super::attention_snapshots(&[lane]);
+        check(entries.len() == 1, "attention fixture should build");
+        let bad_fabro =
+            ConsoleEvent::fixture("evt_bad_fabro", EventType::FabroHumanGateObserved, "fabro")
+                .with_payload_json("{}".to_owned());
+
+        let run_id = super::fabro_run_id_for_attention(&entries[0], &[bad_fabro]);
+
+        check(
+            run_id.is_none(),
+            "malformed fabro gate payload should not produce an attach command",
         );
     }
 
@@ -11366,6 +11447,20 @@ mod tests {
     }
 
     #[test]
+    fn autonomous_decision_line_rejects_missing_typed_fields() {
+        for line in [
+            r#"{"stage":1,"work_item_id":"wi-1","disposition":"auto-approve","governing_settings":["auto_approve_ready"]}"#,
+            r#"{"stage":"auto-disposition","work_item_id":"wi-1","governing_settings":["auto_approve_ready"]}"#,
+            r#"{"stage":"auto-disposition","work_item_id":"wi-1","disposition":"auto-approve","governing_settings":["auto_approve_ready",7]}"#,
+        ] {
+            check(
+                super::autonomous_decision_from_line(line).is_none(),
+                "malformed autonomous decision fields should be skipped",
+            );
+        }
+    }
+
+    #[test]
     fn read_autonomous_decisions_empty_journal_is_empty_audit() {
         let audit = super::read_autonomous_decisions_from_journal("");
 
@@ -11896,6 +11991,25 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_override_action_id_rejects_missing_value_and_bad_rework_cap() {
+        let missing_value =
+            super::dispatcher_override_action_id("wi-1", r#"{"setting":"merge_on_review_cap"}"#);
+        let bad_rework_cap = super::dispatcher_override_action_id(
+            "wi-1",
+            r#"{"setting":"acceptance_rework_cap","value":0}"#,
+        );
+
+        check(
+            missing_value == Err(ApplicationError::InvalidDispatcherOverrideSetting),
+            "dispatcher override should require a value",
+        );
+        check(
+            bad_rework_cap == Err(ApplicationError::InvalidDispatcherOverrideSetting),
+            "acceptance rework cap override should reject non-positive values",
+        );
+    }
+
+    #[test]
     fn dispatcher_override_valve_outcome_carries_the_setting_and_value_payload() {
         // The valve builds a persist-with-payload outcome the handler reads back.
         let outcome = work_item_override_outcome(
@@ -11958,6 +12072,23 @@ mod tests {
 
         assert_eq!(outcome, Err(ApplicationError::InvalidRejectMode));
         assert_eq!(port.observed_action_ids, [] as [String; 0]);
+    }
+
+    #[test]
+    fn reject_handler_rejects_malformed_payload_without_invoking_port() {
+        let command = reject_command();
+        let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+
+        let outcome = handle_work_item_reject_command(&command, "not json", &mut port);
+
+        check(
+            outcome == Err(ApplicationError::InvalidRejectMode),
+            "malformed reject payload should be rejected",
+        );
+        check(
+            port.observed_action_ids.is_empty(),
+            "malformed reject payload should not invoke the port",
+        );
     }
 
     #[test]
@@ -12709,6 +12840,24 @@ mod tests {
     }
 
     #[test]
+    fn settings_read_surfaces_port_errors() {
+        let mut port = ReadErrorActionPort;
+        let mut settings = DispatcherSettingsPort::new(&mut port);
+
+        let read = settings.read_settings();
+        let write = settings.write_setting(&DispatcherSettingWrite::WipCap(7));
+
+        check(
+            read == Err(ApplicationError::FactoryDrainPortFailed),
+            "settings read port errors should surface",
+        );
+        check(
+            write == Ok(OrchestratorActionOutcome::completed()),
+            "read-error fixture should still cover its write surface",
+        );
+    }
+
+    #[test]
     fn settings_read_is_not_observed_when_a_declared_key_is_absent_or_mistyped() {
         // Missing `wip_cap`, and `review_fix_cap` is a string rather than an int:
         // an untrustworthy read degrades to not-observed rather than an assumed
@@ -12733,6 +12882,52 @@ mod tests {
             settings.read_settings(),
             Ok(DispatcherSettingsRead::NotObserved)
         );
+    }
+
+    #[test]
+    fn settings_read_requires_each_declared_key() {
+        for payload in [
+            r#"{"settings":[
+              {"key":"merge_on_review_cap","value":false},
+              {"key":"acceptance_mode","value":"ai-only"},
+              {"key":"review_fix_cap","value":4},
+              {"key":"acceptance_rework_cap","value":2},
+              {"key":"wip_cap","value":9}
+            ]}"#,
+            r#"{"settings":[
+              {"key":"auto_approve_ready","value":true},
+              {"key":"acceptance_mode","value":"ai-only"},
+              {"key":"review_fix_cap","value":4},
+              {"key":"acceptance_rework_cap","value":2},
+              {"key":"wip_cap","value":9}
+            ]}"#,
+            r#"{"settings":[
+              {"key":"auto_approve_ready","value":true},
+              {"key":"merge_on_review_cap","value":false},
+              {"key":"review_fix_cap","value":4},
+              {"key":"acceptance_rework_cap","value":2},
+              {"key":"wip_cap","value":9}
+            ]}"#,
+            r#"{"settings":[
+              {"key":"auto_approve_ready","value":true},
+              {"key":"merge_on_review_cap","value":false},
+              {"key":"acceptance_mode","value":"ai-only"},
+              {"key":"review_fix_cap","value":4},
+              {"key":"wip_cap","value":9}
+            ]}"#,
+            r#"{"settings":[
+              {"key":"auto_approve_ready","value":true},
+              {"key":"merge_on_review_cap","value":false},
+              {"key":"acceptance_mode","value":"ai-only"},
+              {"key":"review_fix_cap","value":4},
+              {"key":"acceptance_rework_cap","value":2}
+            ]}"#,
+        ] {
+            check(
+                super::settings_from_config_read(payload).is_none(),
+                "settings read should reject missing declared keys",
+            );
+        }
     }
 
     #[test]
@@ -12827,6 +13022,44 @@ mod tests {
         ) -> super::ApplicationResult<super::OrchestratorActionReading> {
             Ok(super::OrchestratorActionReading::observed(
                 self.read_stdout.clone(),
+            ))
+        }
+    }
+
+    struct ReadErrorActionPort;
+
+    impl OrchestratorActionPort for ReadErrorActionPort {
+        fn run_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<OrchestratorActionOutcome> {
+            Ok(OrchestratorActionOutcome::completed())
+        }
+
+        fn read_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<super::OrchestratorActionReading> {
+            Err(ApplicationError::FactoryDrainPortFailed)
+        }
+    }
+
+    struct WriteErrorActionPort;
+
+    impl OrchestratorActionPort for WriteErrorActionPort {
+        fn run_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<OrchestratorActionOutcome> {
+            Err(ApplicationError::FactoryDrainPortFailed)
+        }
+
+        fn read_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> super::ApplicationResult<super::OrchestratorActionReading> {
+            Ok(super::OrchestratorActionReading::observed(
+                CONFIG_READ_JSON_DEFAULTS.to_owned(),
             ))
         }
     }
@@ -13036,6 +13269,37 @@ mod tests {
             Err(ApplicationError::InvalidDispatcherSettingPayload)
         );
         assert!(port.observed_action_ids.is_empty());
+    }
+
+    #[test]
+    fn config_handler_surfaces_read_and_write_port_errors() {
+        let mut read_port = ReadErrorActionPort;
+        let mut read_settings = DispatcherSettingsPort::new(&mut read_port);
+        let read = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
+            r#"{"repo":"repo-a","setting":"auto_approve_ready","value":true}"#,
+            "2026-07-11T00:00:04Z",
+            &mut read_settings,
+        );
+
+        check(
+            read == Err(ApplicationError::FactoryDrainPortFailed),
+            "config handler should surface read errors",
+        );
+
+        let mut write_port = WriteErrorActionPort;
+        let mut write_settings = DispatcherSettingsPort::new(&mut write_port);
+        let write = handle_config_dispatcher_setting_set_command(
+            &dispatcher_setting_set_command(),
+            r#"{"repo":"repo-a","setting":"auto_approve_ready","value":true}"#,
+            "2026-07-11T00:00:05Z",
+            &mut write_settings,
+        );
+
+        check(
+            write == Err(ApplicationError::FactoryDrainPortFailed),
+            "config handler should surface write errors",
+        );
     }
     // -----------------------------------------------------------------------
     // TUI autonomous-mode surface (C3 slice 2): toggle, type-to-confirm modal,
@@ -14876,6 +15140,22 @@ mod tests {
     }
 
     #[test]
+    fn editing_errors_when_selected_setting_row_is_out_of_range() {
+        let mut model = settings_model(
+            DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5),
+            0,
+        );
+        model.selected_setting_index = Some(usize::MAX);
+
+        let outcome = resolve_dispatcher_setting_edit(&model, "operator");
+
+        check(
+            outcome == Err(ApplicationError::NoSelectedDispatcherSetting),
+            "out-of-range settings rows should not resolve a write",
+        );
+    }
+
+    #[test]
     fn settings_selection_moves_within_the_six_rows_and_clamps() {
         let settings =
             DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
@@ -16163,6 +16443,21 @@ mod tests {
     }
 
     #[test]
+    fn lane_drilldown_predicate_accepts_lane_focus() {
+        let drilled = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
+        let overview = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        check(
+            super::is_lane_drilldown(&drilled),
+            "lanes view with a lane focus should be a drilldown",
+        );
+        check(
+            !super::is_lane_drilldown(&overview),
+            "lanes overview should not be a drilldown",
+        );
+    }
+
+    #[test]
     fn reduce_moves_the_per_item_cursor_within_a_drilled_in_lane() {
         let events = drilldown_events();
         let start = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
@@ -16236,6 +16531,27 @@ mod tests {
         );
 
         assert_eq!(resolved, (None, Some("wi-missing-column".to_owned())));
+    }
+
+    #[test]
+    fn model_selection_reports_absent_lane_columns() {
+        let mut model = build_tui_model_for_state(
+            &drilldown_events(),
+            &drilldown_state(Lane::Ready, 0, TuiOverlay::None),
+        );
+        model.lane_board = super::LaneBoard {
+            columns: Vec::new(),
+        };
+        model.selected_lane_item_index = Some(0);
+
+        check(
+            model.next_ready_drain_target().is_none(),
+            "ready drain target should be absent without a ready column",
+        );
+        check(
+            model.selected_lane_item().is_none(),
+            "selected lane item should be absent without its lane column",
+        );
     }
 
     #[test]
