@@ -362,10 +362,18 @@ check-baseline` is the fail-closed verifier wired into `just check`.
    feature worktree, delete the local branch, and verify the primary checkout is
    clean on `master`. Do not leave orphaned worktrees.
 
-Rust product changes follow Red-Green-Replay (enforced by the commit-msg hook
-once the Rust checker lands); docs / spec / config changes use `docs(...)` /
-`chore(...)` subjects and are exempt. Keep the specification cohesive; do not
-import orchestrator-only concerns except through explicit contracts.
+Rust product changes follow Red-Green-Replay. The standalone checker exists as
+`crates/console-red-green-replay-check`, but `lefthook.yml` has no `commit-msg`
+section yet; `just check` wiring is pending in `livespec-console-beads-fabro-mvu22t.2`
+and commit-msg hook wiring is pending in `livespec-console-beads-fabro-mvu22t.3`.
+Follow the checker contract in
+`crates/console-red-green-replay-check/src/lib.rs`: "Content is the trigger" and
+"Subject prefixes never exempt product Rust from the ritual." A changeset
+staging no product Rust passes regardless of subject, so docs / spec / config
+commits are exempt in practice by content; use `docs(...)`, `chore(...)`, or
+`chore(spec):` subjects as a convention, not as an exemption criterion. Keep the
+specification cohesive; do not import orchestrator-only concerns except through
+explicit contracts.
 
 ## Post-merge janitor: Rust toolchain on the mise PATH
 
