@@ -30,7 +30,10 @@
 
 use std::path::{Path, PathBuf};
 
-use console_application::action_registry::{ActionContext, ActionSurface, selected_item_hint};
+use console_application::action_registry::{
+    ActionContext, ActionSurface, global_status_hint_tokens,
+    operator_key_action_reference_markdown, selected_item_hint,
+};
 use console_application::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use console_application::{
     FocusPane, LaneFocus, PendingValve, TuiInteractionState, TuiOverlay, TuiView,
@@ -423,6 +426,16 @@ fn every_documented_selected_item_hint_equals_the_rendered_derivation() -> std::
         "expected at least fourteen bound selected-item rows, got {bound}"
     );
     Ok(())
+}
+
+#[test]
+fn generated_reference_carries_the_global_status_hint_derivation() {
+    let generated = operator_key_action_reference_markdown();
+    let expected = format!("`{}`", global_status_hint_tokens().join(" | "));
+    assert!(
+        generated.contains(&expected),
+        "the generated key/action reference must carry the registry-derived global Status hint: {expected}"
+    );
 }
 
 #[test]

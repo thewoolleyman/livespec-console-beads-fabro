@@ -188,6 +188,7 @@ fn run_static(values: &[String]) -> RunOutput {
             let subcommand = values.get(2).map(String::as_str);
             run_events(subcommand)
         }
+        Some("docs") => run_docs(values.get(2).map(String::as_str)),
         Some("plans") => RunOutput::new(
             2,
             "usage: livespec-console-beads-fabro plans <epic-id>".to_owned(),
@@ -199,6 +200,19 @@ fn run_static(values: &[String]) -> RunOutput {
             "run `just check-arch` for architecture enforcement".to_owned(),
         ),
         Some(other) => RunOutput::new(2, format!("unknown command: {other}\n\n{}", help_text())),
+    }
+}
+
+fn run_docs(subcommand: Option<&str>) -> RunOutput {
+    match subcommand {
+        Some("key-action-reference") => RunOutput::new(
+            0,
+            console_application::action_registry::operator_key_action_reference_markdown(),
+        ),
+        _other => RunOutput::new(
+            2,
+            "usage: livespec-console-beads-fabro docs key-action-reference".to_owned(),
+        ),
     }
 }
 
@@ -2576,6 +2590,7 @@ fn help_text() -> String {
         "  serve",
         "  backfill",
         "  events tail",
+        "  docs key-action-reference",
         "  plans <epic-id>",
         "  snapshot",
         "  doctor",
@@ -2913,7 +2928,34 @@ mod tests {
 
         assert_eq!(output.code(), 0);
         assert!(output.message().contains("events tail"));
+        assert!(output.message().contains("docs key-action-reference"));
         assert!(output.message().contains("arch-check"));
+    }
+
+    #[test]
+    fn docs_key_action_reference_command_prints_the_generated_reference() {
+        let output = run(["bin", "docs", "key-action-reference"]);
+
+        assert_eq!(output.code(), 0);
+        assert_eq!(
+            output.message(),
+            console_application::action_registry::operator_key_action_reference_markdown()
+        );
+    }
+
+    #[test]
+    fn docs_without_a_known_subcommand_is_usage_error() {
+        for args in [
+            vec!["bin", "docs"],
+            vec!["bin", "docs", "unknown-reference"],
+        ] {
+            let output = run(args);
+            assert_eq!(output.code(), 2);
+            assert_eq!(
+                output.message(),
+                "usage: livespec-console-beads-fabro docs key-action-reference"
+            );
+        }
     }
 
     #[test]

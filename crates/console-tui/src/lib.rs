@@ -2215,25 +2215,10 @@ fn header_help_lines() -> Vec<Line<'static>> {
 /// The `Global actions` section: the navigation and command keys available from
 /// every view, plus how the modal Help itself is navigated.
 fn global_help_lines() -> Vec<Line<'static>> {
-    vec![
-        Line::from("Global actions -- available from every view:"),
-        Line::from(""),
-        Line::from("up / down    navigate the focused pane; in this help, the section menu"),
-        Line::from("left / right move focus across the body panes (Views -> Content -> Detail);"),
-        Line::from("             left from Views opens the menu; focused header scrolls instead"),
-        Line::from("tab / s-tab  cycle focus across every pane, including the top header"),
-        Line::from("enter        dive from the nav into content, or open the selected item"),
-        Line::from(
-            "esc          step focus back (Detail -> Content -> nav; drilled lane -> overview)",
-        ),
-        Line::from("/            open search"),
-        Line::from(":            open the command palette (drain, actions)"),
-        Line::from("?            open this help"),
-        Line::from("q / ctrl-c   quit"),
-        Line::from(""),
-        Line::from("In this help: left/right choose menu or text pane; up/down act there,"),
-        Line::from("PgUp/PgDn page this pane, and only Esc closes it."),
-    ]
+    action_registry::global_help_reference_lines()
+        .into_iter()
+        .map(Line::from)
+        .collect()
 }
 
 /// The per-item action roster, DERIVED from the action registry: one line per
@@ -3016,8 +3001,8 @@ mod tests {
         TuiTerminalInput, action_available_for_model, action_outcome_effect,
         attach_command_explainer_step, attention_item_line, buffer_to_text,
         command_explainer_confirm_step, command_explainer_lines, command_explanation_for_action,
-        detail_lines, effect_triggers_source_poll, full_width_explainer_rect, help_lines_for_view,
-        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
+        detail_lines, effect_triggers_source_poll, full_width_explainer_rect, global_help_lines,
+        help_lines_for_view, key_event_to_terminal_input, menu_confirm_step, registry_action_input,
         registry_staging_explanation, render_command_explainer, render_command_modal,
         render_detail, render_menu_overlay, render_model, render_summary_detail, render_to_text,
         render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
@@ -7477,6 +7462,15 @@ mod tests {
             .join("\n");
         assert!(text.contains("open the selected work-item's record"));
         assert!(text.contains("description"));
+    }
+
+    #[test]
+    fn global_help_actions_derive_from_the_registry_reference() {
+        let rendered = global_help_lines()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, action_registry::global_help_reference_lines());
     }
 
     // -----------------------------------------------------------------------

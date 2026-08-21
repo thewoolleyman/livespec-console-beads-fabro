@@ -327,8 +327,24 @@ its hints stay readable while the modal is open.
 | `q` | Quit — only when no overlay is open. With search or the command palette open it types a literal `q` into the query. |
 | `/` | Open search. |
 | `:` | Open the command palette (`drain`, `actions`). |
+| `v` | Open the generated menu bar. |
 | `?` | Open the Help modal. |
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward. Inert while an overlay is open. |
+
+### Menu bar
+
+The menu bar is generated from the action registry and is the primary
+hotkey-free route to every operator action. Open it with `v`, or press `Left`
+from the Views pane to enter it without using a hotkey. The top-level menus
+are **Work item**, **Factory**, **View**, **Help**, and **File**; menu items
+render their accelerator beside the label, and actions without accelerators
+remain reachable through the menu and action invoker.
+
+The full generated reference is
+[Operator key/action reference](reference/key-action-reference.md). It names
+each menu path, label, accelerator, availability summary, and what `Enter`
+stages, including **Dispatch ready work** and **Dispatch selected item** under
+the Factory menu.
 
 ### By focus, with no overlay open
 
@@ -416,8 +432,9 @@ current selection, in one list — including the actions that carry no hotkey at
 all (today: `Set workflow scope override`, the recorded remedy a
 factory-safety refusal names). An available action stages its normal confirm
 modal on `Enter`; an unavailable one renders marked `(unavailable here)` and
-stays inert. The roster is deliberately minimal scaffolding for the menu
-shell: it exists so every action is reachable before menus land.
+stays inert. The roster remains a completeness surface behind the generated
+menus: if an action is registered, it appears in both the menu reference and
+the invoker, even when it has no accelerator.
 
 ### When an action is refused
 

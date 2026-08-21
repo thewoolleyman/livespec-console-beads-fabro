@@ -49,6 +49,14 @@ alias serve := tui
 build-release:
     cargo build --release --package livespec-console-beads-fabro
 
+# Regenerate the committed operator key/action reference from ACTION_REGISTRY.
+# errexit is deliberately omitted; each filesystem/build step is guarded directly.
+generate-key-action-reference:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    mkdir -p docs/reference || exit $?
+    cargo run --quiet --package livespec-console-beads-fabro -- docs key-action-reference > docs/reference/key-action-reference.md || exit $?
+
 # Real-TUI end-to-end gate — the TOP tier of the console test pyramid. Builds the
 # RELEASE binary and drives the SHIPPED interactive TUI through a real tmux pane
 # (send-keys -> capture-pane -> assert on the rendered screen AND on store side
