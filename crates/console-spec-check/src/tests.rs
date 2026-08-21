@@ -154,11 +154,23 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // Scope Boundary clauses (the console MUST NOT be treated as a control
     // surface for the overseer/foreman layer, and SHOULD NOT gain UI to
     // observe or edit foreman/overseer configuration or state): 196
-    // normative clauses, 17/100/22/57.
+    // normative clauses, 17/100/22/57. The v041
+    // per-item-factory-dispatch-launcher-argv revision added fourteen
+    // contracts.md clauses under the new "Per-item factory-dispatch launcher
+    // argv" section: the governed `loop --budget 1 --parallel 1 --item <id>`
+    // invocation and the MUST NOT against binding the ungoverned `dispatch`
+    // subcommand, the narrows-never-bypasses rule with its named-ineligible
+    // no-dispatch consequence and truthful surfacing, the MUST-pass-`--item`
+    // rule that keeps the orchestrator's human-hand-picked cost gate keyed,
+    // the carried-across no-policy-arming obligation, and the conformance
+    // clauses that an unconditional not-wired port does not implement a
+    // specified argv while a genuinely unrunnable invocation must still report
+    // honestly and an unperformable verb must not render as available: 210
+    // normative clauses, 17/114/22/57.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 17_usize),
-        ("contracts.md", 100),
+        ("contracts.md", 114),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 57),
     ];
@@ -170,7 +182,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 196,
+        total, 210,
         "total normative clauses across the console spec"
     );
     Ok(())
