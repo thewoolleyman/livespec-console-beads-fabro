@@ -73,13 +73,39 @@ it belongs here.
 
 ## Gates
 
-- **`-mvu22t` needs staged-rollout sign-off before admission.** Once landed its
-  commit-msg hook gates ALL later commits fleet-wide, and `lefthook.yml` has no
-  `commit-msg` section at all today. Test thoroughly before enabling; exempt
-  `docs(...)` and `chore(...)`.
+- **`-mvu22t` needs staged-rollout sign-off before its LAST stage.**
+  `lefthook.yml` still has no `commit-msg` section. Two claims that were in this
+  note are WRONG and were correcting the gate upward; both are now measured, and
+  the full research lives on the item itself (2026-08-21 comment).
+
+  **The blast radius is PER-REPO, not fleet-wide.** `lefthook.yml` is this
+  repository's own config and `.git/hooks/commit-msg` delegates to it, so a
+  commit-msg section added here gates commits IN THIS REPO ONLY. The hook BODY is
+  reused from `livespec-dev-tooling`, which is likely where the fleet-wide
+  impression came from — but a reused body is not shared enforcement. Sibling
+  repos each wire their own opt-in.
+
+  **Do NOT exempt `docs(...)` / `chore(...)`.** The check being ported is
+  CONTENT-triggered, and a 2026-06-11 user design correction upstream explicitly
+  removed prefix-based rejection: "the subject prefix NEVER rejects a commit for
+  containing product code". A commit staging no product code already passes
+  whatever its subject, so those prefixes are exempt in practice with no rule
+  needed — and adding one would let `chore:` carry unguarded product code, which
+  is the hole that correction closed.
+
+  The rollout splits into three stages using the check's two modes, so the
+  sign-off is not one large call: port + tests wired to nothing (gates nothing),
+  then the no-arg range mode in `just check` (judges `origin/master..HEAD` only,
+  never history — which matters because zero commits here carry TDD trailers
+  today), then the commit-msg hook. Only the third stage changes how every commit
+  is written. There is no warn-only mode upstream, so staging by WIRING is the
+  available lever.
 - Cross-language parity hazard on the same item: the Rust port will drift from
   the Python original as the trailer grammar evolves. Either pin the ported
-  grammar version or add a parity fixture.
+  grammar version or add a parity fixture. Decide this in the first stage rather
+  than deferring it. Size the port realistically: 982 lines of Python across
+  three modules, a five-branch decision tree, and every `.py` bucket and pytest
+  call becomes `.rs` and cargo — a semantic port, not a transliteration.
 
 ## Two findings recorded so they are not re-derived
 
