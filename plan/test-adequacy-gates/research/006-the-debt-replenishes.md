@@ -124,3 +124,46 @@ This is a Dispatcher-side observation, and Dispatcher mechanics belong to
 §"Repository scope"), so it is recorded rather than filed. If the proxy
 is worth improving, the signal is available directly: the ledger knows
 each item's dependency count and the description states its site count.
+
+## Amendment: paydown CAN outpace replenishment — measured after a1 landed
+
+The body of this note was written in a window where this thread had
+closed 5 regions and the repo had added 52. That measurement stands, and
+so does the ordering argument built on it. But it was taken before any
+substantial slice had landed, and read alone it invites a conclusion it
+does not support: that the work cannot get ahead. Measured again with two
+real slices merged, it plainly can.
+
+| point | total regions | uncovered |
+|---|---|---|
+| session start (`593e428`) | 41,751 | 893 |
+| after a0 (`669c1048`) | 43,861 | 940 |
+| after `-txtzn5.6` and `-txtzn5.2` | 45,552 | **782** |
+
+**782 is below the 893 this session started at**, and it got there while
+the codebase grew by 3,801 regions — 9.1% — over the same period. Per
+file, `console-eventstore` went 161 → 21 across the two slices
+(`.6` took its `#[cfg(test)]` sites to zero, `.2` closed its production
+`?` arms), and `console-cli` went 531 → 512, its remaining 512 being
+almost entirely the test-module sites that belong to `-txtzn5.5`.
+
+So the honest statement is narrower than the body's, and both halves
+matter:
+
+- Replenishment is real and continuous. New code lands at roughly the
+  codebase's existing region-coverage rate, so the target moves under
+  you, and a slice set sized against a stale count will always come up
+  short.
+- Paydown per landed slice is much larger than the replenishment rate.
+  Two slices moved the number 158 down against roughly 1,700 regions of
+  concurrent growth.
+
+The ordering argument in the body is unaffected, because it never
+depended on paydown being hopeless — it depended on the gate being
+unable to flip while new code adds uncovered regions faster than the
+tail is cleared at the END of the queue. What this amendment removes is
+only the pessimistic reading: the remaining slices are worth dispatching,
+and the count responds sharply when they land.
+
+Re-measure before quoting any figure here. That is the one instruction
+this note has always been trying to give.
