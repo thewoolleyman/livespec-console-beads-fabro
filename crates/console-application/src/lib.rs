@@ -3322,7 +3322,8 @@ fn observed_execution_states(
     let mut execution_states = BTreeMap::new();
     for event in events {
         match event.event_type() {
-            EventType::DispatcherBacklogBounceObserved => {
+            EventType::DispatcherBacklogBounceObserved
+            | EventType::DispatcherJournalProgressObserved => {
                 if let Some(entry) = dispatcher_journal_from_payload_json(event.payload_json()) {
                     let state = if entry.terminal_status().is_some() {
                         LaneExecutionState::FinishedUnreconciled
@@ -7667,7 +7668,7 @@ mod tests {
             "console",
             work_item_id,
             dispatch_id,
-            DispatcherJournalKind::BacklogBounce,
+            DispatcherJournalKind::Progress,
             2,
         )
         .ok()
@@ -7678,7 +7679,7 @@ mod tests {
         let payload = dispatcher_journal_payload_json(&entry);
         ConsoleEvent::fixture(
             event_id,
-            EventType::DispatcherBacklogBounceObserved,
+            EventType::DispatcherJournalProgressObserved,
             "dispatcher",
         )
         .with_payload_json(payload)
