@@ -1089,8 +1089,8 @@
   {
     "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance test must drive the console's per-item dispatch verb and assert the argv it hands the Dispatcher \u2014 the governed `loop --repo <path> --budget 1 --parallel 1 --item <id>` form, with no per-run policy-arming argument and no binding to the ungoverned `dispatch` subcommand \u2014 plus the named-ineligible no-dispatch path and its honest surfacing. Registered as TODO because the port this scenario governs is still the unconditional not_wired stub tracked by livespec-console-beads-fabro-et3.10: the contract was ratified first precisely so the implementation has an argv to be written against, and console-spec-check requires every live scenario to carry a non-empty test registration. This TODO is the gate's own record that the behaviour is specified and not yet implemented; it MUST be replaced with the real test id when et3.10 lands, and a stub that merely returns not_wired does not satisfy it.",
+    "test": "crates/console-application/src/lib.rs::dispatcher_dispatch_item_port_uses_governed_bounded_loop_surface",
+    "reason": "Application-layer coverage asserts the per-item dispatch port is wired and invokes the governed bounded-loop argv (`loop --repo <path> --budget 1 --parallel 1 --item <id>`) without binding to the ungoverned `dispatch` subcommand. The sibling application test `dispatcher_dispatch_item_port_surfaces_zero_dispatch_and_unavailable_honestly` covers the no-dispatch and unavailable surfacing clauses; the current registry schema permits one test id string per scenario entry.",
     "clauses": [
       {
         "gap_id": "gap-3b5nbxmf",
