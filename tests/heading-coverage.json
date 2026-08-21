@@ -833,7 +833,7 @@
   {
     "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline",
     "scenario_file": "scenarios.md",
-    "test": "crates/console-tui/src/lib.rs::move_status_on_a_pending_approval_lane_item_persists_the_approve_command",
+    "test": "crates/console-tui/src/lib.rs::move_status_on_a_pending_approval_lane_item_persists_the_move_command",
     "reason": "Top-of-pyramid proof of the operator status-move surface: selecting a lane work-item and confirming the move-to-status valve persists the command the shared orchestrator port dispatches. It anchors the two re-derived command-count clauses (the eight-command / seven-map-1:1 Command-Handling and TUI-Contract MUST lines), which now assert the move and resolve-blocked commands issue through the drive surface; the sibling tests move_handler_maps_each_pre_terminal_target_onto_the_move_action_id, move_handler_rejects_ship_guarded_and_malformed_targets_and_empty_ids, and valve_and_move_status_keys_fire_on_a_selected_lane_item complete the pyramid across the broad move, the ship-guard, and the picker firing on a selected lane item.",
     "clauses": [
       {

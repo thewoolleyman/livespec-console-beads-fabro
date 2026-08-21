@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use console_spec_check::{
     Audience, CoverageReport, Mode, NFR_FILE, OPERATOR_FILES, SEVERITY_ENV, SpecSource, evaluate,
-    nfr_scenarios, operator_scenarios, parse_registry, resolve_mode,
+    nfr_scenarios, operator_scenarios, parse_registry, resolve_mode, validate_test_registrations,
 };
 
 fn main() -> ExitCode {
@@ -72,7 +72,8 @@ fn run() -> Result<ExitCode, String> {
         None => Vec::new(),
     };
 
-    let report = evaluate(&sources, &registry, &operator, &nfr);
+    let mut report = evaluate(&sources, &registry, &operator, &nfr);
+    report.invalid_test_registrations = validate_test_registrations(&registry, Path::new("."));
     let mode = resolve_mode(std::env::var(SEVERITY_ENV).ok().as_deref());
     emit(&report, mode);
 
@@ -108,14 +109,39 @@ fn emit(report: &CoverageReport, mode: Mode) {
             scenario.scenario_file, scenario.scenario
         );
     }
+    for registration in &report.invalid_test_registrations {
+        match &registration.function {
+            Some(function) => eprintln!(
+                "{label}: invalid registered test [{}] {} :: {} -> {}::{} ({})",
+                registration.scenario_file,
+                registration.scenario,
+                registration.test,
+                registration.file,
+                function,
+                registration.reason
+            ),
+            None => eprintln!(
+                "{label}: invalid registered test [{}] {} :: {} -> {} ({})",
+                registration.scenario_file,
+                registration.scenario,
+                registration.test,
+                registration.file,
+                registration.reason
+            ),
+        }
+    }
     let unlinked = report.unlinked_clauses.len();
     let untested = report.untested_scenarios.len();
-    if unlinked == 0 && untested == 0 {
-        eprintln!("console-spec-check: behavioral coverage clean (0 unlinked, 0 untested)");
+    let invalid = report.invalid_test_registrations.len();
+    if unlinked == 0 && untested == 0 && invalid == 0 {
+        eprintln!(
+            "console-spec-check: behavioral coverage clean (0 unlinked, 0 untested, 0 invalid test registrations)"
+        );
     } else {
         eprintln!(
             "{label}: behavioral-coverage: {unlinked} unlinked clause(s), {untested} untested \
-             scenario(s) (lever {SEVERITY_ENV}; default `fail`, set to `warn` to report only)"
+             scenario(s), {invalid} invalid test registration(s) (lever {SEVERITY_ENV}; default \
+             `fail`, set to `warn` to report only)"
         );
     }
 }

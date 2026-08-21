@@ -30,6 +30,7 @@
 #![warn(missing_docs)]
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -227,15 +228,17 @@ pub struct ClauseLink {
 }
 
 /// One registry entry: a scenario H2 (`scenario` in `scenario_file`), its
-/// top-of-pyramid `test` or pending-test reason, and the clauses linked to it.
+/// top-of-pyramid `test` / `tests` registration or pending-test reason, and
+/// the clauses linked to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageEntry {
     /// Scenario field.
     pub scenario: String,
     /// Scenario file field.
     pub scenario_file: String,
-    /// Test field.
-    pub test: String,
+    /// Test id fields, normalized from either the legacy single `test` string
+    /// or the list-valued `tests` field.
+    pub tests: Vec<String>,
     /// Reason field, required when `test` is the pending sentinel `TODO`.
     pub reason: String,
     /// Clauses field.
@@ -262,11 +265,7 @@ fn parse_entry(item: &Value) -> Option<CoverageEntry> {
     let object = item.as_object()?;
     let scenario = object.get("scenario")?.as_str()?.to_string();
     let scenario_file = object.get("scenario_file")?.as_str()?.to_string();
-    let test = object
-        .get("test")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    let tests = parse_tests(object.get("tests").or_else(|| object.get("test")));
     let reason = object
         .get("reason")
         .and_then(Value::as_str)
@@ -276,10 +275,31 @@ fn parse_entry(item: &Value) -> Option<CoverageEntry> {
     Some(CoverageEntry {
         scenario,
         scenario_file,
-        test,
+        tests,
         reason,
         clauses,
     })
+}
+
+fn parse_tests(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(test)) => split_test_ids(test),
+        Some(Value::Array(tests)) => tests
+            .iter()
+            .filter_map(Value::as_str)
+            .flat_map(split_test_ids)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn split_test_ids(value: &str) -> Vec<String> {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|test| !test.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn parse_clauses(value: &Value) -> Vec<ClauseLink> {
@@ -394,21 +414,44 @@ pub struct UntestedScenario {
     pub scenario: String,
 }
 
+/// A concrete test registration that cannot be resolved to an existing file
+/// and, when a function is named, a matching Rust `fn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidTestRegistration {
+    /// Scenario file field.
+    pub scenario_file: String,
+    /// Scenario field.
+    pub scenario: String,
+    /// Registered test id.
+    pub test: String,
+    /// File path parsed from the test id.
+    pub file: String,
+    /// Function name parsed from the test id, if present.
+    pub function: Option<String>,
+    /// Diagnostic reason.
+    pub reason: String,
+}
+
 /// The outcome of an evaluation: the clauses lacking a scenario link and the
-/// scenarios lacking a test.
+/// scenarios lacking a test, plus concrete test registrations that do not
+/// resolve to files/functions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageReport {
     /// Unlinked clauses field.
     pub unlinked_clauses: Vec<UnlinkedClause>,
     /// Untested scenarios field.
     pub untested_scenarios: Vec<UntestedScenario>,
+    /// Invalid test registrations field.
+    pub invalid_test_registrations: Vec<InvalidTestRegistration>,
 }
 
 impl CoverageReport {
     /// Whether every clause is linked and every scenario tested.
     #[must_use]
     pub const fn is_clean(&self) -> bool {
-        self.unlinked_clauses.is_empty() && self.untested_scenarios.is_empty()
+        self.unlinked_clauses.is_empty()
+            && self.untested_scenarios.is_empty()
+            && self.invalid_test_registrations.is_empty()
     }
 }
 
@@ -488,6 +531,113 @@ pub fn evaluate(
     CoverageReport {
         unlinked_clauses,
         untested_scenarios,
+        invalid_test_registrations: Vec::new(),
+    }
+}
+
+/// Validate every concrete test registration against the repository tree.
+///
+/// A file-only id such as `crates/x/tests/scenario.rs` is valid when the file
+/// exists. A function id such as `crates/x/src/lib.rs::tests::case_name` is
+/// valid when the file exists and contains the text-level marker
+/// `fn case_name(`.
+#[must_use]
+pub fn validate_test_registrations(
+    registry: &[CoverageEntry],
+    repo_root: &Path,
+) -> Vec<InvalidTestRegistration> {
+    registry
+        .iter()
+        .filter(|entry| !is_pending_todo_entry(entry))
+        .flat_map(|entry| {
+            entry
+                .tests
+                .iter()
+                .filter_map(|test| validate_test_registration(entry, test, repo_root))
+        })
+        .collect()
+}
+
+fn validate_test_registration(
+    entry: &CoverageEntry,
+    test: &str,
+    repo_root: &Path,
+) -> Option<InvalidTestRegistration> {
+    let parsed = parse_test_id(test);
+    let path = repo_root.join(&parsed.file);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Some(invalid_test_registration(
+                entry,
+                test,
+                &parsed,
+                "file does not exist",
+            ));
+        }
+        Err(error) => {
+            return Some(invalid_test_registration(
+                entry,
+                test,
+                &parsed,
+                &format!("failed to read file: {error}"),
+            ));
+        }
+    };
+
+    let Some(function) = &parsed.function else {
+        return None;
+    };
+    let marker = format!("fn {function}(");
+    if contents.contains(&marker) {
+        None
+    } else {
+        Some(invalid_test_registration(
+            entry,
+            test,
+            &parsed,
+            "function does not appear in file",
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTestId {
+    file: String,
+    function: Option<String>,
+}
+
+fn parse_test_id(test: &str) -> ParsedTestId {
+    if let Some((file, function_path)) = test.split_once(".rs::") {
+        let function = function_path
+            .rsplit("::")
+            .next()
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string);
+        return ParsedTestId {
+            file: format!("{file}.rs"),
+            function,
+        };
+    }
+    ParsedTestId {
+        file: test.to_string(),
+        function: None,
+    }
+}
+
+fn invalid_test_registration(
+    entry: &CoverageEntry,
+    test: &str,
+    parsed: &ParsedTestId,
+    reason: &str,
+) -> InvalidTestRegistration {
+    InvalidTestRegistration {
+        scenario_file: entry.scenario_file.clone(),
+        scenario: entry.scenario.clone(),
+        test: test.to_string(),
+        file: parsed.file.clone(),
+        function: parsed.function.clone(),
+        reason: reason.to_string(),
     }
 }
 
@@ -519,15 +669,18 @@ fn missing_tests(
 }
 
 fn has_registered_test(entry: &CoverageEntry) -> bool {
-    let test = entry.test.trim();
-    if test.is_empty() {
+    if entry.tests.is_empty() {
         return false;
     }
-    if test != "TODO" {
+    if !is_pending_todo_entry(entry) {
         return true;
     }
     let reason = entry.reason.trim();
     !reason.is_empty() && acknowledges_top_of_pyramid_tier(reason)
+}
+
+fn is_pending_todo_entry(entry: &CoverageEntry) -> bool {
+    entry.tests.len() == 1 && entry.tests[0].trim() == "TODO"
 }
 
 fn acknowledges_top_of_pyramid_tier(reason: &str) -> bool {
