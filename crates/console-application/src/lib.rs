@@ -7452,6 +7452,8 @@ impl AttentionEvent for EventType {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::manual_assert, clippy::panic)]
+
     use std::cell::RefCell;
 
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -7494,6 +7496,67 @@ mod tests {
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
         work_item_failure_event, work_item_override_outcome,
     };
+
+    #[track_caller]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("{context}");
+        }
+    }
+
+    #[track_caller]
+    fn ok_factory_command_outcome(
+        result: super::ApplicationResult<super::FactoryCommandOutcome>,
+    ) -> super::FactoryCommandOutcome {
+        match result {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_work_item_command_outcome(
+        result: super::ApplicationResult<super::WorkItemCommandOutcome>,
+    ) -> super::WorkItemCommandOutcome {
+        match result {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_operator_action_outcome(
+        result: super::ApplicationResult<OperatorActionOutcome>,
+    ) -> OperatorActionOutcome {
+        match result {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected panic")]
+    fn check_panics() {
+        check(false, "expected panic");
+    }
+
+    #[test]
+    #[should_panic(expected = "NoSelectedAttentionItem")]
+    fn ok_factory_command_outcome_panics() {
+        ok_factory_command_outcome(Err(ApplicationError::NoSelectedAttentionItem));
+    }
+
+    #[test]
+    #[should_panic(expected = "NoSelectedAttentionItem")]
+    fn ok_work_item_command_outcome_panics() {
+        ok_work_item_command_outcome(Err(ApplicationError::NoSelectedAttentionItem));
+    }
+
+    #[test]
+    #[should_panic(expected = "NoSelectedOperatorAction")]
+    fn ok_operator_action_outcome_panics() {
+        ok_operator_action_outcome(Err(ApplicationError::NoSelectedOperatorAction));
+    }
 
     #[test]
     fn attention_projection_folds_the_attention_item_stream_ordered_by_id() {
@@ -8821,7 +8884,10 @@ mod tests {
                 selected_section: expected_section,
                 scroll: 0,
             };
-            assert_eq!(opened.overlay(), &expected, "auto-focus from {view:?}");
+            check(
+                opened.overlay() == &expected,
+                "open help should focus active pane section",
+            );
         }
     }
 
@@ -9354,7 +9420,10 @@ mod tests {
         let model = build_tui_model_for_state(&events, &state);
         let registry_actions = registry_attention_actions_for_model(&model);
         let last_action = registry_actions.len().saturating_sub(1);
-        assert!(last_action > 0, "{last_action}");
+        check(
+            last_action > 0,
+            "command modal should expose multiple actions",
+        );
 
         assert_eq!(
             model.overlay(),
@@ -9943,13 +10012,15 @@ mod tests {
     }
 
     #[test]
-    fn factory_drain_handler_records_acceptance_park_as_awaiting_human()
-    -> super::ApplicationResult<()> {
+    fn factory_drain_handler_records_acceptance_park_as_awaiting_human() {
         let command = factory_drain_test_command();
         let mut port = AcceptanceParkDrainPort;
 
-        let outcome =
-            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port)?;
+        let outcome = ok_factory_command_outcome(handle_factory_drain_command(
+            &command,
+            &ready_factory_drain_policy(),
+            &mut port,
+        ));
 
         assert_eq!(outcome.command_status(), "parked-awaiting-human");
         assert_eq!(
@@ -9964,7 +10035,6 @@ mod tests {
                 &EventType::FactoryDrainAwaitingHuman,
             ]
         );
-        Ok(())
     }
 
     #[test]
@@ -10902,13 +10972,15 @@ mod tests {
     }
 
     #[test]
-    fn factory_drain_handler_threads_json_diagnostic_fields_into_the_failure_event()
-    -> super::ApplicationResult<()> {
+    fn factory_drain_handler_threads_json_diagnostic_fields_into_the_failure_event() {
         let command = factory_drain_test_command();
         let mut port = FailingDrainPort;
 
-        let outcome =
-            handle_factory_drain_command(&command, &ready_factory_drain_policy(), &mut port)?;
+        let outcome = ok_factory_command_outcome(handle_factory_drain_command(
+            &command,
+            &ready_factory_drain_policy(),
+            &mut port,
+        ));
         let failed_payloads = outcome
             .events()
             .iter()
@@ -10922,7 +10994,6 @@ mod tests {
         })
         .to_string();
         assert_eq!(failed_payloads, [expected.as_str()]);
-        Ok(())
     }
 
     #[test]
@@ -11243,12 +11314,12 @@ mod tests {
     }
 
     #[test]
-    fn approve_handler_derives_action_id_and_appends_shared_work_item_events()
-    -> super::ApplicationResult<()> {
+    fn approve_handler_derives_action_id_and_appends_shared_work_item_events() {
         let command = approve_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+        let outcome =
+            ok_work_item_command_outcome(handle_work_item_approve_command(&command, &mut port));
 
         // The console routes only through the port with `approve:<work-item-id>`.
         assert_eq!(port.observed_action_ids, ["approve:wi-1"]);
@@ -11274,15 +11345,15 @@ mod tests {
         }
         assert_eq!(outcome.events()[0].context(), "command");
         assert_eq!(outcome.events()[2].context(), "work_item");
-        Ok(())
     }
 
     #[test]
-    fn approve_handler_records_failed_outcome_with_start() -> super::ApplicationResult<()> {
+    fn approve_handler_records_failed_outcome_with_start() {
         let command = approve_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::failed());
 
-        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+        let outcome =
+            ok_work_item_command_outcome(handle_work_item_approve_command(&command, &mut port));
 
         assert_eq!(outcome.command_status(), "failed");
         assert_eq!(
@@ -11297,16 +11368,15 @@ mod tests {
                 &EventType::WorkItemActionFailed,
             ]
         );
-        Ok(())
     }
 
     #[test]
-    fn approve_handler_records_not_wired_without_fabricating_start() -> super::ApplicationResult<()>
-    {
+    fn approve_handler_records_not_wired_without_fabricating_start() {
         let command = approve_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::not_wired());
 
-        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+        let outcome =
+            ok_work_item_command_outcome(handle_work_item_approve_command(&command, &mut port));
 
         // An honest not-wired action never started, so no start event.
         assert_eq!(outcome.command_status(), "not_wired");
@@ -11321,7 +11391,6 @@ mod tests {
                 &EventType::WorkItemActionNotWired
             ]
         );
-        Ok(())
     }
 
     #[test]
@@ -11362,12 +11431,12 @@ mod tests {
     }
 
     #[test]
-    fn accept_handler_derives_action_id_and_routes_through_the_shared_port()
-    -> super::ApplicationResult<()> {
+    fn accept_handler_derives_action_id_and_routes_through_the_shared_port() {
         let command = accept_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-        let outcome = handle_work_item_accept_command(&command, &mut port)?;
+        let outcome =
+            ok_work_item_command_outcome(handle_work_item_accept_command(&command, &mut port));
 
         // Accept carries no payload -- the action-id is just `accept:<id>`, and
         // it rides the shared `work_item` outcome family exactly like approve.
@@ -11389,7 +11458,6 @@ mod tests {
             assert_eq!(event.payload_json(), r#"{"action_id":"accept:wi-1"}"#);
             assert_eq!(event.source(), "console:work-item-command-handler");
         }
-        Ok(())
     }
 
     #[test]
@@ -11410,13 +11478,15 @@ mod tests {
     }
 
     #[test]
-    fn reject_handler_maps_regroom_payload_onto_the_reject_action_id()
-    -> super::ApplicationResult<()> {
+    fn reject_handler_maps_regroom_payload_onto_the_reject_action_id() {
         let command = reject_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-        let outcome =
-            handle_work_item_reject_command(&command, r#"{"mode":"regroom"}"#, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_reject_command(
+            &command,
+            r#"{"mode":"regroom"}"#,
+            &mut port,
+        ));
 
         // The mode from the payload lands in the third action-id segment.
         assert_eq!(port.observed_action_ids, ["reject:wi-1:regroom"]);
@@ -11427,7 +11497,6 @@ mod tests {
                 r#"{"action_id":"reject:wi-1:regroom"}"#
             );
         }
-        Ok(())
     }
 
     fn resolve_blocked_command() -> CommandEnvelope {
@@ -11441,8 +11510,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_blocked_handler_maps_each_target_onto_the_action_id() -> super::ApplicationResult<()>
-    {
+    fn resolve_blocked_handler_maps_each_target_onto_the_action_id() {
         for (payload, expected) in [
             (r#"{"target_status":"ready"}"#, "resolve-blocked:wi-1:ready"),
             (
@@ -11453,7 +11521,9 @@ mod tests {
             let command = resolve_blocked_command();
             let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-            let outcome = handle_work_item_resolve_blocked_command(&command, payload, &mut port)?;
+            let outcome = ok_work_item_command_outcome(handle_work_item_resolve_blocked_command(
+                &command, payload, &mut port,
+            ));
 
             assert_eq!(port.observed_action_ids, [expected]);
             assert_eq!(outcome.command_status(), "completed");
@@ -11464,7 +11534,6 @@ mod tests {
                 );
             }
         }
-        Ok(())
     }
 
     #[test]
@@ -11515,8 +11584,7 @@ mod tests {
     }
 
     #[test]
-    fn move_handler_maps_each_pre_terminal_target_onto_the_move_action_id()
-    -> super::ApplicationResult<()> {
+    fn move_handler_maps_each_pre_terminal_target_onto_the_move_action_id() {
         for (payload, expected) in [
             (r#"{"target_status":"backlog"}"#, "move:wi-1:backlog"),
             (r#"{"target_status":"ready"}"#, "move:wi-1:ready"),
@@ -11525,11 +11593,12 @@ mod tests {
         ] {
             let command = move_command();
             let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
-            let outcome = handle_work_item_move_command(&command, payload, &mut port)?;
+            let outcome = ok_work_item_command_outcome(handle_work_item_move_command(
+                &command, payload, &mut port,
+            ));
             assert_eq!(port.observed_action_ids, [expected]);
             assert_eq!(outcome.command_status(), "completed");
         }
-        Ok(())
     }
 
     #[test]
@@ -11579,8 +11648,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_override_handler_maps_each_cap_setting_and_clear_onto_its_action_id()
-    -> super::ApplicationResult<()> {
+    fn dispatcher_override_handler_maps_each_cap_setting_and_clear_onto_its_action_id() {
         for (payload, expected) in [
             (
                 r#"{"setting":"merge_on_review_cap","value":true}"#,
@@ -11613,12 +11681,12 @@ mod tests {
         ] {
             let command = override_command();
             let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
-            let outcome =
-                handle_work_item_set_dispatcher_override_command(&command, payload, &mut port)?;
+            let outcome = ok_work_item_command_outcome(
+                handle_work_item_set_dispatcher_override_command(&command, payload, &mut port),
+            );
             assert_eq!(port.observed_action_ids, [expected]);
             assert_eq!(outcome.command_status(), "completed");
         }
-        Ok(())
     }
 
     #[test]
@@ -11693,16 +11761,18 @@ mod tests {
     }
 
     #[test]
-    fn reject_handler_maps_rework_payload_onto_the_reject_action_id() -> super::ApplicationResult<()>
-    {
+    fn reject_handler_maps_rework_payload_onto_the_reject_action_id() {
         let command = reject_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-        let outcome = handle_work_item_reject_command(&command, r#"{"mode":"rework"}"#, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_reject_command(
+            &command,
+            r#"{"mode":"rework"}"#,
+            &mut port,
+        ));
 
         assert_eq!(port.observed_action_ids, ["reject:wi-1:rework"]);
         assert_eq!(outcome.command_status(), "completed");
-        Ok(())
     }
 
     #[test]
@@ -11767,13 +11837,15 @@ mod tests {
     }
 
     #[test]
-    fn set_admission_handler_maps_auto_payload_onto_the_action_id() -> super::ApplicationResult<()>
-    {
+    fn set_admission_handler_maps_auto_payload_onto_the_action_id() {
         let command = set_admission_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-        let outcome =
-            handle_work_item_set_admission_command(&command, r#"{"policy":"auto"}"#, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_set_admission_command(
+            &command,
+            r#"{"policy":"auto"}"#,
+            &mut port,
+        ));
 
         // The policy from the payload lands in the third action-id segment.
         assert_eq!(port.observed_action_ids, ["set-admission:wi-1:auto"]);
@@ -11784,21 +11856,21 @@ mod tests {
                 r#"{"action_id":"set-admission:wi-1:auto"}"#
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn set_admission_handler_maps_manual_payload_onto_the_action_id() -> super::ApplicationResult<()>
-    {
+    fn set_admission_handler_maps_manual_payload_onto_the_action_id() {
         let command = set_admission_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
 
-        let outcome =
-            handle_work_item_set_admission_command(&command, r#"{"policy":"manual"}"#, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_set_admission_command(
+            &command,
+            r#"{"policy":"manual"}"#,
+            &mut port,
+        ));
 
         assert_eq!(port.observed_action_ids, ["set-admission:wi-1:manual"]);
         assert_eq!(outcome.command_status(), "completed");
-        Ok(())
     }
 
     #[test]
@@ -11877,13 +11949,14 @@ mod tests {
     }
 
     #[test]
-    fn set_acceptance_handler_maps_ai_only_payload_onto_the_action_id()
-    -> super::ApplicationResult<()> {
+    fn set_acceptance_handler_maps_ai_only_payload_onto_the_action_id() {
         let command = set_acceptance_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
         let payload = r#"{"policy":"ai-only"}"#;
 
-        let outcome = handle_work_item_set_acceptance_command(&command, payload, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_set_acceptance_command(
+            &command, payload, &mut port,
+        ));
 
         // The policy from the payload lands in the third action-id segment.
         assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:ai-only"]);
@@ -11894,38 +11967,37 @@ mod tests {
                 r#"{"action_id":"set-acceptance:wi-1:ai-only"}"#
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn set_acceptance_handler_maps_human_only_payload_onto_the_action_id()
-    -> super::ApplicationResult<()> {
+    fn set_acceptance_handler_maps_human_only_payload_onto_the_action_id() {
         let command = set_acceptance_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
         let payload = r#"{"policy":"human-only"}"#;
 
-        let outcome = handle_work_item_set_acceptance_command(&command, payload, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_set_acceptance_command(
+            &command, payload, &mut port,
+        ));
 
         assert_eq!(port.observed_action_ids, ["set-acceptance:wi-1:human-only"]);
         assert_eq!(outcome.command_status(), "completed");
-        Ok(())
     }
 
     #[test]
-    fn set_acceptance_handler_maps_ai_then_human_payload_onto_the_action_id()
-    -> super::ApplicationResult<()> {
+    fn set_acceptance_handler_maps_ai_then_human_payload_onto_the_action_id() {
         let command = set_acceptance_command();
         let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
         let payload = r#"{"policy":"ai-then-human"}"#;
 
-        let outcome = handle_work_item_set_acceptance_command(&command, payload, &mut port)?;
+        let outcome = ok_work_item_command_outcome(handle_work_item_set_acceptance_command(
+            &command, payload, &mut port,
+        ));
 
         assert_eq!(
             port.observed_action_ids,
             ["set-acceptance:wi-1:ai-then-human"]
         );
         assert_eq!(outcome.command_status(), "completed");
-        Ok(())
     }
 
     #[test]
@@ -12142,8 +12214,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_approve_threads_json_diagnostic_fields_into_the_failure_event()
-    -> super::ApplicationResult<()> {
+    fn a_failed_approve_threads_json_diagnostic_fields_into_the_failure_event() {
         let command = approve_command();
         let mut port = RecordingActionPort::returning(
             OrchestratorActionOutcome::failed_with_refusal(
@@ -12151,7 +12222,8 @@ mod tests {
             ),
         );
 
-        let outcome = handle_work_item_approve_command(&command, &mut port)?;
+        let outcome =
+            ok_work_item_command_outcome(handle_work_item_approve_command(&command, &mut port));
         let failed_payloads = outcome
             .events()
             .iter()
@@ -12166,7 +12238,6 @@ mod tests {
         })
         .to_string();
         assert_eq!(failed_payloads, [expected.as_str()]);
-        Ok(())
     }
 
     #[test]
@@ -12822,7 +12893,10 @@ mod tests {
     fn header_reflects_the_selected_repo_and_carries_no_autonomous_segment() {
         let model = repo_model(TuiOverlay::None, CONFIRM_REPO);
         assert_eq!(model.selected_repo(), CONFIRM_REPO);
-        assert!(model.header().contains(&format!("repo: {CONFIRM_REPO}")));
+        check(
+            model.header().contains(&format!("repo: {CONFIRM_REPO}")),
+            "header should include selected repo",
+        );
         // The retired arming surface left no `autonomous:` header segment.
         assert!(!model.header().contains("autonomous:"));
     }
@@ -13040,7 +13114,10 @@ mod tests {
         let line = model.header_line(112);
         assert!(line.chars().count() <= 112);
         assert!(line.contains("+2 more"));
-        assert!(line.contains(&format!("repo: {CONFIRM_REPO}")));
+        check(
+            line.contains(&format!("repo: {CONFIRM_REPO}")),
+            "header line should include selected repo",
+        );
         assert!(line.contains("attention: 0"));
     }
 
@@ -13119,7 +13196,10 @@ mod tests {
         let wide = model.header_line(300);
         assert_eq!(wide, model.header());
         assert!(rendered_header_segments(&wide).contains(&RenderedHeaderSegmentKind::Transient));
-        assert!(wide.contains(&format!("repo: {CONFIRM_REPO}")));
+        check(
+            wide.contains(&format!("repo: {CONFIRM_REPO}")),
+            "wide header should include selected repo",
+        );
         assert!(wide.contains("view: Lanes"));
 
         let narrow = model.header_line(80);
@@ -13127,8 +13207,11 @@ mod tests {
         assert!(rendered_header_segments(&narrow).contains(&RenderedHeaderSegmentKind::Transient));
         assert!(narrow.contains("factory:"));
         let static_field_yielded =
-            !narrow.contains(&format!("repo: {CONFIRM_REPO}")) || !narrow.contains("view: Lanes");
-        assert!(static_field_yielded);
+            !(narrow.contains(&format!("repo: {CONFIRM_REPO}")) & narrow.contains("view: Lanes"));
+        check(
+            static_field_yielded,
+            "narrow header should yield a static field",
+        );
     }
 
     #[test]
@@ -13159,7 +13242,10 @@ mod tests {
         let narrow = model.header_line(60);
         assert!(narrow.chars().count() <= 60);
         assert!(narrow.contains("factory: dispatch item not wired"));
-        assert!(!narrow.contains("repo:") || !narrow.contains("attention:"));
+        check(
+            !(narrow.contains("repo:") & narrow.contains("attention:")),
+            "narrow header should yield at least one static segment",
+        );
     }
 
     #[test]
@@ -13578,7 +13664,10 @@ mod tests {
             (Lane::Done, "enter item"),
         ] {
             let hint = item_hint(action_registry::ActionSurface::LaneDrill, lane);
-            assert!(hint.contains(expected), "{lane:?}: {hint}");
+            check(
+                hint.contains(expected),
+                "hint should contain expected lane action",
+            );
         }
     }
 
@@ -13741,7 +13830,10 @@ mod tests {
         // The derived impls are part of the type's surface: a clone compares
         // equal and the debug form names the type.
         assert_eq!(silent.clone(), silent);
-        assert!(format!("{silent:?}").contains("ActionFailure"));
+        check(
+            format!("{silent:?}").contains("ActionFailure"),
+            "silent action failure should retain debug identity",
+        );
     }
 
     #[test]
@@ -14960,10 +15052,14 @@ mod tests {
             );
             assert_eq!(command.map(CommandEnvelope::requested_by), Some("operator"));
             // Payloadless: a plain PersistCommand, never PersistCommandWithPayload.
-            assert!(matches!(
-                outcome,
-                Ok(OperatorActionOutcome::PersistCommand(_))
-            ));
+            let outcome = ok_operator_action_outcome(outcome);
+            check(
+                std::mem::discriminant(&outcome)
+                    == std::mem::discriminant(&OperatorActionOutcome::PersistCommand(
+                        factory_drain_test_command(),
+                    )),
+                "payloadless valve should persist a payloadless command",
+            );
         }
     }
 
@@ -15490,7 +15586,10 @@ mod tests {
         // One-line assert on a bound local, per the llvm-cov pincer
         // `action_registry.rs` documents: a wrapped failure-only message lands
         // on a line llvm-cov counts as never executed.
-        assert!(last >= 1, "{last}");
+        check(
+            last >= 1,
+            "menu action list should have at least two actions",
+        );
         let at_first = TuiOverlay::Menu { top, selected: 0 };
         let at_second = TuiOverlay::Menu { top, selected: 1 };
         let at_last = TuiOverlay::Menu {
@@ -15511,7 +15610,7 @@ mod tests {
         // hold different numbers of actions so the index may not even exist.
         let events: [ConsoleEvent; 0] = [];
         let count = action_registry::menu_tree().len();
-        assert!(count >= 2, "the bar must not be a single degenerate node");
+        check(count >= 2, "the bar must not be a single degenerate node");
         let opened = TuiInteractionState::for_view(
             TuiView::Lanes,
             0,
@@ -15626,11 +15725,14 @@ mod tests {
             .collect();
 
         let distinct: std::collections::BTreeSet<&String> = hints.iter().collect();
-        assert_eq!(distinct.len(), hints.len(), "{hints:?}");
+        check(
+            distinct.len() == hints.len(),
+            "overlay hints should be distinct",
+        );
         // The open overlays all say how to LEAVE; only the closed state does not.
         for (overlay, hint) in overlays.iter().zip(&hints) {
             let escapable = hint.contains("esc") || !overlay.is_open();
-            assert!(escapable, "{overlay:?}: {hint}");
+            check(escapable, "open overlay hint should include an exit path");
         }
     }
 
@@ -15767,8 +15869,7 @@ mod tests {
     }
 
     #[test]
-    fn move_status_resolves_to_the_real_orchestrator_transition_for_the_selected_item()
-    -> super::ApplicationResult<()> {
+    fn move_status_resolves_to_the_real_orchestrator_transition_for_the_selected_item() {
         let events = drilldown_events();
         // blocked -> backlog maps onto resolve-blocked with the target payload.
         let resolve = build_tui_model_for_state(
@@ -15784,7 +15885,8 @@ mod tests {
                 },
             ),
         );
-        let resolve_outcome = resolve_valve_action(&resolve, "operator")?;
+        let resolve_outcome =
+            ok_operator_action_outcome(resolve_valve_action(&resolve, "operator"));
         assert!(matches!(
             &resolve_outcome,
             OperatorActionOutcome::PersistCommandWithPayload { command, payload_json }
@@ -15792,7 +15894,6 @@ mod tests {
                     && command.aggregate_id() == "wi-blk"
                     && payload_json == r#"{"target_status":"backlog"}"#
         ));
-        Ok(())
     }
 
     #[test]
@@ -15824,8 +15925,7 @@ mod tests {
     }
 
     #[test]
-    fn move_status_broad_targets_map_onto_the_move_command_with_the_target_payload()
-    -> super::ApplicationResult<()> {
+    fn move_status_broad_targets_map_onto_the_move_command_with_the_target_payload() {
         let events = drilldown_events();
         // pending-approval -> backlog is a broad pre-terminal move (no semantic
         // valve for that pair), so it rides the guarded move command with the
@@ -15844,7 +15944,7 @@ mod tests {
             ),
         );
         assert!(matches!(
-            resolve_valve_action(&model, "operator")?,
+            ok_operator_action_outcome(resolve_valve_action(&model, "operator")),
             OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json }
                 if command.command_type() == &CommandType::WorkItemMoveRequested
                     && command.aggregate_id() == "wi-a"
@@ -15881,17 +15981,15 @@ mod tests {
                 ),
             );
             assert!(matches!(
-                resolve_valve_action(&model, "operator")?,
+                ok_operator_action_outcome(resolve_valve_action(&model, "operator")),
                 OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json }
                     if command.aggregate_id() == item && payload_json == expected_payload
             ));
         }
-        Ok(())
     }
 
     #[test]
-    fn set_override_valve_resolves_to_the_override_command_for_the_selected_item()
-    -> super::ApplicationResult<()> {
+    fn set_override_valve_resolves_to_the_override_command_for_the_selected_item() {
         // A staged per-item override valve resolves, through the shared valve
         // path, into the set-dispatcher-override command for the selected item.
         let events = drilldown_events();
@@ -15908,12 +16006,11 @@ mod tests {
             ),
         );
         assert!(matches!(
-            resolve_valve_action(&model, "operator")?,
+            ok_operator_action_outcome(resolve_valve_action(&model, "operator")),
             OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json }
                 if command.command_type() == &CommandType::WorkItemSetDispatcherOverrideRequested
                     && command.aggregate_id() == "wi-a"
                     && payload_json == r#"{"setting":"merge_on_review_cap","value":true}"#
         ));
-        Ok(())
     }
 }
