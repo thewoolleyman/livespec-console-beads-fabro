@@ -1491,17 +1491,28 @@ fn render_lane_drilldown(model: &TuiScreenModel, lane: Lane, area: Rect, buffer:
     let title = focus_title(&format!("Lane: {}", lane.label()), content_focused(model));
     let block = Block::new().borders(Borders::ALL).title(title);
     if items.is_empty() {
-        Paragraph::new(vec![Line::from("No work-items in this lane")])
+        let selection_notice = model.missing_selected_lane_item_id().map_or_else(
+            || "No work-items in this lane".to_owned(),
+            |work_item_id| format!("{work_item_id} is no longer in this lane; selection not moved"),
+        );
+        Paragraph::new(vec![Line::from(selection_notice)])
             .block(block)
             .render(area, buffer);
         return;
     }
     let selected = model.selected_lane_item_index();
-    let list_items = items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| lane_item_line(item, Some(index) == selected))
-        .collect::<Vec<_>>();
+    let mut list_items = Vec::new();
+    if let Some(work_item_id) = model.missing_selected_lane_item_id() {
+        list_items.push(ListItem::new(format!(
+            "{work_item_id} is no longer in this lane; selection not moved"
+        )));
+    }
+    list_items.extend(
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| lane_item_line(item, Some(index) == selected)),
+    );
     let count = list_items.len();
     let list = List::new(list_items).block(block);
     let mut list_state = ListState::default();
@@ -4479,6 +4490,59 @@ mod tests {
             output
                 .as_ref()
                 .map(|r| r.contains("No work-items in this lane")),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn render_to_text_reports_when_the_anchored_lane_selection_disappears() {
+        let before = [
+            lane_event(
+                "evt_ready_stay_before",
+                "console-ready-stay",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+            lane_event(
+                "evt_ready_vanish_before",
+                "console-ready-vanish",
+                Lane::Ready,
+                None,
+                "b0",
+                "ready",
+            ),
+        ];
+        let starting = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+        let selected = reduce_tui_interaction(&starting, &before, TuiInteraction::SelectNext);
+        let after = [lane_event(
+            "evt_ready_stay_after",
+            "console-ready-stay",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+        let model = build_tui_model_for_state(&after, &selected);
+
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output.as_ref().map(|r| {
+                r.contains("console-ready-vanish is no longer in this lane; selection not moved")
+            }),
+            Ok(true)
+        );
+        assert_eq!(model.selected_work_item_id(), None);
+
+        let empty_lane = build_tui_model_for_state(&[], &selected);
+        let empty_output = render_to_text(&empty_lane, 96, 24);
+        assert_eq!(
+            empty_output.as_ref().map(|r| {
+                r.contains("console-ready-vanish is no longer in this lane; selection not moved")
+            }),
             Ok(true)
         );
     }
