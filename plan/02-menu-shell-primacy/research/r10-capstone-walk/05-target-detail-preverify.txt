@@ -1,0 +1,50 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Lanes | attention: 92 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec)                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Men┌Work item: livespec-console-beads-fabro-ekb5vq──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌Vi│ranked ready item (rank a0, origin freeform)                                                                                                                                                    │──┐
+│  │                                                                                                                                                                                                │r │
+│  │id                   livespec-console-beads-fabro-ekb5vq                                                                                                                                        │sp│
+│> │repo                 livespec-console-beads-fabro                                                                                                                                               │ s│
+│  │type                 —                                                                                                                                                                          │ds│
+│  │status               ready                                                                                                                                                                      │ t│
+│  │execution_state      -                                                                                                                                                                          │cl│
+│  │lane                 ready                                                                                                                                                                      │  │
+│  │rank                 ~                                                                                                                                                                          │es│
+│  │lane_reason          —                                                                                                                                                                          │ea│
+│  │admission_policy     — (not emitted; console assumes manual)                                                                                                                                    │  │
+│  │acceptance_policy    — (not emitted; console assumes ai-then-human)                                                                                                                             │em│
+│  │origin               —                                                                                                                                                                          │-b│
+│  │gap_id               —                                                                                                                                                                          │  │
+│  │assignee             —                                                                                                                                                                          │  │
+│  │depends_on           —                                                                                                                                                                          │  │
+│  │captured_at          —                                                                                                                                                                          │  │
+│  │resolution           —                                                                                                                                                                          │  │
+│  │reason               —                                                                                                                                                                          │  │
+│  │audit                —                                                                                                                                                                          │  │
+│  │superseded_by        —                                                                                                                                                                          │  │
+│  │spec_commitment_hint —                                                                                                                                                                          │  │
+│  │supersedes           —                                                                                                                                                                          │  │
+│  │blocked_reason       —                                                                                                                                                                          │  │
+│  │factory_safety       —                                                                                                                                                                          │  │
+│  │                                                                                                                                                                                                │  │
+│  │acceptance_criteria                                                                                                                                                                             │  │
+│  │—                                                                                                                                                                                               │  │
+│  │                                                                                                                                                                                                │  │
+│  │notes                                                                                                                                                                                           │  │
+│  │—                                                                                                                                                                                               │  │
+│  │                                                                                                                                                                                                │  │
+│  │description                                                                                                                                                                                     │  │
+│  │—                                                                                                                                                                                               │  │
+│  │                                                                                                                                                                                                │  │
+│  │                                                                                                                                                                                                │  │
+│  │                                                                                                                                                                                                │  │
+│  │                                                                                                                                                                                                │  │
+│  │                                                                                                                                                                                                │  │
+│  │                                                                                                                                                                                                │  │
+│  │                                                                                                                                                                                                │  │
+│  │up/down scroll | esc to close                                                                                                                                                                   │  │
+└──└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘──┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down scroll | PgUp/PgDn page | esc close item                                                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,50 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Lanes | attention: 92 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec)                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views───────────┐┌Lane: ready [focus]─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Attention     ││> livespec-console-beads-fabro-erb2ud  rank a0  [ready]  [bug] BacklogBounce is the adapter's FALLBACK event kind - every non-outcome dispatch journal entry renders as 'Dispatcher │
+│  Spec          ││  livespec-console-beads-fabro-iofvz2  rank a0  [ready]  [bug] Operator commands queue behind a running drain on the serial command worker - acceptance arming cannot overlap a disp│
+│> Lanes         ││  livespec-console-beads-fabro-qeqax3  rank a0  [ready]  [bug] Command-spine timestamps are degenerate: commands issued minutes apart share requested_at to the nanosecond, so the s│
+│  Events        ││  livespec-console-beads-fabro-wnlcnj  rank a0  [ready]  Drop the redundant check-test matrix job from ci.yml now that nextest is the canonical harness  repo livespec-console-beads│
+│  Repos         ││  livespec-console-beads-fabro-zbnnlv  rank a0  [ready]  [bug] command_worker_loop can silently DROP an operator command while the UI shows success — six discarded-error paths in t│
+│  Settings      ││  livespec-console-beads-fabro-4s1h  rank ~  [ready]  [bug] The ready lane displays one order and the drain picks another — the operator cannot predict what their own drain will cl│
+│                ││  livespec-console-beads-fabro-ekb5vq  rank ~  [ready]  ranked ready item (rank a0, origin freeform)  repo livespec-console-beads-fabro                                             │
+│                ││  livespec-console-beads-fabro-et3.10  rank ~  [ready]  [bug] R8 not delivered — the per-item dispatch port is unconditionally not_wired, so the verb dispatches nothing  repo lives│
+│                ││  livespec-console-beads-fabro-et3.11  rank ~  [ready]  [bug] The header fitter evicts the only honest failure signal first and keeps two static segments  repo livespec-console-bea│
+│                ││  livespec-console-beads-fabro-et3.8  rank ~  [ready]  Detail-pane commands are drillable into a full-width explainer modal (vc7lmq slice 2)  repo livespec-console-beads-fabro     │
+│                ││  livespec-console-beads-fabro-x6lj  rank ~  [ready]  [bug] Selection is anchored to a ROW INDEX not a work-item id — a re-sort silently re-aims the next action at a different item│
+│                ││  livespec-console-beads-fabro-zfcp  rank ~  [ready]  AGENTS.md's bd list survey forms hide all closed items; -n 0 fixes the row cap, not the status filter  repo livespec-console-b│
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+│                ││                                                                                                                                                                                    │
+└────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

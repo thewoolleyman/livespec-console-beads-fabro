@@ -1,0 +1,5 @@
+{"at": "2026-08-20T23:42:23Z", "blocking": false, "detail": "WARNING: master contains unreleased dispatcher commit(s): 089653150589; a release must be cut before this code takes effect.", "stage": "dispatcher-staleness-warning"}
+{"at": "2026-08-20T23:42:24Z", "reason": "no-outcome-since-ledger-admit", "stage": "dispatch-claim-abandoned", "status": "active", "work_item_id": "livespec-console-beads-fabro-et3.2"}
+{"assignee": "fabro", "at": "2026-08-20T23:42:24Z", "stage": "ledger-admit", "work_item_id": "livespec-console-beads-fabro-ekb5vq"}
+{"at": "2026-08-20T23:42:24Z", "budget": 1, "dry_run": false, "picked": ["livespec-console-beads-fabro-ekb5vq"], "stage": "loop-pick"}
+{"at": "2026-08-20T23:42:29Z", "dispatch_id": "46774a3fa17f40698a30966573dd8dd2", "stage": "dispatch-id", "started_at_epoch": 1787269349.9512837, "work_item_id": "livespec-console-beads-fabro-ekb5vq", "workflow_toml": "/data/projects/livespec-console-beads-fabro/.fabro/workflows/implement-work-item/workflow.toml"}

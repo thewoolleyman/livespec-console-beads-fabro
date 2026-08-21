@@ -1,0 +1,50 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Attention | attention: 92 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec)                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views [focus]───┐┌Attention─────────────────────────────────────────────────────────────────┐┌Detail──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│> Attention     ││> Host-route work-item livespec-console-beads-fabro-5zjk5b: factory_safety█│Repo: livespec-console-beads-fabro                                                                      │
+│  Spec          ││  Host-route work-item livespec-console-beads-fabro-koykn7: factory_safety█│Work item: livespec-console-beads-fabro-5zjk5b                                                          │
+│  Lanes         ││  Host-route work-item livespec-console-beads-fabro-w7d: factory_safety re█│Fabro run: -                                                                                            │
+│  Events        ││  Release stranded active work-item livespec-console-beads-fabro-2ckgiy: l█│Attach: cd /data/projects/livespec-console-beads-fabro && codex exec 'Host-route work-item              │
+│  Repos         ││  Open PR #317 (test: close four more tmux socket-scope bypasses found by █│livespec-console-beads-fabro-5zjk5b from repository /data/projects/livespec-console-beads-fabro. Run it │
+│  Settings      ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│on the host with required credentials; do not dispatch it to Fabro.' < /dev/null                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│Timeline:                                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab█│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Prune stale worktree metadata for /home/ubuntu/.worktrees/livespec-conso║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-console-beads-fab║│                                                                                                        │
+└────────────────┘└──────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter open | ? help | q quit                                                                                                                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
