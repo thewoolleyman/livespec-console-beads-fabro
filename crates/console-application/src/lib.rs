@@ -992,6 +992,7 @@ pub struct TuiInteractionState {
     lane_focus: LaneFocus,
     selected_lane_index: usize,
     selected_lane_item_index: usize,
+    selected_lane_item_id: Option<String>,
     focus: FocusPane,
     detail_scroll: usize,
     detail_max_scroll: usize,
@@ -1018,6 +1019,7 @@ impl TuiInteractionState {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             selected_lane_item_index: 0,
+            selected_lane_item_id: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -1048,6 +1050,7 @@ impl TuiInteractionState {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             selected_lane_item_index: 0,
+            selected_lane_item_id: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -1170,8 +1173,11 @@ impl TuiInteractionState {
 
     #[must_use]
     /// Return the stored value.
-    pub const fn with_lane_focus(mut self, lane_focus: LaneFocus) -> Self {
+    pub fn with_lane_focus(mut self, lane_focus: LaneFocus) -> Self {
         self.lane_focus = lane_focus;
+        if matches!(lane_focus, LaneFocus::Overview) {
+            self.selected_lane_item_id = None;
+        }
         self
     }
 
@@ -1186,8 +1192,26 @@ impl TuiInteractionState {
     /// per-item cursor the `Lanes` drill-in moves with up/down), preserving every
     /// other field.
     #[must_use]
-    pub const fn with_selected_lane_item_index(mut self, selected_lane_item_index: usize) -> Self {
+    pub fn with_selected_lane_item_index(mut self, selected_lane_item_index: usize) -> Self {
         self.selected_lane_item_index = selected_lane_item_index;
+        self.selected_lane_item_id = None;
+        self
+    }
+
+    /// Replace the selected work-item within a drilled-in lane with both the
+    /// current row and the item identity that row represents.
+    ///
+    /// The row keeps keyboard movement simple; the id is the durable selection
+    /// anchor used on the next projection rebuild, so a re-sort follows the
+    /// work-item instead of whatever later lands at the old row index.
+    #[must_use]
+    pub fn with_selected_lane_item(
+        mut self,
+        selected_lane_item_index: usize,
+        work_item_id: &str,
+    ) -> Self {
+        self.selected_lane_item_index = selected_lane_item_index;
+        self.selected_lane_item_id = Some(work_item_id.to_owned());
         self
     }
 
@@ -1330,6 +1354,13 @@ impl TuiInteractionState {
     /// Return the selected work-item row within a drilled-in lane.
     pub const fn selected_lane_item_index(&self) -> usize {
         self.selected_lane_item_index
+    }
+
+    #[must_use]
+    /// Return the selected drilled-lane work-item id anchor, when one has been
+    /// established by operator movement or lane drill-in.
+    pub fn selected_lane_item_id(&self) -> Option<&str> {
+        self.selected_lane_item_id.as_deref()
     }
 
     #[must_use]
@@ -1585,6 +1616,7 @@ pub struct TuiScreenModel {
     lane_focus: LaneFocus,
     selected_lane_index: Option<usize>,
     selected_lane_item_index: Option<usize>,
+    missing_selected_lane_item_id: Option<String>,
     focus: FocusPane,
     detail_scroll: usize,
     header_scroll: usize,
@@ -1646,6 +1678,7 @@ impl TuiScreenModel {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: None,
             selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,
@@ -1695,6 +1728,14 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_lane_item_index(&self) -> Option<usize> {
         self.selected_lane_item_index
+    }
+
+    #[must_use]
+    /// The anchored drilled-lane work-item id that is no longer present in the
+    /// current lane, if any. Renderers surface this explicitly instead of
+    /// silently substituting the item now occupying the old row.
+    pub fn missing_selected_lane_item_id(&self) -> Option<&str> {
+        self.missing_selected_lane_item_id.as_deref()
     }
 
     /// The latest failed operator action against `work_item_id`, if the most
@@ -3517,14 +3558,8 @@ pub fn build_tui_model_for_state(
     };
     // The per-item cursor exists only while drilled into a lane that holds at
     // least one item; an empty lane has nothing to select.
-    let selected_lane_item_index = match (active_view, lane_focus) {
-        (TuiView::Lanes, LaneFocus::Lane(lane)) => lane_board
-            .column(lane)
-            .map(LaneColumn::count)
-            .filter(|count| *count > 0)
-            .map(|count| state.selected_lane_item_index().min(count - 1)),
-        _ => None,
-    };
+    let (selected_lane_item_index, missing_selected_lane_item_id) =
+        selected_lane_item_for_state(active_view, lane_focus, &lane_board, state);
     let selected_setting_index = match active_view {
         TuiView::Settings => Some(
             state
@@ -3545,6 +3580,7 @@ pub fn build_tui_model_for_state(
         lane_focus,
         selected_lane_index,
         selected_lane_item_index,
+        missing_selected_lane_item_id,
         focus: state.focus(),
         detail_scroll: state.detail_scroll(),
         header_scroll: state.header_scroll(),
@@ -3568,6 +3604,35 @@ pub fn build_tui_model_for_state(
         unavailable_sources,
         factory_activity,
     }
+}
+
+fn selected_lane_item_for_state(
+    active_view: TuiView,
+    lane_focus: LaneFocus,
+    lane_board: &LaneBoard,
+    state: &TuiInteractionState,
+) -> (Option<usize>, Option<String>) {
+    let (TuiView::Lanes, LaneFocus::Lane(lane)) = (active_view, lane_focus) else {
+        return (None, None);
+    };
+    let Some(column) = lane_board.column(lane) else {
+        return (None, state.selected_lane_item_id().map(str::to_owned));
+    };
+    if column.count() == 0 {
+        return (None, state.selected_lane_item_id().map(str::to_owned));
+    }
+    if let Some(work_item_id) = state.selected_lane_item_id() {
+        for (index, item) in column.items().iter().enumerate() {
+            if item.work_item_id() == work_item_id {
+                return (Some(index), None);
+            }
+        }
+        return (None, Some(work_item_id.to_owned()));
+    }
+    (
+        Some(state.selected_lane_item_index().min(column.count() - 1)),
+        None,
+    )
 }
 
 /// The header's repo segment: the selected repo id, or a `-` placeholder when
@@ -3902,7 +3967,7 @@ pub fn reduce_tui_interaction(
     let model = build_tui_model_for_state(events, state);
     match interaction {
         TuiInteraction::SelectNext => select_next(state, &model),
-        TuiInteraction::SelectPrevious => select_previous(state),
+        TuiInteraction::SelectPrevious => select_previous(state, &model),
         TuiInteraction::SelectNextView => state
             .clone()
             .with_active_view(move_view_down(state.active_view()))
@@ -3940,7 +4005,7 @@ pub fn reduce_tui_interaction(
         TuiInteraction::SelectPreviousAction => {
             state.clone().with_overlay(move_action_up(state.overlay()))
         }
-        TuiInteraction::DrillIntoLane => drill_into_lane(state),
+        TuiInteraction::DrillIntoLane => drill_into_lane(state, &model),
         TuiInteraction::ReturnToLaneOverview => state.clone().with_lane_focus(LaneFocus::Overview),
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
@@ -4277,12 +4342,14 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
             state.selected_lane_index(),
         ))
     } else if is_lane_drilldown(state) {
-        state
-            .clone()
-            .with_selected_lane_item_index(move_selection_down(
+        select_lane_item_at(
+            state,
+            model,
+            move_selection_down(
                 drilldown_item_count(state, model),
-                state.selected_lane_item_index(),
-            ))
+                current_lane_item_index(state, model),
+            ),
+        )
     } else if is_settings_view(state) {
         state
             .clone()
@@ -4306,15 +4373,17 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
 
 /// Move the selection up, routed to the lane overview row or the settings row
 /// when one of those views is active, else to the attention list.
-fn select_previous(state: &TuiInteractionState) -> TuiInteractionState {
+fn select_previous(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiInteractionState {
     if is_lane_overview(state) {
         state
             .clone()
             .with_selected_lane_index(move_selection_up(state.selected_lane_index()))
     } else if is_lane_drilldown(state) {
-        state
-            .clone()
-            .with_selected_lane_item_index(move_selection_up(state.selected_lane_item_index()))
+        select_lane_item_at(
+            state,
+            model,
+            move_selection_up(current_lane_item_index(state, model)),
+        )
     } else if is_settings_view(state) {
         state
             .clone()
@@ -4328,10 +4397,45 @@ fn select_previous(state: &TuiInteractionState) -> TuiInteractionState {
     }
 }
 
+const fn current_lane_item_index(state: &TuiInteractionState, model: &TuiScreenModel) -> usize {
+    if let Some(index) = model.selected_lane_item_index() {
+        return index;
+    }
+    state.selected_lane_item_index()
+}
+
 /// Drill the lane overview's selected lane into a full per-lane list.
-fn drill_into_lane(state: &TuiInteractionState) -> TuiInteractionState {
+fn drill_into_lane(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiInteractionState {
     let lane = Lane::all()[state.selected_lane_index().min(Lane::all().len() - 1)];
-    state.clone().with_lane_focus(LaneFocus::Lane(lane))
+    let drilled = state.clone().with_lane_focus(LaneFocus::Lane(lane));
+    if let Some(item) = model
+        .lane_board()
+        .column(lane)
+        .and_then(|column| column.items().first())
+    {
+        return drilled.with_selected_lane_item(0, item.work_item_id());
+    }
+    drilled
+}
+
+fn select_lane_item_at(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    index: usize,
+) -> TuiInteractionState {
+    let LaneFocus::Lane(lane) = state.lane_focus() else {
+        return state.clone().with_selected_lane_item_index(index);
+    };
+    if let Some(item) = model
+        .lane_board()
+        .column(lane)
+        .and_then(|column| column.items().get(index))
+    {
+        return state
+            .clone()
+            .with_selected_lane_item(index, item.work_item_id());
+    }
+    state.clone().with_selected_lane_item_index(index)
 }
 
 /// Validate operator action.
@@ -9506,6 +9610,7 @@ mod tests {
             lane_focus: super::LaneFocus::Overview,
             selected_lane_index: None,
             selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             header_scroll: 0,
@@ -10090,6 +10195,7 @@ mod tests {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: Some(0),
             selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             header_scroll: 0,
@@ -15229,6 +15335,90 @@ mod tests {
     }
 
     #[test]
+    fn drilled_lane_selection_survives_a_re_rank_and_stages_the_same_item() {
+        let before = [
+            lane_event(
+                "evt_ready_a_before",
+                "wi-a",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+            lane_event(
+                "evt_ready_target_before",
+                "wi-target",
+                Lane::Ready,
+                None,
+                "b0",
+                "ready",
+            ),
+        ];
+        let starting = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+        let selected = reduce_tui_interaction(&starting, &before, TuiInteraction::SelectNext);
+        let selected_before = build_tui_model_for_state(&before, &selected);
+        assert_eq!(selected_before.selected_lane_item_index(), Some(1));
+        assert_eq!(selected_before.selected_work_item_id(), Some("wi-target"));
+
+        let after = [
+            lane_event(
+                "evt_ready_target_after",
+                "wi-target",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+            lane_event(
+                "evt_ready_a_after",
+                "wi-a",
+                Lane::Ready,
+                None,
+                "b0",
+                "ready",
+            ),
+        ];
+        let selected_after = build_tui_model_for_state(&after, &selected);
+        assert_eq!(selected_after.selected_lane_item_index(), Some(0));
+        assert_eq!(selected_after.selected_work_item_id(), Some("wi-target"));
+
+        let staged = reduce_tui_interaction(
+            &selected,
+            &after,
+            TuiInteraction::OpenFactoryDispatchItemConfirm,
+        );
+        assert_eq!(
+            staged.overlay(),
+            &TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "wi-target".to_owned()
+            }
+        );
+
+        let vanished = [lane_event(
+            "evt_ready_a_without_target",
+            "wi-a",
+            Lane::Ready,
+            None,
+            "b0",
+            "ready",
+        )];
+        let vanished_model = build_tui_model_for_state(&vanished, &selected);
+        assert_eq!(vanished_model.selected_lane_item_index(), None);
+        assert_eq!(vanished_model.selected_work_item_id(), None);
+        assert_eq!(
+            vanished_model.missing_selected_lane_item_id(),
+            Some("wi-target")
+        );
+        let not_staged = reduce_tui_interaction(
+            &selected,
+            &vanished,
+            TuiInteraction::OpenFactoryDispatchItemConfirm,
+        );
+        assert_eq!(not_staged.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
     fn selected_work_item_id_is_view_scoped() {
         let events = fabro_gate_events();
         // Attention view -> the selected attention item's work-item.
@@ -15552,6 +15742,7 @@ mod tests {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: None,
             selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,
@@ -15775,6 +15966,7 @@ mod tests {
             lane_focus: LaneFocus::Overview,
             selected_lane_index: Some(0),
             selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,
@@ -15861,11 +16053,97 @@ mod tests {
         // Down advances to the second item; a further down clamps at the last.
         let down = reduce_tui_interaction(&start, &events, TuiInteraction::SelectNext);
         assert_eq!(down.selected_lane_item_index(), 1);
+        assert_eq!(down.selected_lane_item_id(), Some("wi-b"));
         let down_again = reduce_tui_interaction(&down, &events, TuiInteraction::SelectNext);
         assert_eq!(down_again.selected_lane_item_index(), 1);
+        assert_eq!(down_again.selected_lane_item_id(), Some("wi-b"));
         // Up returns to the first item.
         let up = reduce_tui_interaction(&down, &events, TuiInteraction::SelectPrevious);
         assert_eq!(up.selected_lane_item_index(), 0);
+        assert_eq!(up.selected_lane_item_id(), Some("wi-a"));
+    }
+
+    #[test]
+    fn lane_item_selection_helper_falls_back_to_row_without_a_drilled_lane() {
+        let events = drilldown_events();
+        let overview = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &overview);
+
+        let selected = super::select_lane_item_at(&overview, &model, 1);
+
+        assert_eq!(selected.selected_lane_item_index(), 1);
+        assert_eq!(selected.selected_lane_item_id(), None);
+    }
+
+    #[test]
+    fn lane_item_selection_helper_falls_back_to_row_when_the_row_is_absent() {
+        let events = drilldown_events();
+        let drilled = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &drilled);
+
+        let selected = super::select_lane_item_at(&drilled, &model, 9);
+
+        assert_eq!(selected.selected_lane_item_index(), 9);
+        assert_eq!(selected.selected_lane_item_id(), None);
+    }
+
+    #[test]
+    fn lane_item_movement_falls_back_to_stored_row_when_no_item_is_selected() {
+        let selected_missing = drilldown_state(Lane::Ready, 1, TuiOverlay::None)
+            .with_selected_lane_item(1, "wi-missing");
+        let model = build_tui_model_for_state(&drilldown_events(), &selected_missing);
+        assert_eq!(model.selected_lane_item_index(), None);
+
+        let moved = reduce_tui_interaction(
+            &selected_missing,
+            &drilldown_events(),
+            TuiInteraction::SelectPrevious,
+        );
+
+        assert_eq!(moved.selected_lane_item_index(), 0);
+        assert_eq!(moved.selected_lane_item_id(), None);
+    }
+
+    #[test]
+    fn selected_lane_item_resolver_reports_a_missing_anchor_without_a_lane_column() {
+        let state = drilldown_state(Lane::Ready, 0, TuiOverlay::None)
+            .with_selected_lane_item(0, "wi-missing-column");
+        let board = super::LaneBoard {
+            columns: Vec::new(),
+        };
+
+        let resolved = super::selected_lane_item_for_state(
+            TuiView::Lanes,
+            LaneFocus::Lane(Lane::Ready),
+            &board,
+            &state,
+        );
+
+        assert_eq!(resolved, (None, Some("wi-missing-column".to_owned())));
+    }
+
+    #[test]
+    fn drill_into_lane_establishes_an_identity_anchor_when_the_lane_has_an_item() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_lane_index(1);
+        let drilled =
+            reduce_tui_interaction(&state, &drilldown_events(), TuiInteraction::DrillIntoLane);
+
+        assert_eq!(drilled.lane_focus(), LaneFocus::Lane(Lane::PendingApproval));
+        assert_eq!(drilled.selected_lane_item_index(), 0);
+        assert_eq!(drilled.selected_lane_item_id(), Some("wi-a"));
+    }
+
+    #[test]
+    fn drill_into_empty_lane_keeps_the_row_fallback_without_an_identity_anchor() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_lane_index(0);
+        let drilled =
+            reduce_tui_interaction(&state, &drilldown_events(), TuiInteraction::DrillIntoLane);
+
+        assert_eq!(drilled.lane_focus(), LaneFocus::Lane(Lane::Backlog));
+        assert_eq!(drilled.selected_lane_item_index(), 0);
+        assert_eq!(drilled.selected_lane_item_id(), None);
     }
 
     #[test]
