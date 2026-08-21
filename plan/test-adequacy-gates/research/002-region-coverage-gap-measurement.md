@@ -28,6 +28,10 @@ differs: the gate reads `lines`, this reads `regions`.
 **893 regions are uncovered.** Adding `--fail-under-regions 100` today
 fails the gate by 893, not by zero.
 
+Those 893 regions land on **879 distinct source lines** (a line can carry
+more than one region). The classification below is per LINE, since that
+is what a person actually edits; the gate itself counts regions.
+
 Uncovered regions by file:
 
 | uncovered | file |
@@ -46,26 +50,28 @@ Uncovered regions by file:
 
 Classified by the source line each uncovered region entry sits on, split
 by whether the line falls inside the crate's own trailing `#[cfg(test)]`
-module:
+module (879 lines, not 893 — see above):
 
-| count | scope | kind |
+| lines | scope | kind |
 |-------|-------|------|
 | 543 | in-crate test module | `?` error propagation |
 | 167 | in-crate test module | `assert!` / `.expect()` failure branch |
 | 152 | production | `?` error propagation |
 |  12 | production | other |
 |   4 | either | `match` / `matches!` arm |
+| **713** | **in-crate test module — total** | |
+| **166** | **production — total** | |
 
 Two classes follow:
 
-1. **166 production regions (19%)** are almost entirely the implicit
+1. **166 production lines (19%)** are almost entirely the implicit
    `Err(e) => return Err(From::from(e))` arm of a `?`. Examples:
    `console-eventstore/src/lib.rs:485` (`Connection::open(path)?`),
    `console-application/src/source_adapters.rs:176`
    (`checkpoints.load_checkpoint(&adapter_id)?`),
    `console-cli/src/lib.rs:234` (`store.command_count()?`). Every one is
    a failure path no test exercises.
-2. **713 regions (81%) are inside the crates' own `#[cfg(test)]`
+2. **713 lines (81%) are inside the crates' own `#[cfg(test)]`
    modules** — the never-taken branches of test-helper `?` and of
    `assert!` / `.expect()` in *passing* tests. `--lib` instruments the
    unit-test modules compiled into each library target, so they count.
@@ -131,7 +137,7 @@ the code, not to exclude it, and to report the construct here.
 
 Slice (a) as written is one slice covering separable work:
 
-- **(a1) Close the 166 production region gaps.** Factory-safe
+- **(a1) Close the 166 production gap sites.** Factory-safe
   implementation work, and the piece that most directly raises test
   adequacy. Tractable but not small: seams like
   `&mut dyn CommandAppendStore` (`console-cli/src/lib.rs:224`) accept a
@@ -139,7 +145,7 @@ Slice (a) as written is one slice covering separable work:
   sites (e.g. `:415`, `:482`, `:590`) need either a real failing SQLite
   (closed / read-only / corrupt handle) or a new trait seam — a refactor
   the spec's own "redesign signal" language endorses.
-- **(a2) Work the 713 in-crate test regions down by refactoring**, using
+- **(a2) Work the 713 in-crate test-module sites down by refactoring**, using
   the shared-check-helper pattern proved above. Mechanical and highly
   repetitive, but per-crate independent, so it slices cleanly:
   `console-cli` (426), `console-eventstore` (96), `console-tui` (84),
