@@ -22,6 +22,11 @@
       "reason": "Runs in the janitor/local aggregate to enforce the opt-in plan lifecycle anchor convention; this factory slice may not edit .github/workflows/ to add a new CI job."
     },
     {
+      "name": "check-red-green-replay",
+      "present_in_ci": false,
+      "reason": "Runs in the janitor/local aggregate to validate origin/master..HEAD Rust commits before Stage 3 commit-msg enforcement; this factory slice may not edit .github/workflows/ to add a new CI job."
+    },
+    {
       "name": "check-spec-governance-default-block",
       "present_in_ci": false,
       "reason": "Runs in the janitor/local aggregate as a hermetic spec-governance guard; CI's matrix predates this target and this factory slice may not edit .github/workflows/ to add a new CI job."
