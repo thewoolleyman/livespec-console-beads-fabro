@@ -1,10 +1,46 @@
 run       01M0GVAMTSNC967RR3K87NEF4P
-status    blocked / needs-human  (in-loop human gate, NOT the acceptance valve)
+status    blocked / human_input_required  (in-loop human gate, NOT the acceptance valve)
 at        2026-08-21T02:04:19Z
 pr        null
 merge_sha null
 pushed    refs/heads/feat/livespec-console-beads-fabro-erb2ud @ 346210bd
 
-fabro inspect 01M0GVAMTSNC967RR3K87NEF4P  -> No run found matching
-fabro events  01M0GVAMTSNC967RR3K87NEF4P  -> No run found matching
-engine process for that run id            -> none
+THE RUN WAS REACHABLE ALL ALONG. A LOCAL query lists a DIFFERENT POOL, so a
+remote-pool run reads as absent rather than as an error:
+
+  fabro inspect <run>                      -> "No run found matching"   (WRONG POOL)
+  fabro inspect <run> --server https://hp-xubuntu.perch-rudd.ts.net:32276
+                                           -> ImplementWorkItem, blocked,
+                                              blocked_reason human_input_required
+
+THE GATE (interview, allow_freeform false):
+  [R] Retry the fix
+  [I] Re-implement from scratch
+  [A] Abandon (leave open for triage)
+
+Answered "A" via `fabro attach <run> --server <hp>` with the answer piped on
+stdin -- attach DOES accept piped input, it is not tty-only:
+  "Abandon: terminate non-green (work-item stays open)"
+Run status afterwards: failed / workflow_error. Pool slot freed.
+
+WHY IT PARKED -- verbatim from the run, and it is NOT a GitHub token problem:
+
+  tui error: orchestrator plugin root
+  /root/.claude/plugins/cache/livespec-orchestrator-beads-fabro/livespec-orchestrator-beads-fabro/271b1f3fa14c
+  is missing a scripts/bin directory (neither .claude-plugin/scripts/bin nor scripts/bin)
+
+  FAILED targets: check-nextest check-coverage check-e2e-tmux
+  error: Recipe `check-pre-push` failed on line 504 with exit code 1
+  error: failed to push some refs
+
+Agent's own summary: "pre-push hook blocked publishing ... lefthook ran just
+check and failed because the local orchestrator plugin cache is missing
+scripts/bin, causing all tmux e2e checks to fail".
+
+THE PLUGIN IS FINE; THE SANDBOX PROVISIONING IS NOT. Same pin on the host:
+  .../cache/.../271b1f3fa14c/scripts/bin  -> EXISTS, 18 entries
+The container's /root/.claude/plugins/cache/.../271b1f3fa14c lacks it. The
+sandbox materialises the plugin directory without populating scripts/.
+
+The `github_token_refresh_limited` notices in this run are INFO-level noise
+about ACP env at process launch and are NOT implicated.

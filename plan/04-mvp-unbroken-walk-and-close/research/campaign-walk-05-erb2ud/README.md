@@ -5,8 +5,9 @@ dispatch; the run then parked at Fabro's **in-loop human gate**, never reached
 the acceptance valve, and therefore could not be accepted at it.
 
 **Campaign count stays 4 of 6.** A lifecycle that cannot reach acceptance is not
-a dogfooded lifecycle. Recorded here because the walk produced two findings and
-one dead end that are worth more than the count would have been.
+a dogfooded lifecycle. Recorded here because the walk produced three findings — one of
+them stalling the factory across repositories — and two retractions against
+itself, which are worth more than the count would have been.
 
 ## Counting note
 
@@ -58,22 +59,63 @@ doing exactly what this repo's contracts forbid its ports to do.
 and the drain still picked correctly — the ledger and the ranker were right
 throughout.
 
-## Finding 2 — a parked run that names two recovery commands, and is reachable by neither
+## Finding 2 — the sandbox's orchestrator plugin cache is missing `scripts/bin`
 
-`13-parked-outcome.txt`. The run ended `blocked / needs-human` at 02:04:19Z after
-1h39m, with `pr_number: null`. Its own outcome message says to answer the gate
-with `fabro attach <run>` while the engine lives, or `fabro resume <run>` if it
-died. Measured:
+`13-parked-outcome.txt`. The run ended `blocked / human_input_required` at
+02:04:19Z after 1h39m with `pr_number: null`. The cause, verbatim from the run:
 
-    fabro inspect 01M0GVAMTSNC967RR3K87NEF4P  -> No run found matching
-    fabro events  01M0GVAMTSNC967RR3K87NEF4P  -> No run found matching
-    engine process                            -> none
+    tui error: orchestrator plugin root
+    /root/.claude/plugins/cache/.../livespec-orchestrator-beads-fabro/271b1f3fa14c
+    is missing a scripts/bin directory (neither .claude-plugin/scripts/bin nor scripts/bin)
 
-Engine dead, so `attach` is out; run absent from the CLI, so `resume` is out.
-The gate's question cannot even be READ. A parked run whose prescribed recovery
-is unreachable by construction is a dead end, and it is what cost this walk its
-count. Routed by the console foreman to the dispatch-mechanics owner; not filed
-by this plan.
+    FAILED targets: check-nextest check-coverage check-e2e-tmux
+    error: Recipe `check-pre-push` failed on line 504 with exit code 1
+
+The chain: sandbox plugin cache incomplete → every tmux e2e test fails →
+`just check` fails → the pre-push hook blocks the publish → the `pr` stage fails
+deterministically → `escalate` → the human gate. The `github_token_refresh_limited`
+notices in the same run are INFO-level noise about ACP env at process launch and
+are **not** implicated; an earlier guess by this session that the park shared
+`et3.7`'s token-permission cause was wrong.
+
+**The plugin is fine; the sandbox provisioning is not.** The same pin on this
+host carries `scripts/bin` with 18 entries. It is the container's copy that lacks
+it, so the sandbox materialises the plugin directory — it knows the pin — without
+populating `scripts/`.
+
+This is repo-agnostic: any dispatched repo whose `just check` shells the
+orchestrator's `scripts/bin` fails identically, at the pre-push hook, after
+paying the full run cost. It also **resurrects plan 02's original Defect A** — a
+missing `.claude-plugin/scripts/bin/mint_app_token.py` in the sandbox, which 02
+downgraded as "not the blocker" when a token error surfaced. Same family, and
+here it is the direct cause of a lost lifecycle. Routed to the console foreman
+for the sandbox-image owner; not filed by this plan.
+
+## Finding 3 — and the finding this walk had to retract about itself
+
+This session first reported the run as **unreachable**: `fabro inspect` and
+`fabro events` both returned "No run found matching", with no engine process, so
+neither `attach` nor `resume` — the two commands the dispatch outcome names —
+could reach it. That was published as a dead end.
+
+**It is false.** A local `fabro ps`/`inspect` queries a DIFFERENT POOL, and this
+repo dispatches to the remote `hp` factory. With `--server https://hp-xubuntu…`
+the run lists immediately as `blocked / human_input_required`. The run never
+vanished; the query shape produced an absence and the absence was read as
+information — the exact failure this arc spent the night cataloguing, committed
+by this session after having written the lesson down.
+
+What survives of it is smaller and real: the dispatch outcome's recovery text
+omits `--server`, so an operator following it verbatim gets "No run found
+matching" and concludes the run is gone. Contrary to a report made here earlier,
+`fabro attach` DOES accept a piped answer and is not tty-only.
+
+The gate itself was an interview with three options — Retry / Re-implement /
+Abandon. It was answered **A (Abandon)**: `erb2ud`'s work had already been
+recovered by hand, so a successful factory PR would have duplicated it, and the
+sandbox fault above would have failed a retry regardless. The run is now
+`failed / workflow_error` and its pool slot is released — the hp pool was holding
+only blocked runs at the time, so the slot mattered to other repositories.
 
 ## The false alarm this walk raised, and retracted
 
@@ -129,4 +171,4 @@ days.
 | `10-console-cannot-see-own-arm.txt` | the pane 54s after its own command completed |
 | `11-dispatch-timestamp.txt` / `11-dispatch-committed.txt` | dispatch committed; `drain in flight` |
 | `12-journal-loop-pick.txt` | `loop-pick` took exactly the armed item |
-| `13-parked-outcome.txt` | finding 2 — the unreachable parked run |
+| `13-parked-outcome.txt` | findings 2 and 3 — the sandbox `scripts/bin` fault, the gate, and the `--server` correction |
