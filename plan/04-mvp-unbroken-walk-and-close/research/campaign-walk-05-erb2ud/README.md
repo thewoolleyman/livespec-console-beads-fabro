@@ -6,7 +6,7 @@ the acceptance valve, and therefore could not be accepted at it.
 
 **Campaign count stays 4 of 6.** A lifecycle that cannot reach acceptance is not
 a dogfooded lifecycle. Recorded here because the walk produced three findings — one of
-them stalling the factory across repositories — and two retractions against
+them a deterministic, expensive sandbox fault — and two retractions against
 itself, which are worth more than the count would have been.
 
 ## Counting note
@@ -85,7 +85,20 @@ populating `scripts/`.
 
 This is repo-agnostic: any dispatched repo whose `just check` shells the
 orchestrator's `scripts/bin` fails identically, at the pre-push hook, after
-paying the full run cost. It also **resurrects plan 02's original Defect A** — a
+paying the full run cost — and it will present as a different failure each time,
+depending which check fires first.
+
+**It is NOT, however, what was stalling the factory fleet-wide.** This session
+suspected the other run blocked in the hp pool at the time
+(`livespec-dev-tooling-thw26i`) shared the cause. The console foreman checked it
+against this signature and it carries none of it — no `missing a scripts/bin`,
+no `orchestrator plugin root`, no `check-e2e-tmux`, no `failed to push some
+refs`. That run is blocked on a maintainer policy question about a gate's scope.
+Two blocked runs, two unrelated causes. The coincidence this session doubted was
+in fact a coincidence, and the defect is routed on its own considerable merits
+rather than as a fleet-wide stall.
+
+It also **resurrects plan 02's original Defect A** — a
 missing `.claude-plugin/scripts/bin/mint_app_token.py` in the sandbox, which 02
 downgraded as "not the blocker" when a token error surfaced. Same family, and
 here it is the direct cause of a lost lifecycle. Routed to the console foreman
