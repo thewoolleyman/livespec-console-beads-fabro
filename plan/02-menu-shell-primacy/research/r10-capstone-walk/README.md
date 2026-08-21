@@ -87,9 +87,10 @@ followed that guidance exactly, and the defect still bit — on the READ-BACK.
 
 In order, measured:
 
-1. Selected row 7 (`ekb5vq`), opened its detail, confirmed identity and that it
-   was UNARMED: `acceptance_policy  — (not emitted; console assumes
-   ai-then-human)` (`05-target-detail-preverify.txt`).
+1. Selected row 7 (`ekb5vq`), opened its detail, confirmed identity and read
+   `acceptance_policy  — (not emitted; console assumes ai-then-human)`
+   (`05-target-detail-preverify.txt`). **That read does NOT establish the item
+   was unarmed — see "The unarmed baseline was not evidence" below.**
 2. Armed from the menu. The valve read back `Target:
    livespec-console-beads-fabro-ekb5vq` / `Policy/mode: ai-then-human`
    (`07-set-acceptance-form.txt`), and I confirmed (`08-arm-committed.txt`).
@@ -116,6 +117,53 @@ Guidance that follows, stronger than what is on the item today: after ANY comman
 that refreshes the projection, RE-ESTABLISH THE SELECTION BY READING THE ROW'S
 ID before trusting a detail pane. Never assume the cursor still points where it
 was left.
+
+## The unarmed baseline was NOT evidence — corrected
+
+This record originally presented `05-target-detail-preverify.txt` as a
+same-item UNARMED baseline, and called it stronger than the neighbouring-control
+technique earlier walks used. **That was wrong, and it was wrong in the same way
+the neighbouring control was.**
+
+The plan-04 session established the mechanism during its walk #5, measured
+against the LEDGER rather than inferred from a row moving: `rank` and
+`acceptance_policy` DEGRADE TOGETHER. A stale row is served from a feed carrying
+neither field, and the detail pane renders the ABSENCE of the policy as a policy
+READING — `— (not emitted; console assumes ai-then-human)` — rather than as
+missing data. They confirmed the ledger holds `rank: a0` for an item the console
+was rendering as `rank ~`, so this is `-v8un` falsified against ground truth and
+not merely observed in transit. Their evidence:
+`plan/04-mvp-unbroken-walk-and-close/research/campaign-walk-05-erb2ud/06-stale-projection-blanks-policy.md`.
+
+Checked against my own captures rather than accepted on report:
+
+| capture | `rank` | `acceptance_policy` | what it proves |
+| --- | --- | --- | --- |
+| `05-target-detail-preverify.txt` | `~` | `— (not emitted…)` | **nothing about arm state** — stale row |
+| `10-arm-confirmed-ekb5vq.txt` | `a0` | `ai-then-human` | armed. Fresh row, positive read |
+
+So `acceptance_policy` is a ONE-WAY confirmation:
+
+- Reading `ai-then-human` CONFIRMS armed. This walk's arm evidence is that read,
+  taken on a fresh row (`rank a0`), and it STANDS.
+- Reading `— (not emitted)` confirms NOTHING. It is equally consistent with an
+  armed item on a stale row.
+- **The tell is `rank`: a `~` means the row is stale and every other field on it
+  is suspect.**
+
+The `rank ~` was visible in my own capture the whole time. What was missing was
+not the artifact but the KNOWLEDGE that it is a staleness tell — that was
+established after this walk ran. Recording it this way rather than as an
+oversight, because the correction that matters is the one to the technique, and
+the technique is now written down for the next walker.
+
+THIS IS THE THIRD CORRECTION IN THIS RECORD AND THEY ARE ALL THE SAME FAMILY:
+reading an ABSENCE as information. `-x6lj` made an absent re-selection look like
+a real reading of the intended item; the retracted `sources` claim made an
+unbanked reading outweigh eighteen banked ones; and here a blank field was read
+as a value. The console's habit of rendering "not emitted" as an assumed default
+is what makes the third one possible, and that is a console behaviour worth
+naming, not just a walker's mistake.
 
 ## The width trap — why this walk ran at 200 columns
 
