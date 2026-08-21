@@ -284,12 +284,33 @@ jobs:
           ref: ${{ steps.corepin.outputs.ref }}
           path: .livespec-core
 
+      # The orchestrator is the one sibling this spec tree cites by section
+      # (`.livespec.jsonc` `external_references`, added with v041's per-item
+      # dispatch argv contract). Its `cross_repo_targets.local_clone` is the
+      # host-absolute /data/projects/livespec-orchestrator-beads-fabro, which
+      # cannot exist on a runner — and an ABSENT clone is not treated as
+      # "unvalidatable, keep the allowlist": no_cross_spec_reference maps the
+      # unreadable file to an EMPTY heading set, _validated_external_references
+      # then DROPS every entry for that repo, and the check fails with the
+      # misleading "is not allowlisted" (PR #742, 2026-08-21; identical trap
+      # documented in livespec-driver-claude's ci.yml). A real checkout under
+      # LIVESPEC_SIBLING_CLONES_ROOT takes precedence over local_clone and makes
+      # CI validate citations against the orchestrator's ACTUAL headings —
+      # strictly stronger than the allowlist alone. Public repo, default token.
+      - name: Checkout the orchestrator sibling (cited by external_references)
+        uses: actions/checkout@v4
+        with:
+          repository: thewoolleyman/livespec-orchestrator-beads-fabro
+          ref: master
+          path: .livespec-siblings/livespec-orchestrator-beads-fabro
+
       - name: just check-doctor-static
         run: |
           # In a container job, github.workspace (context) may be the HOST path;
           # $GITHUB_WORKSPACE (env) is the in-container mount, so derive the core
           # plugin root from it to stay container-correct.
           export LIVESPEC_CORE_PLUGIN_ROOT="${GITHUB_WORKSPACE}/.livespec-core/.claude-plugin"
+          export LIVESPEC_SIBLING_CLONES_ROOT="${GITHUB_WORKSPACE}/.livespec-siblings"
           just check-doctor-static
 
   # Real-TUI end-to-end gate (DELIVERABLE #0): drives the SHIPPED interactive TUI
