@@ -1,0 +1,10 @@
+run       01M0GVAMTSNC967RR3K87NEF4P
+status    blocked / needs-human  (in-loop human gate, NOT the acceptance valve)
+at        2026-08-21T02:04:19Z
+pr        null
+merge_sha null
+pushed    refs/heads/feat/livespec-console-beads-fabro-erb2ud @ 346210bd
+
+fabro inspect 01M0GVAMTSNC967RR3K87NEF4P  -> No run found matching
+fabro events  01M0GVAMTSNC967RR3K87NEF4P  -> No run found matching
+engine process for that run id            -> none

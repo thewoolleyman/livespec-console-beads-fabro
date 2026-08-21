@@ -1,0 +1,55 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | repo: livespec-console-beads-fabro | view: Lanes | attention: 93 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec) │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Men┌Work item: livespec-console-beads-fabro-erb2ud──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌Vi│ranked ready item (rank a0, origin freeform)                                                                                                            │──┐
+│  │                                                                                                                                                        │ -│
+│  │id                   livespec-console-beads-fabro-erb2ud                                                                                                │e │
+│> │repo                 livespec-console-beads-fabro                                                                                                       │ni│
+│  │type                 —                                                                                                                                  │s │
+│  │status               ready                                                                                                                              │an│
+│  │execution_state      -                                                                                                                                  │  │
+│  │lane                 ready                                                                                                                              │so│
+│  │rank                 ~                                                                                                                                  │st│
+│  │lane_reason          —                                                                                                                                  │2)│
+│  │admission_policy     — (not emitted; console assumes manual)                                                                                            │e-│
+│  │acceptance_policy    — (not emitted; console assumes ai-then-human)                                                                                     │th│
+│  │origin               —                                                                                                                                  │  │
+│  │gap_id               —                                                                                                                                  │  │
+│  │assignee             —                                                                                                                                  │  │
+│  │depends_on           —                                                                                                                                  │  │
+│  │captured_at          —                                                                                                                                  │  │
+│  │resolution           —                                                                                                                                  │  │
+│  │reason               —                                                                                                                                  │  │
+│  │audit                —                                                                                                                                  │  │
+│  │superseded_by        —                                                                                                                                  │  │
+│  │spec_commitment_hint —                                                                                                                                  │  │
+│  │supersedes           —                                                                                                                                  │  │
+│  │blocked_reason       —                                                                                                                                  │  │
+│  │factory_safety       —                                                                                                                                  │  │
+│  │                                                                                                                                                        │  │
+│  │acceptance_criteria                                                                                                                                     │  │
+│  │—                                                                                                                                                       │  │
+│  │                                                                                                                                                        │  │
+│  │notes                                                                                                                                                   │  │
+│  │—                                                                                                                                                       │  │
+│  │                                                                                                                                                        │  │
+│  │description                                                                                                                                             │  │
+│  │—                                                                                                                                                       │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │                                                                                                                                                        │  │
+│  │up/down scroll | esc to close                                                                                                                           │  │
+└──└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘──┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down scroll | PgUp/PgDn page | esc close item                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
