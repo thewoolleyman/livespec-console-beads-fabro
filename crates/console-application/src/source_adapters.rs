@@ -3230,11 +3230,12 @@ mod tests {
         dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
         fabro_run_snapshot_payload_json, materialize_attention_items,
         normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
-        normalize_work_item_snapshot, not_observed_finding_payload_json,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        normalize_github_pull_request_snapshot, normalize_impl_attention_ready_snapshot,
+        normalize_livespec_next_snapshot, normalize_work_item_snapshot,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
+        parse_orchestrator_observation, run_adapter_poll, work_item_snapshot_from_payload_json,
+        work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -4730,6 +4731,21 @@ mod tests {
         }
     }
 
+    struct FailingCheckpoints {
+        load: AdapterResult<Option<String>>,
+        save: AdapterResult<()>,
+    }
+
+    impl SourceCheckpointPort for FailingCheckpoints {
+        fn load_checkpoint(&self, _adapter_id: &str) -> AdapterResult<Option<String>> {
+            self.load.clone()
+        }
+
+        fn save_checkpoint(&self, _adapter_id: &str, _checkpoint: &str) -> AdapterResult<()> {
+            self.save.clone()
+        }
+    }
+
     struct MemoryCheckpoints {
         trace: Trace,
         checkpoint: Option<String>,
@@ -4807,6 +4823,66 @@ mod tests {
         let poll = AdapterPoll::new(" ", Vec::new());
 
         assert_eq!(poll, Err(AdapterError::EmptyCheckpoint));
+    }
+
+    #[test]
+    fn adapter_poll_surfaces_each_fallible_stage() {
+        let trace = Trace::new();
+        let source = ScriptedSource::new(
+            trace.clone(),
+            Ok(ok_adapter_poll(AdapterPoll::new("next", Vec::new()))),
+        );
+        let mut log = MemoryEventLog::new(trace.clone(), None);
+        let mut load_fails = FailingCheckpoints {
+            load: Err(AdapterError::CheckpointLoadFailed),
+            save: Ok(()),
+        };
+
+        let loaded = run_adapter_poll("adapter", 3, "now", &source, &mut load_fails, &mut log);
+
+        check(
+            loaded == Err(AdapterError::CheckpointLoadFailed),
+            "checkpoint load errors should surface",
+        );
+
+        let mut bad_checkpoint = MemoryCheckpoints::new(trace.clone(), Some(" "));
+        let requested =
+            run_adapter_poll("adapter", 3, "now", &source, &mut bad_checkpoint, &mut log);
+
+        check(
+            requested == Err(AdapterError::EmptyCheckpoint),
+            "invalid loaded checkpoints should surface",
+        );
+
+        let failing_source = ScriptedSource::new(
+            trace.clone(),
+            Err(AdapterError::AppendFailed("poll".to_owned())),
+        );
+        let mut checkpoints = MemoryCheckpoints::new(trace, None);
+        let polled = run_adapter_poll(
+            "adapter",
+            3,
+            "now",
+            &failing_source,
+            &mut checkpoints,
+            &mut log,
+        );
+
+        check(
+            polled == Err(AdapterError::AppendFailed("poll".to_owned())),
+            "source poll errors should surface",
+        );
+
+        let mut save_fails = FailingCheckpoints {
+            load: Ok(None),
+            save: Err(AdapterError::CheckpointSaveFailed),
+        };
+        let saved = run_adapter_poll("adapter", 3, "now", &source, &mut save_fails, &mut log);
+
+        check(
+            saved == Err(AdapterError::CheckpointSaveFailed),
+            "checkpoint save errors should surface",
+        );
     }
 
     // --- Real normalizer tests ----------------------------------------------
@@ -5417,6 +5493,16 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_payload_rejects_invalid_source_identity() {
+        let payload = r#"{"repo":"console","work_item_id":"wi-1","dispatch_id":"dispatch-1","kind":"progress","source_version":0}"#;
+
+        check(
+            dispatcher_journal_from_payload_json(payload).is_none(),
+            "invalid dispatcher source identity should not rebuild",
+        );
+    }
+
+    #[test]
     fn dispatcher_refusal_payload_round_trips_diagnostic_text() {
         let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
             "console",
@@ -5438,6 +5524,32 @@ mod tests {
 
         assert_eq!(rebuilt.as_ref(), Some(&entry));
         assert!(payload_json.contains("factory-safety refusal"));
+    }
+
+    #[test]
+    fn dispatcher_entry_keeps_non_empty_terminal_status() {
+        let entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
+            "console",
+            "wi-1",
+            "dispatch-1",
+            DispatcherJournalKind::Progress,
+            3,
+        )
+        .ok()
+        .into_iter()
+        .collect();
+        check(entries.len() == 1, "dispatcher fixture should build");
+        let entry = entries[0].clone().with_terminal_status("completed");
+        let blank = entries[0].clone().with_terminal_status(" ");
+
+        check(
+            entry.terminal_status() == Some("completed"),
+            "non-empty terminal status should be retained",
+        );
+        check(
+            blank.terminal_status().is_none(),
+            "blank terminal status should be ignored",
+        );
     }
 
     #[test]
@@ -6134,6 +6246,23 @@ mod tests {
         assert_eq!(materialized[0].id(), "wi-a");
     }
 
+    #[test]
+    fn materialize_attention_items_ignores_malformed_stream_payloads() {
+        let events = [
+            ConsoleEvent::fixture("e1", EventType::AttentionItemAppeared, "needs-attention")
+                .with_payload_json("{}".to_owned()),
+            ConsoleEvent::fixture("e2", EventType::AttentionItemResolved, "needs-attention")
+                .with_payload_json("{}".to_owned()),
+        ];
+
+        let materialized = materialize_attention_items(&events);
+
+        check(
+            materialized.is_empty(),
+            "malformed attention stream payloads should be ignored",
+        );
+    }
+
     fn attention_stream_event(
         event_id: &str,
         event_type: EventType,
@@ -6166,6 +6295,37 @@ mod tests {
             Some("wi-a".to_owned())
         );
         assert_eq!(super::attention_resolved_id_from_payload_json("{}"), None);
+    }
+
+    #[test]
+    fn impl_attention_ready_snapshot_requires_work_item_and_valid_repo() {
+        let path_only = AttentionItemSnapshot::new(
+            "impl:path",
+            "implementation",
+            "high",
+            "path only",
+            AttentionSourceRef::new("console", None, Some("SPECIFICATION/scenarios.md")),
+            AttentionHandoff::new("implement", Some("implement"), "implement:path"),
+        );
+
+        check(
+            normalize_impl_attention_ready_snapshot(&path_only).is_none(),
+            "path-only impl attention cannot refresh a work-item lane",
+        );
+
+        let blank_repo = AttentionItemSnapshot::new(
+            "impl:wi-1",
+            "implementation",
+            "high",
+            "blank repo",
+            AttentionSourceRef::new(" ", Some("wi-1"), None),
+            AttentionHandoff::new("implement", Some("implement"), "implement:wi-1"),
+        );
+
+        check(
+            normalize_impl_attention_ready_snapshot(&blank_repo).is_none(),
+            "invalid impl attention repo should not fabricate a snapshot",
+        );
     }
 
     #[test]
