@@ -228,6 +228,7 @@ check:
         check-e2e-tmux
         check-ci-parity
         check-fork-drift
+        check-red-green-replay
     )
     failed=()
     for target in "${targets[@]}"; do
