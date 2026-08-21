@@ -3209,6 +3209,8 @@ pub fn attention_resolved_id_from_payload_json(payload_json: &str) -> Option<Str
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
+
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -3234,6 +3236,114 @@ mod tests {
         parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
         run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
+
+    #[track_caller]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("{context}");
+        }
+    }
+
+    #[track_caller]
+    fn ok_observed_source_adapter(
+        result: AdapterResult<ObservedSourceAdapter<'_>>,
+    ) -> ObservedSourceAdapter<'_> {
+        match result {
+            Ok(adapter) => adapter,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_adapter_poll_request(result: AdapterResult<AdapterPollRequest>) -> AdapterPollRequest {
+        match result {
+            Ok(request) => request,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_adapter_poll(result: AdapterResult<AdapterPoll>) -> AdapterPoll {
+        match result {
+            Ok(poll) => poll,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_parsed_observation(result: Result<ParsedObservation, String>) -> ParsedObservation {
+        match result {
+            Ok(parsed) => parsed,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_attention_items(
+        result: Result<Vec<AttentionItemSnapshot>, String>,
+    ) -> Vec<AttentionItemSnapshot> {
+        match result {
+            Ok(items) => items,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[track_caller]
+    fn some_work_item_snapshot(snapshot: Option<WorkItemSnapshot>) -> WorkItemSnapshot {
+        match snapshot {
+            Some(snapshot) => snapshot,
+            None => panic!("missing work-item snapshot"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected panic")]
+    fn check_panics() {
+        check(false, "expected panic");
+    }
+
+    #[test]
+    #[should_panic(expected = "EmptyRepo")]
+    fn ok_observed_source_adapter_panics() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        ok_observed_source_adapter(ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Orchestrator,
+            " ",
+            SourceObservationPlan::command("list-work-items", &["--json"]),
+            stub_normalize,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "EmptyAdapterId")]
+    fn ok_adapter_poll_request_panics() {
+        ok_adapter_poll_request(Err(AdapterError::EmptyAdapterId));
+    }
+
+    #[test]
+    #[should_panic(expected = "CheckpointLoadFailed")]
+    fn ok_adapter_poll_panics() {
+        ok_adapter_poll(Err(AdapterError::CheckpointLoadFailed));
+    }
+
+    #[test]
+    #[should_panic(expected = "parse failed")]
+    fn ok_parsed_observation_panics() {
+        ok_parsed_observation(Err("parse failed".to_owned()));
+    }
+
+    #[test]
+    #[should_panic(expected = "parse failed")]
+    fn ok_attention_items_panics() {
+        ok_attention_items(Err("parse failed".to_owned()));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing work-item snapshot")]
+    fn some_work_item_snapshot_panics() {
+        some_work_item_snapshot(None);
+    }
 
     #[test]
     fn poll_request_keeps_checkpoint_window() {
@@ -3404,15 +3514,18 @@ mod tests {
             stub_normalize,
         );
 
-        assert!(matches!(adapter, Err(AdapterError::EmptyRepo)));
+        check(
+            adapter.err() == Some(AdapterError::EmptyRepo),
+            "empty repo should be rejected",
+        );
     }
 
     #[test]
-    fn observed_source_adapter_emits_parsed_events_on_success() -> AdapterResult<()> {
+    fn observed_source_adapter_emits_parsed_events_on_success() {
         let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_eq!(
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
@@ -3427,15 +3540,14 @@ mod tests {
             probe.calls.borrow().as_slice(),
             ["cmd:list-work-items --json"]
         );
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_reads_file_plan() -> AdapterResult<()> {
+    fn observed_source_adapter_reads_file_plan() {
         let probe = StubProbe::file(SourceProbeOutcome::observed("work-1", true));
-        let adapter = dispatcher_file_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(dispatcher_file_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_eq!(
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
@@ -3445,7 +3557,6 @@ mod tests {
             probe.calls.borrow().as_slice(),
             ["file:/var/log/dispatcher.jsonl"]
         );
-        Ok(())
     }
 
     fn assert_not_observed(poll: &AdapterPoll, expected_reason: &str) {
@@ -3501,11 +3612,11 @@ mod tests {
     }
 
     #[test]
-    fn observed_source_adapter_emits_not_observed_when_unavailable() -> AdapterResult<()> {
+    fn observed_source_adapter_emits_not_observed_when_unavailable() {
         let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_eq!(
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
@@ -3517,71 +3628,70 @@ mod tests {
         );
         assert_eq!(availability_checkpoint_epoch(poll.checkpoint()), Some(1));
         assert_not_observed(&poll, "orchestrator not found");
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_carries_previous_checkpoint_on_not_observed() -> AdapterResult<()> {
+    fn observed_source_adapter_carries_previous_checkpoint_on_not_observed() {
         let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
-        let adapter = orchestrator_command_adapter(&probe)?;
-        let request = AdapterPollRequest::new("orchestrator:console", Some("prior-checkpoint"), 1)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+        let request = ok_adapter_poll_request(AdapterPollRequest::new(
+            "orchestrator:console",
+            Some("prior-checkpoint"),
+            1,
+        ));
 
-        let poll = adapter.poll(&request)?;
+        let poll = ok_adapter_poll(adapter.poll(&request));
 
         assert_eq!(
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
             Some("prior-checkpoint")
         );
         assert_not_observed(&poll, "orchestrator not found");
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_emits_not_observed_on_non_zero_exit() -> AdapterResult<()> {
+    fn observed_source_adapter_emits_not_observed_on_non_zero_exit() {
         let probe = StubProbe::command(SourceProbeOutcome::observed("ignored", false));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_not_observed(&poll, "source command exited non-zero");
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_emits_not_observed_on_empty_parse() -> AdapterResult<()> {
+    fn observed_source_adapter_emits_not_observed_on_empty_parse() {
         let probe = StubProbe::command(SourceProbeOutcome::observed("empty", true));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_not_observed(&poll, "source produced no records");
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_treats_a_blank_observation_as_idle() -> AdapterResult<()> {
+    fn observed_source_adapter_treats_a_blank_observation_as_idle() {
         // A reached source that returns blank output holds nothing to report:
         // observed-and-idle, never a not-observed finding. The blank payload is
         // caught BEFORE the normalizer (whose blank branch predates the honesty
         // rule and returns "blank observation").
         let probe = StubProbe::command(SourceProbeOutcome::observed("   ", true));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_observed_idle(&poll);
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_treats_empty_json_containers_as_idle() -> AdapterResult<()> {
+    fn observed_source_adapter_treats_empty_json_containers_as_idle() {
         // An empty work-item ledger (`[]`), an empty object (`{}`), or `null`
         // are reachable-but-empty: each is observed-and-idle, not unavailable.
         for empty in ["[]", "{}", "null", "  [ ]  ", "\n{}\n"] {
             let probe = StubProbe::command(SourceProbeOutcome::observed(empty, true));
-            let adapter = orchestrator_command_adapter(&probe)?;
+            let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-            let poll = adapter.poll(&cold_request()?)?;
+            let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
             assert_observed_idle(&poll);
             // The idle poll carries a stable checkpoint (cold start) and emits no
@@ -3591,40 +3701,42 @@ mod tests {
                 Some("observed_idle")
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn observed_idle_poll_carries_the_previous_checkpoint_forward() -> AdapterResult<()> {
+    fn observed_idle_poll_carries_the_previous_checkpoint_forward() {
         // When the source was observed before, an idle poll keeps the previous
         // checkpoint rather than regressing to the cold-start idle sentinel.
         let probe = StubProbe::command(SourceProbeOutcome::observed("[]", true));
-        let adapter = orchestrator_command_adapter(&probe)?;
-        let request = AdapterPollRequest::new("orchestrator:console", Some("ck-prior"), 1)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+        let request = ok_adapter_poll_request(AdapterPollRequest::new(
+            "orchestrator:console",
+            Some("ck-prior"),
+            1,
+        ));
 
-        let poll = adapter.poll(&request)?;
+        let poll = ok_adapter_poll(adapter.poll(&request));
 
         assert_observed_idle(&poll);
         assert_eq!(
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
             Some("ck-prior")
         );
-        Ok(())
     }
 
     #[test]
-    fn availability_transition_epoch_keys_only_state_changes() -> AdapterResult<()> {
+    fn availability_transition_epoch_keys_only_state_changes() {
         let down_probe =
             StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
-        let down_adapter = orchestrator_command_adapter(&down_probe)?;
+        let down_adapter = ok_observed_source_adapter(orchestrator_command_adapter(&down_probe));
         let up_probe = StubProbe::command(SourceProbeOutcome::observed("[]", true));
-        let up_adapter = orchestrator_command_adapter(&up_probe)?;
+        let up_adapter = ok_observed_source_adapter(orchestrator_command_adapter(&up_probe));
 
-        let down_1 = down_adapter.poll(&cold_request()?)?;
-        let down_2 = down_adapter.poll(&request_after(down_1.checkpoint()))?;
-        let up_1 = up_adapter.poll(&request_after(down_2.checkpoint()))?;
-        let up_2 = up_adapter.poll(&request_after(up_1.checkpoint()))?;
-        let down_3 = down_adapter.poll(&request_after(up_2.checkpoint()))?;
+        let down_1 = ok_adapter_poll(down_adapter.poll(&ok_adapter_poll_request(cold_request())));
+        let down_2 = ok_adapter_poll(down_adapter.poll(&request_after(down_1.checkpoint())));
+        let up_1 = ok_adapter_poll(up_adapter.poll(&request_after(down_2.checkpoint())));
+        let up_2 = ok_adapter_poll(up_adapter.poll(&request_after(up_1.checkpoint())));
+        let down_3 = ok_adapter_poll(down_adapter.poll(&request_after(up_2.checkpoint())));
 
         let source_event_ids = [
             down_1.events()[0].source_event_id(),
@@ -3647,17 +3759,16 @@ mod tests {
                 .len(),
             3
         );
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_normalizes_a_non_empty_scalar_payload() -> AdapterResult<()> {
+    fn observed_source_adapter_normalizes_a_non_empty_scalar_payload() {
         // A JSON scalar (here the number `42`) is NOT an empty container, so it
         // is handed to the normalizer rather than treated as idle.
         let probe = StubProbe::command(SourceProbeOutcome::observed("42", true));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_eq!(
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
@@ -3667,18 +3778,16 @@ mod tests {
             poll.events()[0].event().event_type(),
             &EventType::WorkItemSnapshotObserved
         );
-        Ok(())
     }
 
     #[test]
-    fn observed_source_adapter_emits_not_observed_on_builder_error() -> AdapterResult<()> {
+    fn observed_source_adapter_emits_not_observed_on_builder_error() {
         let probe = StubProbe::command(SourceProbeOutcome::observed("broken", true));
-        let adapter = orchestrator_command_adapter(&probe)?;
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
-        let poll = adapter.poll(&cold_request()?)?;
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_not_observed(&poll, "snapshot build failed");
-        Ok(())
     }
 
     #[test]
@@ -4766,21 +4875,24 @@ mod tests {
                 _other => None,
             })
             .collect();
-        assert_eq!(snapshots.len(), 1, "fixture observes exactly one work-item");
+        check(
+            snapshots.len() == 1,
+            "fixture observes exactly one work-item",
+        );
         snapshots[0]
     }
 
     #[test]
-    fn parse_orchestrator_carries_the_whole_standardized_record() -> Result<(), String> {
+    fn parse_orchestrator_carries_the_whole_standardized_record() {
         // The adapter used to keep only id/lane/rank/status/policies and let
         // serde silently discard the rest, which is why nothing in the console
         // could show a work-item's title or description. Every descriptive
         // field must now survive the parse.
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             FULL_RECORD_STDOUT,
-        ))?;
+        )));
         let detail = only_snapshot(&parsed).detail();
 
         assert_eq!(detail.title.as_deref(), Some("Render the whole record"));
@@ -4834,23 +4946,21 @@ mod tests {
                 r#"{"unexpected":"shape"}"#.to_owned(),
             ]
         );
-        Ok(())
     }
 
     #[test]
-    fn work_item_detail_survives_the_payload_round_trip() -> Result<(), String> {
+    fn work_item_detail_survives_the_payload_round_trip() {
         // The persisted wire format and the read-back must move in lockstep, or
         // the record silently vanishes on replay from the ledger and the modal
         // renders an empty shell.
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             FULL_RECORD_STDOUT,
-        ))?;
+        )));
         let snapshot = only_snapshot(&parsed);
         let json = work_item_snapshot_payload_json(snapshot);
-        let restored =
-            work_item_snapshot_from_payload_json(&json).ok_or("payload did not round-trip")?;
+        let restored = some_work_item_snapshot(work_item_snapshot_from_payload_json(&json));
         assert_eq!(restored.detail(), snapshot.detail());
         assert_eq!(&restored, snapshot);
 
@@ -4872,45 +4982,43 @@ mod tests {
             .collect();
         let expected = Some(("console-legacy".to_owned(), WorkItemDetail::default()));
         assert_eq!(replayed, vec![expected.clone(), expected.clone(), expected]);
-        Ok(())
     }
 
     #[test]
-    fn an_edited_description_appends_a_fresh_observation() -> Result<(), String> {
+    fn an_edited_description_appends_a_fresh_observation() {
         // The descriptive record joins the identity hash: without it an edited
         // title or description would never reach the console, leaving the
         // operator reading a stale body forever.
         let edited = FULL_RECORD_STDOUT.replace("line one\\nline two", "an edited body");
-        let original = parse_orchestrator_observation(&observed_for(
+        let original = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             FULL_RECORD_STDOUT,
-        ))?;
-        let changed = parse_orchestrator_observation(&observed_for(
+        )));
+        let changed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             &edited,
-        ))?;
+        )));
         assert_ne!(
             only_snapshot(&original).source_version(),
             only_snapshot(&changed).source_version()
         );
         // The same record observed twice is idempotent -- an unchanged item must
         // NOT churn a new version every poll.
-        let again = parse_orchestrator_observation(&observed_for(
+        let again = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             FULL_RECORD_STDOUT,
-        ))?;
+        )));
         assert_eq!(
             only_snapshot(&original).source_version(),
             only_snapshot(&again).source_version()
         );
-        Ok(())
     }
 
     #[test]
-    fn no_descriptive_field_shape_can_drop_a_work_item() -> Result<(), String> {
+    fn no_descriptive_field_shape_can_drop_a_work_item() {
         // The record contract forbids dropping a work-item from the board
         // because a descriptive field is absent or unparseable. A typed
         // `#[serde(default)]` field would do exactly that on a present `null`
@@ -4927,11 +5035,11 @@ mod tests {
             "audit": [1, 2],
             "description": true
         }]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             stdout,
-        ))?;
+        )));
         let detail = only_snapshot(&parsed).detail();
         // Present but null / wrong-typed reads as absent or as its own JSON
         // text -- never as a dropped work-item.
@@ -4941,7 +5049,6 @@ mod tests {
         assert_eq!(detail.title.as_deref(), Some(r#"{"nested":"object"}"#));
         assert_eq!(detail.audit.as_deref(), Some("[1,2]"));
         assert_eq!(detail.description.as_deref(), Some("true"));
-        Ok(())
     }
 
     #[test]
@@ -5008,7 +5115,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_policy_stays_distinguishable_from_an_unset_one() -> Result<(), String> {
+    fn an_explicit_policy_stays_distinguishable_from_an_unset_one() {
         // The snapshot COLLAPSES a null policy to the enum default because the
         // lane board needs an effective value. The record must not: a `null`
         // means the orchestrator resolves the policy from an ancestor epic, so
@@ -5019,11 +5126,11 @@ mod tests {
             {"id":"livespec-console-beads-fabro-set","lane":"ready","admission_policy":"manual","acceptance_policy":"ai-only"},
             {"id":"livespec-console-beads-fabro-unset","lane":"ready","admission_policy":null}
         ]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             stdout,
-        ))?;
+        )));
         let snapshots: Vec<&WorkItemSnapshot> = parsed
             .events
             .iter()
@@ -5048,53 +5155,50 @@ mod tests {
         assert_eq!(snapshots[1].detail().admission_policy, None);
         assert_eq!(snapshots[1].detail().acceptance_policy, None);
         assert_eq!(snapshots[1].admission_policy(), AdmissionPolicy::Manual);
-        Ok(())
     }
 
     #[test]
-    fn a_bare_string_dependency_reads_as_its_id() -> Result<(), String> {
+    fn a_bare_string_dependency_reads_as_its_id() {
         // The pre-typed-form store shape: a bare string element is a VALID
         // local dependency, so it must read as the id itself rather than as its
         // quoted JSON text, which would display a legitimate shape as garbage.
         let stdout = r#"[{"id":"livespec-console-beads-fabro-legacy","lane":"ready","depends_on":["dep-bare",{"kind":"local","work_item_id":"dep-typed"}]}]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             stdout,
-        ))?;
+        )));
         assert_eq!(
             only_snapshot(&parsed).detail().depends_on,
             vec!["dep-bare".to_owned(), "dep-typed".to_owned()]
         );
-        Ok(())
     }
 
     #[test]
-    fn a_record_missing_every_descriptive_field_still_observes() -> Result<(), String> {
+    fn a_record_missing_every_descriptive_field_still_observes() {
         // A leaner emission (or an older `list-work-items` predating a field)
         // must still land the work-item on the board, carrying an empty record
         // -- never trip the fail-soft skip and drop the item entirely.
         let stdout = r#"[{"id":"livespec-console-beads-fabro-lean","lane":"ready"}]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             stdout,
-        ))?;
+        )));
         let snapshot = only_snapshot(&parsed);
         assert_eq!(snapshot.work_item_id(), "livespec-console-beads-fabro-lean");
         assert_eq!(snapshot.detail(), &WorkItemDetail::default());
-        Ok(())
     }
 
     #[test]
-    fn parse_orchestrator_consumes_emitted_lanes() -> Result<(), String> {
+    fn parse_orchestrator_consumes_emitted_lanes() {
         let stdout = "[{\"id\":\"livespec-console-beads-fabro-a1\",\"lane\":\"ready\",\"lane_reason\":null},\
                       {\"id\":\"livespec-console-beads-fabro-b2\",\"lane\":\"blocked\",\"lane_reason\":\"needs-human\"}]";
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "livespec-console-beads-fabro",
             stdout,
-        ))?;
+        )));
 
         // The emitted lane/lane_reason are consumed directly into the snapshot
         // payloads (never re-derived from any other field).
@@ -5127,7 +5231,6 @@ mod tests {
                 &EventType::WorkItemSnapshotObserved
             );
         }
-        Ok(())
     }
 
     #[test]
@@ -5159,14 +5262,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_orchestrator_carries_rank_and_status() -> Result<(), String> {
+    fn parse_orchestrator_carries_rank_and_status() {
         let stdout = r#"[{"id":"console-1","lane":"active","lane_reason":null,"rank":"a3","status":"active"},
                          {"id":"console-2","lane":"ready"}]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "console",
             stdout,
-        ))?;
+        )));
         let snapshots: Vec<&WorkItemSnapshot> = parsed
             .events
             .iter()
@@ -5183,18 +5286,17 @@ mod tests {
         // an empty status rather than failing to parse.
         assert_eq!(snapshots[1].rank(), "~");
         assert_eq!(snapshots[1].status(), "");
-        Ok(())
     }
 
     #[test]
-    fn parse_orchestrator_carries_policies() -> Result<(), String> {
+    fn parse_orchestrator_carries_policies() {
         let stdout = r#"[{"id":"console-1","lane":"pending-approval","admission_policy":"auto","acceptance_policy":"ai-then-human"},
                          {"id":"console-2","lane":"ready"}]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "console",
             stdout,
-        ))?;
+        )));
         let snapshots: Vec<&WorkItemSnapshot> = parsed
             .events
             .iter()
@@ -5217,11 +5319,10 @@ mod tests {
             snapshots[1].acceptance_policy(),
             AcceptancePolicy::AiThenHuman
         );
-        Ok(())
     }
 
     #[test]
-    fn parse_orchestrator_tolerates_null_policies() -> Result<(), String> {
+    fn parse_orchestrator_tolerates_null_policies() {
         // The orchestrator `list-work-items --json` CLI emits an explicit
         // `null` for the policy fields on most records (not a missing key). A
         // present `null` must resolve to the same default a missing key
@@ -5229,11 +5330,11 @@ mod tests {
         // work-items are observed rather than degrading to a not-observed
         // finding.
         let stdout = r#"[{"id":"console-1","lane":"ready","admission_policy":null,"acceptance_policy":null}]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "console",
             stdout,
-        ))?;
+        )));
         let snapshots: Vec<&WorkItemSnapshot> = parsed
             .events
             .iter()
@@ -5252,11 +5353,10 @@ mod tests {
             snapshots[0].acceptance_policy(),
             AcceptancePolicy::AiThenHuman
         );
-        Ok(())
     }
 
     #[test]
-    fn parse_orchestrator_skips_records_it_cannot_interpret() -> Result<(), String> {
+    fn parse_orchestrator_skips_records_it_cannot_interpret() {
         // The orchestrator emits a `lane` value the console's lifecycle enum
         // does not know (e.g. the raw `open` status on a plan status-anchor
         // row). One such record must NOT sink the whole-array observation:
@@ -5265,11 +5365,11 @@ mod tests {
         let stdout = r#"[{"id":"console-1","lane":"ready"},
                          {"id":"console-anchor","lane":"open"},
                          {"id":"console-2","lane":"blocked","lane_reason":"needs-human"}]"#;
-        let parsed = parse_orchestrator_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
             SourceAdapterKind::Orchestrator,
             "console",
             stdout,
-        ))?;
+        )));
         let ids: Vec<&str> = parsed
             .events
             .iter()
@@ -5282,7 +5382,6 @@ mod tests {
         // The two interpretable records are observed; the unknown-lane record
         // is dropped rather than failing the batch.
         assert_eq!(ids, ["console-1", "console-2"]);
-        Ok(())
     }
 
     #[test]
@@ -5381,18 +5480,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_github_maps_real_states_into_snapshots() -> Result<(), String> {
+    fn parse_github_maps_real_states_into_snapshots() {
         for (raw, expected) in [
             ("MERGED", GithubPullRequestState::Merged),
             ("CLOSED", GithubPullRequestState::ChecksFailing),
             ("OPEN", GithubPullRequestState::Open),
         ] {
             let stdout = format!("[{{\"number\": 24, \"state\": \"{raw}\"}}]");
-            let parsed = parse_github_observation(&observed_for(
+            let parsed = ok_parsed_observation(parse_github_observation(&observed_for(
                 SourceAdapterKind::GitHub,
                 "console",
                 &stdout,
-            ))?;
+            )));
             let version = super::source_stream_seq(&["console", "24", expected.label()]);
 
             assert_eq!(
@@ -5405,7 +5504,6 @@ mod tests {
                 })
             );
         }
-        Ok(())
     }
 
     #[test]
@@ -5425,13 +5523,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_dispatcher_reads_last_journal_entry() -> Result<(), String> {
+    fn parse_dispatcher_reads_last_journal_entry() {
         let stdout = "\n{\"work_item_id\": \"console-1\", \"dispatch_id\": \"dispatch_9\"}\n";
-        let parsed = parse_dispatcher_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_dispatcher_observation(&observed_for(
             SourceAdapterKind::Dispatcher,
             "console",
             stdout,
-        ))?;
+        )));
         let version = super::source_stream_seq(&["console-1", "dispatch_9"]);
 
         assert_eq!(
@@ -5450,11 +5548,10 @@ mod tests {
             parsed.events[0].event().event_type(),
             &EventType::DispatcherJournalProgressObserved
         );
-        Ok(())
     }
 
     #[test]
-    fn parse_dispatcher_refusal_corpus_carries_diagnostic_text() -> Result<(), String> {
+    fn parse_dispatcher_refusal_corpus_carries_diagnostic_text() {
         for (stage, expected_kind, detail) in [
             (
                 "dispatcher-staleness-refused",
@@ -5475,7 +5572,7 @@ mod tests {
             let stdout = format!(
                 r#"{{"work_item_id":"console-1","dispatch_id":"dispatch-{stage}","stage":"outcome","outcome":{{"stage":"{stage}","status":"failed","detail":"{detail}"}}}}"#
             );
-            let parsed = parsed_dispatcher(&stdout)?;
+            let parsed = ok_parsed_observation(parsed_dispatcher(&stdout));
             let version = super::source_stream_seq(&["console-1", &format!("dispatch-{stage}")]);
             let expected_entries: Vec<DispatcherJournalEntry> = DispatcherJournalEntry::new(
                 "console",
@@ -5499,13 +5596,12 @@ mod tests {
             );
             assert!(dispatcher_journal_payload_json(&expected).contains(detail));
         }
-        Ok(())
     }
 
     #[test]
-    fn parse_dispatcher_non_convergence_outcome_is_backlog_bounce() -> Result<(), String> {
+    fn parse_dispatcher_non_convergence_outcome_is_backlog_bounce() {
         let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-stalled","stage":"outcome","outcome":{"stage":"fabro-run","status":"stalled-no-progress","detail":"run made no progress"}}"#;
-        let parsed = parsed_dispatcher(stdout)?;
+        let parsed = ok_parsed_observation(parsed_dispatcher(stdout));
         let version = super::source_stream_seq(&["console-1", "dispatch-stalled"]);
         let expected = DispatcherJournalEntry {
             repo: "console".to_owned(),
@@ -5527,7 +5623,7 @@ mod tests {
         assert!(dispatcher_journal_payload_json(&expected).contains("terminal_status"));
 
         let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-dot","stage":"outcome","outcome":{"stage":"fabro-run","status":"failed","detail":"LIVESPEC_NON_CONVERGED: fix-loop cap hit"}}"#;
-        let parsed = parsed_dispatcher(stdout)?;
+        let parsed = ok_parsed_observation(parsed_dispatcher(stdout));
         let version = super::source_stream_seq(&["console-1", "dispatch-dot"]);
         assert_eq!(
             first_payload(&parsed),
@@ -5542,7 +5638,7 @@ mod tests {
             })
         );
         let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-bounced","stage":"non-convergence-bounce","outcome_stage":"fabro-run","outcome_status":"stalled-no-progress"}"#;
-        let parsed = parsed_dispatcher(stdout)?;
+        let parsed = ok_parsed_observation(parsed_dispatcher(stdout));
         let version = super::source_stream_seq(&["console-1", "dispatch-bounced"]);
         assert_eq!(
             first_payload(&parsed),
@@ -5563,7 +5659,7 @@ mod tests {
             let stdout = format!(
                 r#"{{"work_item_id":"console-1","dispatch_id":"{dispatch_id}","stage":"non-convergence-bounce"{field}}}"#
             );
-            let parsed = parsed_dispatcher(&stdout)?;
+            let parsed = ok_parsed_observation(parsed_dispatcher(&stdout));
             let version = super::source_stream_seq(&["console-1", dispatch_id]);
             assert_eq!(
                 first_payload(&parsed),
@@ -5578,12 +5674,10 @@ mod tests {
                 })
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn parse_dispatcher_terminal_outcomes_without_bounce_signal_are_progress() -> Result<(), String>
-    {
+    fn parse_dispatcher_terminal_outcomes_without_bounce_signal_are_progress() {
         for (dispatch_id, outcome) in [
             (
                 "dispatch-completed",
@@ -5597,7 +5691,7 @@ mod tests {
             let stdout = format!(
                 r#"{{"work_item_id":"console-1","dispatch_id":"{dispatch_id}","stage":"outcome","outcome":{{{outcome}}}}}"#
             );
-            let parsed = parsed_dispatcher(&stdout)?;
+            let parsed = ok_parsed_observation(parsed_dispatcher(&stdout));
             let version = super::source_stream_seq(&["console-1", dispatch_id]);
             assert_eq!(
                 first_payload(&parsed),
@@ -5617,12 +5711,10 @@ mod tests {
                 &EventType::DispatcherJournalProgressObserved
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn parse_dispatcher_non_outcome_entries_are_progress_not_backlog_bounces() -> Result<(), String>
-    {
+    fn parse_dispatcher_non_outcome_entries_are_progress_not_backlog_bounces() {
         for (stage, body) in [
             ("loop-pick", r#""stage":"loop-pick""#),
             (
@@ -5637,7 +5729,7 @@ mod tests {
             let stdout = format!(
                 r#"{{"work_item_id":"console-1","dispatch_id":"dispatch-{stage}",{body}}}"#
             );
-            let parsed = parsed_dispatcher(&stdout)?;
+            let parsed = ok_parsed_observation(parsed_dispatcher(&stdout));
             let version = super::source_stream_seq(&["console-1", &format!("dispatch-{stage}")]);
             assert_eq!(
                 first_payload(&parsed),
@@ -5660,17 +5752,16 @@ mod tests {
                 &EventType::DispatcherBacklogBounceObserved
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn parse_dispatcher_masks_top_bit_hash_versions() -> Result<(), String> {
+    fn parse_dispatcher_masks_top_bit_hash_versions() {
         let stdout = r#"{"work_item_id": "console-1", "dispatch_id": "dispatch-high"}"#;
-        let parsed = parse_dispatcher_observation(&observed_for(
+        let parsed = ok_parsed_observation(parse_dispatcher_observation(&observed_for(
             SourceAdapterKind::Dispatcher,
             "console",
             stdout,
-        ))?;
+        )));
         let version = super::source_stream_seq(&["console-1", "dispatch-high"]);
 
         assert!(i64::try_from(version).is_ok());
@@ -5686,7 +5777,6 @@ mod tests {
                 source_version: version,
             })
         );
-        Ok(())
     }
 
     #[test]
@@ -5734,12 +5824,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_fabro_reads_run_and_falls_back_to_id() -> Result<(), String> {
-        let with_run = parse_fabro_observation(&observed_for(
+    fn parse_fabro_reads_run_and_falls_back_to_id() {
+        let with_run = ok_parsed_observation(parse_fabro_observation(&observed_for(
             SourceAdapterKind::Fabro,
             "console",
             "{\"run_id\": \"run_7\", \"work_item_id\": \"console-1\"}",
-        ))?;
+        )));
         let version = super::source_stream_seq(&["run_7", "console-1"]);
         assert_eq!(
             first_payload(&with_run),
@@ -5753,11 +5843,11 @@ mod tests {
         );
 
         // No run_id: fall back to id, and default work_item_id to the run id.
-        let fallback = parse_fabro_observation(&observed_for(
+        let fallback = ok_parsed_observation(parse_fabro_observation(&observed_for(
             SourceAdapterKind::Fabro,
             "console",
             "{\"id\": \"run_8\"}",
-        ))?;
+        )));
         let fallback_version = super::source_stream_seq(&["run_8", "run_8"]);
         assert_eq!(
             first_payload(&fallback),
@@ -5769,7 +5859,6 @@ mod tests {
                 source_version: fallback_version,
             })
         );
-        Ok(())
     }
 
     #[test]
@@ -5793,18 +5882,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_livespec_maps_real_actions() -> Result<(), String> {
+    fn parse_livespec_maps_real_actions() {
         for (raw, expected) in [
             ("revise", LivespecNextAction::Revise),
             ("critique", LivespecNextAction::Critique),
             ("none", LivespecNextAction::None),
         ] {
             let stdout = format!("{{\"action\": \"{raw}\"}}");
-            let parsed = parse_livespec_observation(&observed_for(
+            let parsed = ok_parsed_observation(parse_livespec_observation(&observed_for(
                 SourceAdapterKind::LiveSpec,
                 "console",
                 &stdout,
-            ))?;
+            )));
             let version = super::source_stream_seq(&["console", expected.label()]);
 
             assert_eq!(
@@ -5816,16 +5905,15 @@ mod tests {
                 })
             );
         }
-        Ok(())
     }
 
     #[test]
-    fn parse_livespec_falls_back_to_next_key_and_reports_errors() -> Result<(), String> {
-        let parsed = parse_livespec_observation(&observed_for(
+    fn parse_livespec_falls_back_to_next_key_and_reports_errors() {
+        let parsed = ok_parsed_observation(parse_livespec_observation(&observed_for(
             SourceAdapterKind::LiveSpec,
             "console",
             "{\"next\": \"revise\"}",
-        ))?;
+        )));
         assert_eq!(
             first_payload(&parsed),
             &SourcePayload::LivespecNextSnapshot(LivespecNextSnapshot {
@@ -5850,7 +5938,6 @@ mod tests {
             )),
             Err("invalid livespec snapshot".to_owned())
         );
-        Ok(())
     }
 
     #[test]
@@ -5877,8 +5964,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_needs_attention_snapshot_reads_the_attention_array() -> Result<(), String> {
-        let items = parse_needs_attention_snapshot(&needs_attention_json("wi-1"))?;
+    fn parse_needs_attention_snapshot_reads_the_attention_array() {
+        let items = ok_attention_items(parse_needs_attention_snapshot(&needs_attention_json(
+            "wi-1",
+        )));
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id(), "wi-1");
@@ -5891,15 +5980,15 @@ mod tests {
         assert_eq!(items[0].handoff().kind(), "approve");
         assert_eq!(items[0].handoff().action_id(), Some("approve"));
         assert_eq!(items[0].handoff().command(), "approve:wi-1");
-        Ok(())
     }
 
     #[test]
-    fn parse_needs_attention_snapshot_accepts_an_empty_inbox() -> Result<(), String> {
-        assert!(parse_needs_attention_snapshot(r#"{"attention":[]}"#)?.is_empty());
+    fn parse_needs_attention_snapshot_accepts_an_empty_inbox() {
+        assert!(
+            ok_attention_items(parse_needs_attention_snapshot(r#"{"attention":[]}"#)).is_empty()
+        );
         // A missing `attention` key defaults to an empty inbox.
-        assert!(parse_needs_attention_snapshot("{}")?.is_empty());
-        Ok(())
+        assert!(ok_attention_items(parse_needs_attention_snapshot("{}")).is_empty());
     }
 
     #[test]
@@ -5931,10 +6020,12 @@ mod tests {
         // Observed but unparseable → Unavailable with the parse reason.
         let bad_probe = StubProbe::command(SourceProbeOutcome::observed("not json", true));
         let bad_port = ProbeNeedsAttentionPort::new(&bad_probe, "needs-attention", &["--json"]);
-        assert!(matches!(
-            bad_port.read_snapshot(),
-            NeedsAttentionReadOutcome::Unavailable(_reason)
-        ));
+        let bad_outcome = bad_port.read_snapshot();
+        check(
+            std::mem::discriminant(&bad_outcome)
+                == std::mem::discriminant(&NeedsAttentionReadOutcome::Unavailable(String::new())),
+            "malformed needs-attention output should be unavailable",
+        );
 
         // Non-zero exit → Unavailable.
         let failing_probe = StubProbe::command(SourceProbeOutcome::observed("", false));

@@ -1037,12 +1037,27 @@ pub enum StagedAction {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::manual_assert, clippy::panic)]
+
     use super::{
         ACTION_REGISTRY, ActionContext, ActionStaging, ActionSurface, GlobalAction, KeyChord,
         action_for_chord, action_for_id, action_offered_on_surface, global_action_for_chord,
         global_status_hint_tokens, menu_actions, menu_tree,
     };
     use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
+
+    #[track_caller]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("{context}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected panic")]
+    fn check_panics() {
+        check(false, "expected panic");
+    }
 
     #[test]
     fn registry_entries_are_complete_unique_and_off_the_system_keys() {
@@ -1065,11 +1080,11 @@ mod tests {
             // the failure-only `spec.id` message on a line llvm-cov counts as
             // never executed. Same pincer PR #573 restructured out.
             let keyed = !spec.hotkeys.is_empty();
-            assert_eq!(spec.hint_token.is_empty(), !keyed, "{}", spec.id);
+            check(spec.hint_token.is_empty() != keyed, spec.id);
             assert!(!spec.menu_path.is_empty(), "{}", spec.id);
             assert!(ids.insert(spec.id), "{}", spec.id);
             for chord in spec.hotkeys {
-                assert!(hotkeys.insert(*chord), "{chord}");
+                check(hotkeys.insert(*chord), "duplicate hotkey");
                 // Space is still refused as a registry chord: the key handler
                 // matches it ahead of the registry lookup, so a registry claim
                 // on it would be a lie. `/ : ? q` USED to be refused for the
@@ -1090,7 +1105,7 @@ mod tests {
         {
             keyless_count += 1;
             assert!(spec.hint_token.is_empty(), "{}", spec.id);
-            assert_eq!(super::accelerator_display(spec), "menu", "{}", spec.id);
+            check(super::accelerator_display(spec) == "menu", spec.id);
         }
         assert!(keyless_count > 0);
 
@@ -1110,7 +1125,10 @@ mod tests {
                             };
                             let tokens = super::available_hint_tokens(&ctx);
                             let has_empty_token = tokens.iter().any(|token| token.is_empty());
-                            assert!(!has_empty_token, "{tokens:?}");
+                            check(
+                                !has_empty_token,
+                                "available hints must not include empty token",
+                            );
                             for spec in ACTION_REGISTRY
                                 .iter()
                                 .filter(|spec| spec.hotkeys.is_empty())
@@ -1192,7 +1210,10 @@ mod tests {
         assert_eq!(labels, expected);
         // The bar must be a REAL bar, not a degenerate single node — the design
         // basis the 2026-08-03 ruling predicted once the globals were registered.
-        assert!(tree.len() >= 2, "{labels:?}");
+        check(
+            tree.len() >= 2,
+            "menu tree must have multiple top-level nodes",
+        );
     }
 
     #[test]
@@ -1205,7 +1226,7 @@ mod tests {
                 .flat_map(|group| group.actions.iter())
                 .map(|spec| spec.id)
                 .collect();
-            assert_eq!(flattened, walked, "{}", top.label);
+            check(flattened == walked, top.label);
         }
         // Out of range is empty, not a panic: the renderer clamps, and a
         // panicking accessor would turn a clamp bug into a crash.
@@ -1253,7 +1274,7 @@ mod tests {
         for spec in ACTION_REGISTRY {
             let matches: Vec<&super::ActionReferenceRow> =
                 rows.iter().filter(|row| row.label == spec.label).collect();
-            assert_eq!(matches.len(), 1, "{}", spec.id);
+            check(matches.len() == 1, spec.id);
             let row = matches[0];
             assert_eq!(row.accelerator, super::accelerator_reference_display(spec));
             assert_eq!(row.availability, spec.availability_summary);
@@ -1282,7 +1303,7 @@ mod tests {
                 spec.id,
                 "move" | "driver-handoff" | "dispatch-selected-item"
             );
-            assert_eq!(attention, !drill_only, "{}", spec.id);
+            check(attention != drill_only, spec.id);
         }
     }
 
