@@ -733,6 +733,11 @@ pub enum TuiOverlay {
         /// last row.
         scroll: usize,
     },
+    /// Factory-dispatch confirmation pinned to the selected work-item.
+    FactoryDispatchItemConfirm {
+        /// The work-item id that confirmation will dispatch.
+        work_item_id: String,
+    },
     /// Valve-confirm variant: the confirm modal that stages one operator
     /// human-valve/policy-edit intent against the selected work-item. `Enter`
     /// submits the valve through the shared orchestrator action port; `up`/`down`
@@ -769,6 +774,7 @@ impl TuiOverlay {
             Self::None
             | Self::CommandModal { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
@@ -788,6 +794,7 @@ impl TuiOverlay {
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::Help { .. }
@@ -806,6 +813,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
@@ -825,6 +833,7 @@ impl TuiOverlay {
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDispatchItemConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
             | Self::Help { .. }
@@ -938,6 +947,8 @@ pub enum TuiInteraction {
     /// Open the work-item detail modal on the currently selected work-item,
     /// showing its full standardized record. Opens at the top of the record.
     OpenWorkItemDetail,
+    /// Open a read-back confirmation for dispatching the selected work-item.
+    OpenFactoryDispatchItemConfirm,
     /// Scroll the work-item detail modal DOWN by the given number of rows (`1`
     /// for a line step). Inert unless that modal is open; the offset clamps to
     /// the record's render-measured wrapped height, so the scroll never runs past
@@ -1941,6 +1952,9 @@ fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
         TuiOverlay::Menu { .. } => {
             Cow::Borrowed("left/right menu | up/down select | enter stage | esc cancel")
         }
+        TuiOverlay::FactoryDispatchItemConfirm { .. } => {
+            Cow::Borrowed("enter dispatch selected item | esc cancel")
+        }
         TuiOverlay::ValveConfirm { .. } => {
             Cow::Borrowed("up/down change | enter confirm | esc cancel")
         }
@@ -2442,21 +2456,74 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
     }
 }
 
-/// Dispatcher selected-item port.
+/// Real selected-item factory-dispatch port.
 ///
-/// The current specification confirms the `factory.dispatch_item_requested`
-/// command contract but does not define a stable concrete Dispatcher argv for
-/// one-item dispatch. Until that lower-level surface exists, the real port is
-/// intentionally honest: it reports `not_wired` instead of fabricating success
-/// or silently falling back to a fleet drain.
-pub struct DispatcherFactoryDispatchItemPort;
+/// It invokes the Dispatcher's governed `loop` surface bounded to the named
+/// item (`--budget 1 --parallel 1 --item <id>`), preserving the orchestrator's
+/// ranked eligibility, WIP cap, and `--item`-keyed cost gate. A successful run
+/// completes only when the Dispatcher reports a non-zero dispatched count; a
+/// genuine unavailable Dispatcher remains an honest not-wired outcome.
+pub struct DispatcherFactoryDispatchItemPort<'a> {
+    probe: &'a dyn SourceProbe,
+    program: String,
+    args: Vec<String>,
+}
 
-impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort {
+impl<'a> DispatcherFactoryDispatchItemPort<'a> {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
+        Self {
+            probe,
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+}
+
+impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort<'_> {
     fn dispatch_item(
         &mut self,
-        _request: &FactoryDispatchItemRequest,
+        request: &FactoryDispatchItemRequest,
     ) -> ApplicationResult<FactoryDispatchItemPortOutcome> {
-        Ok(FactoryDispatchItemPortOutcome::not_wired())
+        let mut arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        arg_refs.push("--budget");
+        arg_refs.push("1");
+        arg_refs.push("--parallel");
+        arg_refs.push("1");
+        arg_refs.push("--item");
+        arg_refs.push(request.work_item_id());
+        Ok(match self.probe.run_command(&self.program, &arg_refs) {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } if dispatched_item_count(&stdout) > 0 => FactoryDispatchItemPortOutcome::completed(),
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => {
+                let diagnostic = stdout.trim();
+                if diagnostic.is_empty() {
+                    FactoryDispatchItemPortOutcome::failed_with_diagnostic(
+                        "dispatcher reported zero dispatched items".to_owned(),
+                    )
+                } else {
+                    FactoryDispatchItemPortOutcome::failed_with_diagnostic(diagnostic.to_owned())
+                }
+            }
+            SourceProbeOutcome::Observed {
+                success: false,
+                stdout,
+            } => {
+                let diagnostic = stdout.trim();
+                if diagnostic.is_empty() {
+                    FactoryDispatchItemPortOutcome::failed()
+                } else {
+                    FactoryDispatchItemPortOutcome::failed_with_diagnostic(diagnostic.to_owned())
+                }
+            }
+            SourceProbeOutcome::Unavailable { .. } => FactoryDispatchItemPortOutcome::not_wired(),
+        })
     }
 }
 
@@ -3813,11 +3880,7 @@ pub fn reduce_tui_interaction(
         TuiInteraction::ScrollDetailUp => state
             .clone()
             .with_detail_scroll(state.detail_scroll().saturating_sub(1)),
-        TuiInteraction::OpenHelp => state.clone().with_overlay(TuiOverlay::Help {
-            focus: HelpFocus::Menu,
-            selected_section: help_section_for_focus(state.focus(), state.active_view()),
-            scroll: 0,
-        }),
+        TuiInteraction::OpenHelp => state.clone().with_overlay(open_help_overlay(state)),
         TuiInteraction::HelpSelectNextSection
         | TuiInteraction::HelpSelectPreviousSection
         | TuiInteraction::HelpScrollDown
@@ -3832,6 +3895,9 @@ pub fn reduce_tui_interaction(
         TuiInteraction::OpenWorkItemDetail => {
             state.clone().with_overlay(open_work_item_detail(&model))
         }
+        TuiInteraction::OpenFactoryDispatchItemConfirm => state
+            .clone()
+            .with_overlay(open_factory_dispatch_item_confirm(&model)),
         TuiInteraction::WorkItemDetailScrollDown(rows) => {
             work_item_detail_scroll_state(state, rows, true)
         }
@@ -3938,6 +4004,14 @@ fn open_command_modal(model: &TuiScreenModel) -> TuiOverlay {
     }
 }
 
+fn open_help_overlay(state: &TuiInteractionState) -> TuiOverlay {
+    TuiOverlay::Help {
+        focus: HelpFocus::Menu,
+        selected_section: help_section_for_focus(state.focus(), state.active_view()),
+        scroll: 0,
+    }
+}
+
 fn open_driver_handoff_overlay(model: &TuiScreenModel) -> TuiOverlay {
     model
         .selected_driver_handoff_command()
@@ -3990,6 +4064,16 @@ fn open_work_item_detail(model: &TuiScreenModel) -> TuiOverlay {
             TuiOverlay::WorkItemDetail {
                 work_item_id: work_item_id.to_owned(),
                 scroll: 0,
+            }
+        })
+}
+
+fn open_factory_dispatch_item_confirm(model: &TuiScreenModel) -> TuiOverlay {
+    model
+        .selected_work_item_id()
+        .map_or(TuiOverlay::None, |work_item_id| {
+            TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: work_item_id.to_owned(),
             }
         })
 }
@@ -6630,6 +6714,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6649,6 +6734,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6762,6 +6848,7 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6792,6 +6879,7 @@ fn help_scroll(overlay: &TuiOverlay, rows: usize, down: bool, max_scroll: usize)
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6816,6 +6904,7 @@ fn help_focus(overlay: &TuiOverlay, focus: HelpFocus) -> TuiOverlay {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6834,6 +6923,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6853,6 +6943,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6891,6 +6982,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -6962,6 +7054,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -9424,12 +9517,6 @@ mod tests {
 
     #[test]
     fn factory_dispatch_item_helpers_cover_default_outcomes_and_labels() {
-        let mut port = DispatcherFactoryDispatchItemPort;
-        let request = FactoryDispatchItemRequest::new("console-selected".to_owned());
-        assert_eq!(
-            port.dispatch_item(&request),
-            Ok(FactoryDispatchItemPortOutcome::not_wired())
-        );
         assert_eq!(
             FactoryDispatchItemPortOutcome::failed(),
             FactoryDispatchItemPortOutcome::Failed { diagnostic: None }
@@ -9459,6 +9546,119 @@ mod tests {
         assert_eq!(
             EventType::FactoryDispatchItemStarted.label(),
             "Factory dispatch item started"
+        );
+    }
+
+    #[test]
+    fn dispatcher_dispatch_item_port_uses_governed_bounded_loop_surface() {
+        let probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::observed("dispatch: dispatched 1 item", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let request = FactoryDispatchItemRequest::new("wi-selected".to_owned());
+        let mut port =
+            DispatcherFactoryDispatchItemPort::new(&probe, "dispatcher", &["loop", "--repo", "."]);
+
+        let outcome = port.dispatch_item(&request);
+
+        assert_ne!(outcome, Ok(FactoryDispatchItemPortOutcome::not_wired()));
+        assert_eq!(outcome, Ok(FactoryDispatchItemPortOutcome::completed()));
+        assert_eq!(
+            *probe.observed_args.borrow(),
+            [
+                "loop",
+                "--repo",
+                ".",
+                "--budget",
+                "1",
+                "--parallel",
+                "1",
+                "--item",
+                "wi-selected"
+            ]
+        );
+        assert!(
+            !probe
+                .observed_args
+                .borrow()
+                .iter()
+                .any(|arg| arg == "dispatch")
+        );
+    }
+
+    #[test]
+    fn dispatcher_dispatch_item_port_surfaces_zero_dispatch_and_unavailable_honestly() {
+        let zero_probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::observed("drain: ready queue empty", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let request = FactoryDispatchItemRequest::new("wi-selected".to_owned());
+        let mut zero_port =
+            DispatcherFactoryDispatchItemPort::new(&zero_probe, "dispatcher", &["loop"]);
+
+        assert_eq!(
+            zero_port.dispatch_item(&request),
+            Ok(FactoryDispatchItemPortOutcome::failed_with_diagnostic(
+                "drain: ready queue empty".to_owned()
+            ))
+        );
+
+        let empty_zero_probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::observed("", true),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut empty_zero_port =
+            DispatcherFactoryDispatchItemPort::new(&empty_zero_probe, "dispatcher", &["loop"]);
+
+        assert_eq!(
+            empty_zero_port.dispatch_item(&request),
+            Ok(FactoryDispatchItemPortOutcome::failed_with_diagnostic(
+                "dispatcher reported zero dispatched items".to_owned()
+            ))
+        );
+
+        let failed_probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::observed("dispatcher refused", false),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut failed_port =
+            DispatcherFactoryDispatchItemPort::new(&failed_probe, "dispatcher", &["loop"]);
+
+        assert_eq!(
+            failed_port.dispatch_item(&request),
+            Ok(FactoryDispatchItemPortOutcome::failed_with_diagnostic(
+                "dispatcher refused".to_owned()
+            ))
+        );
+
+        let empty_failed_probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::observed("", false),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut empty_failed_port =
+            DispatcherFactoryDispatchItemPort::new(&empty_failed_probe, "dispatcher", &["loop"]);
+
+        assert_eq!(
+            empty_failed_port.dispatch_item(&request),
+            Ok(FactoryDispatchItemPortOutcome::failed())
+        );
+
+        let unavailable_probe = ArgsRecordingDrainProbe {
+            config: SourceProbeOutcome::unavailable("unused"),
+            drain: SourceProbeOutcome::unavailable("dispatcher missing"),
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut unavailable_port =
+            DispatcherFactoryDispatchItemPort::new(&unavailable_probe, "dispatcher", &["loop"]);
+
+        assert_eq!(
+            unavailable_port.dispatch_item(&request),
+            Ok(FactoryDispatchItemPortOutcome::not_wired())
         );
     }
 
@@ -13840,6 +14040,41 @@ mod tests {
     }
 
     #[test]
+    fn factory_dispatch_item_confirm_opens_on_the_selected_item_only() {
+        const MODAL_ITEM: &str = "console-pinned";
+        let ready_events = [lane_event(
+            "evt_dispatch_confirm",
+            MODAL_ITEM,
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+        let selected = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+            .with_selected_lane_item_index(0);
+
+        let dispatch_confirm = reduce_tui_interaction(
+            &selected,
+            &ready_events,
+            TuiInteraction::OpenFactoryDispatchItemConfirm,
+        );
+
+        assert_eq!(
+            dispatch_confirm.overlay(),
+            &TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: MODAL_ITEM.to_owned()
+            }
+        );
+        let dispatch_without_selection = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &[],
+            TuiInteraction::OpenFactoryDispatchItemConfirm,
+        );
+        assert_eq!(dispatch_without_selection.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
     fn footer_hint_covers_every_overlay_with_its_own_non_empty_hints() {
         // Every overlay owns the hint line while open (matched before the pane),
         // so each renders its own non-empty, overlay-appropriate keys regardless
@@ -13856,6 +14091,9 @@ mod tests {
             },
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+            },
+            TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "wi-ready".to_owned(),
             },
             TuiOverlay::DriverHandoff {
                 command: r#"claude "/livespec-orchestrator-beads-fabro:implement wi-ready""#

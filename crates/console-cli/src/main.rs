@@ -28,9 +28,9 @@ use console_application::source_adapters::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_application::{
-    DispatcherFactoryDrainPort, DispatcherOrchestratorActionPort, DispatcherSettingsPort,
-    DispatcherSettingsRead, JournalAutonomousDecisionsPort,
-    PluginResolution as TuiPluginResolution,
+    DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
+    DispatcherOrchestratorActionPort, DispatcherSettingsPort, DispatcherSettingsRead,
+    JournalAutonomousDecisionsPort, PluginResolution as TuiPluginResolution,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::SqliteEventStore;
@@ -146,22 +146,30 @@ fn run_store_backed_command(
         resolution.programs().dispatcher(),
         &["loop", "--repo", repo_path.as_str()],
     );
+    let mut dispatch_item = DispatcherFactoryDispatchItemPort::new(
+        &probe,
+        resolution.programs().dispatcher(),
+        &["loop", "--repo", repo_path.as_str()],
+    );
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
         &["--repo", repo_path.as_str(), "--json"],
     );
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
-    Ok(livespec_console_beads_fabro::run_with_store(
-        args,
-        &mut store,
-        &observed_at,
-        &sources,
-        &mut drain,
-        &mut drive,
-        &decisions,
-        &needs_attention,
-    ))
+    Ok(
+        livespec_console_beads_fabro::run_with_store_and_dispatch_port(
+            args,
+            &mut store,
+            &observed_at,
+            &sources,
+            &mut drain,
+            &mut dispatch_item,
+            &mut drive,
+            &decisions,
+            &needs_attention,
+        ),
+    )
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -358,15 +366,21 @@ fn handle_pending_factory_command_lane() {
         resolution.programs().dispatcher(),
         &["loop", "--repo", repo_path.as_str()],
     );
+    let mut dispatch_item = DispatcherFactoryDispatchItemPort::new(
+        &probe,
+        resolution.programs().dispatcher(),
+        &["loop", "--repo", repo_path.as_str()],
+    );
     let mut drive = DispatcherOrchestratorActionPort::new(
         &probe,
         resolution.programs().drive(),
         &["--repo", repo_path.as_str(), "--json"],
     );
-    let _ = livespec_console_beads_fabro::handle_pending_factory_commands(
+    let _ = livespec_console_beads_fabro::handle_pending_factory_commands_with_dispatch_port(
         &mut store,
         &observed_at,
         &mut drain,
+        &mut dispatch_item,
     );
     let _ = livespec_console_beads_fabro::handle_pending_control_commands(
         &mut store,

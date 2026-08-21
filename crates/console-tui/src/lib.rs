@@ -483,13 +483,7 @@ fn invoker_confirm_step(
             );
         }
         Some(action_registry::StagedAction::FactoryDispatchItem) => {
-            let work_item_id = model.selected_work_item_id().unwrap_or("");
-            return TuiRuntimeStep::new(
-                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
-                TuiRuntimeEffect::PersistCommand(
-                    console_application::factory_dispatch_item_command(work_item_id, requested_by),
-                ),
-            );
+            TuiInteraction::OpenFactoryDispatchItemConfirm
         }
         // Quit is the one global that is not an interaction: it ends the
         // session rather than transforming its state.
@@ -534,13 +528,7 @@ fn menu_confirm_step(
             );
         }
         Some(action_registry::StagedAction::FactoryDispatchItem) => {
-            let work_item_id = model.selected_work_item_id().unwrap_or("");
-            return TuiRuntimeStep::new(
-                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
-                TuiRuntimeEffect::PersistCommand(
-                    console_application::factory_dispatch_item_command(work_item_id, requested_by),
-                ),
-            );
+            TuiInteraction::OpenFactoryDispatchItemConfirm
         }
         Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
             Some(global) => global,
@@ -586,6 +574,11 @@ fn confirm_operator_action(
     }
     let outcome = match model.overlay() {
         TuiOverlay::CommandPalette { .. } => resolve_command_palette_action(&model, requested_by),
+        TuiOverlay::FactoryDispatchItemConfirm { work_item_id } => {
+            Ok(OperatorActionOutcome::PersistCommand(
+                console_application::factory_dispatch_item_command(work_item_id, requested_by),
+            ))
+        }
         TuiOverlay::ValveConfirm { .. } => resolve_valve_action(&model, requested_by),
         // `Enter`/`Space` on a Settings row is an ordinary recorded setting write
         // (no overlay, no arming ceremony).
@@ -755,7 +748,9 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         // The item modal is a READING surface, so up/down scroll its body
         // rather than moving a selection -- there is nothing to select in it.
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
-        TuiOverlay::DriverHandoff { .. } => return None,
+        TuiOverlay::DriverHandoff { .. } | TuiOverlay::FactoryDispatchItemConfirm { .. } => {
+            return None;
+        }
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
@@ -782,7 +777,9 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
             HelpFocus::Text => TuiInteraction::HelpScrollDown,
         },
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
-        TuiOverlay::DriverHandoff { .. } => return None,
+        TuiOverlay::DriverHandoff { .. } | TuiOverlay::FactoryDispatchItemConfirm { .. } => {
+            return None;
+        }
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
@@ -802,6 +799,7 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::Menu { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => Some(TuiTerminalInput::Confirm),
@@ -995,6 +993,7 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::Menu { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => None,
     }
@@ -1241,6 +1240,7 @@ fn render_menu_bar(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
@@ -1530,6 +1530,10 @@ fn render_overlay(
             render_driver_handoff_overlay(command, area, buffer);
             OverlayScrollExtents::ZERO
         }
+        TuiOverlay::FactoryDispatchItemConfirm { work_item_id } => {
+            render_factory_dispatch_item_confirm(work_item_id, overlay_rect(area), buffer);
+            OverlayScrollExtents::ZERO
+        }
         TuiOverlay::ValveConfirm { valve } => {
             // The modal's consent target MUST read from the SAME source `Enter`
             // dispatches on (`selected_work_item_id` — the Attention detail OR the
@@ -1644,6 +1648,18 @@ fn render_valve_confirm(
     Paragraph::new(lines)
         .block(Block::new().borders(Borders::ALL).title("Valve"))
         .render(area, buffer);
+}
+
+fn render_factory_dispatch_item_confirm(work_item_id: &str, area: Rect, buffer: &mut Buffer) {
+    Clear.render(area, buffer);
+    Paragraph::new(vec![
+        Line::from("Dispatch selected work-item"),
+        Line::from(format!("Target: {work_item_id}")),
+        Line::from("Uses Dispatcher loop --budget 1 --parallel 1 --item"),
+        Line::from("Enter to dispatch | Esc to cancel"),
+    ])
+    .block(Block::new().borders(Borders::ALL).title("Factory Dispatch"))
+    .render(area, buffer);
 }
 
 fn set_acceptance_cannot_gate_in_flight(
@@ -4346,6 +4362,25 @@ mod tests {
     }
 
     #[test]
+    fn render_to_text_draws_factory_dispatch_item_confirm_overlay() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "console-selected".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+
+        let output = render_to_text(&model, 96, 24).unwrap_or_default();
+
+        assert!(output.contains("Factory Dispatch"));
+        assert!(output.contains("Dispatch selected work-item"));
+        assert!(output.contains("Target: console-selected"));
+        assert!(output.contains("loop --budget 1 --parallel 1 --item"));
+        assert!(output.contains("enter dispatch selected item"));
+    }
+
+    #[test]
     fn render_command_modal_draws_available_attach_actions() {
         let detail = AttentionDetail::new(
             "repo".to_owned(),
@@ -5220,6 +5255,69 @@ mod tests {
     }
 
     #[test]
+    fn menu_dispatch_selected_item_opens_a_target_readback_confirm() {
+        let position = menu_position_for("dispatch-selected-item");
+        assert!(position.is_some());
+        let (top, selected) = position.unwrap_or_default();
+        let state =
+            TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::Menu { top, selected })
+                .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+                .with_selected_lane_item_index(0);
+        let ready_events = [lane_event(
+            "evt_menu_dispatch_item",
+            "console-menu-dispatch-item",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+
+        let staged = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+
+        assert_eq!(
+            staged.state().overlay(),
+            &TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "console-menu-dispatch-item".to_owned()
+            }
+        );
+        assert_eq!(staged.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[test]
+    fn dispatch_selected_item_confirm_persists_the_pinned_item_command() {
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "console-menu-dispatch-item".to_owned(),
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_selected_lane_item_index(0);
+        let ready_events = [lane_event(
+            "evt_confirm_dispatch_item",
+            "different-current-selection",
+            Lane::Ready,
+            None,
+            "a0",
+            "ready",
+        )];
+
+        let confirmed =
+            step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
+        let command = persisted_command(confirmed.effect());
+
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::command_type),
+            Some(&CommandType::FactoryDispatchItemRequested)
+        );
+        assert_eq!(
+            command.map(console_domain::CommandEnvelope::aggregate_id),
+            Some("console-menu-dispatch-item")
+        );
+    }
+
+    #[test]
     fn dispatch_ready_has_no_character_key_path() {
         let spec = action_registry::ACTION_REGISTRY
             .iter()
@@ -5541,16 +5639,14 @@ mod tests {
         ];
 
         let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
-        let command = persisted_command(step.effect());
 
         assert_eq!(
-            command.map(|command| command.command_type().contract_name()),
-            Some("factory.dispatch_item_requested")
+            step.state().overlay(),
+            &TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "console-dispatch-selected".to_owned()
+            }
         );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::aggregate_id),
-            Some("console-dispatch-selected")
-        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
     }
 
     #[test]
@@ -5578,16 +5674,14 @@ mod tests {
         )];
 
         let step = step_tui_runtime(&state, &ready_events, TuiTerminalInput::Confirm, "operator");
-        let command = persisted_command(step.effect());
 
         assert_eq!(
-            command.map(|command| command.command_type().contract_name()),
-            Some("factory.dispatch_item_requested")
+            step.state().overlay(),
+            &TuiOverlay::FactoryDispatchItemConfirm {
+                work_item_id: "console-invoker-dispatch-selected".to_owned()
+            }
         );
-        assert_eq!(
-            command.map(console_domain::CommandEnvelope::aggregate_id),
-            Some("console-invoker-dispatch-selected")
-        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
     }
 
     #[test]

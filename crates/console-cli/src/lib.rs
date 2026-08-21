@@ -31,9 +31,9 @@ use console_application::source_adapters::{
     normalize_work_item_snapshot,
 };
 use console_application::{
-    ApplicationError, AutonomousDecision, AutonomousDecisionsPort,
-    DispatcherFactoryDispatchItemPort, DispatcherSettingsPort, FactoryDrainPolicy,
-    FactoryDrainPort, OrchestratorActionPort, autonomous_reflection_attention_id, build_tui_model,
+    ApplicationError, AutonomousDecision, AutonomousDecisionsPort, DispatcherSettingsPort,
+    FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
+    autonomous_reflection_attention_id, build_tui_model,
     handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
     handle_factory_drain_command, handle_work_item_accept_command,
     handle_work_item_approve_command, handle_work_item_move_command,
@@ -121,13 +121,41 @@ pub fn run_with_store(
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> RunOutput {
+    let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+    run_with_store_and_dispatch_port(
+        args,
+        store,
+        observed_at,
+        sources,
+        factory_port,
+        &mut dispatch_item_port,
+        work_item_port,
+        decisions_port,
+        needs_attention,
+    )
+}
+
+/// Run with store and an explicitly wired selected-item dispatch port.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_store_and_dispatch_port(
+    args: &[String],
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
+    factory_port: &mut dyn FactoryDrainPort,
+    dispatch_item_port: &mut dyn FactoryDispatchItemPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
+    decisions_port: &dyn AutonomousDecisionsPort,
+    needs_attention: &NeedsAttentionIngest<'_>,
+) -> RunOutput {
     match command_name(args) {
         Some("serve") => run_runtime_result(
-            serve_report(
+            serve_report_with_dispatch_port(
                 store,
                 observed_at,
                 sources,
                 factory_port,
+                dispatch_item_port,
                 work_item_port,
                 decisions_port,
                 needs_attention,
@@ -432,11 +460,16 @@ fn append_factory_drain_requested_events(
         let Some(command) = factory_command_from_stored(&stored)? else {
             continue;
         };
+        let event_type = if *command.command_type() == CommandType::FactoryDrainRequested {
+            EventType::FactoryDrainRequested
+        } else {
+            EventType::FactoryDispatchItemRequested
+        };
         let event = ConsoleEvent::new(
             format!("evt_{}_requested", command.command_id()),
             1,
             "factory".to_owned(),
-            EventType::FactoryDrainRequested,
+            event_type,
             "console:factory-command-handler".to_owned(),
             command.aggregate_id().to_owned(),
             0,
@@ -1066,13 +1099,43 @@ pub fn serve_report(
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
+    let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+    serve_report_with_dispatch_port(
+        store,
+        observed_at,
+        sources,
+        factory_port,
+        &mut dispatch_item_port,
+        work_item_port,
+        decisions_port,
+        needs_attention,
+    )
+}
+
+/// Return the serve report value with both factory ports wired.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_report_with_dispatch_port(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
+    factory_port: &mut dyn FactoryDrainPort,
+    dispatch_item_port: &mut dyn FactoryDispatchItemPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
+    decisions_port: &dyn AutonomousDecisionsPort,
+    needs_attention: &NeedsAttentionIngest<'_>,
+) -> ConsoleRuntimeResult<String> {
     // Run the full ingest/reflect sequence unconditionally on every serve (Bug A
     // fix): like the interactive launch, the headless report must reflect the
     // CURRENT ledger, not a first-run snapshot. Checkpointed/idempotent re-ingest
     // (Scenario 3) keeps this safe on a non-empty log.
     let ingestion =
         ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
-    let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
+    let handled = handle_pending_factory_commands_with_dispatch_port(
+        store,
+        observed_at,
+        factory_port,
+        dispatch_item_port,
+    )?;
     let work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let _config_handled = handle_pending_config_commands(store, observed_at, work_item_port)?;
     let events = store.list_console_events()?;
@@ -1344,6 +1407,22 @@ pub fn handle_pending_factory_commands(
     handled_at: &str,
     port: &mut dyn FactoryDrainPort,
 ) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
+    let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+    handle_pending_factory_commands_with_dispatch_port(
+        store,
+        handled_at,
+        port,
+        &mut dispatch_item_port,
+    )
+}
+
+/// Handle pending factory commands with both factory command ports wired.
+pub fn handle_pending_factory_commands_with_dispatch_port(
+    store: &mut dyn FactoryCommandStore,
+    handled_at: &str,
+    drain_port: &mut dyn FactoryDrainPort,
+    dispatch_item_port: &mut dyn FactoryDispatchItemPort,
+) -> ConsoleRuntimeResult<Vec<PendingCommandOutcome>> {
     let _recovered = recover_stale_executing_commands(store, handled_at)?;
     let policy_events = store.list_console_events()?;
     let policy = FactoryDrainPolicy::from_events(&policy_events);
@@ -1359,10 +1438,9 @@ pub fn handle_pending_factory_commands(
             continue;
         }
         let command_outcome = if *command.command_type() == CommandType::FactoryDrainRequested {
-            handle_factory_drain_command(&command, &policy, port)?
+            handle_factory_drain_command(&command, &policy, drain_port)?
         } else {
-            let mut dispatch_port = DispatcherFactoryDispatchItemPort;
-            handle_factory_dispatch_item_command(&command, &mut dispatch_port)?
+            handle_factory_dispatch_item_command(&command, dispatch_item_port)?
         };
         outcomes.push(finalize_pending_command(
             store,
@@ -1373,6 +1451,17 @@ pub fn handle_pending_factory_commands(
         )?);
     }
     Ok(outcomes)
+}
+
+struct CompatibilityNotWiredDispatchItemPort;
+
+impl FactoryDispatchItemPort for CompatibilityNotWiredDispatchItemPort {
+    fn dispatch_item(
+        &mut self,
+        _request: &console_application::FactoryDispatchItemRequest,
+    ) -> Result<console_application::FactoryDispatchItemPortOutcome, ApplicationError> {
+        Ok(console_application::FactoryDispatchItemPortOutcome::not_wired())
+    }
 }
 
 /// Handle pending `work_item.*` commands through the shared orchestrator port.
@@ -2499,11 +2588,11 @@ mod tests {
 
     use console_application::{
         ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
-        AutonomousDecisionsPort, DispatcherOverride, FactoryDrainPort, FactoryDrainPortOutcome,
-        FactoryDrainRequest, LaneColumn, LaneFocus, OrchestratorActionOutcome,
-        OrchestratorActionPort, OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiView, build_tui_model,
-        project_attention, project_lane_board,
+        AutonomousDecisionsPort, DispatcherOverride, FactoryDispatchItemPort, FactoryDrainPort,
+        FactoryDrainPortOutcome, FactoryDrainRequest, LaneColumn, LaneFocus,
+        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideInt,
+        PendingValve, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay, TuiView,
+        build_tui_model, project_attention, project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
             AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, DispatcherJournalEntry,
@@ -2535,14 +2624,15 @@ mod tests {
         config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_console_event, events_tail_report, factory_command_from_stored,
         handle_pending_config_commands, handle_pending_control_commands,
-        handle_pending_factory_commands, handle_pending_work_item_commands, ingest_needs_attention,
-        initial_source_seed, is_failed_once_only_valve_retry, live_source_adapters,
-        load_tui_events_from_store, normalized_payload_json,
-        observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
-        persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
-        refresh_sources, render_tui_preview, resolve_console_repo, run,
-        run_store_backed_tui_session, run_with_store, serve_report, snapshot_report,
-        source_polls_from_seed, work_item_command_from_stored,
+        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
+        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
+        is_failed_once_only_valve_retry, live_source_adapters, load_tui_events_from_store,
+        normalized_payload_json, observe_and_reflect_autonomous_decisions,
+        older_factory_command_blocks_control_command, persist_tui_runtime_effects,
+        plan_page_report, python_normalized_invocation, refresh_sources, render_tui_preview,
+        resolve_console_repo, run, run_store_backed_tui_session, run_with_store, serve_report,
+        serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
+        work_item_command_from_stored,
     };
 
     #[test]
@@ -5516,6 +5606,146 @@ mod tests {
     }
 
     #[test]
+    fn pending_factory_dispatch_item_command_can_complete_through_wired_port()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+            "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
+            CommandType::FactoryDispatchItemRequested,
+            "wi-1".to_owned(),
+            "wi-1:factory.dispatch_item_requested".to_owned(),
+            "operator".to_owned(),
+        ))];
+        assert!(persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z").is_ok());
+        let mut drain_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = CompletingFactoryDispatchItemPort::default();
+
+        let outcomes = handle_pending_factory_commands_with_dispatch_port(
+            &mut store,
+            "2026-06-23T00:00:03Z",
+            &mut drain_port,
+            &mut dispatch_item_port,
+        );
+
+        assert!(outcomes.is_ok());
+        let outcomes = outcomes.unwrap_or_default();
+        assert_ne!(outcomes[0].command_status(), "not_wired");
+        assert_eq!(outcomes[0].command_status(), "completed");
+        assert_eq!(dispatch_item_port.observed_work_item_ids, ["wi-1"]);
+        let events = store.list_console_events().unwrap_or_default();
+        assert_eq!(
+            events
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            vec![
+                &EventType::CommandAccepted,
+                &EventType::FactoryDispatchItemStarted,
+                &EventType::FactoryDispatchItemCompleted,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_factory_dispatch_item_command_propagates_port_errors() -> Result<(), EventStoreError>
+    {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+            "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
+            CommandType::FactoryDispatchItemRequested,
+            "wi-1".to_owned(),
+            "wi-1:factory.dispatch_item_requested".to_owned(),
+            "operator".to_owned(),
+        ))];
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")
+            .map_err(|_error| EventStoreError::InvalidSequence)?;
+        let mut drain_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = ErroringFactoryDispatchItemPort;
+
+        let outcome = handle_pending_factory_commands_with_dispatch_port(
+            &mut store,
+            "2026-06-23T00:00:03Z",
+            &mut drain_port,
+            &mut dispatch_item_port,
+        );
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::FactoryDispatchItemPortFailed
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn serve_report_with_dispatch_port_propagates_dispatch_errors() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+            "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
+            CommandType::FactoryDispatchItemRequested,
+            "wi-1".to_owned(),
+            "wi-1:factory.dispatch_item_requested".to_owned(),
+            "operator".to_owned(),
+        ))];
+        persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")
+            .map_err(|_error| EventStoreError::InvalidSequence)?;
+        let scripted = scripted_source_list();
+        let sources = scripted_source_refs(&scripted);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = ErroringFactoryDispatchItemPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let outcome = serve_report_with_dispatch_port(
+            &mut store,
+            "2026-06-23T00:00:03Z",
+            &sources,
+            &mut factory_port,
+            &mut dispatch_item_port,
+            &mut work_item_port,
+            &empty_decisions_port(),
+            &needs_attention,
+        );
+
+        assert!(matches!(
+            outcome,
+            Err(ConsoleRuntimeError::Application(
+                ApplicationError::FactoryDispatchItemPortFailed
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn per_item_dispatch_request_event_uses_dispatch_item_event_type()
+    -> Result<(), ConsoleRuntimeError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let effects = [TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
+            "cmd_factory_dispatch_item_requested_wi_1".to_owned(),
+            CommandType::FactoryDispatchItemRequested,
+            "wi-1".to_owned(),
+            "wi-1:factory.dispatch_item_requested".to_owned(),
+            "operator".to_owned(),
+        ))];
+        let outcomes = persist_tui_runtime_effects(&mut store, &effects, "2026-06-23T00:00:02Z")?;
+
+        append_factory_drain_requested_events(&mut store, &outcomes, "2026-06-23T00:00:02Z")?;
+
+        let events = store.list_console_events()?;
+        assert_eq!(
+            events
+                .iter()
+                .map(ConsoleEvent::event_type)
+                .collect::<Vec<_>>(),
+            vec![&EventType::FactoryDispatchItemRequested]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn pending_factory_command_handler_ignores_a_lost_claim() -> Result<(), ConsoleRuntimeError> {
         let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::FactoryClaimMiss);
         let mut port = RecordingFactoryDrainPort::default();
@@ -7562,6 +7792,33 @@ mod tests {
             self.observed_aggregate_ids
                 .push(request.aggregate_id().to_owned());
             Ok(FactoryDrainPortOutcome::completed(1))
+        }
+    }
+
+    #[derive(Default)]
+    struct CompletingFactoryDispatchItemPort {
+        observed_work_item_ids: Vec<String>,
+    }
+
+    impl FactoryDispatchItemPort for CompletingFactoryDispatchItemPort {
+        fn dispatch_item(
+            &mut self,
+            request: &console_application::FactoryDispatchItemRequest,
+        ) -> Result<console_application::FactoryDispatchItemPortOutcome, ApplicationError> {
+            self.observed_work_item_ids
+                .push(request.work_item_id().to_owned());
+            Ok(console_application::FactoryDispatchItemPortOutcome::completed())
+        }
+    }
+
+    struct ErroringFactoryDispatchItemPort;
+
+    impl FactoryDispatchItemPort for ErroringFactoryDispatchItemPort {
+        fn dispatch_item(
+            &mut self,
+            _request: &console_application::FactoryDispatchItemRequest,
+        ) -> Result<console_application::FactoryDispatchItemPortOutcome, ApplicationError> {
+            Err(ApplicationError::FactoryDispatchItemPortFailed)
         }
     }
 
