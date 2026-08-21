@@ -912,6 +912,8 @@ fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
+
     use super::{
         AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
         EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand, sequence_from_rowid,
@@ -921,55 +923,70 @@ mod tests {
         source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane, LaneReason},
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
+    use rusqlite::{Rows, Statement, Transaction};
 
     #[test]
-    fn opened_store_uses_wal_mode_and_creates_required_tables() -> Result<(), EventStoreError> {
+    fn opened_store_uses_wal_mode_and_creates_required_tables() {
         let path = std::env::temp_dir().join(format!(
             "livespec-console-eventstore-{}.sqlite",
             std::process::id()
         ));
         let _remove_result = std::fs::remove_file(&path);
-        let store = SqliteEventStore::open(&path)?;
+        let store = ok_store(SqliteEventStore::open(&path));
 
-        let journal_mode: String =
-            store
-                .connection
-                .query_row("pragma journal_mode", [], |row| row.get(0))?;
+        let journal_mode = ok_string(store.connection.query_row(
+            "pragma journal_mode",
+            [],
+            |row| row.get(0),
+        ));
         for table_name in ["events", "commands", "checkpoints"] {
             let sql = format!("select count(*) from {table_name}");
-            assert!(store.connection.prepare(&sql).is_ok());
+            ok_statement(store.connection.prepare(&sql));
         }
-        assert!(!table_select_prepares(&store, "projections"));
+        err_statement(store.connection.prepare("select count(*) from projections"));
 
-        assert_eq!(journal_mode, "wal");
+        check(journal_mode == "wal", "eventstore test assertion");
         let _remove_result = std::fs::remove_file(&path);
-        Ok(())
     }
 
     #[test]
-    fn append_event_persists_canonical_event_row() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn append_event_persists_canonical_event_row() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let append = event_append("evt_1", Some("source-1"));
 
-        let outcome = store.append_event(&append)?;
-        let events = store.list_events()?;
+        let outcome = ok_append_outcome(store.append_event(&append));
+        let events = ok_events(store.list_events());
 
-        assert_eq!(outcome.status(), AppendStatus::Inserted);
-        assert_eq!(outcome.global_seq(), 1);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].global_seq(), 1);
-        assert_eq!(events[0].event_id(), "evt_1");
-        assert_eq!(events[0].event_type(), "fabro.human_gate_observed");
-        assert_eq!(events[0].source(), "fabro");
-        assert_eq!(events[0].source_event_id(), Some("source-1"));
-        assert_eq!(append.event().event_id(), "evt_1");
-        assert_eq!(append.source_event_id(), Some("source-1"));
-        Ok(())
+        check(
+            outcome.status() == AppendStatus::Inserted,
+            "eventstore test assertion",
+        );
+        check(outcome.global_seq() == 1, "eventstore test assertion");
+        check(events.len() == 1, "eventstore test assertion");
+        check(events[0].global_seq() == 1, "eventstore test assertion");
+        check(events[0].event_id() == "evt_1", "eventstore test assertion");
+        check(
+            events[0].event_type() == "fabro.human_gate_observed",
+            "eventstore test assertion",
+        );
+        check(events[0].source() == "fabro", "eventstore test assertion");
+        check(
+            events[0].source_event_id() == Some("source-1"),
+            "eventstore test assertion",
+        );
+        check(
+            append.event().event_id() == "evt_1",
+            "eventstore test assertion",
+        );
+        check(
+            append.source_event_id() == Some("source-1"),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn list_console_events_rebuilds_domain_events() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn list_console_events_rebuilds_domain_events() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let first = event_append("evt_1", Some("source-1"));
         let second = EventAppend::new(
             ConsoleEvent::new(
@@ -991,29 +1008,37 @@ mod tests {
             "{}".to_owned(),
         );
 
-        store.append_event(&first)?;
-        store.append_event(&second)?;
-        let events = store.list_console_events()?;
+        ok_append_outcome(store.append_event(&first));
+        ok_append_outcome(store.append_event(&second));
+        let events = ok_console_events(store.list_console_events());
 
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_id(), "evt_1");
-        assert_eq!(events[0].event_type(), &EventType::FabroHumanGateObserved);
-        assert_eq!(events[0].source(), "fabro");
-        assert_eq!(events[0].stream_seq(), 1);
-        assert_eq!(events[1].event_id(), "evt_2");
-        assert_eq!(
-            events[1].event_type(),
-            &EventType::DispatcherBacklogBounceObserved
+        check(events.len() == 2, "eventstore test assertion");
+        check(events[0].event_id() == "evt_1", "eventstore test assertion");
+        check(
+            events[0].event_type() == &EventType::FabroHumanGateObserved,
+            "eventstore test assertion",
         );
-        assert_eq!(events[1].context(), "dispatch");
-        assert_eq!(events[1].stream_seq(), 2);
-        assert_eq!(events[1].payload_json(), "{}");
-        Ok(())
+        check(events[0].source() == "fabro", "eventstore test assertion");
+        check(events[0].stream_seq() == 1, "eventstore test assertion");
+        check(events[1].event_id() == "evt_2", "eventstore test assertion");
+        check(
+            events[1].event_type() == &EventType::DispatcherBacklogBounceObserved,
+            "eventstore test assertion",
+        );
+        check(
+            events[1].context() == "dispatch",
+            "eventstore test assertion",
+        );
+        check(events[1].stream_seq() == 2, "eventstore test assertion");
+        check(
+            events[1].payload_json() == "{}",
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn list_console_events_attaches_persisted_payload_json() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn list_console_events_attaches_persisted_payload_json() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let payload = r#"{"repo":"console","work_item_id":"console-1","lane":"ready"}"#;
         let append = EventAppend::new(
             ConsoleEvent::fixture(
@@ -1031,18 +1056,19 @@ mod tests {
             "{}".to_owned(),
         );
 
-        store.append_event(&append)?;
-        let events = store.list_console_events()?;
+        ok_append_outcome(store.append_event(&append));
+        let events = ok_console_events(store.list_console_events());
 
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].payload_json(), payload);
-        Ok(())
+        check(events.len() == 1, "eventstore test assertion");
+        check(
+            events[0].payload_json() == payload,
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn work_item_projections_rebuild_identically_after_store_wipe_and_ledger_replay()
-    -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn work_item_projections_rebuild_identically_after_store_wipe_and_ledger_replay() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let pending = work_item_append(
             "evt_console_1_pending",
             "console-1",
@@ -1070,75 +1096,85 @@ mod tests {
             "blocked",
             3,
         );
-        store.append_event(&pending)?;
-        store.append_event(&ready)?;
-        store.append_event(&blocked)?;
+        ok_append_outcome(store.append_event(&pending));
+        ok_append_outcome(store.append_event(&ready));
+        ok_append_outcome(store.append_event(&blocked));
 
         let command = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
-        store.append_command(&command)?;
-        let status_update = store.update_command_status(
+        ok_command_append_outcome(store.append_command(&command));
+        let status_update = ok_status_update(store.update_command_status(
             "cmd_1",
             "completed",
             "2026-06-23T00:00:03Z",
             Some(r#"{"event_count":3}"#),
             None,
-        );
-        assert!(matches!(
-            status_update,
-            Ok(CommandStatusUpdateOutcome { .. })
         ));
+        check(
+            status_update.status() == "completed",
+            "eventstore test assertion",
+        );
 
-        let original_events = store.list_console_events()?;
+        let original_events = ok_console_events(store.list_console_events());
         let original_model = build_tui_model(&original_events, 0);
 
-        let mut rebuilt = SqliteEventStore::open_in_memory()?;
+        let mut rebuilt = ok_store(SqliteEventStore::open_in_memory());
         for event in original_events
             .iter()
             .filter(|event| event.event_type() == &EventType::WorkItemSnapshotObserved)
         {
-            rebuilt.append_event(&replayed_work_item_append(event))?;
+            ok_append_outcome(rebuilt.append_event(&replayed_work_item_append(event)));
         }
-        let rebuilt_events = rebuilt.list_console_events()?;
+        let rebuilt_events = ok_console_events(rebuilt.list_console_events());
         let rebuilt_model = build_tui_model(&rebuilt_events, 0);
 
-        assert_eq!(rebuilt.list_commands()?, []);
-        assert_eq!(rebuilt_events.len(), 3);
-        assert_eq!(rebuilt_model.lane_board(), original_model.lane_board());
-        assert_eq!(
-            rebuilt_model.attention_items(),
-            original_model.attention_items()
+        check(
+            ok_commands(rebuilt.list_commands()).is_empty(),
+            "eventstore test assertion",
         );
-        assert_eq!(rebuilt_model.detail(), original_model.detail());
-        Ok(())
+        check(rebuilt_events.len() == 3, "eventstore test assertion");
+        check(
+            rebuilt_model.lane_board() == original_model.lane_board(),
+            "eventstore test assertion",
+        );
+        check(
+            rebuilt_model.attention_items() == original_model.attention_items(),
+            "eventstore test assertion",
+        );
+        check(
+            rebuilt_model.detail() == original_model.detail(),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn schema_has_no_primary_work_item_lifecycle_state_outside_command_carve_out()
-    -> Result<(), EventStoreError> {
-        let store = SqliteEventStore::open_in_memory()?;
+    fn schema_has_no_primary_work_item_lifecycle_state_outside_command_carve_out() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
 
-        assert!(!table_select_prepares(&store, "projections"));
+        err_statement(store.connection.prepare("select count(*) from projections"));
         for table_name in ["events", "checkpoints"] {
-            for column_name in table_columns(&store, table_name)? {
-                assert!(!matches!(
-                    column_name.as_str(),
-                    "lane" | "lane_reason" | "work_item_status" | "status"
-                ));
+            for column_name in table_columns(&store, table_name) {
+                check(
+                    !["lane", "lane_reason", "work_item_status", "status"]
+                        .contains(&column_name.as_str()),
+                    "eventstore test assertion",
+                );
             }
         }
         // `commands.status` is console-local operator-command state, not
         // work-item lifecycle state. It is intentionally excluded from
         // rebuild determinism and must not be event-sourced as a work-item
         // projection.
-        assert!(table_columns(&store, "commands")?.contains(&"status".to_owned()));
-        Ok(())
+        check(
+            table_columns(&store, "commands").contains(&"status".to_owned()),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn list_console_events_rejects_unknown_event_type() -> Result<(), EventStoreError> {
-        let store = SqliteEventStore::open_in_memory()?;
+    fn list_console_events_rejects_unknown_event_type() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
 
-        let inserted = store.connection.execute(
+        let inserted = ok_execute_count(store.connection.execute(
             r"
             insert into events (
               event_id,
@@ -1159,183 +1195,265 @@ mod tests {
               '2026-06-23T00:00:01Z', 'corr_1', 'test', '{}', '{}')
             ",
             [],
-        );
-        assert!(matches!(inserted, Ok(1)));
-
-        let result = store.list_console_events();
-
-        assert!(matches!(
-            result,
-            Err(EventStoreError::UnknownEventType(event_type)) if event_type == "unknown.event"
         ));
-        Ok(())
+        check(inserted == 1, "eventstore test assertion");
+
+        let error = err_console_events(store.list_console_events());
+
+        check_unknown_event_type(error, "unknown.event");
     }
 
     #[test]
-    fn duplicate_source_event_id_returns_existing_sequence() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn duplicate_source_event_id_returns_existing_sequence() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let first = event_append("evt_1", Some("source-1"));
         let duplicate = event_append("evt_2", Some("source-1"));
 
-        let first_outcome = store.append_event(&first)?;
-        let duplicate_outcome = store.append_event(&duplicate)?;
-        let events = store.list_events()?;
+        let first_outcome = ok_append_outcome(store.append_event(&first));
+        let duplicate_outcome = ok_append_outcome(store.append_event(&duplicate));
+        let events = ok_events(store.list_events());
 
-        assert_eq!(first_outcome.status(), AppendStatus::Inserted);
-        assert_eq!(duplicate_outcome.status(), AppendStatus::Duplicate);
-        assert_eq!(duplicate_outcome.global_seq(), first_outcome.global_seq());
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_id(), "evt_1");
-        Ok(())
+        check(
+            first_outcome.status() == AppendStatus::Inserted,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.status() == AppendStatus::Duplicate,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.global_seq() == first_outcome.global_seq(),
+            "eventstore test assertion",
+        );
+        check(events.len() == 1, "eventstore test assertion");
+        check(events[0].event_id() == "evt_1", "eventstore test assertion");
     }
 
     #[test]
-    fn duplicate_event_id_without_source_event_id_returns_existing_sequence()
-    -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn duplicate_event_id_without_source_event_id_returns_existing_sequence() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let first = event_append("evt_1", None);
         let duplicate = event_append("evt_1", None);
 
-        let first_outcome = store.append_event(&first)?;
-        let duplicate_outcome = store.append_event(&duplicate)?;
+        let first_outcome = ok_append_outcome(store.append_event(&first));
+        let duplicate_outcome = ok_append_outcome(store.append_event(&duplicate));
 
-        assert_eq!(duplicate_outcome.status(), AppendStatus::Duplicate);
-        assert_eq!(duplicate_outcome.global_seq(), first_outcome.global_seq());
-        Ok(())
+        check(
+            duplicate_outcome.status() == AppendStatus::Duplicate,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.global_seq() == first_outcome.global_seq(),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn append_command_persists_pending_command_row() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn append_command_persists_pending_command_row() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
 
-        let outcome = store.append_command(&append)?;
-        let commands = store.list_commands()?;
+        let outcome = ok_command_append_outcome(store.append_command(&append));
+        let commands = ok_commands(store.list_commands());
 
-        assert_eq!(outcome.status(), CommandAppendStatus::Inserted);
-        assert_eq!(outcome.command_id(), "cmd_1");
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].command_id(), "cmd_1");
-        assert_eq!(commands[0].context(), "factory");
-        assert_eq!(commands[0].command_type(), "factory.drain_requested");
-        assert_eq!(commands[0].aggregate_id(), Some("evt_gate"));
-        assert_eq!(commands[0].idempotency_key(), "idem_1");
-        assert_eq!(commands[0].requested_by(), "operator");
-        assert_eq!(commands[0].status(), "pending");
-        assert_eq!(append.command().command_id(), "cmd_1");
-        assert_eq!(append.causation_event_id(), Some("evt_gate"));
-        Ok(())
+        check(
+            outcome.status() == CommandAppendStatus::Inserted,
+            "eventstore test assertion",
+        );
+        check(outcome.command_id() == "cmd_1", "eventstore test assertion");
+        check(commands.len() == 1, "eventstore test assertion");
+        check(
+            commands[0].command_id() == "cmd_1",
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].context() == "factory",
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].command_type() == "factory.drain_requested",
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].aggregate_id() == Some("evt_gate"),
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].idempotency_key() == "idem_1",
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].requested_by() == "operator",
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].status() == "pending",
+            "eventstore test assertion",
+        );
+        check(
+            append.command().command_id() == "cmd_1",
+            "eventstore test assertion",
+        );
+        check(
+            append.causation_event_id() == Some("evt_gate"),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn duplicate_command_id_returns_existing_command_id() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn duplicate_command_id_returns_existing_command_id() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let first = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
         let duplicate = command_append("cmd_1", "idem_2", CommandType::FactoryDrainRequested);
 
-        let first_outcome = store.append_command(&first)?;
-        let duplicate_outcome = store.append_command(&duplicate)?;
-        let commands = store.list_commands()?;
+        let first_outcome = ok_command_append_outcome(store.append_command(&first));
+        let duplicate_outcome = ok_command_append_outcome(store.append_command(&duplicate));
+        let commands = ok_commands(store.list_commands());
 
-        assert_eq!(first_outcome.status(), CommandAppendStatus::Inserted);
-        assert_eq!(duplicate_outcome.status(), CommandAppendStatus::Duplicate);
-        assert_eq!(duplicate_outcome.command_id(), "cmd_1");
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].command_type(), "factory.drain_requested");
-        Ok(())
+        check(
+            first_outcome.status() == CommandAppendStatus::Inserted,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.status() == CommandAppendStatus::Duplicate,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.command_id() == "cmd_1",
+            "eventstore test assertion",
+        );
+        check(commands.len() == 1, "eventstore test assertion");
+        check(
+            commands[0].command_type() == "factory.drain_requested",
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn duplicate_idempotency_key_returns_existing_command_id() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn duplicate_idempotency_key_returns_existing_command_id() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let first = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
         let duplicate = command_append("cmd_2", "idem_1", CommandType::FactoryDrainRequested);
 
-        let first_outcome = store.append_command(&first)?;
-        let duplicate_outcome = store.append_command(&duplicate)?;
-        let commands = store.list_commands()?;
+        let first_outcome = ok_command_append_outcome(store.append_command(&first));
+        let duplicate_outcome = ok_command_append_outcome(store.append_command(&duplicate));
+        let commands = ok_commands(store.list_commands());
 
-        assert_eq!(first_outcome.status(), CommandAppendStatus::Inserted);
-        assert_eq!(duplicate_outcome.status(), CommandAppendStatus::Duplicate);
-        assert_eq!(duplicate_outcome.command_id(), "cmd_1");
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].command_id(), "cmd_1");
-        Ok(())
+        check(
+            first_outcome.status() == CommandAppendStatus::Inserted,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.status() == CommandAppendStatus::Duplicate,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate_outcome.command_id() == "cmd_1",
+            "eventstore test assertion",
+        );
+        check(commands.len() == 1, "eventstore test assertion");
+        check(
+            commands[0].command_id() == "cmd_1",
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn command_claim_wins_once_and_ignores_duplicate_consumers() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn command_claim_wins_once_and_ignores_duplicate_consumers() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
-        store.append_command(&append)?;
+        ok_command_append_outcome(store.append_command(&append));
 
-        assert!(store.claim_command("cmd_1", "2026-06-23T00:00:02Z")?);
-        assert!(!store.claim_command("cmd_1", "2026-06-23T00:00:03Z")?);
+        check(
+            ok_claimed(store.claim_command("cmd_1", "2026-06-23T00:00:02Z")),
+            "eventstore test assertion",
+        );
+        check(
+            !ok_claimed(store.claim_command("cmd_1", "2026-06-23T00:00:03Z")),
+            "eventstore test assertion",
+        );
 
-        let commands = store.list_commands()?;
-        assert_eq!(commands[0].status(), "executing");
-        Ok(())
+        let commands = ok_commands(store.list_commands());
+        check(
+            commands[0].status() == "executing",
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn command_claim_updates_only_the_claimed_command_timestamp() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn command_claim_updates_only_the_claimed_command_timestamp() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let first = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
         let second = command_append("cmd_2", "idem_2", CommandType::FactoryDrainRequested);
-        store.append_command(&first)?;
-        store.append_command(&second)?;
+        ok_command_append_outcome(store.append_command(&first));
+        ok_command_append_outcome(store.append_command(&second));
 
-        assert!(store.claim_command("cmd_1", "2026-06-23T00:00:03Z")?);
-        let commands = store.list_commands()?;
-        let claimed = commands
-            .iter()
-            .find(|command| command.command_id() == "cmd_1")
-            .ok_or(EventStoreError::CommandNotFound("cmd_1".to_owned()))?;
-        let untouched = commands
-            .iter()
-            .find(|command| command.command_id() == "cmd_2")
-            .ok_or(EventStoreError::CommandNotFound("cmd_2".to_owned()))?;
+        check(
+            ok_claimed(store.claim_command("cmd_1", "2026-06-23T00:00:03Z")),
+            "eventstore test assertion",
+        );
+        let commands = ok_commands(store.list_commands());
+        let claimed = stored_command(
+            commands
+                .iter()
+                .find(|command| command.command_id() == "cmd_1"),
+        );
+        let untouched = stored_command(
+            commands
+                .iter()
+                .find(|command| command.command_id() == "cmd_2"),
+        );
 
-        assert_eq!(claimed.status(), "executing");
-        assert_eq!(claimed.updated_at(), "2026-06-23T00:00:03Z");
-        assert_eq!(untouched.status(), "pending");
-        assert_eq!(untouched.updated_at(), untouched.requested_at());
-        Ok(())
+        check(claimed.status() == "executing", "eventstore test assertion");
+        check(
+            claimed.updated_at() == "2026-06-23T00:00:03Z",
+            "eventstore test assertion",
+        );
+        check(untouched.status() == "pending", "eventstore test assertion");
+        check(
+            untouched.updated_at() == untouched.requested_at(),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn executing_command_finalization_requires_an_owned_claim() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn executing_command_finalization_requires_an_owned_claim() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
-        store.append_command(&append)?;
+        ok_command_append_outcome(store.append_command(&append));
 
-        let unclaimed = store.finalize_executing_command_status(
+        let unclaimed = err_status_update(store.finalize_executing_command_status(
             "cmd_1",
             "completed",
             "2026-06-23T00:00:03Z",
             Some(r#"{"event_count":0}"#),
             None,
-        );
-        assert!(matches!(unclaimed, Err(EventStoreError::CommandNotFound(id)) if id == "cmd_1"));
+        ));
+        check_command_not_found(unclaimed, "cmd_1");
 
-        assert!(store.claim_command("cmd_1", "2026-06-23T00:00:02Z")?);
+        check(
+            ok_claimed(store.claim_command("cmd_1", "2026-06-23T00:00:02Z")),
+            "eventstore test assertion",
+        );
         let result_json = Some(r#"{"event_count":0}"#);
-        let claimed = store.finalize_executing_command_status(
+        let claimed = ok_status_update(store.finalize_executing_command_status(
             "cmd_1",
             "completed",
             "2026-06-23T00:00:03Z",
             result_json,
             None,
-        );
+        ));
 
-        assert!(matches!(claimed, Ok(outcome) if outcome.status() == "completed"));
-        assert_eq!(store.list_commands()?[0].status(), "completed");
-        Ok(())
+        check(claimed.status() == "completed", "eventstore test assertion");
+        check(
+            ok_commands(store.list_commands())[0].status() == "completed",
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn stale_executing_commands_fail_only_before_the_cutoff() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn stale_executing_commands_fail_only_before_the_cutoff() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let stale = command_append(
             "cmd_stale",
             "idem_stale",
@@ -1346,16 +1464,26 @@ mod tests {
             "idem_fresh",
             CommandType::FactoryDrainRequested,
         );
-        store.append_command(&stale)?;
-        store.append_command(&fresh)?;
-        assert!(store.claim_command("cmd_stale", "2026-06-22T00:00:00Z")?);
-        assert!(store.claim_command("cmd_fresh", "2026-06-23T00:00:00Z")?);
+        ok_command_append_outcome(store.append_command(&stale));
+        ok_command_append_outcome(store.append_command(&fresh));
+        check(
+            ok_claimed(store.claim_command("cmd_stale", "2026-06-22T00:00:00Z")),
+            "eventstore test assertion",
+        );
+        check(
+            ok_claimed(store.claim_command("cmd_fresh", "2026-06-23T00:00:00Z")),
+            "eventstore test assertion",
+        );
 
         let cutoff = "2026-06-22T12:00:00Z";
         let recovered_at = "2026-06-23T12:00:00Z";
         let error_json = r#"{"reason":"stale"}"#;
-        let recovered = store.fail_stale_executing_commands(cutoff, recovered_at, error_json)?;
-        let commands = store.list_commands()?;
+        let recovered = ok_recovered_count(store.fail_stale_executing_commands(
+            cutoff,
+            recovered_at,
+            error_json,
+        ));
+        let commands = ok_commands(store.list_commands());
 
         let stale_status = commands
             .iter()
@@ -1366,150 +1494,144 @@ mod tests {
             .find(|command| command.command_id() == "cmd_fresh")
             .map(StoredCommand::status);
 
-        assert_eq!(recovered, 1);
-        assert_eq!(stale_status, Some("failed"));
-        assert_eq!(fresh_status, Some("executing"));
-        Ok(())
+        check(recovered == 1, "eventstore test assertion");
+        check(stale_status == Some("failed"), "eventstore test assertion");
+        check(
+            fresh_status == Some("executing"),
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn command_status_update_marks_existing_command() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn command_status_update_marks_existing_command() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let append = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
-        store.append_command(&append)?;
+        ok_command_append_outcome(store.append_command(&append));
 
-        let outcome = store.update_command_status(
+        let outcome = ok_status_update(store.update_command_status(
             "cmd_1",
             "completed",
             "2026-06-23T00:00:03Z",
             Some(r#"{"event_count":3}"#),
             None,
-        );
-        let commands = store.list_commands()?;
+        ));
+        let commands = ok_commands(store.list_commands());
 
-        assert!(matches!(
-            outcome.as_ref().map(CommandStatusUpdateOutcome::command_id),
-            Ok("cmd_1")
-        ));
-        assert!(matches!(
-            outcome.as_ref().map(CommandStatusUpdateOutcome::status),
-            Ok("completed")
-        ));
-        assert_eq!(commands[0].status(), "completed");
-        Ok(())
+        check(outcome.command_id() == "cmd_1", "eventstore test assertion");
+        check(outcome.status() == "completed", "eventstore test assertion");
+        check(
+            commands[0].status() == "completed",
+            "eventstore test assertion",
+        );
     }
 
     #[test]
-    fn executing_command_finalization_reports_sqlite_failure() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.connection.execute_batch("drop table commands")?;
+    fn executing_command_finalization_reports_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
 
-        let outcome = store.finalize_executing_command_status(
+        let outcome = err_status_update(store.finalize_executing_command_status(
             "cmd_1",
             "completed",
             "2026-06-23T00:00:03Z",
             Some(r#"{"event_count":0}"#),
             None,
-        );
+        ));
 
-        assert!(matches!(outcome, Err(EventStoreError::Sqlite(_error))));
-        Ok(())
+        check_sqlite_error(outcome);
     }
 
     #[test]
-    fn command_status_update_rejects_unknown_command() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn command_status_update_rejects_unknown_command() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
 
-        let outcome = store.update_command_status(
+        let outcome = err_status_update(store.update_command_status(
             "cmd_missing",
             "completed",
             "2026-06-23T00:00:03Z",
             None,
             None,
-        );
-
-        assert!(matches!(
-            outcome,
-            Err(EventStoreError::CommandNotFound(command_id)) if command_id == "cmd_missing"
         ));
-        Ok(())
+
+        check_command_not_found(outcome, "cmd_missing");
     }
 
     #[test]
-    fn command_status_update_reports_sqlite_failure() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.connection.execute_batch("drop table commands")?;
+    fn command_status_update_reports_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
 
-        let outcome =
-            store.update_command_status("cmd_1", "completed", "2026-06-23T00:00:03Z", None, None);
+        let outcome = err_status_update(store.update_command_status(
+            "cmd_1",
+            "completed",
+            "2026-06-23T00:00:03Z",
+            None,
+            None,
+        ));
 
-        assert!(matches!(outcome, Err(EventStoreError::Sqlite(_error))));
-        Ok(())
+        check_sqlite_error(outcome);
     }
 
     #[test]
-    fn missing_checkpoint_loads_as_none() -> Result<(), EventStoreError> {
-        let store = SqliteEventStore::open_in_memory()?;
+    fn missing_checkpoint_loads_as_none() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
 
-        let checkpoint = store.load_checkpoint("orchestrator:repo")?;
+        let checkpoint = ok_checkpoint(store.load_checkpoint("orchestrator:repo"));
 
-        assert_eq!(checkpoint, None);
-        Ok(())
+        check(checkpoint.is_none(), "eventstore test assertion");
     }
 
     #[test]
-    fn checkpoint_save_and_load_round_trips_latest_value() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn checkpoint_save_and_load_round_trips_latest_value() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
 
         let key = "orchestrator:repo";
-        store.save_checkpoint(key, r#"{"version":1}"#, "2026-06-24T00:00:00Z")?;
-        store.save_checkpoint(key, r#"{"version":2}"#, "2026-06-24T00:00:01Z")?;
-        let second_adapter_save = store.save_checkpoint(
+        ok_eventstore_unit(store.save_checkpoint(key, r#"{"version":1}"#, "2026-06-24T00:00:00Z"));
+        ok_eventstore_unit(store.save_checkpoint(key, r#"{"version":2}"#, "2026-06-24T00:00:01Z"));
+        ok_eventstore_unit(store.save_checkpoint(
             "fabro:repo",
             r#"{"cursor":"run_1"}"#,
             "2026-06-24T00:00:02Z",
-        );
+        ));
 
-        assert!(matches!(second_adapter_save, Ok(())));
-        assert_eq!(
-            store.load_checkpoint("orchestrator:repo")?,
-            Some(r#"{"version":2}"#.to_owned())
+        check(
+            ok_checkpoint(store.load_checkpoint("orchestrator:repo"))
+                == Some(r#"{"version":2}"#.to_owned()),
+            "eventstore test assertion",
         );
-        assert_eq!(
-            store.load_checkpoint("fabro:repo")?,
-            Some(r#"{"cursor":"run_1"}"#.to_owned())
+        check(
+            ok_checkpoint(store.load_checkpoint("fabro:repo"))
+                == Some(r#"{"cursor":"run_1"}"#.to_owned()),
+            "eventstore test assertion",
         );
-        Ok(())
     }
 
     #[test]
-    fn checkpoint_save_reports_sqlite_failure() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
-        store.connection.execute_batch("drop table checkpoints")?;
+    fn checkpoint_save_reports_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table checkpoints"));
 
-        let result = store.save_checkpoint(
+        let result = err_eventstore_unit(store.save_checkpoint(
             "orchestrator:repo",
             r#"{"version":1}"#,
             "2026-06-24T00:00:00Z",
-        );
+        ));
 
-        assert!(matches!(result, Err(EventStoreError::Sqlite(_error))));
-        Ok(())
+        check_sqlite_error(result);
     }
 
     #[test]
-    fn missing_duplicate_command_lookup_returns_sqlite_error() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn missing_duplicate_command_lookup_returns_sqlite_error() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         let append = command_append(
             "cmd_missing",
             "idem_missing",
             CommandType::FactoryDrainRequested,
         );
-        let transaction = store.connection.transaction()?;
-        let result = super::find_existing_command_id(&transaction, &append);
+        let transaction = ok_transaction(store.connection.transaction());
+        let result = err_command_id(super::find_existing_command_id(&transaction, &append));
 
-        assert!(matches!(result, Err(EventStoreError::Sqlite(_error))));
-        Ok(())
+        check_sqlite_error(result);
     }
 
     #[test]
@@ -1524,23 +1646,35 @@ mod tests {
             "pending".to_owned(),
         );
 
-        assert_eq!(command.command_id(), "cmd_1");
-        assert_eq!(command.context(), "factory");
-        assert_eq!(command.command_type(), "factory.drain_requested");
-        assert_eq!(command.aggregate_id(), None);
-        assert_eq!(command.idempotency_key(), "idem_1");
-        assert_eq!(command.requested_by(), "operator");
-        assert_eq!(command.status(), "pending");
+        check(command.command_id() == "cmd_1", "eventstore test assertion");
+        check(command.context() == "factory", "eventstore test assertion");
+        check(
+            command.command_type() == "factory.drain_requested",
+            "eventstore test assertion",
+        );
+        check(
+            command.aggregate_id().is_none(),
+            "eventstore test assertion",
+        );
+        check(
+            command.idempotency_key() == "idem_1",
+            "eventstore test assertion",
+        );
+        check(
+            command.requested_by() == "operator",
+            "eventstore test assertion",
+        );
+        check(command.status() == "pending", "eventstore test assertion");
         // A command loaded without a re-attached payload defaults to `{}`.
-        assert_eq!(command.payload_json(), "{}");
+        check(command.payload_json() == "{}", "eventstore test assertion");
     }
 
     #[test]
-    fn list_commands_surfaces_the_persisted_command_payload() -> Result<(), EventStoreError> {
-        let mut store = SqliteEventStore::open_in_memory()?;
+    fn list_commands_surfaces_the_persisted_command_payload() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
         // A reject command carries its `mode` beyond the aggregate id, so the
         // loader must surface the persisted `payload_json` for the handler.
-        store.append_command(&CommandAppend::new(
+        ok_command_append_outcome(store.append_command(&CommandAppend::new(
             CommandEnvelope::new(
                 "cmd_reject".to_owned(),
                 CommandType::WorkItemRejectRequested,
@@ -1552,47 +1686,476 @@ mod tests {
             Some("wi-1".to_owned()),
             "corr_cmd_reject".to_owned(),
             r#"{"mode":"regroom"}"#.to_owned(),
-        ))?;
+        )));
 
-        let commands = store.list_commands()?;
+        let commands = ok_commands(store.list_commands());
 
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].command_type(), "work_item.reject_requested");
-        assert_eq!(commands[0].payload_json(), r#"{"mode":"regroom"}"#);
-        Ok(())
+        check(commands.len() == 1, "eventstore test assertion");
+        check(
+            commands[0].command_type() == "work_item.reject_requested",
+            "eventstore test assertion",
+        );
+        check(
+            commands[0].payload_json() == r#"{"mode":"regroom"}"#,
+            "eventstore test assertion",
+        );
     }
 
     #[test]
     fn negative_rowid_is_invalid_sequence() {
-        let result = sequence_from_rowid(-1);
+        let result = err_sequence(sequence_from_rowid(-1));
 
-        assert!(matches!(result, Err(EventStoreError::InvalidSequence)));
+        check_invalid_sequence(result);
     }
 
     #[test]
     fn sqlite_errors_convert_to_event_store_errors() {
         let result = EventStoreError::from(rusqlite::Error::InvalidQuery);
 
-        assert!(matches!(result, EventStoreError::Sqlite(_error)));
+        check_sqlite_error(result);
     }
 
-    fn table_select_prepares(store: &SqliteEventStore, table_name: &str) -> bool {
-        store
-            .connection
-            .prepare(&format!("select count(*) from {table_name}"))
-            .is_ok()
+    #[test]
+    #[should_panic(expected = "check failed")]
+    fn check_false_panics() {
+        check(false, "check failed");
     }
 
-    fn table_columns(store: &SqliteEventStore, table_name: &str) -> EventStoreResult<Vec<String>> {
-        let mut statement = store
-            .connection
-            .prepare(&format!("pragma table_info({table_name})"))?;
-        let mut rows = statement.query([])?;
-        let mut columns = Vec::new();
-        while let Some(row) = rows.next()? {
-            columns.push(row.get(1)?);
+    #[test]
+    #[should_panic(expected = "check_unknown_event_type failed")]
+    fn check_unknown_event_type_panics() {
+        check_unknown_event_type(EventStoreError::InvalidSequence, "unknown.event");
+    }
+
+    #[test]
+    #[should_panic(expected = "check_command_not_found failed")]
+    fn check_command_not_found_panics() {
+        check_command_not_found(EventStoreError::InvalidSequence, "cmd_1");
+    }
+
+    #[test]
+    #[should_panic(expected = "check_sqlite_error failed")]
+    fn check_sqlite_error_panics() {
+        check_sqlite_error(EventStoreError::InvalidSequence);
+    }
+
+    #[test]
+    #[should_panic(expected = "check_invalid_sequence failed")]
+    fn check_invalid_sequence_panics() {
+        check_invalid_sequence(EventStoreError::Sqlite(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_store failed")]
+    fn ok_store_panics() {
+        ok_store(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_append_outcome failed")]
+    fn ok_append_outcome_panics() {
+        ok_append_outcome(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_events failed")]
+    fn ok_events_panics() {
+        ok_events(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_console_events failed")]
+    fn ok_console_events_panics() {
+        ok_console_events(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_command_append_outcome failed")]
+    fn ok_command_append_outcome_panics() {
+        ok_command_append_outcome(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_claimed failed")]
+    fn ok_claimed_panics() {
+        ok_claimed(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_commands failed")]
+    fn ok_commands_panics() {
+        ok_commands(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_status_update failed")]
+    fn ok_status_update_panics() {
+        ok_status_update(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_recovered_count failed")]
+    fn ok_recovered_count_panics() {
+        ok_recovered_count(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_checkpoint failed")]
+    fn ok_checkpoint_panics() {
+        ok_checkpoint(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_unit failed")]
+    fn ok_eventstore_unit_panics() {
+        ok_eventstore_unit(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_string failed")]
+    fn ok_string_panics() {
+        ok_string(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_execute_count failed")]
+    fn ok_execute_count_panics() {
+        ok_execute_count(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_sqlite_unit failed")]
+    fn ok_sqlite_unit_panics() {
+        ok_sqlite_unit(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_transaction failed")]
+    fn ok_transaction_panics() {
+        ok_transaction(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_statement failed")]
+    fn ok_statement_panics() {
+        ok_statement(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_rows failed")]
+    fn ok_rows_panics() {
+        let _rows = ok_rows(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_next_row failed")]
+    fn ok_next_row_panics() {
+        ok_next_row(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "stored_command failed")]
+    fn stored_command_panics() {
+        stored_command(None);
+    }
+
+    #[test]
+    #[should_panic(expected = "err_statement failed")]
+    fn err_statement_panics() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        err_statement(store.connection.prepare("select count(*) from events"));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_console_events failed")]
+    fn err_console_events_panics() {
+        err_console_events(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_status_update failed")]
+    fn err_status_update_panics() {
+        err_status_update(Ok(CommandStatusUpdateOutcome::new(
+            "cmd_1".to_owned(),
+            "completed".to_owned(),
+        )));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_eventstore_unit failed")]
+    fn err_eventstore_unit_panics() {
+        err_eventstore_unit(Ok(()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_command_id failed")]
+    fn err_command_id_panics() {
+        err_command_id(Ok("cmd_1".to_owned()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_sequence failed")]
+    fn err_sequence_panics() {
+        err_sequence(Ok(1));
+    }
+
+    #[track_caller]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("{context}");
         }
-        Ok(columns)
+    }
+
+    #[track_caller]
+    fn check_unknown_event_type(error: EventStoreError, expected: &str) {
+        match error {
+            EventStoreError::UnknownEventType(event_type) if event_type == expected => {}
+            other => panic!("check_unknown_event_type failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn check_command_not_found(error: EventStoreError, expected: &str) {
+        match error {
+            EventStoreError::CommandNotFound(command_id) if command_id == expected => {}
+            other => panic!("check_command_not_found failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn check_sqlite_error(error: EventStoreError) {
+        match error {
+            EventStoreError::Sqlite(_error) => {}
+            other => panic!("check_sqlite_error failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn check_invalid_sequence(error: EventStoreError) {
+        match error {
+            EventStoreError::InvalidSequence => {}
+            other => panic!("check_invalid_sequence failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_store(result: EventStoreResult<SqliteEventStore>) -> SqliteEventStore {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_store failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_append_outcome(result: EventStoreResult<super::AppendOutcome>) -> super::AppendOutcome {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_append_outcome failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_events(result: EventStoreResult<Vec<super::StoredEvent>>) -> Vec<super::StoredEvent> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_events failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_console_events(result: EventStoreResult<Vec<ConsoleEvent>>) -> Vec<ConsoleEvent> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_console_events failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_command_append_outcome(
+        result: EventStoreResult<super::CommandAppendOutcome>,
+    ) -> super::CommandAppendOutcome {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_command_append_outcome failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_claimed(result: EventStoreResult<bool>) -> bool {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_claimed failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_commands(result: EventStoreResult<Vec<StoredCommand>>) -> Vec<StoredCommand> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_commands failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_status_update(
+        result: EventStoreResult<CommandStatusUpdateOutcome>,
+    ) -> CommandStatusUpdateOutcome {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_status_update failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_recovered_count(result: EventStoreResult<usize>) -> usize {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_recovered_count failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_checkpoint(result: EventStoreResult<Option<String>>) -> Option<String> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_checkpoint failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_eventstore_unit(result: EventStoreResult<()>) {
+        match result {
+            Ok(()) => {}
+            Err(error) => panic!("ok_eventstore_unit failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_string(result: Result<String, rusqlite::Error>) -> String {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_string failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_execute_count(result: Result<usize, rusqlite::Error>) -> usize {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_execute_count failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_sqlite_unit(result: Result<(), rusqlite::Error>) {
+        match result {
+            Ok(()) => {}
+            Err(error) => panic!("ok_sqlite_unit failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_transaction(result: Result<Transaction<'_>, rusqlite::Error>) -> Transaction<'_> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_transaction failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_statement(result: Result<Statement<'_>, rusqlite::Error>) -> Statement<'_> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_statement failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_rows(result: Result<Rows<'_>, rusqlite::Error>) -> Rows<'_> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_rows failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_next_row<'row>(
+        result: Result<Option<&'row rusqlite::Row<'row>>, rusqlite::Error>,
+    ) -> Option<&'row rusqlite::Row<'row>> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_next_row failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn stored_command(result: Option<&StoredCommand>) -> &StoredCommand {
+        match result {
+            Some(value) => value,
+            None => panic!("stored_command failed"),
+        }
+    }
+
+    #[track_caller]
+    fn err_statement(result: Result<Statement<'_>, rusqlite::Error>) -> rusqlite::Error {
+        match result {
+            Ok(_value) => panic!("err_statement failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_console_events(result: EventStoreResult<Vec<ConsoleEvent>>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_console_events failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_status_update(result: EventStoreResult<CommandStatusUpdateOutcome>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_status_update failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_unit(result: EventStoreResult<()>) -> EventStoreError {
+        match result {
+            Ok(()) => panic!("err_eventstore_unit failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_command_id(result: EventStoreResult<String>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_command_id failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_sequence(result: EventStoreResult<u64>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_sequence failed"),
+            Err(error) => error,
+        }
+    }
+
+    fn table_columns(store: &SqliteEventStore, table_name: &str) -> Vec<String> {
+        let mut statement = ok_statement(
+            store
+                .connection
+                .prepare(&format!("pragma table_info({table_name})")),
+        );
+        let mut rows = ok_rows(statement.query([]));
+        let mut columns = Vec::new();
+        while let Some(row) = ok_next_row(rows.next()) {
+            columns.push(ok_string(row.get(1)));
+        }
+        columns
     }
 
     #[allow(clippy::too_many_arguments)]
