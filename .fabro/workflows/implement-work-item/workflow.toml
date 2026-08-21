@@ -154,8 +154,8 @@ provider = "docker"
 [environments.livespec-ci.image]
 # GHCR-published family sandbox image (Dockerfile in livespec-dev-tooling).
 # Since the agent-layer split this consumer pulls the `python-rust-agent`
-# layer (base tools + uv + CPython + the Rust toolchain baked once — channel
-# 1.92.0 + clippy + rustfmt, mirroring rust-toolchain.toml — plus the agent
+# layer (base tools + uv + CPython + the Rust toolchain baked once — at the
+# channel rust-toolchain.toml pins, plus clippy and rustfmt — plus the agent
 # payload: bubblewrap and both ACP adapters), so no per-run `rustup` install
 # and no per-run adapter fetch are needed. Tag format:
 #   python-rust-agent-sha-<short>  — per master-build (mutable; tracks HEAD)
