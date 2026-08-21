@@ -65,3 +65,50 @@ The Dispatcher's declared-workflow-edit refusal keys on the literal prefix
 NOT trip it and IS dispatchable. That fork is gated instead by
 `console-fork-drift-check`, which requires every divergence to be pinned and
 explained. Two different gates; do not assume the first one covers the second.
+
+## Reading a dispatch outcome: three traps, measured 2026-08-21
+
+A dispatch that does not return green has several distinct shapes, and they call
+for opposite responses. Do not collapse them.
+
+**`fabro ps` showing no run is NOT evidence that no run happened.** It lists
+active and blocked runs; a **completed** run is invisible to it. During the
+2026-08-21 credential outage a query against the hp factory showed two blocked
+runs in other tenants and no console run — while the console item's work had
+already merged to master. Releasing its "phantom" claim would have reopened
+finished work.
+
+**Separate a phantom claim from a finished run by the JOURNAL, never the run
+listing.** `tmp/fabro-dispatch-journal.jsonl` carries the per-stage record:
+
+- *Phantom* — refused before sandbox launch: `fabro_run_id` is null, no branch,
+  no PR. The claim is stranded and SHOULD be released.
+- *Finished* — a real PR, real CI rows, and a merge (`pull-primary` showing a
+  fast-forward, then `janitor-*` stages). The item is DONE and should be closed,
+  not released.
+
+**Never run a dispatch under a short tool timeout.** Killing it mid-flight
+strands a claim on work that actually SUCCEEDED: a 20-minute timeout SIGTERM'd a
+dispatch during its post-merge janitor, after the merge landed but before closure
+was recorded, producing an `active`/`fabro` item whose change was already on
+master. Run dispatches unbounded in the background instead.
+
+### The stale-plugin refusal is the one shape that strands nothing
+
+`ERROR: dispatcher plugin build is stale; executing build <X> predates latest
+release <Y>` exits 3 with `stdout_json: null` **before** ledger-admit runs, so no
+claim is taken and none needs releasing. It is also purely a SESSION artifact:
+the project pin is usually already current (`claude plugin update ... --scope
+project` reports "already at the latest version"), because a running session
+keeps the build it resolved at kickoff. The marketplace moved twice in one
+session on 2026-08-21. Re-invoke the dispatcher from the currently pinned build
+path, or restart the session — see `.ai/livespec-plugin-currency.md`.
+
+### Credential refusal: let time discriminate before touching a secret
+
+`CLAUDE_CODE_OAUTH_TOKEN ... HTTP 429, rate_limit_error, condition "exhausted"`
+names BOTH a rolling rate limit and an org spend cap, and does not say which. Do
+not assert one. A rolling limit heals itself and a billing cap does not, so a
+retry after a real interval separates them at zero cost. A retry two minutes
+later is not evidence; on 2026-08-21 a retry ~78 minutes later ran clean through
+to a merge, which settled it as the rolling face with no secret rotated.
