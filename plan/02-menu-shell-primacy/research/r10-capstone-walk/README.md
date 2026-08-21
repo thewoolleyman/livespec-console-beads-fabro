@@ -179,21 +179,51 @@ This independently confirms the plan-04 session's correction that walk #2's
 "exactly Accept and Reject" was imprecise. Recorded because two walks now agree
 and the earlier record does not.
 
-## The `sources` question, answered by round trip
+## The `sources` question — MY CLAIM HERE WAS WRONG, AND IS RETRACTED
 
-The plan-04 session hypothesised from ONE transition that the `dispatcher` source
-reads unavailable simply because no dispatch is running, and named the clean test:
-whether it returns to 2 once the drain completes. This walk ran the full round
-trip on one instance:
+An earlier revision of this file claimed the plan-04 session's hypothesis was
+confirmed: that the `dispatcher` source reads unavailable simply because no
+dispatch is running, "answered by round trip", 2 -> 1 -> 2. **That claim was
+false and it is retracted.** Recording the retraction rather than quietly
+softening the wording, because the way I got it wrong is the same failure this
+walk's headline finding is about.
 
-- before dispatch: `sources: 2 unavailable (dispatcher, livespec)`
-- drain in flight: `sources: 1 unavailable (livespec)`
-- drain completed: `sources: 2 unavailable (dispatcher, livespec)`
+WHAT ACTUALLY KILLED IT, twice over:
 
-That is the clean test, and it passes. The `dispatcher` source's unavailability
-tracks whether a dispatch is running; it is not evidence of a broken source.
-`livespec`'s remains the known absent-binary case. Logged, not chased — but the
-arc no longer needs to carry this half as unexplained.
+1. The plan-04 session's own banked file
+   (`campaign-walk-03-erb2ud/17-sources-during-drain.txt`) holds TWO samples,
+   BOTH taken with the header reading `factory: drain in flight`: one
+   `sources: 1 unavailable (livespec)` and one
+   `sources: 2 unavailable (dispatcher, livespec)`, the latter sixteen minutes
+   into a dispatch that had not finished. During ONE continuous drain the
+   dispatcher source went unavailable -> available -> unavailable again. A clean
+   "is a dispatch running" predicate cannot produce that sample. That session had
+   already raised and RETRACTED this hypothesis inside its own record; I revived
+   it on their credit, which they were right to refuse.
+
+2. **My own banked captures contradict me, and I did not read them before
+   reporting.** All EIGHTEEN header captures in this directory read
+   `sources: 2 unavailable (dispatcher, livespec)` — INCLUDING both frames taken
+   with the drain in flight (`12-dispatch-committed.txt` and
+   `14-cockpit-responsive-during-drain.txt`). The single `sources: 1` reading I
+   built the round trip on was an ad-hoc screen read at 23:51:16Z that I never
+   banked to a file. I reported a transition my own evidence directory denies.
+
+WHY THIS IS THE SAME MISTAKE TWICE IN ONE WALK: the finding above is that a
+transient screen read can be about a different item than you think, and that the
+defence is to trust the recorded identity over the impression. Here I trusted an
+unbanked screen impression over eighteen banked captures sitting in this very
+directory. The lesson generalizes past `-x6lj`: **prefer the artifact to the
+impression, and check the artifact before writing the claim, not after.**
+
+WHAT THE COMBINED EVIDENCE ACTUALLY SUPPORTS, stated at the strength it earns:
+dispatcher-source availability CORRELATES with a dispatch running but FLICKERS
+during one. That points at something finer-grained — a poll cadence, a timeout,
+a journal-quiet window — rather than a clean predicate. Neither session has
+measured the mechanism. Deliberately NOT filed, and that is a joint disposition:
+it is one line of unexplained header behaviour with no operator consequence
+either walk has observed, and this arc has better uses for a work-item. It stays
+recorded here as unexplained, which is what it was before I over-claimed it.
 
 ## File index
 
