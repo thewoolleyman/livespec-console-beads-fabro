@@ -8,6 +8,8 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use sha2::{Digest, Sha256};
 
@@ -83,12 +85,14 @@ pub struct Buckets {
 pub fn classify(paths: &[String]) -> Buckets {
     let tests = paths
         .iter()
-        .filter(|path| is_rust(path) && is_test_path(path))
+        .filter(|path| is_rust(path) && is_integration_test_path(path))
         .cloned()
         .collect();
     let impls = paths
         .iter()
-        .filter(|path| is_rust(path) && is_product_impl_path(path))
+        .filter(|path| {
+            is_rust(path) && is_product_impl_path(path) && !is_integration_test_path(path)
+        })
         .cloned()
         .collect();
     Buckets { tests, impls }
@@ -206,7 +210,7 @@ fn handle_red(runner: &impl Runner, msg_path: &Path, tests: &[String]) -> Result
                 "TDD-Red-Output-Checksum",
                 &text_checksum(&result.combined()),
             ),
-            ("TDD-Red-Captured-At", "now"),
+            ("TDD-Red-Captured-At", &utc_timestamp()),
         ],
     )
 }
@@ -232,7 +236,7 @@ fn handle_green(runner: &impl Runner, msg_path: &Path) -> Result<(), String> {
     write_trailers(
         msg_path,
         &[
-            ("TDD-Green-Verified-At", "now"),
+            ("TDD-Green-Verified-At", &utc_timestamp()),
             ("TDD-Green-Parent-Reflog", &parent),
         ],
     )
@@ -254,7 +258,7 @@ fn handle_suite_green(runner: &impl Runner, msg_path: &Path) -> Result<(), Strin
                 "TDD-Suite-Green-Output-Checksum",
                 &text_checksum(&result.combined()),
             ),
-            ("TDD-Suite-Green-Captured-At", "now"),
+            ("TDD-Suite-Green-Captured-At", &utc_timestamp()),
         ],
     )
 }
@@ -387,8 +391,8 @@ fn is_rust(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
 }
 
-fn is_test_path(path: &str) -> bool {
-    path.starts_with("tests/") || path.contains("/tests/")
+fn is_integration_test_path(path: &str) -> bool {
+    path.starts_with("tests/") || integration_scope(path).is_some()
 }
 
 fn is_product_impl_path(path: &str) -> bool {
@@ -425,6 +429,43 @@ fn bytes_checksum(bytes: &[u8]) -> String {
             rendered
         });
     format!("sha256:{hex}")
+}
+
+fn utc_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let (year, month, day, hour, minute, second) = unix_seconds_to_utc(seconds);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn unix_seconds_to_utc(seconds: u64) -> (i32, u32, u32, u32, u32, u32) {
+    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
+    let day_seconds = seconds % 86_400;
+    let hour = u32::try_from(day_seconds / 3_600).unwrap_or(0);
+    let minute = u32::try_from((day_seconds % 3_600) / 60).unwrap_or(0);
+    let second = u32::try_from(day_seconds % 60).unwrap_or(0);
+    let (year, month, day) = civil_from_days(days);
+    (year, month, day, hour, minute, second)
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
+    let days = days_since_unix_epoch + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (
+        i32::try_from(year).unwrap_or(i32::MAX),
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
+    )
 }
 
 fn summary(text: &str) -> String {
@@ -488,16 +529,13 @@ mod tests {
         path
     }
 
-    fn temp_nested_file(rel_path: &str, text: &str) -> PathBuf {
-        let path = std::env::temp_dir()
-            .join(format!("console-rgr-{}", std::process::id()))
-            .join(rel_path);
-        let parent = path.parent().map(std::path::Path::to_path_buf);
-        assert!(parent.is_some(), "nested temp path needs a parent");
-        let create = fs::create_dir_all(parent.unwrap_or_default());
-        assert!(create.is_ok(), "temp dir create failed: {create:?}");
+    fn temp_workspace_file(rel_path: &str, text: &str) -> PathBuf {
+        let path = PathBuf::from(rel_path);
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         let write = fs::write(&path, text);
-        assert!(write.is_ok(), "nested temp write failed: {write:?}");
+        assert!(write.is_ok(), "workspace temp write failed: {write:?}");
         path
     }
 
@@ -524,10 +562,17 @@ mod tests {
         let buckets = classify(&[
             "crates/console-cli/tests/flow.rs".to_owned(),
             "crates/console-cli/src/lib.rs".to_owned(),
+            "crates/console-cli/src/tests/helpers.rs".to_owned(),
             "docs/example.rs".to_owned(),
         ]);
         assert_eq!(buckets.tests, ["crates/console-cli/tests/flow.rs"]);
-        assert_eq!(buckets.impls, ["crates/console-cli/src/lib.rs"]);
+        assert_eq!(
+            buckets.impls,
+            [
+                "crates/console-cli/src/lib.rs",
+                "crates/console-cli/src/tests/helpers.rs"
+            ]
+        );
     }
 
     #[test]
@@ -573,6 +618,11 @@ mod tests {
                 .is_ok_and(|text| text.contains("TDD-Red-Test:"))
         );
         assert!(msg.as_ref().is_ok_and(|text| text.contains(&test_rel)));
+        let captured_at = msg
+            .as_ref()
+            .ok()
+            .and_then(|text| trailer_value(text, "TDD-Red-Captured-At"));
+        assert!(captured_at.is_some_and(|value| value.ends_with('Z') && value != "now"));
         let _ = fs::remove_file(test_path);
         let _ = fs::remove_file(msg_path);
     }
@@ -617,6 +667,11 @@ mod tests {
             msg.as_ref()
                 .is_ok_and(|text| text.contains("TDD-Green-Verified-At:"))
         );
+        let verified_at = msg
+            .as_ref()
+            .ok()
+            .and_then(|text| trailer_value(text, "TDD-Green-Verified-At"));
+        assert!(verified_at.is_some_and(|value| value.ends_with('Z') && value != "now"));
         let _ = fs::remove_file(test_path);
         let _ = fs::remove_file(msg_path);
     }
@@ -657,6 +712,11 @@ mod tests {
             msg.as_ref()
                 .is_ok_and(|text| text.contains("TDD-Suite-Green-Captured-At:"))
         );
+        let captured_at = msg
+            .as_ref()
+            .ok()
+            .and_then(|text| trailer_value(text, "TDD-Suite-Green-Captured-At"));
+        assert!(captured_at.is_some_and(|value| value.ends_with('Z') && value != "now"));
         let red = FakeRunner::new(Vec::new(), vec![CommandOutput::failure("fail")]);
         assert!(handle_suite_green(&red, &msg_path).is_err_and(|err| err.contains("suite-red")));
         let _ = fs::remove_file(msg_path);
@@ -756,8 +816,8 @@ mod tests {
         let msg_path = temp_file("msg-dispatch", "feat: x\n");
         let pass = FakeRunner::new(vec![CommandOutput::success("docs/readme.md\n")], Vec::new());
         assert!(check_commit_msg(&pass, &msg_path).is_ok());
-        let red_test = temp_nested_file("crates/x/tests/dispatch_red.rs", "fn x() {}\n");
-        let red_path = red_test.to_string_lossy().into_owned();
+        let red_path = format!("tests/dispatch-red-{}.rs", std::process::id());
+        let red_test = temp_workspace_file(&red_path, "fn x() {}\n");
         let red = FakeRunner::new(
             vec![CommandOutput::success(&format!("{red_path}\n"))],
             vec![
@@ -825,6 +885,16 @@ mod tests {
             scope_for_tests(&["tests/root.rs".to_owned()]),
             TestScope::Workspace
         );
+        assert_eq!(
+            scope_for_tests(&["crates/console-cli/src/tests/helpers.rs".to_owned()]),
+            TestScope::Workspace
+        );
+    }
+
+    fn trailer_value(text: &str, key: &str) -> Option<String> {
+        text.lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+            .map(str::to_owned)
     }
 
     #[test]
