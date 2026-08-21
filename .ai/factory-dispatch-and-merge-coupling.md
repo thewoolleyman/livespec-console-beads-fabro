@@ -112,3 +112,39 @@ not assert one. A rolling limit heals itself and a billing cap does not, so a
 retry after a real interval separates them at zero cost. A retry two minutes
 later is not evidence; on 2026-08-21 a retry ~78 minutes later ran clean through
 to a merge, which settled it as the rolling face with no secret rotated.
+
+## The sandbox never sees your work-item COMMENTS
+
+Measured 2026-08-21, after annotating eleven slices with the constraints their
+implementers would need and then discovering none of it would arrive.
+
+`.fabro/workflows/implement-work-item/workflow.fabro` says it plainly:
+
+> The per-item brief (work-item id, title, description, publish branch) arrives
+> via the run goal (`--goal-file`), rendered into the prompts as the `goal`
+> template variable.
+
+**Four fields. Comments are not among them.** A dispatched implementer sees the
+title and the description and nothing else from the ledger record — not the
+comment where you recorded the measurement, not the one warning it off the
+approach that looks right and is not, not the scope verification that says the
+item is twice the size its title implies.
+
+This cuts against the natural habit. Comments are the right place for an
+ongoing record: they are append-only, timestamped, attributed, and they do not
+destroy what was there before. `bd update --description` replaces. So the
+instinct is to leave the description as filed and let the comment stream carry
+what you learned — which is exactly the choice that makes the learning invisible
+to the only reader who has to act on it.
+
+**The rule:** anything a dispatched implementer MUST know belongs in the
+DESCRIPTION, even if that means rewriting a description you already wrote.
+Comments remain right for the audit trail, for cross-session coordination, and
+for anything a HUMAN or a host-only session will read — those readers see the
+whole record. They are wrong as the sole carrier of a constraint the factory
+needs.
+
+A cheap way to catch this: before dispatching, ask what the item would look like
+with every comment deleted. If the remaining title and description would lead a
+competent implementer to the wrong approach, the item is not ready to dispatch,
+however complete the ledger record looks to you.
