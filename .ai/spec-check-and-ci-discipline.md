@@ -158,6 +158,39 @@ rebuild (`touch` the source, or use a clean worktree with its own target
 dir) and re-measure. A `target/` directory shared across worktrees makes
 this failure ordinary rather than exotic.
 
+## The rate-limit guard reads your PR BODY as shell, line by line
+
+`github_rate_limit_guard.py` (from the `livespec-driver-claude` plugin) blocks a
+`gh pr`/`gh run` command that also contains a shell loop or `sleep`. It correctly
+requires COMMAND POSITION, so ordinary prose containing "for" mid-sentence is
+fine. But command position includes `^` under `re.MULTILINE`, and the pattern is
+matched against the WHOLE command string — heredoc body included.
+
+So a `gh pr create` whose body has a line BEGINNING with `For`, `While`, `Until`
+or `Sleep` is denied, with a message about looped GitHub reads that describes
+nothing you did. Measured 2026-08-21 (mid-line is allowed, line-start is not):
+
+```text
+real shell loop              -> DENIED   matched 'for'
+prose, line-start 'For'      -> DENIED   matched 'For'
+prose, mid-line 'for'        -> allowed
+prose, line-start 'While'    -> DENIED   matched 'While'
+```
+
+`--body-file` does NOT help: the guard sees the `cat > file <<EOF` heredoc in the
+same command. Two things that do:
+
+- Reword so no body line starts with those words ("But an item that..." instead
+  of "For an item that..."). Cheapest fix.
+- Write the body file in a SEPARATE Bash call from the `gh pr create` call, so
+  neither command contains both the prose and the `gh` invocation.
+
+The guard is doing its job and the rule it enforces is right; this is a
+false-positive shape in a sibling plugin, not something to work around by
+disabling anything. Dispatcher and driver mechanics live outside this repo per
+`AGENTS.md` "Repository scope", so this is recorded as working knowledge here
+rather than filed as a defect here.
+
 ## Commit / push mechanics
 
 - Commits and pushes are **refused at the primary checkout** (baseline
