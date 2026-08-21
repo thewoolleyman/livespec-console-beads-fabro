@@ -56,85 +56,116 @@ module:
 |  12 | production | other |
 |   4 | either | `match` / `matches!` arm |
 
-Two facts follow, and they point in different directions:
+Two classes follow:
 
 1. **166 production regions (19%)** are almost entirely the implicit
    `Err(e) => return Err(From::from(e))` arm of a `?`. Examples:
    `console-eventstore/src/lib.rs:485` (`Connection::open(path)?`),
    `console-application/src/source_adapters.rs:176`
    (`checkpoints.load_checkpoint(&adapter_id)?`),
-   `console-cli/src/lib.rs:234` (`store.command_count()?`). These are
-   real, closeable gaps: every one is a failure path no test exercises.
+   `console-cli/src/lib.rs:234` (`store.command_count()?`). Every one is
+   a failure path no test exercises.
 2. **713 regions (81%) are inside the crates' own `#[cfg(test)]`
    modules** — the never-taken branches of test-helper `?` and of
    `assert!` / `.expect()` in *passing* tests. `--lib` instruments the
-   unit-test modules compiled into each library target, so they are
-   counted.
+   unit-test modules compiled into each library target, so they count.
 
-Fact 2 is the load-bearing one: **a green test suite cannot, even in
-principle, cover the failure branch of its own passing assertion.**
-`assert!(cond)` whose `cond` always holds leaves its panic region
-uncovered by construction; making it covered means making the test fail.
-The `justfile:256-269` coverage-pincer comment already records the
-line-level form of exactly this trap ("a passing test suite cannot
-exercise a failing assert message"). At region granularity it is not an
-edge case to work around — it is 167 regions, plus 543 test-helper `?`
-arms whose error paths exist only to satisfy the compiler.
+## The ruling: class 2 is a refactoring backlog, not a limit
 
-## Why this collides with the ratified spec
+This note first concluded that class 2 was a natural limit — that a
+green suite cannot cover its own passing assertion's failure branch, so
+`--fail-under-regions 100` was unreachable and the spec's
+no-exclusions clause at `SPECIFICATION/non-functional-requirements.md:122-127`
+had to give. **Maintainer ruling, 2026-08-21: it does not.** If it is
+code we own, there is no reason it cannot be made reachable by
+refactoring; code that is genuinely unreachable is un-executable and
+therefore deletable, which is the whole point of the clause. The target
+stands as ratified. Do not narrow the measured scope and do not withdraw
+the target. Where a region truly resists, delete the code rather than
+excluding it from measurement, and report the specific construct.
 
-`SPECIFICATION/non-functional-requirements.md:122-127` is unambiguous:
+**The ruling is empirically correct, and the earlier conclusion was
+wrong.** Measured on `console-fork-drift-check`, whose 8 uncovered
+regions were 3 production and 5 test-module `assert!` sites:
 
-> **No coverage exclusions are permitted** -- regions the language makes
-> uncoverable (macro-generated code, exhaustiveness arms for states the
-> type system already makes impossible) MUST be eliminated by
-> restructuring, never annotated away
+| variant | uncovered regions |
+|---------|-------------------|
+| as-is (5 `assert!` sites) | 8 |
+| two `assert!` sites compressed into one `assert_eq!` tuple compare | 7 |
+| all 5 routed through one shared `check` helper + one `#[should_panic]` test | **3** |
 
-Under that clause the only sanctioned response to an uncoverable region
-is restructuring. But 713 of the 893 are in test code, where
-"restructuring" would mean deleting assertions or rewriting every test
-helper to be infallible — the opposite of test adequacy, which is this
-thread's whole charter. And no exclusion (`--ignore-filename-regex`, a
-disposition file, an annotation) is permitted to carve them out.
+Every test-module region went to zero; the 3 that remain are the
+production gaps. All 32 tests still pass. The mechanism is that region
+coverage is **per source site**: a failure branch is covered if any run
+takes it. So the pattern is
 
-So `--fail-under-regions 100` as currently specified is **not reachable**
-by work this thread can legitimately do. The gate cannot simply be
-flipped once the production gaps close; it would still be 713 short.
+```rust
+#[track_caller]
+fn check(condition: bool, context: &str) {
+    if !condition {
+        panic!("check failed: {context}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "check failed")]
+fn check_reports_failure() {
+    check(false, "deliberate");
+}
+```
+
+Funnelling N assertion sites through one helper leaves exactly one
+failure branch in the crate, and a `#[should_panic]` test *takes* it.
+The same reduction applies to the 543 test-helper `?` arms: consolidate
+the fallible test-support operations behind shared helpers, then give
+each consolidated site one deliberate error-case test.
+
+**Nothing resists so far.** The one construct that could have been
+structurally unfailable — a `write!(...)?` whose sink cannot error —
+occurs exactly once (`console-tui/src/lib.rs:373`) and writes to a real
+`io::Write`, so a failing-writer double covers it. If a genuinely
+un-executable region does turn up, the ruling's instruction is to delete
+the code, not to exclude it, and to report the construct here.
 
 ## Consequence for the regroom
 
-Slice (a) as written is one slice covering three separable pieces of
-work at three different tiers:
+Slice (a) as written is one slice covering separable work:
 
-- **(a1) Close the 166 production region gaps.** Genuinely factory-safe
-  implementation work, and the piece that actually raises test adequacy.
-  Tractable but not small: seams like `&mut dyn CommandAppendStore`
-  (`console-cli/src/lib.rs:224`) accept a failing double directly, while
-  the many `&mut SqliteEventStore` call sites (e.g. `:415`, `:482`,
-  `:590`) need either a real failing SQLite (closed / read-only /
-  corrupt handle) or a new trait seam — a refactor the spec's own
-  "redesign signal" language endorses.
-- **(a2) Decide the measurement scope for the region target.** Whether
-  the ratified region goal counts in-crate test modules. This is a
-  **spec-tier** question, not an implementation choice, and it gates
-  whether (a3) can ever pass.
+- **(a1) Close the 166 production region gaps.** Factory-safe
+  implementation work, and the piece that most directly raises test
+  adequacy. Tractable but not small: seams like
+  `&mut dyn CommandAppendStore` (`console-cli/src/lib.rs:224`) accept a
+  failing double directly, while the many `&mut SqliteEventStore` call
+  sites (e.g. `:415`, `:482`, `:590`) need either a real failing SQLite
+  (closed / read-only / corrupt handle) or a new trait seam — a refactor
+  the spec's own "redesign signal" language endorses.
+- **(a2) Work the 713 in-crate test regions down by refactoring**, using
+  the shared-check-helper pattern proved above. Mechanical and highly
+  repetitive, but per-crate independent, so it slices cleanly:
+  `console-cli` (426), `console-eventstore` (96), `console-tui` (84),
+  `console-application/source_adapters.rs` (66),
+  `console-application/lib.rs` (29), `action_registry.rs` (7),
+  `console-fork-drift-check` (5). Report any construct that resists.
 - **(a3) Flip the gate + land the spec-reconciliation rider.** Blocked on
-  (a2) and (a1).
+  (a1) and (a2). The rider flips only the ":112-119" sentence's
+  "NOT yet a present gate" tail; the no-exclusions clause is untouched
+  and stays as ratified.
 
-Note that (a2) is not a request to weaken the gate. It is the question
-of what the gate MEASURES. The line gate already answers this question
-implicitly for its own metric, and the answer is recorded in
-`tests/fixtures/coverage-unnameable-disposition.json` (ledger item
-`livespec-console-beads-fabro-3yx`) — a reasoned, capped disposition for
-misses no listing surface can name. The region target has no equivalent
-answer, and the no-exclusions clause forbids inventing one without a
-spec revision.
+The line gate's own analogue — `tests/fixtures/coverage-unnameable-disposition.json`
+(ledger item `livespec-console-beads-fabro-3yx`), a capped disposition
+for misses no listing surface can name — is deliberately NOT the model
+here. That disposition exists because llvm-cov counts line misses it
+cannot name; these region misses are all nameable, and the ruling is to
+fix them rather than disposition them.
 
 ## Sequencing consequence
 
-The low-water-mark constraint (note 001, Sequencing #2) still applies,
-but it is no longer the binding constraint on when (a) can start. As of
-2026-08-21 the repo is AT a low-water mark — 2 open PRs (#404, the
+The low-water-mark constraint (note 001, Sequencing #2) still applies to
+(a3), but it is not the binding constraint on when (a) can start. As of
+2026-08-21 the repo IS at a low-water mark — 2 open PRs (#404, the
 release-please PR, and #317) — and the flip still cannot land, because
 (a1) and (a2) are unfinished. The window is not the blocker; the 893
 regions are.
+
+Slices (b) CI merge-gate fuzz and (c) CI mutation are independent of the
+region gate and of each other, and can proceed in parallel with (a1).
