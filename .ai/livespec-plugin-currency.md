@@ -178,3 +178,39 @@ Unrelated to ledger item `livespec-console-beads-fabro-3ej` ("livespec
 pin bumps cannot land here"), which concerns the `livespec` CORE pin in
 `.livespec.jsonc` frozen at v0.26.0 — same family, different pin,
 different failure mode.
+
+### The pin FILE goes stale too — refresh it before you resolve it
+
+Added 2026-08-21 after the dispatch-time recipe above failed on its author.
+`installed_plugins.json` is not a live view of the marketplace: it only changes
+when `claude plugin update` / `just ensure-plugins` actually runs. So on a
+fast-moving day, resolving the pin at dispatch time faithfully returns a build
+that is *itself* already behind, and the gate refuses exactly as before.
+
+Measured: the orchestrator release moved FIVE times in one working day —
+`15a4ae9aff88` → `5dcbc6829ff9` → `ea71503fcf13` → `f51534d61621` →
+`392b3fa90f86`. A dispatch that resolved the pin correctly, by `projectPath`,
+got `f51534d61621` and was refused against `392b3fa90f86`. The resolution was
+right; the file was stale.
+
+**The complete recipe is two steps, in this order:**
+
+1. `mise exec -- just ensure-plugins` — refreshes the pin file. It prints
+   "Restart to apply changes", which is true for THIS session's own skills and
+   hooks but irrelevant to a subprocess you are about to launch by path.
+2. Resolve the pin from `installed_plugins.json`, filtered by `projectPath`,
+   and invoke that build's `scripts/bin/drive.py`.
+
+Step 1 without step 2 leaves your session on its kickoff build. Step 2 without
+step 1 faithfully resolves a stale pin. Both failures produce the same exit-3
+message, which is why it is worth knowing they are different faults.
+
+If you want to know whether a refusal is coming before you spend a dispatch,
+probe what the gate probes:
+
+    git ls-remote https://github.com/thewoolleyman/livespec-orchestrator-beads-fabro.git refs/heads/release
+
+and compare that SHA to the build you are about to execute. Cheap, and it
+distinguishes "my pin is stale" from "my session is stale" without burning a
+run. Re-check `just check-fork-drift` after any pin move — it stayed green
+across all five moves today, but that is a fact to verify rather than assume.
