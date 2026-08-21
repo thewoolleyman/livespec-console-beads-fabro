@@ -138,12 +138,35 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
 
 ## Keep this invariant
 
-`just check` does NOT run `check-e2e-tmux` — it is absent from the
-`targets=(...)` array the `check` aggregate walks, so ordinary gate runs
-never spawn tmux. (The related `#[ignore]` note near the top of the
-`justfile` explains why the nextest matrix stays tmux-free; the array is
-the load-bearing part.) **Keep it that way.** Do not let a new coverage
-or soak target pull tmux into the default matrix.
+**Corrected 2026-08-21 — the invariant this thread inherited is half
+false, and the false half is the part it told you to preserve.**
+
+The legacy handoff said "`just check` does NOT run `check-e2e-tmux` — it
+is absent from the `targets=(...)` array … ordinary gate runs never spawn
+tmux. Keep it that way." That was true when written and is not true now.
+`check-e2e-tmux` sits in the aggregate's `targets=(...)` array at
+`justfile:220`, promoted deliberately by `4fc82ac` on 2026-08-17 under a
+measured marginal-cost rule (44.7s before, 56.2s after — 11.5s, inside
+that commit's stated 60s promotion budget). `just check` spawns tmux
+today. Do not "restore" the old behaviour; it was traded away on
+purpose.
+
+What DOES still hold, and is the half worth keeping:
+
+- The E2E test is `#[ignore]`d, so the **default test matrix**
+  (`check-nextest`, `check-test`) stays tmux-free; `check-e2e-tmux` opts
+  back in explicitly with `--ignored` (`justfile:56-70`). That guard,
+  plus the zero-tests-ran trailing check at `justfile:87`, is what keeps
+  the ordinary test matrix hermetic.
+- **`just check` MUST NOT include fuzz or mutation runs.** This one is
+  not a local convention that can drift — it is ratified in
+  `SPECIFICATION/non-functional-requirements.md` §"Quality Gate", one
+  line below the coverage clause. It binds slices (b) and (c) directly.
+
+So the rule for this thread's new targets is the promotion rule that
+`4fc82ac` actually used — measure the marginal cost and justify it —
+except for fuzz and mutation, which the spec keeps out of the aggregate
+regardless of how cheap they turn out to be.
 
 ## Dispatch
 
