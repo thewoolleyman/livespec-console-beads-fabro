@@ -96,6 +96,32 @@ What to do when you see exit code 3 with this message:
    or restart Claude Code. Restarting is cleaner if you have other
    plugin-driven work to do; the explicit path is enough for one
    dispatch.
+
+   **Better: resolve the pin at DISPATCH time instead of holding the
+   kickoff path.** Suggested by the `repo-invariant-guards` thread,
+   verified here 2026-08-21. It needs no host mutation and no tracked
+   file change, and it survives the next marketplace move on its own:
+
+   ```python
+   import json, pathlib
+   KEY = "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro"
+   rows = json.loads((pathlib.Path.home() / ".claude/plugins/installed_plugins.json")
+                     .read_text())["plugins"][KEY]
+   me = "/data/projects/livespec-console-beads-fabro"
+   root = next(r["installPath"] for r in rows if r.get("projectPath") == me)
+   # -> .../cache/.../<current-sha>; use f"{root}/scripts/bin/drive.py"
+   ```
+
+   **The `projectPath` filter is load-bearing — do not take `rows[0]`.**
+   That list is per-project and UNORDERED. Measured on this host the
+   same day: 16 rows across SIX distinct builds, with row 0 belonging to
+   `/data/projects/livespec-runtime` on `4157cf17b852` while this repo's
+   row was the current `ea71503fcf13`. Taking `[0]` would have selected
+   another project's build — and an older one, which the staleness gate
+   then refuses for a reason that has nothing to do with your repo. The
+   `justfile`'s `check-doctor-static` recipe carries the same warning
+   about the same file for the livespec core plugin; it is the same
+   trap.
 3. **Check `just check-fork-drift` after the pin moves**, before
    assuming the bump was free. That check compares this repo's 8 pinned
    fork files against the INSTALLED plugin build, so a pin move can
