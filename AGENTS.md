@@ -363,9 +363,15 @@ check-baseline` is the fail-closed verifier wired into `just check`.
    clean on `master`. Do not leave orphaned worktrees.
 
 Rust product changes follow Red-Green-Replay. The standalone checker exists as
-`crates/console-red-green-replay-check`, but `lefthook.yml` has no `commit-msg`
-section yet; `just check` wiring is pending in `livespec-console-beads-fabro-mvu22t.2`
-and commit-msg hook wiring is pending in `livespec-console-beads-fabro-mvu22t.3`.
+`crates/console-red-green-replay-check` and IS wired into the `just check`
+aggregate as `check-red-green-replay` (stage 2, landed 2026-08-21 via PR #804),
+so the ritual is enforced on every `just check` run. What is NOT yet enforced is
+per-commit gating: `lefthook.yml` still carries only `pre-commit` and `pre-push`,
+with no `commit-msg` section. That hook is stage 3
+(`livespec-console-beads-fabro-mvu22t.3`) and it is DELIBERATELY HELD at backlog
+— do not set it ready and do not dispatch it. Its hold lifts only once field
+evidence that stage 2 has run in `just check` on real branches is recorded on
+that item; stage 2 merging is NOT that evidence.
 Follow the checker contract in
 `crates/console-red-green-replay-check/src/lib.rs`: "Content is the trigger" and
 "Subject prefixes never exempt product Rust from the ritual." A changeset
