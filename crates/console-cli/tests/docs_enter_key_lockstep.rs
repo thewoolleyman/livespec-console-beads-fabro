@@ -36,6 +36,10 @@
 
 use std::path::{Path, PathBuf};
 
+use console_application::action_registry::{
+    ACTION_REGISTRY, action_reference_rows, enter_stages_description,
+};
+
 /// Where `Enter` is resolved for the content pane.
 const ENTER_SOURCE: &str = "crates/console-tui/src/lib.rs";
 /// The doc carrying the by-focus key table.
@@ -126,6 +130,27 @@ fn every_view_binding_enter_is_named_in_the_key_table() -> std::io::Result<()> {
          {missing:?}\n\nThe cell currently reads:\n  {cell}\n"
     );
     Ok(())
+}
+
+#[test]
+fn generated_reference_enter_staging_derives_from_the_registry() {
+    let rows = action_reference_rows();
+    assert_eq!(rows.len(), ACTION_REGISTRY.len());
+    for spec in ACTION_REGISTRY {
+        let matches: Vec<_> = rows.iter().filter(|row| row.label == spec.label).collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "generated reference entry for `{}`",
+            spec.id
+        );
+        assert_eq!(
+            matches[0].enter_stages,
+            enter_stages_description(spec),
+            "generated reference Enter staging for `{}` must derive from registry staging",
+            spec.id
+        );
+    }
 }
 
 #[cfg(test)]

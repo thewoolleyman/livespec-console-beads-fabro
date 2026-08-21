@@ -21,6 +21,8 @@ orchestrator's `drive` API.
   variable the console reads, with defaults.
 - [Detailed usage](detailed-usage.md) — a section per pane, the full
   keybinding reference, the Help modal, and the dispatcher settings.
+- [Operator key/action reference](reference/key-action-reference.md) — the
+  generated menu, accelerator, availability, and Enter-staging reference.
 - [Lifecycle walkthrough](lifecycle-walkthrough.md) — one work-item from
   waiting-for-a-human to shipped, key by key.
 - [Factory confirmations](factory-confirmations.md) — dated operational

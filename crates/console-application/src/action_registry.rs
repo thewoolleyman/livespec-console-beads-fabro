@@ -211,6 +211,8 @@ pub struct ActionSpec {
     /// The parameter the confirm dialog cycles, described for menu/dialog
     /// generation. Payload-free actions carry no parameter.
     pub parameter: Option<ActionParameter>,
+    /// Human-readable availability summary consumed by generated operator docs.
+    pub availability_summary: &'static str,
     /// Whether this action is offered and live for the given selection.
     pub availability: fn(&ActionContext) -> bool,
     /// How the action is staged when invoked.
@@ -241,6 +243,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('h')],
         menu_path: &["Work item", "Hand off"],
         parameter: None,
+        availability_summary: "Available for drilled-in backlog groom handoffs and factory-unsafe ready implementation handoffs.",
         availability: |ctx| {
             ctx.has_driver_handoff && matches!(ctx.surface, ActionSurface::LaneDrill)
         },
@@ -256,6 +259,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "target status",
             choices: &["backlog", "ready", "blocked"],
         }),
+        availability_summary: "Available in a drilled-in lane when the selected item's lane has a legal backlog, ready, or blocked move target.",
         availability: |ctx| {
             matches!(ctx.surface, ActionSurface::LaneDrill)
                 && status_move_targets(ctx.lane).first().is_some_and(|to| {
@@ -284,6 +288,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('p')],
         menu_path: &["Work item", "Lifecycle"],
         parameter: None,
+        availability_summary: "Available for a manual-admission pending-approval work-item.",
         // Lane AND effective admission policy: the approve valve fires only on
         // an effective-manual pending-approval item (the orchestrator's
         // `can_approve_item` rule), so a dispatcher-admitted (`auto`) item
@@ -301,6 +306,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('c')],
         menu_path: &["Work item", "Lifecycle"],
         parameter: None,
+        availability_summary: "Available for a work-item in acceptance.",
         availability: |ctx| per_item_verb_is_state_valid(ctx.lane, PendingValve::Accept),
         staging: ActionStaging::Valve(|_ctx| Some(PendingValve::Accept)),
     },
@@ -314,6 +320,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "mode",
             choices: &["rework", "regroom"],
         }),
+        availability_summary: "Available for a work-item in acceptance.",
         availability: |ctx| {
             per_item_verb_is_state_valid(ctx.lane, PendingValve::Reject(RejectMode::Rework))
         },
@@ -329,6 +336,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "policy",
             choices: &["manual", "auto"],
         }),
+        availability_summary: "Available where the selected work-item accepts an admission-policy change.",
         availability: |ctx| {
             per_item_verb_is_state_valid(
                 ctx.lane,
@@ -349,6 +357,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "merge_on_review_cap",
             choices: &["on", "off", "clear"],
         }),
+        availability_summary: "Available where the selected work-item accepts a merge-on-review-cap override.",
         availability: |ctx| {
             per_item_verb_is_state_valid(
                 ctx.lane,
@@ -373,6 +382,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "review_fix_cap",
             choices: &["1..=9", "clear"],
         }),
+        availability_summary: "Available where the selected work-item accepts a review-fix-cap override.",
         availability: |ctx| {
             per_item_verb_is_state_valid(
                 ctx.lane,
@@ -395,6 +405,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "policy",
             choices: &["ai-then-human", "ai-only", "human-only"],
         }),
+        availability_summary: "Available where the selected work-item accepts an acceptance-policy change.",
         availability: |ctx| {
             per_item_verb_is_state_valid(
                 ctx.lane,
@@ -415,6 +426,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "acceptance_rework_cap",
             choices: &["1..=9", "clear"],
         }),
+        availability_summary: "Available where the selected work-item accepts an acceptance-rework-cap override.",
         availability: |ctx| {
             per_item_verb_is_state_valid(
                 ctx.lane,
@@ -444,6 +456,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "scope",
             choices: &["citation-only"],
         }),
+        availability_summary: "Available for a ready work-item that is awaiting the workflow-scope override.",
         // Gated on the item ACTUALLY awaiting an override, which only the
         // orchestrator can know: the refusal this clears is computed at
         // dispatch time from the item's own text, and re-deriving that regex
@@ -461,6 +474,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[],
         menu_path: &["Factory", "Dispatch"],
         parameter: None,
+        availability_summary: "Available when the board has at least one ready work-item.",
         availability: |ctx| ctx.ready_work_item_count > 0,
         staging: ActionStaging::FactoryDrain,
     },
@@ -471,6 +485,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[],
         menu_path: &["Factory", "Dispatch"],
         parameter: None,
+        availability_summary: "Available for a selected ready work-item in a drilled-in lane.",
         availability: |ctx| {
             ctx.lane == Lane::Ready && matches!(ctx.surface, ActionSurface::LaneDrill)
         },
@@ -494,6 +509,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('/')],
         menu_path: &["View", "Search"],
         parameter: None,
+        availability_summary: "Available globally from every view.",
         availability: |_ctx| true,
         staging: ActionStaging::Global(GlobalAction::OpenSearch),
     },
@@ -504,6 +520,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain(':')],
         menu_path: &["View", "Command palette"],
         parameter: None,
+        availability_summary: "Available globally from every view.",
         availability: |_ctx| true,
         staging: ActionStaging::Global(GlobalAction::OpenCommandPalette),
     },
@@ -522,6 +539,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('v')],
         menu_path: &["View", "Menu bar"],
         parameter: None,
+        availability_summary: "Available globally from every view; Left from the Views pane also opens it without a hotkey.",
         availability: |_ctx| true,
         staging: ActionStaging::Global(GlobalAction::OpenMenu),
     },
@@ -532,6 +550,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('?')],
         menu_path: &["Help", "Keys and actions"],
         parameter: None,
+        availability_summary: "Available globally from every view.",
         availability: |_ctx| true,
         staging: ActionStaging::Global(GlobalAction::OpenHelp),
     },
@@ -545,6 +564,7 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('q'), KeyChord::ctrl('c')],
         menu_path: &["File", "Quit"],
         parameter: None,
+        availability_summary: "Available globally from every view.",
         availability: |_ctx| true,
         staging: ActionStaging::Global(GlobalAction::Quit),
     },
@@ -839,6 +859,167 @@ pub fn valve_is_available(valve: PendingValve, ctx: &ActionContext) -> bool {
     action_for_id(id).is_some_and(|spec| (spec.availability)(ctx))
 }
 
+/// One generated operator key/action reference row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionReferenceRow {
+    /// The menu path from the top-level menu through the action label.
+    pub menu_path: String,
+    /// The action label rendered to operators.
+    pub label: &'static str,
+    /// The rendered accelerator chord list, or `none` for menu-only actions.
+    pub accelerator: String,
+    /// The registry-owned availability summary.
+    pub availability: &'static str,
+    /// What pressing Enter on the selected menu/invoker action stages.
+    pub enter_stages: &'static str,
+}
+
+/// Generated operator key/action reference rows, grouped by the registry menu
+/// taxonomy.
+#[must_use]
+pub fn action_reference_rows() -> Vec<ActionReferenceRow> {
+    menu_tree()
+        .iter()
+        .flat_map(|top| {
+            top.groups.iter().flat_map(|group| {
+                group.actions.iter().map(|spec| ActionReferenceRow {
+                    menu_path: format!("{} > {} > {}", top.label, group.label, spec.label),
+                    label: spec.label,
+                    accelerator: accelerator_reference_display(spec),
+                    availability: spec.availability_summary,
+                    enter_stages: enter_stages_description(spec),
+                })
+            })
+        })
+        .collect()
+}
+
+/// Render an action's accelerator for the generated reference.
+#[must_use]
+pub fn accelerator_reference_display(spec: &ActionSpec) -> String {
+    if spec.hotkeys.is_empty() {
+        "none".to_owned()
+    } else {
+        accelerator_display(spec)
+    }
+}
+
+/// What Enter stages for the selected action.
+#[must_use]
+pub const fn enter_stages_description(spec: &ActionSpec) -> &'static str {
+    match spec.staging {
+        ActionStaging::Valve(_stager) => "the registry valve-confirm flow",
+        ActionStaging::DriverHandoff => "the driver-handoff overlay for the selected work-item",
+        ActionStaging::FactoryDrain => "the factory-drain command for ready work",
+        ActionStaging::FactoryDispatchItem => "selected-item factory dispatch confirmation",
+        ActionStaging::Global(_action) => "the registered global console action",
+    }
+}
+
+/// The generated markdown document carrying the operator key/action reference.
+#[must_use]
+pub fn operator_key_action_reference_markdown() -> String {
+    let mut output = [
+        "# Operator Key/Action Reference",
+        "",
+        "Generated from `console_application::action_registry` by \
+         `just generate-key-action-reference`. Do not edit this file by hand; \
+         regenerate it after changing `ACTION_REGISTRY`, `menu_tree()`, \
+         `accelerator_display()`, or `global_status_hint_tokens()`.",
+        "",
+        "The menu bar is generated from the registry's menu taxonomy. Open it \
+         with `v`; from the Views pane, `Left` also opens the menu bar as the \
+         hotkey-free entry path.",
+        "",
+        "## Global Status Hint Tokens",
+        "",
+        &format!("`{}`", global_status_hint_tokens().join(" | ")),
+        "",
+        "## Menu Actions",
+        "",
+        "| Menu path | Label | Accelerator | Availability | Enter stages |",
+        "|---|---|---|---|---|",
+    ]
+    .join("\n");
+    let rows = action_reference_rows()
+        .into_iter()
+        .map(|row| {
+            format!(
+                "| {} | {} | {} | {} | {} |",
+                markdown_cell(&row.menu_path),
+                markdown_cell(row.label),
+                markdown_cell(&row.accelerator),
+                markdown_cell(row.availability),
+                markdown_cell(row.enter_stages),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    output.push('\n');
+    output.push_str(&rows);
+    output
+}
+
+/// The registry-derived global action lines used by modal Help.
+#[must_use]
+pub fn global_help_action_lines() -> Vec<String> {
+    ACTION_REGISTRY
+        .iter()
+        .filter_map(|spec| match spec.staging {
+            ActionStaging::Global(action) => Some((spec, action)),
+            ActionStaging::Valve(_)
+            | ActionStaging::DriverHandoff
+            | ActionStaging::FactoryDrain
+            | ActionStaging::FactoryDispatchItem => None,
+        })
+        .map(|(spec, action)| {
+            format!(
+                "{:<13}{}",
+                accelerator_reference_display(spec),
+                global_help_label(action)
+            )
+        })
+        .collect()
+}
+
+/// The complete global Help section prose, with action rows derived from the
+/// registry.
+#[must_use]
+pub fn global_help_reference_lines() -> Vec<String> {
+    let mut lines = vec![
+        "Global actions -- available from every view:".to_owned(),
+        String::new(),
+        "up / down    navigate the focused pane; in this help, the section menu".to_owned(),
+        "left / right move focus across the body panes (Views -> Content -> Detail);".to_owned(),
+        "             left from Views opens the menu; focused header scrolls instead".to_owned(),
+        "tab / s-tab  cycle focus across every pane, including the top header".to_owned(),
+        "enter        dive from the nav into content, or open the selected item".to_owned(),
+        "esc          step focus back (Detail -> Content -> nav; drilled lane -> overview)"
+            .to_owned(),
+    ];
+    lines.extend(global_help_action_lines());
+    lines.extend([
+        String::new(),
+        "In this help: left/right choose menu or text pane; up/down act there,".to_owned(),
+        "PgUp/PgDn page this pane, and only Esc closes it.".to_owned(),
+    ]);
+    lines
+}
+
+fn global_help_label(action: GlobalAction) -> String {
+    match action {
+        GlobalAction::OpenSearch => "open search".to_owned(),
+        GlobalAction::OpenCommandPalette => "open the command palette (drain, actions)".to_owned(),
+        GlobalAction::OpenHelp => "open this help".to_owned(),
+        GlobalAction::OpenMenu => "open the menu bar".to_owned(),
+        GlobalAction::Quit => "quit".to_owned(),
+    }
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
 /// The staged result of invoking an available registered action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StagedAction {
@@ -874,6 +1055,7 @@ mod tests {
         for spec in ACTION_REGISTRY {
             assert!(!spec.id.is_empty());
             assert!(!spec.label.is_empty());
+            assert!(!spec.availability_summary.is_empty(), "{}", spec.id);
             let label_is_unique = labels.insert(spec.label, spec.id).is_none();
             assert!(label_is_unique, "{}", spec.label);
             // A hint token is a KEY hint: keyed actions carry one, and a
@@ -1062,6 +1244,29 @@ mod tests {
             .collect();
         assert_eq!(tokens, expected);
         assert_eq!(tokens, ["? help", "q quit"]);
+    }
+
+    #[test]
+    fn operator_reference_mentions_every_registered_action_once() {
+        let rows = super::action_reference_rows();
+        assert_eq!(rows.len(), ACTION_REGISTRY.len());
+        for spec in ACTION_REGISTRY {
+            let matches: Vec<&super::ActionReferenceRow> =
+                rows.iter().filter(|row| row.label == spec.label).collect();
+            assert_eq!(matches.len(), 1, "{}", spec.id);
+            let row = matches[0];
+            assert_eq!(row.accelerator, super::accelerator_reference_display(spec));
+            assert_eq!(row.availability, spec.availability_summary);
+            assert_eq!(row.enter_stages, super::enter_stages_description(spec));
+        }
+    }
+
+    #[test]
+    fn generated_markdown_carries_regeneration_header_and_global_hint_derivation() {
+        let markdown = super::operator_key_action_reference_markdown();
+        assert!(markdown.contains("Generated from `console_application::action_registry`"));
+        assert!(markdown.contains("`just generate-key-action-reference`"));
+        assert!(markdown.contains(&format!("`{}`", global_status_hint_tokens().join(" | "))));
     }
 
     #[test]
