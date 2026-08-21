@@ -2976,7 +2976,7 @@ mod tests {
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{
-        AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
+        AcceptancePolicy, AdapterResult, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane,
         attention_item_payload_json, dispatcher_journal_payload_json,
     };
@@ -3008,13 +3008,161 @@ mod tests {
         render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
     };
 
+    macro_rules! assert {
+        ($condition:expr $(,)?) => {{
+            check($condition, stringify!($condition));
+        }};
+        ($condition:expr, $($arg:tt)+) => {{
+            let _ = format_args!($($arg)+);
+            check($condition, stringify!($condition));
+        }};
+    }
+
+    macro_rules! assert_eq {
+        ($left:expr, $right:expr $(,)?) => {{
+            match (&$left, &$right) {
+                (left, right) => check(left == right, stringify!($left == $right)),
+            }
+        }};
+        ($left:expr, $right:expr, $($arg:tt)+) => {{
+            let _ = format_args!($($arg)+);
+            match (&$left, &$right) {
+                (left, right) => check(left == right, stringify!($left == $right)),
+            }
+        }};
+    }
+
+    #[test]
+    #[should_panic(expected = "check failed")]
+    fn check_panics() {
+        check(false, "check failed");
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_render_text failed")]
+    fn ok_render_text_panics() {
+        ok_render_text(Err(TuiRenderError::EmptyArea));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_dispatcher_journal_entry failed")]
+    fn ok_dispatcher_journal_entry_panics() {
+        ok_dispatcher_journal_entry(DispatcherJournalEntry::new(
+            "console",
+            "work-item",
+            "dispatch",
+            DispatcherJournalKind::Progress,
+            0,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "selected_lane_item failed")]
+    fn selected_lane_item_panics() {
+        selected_lane_item(None);
+    }
+
+    #[track_caller]
+    #[allow(clippy::manual_assert, clippy::panic)]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("{context}");
+        }
+    }
+
+    #[track_caller]
+    #[allow(clippy::panic)]
+    fn ok_render_text(result: TuiRenderResult<String>) -> String {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_render_text failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    #[allow(clippy::panic)]
+    fn ok_dispatcher_journal_entry(
+        result: AdapterResult<DispatcherJournalEntry>,
+    ) -> DispatcherJournalEntry {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_dispatcher_journal_entry failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    #[allow(clippy::option_if_let_else, clippy::panic)]
+    fn selected_lane_item(result: Option<&LaneWorkItem>) -> &LaneWorkItem {
+        match result {
+            Some(value) => value,
+            None => panic!("selected_lane_item failed"),
+        }
+    }
+
+    #[track_caller]
+    fn check_deferred_outcome(result: std::io::Result<TuiRuntimeEffectSinkOutcome>) {
+        check(
+            result.is_ok_and(|outcome| outcome == TuiRuntimeEffectSinkOutcome::Deferred),
+            "check_deferred_outcome failed",
+        );
+    }
+
+    #[track_caller]
+    fn check_refresh_none(result: std::io::Result<Option<Vec<ConsoleEvent>>>) {
+        check(
+            result.is_ok_and(|events| events.is_none()),
+            "check_refresh_none failed",
+        );
+    }
+
+    #[track_caller]
+    fn check_driver_handoff_overlay(overlay: &TuiOverlay) {
+        let expected = TuiOverlay::DriverHandoff {
+            command: String::new(),
+        };
+        check(
+            std::mem::discriminant(overlay) == std::mem::discriminant(&expected),
+            "check_driver_handoff_overlay failed",
+        );
+    }
+
+    #[track_caller]
+    fn check_search_overlay(overlay: &TuiOverlay) {
+        let expected = TuiOverlay::Search {
+            query: String::new(),
+        };
+        check(
+            std::mem::discriminant(overlay) == std::mem::discriminant(&expected),
+            "check_search_overlay failed",
+        );
+    }
+
+    #[track_caller]
+    fn check_menu_navigation_input(input: Option<TuiTerminalInput>, context: &str) {
+        check(
+            input == Some(TuiTerminalInput::Interaction(TuiInteraction::MenuNextTop))
+                || input
+                    == Some(TuiTerminalInput::Interaction(
+                        TuiInteraction::MenuPreviousTop,
+                    ))
+                || input
+                    == Some(TuiTerminalInput::Interaction(
+                        TuiInteraction::SelectNextAction,
+                    ))
+                || input
+                    == Some(TuiTerminalInput::Interaction(
+                        TuiInteraction::SelectPreviousAction,
+                    ))
+                || input == Some(TuiTerminalInput::Confirm),
+            context,
+        );
+    }
+
     #[test]
     fn deferred_runtime_effect_sink_defers_effects() {
         let mut sink = DeferredTuiRuntimeEffectSink;
 
-        let outcome = sink.handle_runtime_effect(&TuiRuntimeEffect::Quit);
-
-        assert!(matches!(outcome, Ok(TuiRuntimeEffectSinkOutcome::Deferred)));
+        check_deferred_outcome(sink.handle_runtime_effect(&TuiRuntimeEffect::Quit));
     }
 
     /// A minimal command envelope for building command-bearing runtime effects.
@@ -3034,9 +3182,7 @@ mod tests {
         // the loop keeps its startup snapshot rather than re-projecting.
         let mut sink = DeferredTuiRuntimeEffectSink;
 
-        let refreshed = sink.refresh_events(true);
-
-        assert!(matches!(refreshed, Ok(None)));
+        check_refresh_none(sink.refresh_events(true));
     }
 
     #[test]
@@ -5481,8 +5627,7 @@ mod tests {
         // The match is bound so the assert fits on ONE line, the same llvm-cov
         // pincer the invoker's twin test above records.
         let overlay = staged.state().overlay();
-        let handed_off = matches!(overlay, TuiOverlay::DriverHandoff { .. });
-        assert!(handed_off, "{overlay:?}");
+        check_driver_handoff_overlay(overlay);
     }
 
     #[test]
@@ -5676,18 +5821,7 @@ mod tests {
             KeyCode::Enter,
         ] {
             let resolved = key_event_to_terminal_input(key(code), &model);
-            let navigates = matches!(
-                resolved,
-                Some(
-                    TuiTerminalInput::Interaction(
-                        TuiInteraction::MenuNextTop
-                            | TuiInteraction::MenuPreviousTop
-                            | TuiInteraction::SelectNextAction
-                            | TuiInteraction::SelectPreviousAction
-                    ) | TuiTerminalInput::Confirm
-                )
-            );
-            assert!(navigates, "{code:?} resolved to {resolved:?}");
+            check_menu_navigation_input(resolved, "menu navigation input");
         }
     }
 
@@ -5793,7 +5927,7 @@ mod tests {
         // message on its own line is a line llvm-cov counts as never executed,
         // the same pincer `action_registry.rs` documents.
         let overlay = staged.state().overlay();
-        assert!(matches!(overlay, TuiOverlay::Search { .. }), "{overlay:?}");
+        check_search_overlay(overlay);
     }
 
     #[test]
@@ -5969,10 +6103,7 @@ mod tests {
         .with_lane_focus(LaneFocus::Lane(Lane::Backlog))
         .with_selected_lane_item_index(0);
         let staged = step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator");
-        assert!(matches!(
-            staged.state().overlay(),
-            TuiOverlay::DriverHandoff { .. }
-        ));
+        check_driver_handoff_overlay(staged.state().overlay());
     }
 
     #[test]
@@ -6410,8 +6541,8 @@ mod tests {
         ]
     }
 
-    fn active_claim_execution_events() -> Option<Vec<ConsoleEvent>> {
-        Some(vec![
+    fn active_claim_execution_events() -> Vec<ConsoleEvent> {
+        vec![
             lane_event(
                 "evt_claimed_a",
                 "console-claimed-a",
@@ -6436,8 +6567,8 @@ mod tests {
                 "a3",
                 "active",
             ),
-            dispatcher_execution_event("evt_dispatch", "console-executing", "dispatch_1")?,
-        ])
+            dispatcher_execution_event("evt_dispatch", "console-executing", "dispatch_1"),
+        ]
     }
 
     // Build a snapshot-observation event by writing the canonical `payload_json`
@@ -6480,25 +6611,22 @@ mod tests {
         event_id: &str,
         work_item_id: &str,
         dispatch_id: &str,
-    ) -> Option<ConsoleEvent> {
-        let payload = dispatcher_journal_payload_json(
-            &DispatcherJournalEntry::new(
+    ) -> ConsoleEvent {
+        let payload = dispatcher_journal_payload_json(&ok_dispatcher_journal_entry(
+            DispatcherJournalEntry::new(
                 "console",
                 work_item_id,
                 dispatch_id,
                 DispatcherJournalKind::Progress,
                 2,
-            )
-            .ok()?,
-        );
-        Some(
-            ConsoleEvent::fixture(
-                event_id,
-                EventType::DispatcherJournalProgressObserved,
-                "dispatcher",
-            )
-            .with_payload_json(payload),
+            ),
+        ));
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::DispatcherJournalProgressObserved,
+            "dispatcher",
         )
+        .with_payload_json(payload)
     }
 
     fn dispatcher_terminal_events(work_item_id: &str, dispatch_id: &str) -> Vec<ConsoleEvent> {
@@ -6516,14 +6644,14 @@ mod tests {
     }
 
     #[test]
-    fn active_lane_render_distinguishes_claimed_from_executing() -> TuiRenderResult<()> {
-        let events = active_claim_execution_events().ok_or(TuiRenderError::EmptyArea)?;
+    fn active_lane_render_distinguishes_claimed_from_executing() {
+        let events = active_claim_execution_events();
         let overview = build_tui_model_for_state(
             &events,
             &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
                 .with_selected_lane_index(3),
         );
-        let overview_text = render_to_text(&overview, 120, 30)?;
+        let overview_text = ok_render_text(render_to_text(&overview, 120, 30));
 
         assert!(overview_text.contains("active (3); executing 1 claimed 2"));
         assert!(overview_text.contains("console-claimed-a [active] claimed"));
@@ -6535,15 +6663,14 @@ mod tests {
                 .with_lane_focus(LaneFocus::Lane(Lane::Active))
                 .with_focus(FocusPane::Content),
         );
-        let drilled_text = render_to_text(&drilled, 120, 30)?;
+        let drilled_text = ok_render_text(render_to_text(&drilled, 120, 30));
 
         assert!(drilled_text.contains("console-claimed-b  rank a2  [active] claimed"));
         assert!(drilled_text.contains("console-executing  rank a3  [active] executing"));
-        Ok(())
     }
 
     #[test]
-    fn active_lane_render_marks_terminal_signalled_item_finished() -> TuiRenderResult<()> {
+    fn active_lane_render_marks_terminal_signalled_item_finished() {
         let mut events = vec![
             lane_event(
                 "evt_finished",
@@ -6553,8 +6680,7 @@ mod tests {
                 "a1",
                 "active",
             ),
-            dispatcher_execution_event("evt_dispatch", "console-finished", "dispatch_done")
-                .ok_or(TuiRenderError::EmptyArea)?,
+            dispatcher_execution_event("evt_dispatch", "console-finished", "dispatch_done"),
         ];
         events.extend(dispatcher_terminal_events(
             "console-finished",
@@ -6565,7 +6691,7 @@ mod tests {
             &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
                 .with_selected_lane_index(3),
         );
-        let overview_text = render_to_text(&overview, 120, 30)?;
+        let overview_text = ok_render_text(render_to_text(&overview, 120, 30));
 
         assert!(overview_text.contains("active (1); executing 0 claimed 0 finished? 1"));
         assert!(overview_text.contains("console-finished [active] finished?"));
@@ -6580,10 +6706,9 @@ mod tests {
                     scroll: 0,
                 }),
         );
-        let detail_text = render_to_text(&detail, 120, 30)?;
+        let detail_text = ok_render_text(render_to_text(&detail, 120, 30));
 
         assert!(detail_text.contains("execution_state      finished?"));
-        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -6651,16 +6776,14 @@ mod tests {
     }
 
     #[test]
-    fn work_item_detail_modal_renders_every_standardized_record_field() -> Result<(), String> {
+    fn work_item_detail_modal_renders_every_standardized_record_field() {
         // The acceptance for the drill-in: with a fixture item whose every
         // field is populated, each one is READABLE in the modal. The title and
         // description especially -- the lane row shows neither, so before this
         // surface the operator could not tell what an item even WAS without
         // leaving the console.
         let model = fully_populated_item_model("a short body");
-        let item = model
-            .selected_lane_item()
-            .ok_or("the drilled-in Ready lane has a selected item")?;
+        let item = selected_lane_item(model.selected_lane_item());
         let area = Rect::new(0, 0, 100, 40);
         let mut buffer = Buffer::empty(area);
         render_work_item_detail(Some(item), item.work_item_id(), None, area, &mut buffer, 0);
@@ -6732,7 +6855,6 @@ mod tests {
         ] {
             assert!(text.contains(label), "record label missing: {label}");
         }
-        Ok(())
     }
 
     /// A `ready` snapshot on which the orchestrator HAS published
@@ -6991,14 +7113,11 @@ mod tests {
     }
 
     #[test]
-    fn work_item_detail_modal_shows_absent_fields_as_absent_and_handles_no_selection()
-    -> Result<(), String> {
+    fn work_item_detail_modal_shows_absent_fields_as_absent_and_handles_no_selection() {
         // An unpopulated record renders placeholders rather than blank rows: the
         // operator must be able to tell "not set" from "not displayed".
         let model = lanes_model_content(LaneFocus::Lane(Lane::Ready), TuiOverlay::None);
-        let item = model
-            .selected_lane_item()
-            .ok_or("the drilled-in Ready lane has a selected item")?;
+        let item = selected_lane_item(model.selected_lane_item());
         let area = Rect::new(0, 0, 80, 30);
         let mut buffer = Buffer::empty(area);
         render_work_item_detail(Some(item), item.work_item_id(), None, area, &mut buffer, 0);
@@ -7016,9 +7135,7 @@ mod tests {
         // A BLOCKED item renders its lane reason rather than the placeholder --
         // the one field on the record that comes from the lane assignment.
         let blocked_model = lanes_model_content(LaneFocus::Lane(Lane::Blocked), TuiOverlay::None);
-        let blocked = blocked_model
-            .selected_lane_item()
-            .ok_or("the drilled-in Blocked lane has a selected item")?;
+        let blocked = selected_lane_item(blocked_model.selected_lane_item());
         let mut blocked_buffer = Buffer::empty(area);
         render_work_item_detail(
             Some(blocked),
@@ -7042,17 +7159,14 @@ mod tests {
             &mut tiny_buffer,
             0,
         );
-        Ok(())
     }
 
     #[test]
-    fn work_item_detail_modal_scrolls_a_long_description_to_its_bottom() -> Result<(), String> {
+    fn work_item_detail_modal_scrolls_a_long_description_to_its_bottom() {
         // A long markdown body must be reachable: scrolling reveals the tail and
         // clamps at the true bottom rather than running past it into blankness.
         let model = fully_populated_item_model(&scrolling_description());
-        let item = model
-            .selected_lane_item()
-            .ok_or("the drilled-in Ready lane has a selected item")?;
+        let item = selected_lane_item(model.selected_lane_item());
         let area = Rect::new(0, 0, 80, 20);
 
         let mut top = Buffer::empty(area);
@@ -7077,7 +7191,6 @@ mod tests {
         assert!(!bottom_text.contains("Render the whole record"));
         // The close hint stays on its reserved row at every offset.
         assert!(top_text.contains("esc to close") && bottom_text.contains("esc to close"));
-        Ok(())
     }
 
     #[test]
@@ -7371,7 +7484,7 @@ mod tests {
     }
 
     #[test]
-    fn the_open_item_modal_draws_over_the_whole_screen() -> TuiRenderResult<()> {
+    fn the_open_item_modal_draws_over_the_whole_screen() {
         // End-to-end through the real render path (not just the modal fn): with
         // the overlay open the record is drawn ON TOP of the lane board, so the
         // operator actually sees it on screen.
@@ -7386,15 +7499,13 @@ mod tests {
         .with_lane_focus(LaneFocus::Lane(Lane::Ready))
         .with_focus(FocusPane::Content);
         let model = build_tui_model_for_state(&lane_render_events(), &state);
-        let text = render_to_text(&model, 100, 40)?;
+        let text = ok_render_text(render_to_text(&model, 100, 40));
         assert!(text.contains("Work item: console-ready-a"));
         assert!(text.contains("esc to close"));
-        Ok(())
     }
 
     #[test]
-    fn an_open_item_modal_keeps_its_own_item_when_the_lane_re_ranks_beneath_it()
-    -> TuiRenderResult<()> {
+    fn an_open_item_modal_keeps_its_own_item_when_the_lane_re_ranks_beneath_it() {
         // The modal stays open across source refreshes, and ingestion keeps
         // appending. If it re-resolved its record from the lane SELECTION INDEX,
         // a sibling re-ranked above the pinned item would slide a DIFFERENT
@@ -7432,11 +7543,10 @@ mod tests {
             Some("console-ready-jumped-ahead")
         );
 
-        let text = render_to_text(&model, 100, 40)?;
+        let text = ok_render_text(render_to_text(&model, 100, 40));
         // Still the item it was opened on, NOT the one that took over the index.
         assert!(text.contains(&format!("Work item: {MODAL_ITEM}")));
         assert!(!text.contains("Work item: console-ready-jumped-ahead"));
-        Ok(())
     }
 
     #[test]
@@ -8147,8 +8257,8 @@ mod tests {
     }
 
     #[test]
-    fn set_acceptance_confirm_warns_when_selected_item_is_mid_dispatch() -> TuiRenderResult<()> {
-        let events = active_claim_execution_events().ok_or(TuiRenderError::EmptyArea)?;
+    fn set_acceptance_confirm_warns_when_selected_item_is_mid_dispatch() {
+        let events = active_claim_execution_events();
         let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
             .with_lane_focus(LaneFocus::Lane(Lane::Active))
             .with_selected_lane_item_index(2);
@@ -8166,16 +8276,15 @@ mod tests {
             valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
         });
         let warning_screen = build_tui_model_for_state(&events, &modal_state);
-        let output = render_to_text(&warning_screen, 120, 30)?;
+        let output = ok_render_text(render_to_text(&warning_screen, 120, 30));
 
         assert!(output.contains("Set acceptance work-item"));
         assert!(output.contains("Target: console-executing"));
         assert!(output.contains("Notice: this policy cannot gate the run in flight."));
-        Ok(())
     }
 
     #[test]
-    fn set_acceptance_confirm_on_idle_item_is_unchanged() -> TuiRenderResult<()> {
+    fn set_acceptance_confirm_on_idle_item_is_unchanged() {
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::ValveConfirm {
@@ -8183,11 +8292,10 @@ mod tests {
             },
         );
         let modal = build_tui_model_for_state(&pending_events(), &state);
-        let output = render_to_text(&modal, 120, 30)?;
+        let output = ok_render_text(render_to_text(&modal, 120, 30));
 
         assert!(output.contains("Set acceptance work-item"));
         assert!(!output.contains("cannot gate the run in flight"));
-        Ok(())
     }
 
     #[test]
