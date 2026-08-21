@@ -58,7 +58,11 @@ NOT `--fail-under-regions 100`, and no fuzz or mutants job exists in
   This realizes the ratified `coverage-region-gate` spec commitment from
   v007. Landing it carries a spec-reconciliation rider flipping the
   :112-119 sentence. **The 2026-08-21 measurement (note 002) shows this
-  is not a one-line flip: 893 regions are uncovered today.** (Hint
+  is not a one-line flip: 893 regions are uncovered today**, and the
+  maintainer ruling recorded there cuts (a) into a1 (close the 166
+  production gaps), a2 (refactor the 713 in-crate test regions down
+  via the shared-check-helper pattern), and a3 (flip the gate +
+  rider). (Hint
   mismatch on record: the epic carries `spec_commitment_hint
   quality-gate-ci-jobs`; the v007 follow-up id_hint is
   `coverage-region-gate`. Same obligation — do not file twice.)
