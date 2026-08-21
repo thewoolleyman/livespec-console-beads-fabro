@@ -1,0 +1,50 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | mode: tui | repo: livespec-console-beads-fabro | view: Lanes | attention: 92 | factory: drain completed | sources: 2 unavailable (dispatcher, livespec)                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Men┌Work item: livespec-console-beads-fabro-ekb5vq──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌Vi│[bug] clippy match_same_arms and the 100% llvm-cov line gate can each be satisfied only by violating the other, and the way out is undiscoverable                                               │──┐
+│  │                                                                                                                                                                                                │ay│
+│  │id                   livespec-console-beads-fabro-ekb5vq                                                                                                                                        │r │
+│> │repo                 livespec-console-beads-fabro                                                                                                                                               │sp│
+│  │type                 bug                                                                                                                                                                        │ s│
+│  │status               ready                                                                                                                                                                      │ds│
+│  │execution_state      -                                                                                                                                                                          │ t│
+│  │lane                 ready                                                                                                                                                                      │cl│
+│  │rank                 a0                                                                                                                                                                         │es│
+│  │lane_reason          —                                                                                                                                                                          │ea│
+│  │admission_policy     — (not emitted; console assumes manual)                                                                                                                                    │  │
+│  │acceptance_policy    ai-then-human                                                                                                                                                              │em│
+│  │origin               freeform                                                                                                                                                                   │-b│
+│  │gap_id               —                                                                                                                                                                          │  │
+│  │assignee             —                                                                                                                                                                          │  │
+│  │depends_on           —                                                                                                                                                                          │  │
+│  │captured_at          2026-07-30T01:57:37Z                                                                                                                                                       │  │
+│  │resolution           —                                                                                                                                                                          │  │
+│  │reason               —                                                                                                                                                                          │  │
+│  │audit                —                                                                                                                                                                          │  │
+│  │superseded_by        —                                                                                                                                                                          │  │
+│  │spec_commitment_hint —                                                                                                                                                                          │  │
+│  │supersedes           —                                                                                                                                                                          │  │
+│  │blocked_reason       —                                                                                                                                                                          │  │
+│  │factory_safety       —                                                                                                                                                                          │  │
+│  │                                                                                                                                                                                                │  │
+│  │acceptance_criteria                                                                                                                                                                             │  │
+│  │A pincer note exists at the gate definition (justfile check-coverage recipe and/or coverage-gate.py header or .ai note) naming the or-pattern vs match_same_arms pincer; coverage-gate.py       │  │
+│  │nameable-miss failure message states the resolution (exercise the untaken alternative; never split the arm or relax match_same_arms); no gate-behavior changes; just check green.               │  │
+│  │                                                                                                                                                                                                │  │
+│  │notes                                                                                                                                                                                           │  │
+│  │SCOPE NARROWED BY MAINTAINER RULING (2026-08-20, panel-sharpened; full record                                                                                                                   │  │
+│  │tmp/overseer/foreman/panels/livespec-console-beads-fabro-ekb5vq/panel-7110734972711c55f7b4c65405de227b4ca21128460035c4babc0eca3d299c4e.json). Two of three desired outcomes ALREADY LANDED and  │  │
+│  │verified in-tree: unnameable-miss attribution via instantiation-group arithmetic (PR #696; coverage-gate.py fails closed on unattributable misses) and missing-line enumeration in gate failure │  │
+│  │output (justfile:271 tees `cargo llvm-cov report --show-missing-lines`; coverage-gate.py:220-226 prints nameable rows). APPROVED RESIDUE ONLY: discoverability — (a) a pincer note at the gate  │  │
+│  │definition (justfile check-coverage recipe and/or dev-tooling/coverage-gate.py header or .ai note) naming the or-pattern vs match_same_arms pincer, (b) one added sentence in coverage-gate.py's│  │
+│  │nameable-miss failure message: the fix is to EXERCISE THE UNTAKEN ALTERNATIVE — never split the arm, never relax match_same_arms. Outside plan/archive the repo currently has ZERO mentions of  │  │
+│  │any of this.                                                                                                                                                                                    │  │
+│  │                                                                                                                                                                                                │  │
+│  │description                                                                                                                                                                                     │  │
+│  │Problem: two of this repo's own quality gates are in direct tension on a shape that                                                                                                             │  │
+│  │up/down scroll | esc to close                                                                                                                                                                   │  │
+└──└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘──┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down scroll | PgUp/PgDn page | esc close item                                                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
