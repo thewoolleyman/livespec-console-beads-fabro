@@ -1,1089 +1,1153 @@
 [
- {
-  "scenario": "Scenario 1 -- Operator sees one needs-attention inbox",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_12_needs_attention_diff.rs::scenario_12_needs_attention_snapshot_diffed_at_ingest_into_attention_item_events",
-  "reason": "This top-of-pyramid test covers the re-cast Scenario 1 path by ingesting the product needs-attention snapshot and projecting the attention_item stream consumed by the needs-attention inbox.",
-  "clauses": [
-   {
-    "gap_id": "gap-cbianbui",
-    "scenario": "Scenario 1 -- Operator sees one needs-attention inbox"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 2 -- Factory drain command",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_2_factory_drain_command_dispatches_and_projects_outcome",
-  "reason": "Top-of-pyramid integration coverage for command persistence, handler acceptance, Dispatcher-port invocation, outcome events, and completed command projection.",
-  "clauses": [
-   {
-    "gap_id": "gap-d3m5voif",
-    "scenario": "Scenario 2 -- Factory drain command"
-   },
-   {
-    "gap_id": "gap-e63rj66x",
-    "scenario": "Scenario 2 -- Factory drain command"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_3_pull_adapter_backfill_replays_window_and_advances_checkpoint_after_append",
-  "reason": "Top-of-pyramid integration coverage for a cold-start adapter backfill, bounded reconciliation-window request, durable append, and checkpoint advancement.",
-  "clauses": [
-   {
-    "gap_id": "gap-g5wswzt5",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-5tddgrob",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-cgknjzws",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-ujt3s7rx",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-4nqktnpz",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-kb7xafy2",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-bfinrito",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-csb7537s",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-qlwfra5y",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-ybaf2o76",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-4vwls6to",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-q5yo3v6p",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   },
-   {
-    "gap_id": "gap-sistdza5",
-    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 4 -- Source cannot prove full transition history",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_4_snapshot_only_source_emits_completeness_finding",
-  "reason": "Top-of-pyramid integration coverage for ingesting a snapshot-only source and surfacing the source-completeness finding.",
-  "clauses": [
-   {
-    "gap_id": "gap-6nlsbguz",
-    "scenario": "Scenario 4 -- Source cannot prove full transition history"
-   },
-   {
-    "gap_id": "gap-s7asgmbj",
-    "scenario": "Scenario 4 -- Source cannot prove full transition history"
-   },
-   {
-    "gap_id": "gap-wo6cyeph",
-    "scenario": "Scenario 4 -- Source cannot prove full transition history"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 5 -- TUI-first operator workflow",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_command",
-  "reason": "Top-of-pyramid integration coverage for the store-backed TUI loop: source backfill, presentation to the runner, command persistence, and dispatch handling.",
-  "clauses": [
-   {
-    "gap_id": "gap-lqcxsqk5",
-    "scenario": "Scenario 5 -- TUI-first operator workflow"
-   },
-   {
-    "gap_id": "gap-7r5xvpx6",
-    "scenario": "Scenario 5 -- TUI-first operator workflow"
-   },
-   {
-    "gap_id": "gap-6no66fti",
-    "scenario": "Scenario 5 -- TUI-first operator workflow"
-   },
-   {
-    "gap_id": "gap-i2aaccih",
-    "scenario": "Scenario 5 -- TUI-first operator workflow"
-   },
-   {
-    "gap_id": "gap-ytf6uire",
-    "scenario": "Scenario 5 -- TUI-first operator workflow"
-   },
-   {
-    "gap_id": "gap-6d4rptn2",
-    "scenario": "Scenario 5 -- TUI-first operator workflow"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 6 -- Policy-rejected command produces no side effect",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_6_policy_rejected_drain.rs::scenario_6_policy_rejected_drain_emits_rejection_without_invoking_port",
-  "clauses": [
-   {
-    "gap_id": "gap-djjxev42",
-    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
-   },
-   {
-    "gap_id": "gap-uktsb7dc",
-    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
-   },
-   {
-    "gap_id": "gap-2pdu2dqc",
-    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
-   },
-   {
-    "gap_id": "gap-mkmwe6sh",
-    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
-   },
-   {
-    "gap_id": "gap-rurps4m2",
-    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 7 -- Crash-gap recovery reconstructs a missing outcome",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_7_crash_gap.rs::scenario_7_reconciliation_reconstructs_missing_outcome_after_crash",
-  "clauses": []
- },
- {
-  "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_8_corrupted_projection_rebuilds_by_replaying_event_log",
-  "reason": "Top-of-pyramid integration coverage for dropping derived projection state, replaying the append-only event log, and rebuilding an equivalent projection.",
-  "clauses": [
-   {
-    "gap_id": "gap-ib4zdcqj",
-    "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
-   },
-   {
-    "gap_id": "gap-2tugwhph",
-    "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
-   },
-   {
-    "gap_id": "gap-lyqu26at",
-    "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
-   },
-   {
-    "gap_id": "gap-ymr6klbs",
-    "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_11_set_admission.rs::scenario_11_set_admission_never_moves_an_item_between_states",
-  "reason": "Top-of-pyramid acceptance/integration test tier under crates/console-cli/tests/ (the Scenario 7 precedent). All three of the scenario's scenes are now built and bound, each riding the shared orchestrator-action port and work_item outcome family: the Approve scene lands crates/console-cli/tests/scenario_11_approve_valve.rs (con-S1), the Reject scene lands crates/console-cli/tests/scenario_11_reject_valve.rs (con-S2), and the set-admission policy-edit scene lands crates/console-cli/tests/scenario_11_set_admission.rs (con-S3). The bound test path names the set-admission scene that completes coverage; the scenario is fully covered. The v035 dispatcher-settings re-baseline reworded two of this scenario's clause lines (the `drive` 1:1 mapping sentence and the TUI drive-the-valves clause), so their gap-ids were rebound; the TUI clause now names six commands and binds to Scenario 10, whose override scene is still pending a test.",
-  "clauses": [
-   {
-    "gap_id": "gap-7hcn45eu",
-    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_12_needs_attention_diff.rs::scenario_12_needs_attention_snapshot_diffed_at_ingest_into_attention_item_events",
-  "clauses": []
- },
- {
-  "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: a top-of-pyramid contributor acceptance test should exercise the spec placement boundary by validating that operator-observable content routes to the functional files while contributor-only constraints route to non-functional-requirements.md. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-cwfojsth",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   },
-   {
-    "gap_id": "gap-4xyiregs",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   },
-   {
-    "gap_id": "gap-ahcqrwyu",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   },
-   {
-    "gap_id": "gap-pzx3lvle",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   },
-   {
-    "gap_id": "gap-wtugehag",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   },
-   {
-    "gap_id": "gap-gdql5nhp",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   },
-   {
-    "gap_id": "gap-cioe4cvs",
-    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid hook/check acceptance test should cover accepted Red-Green-Replay evidence, rejected malformed product commits, and the non-product exemption once the Rust replay checker lands. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-7y6ca6tv",
-    "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
-   },
-   {
-    "gap_id": "gap-w25h6336",
-    "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
-   },
-   {
-    "gap_id": "gap-xxzju2s6",
-    "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
-   },
-   {
-    "gap_id": "gap-2dsuvu6i",
-    "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid quality-gate acceptance test should assert the local check aggregate, merge-only fuzz/mutation split, and nightly chore-opening behavior. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-mupmnlf6",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-u4vkamqx",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-qqsjj3l7",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-b2oe2inf",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-u4epjyph",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-2nkpajjx",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-iiur4vzu",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-q2iltoar",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-a4adwzr6",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-s3gue5iu",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-f3babxhd",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-zfztfa2j",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   },
-   {
-    "gap_id": "gap-ay7wmdyj",
-    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "crates/console-spec-check/src/tests.rs::evaluate_flags_unlinked_and_resolves_links",
-  "reason": "Top-of-pyramid checker coverage for resolving a clause link only when it points to a live scenario in the correct audience partition; paired checker tests cover untested scenarios and fail/warn mode.",
-  "clauses": [
-   {
-    "gap_id": "gap-66uwzzdf",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   },
-   {
-    "gap_id": "gap-4stkidvc",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   },
-   {
-    "gap_id": "gap-eufggjsj",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   },
-   {
-    "gap_id": "gap-cpsezy5s",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   },
-   {
-    "gap_id": "gap-li66ewiy",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   },
-   {
-    "gap_id": "gap-b6nbeggx",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   },
-   {
-    "gap_id": "gap-ozcrjep2",
-    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid CI/work-items access acceptance test should verify the single bare BEADS_DOLT_PASSWORD convention without echoing or committing secrets. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-je2rqb7t",
-    "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
-   },
-   {
-    "gap_id": "gap-mvwyxgwc",
-    "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
-   },
-   {
-    "gap_id": "gap-mmtvkkpz",
-    "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify product crates are Rust crates and declare #![forbid(unsafe_code)] unless a future spec revision grants an exception. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-asgj526f",
-    "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban"
-   },
-   {
-    "gap_id": "gap-eum4ifwi",
-    "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario G -- Railway-oriented error handling",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify typed Result rails, panic/unwrap/expect exclusions, rejection-versus-infrastructure error separation, and pipeline-shaped use cases. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-elbrtgyb",
-    "scenario": "Contributor Scenario G -- Railway-oriented error handling"
-   },
-   {
-    "gap_id": "gap-whxrlx4j",
-    "scenario": "Contributor Scenario G -- Railway-oriented error handling"
-   },
-   {
-    "gap_id": "gap-rr3aphtn",
-    "scenario": "Contributor Scenario G -- Railway-oriented error handling"
-   },
-   {
-    "gap_id": "gap-wnwiqkqd",
-    "scenario": "Contributor Scenario G -- Railway-oriented error handling"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify bounded-context ownership, domain infrastructure isolation, source-adapter isolation, UI source isolation, and the zero-Beads-knowledge read path. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-h4eusndl",
-    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
-   },
-   {
-    "gap_id": "gap-dkp7nwnq",
-    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
-   },
-   {
-    "gap_id": "gap-nfjgjdq4",
-    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
-   },
-   {
-    "gap_id": "gap-a67yfq57",
-    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
-   },
-   {
-    "gap_id": "gap-udwkfq42",
-    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: the top-of-pyramid architecture-check acceptance test should verify the compiled check enforces the Domain-Driven Design rule set from structured crate metadata and Rust AST inspection. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-  "clauses": [
-   {
-    "gap_id": "gap-sbflemi5",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   },
-   {
-    "gap_id": "gap-y3zougam",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   },
-   {
-    "gap_id": "gap-6rbisibd",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   },
-   {
-    "gap_id": "gap-j2ofxpcn",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   },
-   {
-    "gap_id": "gap-hh6ugogd",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   },
-   {
-    "gap_id": "gap-a5fi6ahj",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   },
-   {
-    "gap_id": "gap-tcpowvre",
-    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-tui/src/lib.rs::tests::render_to_text_distinguishes_cockpit_blind_from_factory_idle_in_the_header",
-  "reason": "Top-of-pyramid render-level test asserting the idle-vs-blind header distinction: unavailable sources are counted and named in the header, and a healthy cycle shows no phantom unavailability count. Extended with four source-availability-honesty assertions (b1-source-availability-honesty): a reachable source is counted available and shows no unavailability indicator; a reached-but-empty source (an empty work-item ledger, zero open pull requests, or an absent-but-expected dispatch journal) is observed-and-idle, never counted or named unavailable; a recovered source clears from the tally on its next successful observation (latest-poll-outcome-per-source, not any historical failure); and a genuinely-unreachable source is counted and named with a durably-persisted human-readable reason. Binds the new Adapter Contract honesty clause (empty-is-not-unavailable / persisted-reason / latest-per-source).",
-  "clauses": [
-   {
-    "gap_id": "gap-hmxhswp7",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   },
-   {
-    "gap_id": "gap-7yl7qdx3",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   },
-   {
-    "gap_id": "gap-4rhbuikn",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   },
-   {
-    "gap_id": "gap-jez5gaos",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   },
-   {
-    "gap_id": "gap-vgferywx",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   },
-   {
-    "gap_id": "gap-uezyiwwk",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   },
-   {
-    "gap_id": "gap-n7vt6nbj",
-    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/tmux_tui_e2e.rs",
-  "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_modal_help_scenario_18`) driving the shipped binary through a real tmux pane: `?` opens the overlay auto-focused to the focused pane's section (Attention, Lanes, Settings), with a Global-actions section plus one per focusable pane; the overlay is a 3-character-border near-full-viewport window (corners derived from the captured viewport) that never renders wider than the viewport; a left-side section menu beside a right-side help-text pane whose content switches as the menu is navigated and which left/right never scroll; and a modal that always prints `esc to exit` and closes only on Esc -- `?` and other keys leave it open with the underlying view unswitched and unscrolled, and Esc returns focus to the originating pane. The render/keymap/reducer slices (auto-focus section selection, Esc-only close, section navigation resetting scroll, up/down-and-PgUp/PgDn key mapping, and the 3-character border geometry) are unit-covered in console-application and console-tui; this E2E covers the shipped raw-mode render/loop path end to end.",
-  "clauses": [
-   {
-    "gap_id": "gap-kz3ucpjv",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   },
-   {
-    "gap_id": "gap-gpol7uvv",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   },
-   {
-    "gap_id": "gap-bwlmtboa",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   },
-   {
-    "gap_id": "gap-wpgqv4zu",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   },
-   {
-    "gap_id": "gap-oieftjkf",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   },
-   {
-    "gap_id": "gap-lgc3ymdx",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   },
-   {
-    "gap_id": "gap-5i56qfnu",
-    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_9_dispatcher_setting.rs",
-  "reason": "Top-of-pyramid acceptance test for the dispatcher-settings write path, driving the console command pump end to end over the real DispatcherOrchestratorActionPort: the single-setting `config.dispatcher_setting_set` command, the ordinary recorded write with no arming ceremony, the orchestrator-owned setting state the console never duplicates (the write rides `drive.py --action set-config:<key>:<value>`, never a `.livespec.jsonc` write), the `config.dispatcher_setting.changed` audit with previous/new values, and the not-wired honesty outcome. The Settings-surface TUI slice (six-row content pane, per-setting detail help, and the Enter/Space edit that emits the command with no confirm modal) is unit-covered in console-application and console-tui; this acceptance test covers the handler round-trip.",
-  "clauses": [
-   {
-    "gap_id": "gap-mrb6qt3j",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-zzj6x5wp",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-xf6id2f2",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-i3ypmoz6",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-rtoyduos",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-cyyevbtp",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-z6errbm6",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-acibjyuw",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-ihvvtnr4",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-hz7dbvls",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-dayqffnt",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-ih7hpoyh",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-xol76tyx",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-xefflyiy",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-nekc3fo7",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-lrmpoqgc",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-gbxhbvh6",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-miiy3rcc",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-r4n3sljc",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-xwwcbmms",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-eoe6ihj2",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-3o7imlnk",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-bg7ur253",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-bs4rorjt",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-oustmuv6",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-p52alykh",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-5cjdnlb4",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-yyevgtzl",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-vmx3esw4",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   },
-   {
-    "gap_id": "gap-vdunlnsq",
-    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
-  "scenario_file": "scenarios.md",
-  "test": "TODO",
-  "reason": "Test tier: top-of-pyramid acceptance test pending for the per-item override valve: an override beating the global default, the `wip_cap` rejection (a per-repo concurrency ceiling admits none), the one-console-command-per-overridable-setting rule, and the TUI driving all six Work-item Lifecycle commands. The six-command TUI clause binds here rather than to Scenario 11 because Scenario 11 is fully covered by built tests while the sixth (override) scene is not yet built. Owner: W3 Settings-surface code child, which lands the per-item override control under crates/console-cli/tests/.",
-  "clauses": [
-   {
-    "gap_id": "gap-6i3hqmed",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-43ukcnwy",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-65d6ylmc",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-xudwpvfd",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-i77hwadv",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-lujqie6j",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-lba5jutm",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-6mqderrp",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   },
-   {
-    "gap_id": "gap-xdltweos",
-    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_key_missing_from_the_settings_surface",
-  "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md \u00a7\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
-  "clauses": [
-   {
-    "gap_id": "gap-u5dlygw2",
-    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
-   },
-   {
-    "gap_id": "gap-qgh3bive",
-    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
-   },
-   {
-    "gap_id": "gap-qjcrfd64",
-    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
-   },
-   {
-    "gap_id": "gap-z3xisytt",
-    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
-   },
-   {
-    "gap_id": "gap-di4d5msq",
-    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/scenario_15_orchestrator_auto_dispositions.rs::scenario_15_orchestrator_auto_dispositions_reflect_and_surface_escalations",
-  "reason": "Top-of-pyramid integration test drives serve_report through the real JournalAutonomousDecisionsPort against a producer-generated, SHA-256-stamped auto-disposition JSONL fixture covering auto-approve, ai-auto-accept, ai-fail-auto-rework, ship-on-cap, and cap-exceeded-escalation. It asserts the console reads tmp/fabro-dispatch-journal.jsonl, reflects the four auto-dispositions through factory.autonomous_decision_reflected commands carrying governing_settings, and surfaces the cap-exceeded escalation as a needs-attention item from the journal read leg.",
-  "clauses": [
-   {
-    "gap_id": "gap-34qvabhn",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-h5nbb7fk",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-dumhd5mg",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-cr2zwgfl",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-4c2sd2bd",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-n7i5m6ya",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-pibyrz3e",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   },
-   {
-    "gap_id": "gap-gi26n6eq",
-    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument",
-  "scenario_file": "scenarios.md",
-  "test": "TODO",
-  "reason": "Test tier: top-of-pyramid acceptance test pending for the factory-drain launcher argv: the drain port invokes the Dispatcher with NO per-run policy-arming argument, leaving dispatch-time policy to the orchestrator-owned `dispatcher.*` settings the Dispatcher reads itself. A per-run flag writes no setting, so this is a distinct obligation from the settings-write scenarios and earns its own bound test. Owner: drain-launcher code child under crates/console-cli/tests/; W1 already fixed the shipped launcher, so this test pins that fix against regression rather than driving new behavior.",
-  "clauses": [
-   {
-    "gap_id": "gap-xgf6bv6m",
-    "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
-   },
-   {
-    "gap_id": "gap-zsdfhxxn",
-    "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
-   },
-   {
-    "gap_id": "gap-pictmulm",
-    "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
-   },
-   {
-    "gap_id": "gap-qpuhrnoh",
-    "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-tui/src/lib.rs::move_status_on_a_pending_approval_lane_item_persists_the_approve_command",
-  "reason": "Top-of-pyramid proof of the operator status-move surface: selecting a lane work-item and confirming the move-to-status valve persists the command the shared orchestrator port dispatches. It anchors the two re-derived command-count clauses (the eight-command / seven-map-1:1 Command-Handling and TUI-Contract MUST lines), which now assert the move and resolve-blocked commands issue through the drive surface; the sibling tests move_handler_maps_each_pre_terminal_target_onto_the_move_action_id, move_handler_rejects_ship_guarded_and_malformed_targets_and_empty_ids, and valve_and_move_status_keys_fire_on_a_selected_lane_item complete the pyramid across the broad move, the ship-guard, and the picker firing on a selected lane item.",
-  "clauses": [
-   {
-    "gap_id": "gap-3yr4q3vk",
-    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
-   },
-   {
-    "gap_id": "gap-qcfog6ab",
-    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
-   },
-   {
-    "gap_id": "gap-lk2rvc4e",
-    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
-   },
-   {
-    "gap_id": "gap-bukss5vz",
-    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
-   },
-   {
-    "gap_id": "gap-r6hkps6z",
-    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
-   },
-   {
-    "gap_id": "gap-2k2pcgqy",
-    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 19 -- Operator reads context-specific shortcut hints in the Status line",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/tmux_tui_e2e.rs",
-  "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_status_line_context_hints`) driving the shipped binary through a real tmux pane: the focused pane (Attention) renders non-empty, context-appropriate hints; switching focus (Lanes -> Settings) changes the hints AND the two panes' hint sets differ (the Lanes `move-status` key vs. the Settings `edit row` key); opening the `?` Help overlay replaces the pane's hints with the overlay's (`close help`) with the pane's `move-status` gone, and closing it (Esc) restores the pane's hints; and no context with available actions shows an empty hint line. The Status line renders in a height-3 bordered box below the Help modal's 3-row bottom margin so the overlay's hints stay visible and capturable while the modal is open. The pane/overlay hint derivation (`footer_hint` over the focused `active_view` and open `overlay`) is unit-covered in console-application; this E2E covers the shipped raw-mode render/loop path end to end. The clause now also forbids a DISHONEST hint (a key advertised where it is inert, or described by an action it does not perform in that context); that added rule is proven by the reducer-level siblings crates/console-application/src/lib.rs::the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane and crates/console-tui/src/lib.rs::status_hint_stops_claiming_drill_where_enter_no_longer_drills, which pin the Lanes hint to `enter drill` on the lane overview and `enter item` inside a drilled-in lane, where Enter previously did nothing while the hint still said `drill`. Independent review then found the clause's first wording was itself violated at ship time by the hints this change edits: the lane OVERVIEW advertised six per-item keys (s / p / c / r / m / n) that are inert there because its selection is a LANE and not a work-item, and an empty drilled-in lane advertised `enter item` where Enter opens nothing. The hints are now selection-aware and the clause states the enforceable rule (no per-item key where no work-item is selected) while explicitly NOT promising per-item-state suppression, which depends on the orchestrator's valid-verb vocabulary this console does not yet consume. Proven by crates/console-application/src/lib.rs::the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane, which now asserts the overview and the empty drilled-in lane carry no per-item key and that an empty Attention inbox drops its valve keys.",
-  "clauses": [
-   {
-    "gap_id": "gap-7heyl2dr",
-    "scenario": "Scenario 19 -- Operator reads context-specific shortcut hints in the Status line"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 20 -- Operator focuses and horizontally scrolls the top/header pane on a narrow viewport",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_top_pane_focus_hscroll",
-  "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_top_pane_focus_hscroll`) driving the shipped binary through a real tmux pane: on a narrow (56-col) viewport the blurred header shrinks to fit (dropping the low-value `fleet: livespec` field, no `[focus]` marker); three Tabs cycle focus onto the top/header pane (Nav -> Content -> Detail -> Header), whose block title gains `[focus]` and whose FULL header line renders at offset 0 (fleet visible at the left, `attention:` clipped off the right); scrolling right saturates the render-measured clamp to the right edge (revealing `attention:`, panning `fleet` off-screen) and scrolling left returns to the left edge; blur (Tab off the header) snaps the pane back to its shrink-to-fit, left-justified default; and a wide launch shows the whole header with a zero scroll clamp. The focus-ring cycle, header-scroll clamp/reset, focused-vs-blurred render, `footer()` header hints, and the `?`-to-header-section behavior are unit-covered in console-application and console-tui; this E2E covers the shipped raw-mode render/loop path end to end.",
-  "clauses": [
-   {
-    "gap_id": "gap-lepclyx4",
-    "scenario": "Scenario 20 -- Operator focuses and horizontally scrolls the top/header pane on a narrow viewport"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_panes_operational_content_only_scenario_21",
-  "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The \u00a7\"TUI Contract\" panes-operational-content-only clause binds here.",
-  "clauses": [
-   {
-    "gap_id": "gap-xiziukv6",
-    "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-completeness-check/tests/scenario_22_user_docs_tree.rs::settings_doc_is_the_detailed_usage_sub_document",
-  "reason": "Top-of-pyramid structural coverage for the User Documentation Contract, in crates/console-completeness-check/tests/scenario_22_user_docs_tree.rs: the top-level README.md links docs/README.md and carries no user-facing documentation sections of its own while retaining contributor material (readme_is_a_pointer_carrying_no_user_facing_documentation, readme_retains_contributor_facing_material); docs/README.md is an overview plus a table of contents linking each sub-document by relative path (docs_index_is_an_overview_and_table_of_contents); the tree carries the four named sub-documents, with installing covering the download-install path and running the console against a repository other than its own, and detailed-usage carrying a section per TUI pane (docs_tree_carries_the_four_required_sub_documents, installing_covers_download_install_and_another_repository, detailed_usage_carries_a_section_per_tui_pane); and the settings doc the completeness check reads is docs/detailed-usage.md rather than the README, which carries the Dispatcher-settings section the check scopes to (settings_doc_is_the_detailed_usage_sub_document, settings_doc_carries_the_dispatcher_settings_section). The test lives in the completeness-check crate because the settings-doc case binds the contract to the SETTINGS_DOC constant that crate actually reads -- the surface that would silently drift if the contract and the gate disagreed.",
-  "clauses": [
-   {
-    "gap_id": "gap-xdj5g2rk",
-    "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
-   },
-   {
-    "gap_id": "gap-hbcwvf5e",
-    "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
-   },
-   {
-    "gap_id": "gap-ynr73rzr",
-    "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 23 -- Operator reads a work-item's full record without leaving the console",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-tui/src/lib.rs::work_item_detail_modal_renders_every_standardized_record_field",
-  "reason": "Top-of-pyramid render proof of the work-item record drill-in, in crates/console-tui/src/lib.rs: a fixture work-item with EVERY standardized field populated is projected through the real lane board and rendered, and each field (title, description, type, status, lane, rank, origin, gap_id, assignee, depends_on, captured_at, resolution, reason, audit, superseded_by, spec_commitment_hint) plus its label is asserted present (work_item_detail_modal_renders_every_standardized_record_field). The sibling tests complete the scenario: work_item_detail_modal_shows_absent_fields_as_absent_and_handles_no_selection (an unemitted field renders as the explicit absent placeholder, the item still lists in its lane, and a no-selection / too-small viewport degrades without panicking); attention_enter_opens_the_item_modal_and_esc_preserves_selection and open_work_item_detail_uses_attention_selection (Enter on a needs-attention work-item opens the same pinned record modal and Esc preserves the attention selection); command_modal_does_not_open_without_actions and render_to_text_suppresses_empty_command_modal_overlay (the legacy command modal stays closed and does not render when the selected attention detail has no actions); work_item_detail_modal_scrolls_a_long_description_to_its_bottom (a description taller than the viewport reaches its last row and clamps there, with the close hint pinned on its reserved row at every offset); enter_opens_the_item_modal_and_esc_closes_it_back_to_the_lane (Enter on a drilled-in lane row opens the record and Esc unwinds exactly one level, back to the lane rather than the lane overview); item_modal_scroll_keys_move_the_offset_and_are_inert_elsewhere (up/down and PgUp/PgDn scroll it, Enter and `?` are inert over the read-only surface); status_hint_stops_claiming_drill_where_enter_no_longer_drills (the Status line names the item drill-in inside a drilled-in lane instead of the lane drill-in it used to claim while Enter was inert); and the_open_item_modal_draws_over_the_whole_screen (the record draws through the real render path over the lane board). The plumbing that feeds the surface is proven in crates/console-application/src/source_adapters.rs by parse_orchestrator_carries_the_whole_standardized_record (every descriptive field survives the adapter, with the structured depends_on and audit shapes flattened and an unrecognized dependency element degraded rather than dropped), work_item_detail_survives_the_payload_round_trip (the persisted payload and its read-back move in lockstep, and a pre-record ledger row still replays), an_edited_description_appends_a_fresh_observation (a description edit reaches the console instead of sitting stale behind an unchanged lifecycle state, while an unchanged record stays idempotent), and a_record_missing_every_descriptive_field_still_observes (a leaner emission keeps the work-item on the board rather than tripping the fail-soft skip).",
-  "clauses": [
-   {
-    "gap_id": "gap-rmrpojby",
-    "scenario": "Scenario 23 -- Operator reads a work-item's full record without leaving the console"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/src/lib.rs::two_factory_executors_claim_one_pending_command_once",
-  "reason": "Top-of-pyramid command-queue coverage in console-cli: two file-backed SQLite connections consume the same pending factory command, the winning executor claims pending -> executing before invoking the Dispatcher port, a reentrant loser observes no pending command and executes no port call, the side-effect counter remains exactly one, and the winning command finalizes to completed. The sibling stale_executing_factory_command_is_failed_without_reexecution seeds an old executing claim and proves recovery marks it failed without invoking the port.",
-  "clauses": [
-   {
-    "gap_id": "gap-2aohdo5p",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-iuqhvg72",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-ng6mae2y",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-pvyu7j3v",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-zaarr7zd",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-xrds3dpi",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-7wnnjb4f",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   },
-   {
-    "gap_id": "gap-tc636ivq",
-    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 25 -- Per-item verb hints follow the per-state vocabulary",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary",
-  "reason": "Top-of-pyramid real-TUI tmux E2E proving the ratified per-state operator verb vocabulary at the shipped key/render boundary: a selected done item offers no per-item verb hint and keeps the corresponding keys inert, a selected backlog item keeps the operator-drivable move hint while suppressing human-valve hints, and a selected acceptance item keeps reject alongside accept instead of treating active as a single-entry-door predecessor.",
-  "clauses": [
-   {
-    "gap_id": "gap-23tps2nk",
-    "scenario": "Scenario 25 -- Per-item verb hints follow the per-state vocabulary"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session",
-  "scenario_file": "scenarios.md",
-  "test": "crates/console-tui/src/lib.rs::tests::driver_handoff_overlay_renders_lane_appropriate_id_only_invocations; crates/console-tui/src/lib.rs::tests::driver_handoff_confirm_copies_without_persisting_or_polling; crates/console-tui/src/lib.rs::tests::driver_handoff_is_suppressed_outside_backlog_and_host_only_ready",
-  "reason": "TUI unit coverage proves Scenario 26 at the key/render/effect boundary: eligible backlog and host-only ready selections open the full-width handoff overlay with the id-only groom/implement invocation, the overlay wording avoids claimed copy success, Enter produces a copy-only non-persisted effect, and ineligible states suppress the handoff key and hint.",
-  "clauses": [
-   {
-    "gap_id": "gap-vvl5pllp",
-    "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional",
-  "scenario_file": "scenarios.md",
-  "test": "TODO",
-  "reason": "Test tier: top-of-pyramid acceptance coverage is owed by the menu-shell implementation (plan/02-menu-shell-primacy/): the generic menu-traversal E2E driving every registered action's menu path, plus the hotkey-free-build reachability run, are the integration/acceptance tests this scenario names. Registered as TODO at ratification time because the menu system this scenario specifies does not exist yet -- the registry (plan/01) and menu shell (plan/02) are the implementing plans, and the scenario is ratified ahead of them by deliberate maintainer decision (2026-08-02).",
-  "clauses": [
-   {
-    "gap_id": "gap-pdamcd6a",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-ema2vw57",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-j3re4iwg",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-a3mfeqsi",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-lbb53ona",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-nu2fvafi",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-fqc3cuoe",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-xd7dp4xu",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-gll6bzws",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   },
-   {
-    "gap_id": "gap-rpesict5",
-    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
-   }
-  ]
- },
- {
-  "scenario": "Contributor Scenario J -- Cross-repo action-surface parity",
-  "scenario_file": "non-functional-requirements.md",
-  "test": "TODO",
-  "reason": "Test tier: a top-of-pyramid acceptance/integration test lands with the parity check itself (plan/01-action-registry-and-invoker slice A ships crates/console-cli/tests/drive_surface_parity.rs, born red against the currently-unbound valve actions as its red demonstration, then green with bindings and reasoned omissions). Registered as TODO until that slice merges; the test name is recorded here at merge time.",
-  "clauses": [
-   {
-    "gap_id": "gap-3hzrpeqq",
-    "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
-   },
-   {
-    "gap_id": "gap-wa6qy5v2",
-    "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
-   },
-   {
-    "gap_id": "gap-fszan563",
-    "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
-   },
-   {
-    "gap_id": "gap-k5zintsg",
-    "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
-   },
-   {
-    "gap_id": "gap-s4d4pl6q",
-    "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
-   }
-  ]
- },
- {
-  "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
-  "scenario_file": "scenarios.md",
-  "test": "TODO",
-  "reason": "Test tier: a top-of-pyramid acceptance test would need to prove a UI absence -- that the console's Settings surface never gains a `livespec-overseer` foreman/overseer configuration lever (for example `foreman_valve_disposition`) and that no console code path invokes the overseer/foreman layer. This v040 Scope Boundary clause is bound here because Scenario 11 is the console's other orthogonal-system boundary case (the orchestrator's ratified action surface, which the console maps commands onto and never bypasses); the overseer/foreman clause is the same shape of boundary against a second, independent system. Coverage today is structural rather than behavioral: console-arch-check enforces that the Settings surface stays limited to the orchestrator-declared `dispatcher.*` levers (Scenario 14), and no `livespec-overseer` client exists in this crate tree for a test to invoke. Registered now, pending, per the console-spec-check requirement that every live clause bind to a scenario.",
-  "clauses": [
-   {
-    "gap_id": "gap-bhrwmgth",
-    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-   },
-   {
-    "gap_id": "gap-vwuzqptl",
-    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-   }
-  ]
- }
+  {
+    "scenario": "Scenario 1 -- Operator sees one needs-attention inbox",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_12_needs_attention_diff.rs::scenario_12_needs_attention_snapshot_diffed_at_ingest_into_attention_item_events",
+    "reason": "This top-of-pyramid test covers the re-cast Scenario 1 path by ingesting the product needs-attention snapshot and projecting the attention_item stream consumed by the needs-attention inbox.",
+    "clauses": [
+      {
+        "gap_id": "gap-cbianbui",
+        "scenario": "Scenario 1 -- Operator sees one needs-attention inbox"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 2 -- Factory drain command",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_2_factory_drain_command_dispatches_and_projects_outcome",
+    "reason": "Top-of-pyramid integration coverage for command persistence, handler acceptance, Dispatcher-port invocation, outcome events, and completed command projection.",
+    "clauses": [
+      {
+        "gap_id": "gap-d3m5voif",
+        "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-e63rj66x",
+        "scenario": "Scenario 2 -- Factory drain command"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_3_pull_adapter_backfill_replays_window_and_advances_checkpoint_after_append",
+    "reason": "Top-of-pyramid integration coverage for a cold-start adapter backfill, bounded reconciliation-window request, durable append, and checkpoint advancement.",
+    "clauses": [
+      {
+        "gap_id": "gap-g5wswzt5",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-5tddgrob",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-cgknjzws",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-ujt3s7rx",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-4nqktnpz",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-kb7xafy2",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-bfinrito",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-csb7537s",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-qlwfra5y",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-ybaf2o76",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-4vwls6to",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-q5yo3v6p",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      },
+      {
+        "gap_id": "gap-sistdza5",
+        "scenario": "Scenario 3 -- Pull adapter backfill avoids silent missed data"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 4 -- Source cannot prove full transition history",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_4_snapshot_only_source_emits_completeness_finding",
+    "reason": "Top-of-pyramid integration coverage for ingesting a snapshot-only source and surfacing the source-completeness finding.",
+    "clauses": [
+      {
+        "gap_id": "gap-6nlsbguz",
+        "scenario": "Scenario 4 -- Source cannot prove full transition history"
+      },
+      {
+        "gap_id": "gap-s7asgmbj",
+        "scenario": "Scenario 4 -- Source cannot prove full transition history"
+      },
+      {
+        "gap_id": "gap-wo6cyeph",
+        "scenario": "Scenario 4 -- Source cannot prove full transition history"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 5 -- TUI-first operator workflow",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_command",
+    "reason": "Top-of-pyramid integration coverage for the store-backed TUI loop: source backfill, presentation to the runner, command persistence, and dispatch handling.",
+    "clauses": [
+      {
+        "gap_id": "gap-lqcxsqk5",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-7r5xvpx6",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-6no66fti",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-i2aaccih",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-ytf6uire",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-6d4rptn2",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 6 -- Policy-rejected command produces no side effect",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_6_policy_rejected_drain.rs::scenario_6_policy_rejected_drain_emits_rejection_without_invoking_port",
+    "clauses": [
+      {
+        "gap_id": "gap-djjxev42",
+        "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
+      },
+      {
+        "gap_id": "gap-uktsb7dc",
+        "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
+      },
+      {
+        "gap_id": "gap-2pdu2dqc",
+        "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
+      },
+      {
+        "gap_id": "gap-mkmwe6sh",
+        "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
+      },
+      {
+        "gap_id": "gap-rurps4m2",
+        "scenario": "Scenario 6 -- Policy-rejected command produces no side effect"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 7 -- Crash-gap recovery reconstructs a missing outcome",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_7_crash_gap.rs::scenario_7_reconciliation_reconstructs_missing_outcome_after_crash",
+    "clauses": []
+  },
+  {
+    "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_8_corrupted_projection_rebuilds_by_replaying_event_log",
+    "reason": "Top-of-pyramid integration coverage for dropping derived projection state, replaying the append-only event log, and rebuilding an equivalent projection.",
+    "clauses": [
+      {
+        "gap_id": "gap-ib4zdcqj",
+        "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
+      },
+      {
+        "gap_id": "gap-2tugwhph",
+        "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
+      },
+      {
+        "gap_id": "gap-lyqu26at",
+        "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
+      },
+      {
+        "gap_id": "gap-ymr6klbs",
+        "scenario": "Scenario 8 -- Corrupted projection rebuilds by replay"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_11_set_admission.rs::scenario_11_set_admission_never_moves_an_item_between_states",
+    "reason": "Top-of-pyramid acceptance/integration test tier under crates/console-cli/tests/ (the Scenario 7 precedent). All three of the scenario's scenes are now built and bound, each riding the shared orchestrator-action port and work_item outcome family: the Approve scene lands crates/console-cli/tests/scenario_11_approve_valve.rs (con-S1), the Reject scene lands crates/console-cli/tests/scenario_11_reject_valve.rs (con-S2), and the set-admission policy-edit scene lands crates/console-cli/tests/scenario_11_set_admission.rs (con-S3). The bound test path names the set-admission scene that completes coverage; the scenario is fully covered. The v035 dispatcher-settings re-baseline reworded two of this scenario's clause lines (the `drive` 1:1 mapping sentence and the TUI drive-the-valves clause), so their gap-ids were rebound; the TUI clause now names six commands and binds to Scenario 10, whose override scene is still pending a test.",
+    "clauses": [
+      {
+        "gap_id": "gap-7hcn45eu",
+        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_12_needs_attention_diff.rs::scenario_12_needs_attention_snapshot_diffed_at_ingest_into_attention_item_events",
+    "clauses": []
+  },
+  {
+    "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid contributor acceptance test should exercise the spec placement boundary by validating that operator-observable content routes to the functional files while contributor-only constraints route to non-functional-requirements.md. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-cwfojsth",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-4xyiregs",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-ahcqrwyu",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-pzx3lvle",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-wtugehag",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-gdql5nhp",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      },
+      {
+        "gap_id": "gap-cioe4cvs",
+        "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid hook/check acceptance test should cover accepted Red-Green-Replay evidence, rejected malformed product commits, and the non-product exemption once the Rust replay checker lands. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-7y6ca6tv",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      },
+      {
+        "gap_id": "gap-w25h6336",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      },
+      {
+        "gap_id": "gap-xxzju2s6",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      },
+      {
+        "gap_id": "gap-2dsuvu6i",
+        "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid quality-gate acceptance test should assert the local check aggregate, merge-only fuzz/mutation split, and nightly chore-opening behavior. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-mupmnlf6",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-u4vkamqx",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-qqsjj3l7",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-b2oe2inf",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-u4epjyph",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-2nkpajjx",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-iiur4vzu",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-q2iltoar",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-a4adwzr6",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-s3gue5iu",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-f3babxhd",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-zfztfa2j",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-ay7wmdyj",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "crates/console-spec-check/src/tests.rs::evaluate_flags_unlinked_and_resolves_links",
+    "reason": "Top-of-pyramid checker coverage for resolving a clause link only when it points to a live scenario in the correct audience partition; paired checker tests cover untested scenarios and fail/warn mode.",
+    "clauses": [
+      {
+        "gap_id": "gap-66uwzzdf",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-4stkidvc",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-eufggjsj",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-cpsezy5s",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-li66ewiy",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-b6nbeggx",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      },
+      {
+        "gap_id": "gap-ozcrjep2",
+        "scenario": "Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid CI/work-items access acceptance test should verify the single bare BEADS_DOLT_PASSWORD convention without echoing or committing secrets. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-je2rqb7t",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      },
+      {
+        "gap_id": "gap-mvwyxgwc",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      },
+      {
+        "gap_id": "gap-mmtvkkpz",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify product crates are Rust crates and declare #![forbid(unsafe_code)] unless a future spec revision grants an exception. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-asgj526f",
+        "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban"
+      },
+      {
+        "gap_id": "gap-eum4ifwi",
+        "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario G -- Railway-oriented error handling",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify typed Result rails, panic/unwrap/expect exclusions, rejection-versus-infrastructure error separation, and pipeline-shaped use cases. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-elbrtgyb",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      },
+      {
+        "gap_id": "gap-whxrlx4j",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      },
+      {
+        "gap_id": "gap-rr3aphtn",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      },
+      {
+        "gap_id": "gap-wnwiqkqd",
+        "scenario": "Contributor Scenario G -- Railway-oriented error handling"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify bounded-context ownership, domain infrastructure isolation, source-adapter isolation, UI source isolation, and the zero-Beads-knowledge read path. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-h4eusndl",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-dkp7nwnq",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-nfjgjdq4",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-a67yfq57",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      },
+      {
+        "gap_id": "gap-udwkfq42",
+        "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: the top-of-pyramid architecture-check acceptance test should verify the compiled check enforces the Domain-Driven Design rule set from structured crate metadata and Rust AST inspection. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "clauses": [
+      {
+        "gap_id": "gap-sbflemi5",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-y3zougam",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-6rbisibd",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-j2ofxpcn",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-hh6ugogd",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-a5fi6ahj",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      },
+      {
+        "gap_id": "gap-tcpowvre",
+        "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-tui/src/lib.rs::tests::render_to_text_distinguishes_cockpit_blind_from_factory_idle_in_the_header",
+    "reason": "Top-of-pyramid render-level test asserting the idle-vs-blind header distinction: unavailable sources are counted and named in the header, and a healthy cycle shows no phantom unavailability count. Extended with four source-availability-honesty assertions (b1-source-availability-honesty): a reachable source is counted available and shows no unavailability indicator; a reached-but-empty source (an empty work-item ledger, zero open pull requests, or an absent-but-expected dispatch journal) is observed-and-idle, never counted or named unavailable; a recovered source clears from the tally on its next successful observation (latest-poll-outcome-per-source, not any historical failure); and a genuinely-unreachable source is counted and named with a durably-persisted human-readable reason. Binds the new Adapter Contract honesty clause (empty-is-not-unavailable / persisted-reason / latest-per-source).",
+    "clauses": [
+      {
+        "gap_id": "gap-hmxhswp7",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-7yl7qdx3",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-4rhbuikn",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-jez5gaos",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-vgferywx",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-uezyiwwk",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-n7vt6nbj",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_modal_help_scenario_18`) driving the shipped binary through a real tmux pane: `?` opens the overlay auto-focused to the focused pane's section (Attention, Lanes, Settings), with a Global-actions section plus one per focusable pane; the overlay is a 3-character-border near-full-viewport window (corners derived from the captured viewport) that never renders wider than the viewport; a left-side section menu beside a right-side help-text pane whose content switches as the menu is navigated and which left/right never scroll; and a modal that always prints `esc to exit` and closes only on Esc -- `?` and other keys leave it open with the underlying view unswitched and unscrolled, and Esc returns focus to the originating pane. The render/keymap/reducer slices (auto-focus section selection, Esc-only close, section navigation resetting scroll, up/down-and-PgUp/PgDn key mapping, and the 3-character border geometry) are unit-covered in console-application and console-tui; this E2E covers the shipped raw-mode render/loop path end to end.",
+    "clauses": [
+      {
+        "gap_id": "gap-kz3ucpjv",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-gpol7uvv",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-bwlmtboa",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-wpgqv4zu",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-oieftjkf",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-lgc3ymdx",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      },
+      {
+        "gap_id": "gap-5i56qfnu",
+        "scenario": "Scenario 18 -- Operator opens pane-specific modal help and exits only with Esc"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_9_dispatcher_setting.rs",
+    "reason": "Top-of-pyramid acceptance test for the dispatcher-settings write path, driving the console command pump end to end over the real DispatcherOrchestratorActionPort: the single-setting `config.dispatcher_setting_set` command, the ordinary recorded write with no arming ceremony, the orchestrator-owned setting state the console never duplicates (the write rides `drive.py --action set-config:<key>:<value>`, never a `.livespec.jsonc` write), the `config.dispatcher_setting.changed` audit with previous/new values, and the not-wired honesty outcome. The Settings-surface TUI slice (six-row content pane, per-setting detail help, and the Enter/Space edit that emits the command with no confirm modal) is unit-covered in console-application and console-tui; this acceptance test covers the handler round-trip.",
+    "clauses": [
+      {
+        "gap_id": "gap-mrb6qt3j",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-zzj6x5wp",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xf6id2f2",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-i3ypmoz6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-rtoyduos",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-cyyevbtp",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-z6errbm6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-acibjyuw",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-ihvvtnr4",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-hz7dbvls",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-dayqffnt",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-ih7hpoyh",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xol76tyx",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xefflyiy",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-nekc3fo7",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-lrmpoqgc",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-gbxhbvh6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-miiy3rcc",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-r4n3sljc",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-xwwcbmms",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-eoe6ihj2",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-3o7imlnk",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-bg7ur253",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-bs4rorjt",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-oustmuv6",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-p52alykh",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-5cjdnlb4",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-yyevgtzl",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-vmx3esw4",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      },
+      {
+        "gap_id": "gap-vdunlnsq",
+        "scenario": "Scenario 9 -- Operator sets a dispatcher policy setting from the console"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: top-of-pyramid acceptance test pending for the per-item override valve: an override beating the global default, the `wip_cap` rejection (a per-repo concurrency ceiling admits none), the one-console-command-per-overridable-setting rule, and the TUI driving all six Work-item Lifecycle commands. The six-command TUI clause binds here rather than to Scenario 11 because Scenario 11 is fully covered by built tests while the sixth (override) scene is not yet built. Owner: W3 Settings-surface code child, which lands the per-item override control under crates/console-cli/tests/.",
+    "clauses": [
+      {
+        "gap_id": "gap-6i3hqmed",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-43ukcnwy",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-65d6ylmc",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-xudwpvfd",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-i77hwadv",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-lujqie6j",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-lba5jutm",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-6mqderrp",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-xdltweos",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_key_missing_from_the_settings_surface",
+    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md \u00a7\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
+    "clauses": [
+      {
+        "gap_id": "gap-u5dlygw2",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-qgh3bive",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-qjcrfd64",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-z3xisytt",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-di4d5msq",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/scenario_15_orchestrator_auto_dispositions.rs::scenario_15_orchestrator_auto_dispositions_reflect_and_surface_escalations",
+    "reason": "Top-of-pyramid integration test drives serve_report through the real JournalAutonomousDecisionsPort against a producer-generated, SHA-256-stamped auto-disposition JSONL fixture covering auto-approve, ai-auto-accept, ai-fail-auto-rework, ship-on-cap, and cap-exceeded-escalation. It asserts the console reads tmp/fabro-dispatch-journal.jsonl, reflects the four auto-dispositions through factory.autonomous_decision_reflected commands carrying governing_settings, and surfaces the cap-exceeded escalation as a needs-attention item from the journal read leg.",
+    "clauses": [
+      {
+        "gap_id": "gap-34qvabhn",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-h5nbb7fk",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-dumhd5mg",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-cr2zwgfl",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-4c2sd2bd",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-n7i5m6ya",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-pibyrz3e",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      },
+      {
+        "gap_id": "gap-gi26n6eq",
+        "scenario": "Scenario 15 -- Orchestrator auto-dispositions and escalations reach the operator"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: top-of-pyramid acceptance test pending for the factory-drain launcher argv: the drain port invokes the Dispatcher with NO per-run policy-arming argument, leaving dispatch-time policy to the orchestrator-owned `dispatcher.*` settings the Dispatcher reads itself. A per-run flag writes no setting, so this is a distinct obligation from the settings-write scenarios and earns its own bound test. Owner: drain-launcher code child under crates/console-cli/tests/; W1 already fixed the shipped launcher, so this test pins that fix against regression rather than driving new behavior.",
+    "clauses": [
+      {
+        "gap_id": "gap-xgf6bv6m",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      },
+      {
+        "gap_id": "gap-zsdfhxxn",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      },
+      {
+        "gap_id": "gap-pictmulm",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      },
+      {
+        "gap_id": "gap-qpuhrnoh",
+        "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-tui/src/lib.rs::move_status_on_a_pending_approval_lane_item_persists_the_approve_command",
+    "reason": "Top-of-pyramid proof of the operator status-move surface: selecting a lane work-item and confirming the move-to-status valve persists the command the shared orchestrator port dispatches. It anchors the two re-derived command-count clauses (the eight-command / seven-map-1:1 Command-Handling and TUI-Contract MUST lines), which now assert the move and resolve-blocked commands issue through the drive surface; the sibling tests move_handler_maps_each_pre_terminal_target_onto_the_move_action_id, move_handler_rejects_ship_guarded_and_malformed_targets_and_empty_ids, and valve_and_move_status_keys_fire_on_a_selected_lane_item complete the pyramid across the broad move, the ship-guard, and the picker firing on a selected lane item.",
+    "clauses": [
+      {
+        "gap_id": "gap-3yr4q3vk",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      },
+      {
+        "gap_id": "gap-qcfog6ab",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      },
+      {
+        "gap_id": "gap-lk2rvc4e",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      },
+      {
+        "gap_id": "gap-bukss5vz",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      },
+      {
+        "gap_id": "gap-r6hkps6z",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      },
+      {
+        "gap_id": "gap-2k2pcgqy",
+        "scenario": "Scenario 17 -- Operator selects a work-item and moves it along the pipeline"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 19 -- Operator reads context-specific shortcut hints in the Status line",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_status_line_context_hints`) driving the shipped binary through a real tmux pane: the focused pane (Attention) renders non-empty, context-appropriate hints; switching focus (Lanes -> Settings) changes the hints AND the two panes' hint sets differ (the Lanes `move-status` key vs. the Settings `edit row` key); opening the `?` Help overlay replaces the pane's hints with the overlay's (`close help`) with the pane's `move-status` gone, and closing it (Esc) restores the pane's hints; and no context with available actions shows an empty hint line. The Status line renders in a height-3 bordered box below the Help modal's 3-row bottom margin so the overlay's hints stay visible and capturable while the modal is open. The pane/overlay hint derivation (`footer_hint` over the focused `active_view` and open `overlay`) is unit-covered in console-application; this E2E covers the shipped raw-mode render/loop path end to end. The clause now also forbids a DISHONEST hint (a key advertised where it is inert, or described by an action it does not perform in that context); that added rule is proven by the reducer-level siblings crates/console-application/src/lib.rs::the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane and crates/console-tui/src/lib.rs::status_hint_stops_claiming_drill_where_enter_no_longer_drills, which pin the Lanes hint to `enter drill` on the lane overview and `enter item` inside a drilled-in lane, where Enter previously did nothing while the hint still said `drill`. Independent review then found the clause's first wording was itself violated at ship time by the hints this change edits: the lane OVERVIEW advertised six per-item keys (s / p / c / r / m / n) that are inert there because its selection is a LANE and not a work-item, and an empty drilled-in lane advertised `enter item` where Enter opens nothing. The hints are now selection-aware and the clause states the enforceable rule (no per-item key where no work-item is selected) while explicitly NOT promising per-item-state suppression, which depends on the orchestrator's valid-verb vocabulary this console does not yet consume. Proven by crates/console-application/src/lib.rs::the_status_hint_distinguishes_the_lane_overview_from_a_drilled_in_lane, which now asserts the overview and the empty drilled-in lane carry no per-item key and that an empty Attention inbox drops its valve keys.",
+    "clauses": [
+      {
+        "gap_id": "gap-7heyl2dr",
+        "scenario": "Scenario 19 -- Operator reads context-specific shortcut hints in the Status line"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 20 -- Operator focuses and horizontally scrolls the top/header pane on a narrow viewport",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_top_pane_focus_hscroll",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_top_pane_focus_hscroll`) driving the shipped binary through a real tmux pane: on a narrow (56-col) viewport the blurred header shrinks to fit (dropping the low-value `fleet: livespec` field, no `[focus]` marker); three Tabs cycle focus onto the top/header pane (Nav -> Content -> Detail -> Header), whose block title gains `[focus]` and whose FULL header line renders at offset 0 (fleet visible at the left, `attention:` clipped off the right); scrolling right saturates the render-measured clamp to the right edge (revealing `attention:`, panning `fleet` off-screen) and scrolling left returns to the left edge; blur (Tab off the header) snaps the pane back to its shrink-to-fit, left-justified default; and a wide launch shows the whole header with a zero scroll clamp. The focus-ring cycle, header-scroll clamp/reset, focused-vs-blurred render, `footer()` header hints, and the `?`-to-header-section behavior are unit-covered in console-application and console-tui; this E2E covers the shipped raw-mode render/loop path end to end.",
+    "clauses": [
+      {
+        "gap_id": "gap-lepclyx4",
+        "scenario": "Scenario 20 -- Operator focuses and horizontally scrolls the top/header pane on a narrow viewport"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_panes_operational_content_only_scenario_21",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The \u00a7\"TUI Contract\" panes-operational-content-only clause binds here.",
+    "clauses": [
+      {
+        "gap_id": "gap-xiziukv6",
+        "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-completeness-check/tests/scenario_22_user_docs_tree.rs::settings_doc_is_the_detailed_usage_sub_document",
+    "reason": "Top-of-pyramid structural coverage for the User Documentation Contract, in crates/console-completeness-check/tests/scenario_22_user_docs_tree.rs: the top-level README.md links docs/README.md and carries no user-facing documentation sections of its own while retaining contributor material (readme_is_a_pointer_carrying_no_user_facing_documentation, readme_retains_contributor_facing_material); docs/README.md is an overview plus a table of contents linking each sub-document by relative path (docs_index_is_an_overview_and_table_of_contents); the tree carries the four named sub-documents, with installing covering the download-install path and running the console against a repository other than its own, and detailed-usage carrying a section per TUI pane (docs_tree_carries_the_four_required_sub_documents, installing_covers_download_install_and_another_repository, detailed_usage_carries_a_section_per_tui_pane); and the settings doc the completeness check reads is docs/detailed-usage.md rather than the README, which carries the Dispatcher-settings section the check scopes to (settings_doc_is_the_detailed_usage_sub_document, settings_doc_carries_the_dispatcher_settings_section). The test lives in the completeness-check crate because the settings-doc case binds the contract to the SETTINGS_DOC constant that crate actually reads -- the surface that would silently drift if the contract and the gate disagreed.",
+    "clauses": [
+      {
+        "gap_id": "gap-xdj5g2rk",
+        "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
+      },
+      {
+        "gap_id": "gap-hbcwvf5e",
+        "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
+      },
+      {
+        "gap_id": "gap-ynr73rzr",
+        "scenario": "Scenario 22 -- User-facing documentation lives in the docs/ tree with the README as a pointer"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 23 -- Operator reads a work-item's full record without leaving the console",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-tui/src/lib.rs::work_item_detail_modal_renders_every_standardized_record_field",
+    "reason": "Top-of-pyramid render proof of the work-item record drill-in, in crates/console-tui/src/lib.rs: a fixture work-item with EVERY standardized field populated is projected through the real lane board and rendered, and each field (title, description, type, status, lane, rank, origin, gap_id, assignee, depends_on, captured_at, resolution, reason, audit, superseded_by, spec_commitment_hint) plus its label is asserted present (work_item_detail_modal_renders_every_standardized_record_field). The sibling tests complete the scenario: work_item_detail_modal_shows_absent_fields_as_absent_and_handles_no_selection (an unemitted field renders as the explicit absent placeholder, the item still lists in its lane, and a no-selection / too-small viewport degrades without panicking); attention_enter_opens_the_item_modal_and_esc_preserves_selection and open_work_item_detail_uses_attention_selection (Enter on a needs-attention work-item opens the same pinned record modal and Esc preserves the attention selection); command_modal_does_not_open_without_actions and render_to_text_suppresses_empty_command_modal_overlay (the legacy command modal stays closed and does not render when the selected attention detail has no actions); work_item_detail_modal_scrolls_a_long_description_to_its_bottom (a description taller than the viewport reaches its last row and clamps there, with the close hint pinned on its reserved row at every offset); enter_opens_the_item_modal_and_esc_closes_it_back_to_the_lane (Enter on a drilled-in lane row opens the record and Esc unwinds exactly one level, back to the lane rather than the lane overview); item_modal_scroll_keys_move_the_offset_and_are_inert_elsewhere (up/down and PgUp/PgDn scroll it, Enter and `?` are inert over the read-only surface); status_hint_stops_claiming_drill_where_enter_no_longer_drills (the Status line names the item drill-in inside a drilled-in lane instead of the lane drill-in it used to claim while Enter was inert); and the_open_item_modal_draws_over_the_whole_screen (the record draws through the real render path over the lane board). The plumbing that feeds the surface is proven in crates/console-application/src/source_adapters.rs by parse_orchestrator_carries_the_whole_standardized_record (every descriptive field survives the adapter, with the structured depends_on and audit shapes flattened and an unrecognized dependency element degraded rather than dropped), work_item_detail_survives_the_payload_round_trip (the persisted payload and its read-back move in lockstep, and a pre-record ledger row still replays), an_edited_description_appends_a_fresh_observation (a description edit reaches the console instead of sitting stale behind an unchanged lifecycle state, while an unchanged record stays idempotent), and a_record_missing_every_descriptive_field_still_observes (a leaner emission keeps the work-item on the board rather than tripping the fail-soft skip).",
+    "clauses": [
+      {
+        "gap_id": "gap-rmrpojby",
+        "scenario": "Scenario 23 -- Operator reads a work-item's full record without leaving the console"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/src/lib.rs::two_factory_executors_claim_one_pending_command_once",
+    "reason": "Top-of-pyramid command-queue coverage in console-cli: two file-backed SQLite connections consume the same pending factory command, the winning executor claims pending -> executing before invoking the Dispatcher port, a reentrant loser observes no pending command and executes no port call, the side-effect counter remains exactly one, and the winning command finalizes to completed. The sibling stale_executing_factory_command_is_failed_without_reexecution seeds an old executing claim and proves recovery marks it failed without invoking the port.",
+    "clauses": [
+      {
+        "gap_id": "gap-2aohdo5p",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-iuqhvg72",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-ng6mae2y",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-pvyu7j3v",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-zaarr7zd",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-xrds3dpi",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-7wnnjb4f",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      },
+      {
+        "gap_id": "gap-tc636ivq",
+        "scenario": "Scenario 24 -- Two consoles consume one command queue exactly once"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 25 -- Per-item verb hints follow the per-state vocabulary",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary",
+    "reason": "Top-of-pyramid real-TUI tmux E2E proving the ratified per-state operator verb vocabulary at the shipped key/render boundary: a selected done item offers no per-item verb hint and keeps the corresponding keys inert, a selected backlog item keeps the operator-drivable move hint while suppressing human-valve hints, and a selected acceptance item keeps reject alongside accept instead of treating active as a single-entry-door predecessor.",
+    "clauses": [
+      {
+        "gap_id": "gap-23tps2nk",
+        "scenario": "Scenario 25 -- Per-item verb hints follow the per-state vocabulary"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session",
+    "scenario_file": "scenarios.md",
+    "test": "crates/console-tui/src/lib.rs::tests::driver_handoff_overlay_renders_lane_appropriate_id_only_invocations; crates/console-tui/src/lib.rs::tests::driver_handoff_confirm_copies_without_persisting_or_polling; crates/console-tui/src/lib.rs::tests::driver_handoff_is_suppressed_outside_backlog_and_host_only_ready",
+    "reason": "TUI unit coverage proves Scenario 26 at the key/render/effect boundary: eligible backlog and host-only ready selections open the full-width handoff overlay with the id-only groom/implement invocation, the overlay wording avoids claimed copy success, Enter produces a copy-only non-persisted effect, and ineligible states suppress the handoff key and hint.",
+    "clauses": [
+      {
+        "gap_id": "gap-vvl5pllp",
+        "scenario": "Scenario 26 -- Operator hands a work-item off to an LLM driver session"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: top-of-pyramid acceptance coverage is owed by the menu-shell implementation (plan/02-menu-shell-primacy/): the generic menu-traversal E2E driving every registered action's menu path, plus the hotkey-free-build reachability run, are the integration/acceptance tests this scenario names. Registered as TODO at ratification time because the menu system this scenario specifies does not exist yet -- the registry (plan/01) and menu shell (plan/02) are the implementing plans, and the scenario is ratified ahead of them by deliberate maintainer decision (2026-08-02).",
+    "clauses": [
+      {
+        "gap_id": "gap-pdamcd6a",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-ema2vw57",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-j3re4iwg",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-a3mfeqsi",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-lbb53ona",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-nu2fvafi",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-fqc3cuoe",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-xd7dp4xu",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-gll6bzws",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      },
+      {
+        "gap_id": "gap-rpesict5",
+        "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional"
+      }
+    ]
+  },
+  {
+    "scenario": "Contributor Scenario J -- Cross-repo action-surface parity",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid acceptance/integration test lands with the parity check itself (plan/01-action-registry-and-invoker slice A ships crates/console-cli/tests/drive_surface_parity.rs, born red against the currently-unbound valve actions as its red demonstration, then green with bindings and reasoned omissions). Registered as TODO until that slice merges; the test name is recorded here at merge time.",
+    "clauses": [
+      {
+        "gap_id": "gap-3hzrpeqq",
+        "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
+      },
+      {
+        "gap_id": "gap-wa6qy5v2",
+        "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
+      },
+      {
+        "gap_id": "gap-fszan563",
+        "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
+      },
+      {
+        "gap_id": "gap-k5zintsg",
+        "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
+      },
+      {
+        "gap_id": "gap-s4d4pl6q",
+        "scenario": "Contributor Scenario J -- Cross-repo action-surface parity"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid acceptance test would need to prove a UI absence -- that the console's Settings surface never gains a `livespec-overseer` foreman/overseer configuration lever (for example `foreman_valve_disposition`) and that no console code path invokes the overseer/foreman layer. This v040 Scope Boundary clause is bound here because Scenario 11 is the console's other orthogonal-system boundary case (the orchestrator's ratified action surface, which the console maps commands onto and never bypasses); the overseer/foreman clause is the same shape of boundary against a second, independent system. Coverage today is structural rather than behavioral: console-arch-check enforces that the Settings surface stays limited to the orchestrator-declared `dispatcher.*` levers (Scenario 14), and no `livespec-overseer` client exists in this crate tree for a test to invoke. Registered now, pending, per the console-spec-check requirement that every live clause bind to a scenario.",
+    "clauses": [
+      {
+        "gap_id": "gap-bhrwmgth",
+        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
+      },
+      {
+        "gap_id": "gap-vwuzqptl",
+        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid acceptance test must drive the console's per-item dispatch verb and assert the argv it hands the Dispatcher \u2014 the governed `loop --repo <path> --budget 1 --parallel 1 --item <id>` form, with no per-run policy-arming argument and no binding to the ungoverned `dispatch` subcommand \u2014 plus the named-ineligible no-dispatch path and its honest surfacing. Registered as TODO because the port this scenario governs is still the unconditional not_wired stub tracked by livespec-console-beads-fabro-et3.10: the contract was ratified first precisely so the implementation has an argv to be written against, and console-spec-check requires every live scenario to carry a non-empty test registration. This TODO is the gate's own record that the behaviour is specified and not yet implemented; it MUST be replaced with the real test id when et3.10 lands, and a stub that merely returns not_wired does not satisfy it.",
+    "clauses": [
+      {
+        "gap_id": "gap-3b5nbxmf",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-nekmoxhi",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-jmmh7o7r",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-ul2moaw7",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-tarauy5r",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-gw3daizp",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-y7pccd3i",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-zwbitusl",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-7pciomnr",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-ga5oxudh",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-hexpehuc",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-6kthurqk",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-eu4ovzg3",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-v6ekcmys",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      }
+    ]
+  }
 ]
