@@ -431,6 +431,24 @@ mod tests {
         }
     }
 
+    /// Region-coverage note for the a2 slices: keep assertion failures routed
+    /// through this single monomorphic site, and cover the panic arm once. Do
+    /// not replace this with a generic result/assert helper; generic helpers
+    /// monomorphize into multiple uncovered failure sites.
+    #[track_caller]
+    #[allow(clippy::manual_assert, clippy::panic)]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("check failed: {context}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "check failed")]
+    fn check_reports_failure() {
+        check(false, "deliberate failure");
+    }
+
     /// A unique scratch directory. Filesystem errors are deliberately ignored:
     /// the assertions below fail loudly if setup did not take, and the workspace
     /// denies `unwrap`/`expect`/`panic` in tests as well as in production.
@@ -463,7 +481,7 @@ mod tests {
 
     #[test]
     fn parse_pins_rejects_a_missing_files_array() {
-        assert!(parse_pins("{}").is_err());
+        check(parse_pins("{}").is_err(), "missing files array is rejected");
     }
 
     #[test]
@@ -474,13 +492,16 @@ mod tests {
             &[pin("prompts/pr.md", Some(&digest(b"OLD")), true, "forked")],
             &dir,
         );
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UpstreamMoved { path, .. }] if path == "prompts/pr.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UpstreamMoved { path, .. }] if path == "prompts/pr.md"
+            ),
+            "upstream movement is reported for prompts/pr.md",
+        );
         let rendered = findings.first().map(Finding::render).unwrap_or_default();
-        assert!(rendered.contains("prompts/pr.md"), "{rendered}");
-        assert!(rendered.contains("UPSTREAM MOVED"), "{rendered}");
+        check(rendered.contains("prompts/pr.md"), &rendered);
+        check(rendered.contains("UPSTREAM MOVED"), &rendered);
     }
 
     #[test]
@@ -511,10 +532,13 @@ mod tests {
         let dir = scratch("workflow-real-drift");
         let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
         let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
+            ),
+            "workflow non-docker drift is reported",
+        );
     }
 
     #[test]
@@ -525,10 +549,13 @@ mod tests {
         let dir = scratch("workflow-spacing-drift");
         let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
         let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
+            ),
+            "workflow docker key or spacing drift is reported",
+        );
     }
 
     #[test]
@@ -543,20 +570,26 @@ mod tests {
         let dir = scratch("added");
         let _ = std::fs::write(dir.join("prompts/disposition.md"), b"NEW STAGE");
         let findings = check_upstream(&[], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UpstreamAdded { path }] if path == "prompts/disposition.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UpstreamAdded { path }] if path == "prompts/disposition.md"
+            ),
+            "new upstream file is reported",
+        );
     }
 
     #[test]
     fn an_upstream_file_that_vanished_is_reported() {
         let dir = scratch("gone");
         let findings = check_upstream(&[pin("prompts/pr.md", Some("aa"), true, "forked")], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UpstreamGone { path, .. }] if path == "prompts/pr.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UpstreamGone { path, .. }] if path == "prompts/pr.md"
+            ),
+            "vanished upstream file is reported",
+        );
     }
 
     #[test]
@@ -564,20 +597,26 @@ mod tests {
         let dir = scratch("undeclared");
         let _ = std::fs::write(dir.join("prompts/sneaky.md"), b"x");
         let findings = check_local(&[], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UndeclaredForkFile { path }] if path == "prompts/sneaky.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UndeclaredForkFile { path }] if path == "prompts/sneaky.md"
+            ),
+            "undeclared fork file is reported",
+        );
     }
 
     #[test]
     fn a_declared_but_missing_fork_file_is_reported() {
         let dir = scratch("missing");
         let findings = check_local(&[pin("prompts/pr.md", Some("aa"), true, "forked")], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::DeclaredButMissing { path }] if path == "prompts/pr.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::DeclaredButMissing { path }] if path == "prompts/pr.md"
+            ),
+            "declared missing fork file is reported",
+        );
     }
 
     #[test]
@@ -599,10 +638,13 @@ mod tests {
     fn a_pin_without_a_reason_is_reported() {
         let dir = scratch("no-reason");
         let findings = check_local(&[pin("prompts/pr.md", Some("aa"), false, "  ")], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::MissingReason { path }] if path == "prompts/pr.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::MissingReason { path }] if path == "prompts/pr.md"
+            ),
+            "pin without a reason is reported",
+        );
     }
 
     /// Every `Finding` renders, and every rendering LEADS WITH THE FILE — the
@@ -643,7 +685,7 @@ mod tests {
                 | Finding::UpstreamAdded { path }
                 | Finding::MissingReason { path } => path.clone(),
             };
-            assert!(rendered.starts_with(&named), "{rendered}");
+            check(rendered.starts_with(&named), &rendered);
         }
     }
 
@@ -657,17 +699,23 @@ mod tests {
             reason: "r".to_owned(),
         }
         .render();
-        assert!(rendered.contains("c.md"), "{rendered}");
+        check(rendered.contains("c.md"), &rendered);
     }
 
     #[test]
     fn parse_pins_rejects_an_entry_without_a_string_path() {
-        assert!(parse_pins(r#"{"files":[{"upstream_sha256":"aa"}]}"#).is_err());
+        check(
+            parse_pins(r#"{"files":[{"upstream_sha256":"aa"}]}"#).is_err(),
+            "entry without string path is rejected",
+        );
     }
 
     #[test]
     fn parse_pins_rejects_malformed_json() {
-        assert!(parse_pins("{not json").is_err());
+        check(
+            parse_pins("{not json").is_err(),
+            "malformed JSON is rejected",
+        );
     }
 
     #[test]
@@ -738,19 +786,28 @@ mod tests {
     #[test]
     fn resolve_upstream_dir_reports_an_absent_manifest() {
         let home = scratch("resolve-no-manifest");
-        assert!(resolve_upstream_dir(&home, Path::new("/repo")).is_err());
+        check(
+            resolve_upstream_dir(&home, Path::new("/repo")).is_err(),
+            "absent plugin manifest is reported",
+        );
     }
 
     #[test]
     fn resolve_upstream_dir_reports_malformed_json() {
         let home = fake_home("resolve-bad-json", "{not json");
-        assert!(resolve_upstream_dir(&home, Path::new("/repo")).is_err());
+        check(
+            resolve_upstream_dir(&home, Path::new("/repo")).is_err(),
+            "malformed plugin manifest is reported",
+        );
     }
 
     #[test]
     fn resolve_upstream_dir_reports_a_missing_plugin_entry() {
         let home = fake_home("resolve-no-plugin", r#"{"plugins":{}}"#);
-        assert!(resolve_upstream_dir(&home, Path::new("/repo")).is_err());
+        check(
+            resolve_upstream_dir(&home, Path::new("/repo")).is_err(),
+            "missing plugin entry is reported",
+        );
     }
 
     #[test]
@@ -759,7 +816,10 @@ mod tests {
             "resolve-other-project",
             &install_json("/some/other/repo", "/tmp/whatever"),
         );
-        assert!(resolve_upstream_dir(&home, Path::new("/repo")).is_err());
+        check(
+            resolve_upstream_dir(&home, Path::new("/repo")).is_err(),
+            "install for another project is reported",
+        );
     }
 
     #[test]
@@ -768,7 +828,10 @@ mod tests {
             "resolve-no-install-path",
             r#"{"plugins":{"livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro":[{"projectPath":"/repo"}]}}"#,
         );
-        assert!(resolve_upstream_dir(&home, Path::new("/repo")).is_err());
+        check(
+            resolve_upstream_dir(&home, Path::new("/repo")).is_err(),
+            "missing install path is reported",
+        );
     }
 
     /// A resolved install whose workflow directory is absent is an error, not a
@@ -782,7 +845,7 @@ mod tests {
             &install_json("/repo", &install.to_string_lossy()),
         );
         let resolved = resolve_upstream_dir(&home, Path::new("/repo"));
-        assert!(resolved.is_err(), "{resolved:?}");
+        check(resolved.is_err(), &format!("{resolved:?}"));
     }
 
     #[test]
@@ -807,10 +870,13 @@ mod tests {
         let _ = std::fs::create_dir_all(dir.join("prompts/deep"));
         let _ = std::fs::write(dir.join("prompts/deep/buried.md"), b"x");
         let findings = check_local(&[], &dir);
-        assert!(matches!(
-            findings.as_slice(),
-            [Finding::UndeclaredForkFile { path }] if path == "prompts/deep/buried.md"
-        ));
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::UndeclaredForkFile { path }] if path == "prompts/deep/buried.md"
+            ),
+            "nested fork file is reported",
+        );
     }
 
     /// An unreadable directory yields no paths rather than propagating an error.
