@@ -67,6 +67,7 @@ fn run_checks(root: &Path) -> Vec<String> {
         let crate_dir = root.join("crates").join(crate_name);
         findings.extend(check_crate_sources(crate_name, &crate_dir));
     }
+    findings.extend(check_zero_beads_knowledge(root));
     findings.extend(check_tmux_socket_scoping(root));
     findings.extend(check_workspace_rust_version_matches_toolchain(root));
     findings.extend(check_fabro_image_rust_toolchain(root));
@@ -1481,6 +1482,234 @@ const KNOWN_TMUX_SUBCOMMANDS: &[&str] = &[
     "split-window",
 ];
 
+// ---------------------------------------------------------------------------
+// Zero-Beads-knowledge rule.
+// ---------------------------------------------------------------------------
+
+/// The source file that owns the console's compiled-in backing CLI defaults.
+const BACKING_CLI_SOURCE: &str = "crates/console-cli/src/backing_cli.rs";
+
+/// Programs and default command tokens the console is permitted to resolve from
+/// compiled-in backing CLI defaults.
+///
+/// This is deliberately a CLOSED allow-list: the console's work-item boundary is
+/// the orchestrator CLI, not Beads itself. The static promise here is limited
+/// and honest: `BackingCliResolution::from_environment` applies runtime program
+/// overrides, so an environment variable can still swap a program after compile
+/// time. This guard proves the compiled-in defaults contain no Beads-native
+/// program, and the resolvable default set cannot be widened without editing
+/// the watched backing CLI file and making a deliberate allow-list decision.
+const ALLOWED_BACKING_CLI_DEFAULT_TOKENS: &[&str] = &[
+    "--json",
+    "dispatcher.py",
+    "drive.py",
+    "fabro",
+    "gh",
+    "list-work-items",
+    "list_work_items.py",
+    "livespec",
+    "livespec-dispatcher-drain",
+    "livespec-orchestrator-drive",
+    "needs-attention",
+    "needs_attention.py",
+    "next",
+];
+
+fn check_zero_beads_knowledge(root: &Path) -> Vec<String> {
+    let mut findings = check_backing_cli_default_tokens(root);
+    findings.extend(check_zero_beads_source_paths(root));
+    findings
+}
+
+fn check_zero_beads_source_paths(root: &Path) -> Vec<String> {
+    let mut findings = Vec::new();
+    let mut paths = Vec::new();
+    for crate_name in SCANNED_CRATES {
+        paths.extend(rust_files(&root.join("crates").join(crate_name)));
+    }
+    if paths.is_empty() {
+        findings.push(format!(
+            "zero-Beads-knowledge scan found no Rust files under {} — the scan root moved \
+             or the walk is broken; refusing to pass without having read anything",
+            root.display()
+        ));
+        return findings;
+    }
+    for path in paths {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                findings.push(format!("could not read {}: {error}", path.display()));
+                continue;
+            }
+        };
+        let file = match syn::parse_file(&source) {
+            Ok(file) => file,
+            Err(error) => {
+                findings.push(format!("could not parse {}: {error}", path.display()));
+                continue;
+            }
+        };
+        findings.extend(check_beads_native_source_paths(
+            &file,
+            &path.display().to_string(),
+        ));
+    }
+    findings
+}
+
+fn check_backing_cli_default_tokens(root: &Path) -> Vec<String> {
+    let path = root.join(BACKING_CLI_SOURCE);
+    let source = match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => return vec![format!("could not read {}: {error}", path.display())],
+    };
+    let file = match syn::parse_file(&source) {
+        Ok(file) => file,
+        Err(error) => return vec![format!("could not parse {}: {error}", path.display())],
+    };
+    let mut visitor = BackingCliDefaultVisitor {
+        tokens: BTreeSet::new(),
+        struct_literal_count: 0,
+        backing_cli_impl_depth: 0,
+    };
+    visitor.visit_file(&file);
+    if visitor.struct_literal_count == 0 || visitor.tokens.is_empty() {
+        return vec![format!(
+            "{}: no `BackingCliPrograms` default struct literals were parsed — refusing \
+             to pass a vacuous zero-Beads-knowledge backing CLI check",
+            path.display()
+        )];
+    }
+    visitor
+        .tokens
+        .into_iter()
+        .filter(|token| !ALLOWED_BACKING_CLI_DEFAULT_TOKENS.contains(&token.as_str()))
+        .map(|token| {
+            format!(
+                "{}: backing CLI default token `{token}` is not in the explicit \
+                 zero-Beads-knowledge allow-list",
+                path.display()
+            )
+        })
+        .collect()
+}
+
+struct BackingCliDefaultVisitor {
+    tokens: BTreeSet<String>,
+    struct_literal_count: usize,
+    backing_cli_impl_depth: usize,
+}
+
+impl BackingCliDefaultVisitor {
+    fn collect_expr_tokens(&mut self, expr: &syn::Expr) {
+        let mut visitor = StringLiteralCollector {
+            tokens: &mut self.tokens,
+        };
+        visitor.visit_expr(expr);
+    }
+}
+
+impl<'ast> Visit<'ast> for BackingCliDefaultVisitor {
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        let is_backing_cli_impl = matches!(
+            node.self_ty.as_ref(),
+            syn::Type::Path(type_path) if path_ends_with(&type_path.path, "BackingCliPrograms")
+        );
+        if is_backing_cli_impl {
+            self.backing_cli_impl_depth += 1;
+        }
+        syn::visit::visit_item_impl(self, node);
+        if is_backing_cli_impl {
+            self.backing_cli_impl_depth -= 1;
+        }
+    }
+
+    fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        if path_ends_with(&node.path, "BackingCliPrograms")
+            || (self.backing_cli_impl_depth > 0 && path_ends_with(&node.path, "Self"))
+        {
+            self.struct_literal_count += 1;
+            for field in &node.fields {
+                self.collect_expr_tokens(&field.expr);
+            }
+        }
+        syn::visit::visit_expr_struct(self, node);
+    }
+}
+
+struct StringLiteralCollector<'a> {
+    tokens: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for StringLiteralCollector<'_> {
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        let value = node.value();
+        if let Some(token) = backing_cli_token(&value) {
+            self.tokens.insert(token);
+        }
+    }
+}
+
+fn backing_cli_token(value: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with('-') {
+        return Some(value.to_owned());
+    }
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+fn check_beads_native_source_paths(file: &syn::File, display: &str) -> Vec<String> {
+    let mut visitor = BeadsNativePathVisitor {
+        findings: Vec::new(),
+        display,
+    };
+    visitor.visit_file(file);
+    visitor.findings
+}
+
+struct BeadsNativePathVisitor<'a> {
+    findings: Vec<String>,
+    display: &'a str,
+}
+
+impl<'ast> Visit<'ast> for BeadsNativePathVisitor<'_> {
+    fn visit_attribute(&mut self, _node: &'ast syn::Attribute) {}
+
+    fn visit_expr_lit(&mut self, node: &'ast syn::ExprLit) {
+        if let syn::Lit::Str(literal) = &node.lit {
+            let value = literal.value();
+            if is_beads_native_source_path(&value) {
+                self.findings.push(format!(
+                    "{}: string literal `{value}` embeds a Beads-native store path; \
+                     the console must reach work-items through orchestrator CLI ports, \
+                     not `.beads`, Dolt, or Beads SQLite storage",
+                    self.display
+                ));
+            }
+        }
+        syn::visit::visit_expr_lit(self, node);
+    }
+}
+
+fn is_beads_native_source_path(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains(".beads")
+        || (lower.contains("beads") && (lower.contains("dolt") || lower.contains("sqlite")))
+}
+
+fn path_ends_with(path: &syn::Path, name: &str) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
+}
+
 /// A crate entrypoint is its `src/lib.rs` or `src/main.rs`.
 fn is_entrypoint(path: &Path) -> bool {
     path.file_name()
@@ -1800,10 +2029,11 @@ mod tests {
 
     use super::{
         CrateNode, ObservedRustToolchain, check_adapter_isolation,
+        check_backing_cli_default_tokens, check_beads_native_source_paths,
         check_fabro_image_rust_toolchain_with_probe, check_forbid_unsafe, check_layering,
         check_registry_bypass, check_tmux_socket_scoping, check_tmux_socket_scoping_source,
         check_type_placement, check_unwrap_expect, check_workspace_rust_version_matches_toolchain,
-        fabro_python_rust_image, observed_rust_toolchain,
+        check_zero_beads_source_paths, fabro_python_rust_image, observed_rust_toolchain,
         observed_rust_toolchain_from_image_config, rust_files_for_tmux_scan,
     };
 
@@ -1965,6 +2195,135 @@ mod tests {
     fn adapter_isolation_ignores_non_adapter_files() -> Result<(), syn::Error> {
         let file = syn::parse_file("mod fabro { } mod alpha { fn x() { super::fabro::y(); } }")?;
         assert!(check_adapter_isolation(&file, "crates/x/src/lib.rs").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_default_bd_program_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("zero-beads-bd-default")?;
+        write_backing_cli_source(
+            &root,
+            r#"
+                struct BackingCliPrograms { list_work_items: String }
+                impl Default for BackingCliPrograms {
+                    fn default() -> Self {
+                        Self { list_work_items: "bd".to_owned() }
+                    }
+                }
+            "#,
+        )?;
+
+        let findings = check_backing_cli_default_tokens(&root);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("`bd`"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_current_default_program_set_is_allowed() -> std::io::Result<()> {
+        let root = temp_scan_root("zero-beads-allowed-defaults")?;
+        write_backing_cli_source(
+            &root,
+            r#"
+                struct BackingCliPrograms {
+                    list_work_items: String,
+                    livespec: CommandShape,
+                    fabro: String,
+                    dispatcher: String,
+                    drive: String,
+                    needs_attention: String,
+                    github: String,
+                }
+                struct CommandShape;
+                impl CommandShape {
+                    fn new(_program: &str, _args: &[&str]) -> Self { Self }
+                }
+                impl Default for BackingCliPrograms {
+                    fn default() -> Self {
+                        Self {
+                            list_work_items: "list-work-items".to_owned(),
+                            livespec: CommandShape::new("livespec", &["next", "--json"]),
+                            fabro: "fabro".to_owned(),
+                            dispatcher: "livespec-dispatcher-drain".to_owned(),
+                            drive: "livespec-orchestrator-drive".to_owned(),
+                            needs_attention: "needs-attention".to_owned(),
+                            github: "gh".to_owned(),
+                        }
+                    }
+                }
+                fn programs_from_plugin_bin(bin: &std::path::Path) -> BackingCliPrograms {
+                    BackingCliPrograms {
+                        list_work_items: bin.join("list_work_items.py").display().to_string(),
+                        livespec: CommandShape::new("livespec", &["next", "--json"]),
+                        fabro: "fabro".to_owned(),
+                        dispatcher: bin.join("dispatcher.py").display().to_string(),
+                        drive: bin.join("drive.py").display().to_string(),
+                        needs_attention: bin.join("needs_attention.py").display().to_string(),
+                        github: "gh".to_owned(),
+                    }
+                }
+            "#,
+        )?;
+
+        let findings = check_backing_cli_default_tokens(&root);
+
+        assert!(findings.is_empty(), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn backing_cli_unparseable_source_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("zero-beads-unparseable-backing-cli")?;
+        write_backing_cli_source(&root, "impl Default for BackingCliPrograms {")?;
+
+        let findings = check_backing_cli_default_tokens(&root);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("could not parse"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn beads_native_dot_beads_path_is_flagged() -> Result<(), syn::Error> {
+        let file = syn::parse_file(
+            r#"fn read_store(root: &std::path::Path) { let _path = root.join(".beads"); }"#,
+        )?;
+
+        let findings = check_beads_native_source_paths(&file, "crates/console-cli/src/main.rs");
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains(".beads"), "{findings:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn beads_native_doc_comment_is_not_flagged() -> Result<(), syn::Error> {
+        let file = syn::parse_file(
+            r"
+            /// The tenant is deliberately NOT read from `.beads`.
+            fn reads_nothing() {}
+            ",
+        )?;
+
+        let findings = check_beads_native_source_paths(&file, "crates/console-cli/src/lib.rs");
+
+        assert!(findings.is_empty(), "{findings:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn zero_beads_scan_that_reads_no_rust_files_is_flagged() -> std::io::Result<()> {
+        let root = temp_scan_root("zero-beads-no-rust-files")?;
+
+        let findings = check_zero_beads_source_paths(&root);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("no Rust files"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
         Ok(())
     }
 
@@ -2642,6 +3001,12 @@ mod tests {
         fs::remove_dir_all(&path).ok();
         fs::create_dir_all(&path)?;
         Ok(path)
+    }
+
+    fn write_backing_cli_source(root: &Path, source: &str) -> std::io::Result<()> {
+        let path = root.join("crates/console-cli/src/backing_cli.rs");
+        fs::create_dir_all(path.parent().unwrap_or(root))?;
+        fs::write(path, source)
     }
 
     fn temp_fabro_toolchain_root(
