@@ -270,6 +270,25 @@ fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
 /// run after the first.
 const TMUX_SCAN_SKIPPED_DIRS: &[&str] = &["target", ".git", "tmp", ".venv"];
 
+/// Whether `path` is a symlink whose target resolves INSIDE `root`.
+///
+/// Used to separate the two kinds of symlink the tmux scan meets. An in-tree
+/// link (`CLAUDE.md -> AGENTS.md`) is provably harmless: following it cannot
+/// leave the repository, and its target is walked under its real path regardless,
+/// so skipping it costs the scan no coverage. A link that points outside the
+/// root genuinely hides content from the scan and must stay a finding.
+///
+/// Fails CLOSED on every uncertainty. `canonicalize` resolves the whole chain
+/// and errors on a dangling link, so an unresolvable target answers `false` and
+/// is reported. `root` is canonicalized too, because a `root` reached through a
+/// symlinked parent would otherwise never prefix-match its own resolved children.
+fn symlink_resolves_within(path: &Path, root: &Path) -> bool {
+    let (Ok(target), Ok(resolved_root)) = (fs::canonicalize(path), fs::canonicalize(root)) else {
+        return false;
+    };
+    target.starts_with(&resolved_root)
+}
+
 /// Collect the Rust files the tmux rule scans, plus a finding for every part of
 /// the tree the walk could NOT read.
 ///
@@ -302,13 +321,28 @@ fn rust_files_for_tmux_scan(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
             continue;
         };
         if metadata.is_symlink() {
-            findings.push(format!(
-                "tmux socket-scoping scan skipped the symlink {} — following it \
-                 could leave the repository, so its contents are UNSCANNED; move \
-                 the real directory into the tree or add it to the skip-list \
-                 deliberately",
-                path.display()
-            ));
+            // The hazard this arm guards is stated in its own finding: following
+            // the link could LEAVE THE REPOSITORY. A link that resolves back
+            // INSIDE the scan root cannot, and the walk reaches its target anyway
+            // by the target's real path — so such a link is provably harmless and
+            // reporting it is a false positive, not suspect-by-default rigor.
+            // `CLAUDE.md -> AGENTS.md` is the in-tree case that proved this: it
+            // landed after this rule was written and failed a scan that had
+            // nothing to say about it.
+            //
+            // Resolution is the discriminator, and it fails CLOSED: a link that
+            // escapes the root, dangles, or cannot be canonicalized at all is
+            // still reported. Only a link demonstrably resolving within the root
+            // is skipped silently.
+            if !symlink_resolves_within(&path, root) {
+                findings.push(format!(
+                    "tmux socket-scoping scan skipped the symlink {} — following it \
+                     could leave the repository, so its contents are UNSCANNED; move \
+                     the real directory into the tree or add it to the skip-list \
+                     deliberately",
+                    path.display()
+                ));
+            }
             continue;
         }
         if metadata.is_dir() {
@@ -1301,12 +1335,13 @@ fn rust_files_from(pending: &mut Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
 
     use super::{
         CrateNode, check_adapter_isolation, check_forbid_unsafe, check_layering,
         check_registry_bypass, check_tmux_socket_scoping, check_tmux_socket_scoping_source,
-        check_type_placement, check_unwrap_expect,
+        check_type_placement, check_unwrap_expect, rust_files_for_tmux_scan,
     };
 
     fn node(name: &str, workspace_deps: &[&str], external_deps: &[&str]) -> CrateNode {
@@ -2027,6 +2062,76 @@ mod tests {
         // sources are clean.
         let findings = check_tmux_socket_scoping(Path::new(env!("CARGO_MANIFEST_DIR")));
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    // Defect 6b — the symlink arm flagged links that could not leave the tree.
+
+    #[test]
+    fn a_symlink_resolving_inside_the_scan_root_is_not_flagged() -> std::io::Result<()> {
+        // The must-NOT-flag half. `CLAUDE.md -> AGENTS.md` is the real case:
+        // following it cannot leave the repository and its target is scanned
+        // under its own real path, so it costs the scan no coverage.
+        let temp = temp_scan_root("symlink-inside")?;
+        fs::write(temp.join("real.rs"), "fn f() {}\n")?;
+        std::os::unix::fs::symlink("real.rs", temp.join("link.rs"))?;
+
+        let (paths, findings) = rust_files_for_tmux_scan(&temp);
+
+        assert!(findings.is_empty(), "{findings:?}");
+        assert!(
+            paths.iter().any(|path| path.ends_with("real.rs")),
+            "the real target must still be scanned: {paths:?}"
+        );
+        fs::remove_dir_all(&temp).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn a_symlink_escaping_the_scan_root_is_flagged() -> std::io::Result<()> {
+        // The must-flag half, and the reason the arm exists: this link really
+        // does hide content from the scan, so it stays suspect-by-default.
+        let outside = temp_scan_root("symlink-outside-target")?;
+        fs::write(outside.join("hidden.rs"), "fn f() {}\n")?;
+        let temp = temp_scan_root("symlink-outside")?;
+        std::os::unix::fs::symlink(outside.join("hidden.rs"), temp.join("link.rs"))?;
+
+        let (_paths, findings) = rust_files_for_tmux_scan(&temp);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("skipped the symlink"), "{findings:?}");
+        fs::remove_dir_all(&temp).ok();
+        fs::remove_dir_all(&outside).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn a_dangling_symlink_is_flagged() -> std::io::Result<()> {
+        // Resolution fails CLOSED: an unresolvable target is reported, never
+        // silently treated as in-tree.
+        let temp = temp_scan_root("symlink-dangling")?;
+        fs::write(temp.join("real.rs"), "fn f() {}\n")?;
+        std::os::unix::fs::symlink("nowhere.rs", temp.join("link.rs"))?;
+
+        let (_paths, findings) = rust_files_for_tmux_scan(&temp);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("skipped the symlink"), "{findings:?}");
+        fs::remove_dir_all(&temp).ok();
+        Ok(())
+    }
+
+    /// A fresh empty scratch directory named for one test.
+    ///
+    /// Deliberately a STABLE per-test name rather than a random one: a failed
+    /// run leaves its tree inspectable, and the leading remove makes each run
+    /// independent of the last one's leftovers. `CARGO_TARGET_TMPDIR` is not
+    /// available here — cargo defines it for integration tests, not for a bin
+    /// target's unit tests — so this roots under the system temp dir instead.
+    fn temp_scan_root(name: &str) -> std::io::Result<std::path::PathBuf> {
+        let path = std::env::temp_dir().join(format!("console-arch-check-{name}"));
+        fs::remove_dir_all(&path).ok();
+        fs::create_dir_all(&path)?;
+        Ok(path)
     }
 
     #[test]
