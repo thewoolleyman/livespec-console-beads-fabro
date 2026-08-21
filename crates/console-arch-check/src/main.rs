@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::process::ExitCode;
 
 use cargo_metadata::{DependencyKind, MetadataCommand};
@@ -67,7 +68,364 @@ fn run_checks(root: &Path) -> Vec<String> {
         findings.extend(check_crate_sources(crate_name, &crate_dir));
     }
     findings.extend(check_tmux_socket_scoping(root));
+    findings.extend(check_fabro_image_rust_toolchain(root));
     findings
+}
+
+// ---------------------------------------------------------------------------
+// Fabro sandbox image lockstep (actual image probe).
+// ---------------------------------------------------------------------------
+
+/// The committed Fabro workflow whose Docker image must carry the same Rust
+/// toolchain this repo declares.
+const FABRO_IMPLEMENT_WORKFLOW: &str = ".fabro/workflows/implement-work-item/workflow.toml";
+
+fn check_fabro_image_rust_toolchain(root: &Path) -> Vec<String> {
+    check_fabro_image_rust_toolchain_with_probe(root, probe_image_rust_toolchain)
+}
+
+fn check_fabro_image_rust_toolchain_with_probe(
+    root: &Path,
+    probe: impl FnOnce(&str) -> Result<String, String>,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let expected = match expected_rust_toolchain(root) {
+        Ok(expected) => expected,
+        Err(error) => {
+            findings.push(error);
+            return findings;
+        }
+    };
+    let image = match fabro_python_rust_image(root) {
+        Ok(image) => image,
+        Err(error) => {
+            findings.push(error);
+            return findings;
+        }
+    };
+    let probe_output = match probe(&image) {
+        Ok(output) => output,
+        Err(error) => {
+            findings.push(format!(
+                "Fabro sandbox Rust probe could not read image `{image}` — refusing \
+                 to pass without interrogating the actual configured image: {error}"
+            ));
+            return findings;
+        }
+    };
+    let actual = match observed_rust_toolchain(&probe_output) {
+        Ok(actual) => actual,
+        Err(error) => {
+            findings.push(format!(
+                "Fabro sandbox Rust probe for image `{image}` produced no usable \
+                 Rust evidence — refusing to pass without rustc/clippy/rustfmt \
+                 output: {error}"
+            ));
+            return findings;
+        }
+    };
+    if actual.rustc_version != expected.channel {
+        findings.push(format!(
+            "Fabro sandbox image `{image}` bakes rustc {}, but rust-toolchain.toml \
+             pins channel {}",
+            actual.rustc_version, expected.channel
+        ));
+    }
+    for component in &expected.components {
+        if !actual.components.contains(component) {
+            findings.push(format!(
+                "Fabro sandbox image `{image}` does not prove required \
+                 rust-toolchain.toml component `{component}` is installed"
+            ));
+        }
+    }
+    findings
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ExpectedRustToolchain {
+    channel: String,
+    components: BTreeSet<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ObservedRustToolchain {
+    rustc_version: String,
+    components: BTreeSet<String>,
+}
+
+fn expected_rust_toolchain(root: &Path) -> Result<ExpectedRustToolchain, String> {
+    let path = root.join("rust-toolchain.toml");
+    let source = fs::read_to_string(&path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let value: toml::Value = toml::from_str(&source)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+    let toolchain = value
+        .get("toolchain")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{}: missing [toolchain] table", path.display()))?;
+    let channel = toolchain
+        .get("channel")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| format!("{}: missing toolchain.channel", path.display()))?;
+    let components = toolchain
+        .get("components")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| format!("{}: missing toolchain.components", path.display()))?
+        .iter()
+        .map(|component| {
+            component.as_str().map(str::to_owned).ok_or_else(|| {
+                format!(
+                    "{}: every toolchain.components entry must be a string",
+                    path.display()
+                )
+            })
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(ExpectedRustToolchain {
+        channel: channel.to_owned(),
+        components,
+    })
+}
+
+fn fabro_python_rust_image(root: &Path) -> Result<String, String> {
+    let path = root.join(FABRO_IMPLEMENT_WORKFLOW);
+    let source = fs::read_to_string(&path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let value: toml::Value = toml::from_str(&source)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+    let image = value
+        .get("environments")
+        .and_then(|environments| environments.get("livespec-ci"))
+        .and_then(|environment| environment.get("image"))
+        .and_then(|image| image.get("docker"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "{}: missing environments.livespec-ci.image.docker",
+                path.display()
+            )
+        })?;
+    if !image.contains("livespec-fabro-sandbox:python-rust-agent-") {
+        return Err(format!(
+            "{}: configured Fabro sandbox image `{image}` is not the \
+             python-rust-agent image whose baked Rust this guard covers",
+            path.display()
+        ));
+    }
+    Ok(image.to_owned())
+}
+
+fn probe_image_rust_toolchain(image: &str) -> Result<String, String> {
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            image,
+            "sh",
+            "-eu",
+            "-c",
+            "rustc --version && cargo clippy --version && rustfmt --version",
+        ])
+        .output();
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            return probe_image_config_history(image).map_err(|fallback_error| {
+                format!(
+                    "could not execute `docker run`: {error}; OCI image-config fallback \
+                     also failed: {fallback_error}"
+                )
+            });
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return probe_image_config_history(image).map_err(|fallback_error| {
+            format!(
+                "`docker run --rm {image} ...` exited with {}. stdout: {} stderr: {}; \
+                 OCI image-config fallback also failed: {fallback_error}",
+                output.status,
+                stdout.trim(),
+                stderr.trim()
+            )
+        });
+    }
+    String::from_utf8(output.stdout).map_err(|error| format!("probe output was not UTF-8: {error}"))
+}
+
+fn probe_image_config_history(image: &str) -> Result<String, String> {
+    let reference = GhcrImageReference::parse(image)?;
+    let token_url = format!(
+        "https://ghcr.io/token?scope=repository:{}:pull&service=ghcr.io",
+        reference.repository
+    );
+    let token_json = curl(&token_url, &[])?;
+    let token = json_field(&token_json, "token")?;
+    let manifest_url = format!(
+        "https://ghcr.io/v2/{}/manifests/{}",
+        reference.repository, reference.tag
+    );
+    let manifest_json = curl(
+        &manifest_url,
+        &[
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            "-H",
+            "Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json",
+        ],
+    )?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_json)
+        .map_err(|error| format!("could not parse image manifest JSON: {error}"))?;
+    let config_digest = manifest
+        .get("config")
+        .and_then(|config| config.get("digest"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "image manifest did not carry a config digest".to_owned())?;
+    let config_url = format!(
+        "https://ghcr.io/v2/{}/blobs/{config_digest}",
+        reference.repository
+    );
+    let config_json = curl(
+        &config_url,
+        &["-H", &format!("Authorization: Bearer {token}")],
+    )?;
+    let config: serde_json::Value = serde_json::from_str(&config_json)
+        .map_err(|error| format!("could not parse image config JSON: {error}"))?;
+    observed_rust_toolchain_from_image_config(&config)
+}
+
+struct GhcrImageReference {
+    repository: String,
+    tag: String,
+}
+
+impl GhcrImageReference {
+    fn parse(image: &str) -> Result<Self, String> {
+        let Some(rest) = image.strip_prefix("ghcr.io/") else {
+            return Err(format!("unsupported image registry in `{image}`"));
+        };
+        let Some((repository, tag)) = rest.rsplit_once(':') else {
+            return Err(format!("image `{image}` has no tag"));
+        };
+        if repository.is_empty() || tag.is_empty() {
+            return Err(format!("image `{image}` must include repository and tag"));
+        }
+        Ok(Self {
+            repository: repository.to_owned(),
+            tag: tag.to_owned(),
+        })
+    }
+}
+
+fn curl(url: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("curl")
+        .args(["-fsSL", "--retry", "3"])
+        .args(args)
+        .arg(url)
+        .output()
+        .map_err(|error| format!("could not execute `curl`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`curl` exited with {} while reading {url}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|error| format!("curl output was not UTF-8: {error}"))
+}
+
+fn json_field(json: &str, field: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| format!("could not parse JSON: {error}"))?;
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("JSON response did not carry string field `{field}`"))
+}
+
+fn observed_rust_toolchain_from_image_config(config: &serde_json::Value) -> Result<String, String> {
+    let mut rustc_version = None;
+    let mut components = BTreeSet::new();
+    let Some(history) = config.get("history").and_then(serde_json::Value::as_array) else {
+        return Err("image config did not carry history entries".to_owned());
+    };
+    for created_by in history
+        .iter()
+        .filter_map(|entry| entry.get("created_by").and_then(serde_json::Value::as_str))
+    {
+        if rustc_version.is_none() {
+            rustc_version = rust_version_from_history(created_by);
+        }
+        components.extend(components_from_history(created_by));
+    }
+    let version = rustc_version.ok_or_else(|| {
+        "image config history did not prove which Rust version was baked".to_owned()
+    })?;
+    if components.is_empty() {
+        return Err("image config history did not prove any Rust components were baked".to_owned());
+    }
+    let mut output = format!("rustc {version} (from image config history)\n");
+    for component in components {
+        output.push_str(&component);
+        output.push_str(" (from image config history)\n");
+    }
+    Ok(output)
+}
+
+fn rust_version_from_history(created_by: &str) -> Option<String> {
+    created_by.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix("RUST_VERSION=")
+            .filter(|version| !version.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn components_from_history(created_by: &str) -> BTreeSet<String> {
+    let mut components = BTreeSet::new();
+    let mut tokens = created_by.split_whitespace();
+    while let Some(token) = tokens.next() {
+        let component_list = token
+            .strip_prefix("--component=")
+            .or_else(|| (token == "--component").then(|| tokens.next()).flatten());
+        if let Some(component_list) = component_list {
+            for component in component_list.split(',') {
+                if matches!(component, "clippy" | "rustfmt") {
+                    components.insert(component.to_owned());
+                }
+            }
+        }
+    }
+    components
+}
+
+fn observed_rust_toolchain(output: &str) -> Result<ObservedRustToolchain, String> {
+    let mut rustc_version = None;
+    let mut components = BTreeSet::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(version) = line.strip_prefix("rustc ") {
+            rustc_version = Some(
+                version
+                    .split_whitespace()
+                    .next()
+                    .ok_or_else(|| format!("malformed rustc version line `{line}`"))?
+                    .to_owned(),
+            );
+        } else if line.starts_with("clippy ") {
+            components.insert("clippy".to_owned());
+        } else if line.starts_with("rustfmt ") {
+            components.insert("rustfmt".to_owned());
+        }
+    }
+    let rustc_version = rustc_version.ok_or_else(|| "missing `rustc --version` line".to_owned())?;
+    Ok(ObservedRustToolchain {
+        rustc_version,
+        components,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,13 +1714,17 @@ fn rust_files_from(pending: &mut Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
 
     use super::{
-        CrateNode, check_adapter_isolation, check_forbid_unsafe, check_layering,
+        CrateNode, ObservedRustToolchain, check_adapter_isolation,
+        check_fabro_image_rust_toolchain_with_probe, check_forbid_unsafe, check_layering,
         check_registry_bypass, check_tmux_socket_scoping, check_tmux_socket_scoping_source,
-        check_type_placement, check_unwrap_expect, rust_files_for_tmux_scan,
+        check_type_placement, check_unwrap_expect, fabro_python_rust_image,
+        observed_rust_toolchain, observed_rust_toolchain_from_image_config,
+        rust_files_for_tmux_scan,
     };
 
     fn node(name: &str, workspace_deps: &[&str], external_deps: &[&str]) -> CrateNode {
@@ -2200,6 +2562,183 @@ mod tests {
         fs::remove_dir_all(&path).ok();
         fs::create_dir_all(&path)?;
         Ok(path)
+    }
+
+    fn temp_fabro_toolchain_root(
+        name: &str,
+        channel: &str,
+        components: &[&str],
+        image: &str,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let root = temp_scan_root(name)?;
+        fs::create_dir_all(root.join(".fabro/workflows/implement-work-item"))?;
+        let component_list = components
+            .iter()
+            .map(|component| format!("\"{component}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fs::write(
+            root.join("rust-toolchain.toml"),
+            format!("[toolchain]\nchannel = \"{channel}\"\ncomponents = [{component_list}]\n"),
+        )?;
+        fs::write(
+            root.join(".fabro/workflows/implement-work-item/workflow.toml"),
+            format!("[environments.livespec-ci.image]\ndocker = \"{image}\"\n"),
+        )?;
+        Ok(root)
+    }
+
+    #[test]
+    fn fabro_image_rust_toolchain_match_is_allowed() -> std::io::Result<()> {
+        let image = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.31.1";
+        let root =
+            temp_fabro_toolchain_root("fabro-rust-match", "1.92.0", &["clippy", "rustfmt"], image)?;
+        let findings = check_fabro_image_rust_toolchain_with_probe(&root, |probed_image| {
+            assert_eq!(probed_image, image);
+            Ok("rustc 1.92.0 (abc 2026-01-01)\nclippy 0.1.92\nrustfmt 1.92.0\n".to_owned())
+        });
+        assert!(findings.is_empty(), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn fabro_image_rust_toolchain_mismatch_is_flagged() -> std::io::Result<()> {
+        let image = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.31.1";
+        let root = temp_fabro_toolchain_root(
+            "fabro-rust-mismatch",
+            "1.92.0",
+            &["clippy", "rustfmt"],
+            image,
+        )?;
+        let findings = check_fabro_image_rust_toolchain_with_probe(&root, |_| {
+            Ok("rustc 1.91.0 (abc 2026-01-01)\nclippy 0.1.91\nrustfmt 1.91.0\n".to_owned())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("rustc 1.91.0"), "{findings:?}");
+        assert!(findings[0].contains("1.92.0"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_fabro_image_probe_is_flagged() -> std::io::Result<()> {
+        let image = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.31.1";
+        let root = temp_fabro_toolchain_root(
+            "fabro-rust-unreadable",
+            "1.92.0",
+            &["clippy", "rustfmt"],
+            image,
+        )?;
+        let findings = check_fabro_image_rust_toolchain_with_probe(&root, |_| {
+            Err("docker daemon unavailable".to_owned())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("could not read image"), "{findings:?}");
+        assert!(
+            findings[0].contains("docker daemon unavailable"),
+            "{findings:?}"
+        );
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn vacuous_fabro_image_probe_output_is_flagged() -> std::io::Result<()> {
+        let image = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.31.1";
+        let root = temp_fabro_toolchain_root(
+            "fabro-rust-vacuous",
+            "1.92.0",
+            &["clippy", "rustfmt"],
+            image,
+        )?;
+        let findings = check_fabro_image_rust_toolchain_with_probe(&root, |_| Ok(String::new()));
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("no usable Rust evidence"),
+            "{findings:?}"
+        );
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn missing_required_fabro_image_component_is_flagged() -> std::io::Result<()> {
+        let image = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.31.1";
+        let root = temp_fabro_toolchain_root(
+            "fabro-rust-component",
+            "1.92.0",
+            &["clippy", "rustfmt"],
+            image,
+        )?;
+        let findings = check_fabro_image_rust_toolchain_with_probe(&root, |_| {
+            Ok("rustc 1.92.0 (abc 2026-01-01)\nclippy 0.1.92\n".to_owned())
+        });
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("rustfmt"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn fabro_image_pin_must_stay_on_python_rust_agent_layer() -> std::io::Result<()> {
+        let root = temp_fabro_toolchain_root(
+            "fabro-rust-wrong-image",
+            "1.92.0",
+            &["clippy", "rustfmt"],
+            "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.31.1",
+        )?;
+        let result = fabro_python_rust_image(&root);
+        assert!(result.is_err(), "wrong image must fail");
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("python-rust-agent"), "{error}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn observed_rust_toolchain_requires_rustc_evidence() {
+        let result = observed_rust_toolchain("clippy 0.1.92\nrustfmt 1.92.0\n");
+        assert!(result.is_err(), "missing rustc must fail");
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("rustc"), "{error}");
+    }
+
+    #[test]
+    fn image_config_history_rust_toolchain_evidence_is_usable() -> serde_json::Result<()> {
+        let config: serde_json::Value = serde_json::from_str(
+            r#"{
+              "history": [
+                {"created_by": "ARG RUST_VERSION=1.92.0"},
+                {"created_by": "RUN |1 RUST_VERSION=1.92.0 /bin/sh -c rustup --default-toolchain ${RUST_VERSION} --component clippy,rustfmt # buildkit"}
+              ]
+            }"#,
+        )?;
+        let output = observed_rust_toolchain_from_image_config(&config).unwrap_or_default();
+        let observed = observed_rust_toolchain(&output).unwrap_or(ObservedRustToolchain {
+            rustc_version: String::new(),
+            components: BTreeSet::new(),
+        });
+        assert_eq!(observed.rustc_version, "1.92.0");
+        assert!(observed.components.contains("clippy"));
+        assert!(observed.components.contains("rustfmt"));
+        Ok(())
+    }
+
+    #[test]
+    fn image_config_history_without_rust_evidence_is_flagged() -> serde_json::Result<()> {
+        let config: serde_json::Value = serde_json::from_str(
+            r#"{
+              "history": [
+                {"created_by": "RUN /bin/sh -c echo no rust evidence"}
+              ]
+            }"#,
+        )?;
+        let result = observed_rust_toolchain_from_image_config(&config);
+        assert!(result.is_err(), "missing image evidence must fail");
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("Rust version"), "{error}");
+        Ok(())
     }
 
     #[test]
