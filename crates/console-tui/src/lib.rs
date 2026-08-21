@@ -3307,6 +3307,16 @@ mod tests {
     }
 
     #[test]
+    fn keymap_left_from_lanes_overview_content_returns_to_nav() {
+        let model = lanes_model_content(LaneFocus::Overview, TuiOverlay::None);
+
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Left), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
+        );
+    }
+
+    #[test]
     fn keymap_maps_detail_pane_scroll_step_back_and_inert_enter() {
         // On the rightmost Detail pane: up/down scroll the detail, Esc and Left
         // step focus back to Content, Right clamps (inert), and Enter is inert

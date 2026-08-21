@@ -18,6 +18,20 @@ use super::{
 const FIXTURE: &str = include_str!("../tests/data/parity_fixture.md");
 const GOLDEN: &str = include_str!("../tests/data/parity_golden.json");
 
+#[track_caller]
+#[allow(clippy::manual_assert, clippy::panic)]
+fn check(condition: bool, context: &str) {
+    if !condition {
+        panic!("check failed: {context}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "check failed")]
+fn check_reports_failure() {
+    check(false, "deliberate failure");
+}
+
 #[test]
 fn gap_id_parity_with_vendored_python_primitive() -> Result<(), Box<dyn std::error::Error>> {
     let golden: serde_json::Value = serde_json::from_str(GOLDEN)?;
@@ -344,9 +358,11 @@ fn parse_registry_skips_malformed_entries() -> Result<(), String> {
     let json = r#"[
       42,
       {"scenario_file":"scenarios.md","test":"t"},
+      {"scenario":7,"scenario_file":"scenarios.md","test":"t"},
       {"scenario":"NoFile","test":"t"},
+      {"scenario":"BadFile","scenario_file":7,"test":"t"},
       {"scenario":"OK","scenario_file":"scenarios.md","test":"t",
-       "clauses":[5,{"gap_id":"g"},{"gap_id":"g2","scenario":"X"}]},
+       "clauses":[5,{"gap_id":7,"scenario":"X"},{"scenario":"NoGap"},{"gap_id":"g"},{"gap_id":"g2","scenario":7},{"gap_id":"g3","scenario":"Y"}]},
       {"scenario":"NoTestField","scenario_file":"scenarios.md","clauses":7}
     ]"#;
     let entries = parse_registry(json)?;
@@ -360,8 +376,8 @@ fn parse_registry_skips_malformed_entries() -> Result<(), String> {
     assert_eq!(
         entries[0].clauses,
         vec![ClauseLink {
-            gap_id: "g2".to_string(),
-            scenario: "X".to_string()
+            gap_id: "g3".to_string(),
+            scenario: "Y".to_string()
         }],
     );
     assert_eq!(entries[1].scenario, "NoTestField");
@@ -625,6 +641,28 @@ fn evaluate_rejects_unreasoned_pending_todo_scenarios() {
         untested,
         vec![("scenarios.md", "No Reason"), ("scenarios.md", "No Tier")],
         "TODO entries need both a reason and a scenario-level test-tier acknowledgement",
+    );
+}
+
+#[test]
+fn evaluate_accepts_acceptance_tier_pending_todo_scenarios() {
+    let sources: [SpecSource; 0] = [];
+    let operator = vec!["Pending Acceptance".to_string()];
+    let nfr: Vec<String> = Vec::new();
+    let registry = vec![CoverageEntry {
+        scenario: "Pending Acceptance".to_string(),
+        scenario_file: "scenarios.md".to_string(),
+        tests: vec!["TODO".to_string()],
+        reason: "Test tier: acceptance coverage will land with the implementation slice."
+            .to_string(),
+        clauses: Vec::new(),
+    }];
+
+    let report = evaluate(&sources, &registry, &operator, &nfr);
+
+    check(
+        report.untested_scenarios.is_empty(),
+        "acceptance is a recognized pending-test tier",
     );
 }
 

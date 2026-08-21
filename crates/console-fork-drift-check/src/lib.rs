@@ -229,21 +229,28 @@ pub fn parse_pins(manifest_json: &str) -> Result<Vec<Pin>, String> {
 
 /// Every file under `dir`, as paths relative to it, sorted.
 fn walk_relative(dir: &Path) -> Vec<String> {
-    fn recurse(base: &Path, current: &Path, out: &mut Vec<String>) {
+    fn recurse(current: &Path, relative_prefix: &str, out: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(current) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let relative = if relative_prefix.is_empty() {
+                name.into_owned()
+            } else {
+                format!("{relative_prefix}/{name}")
+            };
             if path.is_dir() {
-                recurse(base, &path, out);
-            } else if let Ok(relative) = path.strip_prefix(base) {
-                out.push(relative.to_string_lossy().replace('\\', "/"));
+                recurse(&path, &relative, out);
+            } else {
+                out.push(relative);
             }
         }
     }
     let mut out = Vec::new();
-    recurse(dir, dir, &mut out);
+    recurse(dir, "", &mut out);
     out.sort();
     out
 }
@@ -566,6 +573,18 @@ mod tests {
     }
 
     #[test]
+    fn workflow_digest_preserves_crlf_when_normalizing_docker_pin() {
+        let old =
+            b"docker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\r\n";
+        let new =
+            b"docker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v2.0.0\"\r\n";
+        assert_eq!(
+            digest_for_pin(WORKFLOW_TOML, old),
+            digest_for_pin(WORKFLOW_TOML, new)
+        );
+    }
+
+    #[test]
     fn a_new_upstream_file_is_reported() {
         let dir = scratch("added");
         let _ = std::fs::write(dir.join("prompts/disposition.md"), b"NEW STAGE");
@@ -603,6 +622,17 @@ mod tests {
                 [Finding::UndeclaredForkFile { path }] if path == "prompts/sneaky.md"
             ),
             "undeclared fork file is reported",
+        );
+    }
+
+    #[test]
+    fn a_declared_fork_file_is_not_reported_as_undeclared() {
+        let dir = scratch("declared-present");
+        let _ = std::fs::write(dir.join("prompts/pr.md"), b"x");
+        let findings = check_local(&[pin("prompts/pr.md", None, true, "forked")], &dir);
+        check(
+            findings.is_empty(),
+            "declared present fork file should be clean",
         );
     }
 
