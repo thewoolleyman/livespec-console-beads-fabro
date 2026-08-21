@@ -270,23 +270,30 @@ fn check_tmux_socket_scoping(root: &Path) -> Vec<String> {
 /// run after the first.
 const TMUX_SCAN_SKIPPED_DIRS: &[&str] = &["target", ".git", "tmp", ".venv"];
 
-/// Whether `path` is a symlink whose target resolves INSIDE `root`.
+/// The symlink's target, if and only if it resolves INSIDE `root`.
 ///
-/// Used to separate the two kinds of symlink the tmux scan meets. An in-tree
-/// link (`CLAUDE.md -> AGENTS.md`) is provably harmless: following it cannot
-/// leave the repository, and its target is walked under its real path regardless,
-/// so skipping it costs the scan no coverage. A link that points outside the
+/// Separates the two kinds of symlink the tmux scan meets. An in-tree link
+/// (`CLAUDE.md -> AGENTS.md`) cannot leave the repository, so the walk FOLLOWS
+/// it to the returned path and scans the content. A link pointing outside the
 /// root genuinely hides content from the scan and must stay a finding.
 ///
+/// Returning the target rather than a bool is what lets the caller follow it.
+/// An earlier revision skipped in-tree links silently on the reasoning that the
+/// walk reaches their targets anyway under the real path — true for
+/// `CLAUDE.md`, FALSE in general: a link into a skip-listed directory
+/// (`target/`, `.git/`, `tmp/`, `.venv/`) has no other route in, so skipping it
+/// left content unscanned with no finding. That is the same vacuity this rule
+/// exists to cure.
+///
 /// Fails CLOSED on every uncertainty. `canonicalize` resolves the whole chain
-/// and errors on a dangling link, so an unresolvable target answers `false` and
+/// and errors on a dangling link, so an unresolvable target answers `None` and
 /// is reported. `root` is canonicalized too, because a `root` reached through a
 /// symlinked parent would otherwise never prefix-match its own resolved children.
-fn symlink_resolves_within(path: &Path, root: &Path) -> bool {
+fn symlink_target_within(path: &Path, root: &Path) -> Option<PathBuf> {
     let (Ok(target), Ok(resolved_root)) = (fs::canonicalize(path), fs::canonicalize(root)) else {
-        return false;
+        return None;
     };
-    target.starts_with(&resolved_root)
+    target.starts_with(&resolved_root).then_some(target)
 }
 
 /// Collect the Rust files the tmux rule scans, plus a finding for every part of
@@ -304,6 +311,10 @@ fn rust_files_for_tmux_scan(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
     let mut findings = Vec::new();
+    // Canonical paths already enqueued. Following in-tree symlinks makes the
+    // walk a graph rather than a tree, so this is what keeps a link cycle from
+    // looping forever and stops an already-walked subtree being re-reported.
+    let mut visited = std::collections::HashSet::new();
     while let Some(path) = pending.pop() {
         // `symlink_metadata` does not follow links, so a symlinked directory
         // can never send the walk round a cycle or out of the repository.
@@ -322,27 +333,37 @@ fn rust_files_for_tmux_scan(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
         };
         if metadata.is_symlink() {
             // The hazard this arm guards is stated in its own finding: following
-            // the link could LEAVE THE REPOSITORY. A link that resolves back
-            // INSIDE the scan root cannot, and the walk reaches its target anyway
-            // by the target's real path — so such a link is provably harmless and
-            // reporting it is a false positive, not suspect-by-default rigor.
-            // `CLAUDE.md -> AGENTS.md` is the in-tree case that proved this: it
-            // landed after this rule was written and failed a scan that had
-            // nothing to say about it.
+            // the link could LEAVE THE REPOSITORY. A link resolving back INSIDE
+            // the root cannot, so it is FOLLOWED rather than refused —
+            // `CLAUDE.md -> AGENTS.md` is the in-tree case that proved the
+            // blanket refusal wrong, landing after this rule was written and
+            // failing a scan that had nothing to say about it.
             //
-            // Resolution is the discriminator, and it fails CLOSED: a link that
-            // escapes the root, dangles, or cannot be canonicalized at all is
-            // still reported. Only a link demonstrably resolving within the root
-            // is skipped silently.
-            if !symlink_resolves_within(&path, root) {
-                findings.push(format!(
-                    "tmux socket-scoping scan skipped the symlink {} — following it \
-                     could leave the repository, so its contents are UNSCANNED; move \
-                     the real directory into the tree or add it to the skip-list \
-                     deliberately",
+            // Following, not skipping, is the point. Skipping in-tree links
+            // would leave a link into a skip-listed directory unscanned and
+            // unreported — the vacuity this rule exists to cure. `visited`
+            // makes that safe: canonical paths dedupe, so a link cycle
+            // terminates and a link to an already-walked subtree costs nothing.
+            match symlink_target_within(&path, root) {
+                Some(target) => pending.push(target),
+                None => findings.push(format!(
+                    "tmux socket-scoping scan skipped the symlink {} — its target \
+                     does not resolve inside the repository, so its contents are \
+                     UNSCANNED; move the real directory into the tree or add it to \
+                     the skip-list deliberately",
                     path.display()
-                ));
+                )),
             }
+            continue;
+        }
+        // Dedupe REAL paths only, and only after the symlink arm. Canonicalizing
+        // a symlink yields its TARGET, so checking here first would mark the
+        // target visited on behalf of the link and then skip the target itself —
+        // silently unscanning exactly the file the arm just went to the trouble
+        // of following.
+        if let Ok(canonical) = fs::canonicalize(&path)
+            && !visited.insert(canonical)
+        {
             continue;
         }
         if metadata.is_dir() {
@@ -2064,13 +2085,13 @@ mod tests {
         assert!(findings.is_empty(), "{findings:?}");
     }
 
-    // Defect 6b — the symlink arm flagged links that could not leave the tree.
+    // Defect 6b — the symlink arm refused links that could not leave the tree,
+    // then skipped them silently, which left in-tree targets unscanned.
 
     #[test]
-    fn a_symlink_resolving_inside_the_scan_root_is_not_flagged() -> std::io::Result<()> {
+    fn a_symlink_resolving_inside_the_scan_root_is_followed() -> std::io::Result<()> {
         // The must-NOT-flag half. `CLAUDE.md -> AGENTS.md` is the real case:
-        // following it cannot leave the repository and its target is scanned
-        // under its own real path, so it costs the scan no coverage.
+        // following it cannot leave the repository, so it is scanned, not refused.
         let temp = temp_scan_root("symlink-inside")?;
         fs::write(temp.join("real.rs"), "fn f() {}\n")?;
         std::os::unix::fs::symlink("real.rs", temp.join("link.rs"))?;
@@ -2080,7 +2101,54 @@ mod tests {
         assert!(findings.is_empty(), "{findings:?}");
         assert!(
             paths.iter().any(|path| path.ends_with("real.rs")),
-            "the real target must still be scanned: {paths:?}"
+            "the target must be scanned: {paths:?}"
+        );
+        fs::remove_dir_all(&temp).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn a_symlink_into_a_skipped_directory_is_still_scanned() -> std::io::Result<()> {
+        // The reason in-tree links are FOLLOWED rather than skipped. `target/`
+        // is on the skip-list, so the walk has no other route to this file. An
+        // earlier revision skipped the link silently on the reasoning that the
+        // real path is walked anyway — leaving the content unscanned AND
+        // unreported, which is the vacuity this rule exists to cure.
+        let temp = temp_scan_root("symlink-into-skipped")?;
+        fs::create_dir_all(temp.join("target"))?;
+        fs::write(temp.join("target/generated.rs"), "fn f() {}\n")?;
+        std::os::unix::fs::symlink("target/generated.rs", temp.join("link.rs"))?;
+
+        let (paths, findings) = rust_files_for_tmux_scan(&temp);
+
+        assert!(findings.is_empty(), "{findings:?}");
+        assert!(
+            paths.iter().any(|path| path.ends_with("generated.rs")),
+            "a link is the only route to this file, so it must be scanned: {paths:?}"
+        );
+        fs::remove_dir_all(&temp).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn a_symlink_cycle_terminates_and_reports_nothing() -> std::io::Result<()> {
+        // Following in-tree links makes the walk a graph, so the visited set is
+        // load-bearing: without it this test hangs rather than fails.
+        let temp = temp_scan_root("symlink-cycle")?;
+        fs::create_dir_all(temp.join("inner"))?;
+        fs::write(temp.join("inner/real.rs"), "fn f() {}\n")?;
+        std::os::unix::fs::symlink(temp.join("inner"), temp.join("inner/loop"))?;
+
+        let (paths, findings) = rust_files_for_tmux_scan(&temp);
+
+        assert!(findings.is_empty(), "{findings:?}");
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path.ends_with("real.rs"))
+                .count(),
+            1,
+            "the cycle must not re-enqueue the subtree: {paths:?}"
         );
         fs::remove_dir_all(&temp).ok();
         Ok(())
