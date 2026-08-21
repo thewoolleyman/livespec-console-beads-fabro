@@ -5,11 +5,20 @@
 # it. Pattern copied from livespec-dev-tooling
 # ci-runner/k3s/test-job/proof-job.yml (livespec-s43svm.14's phase-1
 # proof), adapted to THIS repo's own ARC scale set
-# (livespec-console-beads-fabro-local-ci-k3s, installed 2026-08-16).
+# (livespec-console-beads-k3s, installed 2026-08-16).
 #
 # In ARC's gha-runner-scale-set mode a workflow selects the pool by the
 # scale set NAME, as a bare string — not by a label array (see the
 # livespec-dev-tooling PR #1431 fix this pattern already avoids).
+#
+# The name MUST be verified against the live cluster, not derived from
+# the other repos' naming convention. Until livespec-s43svm.38 this file
+# requested `livespec-console-beads-fabro-local-ci-k3s`, which looks
+# systematic and is not what was provisioned. A requested name matching
+# no scale set produces NO error: GitHub simply never assigns the job,
+# and it sits `queued` with an empty `runner_name` forever — the same
+# observable surface as the wedged-runner deadlock in
+# livespec-s43svm.30.
 name: k3s-arc-proof-job (livespec-s43svm.16, non-gating)
 
 on:
@@ -17,7 +26,7 @@ on:
 
 jobs:
   proof:
-    runs-on: livespec-console-beads-fabro-local-ci-k3s
+    runs-on: livespec-console-beads-k3s
     steps:
       - name: prove the path end-to-end
         run: |
