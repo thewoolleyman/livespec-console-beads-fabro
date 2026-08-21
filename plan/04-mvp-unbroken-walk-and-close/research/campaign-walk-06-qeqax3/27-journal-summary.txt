@@ -1,0 +1,3 @@
+{"at": "2026-08-21T07:32:40Z", "budget": 1, "dry_run": false, "picked": ["livespec-console-beads-fabro-qeqax3"], "stage": "loop-pick"}
+{"acceptance_verdict": "PASS", "advisory": false, "at": "2026-08-21T08:00:10Z", "policy": "ai-then-human", "stage": "acceptance-parked", "work_item_id": "livespec-console-beads-fabro-qeqax3"}
+{"at": "2026-08-21T08:00:10Z", "outcome": {"detail": "merged, post-merge janitor green", "fabro_failure_category": null, "fabro_failure_cause": null, "fabro_failure_signature": null, "fabro_run_id": "01M0HKS3GF84BEYX1DSZFF4AY4", "merge_sha": "86c14996a436a5df0517d4191851cda88b52da02", "pr_number": 751, "stage": "done", "status": "green", "work_item_id": "livespec-console-beads-fabro-qeqax3"}, "stage": "outcome"}
