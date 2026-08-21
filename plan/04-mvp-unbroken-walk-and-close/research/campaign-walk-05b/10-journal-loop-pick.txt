@@ -1,0 +1,4 @@
+2026-08-21T06:11:45Z ledger-admit {"work_item_id": "livespec-console-beads-fabro-iofvz2"}
+2026-08-21T06:11:45Z loop-pick {"budget": 1, "picked": ["livespec-console-beads-fabro-iofvz2"]}
+2026-08-21T06:11:48Z sizing-warn {"warnings": ["description is 1758 chars (> 1500): heavy items have exceeded one unattended ACP turn; consider splitting before loop-feeding"], "work_item_id": "livespec-console-beads-fabro-iofvz2"}
+2026-08-21T06:11:49Z dispatch-id {"dispatch_id": "120f5f62a7104333a0254d160060a4c0", "work_item_id": "livespec-console-beads-fabro-iofvz2"}

@@ -1,0 +1,55 @@
+┌LiveSpec Console──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│fleet: livespec | repo: livespec-console-beads-fabro | view: Attention | attention: 98 | factory: drain failed | sources: 2 unavailable (dispatcher, livespec)│
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Menu:  Work item   Factory   View   Help   File
+┌Views [focus]───┐┌Attention──────────────────────────────────────────────────┐┌Detail─────────────────────────────────────────────────────────────────────────┐
+│> Attention     ││> Host-route work-item livespec-console-beads-fabro-5zjk5b:█│Repo: livespec-console-beads-fabro                                             │
+│  Spec          ││  Host-route work-item livespec-console-beads-fabro-koykn7:█│Work item: livespec-console-beads-fabro-5zjk5b                                 │
+│  Lanes         ││  Host-route work-item livespec-console-beads-fabro-w7d: fa█│Fabro run: -                                                                   │
+│  Events        ││  Release stranded active work-item livespec-console-beads-█│Attach: cd /data/projects/livespec-console-beads-fabro && codex exec           │
+│  Repos         ││  Open PR #317 (test: close four more tmux socket-scope byp█│'Host-route work-item livespec-console-beads-fabro-5zjk5b from repository      │
+│  Settings      ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│/data/projects/livespec-console-beads-fabro. Run it on the host with required  │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│credentials; do not dispatch it to Fabro.' < /dev/null                         │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│Timeline:                                                                      │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co█│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Prune stale worktree metadata for /home/ubuntu/.worktrees║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+│                ││  Remove clean worktree /home/ubuntu/.worktrees/livespec-co║│                                                                               │
+└────────────────┘└───────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────┘
+┌Status────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│up/down move | enter open | ? help | q quit                                                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
