@@ -89,7 +89,7 @@ the refusal, exactly as the `.fabro/` note above predicts. It was host-routed an
 merged normally. The refusal fires at stage `host-only-refused` BEFORE any run
 exists, so it strands no claim — the item stays `ready`.
 
-## Reading a dispatch outcome: three traps, measured 2026-08-21
+## Reading a dispatch outcome: four traps, measured 2026-08-21
 
 A dispatch that does not return green has several distinct shapes, and they call
 for opposite responses. Do not collapse them.
@@ -115,6 +115,61 @@ strands a claim on work that actually SUCCEEDED: a 20-minute timeout SIGTERM'd a
 dispatch during its post-merge janitor, after the merge landed but before closure
 was recorded, producing an `active`/`fabro` item whose change was already on
 master. Run dispatches unbounded in the background instead.
+
+### A phantom verdict needs the RIGHT SERVER — a bare listing names none
+
+Measured 2026-08-21, and it produced the mistake the trap above exists to
+prevent: a claim released on a run that was **alive at that moment**.
+
+`fabro ps` and `fabro ps -a` **do not query the factory the item was dispatched
+to** unless you say so. Run bare, they answer from a different server and return
+an empty listing. That empty listing is indistinguishable from a genuine
+phantom — and it is the more dangerous of the two, because it reads as a clean
+negative rather than as an error. The instrument answered; it just did not
+answer about the thing you asked.
+
+Name the server, and note the flag position — `--server` goes after the
+subcommand:
+
+```bash
+fabro ps -a --server https://hp-xubuntu.perch-rudd.ts.net:32276   # right
+fabro --server <url> ps                                          # rejected
+```
+
+**The factory is already in the journal row you are reading.** The `dispatch-id`
+stage carries `dispatch_factory` (e.g. `"hp"`); map it through `.livespec.jsonc`
+`factories`. In the incident the field was quoted in the very analysis that
+concluded "no run was ever created".
+
+**Why the journal alone cannot settle it.** The rule above says absence of a
+terminal `outcome` row means the run has not finished. True — but *has not
+finished* covers BOTH *still running* AND *never started*, and collapsing it to
+the second is the whole error. The journal distinguishes finished from
+unfinished; only a live query distinguishes in-flight from phantom.
+
+**The corrected test, all three legs required:**
+
+> A phantom verdict needs a POSITIVE ABSENCE from the server named by the
+> journal's own `dispatch_factory`, **plus** no branch **and** no PR.
+
+The branch/PR legs are not belt-and-braces. A succeeded run leaves both, so
+either one alone refutes a phantom call in a single command — in the incident
+`git ls-remote --heads origin | grep <id>` would have done it instantly, and the
+branch was there.
+
+**Silence can be queueing.** The same dispatch emitted `dispatch-id` in four
+seconds and then nothing for fifteen minutes, because the factory was
+head-of-line blocked by another tenant's run sitting in `blocked` on
+`human_input_required`. A long gap after `dispatch-id` is not evidence of
+failure; check whether the factory is draining at all before reading anything
+into it.
+
+**And killing the dispatcher does not kill the run.** The remote run survived,
+succeeded, published its branch and PR, and its sandbox-armed auto-merge landed
+it — see the section above: what dies with the local dispatcher is the LEDGER
+CLOSURE, not the merge. The state that leaves behind is an unclosed item behind
+an already-merged PR, which is quieter and more misleading than a stuck PR would
+be. Close it by hand after verifying acceptance against the merged code.
 
 ### The stale-plugin refusal is the one shape that strands nothing
 
