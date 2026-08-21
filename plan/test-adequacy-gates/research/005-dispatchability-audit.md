@@ -101,11 +101,20 @@ Note this is a different mechanism from ledger item
 here"), which is about the `livespec` CORE pin in `.livespec.jsonc`
 frozen at v0.26.0. Same family, different pin, different failure.
 
-## Also observed: nothing drains this repo
+## Also observed: no always-on drain took the ready lane
 
-`-txtzn5.1` sat `ready` and unclaimed for over two hours. The only
-dispatch process running on the host at the time was driving
-`/data/projects/livespec-overseer`, not this repo. Dispatch here is
-per-action (`drive --action impl:<id>`), initiated by a session or an
-overseer — there is no always-on drain for this tenant. A slice marked
-`ready` here is not therefore a slice that will start.
+`-txtzn5.1` sat `ready` and unclaimed for over two hours. It is tempting
+to conclude that nothing dispatches in this repo; that would be wrong,
+and the correction is worth recording alongside the claim. Later the
+same afternoon the host was running Fabro for
+`livespec-console-beads-fabro-mcj.2` — this repo's own tenant — while
+also running `overseer-54k2za.1` and `overseer-hgq4wi.30` for
+`/data/projects/livespec-overseer`.
+
+So dispatch here works and is in active use. What does NOT exist is an
+always-on drain that picks up whatever is `ready` in this tenant:
+dispatch is per-action (`drive --action impl:<id>`), initiated by a
+session or an overseer track that has decided to run that item. A slice
+marked `ready` here is not therefore a slice that will start — someone
+has to dispatch it, and until then it waits regardless of how ripe the
+ledger says it is.
