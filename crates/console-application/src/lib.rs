@@ -3498,6 +3498,7 @@ fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
             | EventType::WorkItemSnapshotObserved
             | EventType::SourceCompletenessFindingObserved
             | EventType::DispatcherBacklogBounceObserved
+            | EventType::DispatcherJournalProgressObserved
             | EventType::DispatcherRefusalObserved
             | EventType::FabroHumanGateObserved
             | EventType::GithubPullRequestSnapshotObserved
@@ -4711,6 +4712,7 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         }
         EventType::WorkItemSnapshotObserved
         | EventType::DispatcherBacklogBounceObserved
+        | EventType::DispatcherJournalProgressObserved
         | EventType::DispatcherRefusalObserved
         | EventType::FabroHumanGateObserved
         | EventType::GithubPullRequestSnapshotObserved
@@ -7201,6 +7203,7 @@ impl AttentionEvent for EventType {
             Self::LivespecNextSnapshotObserved => "LiveSpec next snapshot",
             Self::LivespecReviseRequired => "LiveSpec revise required",
             Self::DispatcherBacklogBounceObserved => "Dispatcher backlog bounce",
+            Self::DispatcherJournalProgressObserved => "Dispatcher journal progress",
             Self::DispatcherRefusalObserved => "Dispatcher refusal",
             Self::FactoryDrainRequested => "Factory drain requested",
             Self::FactoryDrainStarted => "Factory drain started",
@@ -10274,6 +10277,10 @@ mod tests {
         assert_eq!(
             EventType::DispatcherBacklogBounceObserved.label(),
             "Dispatcher backlog bounce"
+        );
+        assert_eq!(
+            EventType::DispatcherJournalProgressObserved.label(),
+            "Dispatcher journal progress"
         );
         assert_eq!(
             EventType::DispatcherRefusalObserved.label(),
