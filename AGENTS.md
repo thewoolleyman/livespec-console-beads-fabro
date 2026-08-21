@@ -285,6 +285,35 @@ them what they were allowed to decide.
   you would pick, you have already done the deciding work. Decide it, record
   the reasoning where the work is tracked, and report it as decided.
 
+### Standing maintainer directives (binding until countermanded)
+
+Recorded on the foreman epic and binding on EVERY session in this repo. They
+are reproduced here because CLAUDE.md is what a session actually reads at
+kickoff: on 2026-08-21 a plan-resume session was staffed without them, raised a
+two-question picker, and the foreman had to hand the directives back mid-thread.
+
+1. **Get the TUI into a usable state.** Whatever does not work perfectly gets
+   fixed later. Ship, do not polish.
+2. **The absolute priority is momentum.** Keep everything moving. Say yes to
+   everything possible.
+3. **Find the bugs by dogfooding, ASAP.** Real usage at the real TUI is the
+   bug-finding plan.
+4. **Do not bring decisions to the maintainer.** A decision with a sound
+   recommendation is DECIDED — execute and report. Groom cuts, closures,
+   acceptance amendments, and scope splits are all included. The ONLY escalation
+   is a security concern a consensus panel cannot resolve. A four-question batch
+   is what prompted this rule, and it was answered with explicit displeasure at
+   being asked.
+5. **Recorded next actions are instructions, not menus.** Take them.
+
+Directive 4 narrows the "when to ask" guidance above rather than sitting beside
+it: where that section says to reserve gates for genuine product calls and
+irreversible actions, directive 4 says that in THIS repo, in this phase, even
+those are yours when you can state a sound recommendation. This does not touch
+the confirm-first rule for destructive or outward-facing ACTIONS in the
+mutation protocol — deciding is yours, but an irreversible act still gets its
+confirmation.
+
 ## Repository mutation protocol
 
 Every repo change uses a worktree → PR → merge → cleanup path. Treat leaving
