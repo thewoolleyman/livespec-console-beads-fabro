@@ -119,6 +119,45 @@ spec/feature work lives on `spec/*` branches in worktrees, so a bare
 `cargo test` in the primary checkout tests master, not the branch. Check
 out (or worktree) the CI'd SHA before saying "passes locally."
 
+## A green PR is a statement about its TIP, not about the merge result
+
+A PR's checks ran against its own branch tip. They say nothing about the
+tree that results from merging it, and **the older the branch, the wider
+that gap**. Nothing in the merge machinery closes it: a stale branch can
+merge with no textual conflict at all and still break `master`, because
+the breakage is semantic rather than textual.
+
+Measured 2026-08-21 on PR #317: 14/14 green, branch tip from 2026-07-19,
+`mergeable` reported `UNKNOWN`. Rebased onto current `master` it went
+**red** on `check-arch`. Its new "never silently skip a symlink" rule
+flagged `./CLAUDE.md`, a symlink to `AGENTS.md` committed in `af0b60a` on
+2026-08-16 — a month AFTER the branch last ran. CI had honestly tested a
+tree that did not contain the file that breaks it.
+
+**Rule: before merging any PR whose branch is not current, refresh it and
+let CI re-run.** `gh pr update-branch <n> --rebase` then wait. Treat an
+old green as unevaluated, not as a pass. A `mergeable` of `UNKNOWN` is a
+prompt to check rather than a blocker — but note it would NOT have warned
+here, since the textual merge was clean.
+
+The corollary for required checks: the check SET also moves. #317's green
+predated `check-shell-quality` and `check-plan-no-tombstone` entirely, so
+even a full green row was missing two gates the current set requires.
+
+## When a binary reports something its source cannot say, the BINARY is stale
+
+`cargo` considered a `console-arch-check` binary fresh while it had been
+built from a different worktree's branch, so a run on `master` printed a
+diagnostic whose message string **does not exist anywhere in master's
+source**. That nearly produced a report of `master` being red, and of a
+regression being "pre-existing" when it was the opposite.
+
+The tell is cheap and decisive: `grep` the source for the exact message
+before believing the run. If the string is not there, force a genuine
+rebuild (`touch` the source, or use a clean worktree with its own target
+dir) and re-measure. A `target/` directory shared across worktrees makes
+this failure ordinary rather than exotic.
+
 ## Commit / push mechanics
 
 - Commits and pushes are **refused at the primary checkout** (baseline
