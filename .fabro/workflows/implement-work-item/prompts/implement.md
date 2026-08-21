@@ -42,24 +42,32 @@ constraints.
   Result rails, bugs raise. Never write the abbreviation "NFR" — spell
   out "non-functional-requirements".
 
-## Red-Green-Replay (REQUIRED for any product `.py` change — follow VERBATIM)
+## Red-Green-Replay (REQUIRED for any product `.rs` change — follow VERBATIM)
 
 1. **Red commit.** Stage the test file ALONE (no impl) and commit with a
-   `fix:`/`feat:` subject. The `red_green_replay` hook runs pytest on
+   `fix:`/`feat:` subject. The `console-red-green-replay-check` commit-msg
+   check runs the relevant Rust test via `cargo test` / `cargo nextest` on
    the staged tree; the staged test MUST fail (non-zero). Prefer a
-   genuine assertion failure over ImportError: if the impl module does
-   not exist yet, create a minimal STUB on disk so the test imports and
+   genuine assertion failure over compile/import failure: if the impl module
+   does not exist yet, create a minimal STUB on disk so the test compiles and
    runs but its assertion FAILS; the stub must NOT make the test pass
-   (that trips `test-passed-at-red`). The impl must be UNMODIFIED on
-   disk at Red (the hook's pytest reads the on-disk module).
+   (that trips `red-green-replay-test-passed-at-red`). The impl must be
+   UNMODIFIED on disk at Red (the check's Rust test command reads the
+   on-disk module).
 2. **Green amend.** Stage the impl, `mise exec -- git commit --amend`.
-   The hook re-runs the SAME test (now passing) and records
-   `TDD-Green-*` trailers. Test-file bytes MUST be byte-identical
-   across Red→Green; to change the test, author a fresh Red.
+   The check re-runs the SAME test (now passing) and records the Green
+   trailers. Test-file bytes MUST be byte-identical across Red→Green; to
+   change the test, author a fresh Red.
 
-Exempt: changesets with no product `.py` (docs, spec, work-items,
-config) use `chore(...)`/`docs(...)`/`chore(spec):` subjects and skip
-the ritual.
+The trailer grammar is owned by
+`crates/console-red-green-replay-check/src/lib.rs`; emit the exact keys parsed
+there: `RED_TRAILER_TOKEN` = `TDD-Red-Test-File-Checksum:`,
+`GREEN_TRAILER_TOKEN` = `TDD-Green-Verified-At:`, and
+`SUITE_TRAILER_TOKEN` = `TDD-Suite-Green-Captured-At:`. Do not invent another
+spelling or broader `TDD-Green-*` grammar.
+
+Exempt: changesets with no product `.rs` (docs, spec, work-items, config) use
+`chore(...)`/`docs(...)`/`chore(spec):` subjects and skip the ritual.
 
 Every commit message body MUST end with the trailer line:
 
