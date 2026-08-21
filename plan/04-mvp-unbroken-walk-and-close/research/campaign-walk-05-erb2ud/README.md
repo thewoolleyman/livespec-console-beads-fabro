@@ -55,6 +55,22 @@ Plan 02 owns `-v8un` and sharpened this into its acceptance: **unknown must be
 distinguishable from unset**, because a projection printing an assumed default is
 doing exactly what this repo's contracts forbid its ports to do.
 
+**Corrected after closure, and it strengthens the finding.** This record
+originally said the acceptance policy "is not stored on the bead at all". Wrong —
+it is a LABEL, and this session read `metadata` without reading `labels`.
+`erb2ud` carried `acceptance:ai-then-human`; the unarmed rows in the same lane
+(`iofvz2`, `qeqax3`, `zbnnlv`) carry no `acceptance:*` label at all. So the
+ledger plainly held the value and the console still printed
+`— (not emitted; console assumes ai-then-human)` — the same disagreement as
+`rank: a0` versus `rank ~`, against a second field. The speculative "degraded
+orchestrator read surface" explanation is withdrawn as unnecessary.
+
+That label evidence also **partly un-does this walk's retraction of walk #3's
+control**: `iofvz2` is genuinely unarmed, so that control was sound after all.
+The methodological point stands — a blank pane is not evidence of an unset value,
+so the technique remains ONE-WAY — but the accusation against walk #3 was harsher
+than the evidence warranted. See `06-` for the full correction.
+
 **The staleness is in the projection only.** This walk armed against a stale row
 and the drain still picked correctly — the ledger and the ranker were right
 throughout.
