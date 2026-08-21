@@ -32,6 +32,7 @@ authors = [
 dev = [
     "livespec-dev-tooling",
     "livespec-runtime>=0.20.0",
+    "returns>=0.25.0",
     # livespec-dev-tooling vendors structlog but declares no runtime
     # [project.dependencies], so its vendored structlog's own transitive
     # need for typing-extensions is unmet in this minimal env (other fleet
