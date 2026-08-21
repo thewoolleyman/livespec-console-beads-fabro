@@ -108,8 +108,26 @@ Self-declared MIXED autonomy — regroom into two dep-linked slices:
    `repo-invariant-guards` rebases onto it.** Rationale: the
    region-coverage flip retroactively binds every open PR including
    theirs, so it needs the low-water mark and must not be made to wait.
-4. Parallel-safe against event-identity, command-queue, and
-   operator-surface — no shared files.
+4. Parallel-safe against the other live threads — re-verified
+   2026-08-21. The claim as inherited named `command-queue` and
+   `operator-surface`; **both are archived** (`plan/archive/command-queue-semantics/`,
+   `plan/archive/operator-surface-redesign/`), so naming them told a
+   successor nothing. The live threads today are
+   `02-menu-shell-primacy`, `04-mvp-unbroken-walk-and-close`,
+   `event-identity-integrity` and `repo-invariant-guards`.
+
+   `event-identity-integrity` mentions neither `justfile` nor
+   `ci.yml` anywhere. The two MVP threads mention them in many files,
+   but every occurrence is a REFERENCE (running `just check`), not an
+   edit plan: neither contains an edit-verb phrase against either path,
+   and neither touches the `targets=(...)` array. So the substance of
+   the claim holds and the contention list is unchanged —
+   `repo-invariant-guards` remains the only thread that plans to edit
+   these files, and it already concedes the tie-break in #3 above.
+
+   Re-derive rather than trusting this list; threads archive and appear.
+   The check that matters is an edit-verb phrase against `justfile` or
+   `.github/workflows/`, not a bare mention.
 5. Ledger item `livespec-console-beads-fabro-wnlcnj` (ready) also edits
    `ci.yml` (dropping the redundant `check-test` matrix job). It is not
    owned by this thread; sequence it before the fuzz/mutants job lands
