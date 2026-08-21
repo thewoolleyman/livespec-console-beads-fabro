@@ -2601,6 +2601,8 @@ fn help_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
+
     use crate::effect_sink_io_error;
 
     use std::cell::RefCell;
@@ -2619,12 +2621,13 @@ mod tests {
         PendingValve, RejectMode, TuiInteraction, TuiInteractionState, TuiOverlay, TuiView,
         build_tui_model, project_attention, project_lane_board,
         source_adapters::{
-            AcceptancePolicy, AdapterError, AdapterPoll, AdapterPollRequest, AdmissionPolicy,
-            AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, DispatcherJournalEntry,
-            DispatcherJournalKind, Lane, LaneReason, NeedsAttentionReadOutcome,
-            NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, PullSourcePort,
-            SourceAdapterKind, SourceEventAppendPort, SourcePayload, SourceProbe,
-            SourceProbeOutcome, WorkItemSnapshot, normalize_work_item_snapshot,
+            AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll,
+            AdapterPollRequest, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
+            AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
+            NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
+            NotObservedFinding, PullSourcePort, SourceAdapterKind, SourceEventAppendPort,
+            SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemSnapshot,
+            normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -7807,6 +7810,234 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    #[test]
+    fn real_store_persistence_reports_missing_command_table_errors() {
+        let (path, mut store) = file_store("persist-missing-commands");
+        corrupt_store(&path, "drop table commands");
+
+        let error = err_eventstore_command_outcomes(persist_tui_runtime_effects(
+            &mut store,
+            &[factory_drain_effect()],
+            "2026-06-23T00:00:02Z",
+        ));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_demo_backfill_reports_missing_event_table_errors() {
+        let (path, mut store) = file_store("demo-missing-events");
+        corrupt_store(&path, "drop table events");
+
+        let append_error = err_eventstore_append_outcomes(append_demo_events_to_store(
+            &mut store,
+            "2026-06-23T00:00:00Z",
+        ));
+        let report_error =
+            err_eventstore_string(backfill_demo_report(&mut store, "2026-06-23T00:00:00Z"));
+
+        check_event_store_error(append_error);
+        check_event_store_error(report_error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_read_reports_propagate_missing_event_table_errors() {
+        for command in ["events", "snapshot", "doctor", "plans"] {
+            let (path, store) = file_store(&format!("read-missing-events-{command}"));
+            corrupt_store(&path, "drop table events");
+
+            let error = if command == "events" {
+                err_eventstore_string(events_tail_report(&store, 20))
+            } else if command == "snapshot" {
+                err_eventstore_string(snapshot_report(&store))
+            } else if command == "doctor" {
+                err_eventstore_string(doctor_report(&store))
+            } else {
+                err_eventstore_string(plan_page_report(&store, "epic-1"))
+            };
+
+            check_event_store_error(error);
+            cleanup_store(&path);
+        }
+    }
+
+    #[test]
+    fn real_store_snapshot_and_doctor_propagate_missing_command_table_errors() {
+        for command in ["snapshot", "doctor"] {
+            let (path, store) = file_store(&format!("read-missing-commands-{command}"));
+            corrupt_store(&path, "drop table commands");
+
+            let error = if command == "snapshot" {
+                err_eventstore_string(snapshot_report(&store))
+            } else {
+                err_eventstore_string(doctor_report(&store))
+            };
+
+            check_event_store_error(error);
+            cleanup_store(&path);
+        }
+    }
+
+    #[test]
+    fn real_store_needs_attention_ingest_reports_missing_event_table_errors() {
+        let (path, mut store) = file_store("needs-attention-missing-events");
+        let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&port, "livespec-console-beads-fabro");
+        corrupt_store(&path, "drop table events");
+
+        let error = err_runtime_usize(ingest_needs_attention(
+            &mut store,
+            &needs_attention,
+            "2026-07-07T00:00:00Z",
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_refresh_sources_reports_needs_attention_store_errors() {
+        let (path, mut store) = file_store("refresh-missing-events");
+        let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&port, "livespec-console-beads-fabro");
+        corrupt_store(&path, "drop table events");
+
+        let error = err_runtime_summaries(refresh_sources(
+            &mut store,
+            "2026-07-07T00:00:00Z",
+            &[],
+            &needs_attention,
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_reflection_reports_missing_command_and_event_table_errors() {
+        let audit = AutonomousAudit::new(
+            vec![ok_decision(AutonomousDecision::from_auto_disposition(
+                "wi-1",
+                "auto-approve",
+                vec!["auto_approve_ready".to_owned()],
+            ))],
+            vec![ok_decision(AutonomousDecision::from_auto_disposition(
+                "wi-2",
+                "cap-exceeded-escalation",
+                vec!["acceptance_rework_cap".to_owned()],
+            ))],
+        );
+        let decisions = SimulatedDecisionsPort::returning(audit);
+
+        let (command_path, mut command_store) = file_store("reflection-missing-commands");
+        corrupt_store(&command_path, "drop table commands");
+        let command_error = err_runtime_usize(observe_and_reflect_autonomous_decisions(
+            &mut command_store,
+            "2026-07-11T00:00:01Z",
+            &decisions,
+        ));
+        check_runtime_event_store_error(command_error);
+        cleanup_store(&command_path);
+
+        let escalation_audit =
+            AutonomousAudit::new(Vec::new(), decisions.audit.escalations().to_vec());
+        let escalation_decisions = SimulatedDecisionsPort::returning(escalation_audit);
+        let (event_path, mut event_store) = file_store("reflection-missing-events");
+        corrupt_store(&event_path, "drop table events");
+        let event_error = err_runtime_usize(observe_and_reflect_autonomous_decisions(
+            &mut event_store,
+            "2026-07-11T00:00:01Z",
+            &escalation_decisions,
+        ));
+        check_runtime_event_store_error(event_error);
+        cleanup_store(&event_path);
+    }
+
+    #[test]
+    fn real_store_pending_handlers_report_missing_table_errors() {
+        let (factory_event_path, mut factory_event_store) = file_store("factory-missing-events");
+        corrupt_store(&factory_event_path, "drop table events");
+        let factory_event_error = err_runtime_pending_outcomes(handle_pending_factory_commands(
+            &mut factory_event_store,
+            "2026-06-23T00:00:03Z",
+            &mut SimulatedFactoryDrainPort,
+        ));
+        check_runtime_event_store_error(factory_event_error);
+        cleanup_store(&factory_event_path);
+
+        let (factory_command_path, mut factory_command_store) =
+            file_store("factory-missing-commands");
+        corrupt_store(&factory_command_path, "drop table commands");
+        let factory_command_error = err_runtime_pending_outcomes(handle_pending_factory_commands(
+            &mut factory_command_store,
+            "2026-06-23T00:00:03Z",
+            &mut SimulatedFactoryDrainPort,
+        ));
+        check_runtime_event_store_error(factory_command_error);
+        cleanup_store(&factory_command_path);
+
+        let (work_item_path, mut work_item_store) = file_store("work-item-missing-commands");
+        corrupt_store(&work_item_path, "drop table commands");
+        let work_item_error = err_runtime_pending_outcomes(handle_pending_work_item_commands(
+            &mut work_item_store,
+            "2026-06-23T00:00:03Z",
+            &mut SimulatedWorkItemActionPort::default(),
+        ));
+        check_runtime_event_store_error(work_item_error);
+        cleanup_store(&work_item_path);
+
+        let (config_path, mut config_store) = file_store("config-missing-commands");
+        corrupt_store(&config_path, "drop table commands");
+        let config_error = err_runtime_pending_outcomes(handle_pending_config_commands(
+            &mut config_store,
+            "2026-06-23T00:00:03Z",
+            &mut SimulatedWorkItemActionPort::default(),
+        ));
+        check_runtime_event_store_error(config_error);
+        cleanup_store(&config_path);
+    }
+
+    #[test]
+    fn real_store_tui_session_reports_startup_ingest_store_errors() {
+        let (path, mut store) = file_store("tui-session-missing-events");
+        let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&port, "livespec-console-beads-fabro");
+        let mut runner = ScriptedTuiSessionRunner::new(Vec::new());
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let poll_requester = poll_requester();
+        let command_requester = command_requester();
+        corrupt_store(&path, "drop table events");
+
+        let error = err_runtime_tui_outcome(run_store_backed_tui_session(
+            &mut store,
+            "2026-07-07T00:00:00Z",
+            "operator",
+            &mut runner,
+            &[],
+            &mut factory_port,
+            &mut work_item_port,
+            &empty_decisions_port(),
+            &needs_attention,
+            &poll_requester,
+            &command_requester,
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
     fn plan_snapshot_event(
         event_id: &str,
         work_item_id: &str,
@@ -8045,6 +8276,275 @@ mod tests {
 
     fn async_command_requester() -> RecordingPendingCommandRequester {
         RecordingPendingCommandRequester::new(false)
+    }
+
+    #[test]
+    #[should_panic(expected = "check failed")]
+    fn check_panics() {
+        check(false, "check failed");
+    }
+
+    #[test]
+    #[should_panic(expected = "check_event_store_error failed")]
+    fn check_event_store_error_panics() {
+        check_event_store_error(EventStoreError::UnknownEventType(
+            "unknown.event".to_owned(),
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "check_runtime_event_store_error failed")]
+    fn check_runtime_event_store_error_panics() {
+        check_runtime_event_store_error(ConsoleRuntimeError::TuiRuntimeFailed);
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_store failed")]
+    fn ok_store_panics() {
+        ok_store(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_sqlite_connection failed")]
+    fn ok_sqlite_connection_panics() {
+        ok_sqlite_connection(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_sqlite_unit failed")]
+    fn ok_sqlite_unit_panics() {
+        ok_sqlite_unit(Err(rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_io_unit failed")]
+    fn ok_io_unit_panics() {
+        ok_io_unit(Err(std::io::Error::other("boom")));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_duration failed")]
+    fn ok_duration_panics() {
+        ok_duration(SystemTime::UNIX_EPOCH.duration_since(SystemTime::now()));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_decision failed")]
+    fn ok_decision_panics() {
+        ok_decision(None);
+    }
+
+    #[test]
+    #[should_panic(expected = "err_eventstore_command_outcomes failed")]
+    fn err_eventstore_command_outcomes_panics() {
+        err_eventstore_command_outcomes(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_eventstore_append_outcomes failed")]
+    fn err_eventstore_append_outcomes_panics() {
+        err_eventstore_append_outcomes(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_eventstore_string failed")]
+    fn err_eventstore_string_panics() {
+        err_eventstore_string(Ok(String::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_runtime_usize failed")]
+    fn err_runtime_usize_panics() {
+        err_runtime_usize(Ok(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_runtime_summaries failed")]
+    fn err_runtime_summaries_panics() {
+        err_runtime_summaries(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_runtime_pending_outcomes failed")]
+    fn err_runtime_pending_outcomes_panics() {
+        err_runtime_pending_outcomes(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_runtime_tui_outcome failed")]
+    fn err_runtime_tui_outcome_panics() {
+        err_runtime_tui_outcome(Ok(TuiSessionOutcome::new(0, 0, 0, 0, 0, 0)));
+    }
+
+    #[test]
+    fn helper_success_arms_are_covered() {
+        check(true, "helper success");
+        ok_io_unit(Ok(()));
+    }
+
+    #[track_caller]
+    fn check(condition: bool, context: &str) {
+        if !condition {
+            panic!("{context}");
+        }
+    }
+
+    #[track_caller]
+    fn check_event_store_error(error: EventStoreError) {
+        match error {
+            EventStoreError::InvalidSequence | EventStoreError::Sqlite(_) => {}
+            other => panic!("check_event_store_error failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn check_runtime_event_store_error(error: ConsoleRuntimeError) {
+        match error {
+            ConsoleRuntimeError::EventStore(error) => check_event_store_error(error),
+            other => panic!("check_runtime_event_store_error failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_store(result: EventStoreResult<SqliteEventStore>) -> SqliteEventStore {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_store failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_sqlite_connection(
+        result: Result<rusqlite::Connection, rusqlite::Error>,
+    ) -> rusqlite::Connection {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_sqlite_connection failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_sqlite_unit(result: Result<(), rusqlite::Error>) {
+        match result {
+            Ok(()) => {}
+            Err(error) => panic!("ok_sqlite_unit failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_io_unit(result: Result<(), std::io::Error>) {
+        match result {
+            Ok(()) => {}
+            Err(error) => panic!("ok_io_unit failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_duration(
+        result: Result<std::time::Duration, std::time::SystemTimeError>,
+    ) -> std::time::Duration {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_duration failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_decision(result: Option<AutonomousDecision>) -> AutonomousDecision {
+        match result {
+            Some(value) => value,
+            None => panic!("ok_decision failed"),
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_command_outcomes(
+        result: EventStoreResult<Vec<CommandAppendOutcome>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_command_outcomes failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_append_outcomes(
+        result: EventStoreResult<Vec<AppendOutcome>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_append_outcomes failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_string(result: EventStoreResult<String>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_string failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_runtime_usize(result: ConsoleRuntimeResult<usize>) -> ConsoleRuntimeError {
+        match result {
+            Ok(_value) => panic!("err_runtime_usize failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_runtime_summaries(
+        result: ConsoleRuntimeResult<Vec<AdapterIngestionSummary>>,
+    ) -> ConsoleRuntimeError {
+        match result {
+            Ok(_value) => panic!("err_runtime_summaries failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_runtime_pending_outcomes(
+        result: ConsoleRuntimeResult<Vec<PendingCommandOutcome>>,
+    ) -> ConsoleRuntimeError {
+        match result {
+            Ok(_value) => panic!("err_runtime_pending_outcomes failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_runtime_tui_outcome(
+        result: ConsoleRuntimeResult<TuiSessionOutcome>,
+    ) -> ConsoleRuntimeError {
+        match result {
+            Ok(_value) => panic!("err_runtime_tui_outcome failed"),
+            Err(error) => error,
+        }
+    }
+
+    fn file_store(name: &str) -> (PathBuf, SqliteEventStore) {
+        let nanos = ok_duration(SystemTime::now().duration_since(UNIX_EPOCH)).as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-cli-{name}-{}-{nanos}.sqlite",
+            std::process::id()
+        ));
+        let _ignored = fs::remove_file(&path);
+        let store = ok_store(SqliteEventStore::open(&path));
+        (path, store)
+    }
+
+    fn corrupt_store(path: &Path, sql: &str) {
+        let connection = ok_sqlite_connection(rusqlite::Connection::open(path));
+        ok_sqlite_unit(connection.execute_batch(sql));
+    }
+
+    fn cleanup_store(path: &Path) {
+        let _ignored = fs::remove_file(path);
+        let wal = path.with_extension("sqlite-wal");
+        let shm = path.with_extension("sqlite-shm");
+        let _ignored = fs::remove_file(wal);
+        let _ignored = fs::remove_file(shm);
     }
 
     #[test]

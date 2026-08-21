@@ -611,6 +611,7 @@ dependencies = [
  "console-domain",
  "console-eventstore",
  "console-tui",
+ "rusqlite",
  "serde_json",
  "sha2",
  "time",

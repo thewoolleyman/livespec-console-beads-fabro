@@ -923,7 +923,7 @@ mod tests {
         source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane, LaneReason},
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
-    use rusqlite::{Rows, Statement, Transaction};
+    use rusqlite::{Connection, Rows, Statement, Transaction};
 
     #[test]
     fn opened_store_uses_wal_mode_and_creates_required_tables() {
@@ -1716,6 +1716,209 @@ mod tests {
     }
 
     #[test]
+    fn opening_store_at_directory_reports_sqlite_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-eventstore-dir-{}",
+            std::process::id()
+        ));
+        let _ignored = std::fs::remove_dir_all(&path);
+        ok_unit(std::fs::create_dir_all(&path));
+
+        let error = err_store(SqliteEventStore::open(&path));
+
+        check_sqlite_error(error);
+        let _ignored = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn opening_store_reports_schema_initialization_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-eventstore-bad-schema-{}.sqlite",
+            std::process::id()
+        ));
+        let _ignored = std::fs::remove_file(&path);
+        let connection = ok_connection(Connection::open(&path));
+        ok_sqlite_unit(
+            connection.execute_batch("create table events (global_seq integer primary key);"),
+        );
+        drop(connection);
+
+        let error = err_store(SqliteEventStore::open(&path));
+
+        check_sqlite_error(error);
+        let _ignored = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_event_reports_transaction_start_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("begin immediate"));
+
+        let error = err_append_outcome(store.append_event(&event_append("evt_tx", None)));
+
+        check_sqlite_error(error);
+        ok_sqlite_unit(store.connection.execute_batch("rollback"));
+    }
+
+    #[test]
+    fn append_command_reports_transaction_start_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("begin immediate"));
+
+        let error = err_command_append_outcome(store.append_command(&command_append(
+            "cmd_tx",
+            "idem_tx",
+            CommandType::FactoryDrainRequested,
+        )));
+
+        check_sqlite_error(error);
+        ok_sqlite_unit(store.connection.execute_batch("rollback"));
+    }
+
+    #[test]
+    fn append_event_reports_insert_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+
+        let error = err_append_outcome(store.append_event(&event_append("evt_insert", None)));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn append_command_reports_insert_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
+
+        let error = err_command_append_outcome(store.append_command(&command_append(
+            "cmd_insert",
+            "idem_insert",
+            CommandType::FactoryDrainRequested,
+        )));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn store_read_methods_report_missing_table_prepare_failures() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+        check_sqlite_error(err_events(store.list_events()));
+        check_sqlite_error(err_console_events(store.list_console_events()));
+
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
+        check_sqlite_error(err_commands(store.list_commands()));
+
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table checkpoints"));
+        check_sqlite_error(err_checkpoint(store.load_checkpoint("orchestrator:repo")));
+    }
+
+    #[test]
+    fn command_mutators_report_missing_table_failures() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
+        check_sqlite_error(err_claimed(
+            store.claim_command("cmd_1", "2026-06-23T00:00:02Z"),
+        ));
+
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
+        check_sqlite_error(err_recovered_count(store.fail_stale_executing_commands(
+            "2026-06-22T00:00:00Z",
+            "2026-06-23T00:00:00Z",
+            "{}",
+        )));
+    }
+
+    #[test]
+    fn duplicate_lookup_helpers_report_missing_sequence_tables() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let append = event_append("evt_missing_source", Some("source-missing"));
+        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+        let transaction = ok_transaction(store.connection.transaction());
+
+        let error = err_sequence(super::find_existing_sequence(&transaction, &append));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn duplicate_lookup_helpers_report_missing_event_id_tables() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let append = event_append("evt_missing_id", None);
+        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+        let transaction = ok_transaction(store.connection.transaction());
+
+        let error = err_sequence(super::find_existing_sequence(&transaction, &append));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn list_events_reports_bad_row_values() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        for column_name in [
+            "global_seq",
+            "event_id",
+            "type",
+            "source",
+            "source_event_id",
+        ] {
+            replace_events_for_list_events(&store, column_name);
+
+            let error = err_events(store.list_events());
+
+            check_event_store_error(error);
+        }
+    }
+
+    #[test]
+    fn list_console_events_reports_bad_row_values() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        for column_name in [
+            "event_id",
+            "schema_version",
+            "context",
+            "source",
+            "stream_id",
+            "stream_seq",
+            "payload_json",
+        ] {
+            replace_events_for_list_console_events(&store, column_name);
+
+            let error = err_console_events(store.list_console_events());
+
+            check_event_store_error(error);
+        }
+    }
+
+    #[test]
+    fn list_commands_reports_bad_row_values() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        for column_name in [
+            "command_id",
+            "context",
+            "type",
+            "aggregate_id",
+            "idempotency_key",
+            "requested_by",
+            "status",
+            "requested_at",
+            "updated_at",
+            "payload_json",
+            "error_json",
+        ] {
+            replace_commands_for_list_commands(&store, column_name);
+
+            let error = err_commands(store.list_commands());
+
+            check_sqlite_error(error);
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "check failed")]
     fn check_false_panics() {
         check(false, "check failed");
@@ -1746,9 +1949,29 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "check_event_store_error failed")]
+    fn check_event_store_error_panics() {
+        check_event_store_error(EventStoreError::UnknownEventType(
+            "unknown.event".to_owned(),
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_unit failed")]
+    fn ok_unit_panics() {
+        ok_unit(Err(std::io::Error::other("boom")));
+    }
+
+    #[test]
     #[should_panic(expected = "ok_store failed")]
     fn ok_store_panics() {
         ok_store(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_connection failed")]
+    fn ok_connection_panics() {
+        ok_connection(Err(rusqlite::Error::InvalidQuery));
     }
 
     #[test]
@@ -1899,6 +2122,57 @@ mod tests {
         err_sequence(Ok(1));
     }
 
+    #[test]
+    #[should_panic(expected = "err_store failed")]
+    fn err_store_panics() {
+        err_store(Ok(ok_store(SqliteEventStore::open_in_memory())));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_append_outcome failed")]
+    fn err_append_outcome_panics() {
+        err_append_outcome(Ok(super::AppendOutcome::new(1, AppendStatus::Inserted)));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_command_append_outcome failed")]
+    fn err_command_append_outcome_panics() {
+        err_command_append_outcome(Ok(super::CommandAppendOutcome::new(
+            "cmd_1".to_owned(),
+            CommandAppendStatus::Inserted,
+        )));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_events failed")]
+    fn err_events_panics() {
+        err_events(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_commands failed")]
+    fn err_commands_panics() {
+        err_commands(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_claimed failed")]
+    fn err_claimed_panics() {
+        err_claimed(Ok(false));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_recovered_count failed")]
+    fn err_recovered_count_panics() {
+        err_recovered_count(Ok(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_checkpoint failed")]
+    fn err_checkpoint_panics() {
+        err_checkpoint(Ok(None));
+    }
+
     #[track_caller]
     fn check(condition: bool, context: &str) {
         if !condition {
@@ -1939,10 +2213,34 @@ mod tests {
     }
 
     #[track_caller]
+    fn check_event_store_error(error: EventStoreError) {
+        match error {
+            EventStoreError::InvalidSequence | EventStoreError::Sqlite(_) => {}
+            other => panic!("check_event_store_error failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_unit(result: Result<(), std::io::Error>) {
+        match result {
+            Ok(()) => {}
+            Err(error) => panic!("ok_unit failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
     fn ok_store(result: EventStoreResult<SqliteEventStore>) -> SqliteEventStore {
         match result {
             Ok(value) => value,
             Err(error) => panic!("ok_store failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_connection(result: Result<Connection, rusqlite::Error>) -> Connection {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_connection failed: {error:?}"),
         }
     }
 
@@ -2105,9 +2403,75 @@ mod tests {
     }
 
     #[track_caller]
+    fn err_store(result: EventStoreResult<SqliteEventStore>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_store failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_append_outcome(result: EventStoreResult<super::AppendOutcome>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_append_outcome failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_command_append_outcome(
+        result: EventStoreResult<super::CommandAppendOutcome>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_command_append_outcome failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
     fn err_console_events(result: EventStoreResult<Vec<ConsoleEvent>>) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_console_events failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_events(result: EventStoreResult<Vec<super::StoredEvent>>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_events failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_commands(result: EventStoreResult<Vec<StoredCommand>>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_commands failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_claimed(result: EventStoreResult<bool>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_claimed failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_recovered_count(result: EventStoreResult<usize>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_recovered_count failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_checkpoint(result: EventStoreResult<Option<String>>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_checkpoint failed"),
             Err(error) => error,
         }
     }
@@ -2156,6 +2520,117 @@ mod tests {
             columns.push(ok_string(row.get(1)));
         }
         columns
+    }
+
+    fn replace_events_for_list_events(store: &SqliteEventStore, bad_column: &str) {
+        let global_seq = if bad_column == "global_seq" {
+            "-1"
+        } else {
+            "1"
+        };
+        let event_id = sql_text_or_blob("evt_1", bad_column == "event_id");
+        let event_type = sql_text_or_blob("fabro.human_gate_observed", bad_column == "type");
+        let source = sql_text_or_blob("fabro", bad_column == "source");
+        let source_event_id = if bad_column == "source_event_id" {
+            "x'01'".to_owned()
+        } else {
+            "'source-1'".to_owned()
+        };
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop table events;
+             create table events (
+               global_seq integer,
+               event_id,
+               type,
+               source,
+               source_event_id
+             );
+             insert into events values (
+               {global_seq}, {event_id}, {event_type}, {source}, {source_event_id}
+             );"
+        )));
+    }
+
+    fn replace_events_for_list_console_events(store: &SqliteEventStore, bad_column: &str) {
+        let event_id = sql_text_or_blob("evt_1", bad_column == "event_id");
+        let schema_version = if bad_column == "schema_version" {
+            "'bad'".to_owned()
+        } else {
+            "1".to_owned()
+        };
+        let context = sql_text_or_blob("factory", bad_column == "context");
+        let source = sql_text_or_blob("fabro", bad_column == "source");
+        let stream_id = sql_text_or_blob("stream-1", bad_column == "stream_id");
+        let stream_seq = if bad_column == "stream_seq" {
+            "-1".to_owned()
+        } else {
+            "1".to_owned()
+        };
+        let payload_json = sql_text_or_blob("{}", bad_column == "payload_json");
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop table events;
+             create table events (
+               global_seq integer,
+               event_id,
+               schema_version,
+               context,
+               type,
+               source,
+               stream_id,
+               stream_seq,
+               payload_json
+             );
+             insert into events values (
+               1, {event_id}, {schema_version}, {context},
+               'fabro.human_gate_observed', {source}, {stream_id}, {stream_seq}, {payload_json}
+             );"
+        )));
+    }
+
+    fn replace_commands_for_list_commands(store: &SqliteEventStore, bad_column: &str) {
+        let value = |column: &str, text: &str| sql_text_or_blob(text, bad_column == column);
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop table commands;
+             create table commands (
+               command_id,
+               context,
+               type,
+               aggregate_id,
+               idempotency_key,
+               requested_by,
+               status,
+               requested_at,
+               updated_at,
+               payload_json,
+               error_json
+             );
+             insert into commands values (
+               {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+             );",
+            value("command_id", "cmd_1"),
+            value("context", "factory"),
+            value("type", "factory.drain_requested"),
+            value("aggregate_id", "evt_gate"),
+            value("idempotency_key", "idem_1"),
+            value("requested_by", "operator"),
+            value("status", "pending"),
+            value("requested_at", "2026-06-23T00:00:02Z"),
+            value("updated_at", "2026-06-23T00:00:02Z"),
+            value("payload_json", "{}"),
+            if bad_column == "error_json" {
+                "x'01'".to_owned()
+            } else {
+                "null".to_owned()
+            }
+        )));
+    }
+
+    fn sql_text_or_blob(value: &str, blob: bool) -> String {
+        if blob {
+            "x'01'".to_owned()
+        } else {
+            format!("'{}'", value.replace('\'', "''"))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
