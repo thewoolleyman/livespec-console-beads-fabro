@@ -5819,7 +5819,7 @@ mod tests {
                 "console",
                 work_item_id,
                 dispatch_id,
-                DispatcherJournalKind::BacklogBounce,
+                DispatcherJournalKind::Progress,
                 2,
             )
             .ok()?,
@@ -5827,7 +5827,7 @@ mod tests {
         Some(
             ConsoleEvent::fixture(
                 event_id,
-                EventType::DispatcherBacklogBounceObserved,
+                EventType::DispatcherJournalProgressObserved,
                 "dispatcher",
             )
             .with_payload_json(payload),
