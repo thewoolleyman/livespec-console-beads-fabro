@@ -194,3 +194,63 @@ The same caution applies to `outcome`: an item's real terminal row carries
 `stage: "outcome"` with an `outcome` object holding `status`, `pr_number`,
 `merge_sha` and `fabro_run_id`. Absence of that row means the run has not
 finished, whatever else the file appears to say about the id.
+
+## A gate written as prose is not a gate — dispatch also CLOSES the item
+
+Measured 2026-08-21, one level up from the comments trap above and with the
+same shape.
+
+Dispatching merges the item; it also **closes** it. The close is mechanical —
+`Fabro dispatch landed PR #797 (merged, post-merge janitor green)` — and it
+does not read acceptance criteria to decide whether to close. So an item whose
+acceptance says it must stay open closes anyway.
+
+The worked example. `-mvu22t.4` widened the factory prompt so dispatched
+branches emit Rust TDD trailers. Its acceptance 4 required post-merge
+end-to-end evidence that could not exist yet, because a run executes the prompt
+as it existed AT DISPATCH and therefore cannot exercise its own edit. So the
+item said, in capitals:
+
+    Leave this item OPEN until the evidence is recorded, even after its own
+    PR merges.
+
+It closed on merge. The harm was immediate and was exactly what the clause
+existed to prevent: `-mvu22t.2` — the slice that would have reddened `just
+check` on every factory branch touching Rust — was blocked on `-mvu22t.4`
+alone. The moment `.4` closed, `.2` became mechanically dispatchable with its
+real gate still open, and a drain picking by rank would have taken it.
+
+**The rule:** a gate that must survive a merge belongs in the DEPENDENCY GRAPH,
+not in a sentence. Express it as a blocking edge, or as a separate item that
+holds the edge. Acceptance prose can DESCRIBE a gate; it can never ENFORCE one.
+
+The remedy in that instance was a verification-only item (`-mvu22t.6`, no code
+change) carrying the measurement, made to block `-mvu22t.2` directly. Give such
+an item an explicit disposition for a NEGATIVE result — record it, close it as
+answered, file the follow-up — or it becomes a permanent block nobody may close.
+
+### The diagnostic that makes it findable
+
+Named by the foreman seat while scanning for other instances, and it is the
+generalisable half:
+
+> The tell is **an instruction addressed to a HUMAN sitting in a field only
+> MACHINES act on.**
+
+That is greppable, and a ledger-wide scan for enforce-shaped prose (`do not
+close`, `leave open`, `must remain open`, `even after its merge`, `not closed
+until`) takes one query.
+
+**But most hits are not the defect.** That scan returned three across 254
+closed-inclusive items, and only one was real. The prose has to be trying to
+survive an event the machinery will act on anyway:
+
+- `-4s1h` said "do not close it against 4nrwmp" — a scope instruction to a
+  human triager, honoured, never at risk from the Dispatcher.
+- `-mvu22t.5` said "DO NOT CLOSE THIS BY LANDING -mvu22t.4" — a warning against
+  confusing two items. `.5` closing on its OWN merge is correct, and the gate
+  that matters there (`.5` blocks `.3`) was already an edge.
+
+So read every hit for the hazard, not the string. The same discipline as the
+comments trap: ask which reader acts on the field, and whether the instruction
+is addressed to that reader.
