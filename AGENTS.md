@@ -74,6 +74,12 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       apart from real saturation when jobs sit queued (opposite fixes; capacity
       signals cannot see a wedge), and verifying the CI'd commit before
       trusting a local test run.
+    - [`.ai/factory-dispatch-and-merge-coupling.md`](.ai/factory-dispatch-and-merge-coupling.md)
+      — dispatching a work-item to the factory MERGES it; `ready` does not
+      authorize dispatch when a merge must wait. Why the `do-not-merge`
+      label, `merge_on_review_cap`, and `factory_safety` all fail to hold
+      it, why you cannot just go off-factory instead, and why the
+      workflow-edit refusal does not cover `.fabro/`.
     - [`.ai/fleet-repo-naming.md`](.ai/fleet-repo-naming.md)
       — never use bare "beads-fabro" (two sibling repos end in it); the
       repo ↔ tenant ↔ ID-prefix map, and targeting repos by full
