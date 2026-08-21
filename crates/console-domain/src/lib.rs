@@ -140,6 +140,8 @@ pub enum EventType {
     CommandRejected,
     /// Dispatcher backlog bounce observed.
     DispatcherBacklogBounceObserved,
+    /// Dispatcher journal progress observed.
+    DispatcherJournalProgressObserved,
     /// Dispatcher refusal observed from its journal.
     DispatcherRefusalObserved,
     /// Fabro run reached a human gate.
@@ -221,6 +223,7 @@ impl EventType {
             Self::CommandAccepted => "command.accepted",
             Self::CommandRejected => "command.rejected",
             Self::DispatcherBacklogBounceObserved => "dispatch.backlog_bounce_observed",
+            Self::DispatcherJournalProgressObserved => "dispatch.journal_progress_observed",
             Self::DispatcherRefusalObserved => "dispatch.refusal_observed",
             Self::FabroHumanGateObserved => "fabro.human_gate_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
@@ -262,6 +265,7 @@ impl EventType {
             "command.accepted" => Some(Self::CommandAccepted),
             "command.rejected" => Some(Self::CommandRejected),
             "dispatch.backlog_bounce_observed" => Some(Self::DispatcherBacklogBounceObserved),
+            "dispatch.journal_progress_observed" => Some(Self::DispatcherJournalProgressObserved),
             "dispatch.refusal_observed" => Some(Self::DispatcherRefusalObserved),
             "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
@@ -639,6 +643,14 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_progress_event_type_contract_name_is_stable() {
+        assert_eq!(
+            EventType::DispatcherJournalProgressObserved.contract_name(),
+            "dispatch.journal_progress_observed"
+        );
+    }
+
+    #[test]
     fn dispatcher_setting_event_contract_names_are_stable() {
         assert_eq!(
             EventType::ConfigDispatcherSettingChanged.contract_name(),
@@ -681,6 +693,7 @@ mod tests {
             EventType::CommandAccepted,
             EventType::CommandRejected,
             EventType::DispatcherBacklogBounceObserved,
+            EventType::DispatcherJournalProgressObserved,
             EventType::DispatcherRefusalObserved,
             EventType::FabroHumanGateObserved,
             EventType::FactoryDrainCompleted,

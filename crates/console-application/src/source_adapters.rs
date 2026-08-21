@@ -916,6 +916,8 @@ impl LivespecNextSnapshot {
 pub enum DispatcherJournalKind {
     /// Backlog bounce variant.
     BacklogBounce,
+    /// Non-terminal dispatcher journal progress.
+    Progress,
     /// Dispatcher refused a stale dispatch.
     DispatcherStalenessRefused,
     /// Dispatcher refused because the source state is invalid for the action.
@@ -930,6 +932,7 @@ impl DispatcherJournalKind {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::BacklogBounce => "backlog-bounce",
+            Self::Progress => "progress",
             Self::DispatcherStalenessRefused => "dispatcher-staleness-refused",
             Self::InvalidSourceState => "invalid-source-state",
             Self::HostOnlyRefused => "host-only-refused",
@@ -940,7 +943,7 @@ impl DispatcherJournalKind {
     /// Whether this journal kind carries a refusal diagnostic.
     pub const fn is_refusal(&self) -> bool {
         match self {
-            Self::BacklogBounce => false,
+            Self::BacklogBounce | Self::Progress => false,
             Self::DispatcherStalenessRefused | Self::InvalidSourceState | Self::HostOnlyRefused => {
                 true
             }
@@ -1618,10 +1621,12 @@ fn livespec_next_event(snapshot: LivespecNextSnapshot) -> NormalizedSourceEvent 
 }
 
 fn dispatcher_journal_event(entry: DispatcherJournalEntry) -> NormalizedSourceEvent {
-    let event_type = if entry.kind().is_refusal() {
-        EventType::DispatcherRefusalObserved
-    } else {
-        EventType::DispatcherBacklogBounceObserved
+    let event_type = match entry.kind() {
+        DispatcherJournalKind::BacklogBounce => EventType::DispatcherBacklogBounceObserved,
+        DispatcherJournalKind::Progress => EventType::DispatcherJournalProgressObserved,
+        DispatcherJournalKind::DispatcherStalenessRefused
+        | DispatcherJournalKind::InvalidSourceState
+        | DispatcherJournalKind::HostOnlyRefused => EventType::DispatcherRefusalObserved,
     };
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
@@ -2589,7 +2594,7 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
         return Ok(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
-            kind: DispatcherJournalKind::BacklogBounce,
+            kind: DispatcherJournalKind::Progress,
             diagnostic: None,
             terminal_status: None,
         });
@@ -2609,7 +2614,7 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
         return Ok(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
-            kind: DispatcherJournalKind::BacklogBounce,
+            kind: DispatcherJournalKind::Progress,
             diagnostic: None,
             terminal_status: None,
         });
@@ -3929,6 +3934,7 @@ mod tests {
             DispatcherJournalKind::BacklogBounce.label(),
             "backlog-bounce"
         );
+        assert_eq!(DispatcherJournalKind::Progress.label(), "progress");
         assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
         assert_eq!(GithubPullRequestState::Open.label(), "open");
         assert_eq!(
@@ -5409,11 +5415,15 @@ mod tests {
                 repo: "console".to_owned(),
                 work_item_id: "console-1".to_owned(),
                 dispatch_id: "dispatch_9".to_owned(),
-                kind: DispatcherJournalKind::BacklogBounce,
+                kind: DispatcherJournalKind::Progress,
                 diagnostic: None,
                 terminal_status: None,
                 source_version: version,
             })
+        );
+        assert_eq!(
+            parsed.events[0].event().event_type(),
+            &EventType::DispatcherJournalProgressObserved
         );
         Ok(())
     }
@@ -5468,31 +5478,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_dispatcher_non_refusal_outcomes_remain_backlog_bounces() -> Result<(), String> {
-        for (stage, status) in [("outcome", "completed"), ("progress", "failed")] {
-            let stdout = format!(
-                r#"{{"work_item_id":"console-1","dispatch_id":"dispatch-{stage}-{status}","stage":"{stage}","outcome":{{"stage":"{status}","status":"{status}","detail":"not a refusal"}}}}"#
-            );
-            let parsed = parsed_dispatcher(&stdout)?;
-            let version =
-                super::source_stream_seq(&["console-1", &format!("dispatch-{stage}-{status}")]);
-            let expected = DispatcherJournalEntry {
-                repo: "console".to_owned(),
-                work_item_id: "console-1".to_owned(),
-                dispatch_id: format!("dispatch-{stage}-{status}"),
-                kind: DispatcherJournalKind::BacklogBounce,
-                diagnostic: None,
-                terminal_status: (stage == "outcome").then(|| status.to_owned()),
-                source_version: version,
-            };
-            assert_eq!(
-                first_payload(&parsed),
-                &SourcePayload::DispatcherJournalEntry(expected.clone())
-            );
-            if stage == "outcome" {
-                assert!(dispatcher_journal_payload_json(&expected).contains("terminal_status"));
-            }
-        }
+    fn parse_dispatcher_completed_outcome_remains_backlog_bounce() -> Result<(), String> {
+        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-completed","stage":"outcome","outcome":{"stage":"completed","status":"completed","detail":"bounce observed"}}"#;
+        let parsed = parsed_dispatcher(stdout)?;
+        let version = super::source_stream_seq(&["console-1", "dispatch-completed"]);
+        let expected = DispatcherJournalEntry {
+            repo: "console".to_owned(),
+            work_item_id: "console-1".to_owned(),
+            dispatch_id: "dispatch-completed".to_owned(),
+            kind: DispatcherJournalKind::BacklogBounce,
+            diagnostic: None,
+            terminal_status: Some("completed".to_owned()),
+            source_version: version,
+        };
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(expected.clone())
+        );
+        assert_eq!(
+            parsed.events[0].event().event_type(),
+            &EventType::DispatcherBacklogBounceObserved
+        );
+        assert!(dispatcher_journal_payload_json(&expected).contains("terminal_status"));
+
         let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-unknown","stage":"outcome","outcome":{"stage":"unknown-refused","status":"failed","detail":"unknown refusal detail"}}"#;
         let parsed = parsed_dispatcher(stdout)?;
         let version = super::source_stream_seq(&["console-1", "dispatch-unknown"]);
@@ -5508,6 +5516,49 @@ mod tests {
                 source_version: version,
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dispatcher_non_outcome_entries_are_progress_not_backlog_bounces() -> Result<(), String>
+    {
+        for (stage, body) in [
+            ("loop-pick", r#""stage":"loop-pick""#),
+            (
+                "sizing-warn",
+                r#""stage":"sizing-warn","outcome":{"stage":"sizing-warn","status":"warning","detail":"large item"}"#,
+            ),
+            (
+                "dispatch-id",
+                r#""stage":"dispatch-id","outcome":{"stage":"dispatch-id","status":"observed","detail":"dispatch assigned"}"#,
+            ),
+        ] {
+            let stdout = format!(
+                r#"{{"work_item_id":"console-1","dispatch_id":"dispatch-{stage}",{body}}}"#
+            );
+            let parsed = parsed_dispatcher(&stdout)?;
+            let version = super::source_stream_seq(&["console-1", &format!("dispatch-{stage}")]);
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                    repo: "console".to_owned(),
+                    work_item_id: "console-1".to_owned(),
+                    dispatch_id: format!("dispatch-{stage}"),
+                    kind: DispatcherJournalKind::Progress,
+                    diagnostic: None,
+                    terminal_status: None,
+                    source_version: version,
+                })
+            );
+            assert_eq!(
+                parsed.events[0].event().event_type(),
+                &EventType::DispatcherJournalProgressObserved
+            );
+            assert_ne!(
+                parsed.events[0].event().event_type(),
+                &EventType::DispatcherBacklogBounceObserved
+            );
+        }
         Ok(())
     }
 
@@ -5528,7 +5579,7 @@ mod tests {
                 repo: "console".to_owned(),
                 work_item_id: "console-1".to_owned(),
                 dispatch_id: "dispatch-high".to_owned(),
-                kind: DispatcherJournalKind::BacklogBounce,
+                kind: DispatcherJournalKind::Progress,
                 diagnostic: None,
                 terminal_status: None,
                 source_version: version,
