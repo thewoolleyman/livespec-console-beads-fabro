@@ -80,3 +80,47 @@ python3 -c "import json;t=json.load(open('/tmp/cov.json'))['data'][0]['totals'][
 its one dispositioned unnameable miss (allowance 1, tracked by
 `livespec-console-beads-fabro-3yx`). Nothing here is a regression in a
 gate that exists today.
+
+## Addendum: the sizing warning now measures the wrong thing
+
+Dispatching `-txtzn5.6` produced a `sizing-warn` journal stage:
+
+> description is 2010 chars (> 1500): heavy items have exceeded one
+> unattended ACP turn; consider splitting before loop-feeding
+
+It is a warning, not a refusal — `.6` dispatched anyway. But it is worth
+knowing why it fired, because it will fire on all seven of these slices
+and it does not mean what it appears to.
+
+The heuristic uses **description length as a proxy for work size**. That
+proxy was reasonable before note 005, when a description described the
+work. It is no longer, because the fix for "the sandbox never sees
+comments" was to move every load-bearing constraint — the
+monomorphic-helper warning, the measurement command, the production-arm
+techniques — out of comments and into the description. The descriptions
+are long because they carry guidance, not because the work is heavy.
+
+For this thread's slices the correlation is not merely weak, it is
+**inverted**:
+
+| slice | sites | description chars |
+|-------|-------|-------------------|
+| `.4` | 12 | 2,887 |
+| `.3` | 32 | 2,773 |
+| `.2` | 122 | 2,736 |
+| `.8` | 102 | 2,067 |
+| `.7` | 84 | 2,062 |
+| `.6` | 96 | 2,010 |
+| `.5` | 426 | 2,084 |
+
+The smallest slice carries the longest description; the largest carries
+one of the shortest. Do not read `sizing-warn` on these items as "this
+work is too big" — read the site count in the title instead. `.5` at 426
+sites is the one genuinely at risk of exceeding an unattended turn, and
+it is the slice the warning ranks as least concerning.
+
+This is a Dispatcher-side observation, and Dispatcher mechanics belong to
+`livespec-orchestrator-beads-fabro` rather than here (see CLAUDE.md
+§"Repository scope"), so it is recorded rather than filed. If the proxy
+is worth improving, the signal is available directly: the ledger knows
+each item's dependency count and the description states its site count.
