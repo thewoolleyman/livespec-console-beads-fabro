@@ -3738,7 +3738,7 @@ enum Shrink {
 /// Compose the width-fitted header. See [`TuiScreenModel::header_line`] for the
 /// degradation contract. This is the pure core: it composes the atomic fields in
 /// a fixed display order and, while the line is over `width`, applies the shrink
-/// plan one step at a time — eliding source names, then dropping fields by their
+/// plan one step at a time: eliding source names, then dropping fields by their
 /// declared information-value priority — re-measuring after each step and
 /// stopping as soon as it fits.
 fn fit_header_line(
@@ -3749,10 +3749,10 @@ fn fit_header_line(
     unavailable_sources: &[String],
     width: usize,
 ) -> String {
-    // Fixed display order; `present[index] = false` means the whole field was
+    // Fixed display order; `None` means the whole field was
     // dropped to make room. Each field is atomic -- kept or dropped whole, never
     // mid-truncated.
-    let fields = [
+    let mut fields = [
         Some(HeaderField {
             text: "fleet: livespec".to_owned(),
             priority: HeaderSegmentPriority::ConstantIdentity,
@@ -3778,23 +3778,13 @@ fn fit_header_line(
             priority: HeaderSegmentPriority::TransientState,
         }),
     ];
-    let mut present = [
-        fields[0].is_some(),
-        fields[1].is_some(),
-        fields[2].is_some(),
-        fields[3].is_some(),
-        fields[4].is_some(),
-        fields[5].is_some(),
-    ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |present: &[bool; 6], source_idx: usize| -> String {
+    let compose = |fields: &[Option<HeaderField>; 6], source_idx: usize| -> String {
         let mut line = fields
             .iter()
-            .enumerate()
-            .filter(|(index, _field)| present[*index])
-            .filter_map(|(_index, field)| field.as_ref().map(|field| field.text.as_str()))
+            .filter_map(|field| field.as_ref().map(|field| field.text.as_str()))
             .collect::<Vec<_>>()
             .join(" | ");
         if let Some(source) = source_forms.get(source_idx) {
@@ -3832,20 +3822,20 @@ fn fit_header_line(
             .map(|(index, _priority)| Shrink::DropField(index)),
     );
 
-    let mut line = compose(&present, source_idx);
+    let mut line = compose(&fields, source_idx);
     for op in &plan {
         if header_display_width(&line) <= width {
             break;
         }
         match *op {
-            Shrink::DropField(index) => present[index] = false,
+            Shrink::DropField(index) => fields[index] = None,
             Shrink::DegradeSource => {
                 if source_idx + 1 < source_forms.len() {
                     source_idx += 1;
                 }
             }
         }
-        line = compose(&present, source_idx);
+        line = compose(&fields, source_idx);
     }
     line
 }
@@ -13139,6 +13129,37 @@ mod tests {
         let static_field_yielded =
             !narrow.contains(&format!("repo: {CONFIRM_REPO}")) || !narrow.contains("view: Lanes");
         assert!(static_field_yielded);
+    }
+
+    #[test]
+    fn header_line_prioritizes_transient_factory_state_over_static_segments() {
+        let event = ConsoleEvent::fixture(
+            "evt_dispatch_item_not_wired",
+            EventType::FactoryDispatchItemNotWired,
+            "factory",
+        );
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_active_view(TuiView::Lanes)
+            .with_selected_repo(CONFIRM_REPO.to_owned());
+        let model = build_tui_model_for_state(&[event], &state);
+        let segments = [
+            "fleet: livespec",
+            "mode: tui",
+            &format!("repo: {CONFIRM_REPO}"),
+            "view: Lanes",
+            "attention: 0",
+            "factory: dispatch item not wired",
+        ];
+
+        let wide = model.header_line(160);
+        for segment in segments {
+            assert!(wide.contains(segment));
+        }
+
+        let narrow = model.header_line(60);
+        assert!(narrow.chars().count() <= 60);
+        assert!(narrow.contains("factory: dispatch item not wired"));
+        assert!(!narrow.contains("repo:") || !narrow.contains("attention:"));
     }
 
     #[test]
