@@ -251,7 +251,7 @@ impl CommandAppendStore for SqliteEventStore {
 pub fn persist_tui_runtime_effects(
     store: &mut dyn CommandAppendStore,
     effects: &[TuiRuntimeEffect],
-    requested_at: &str,
+    _requested_at: &str,
 ) -> EventStoreResult<Vec<CommandAppendOutcome>> {
     let mut outcomes = Vec::new();
     for effect in effects {
@@ -261,14 +261,24 @@ pub fn persist_tui_runtime_effects(
         // next).
         let sequence = store.command_count()?;
         let existing_commands = store.list_commands()?;
-        let Some(append) =
-            command_append_from_tui_effect(effect, requested_at, sequence, &existing_commands)
-        else {
+        let command_requested_at = current_command_requested_at()?;
+        let Some(append) = command_append_from_tui_effect(
+            effect,
+            &command_requested_at,
+            sequence,
+            &existing_commands,
+        ) else {
             continue;
         };
         outcomes.push(store.append_command(&append)?);
     }
     Ok(outcomes)
+}
+
+fn current_command_requested_at() -> EventStoreResult<String> {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|_error| EventStoreError::InvalidSequence)
 }
 
 /// Port interface for event append store behavior supplied by an outer layer.
@@ -3524,6 +3534,25 @@ mod tests {
         );
         assert_eq!(commands[0].requested_by(), "operator");
         assert_eq!(commands[0].status(), "pending");
+        Ok(())
+    }
+
+    #[test]
+    fn tui_persistence_stamps_each_command_request_separately() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let first = [factory_drain_effect()];
+        let second = [factory_drain_effect()];
+
+        persist_tui_runtime_effects(&mut store, &first, "2026-06-23T00:00:02Z")?;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        persist_tui_runtime_effects(&mut store, &second, "2026-06-23T00:00:02Z")?;
+
+        let commands = store.list_commands()?;
+
+        assert_eq!(commands.len(), 2);
+        assert_ne!(commands[0].requested_at(), commands[1].requested_at());
+        assert_eq!(commands[0].requested_at(), commands[0].updated_at());
+        assert_eq!(commands[1].requested_at(), commands[1].updated_at());
         Ok(())
     }
 

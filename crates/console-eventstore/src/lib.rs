@@ -254,6 +254,8 @@ pub struct StoredCommand {
     idempotency_key: String,
     requested_by: String,
     status: String,
+    requested_at: String,
+    updated_at: String,
     /// The persisted `payload_json` column. `None` until re-attached by
     /// [`Self::with_payload_json`] when a command is loaded, so a handler can
     /// read a command's payload (for example a reject command's `mode`).
@@ -284,9 +286,19 @@ impl StoredCommand {
             idempotency_key,
             requested_by,
             status,
+            requested_at: String::new(),
+            updated_at: String::new(),
             payload_json: None,
             error_json: None,
         }
+    }
+
+    #[must_use]
+    /// Re-attach the persisted command lifecycle timestamps to a stored command.
+    pub fn with_lifecycle_timestamps(mut self, requested_at: String, updated_at: String) -> Self {
+        self.requested_at = requested_at;
+        self.updated_at = updated_at;
+        self
     }
 
     #[must_use]
@@ -345,6 +357,18 @@ impl StoredCommand {
     /// Return the status value.
     pub fn status(&self) -> &str {
         &self.status
+    }
+
+    #[must_use]
+    /// Return the requested-at timestamp value.
+    pub fn requested_at(&self) -> &str {
+        &self.requested_at
+    }
+
+    #[must_use]
+    /// Return the updated-at timestamp value.
+    pub fn updated_at(&self) -> &str {
+        &self.updated_at
     }
 
     #[must_use]
@@ -655,7 +679,7 @@ impl SqliteEventStore {
     pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         let sql = r"
             select command_id, context, type, aggregate_id, idempotency_key, requested_by, status,
-                   payload_json, error_json
+                   requested_at, updated_at, payload_json, error_json
             from commands
             order by requested_at, command_id
         ";
@@ -673,8 +697,9 @@ impl SqliteEventStore {
                     row.get(5)?,
                     row.get(6)?,
                 )
-                .with_payload_json(row.get::<_, String>(7)?)
-                .with_error_json(row.get(8)?),
+                .with_lifecycle_timestamps(row.get(7)?, row.get(8)?)
+                .with_payload_json(row.get::<_, String>(9)?)
+                .with_error_json(row.get(10)?),
             );
         }
         Ok(commands)
@@ -1249,6 +1274,32 @@ mod tests {
 
         let commands = store.list_commands()?;
         assert_eq!(commands[0].status(), "executing");
+        Ok(())
+    }
+
+    #[test]
+    fn command_claim_updates_only_the_claimed_command_timestamp() -> Result<(), EventStoreError> {
+        let mut store = SqliteEventStore::open_in_memory()?;
+        let first = command_append("cmd_1", "idem_1", CommandType::FactoryDrainRequested);
+        let second = command_append("cmd_2", "idem_2", CommandType::FactoryDrainRequested);
+        store.append_command(&first)?;
+        store.append_command(&second)?;
+
+        assert!(store.claim_command("cmd_1", "2026-06-23T00:00:03Z")?);
+        let commands = store.list_commands()?;
+        let claimed = commands
+            .iter()
+            .find(|command| command.command_id() == "cmd_1")
+            .ok_or(EventStoreError::CommandNotFound("cmd_1".to_owned()))?;
+        let untouched = commands
+            .iter()
+            .find(|command| command.command_id() == "cmd_2")
+            .ok_or(EventStoreError::CommandNotFound("cmd_2".to_owned()))?;
+
+        assert_eq!(claimed.status(), "executing");
+        assert_eq!(claimed.updated_at(), "2026-06-23T00:00:03Z");
+        assert_eq!(untouched.status(), "pending");
+        assert_eq!(untouched.updated_at(), untouched.requested_at());
         Ok(())
     }
 
