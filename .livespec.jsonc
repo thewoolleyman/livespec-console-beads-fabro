@@ -48,6 +48,20 @@
       "default_branch": "master"
     }
   },
+  // Cross-repo section citations this spec tree is allowed to make. The
+  // no-cross-spec-reference doctor check refuses a section citation that does
+  // not resolve inside THIS SPECIFICATION/ tree unless it is listed here, which
+  // is what keeps a citation of a sibling's section from rotting silently.
+  // Added 2026-08-21 with the per-item factory-dispatch launcher argv contract,
+  // which binds the orchestrator's GOVERNED loop surface and must cite the
+  // sections that govern it.
+  "external_references": {
+    "livespec-orchestrator-beads-fabro": [
+      "SPECIFICATION/contracts.md §\"Dispatcher loop invocation surface\"",
+      "SPECIFICATION/contracts.md §\"Fail-closed cost gate (keyed on `--item` presence)\"",
+      "SPECIFICATION/contracts.md §\"The skill surface\""
+    ]
+  },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
   // livespec-overseer foreman config. foreman_valve_disposition governs how the
   // per-repo foreman handles blocked sessions and human valves it observes:
