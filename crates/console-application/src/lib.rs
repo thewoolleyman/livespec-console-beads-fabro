@@ -743,6 +743,14 @@ pub enum TuiOverlay {
         /// The work-item id that confirmation will dispatch.
         work_item_id: String,
     },
+    /// Factory-drain confirmation pinned to the ready item the next drain will
+    /// claim under the board's rank-ordered ready lane.
+    FactoryDrainConfirm {
+        /// The work-item id the drain will claim first.
+        work_item_id: String,
+        /// The rank value that made it the next drain target.
+        rank: String,
+    },
     /// Valve-confirm variant: the confirm modal that stages one operator
     /// human-valve/policy-edit intent against the selected work-item. `Enter`
     /// submits the valve through the shared orchestrator action port; `up`/`down`
@@ -780,6 +788,7 @@ impl TuiOverlay {
             | Self::CommandModal { .. }
             | Self::CommandExplainer { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDrainConfirm { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
@@ -801,6 +810,7 @@ impl TuiOverlay {
             | Self::CommandModal { .. }
             | Self::CommandExplainer { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDrainConfirm { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
@@ -823,6 +833,7 @@ impl TuiOverlay {
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDrainConfirm { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
@@ -844,6 +855,7 @@ impl TuiOverlay {
             | Self::CommandModal { .. }
             | Self::CommandExplainer { .. }
             | Self::ActionInvoker { .. }
+            | Self::FactoryDrainConfirm { .. }
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
@@ -962,6 +974,9 @@ pub enum TuiInteraction {
     OpenWorkItemDetail,
     /// Open a read-back confirmation for dispatching the selected work-item.
     OpenFactoryDispatchItemConfirm,
+    /// Open a read-back confirmation for draining the next ranked ready
+    /// work-item.
+    OpenFactoryDrainConfirm,
     /// Scroll the work-item detail modal DOWN by the given number of rows (`1`
     /// for a line step). Inert unless that modal is open; the offset clamps to
     /// the record's render-measured wrapped height, so the scroll never runs past
@@ -1763,6 +1778,13 @@ impl TuiScreenModel {
             .find(|item| item.work_item_id() == work_item_id)
     }
 
+    /// The ready work-item a budget-1 drain will claim first, read from the
+    /// SAME rank-ordered ready column the board renders.
+    #[must_use]
+    pub fn next_ready_drain_target(&self) -> Option<&LaneWorkItem> {
+        self.lane_board.column(Lane::Ready)?.items().first()
+    }
+
     /// The selected work-item within a drilled-in lane, or `None` when the
     /// `Lanes` view is not drilled into a non-empty lane.
     #[must_use]
@@ -2040,6 +2062,9 @@ fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
         }
         TuiOverlay::FactoryDispatchItemConfirm { .. } => {
             Cow::Borrowed("enter dispatch selected item | esc cancel")
+        }
+        TuiOverlay::FactoryDrainConfirm { .. } => {
+            Cow::Borrowed("enter dispatch ready work | esc cancel")
         }
         TuiOverlay::ValveConfirm { .. } => {
             Cow::Borrowed("up/down change | enter confirm | esc cancel")
@@ -4057,9 +4082,10 @@ pub fn reduce_tui_interaction(
         TuiInteraction::OpenWorkItemDetail => {
             state.clone().with_overlay(open_work_item_detail(&model))
         }
-        TuiInteraction::OpenFactoryDispatchItemConfirm => state
-            .clone()
-            .with_overlay(open_factory_dispatch_item_confirm(&model)),
+        TuiInteraction::OpenFactoryDispatchItemConfirm
+        | TuiInteraction::OpenFactoryDrainConfirm => {
+            open_factory_confirm_state(state, &model, interaction)
+        }
         TuiInteraction::WorkItemDetailScrollDown(rows) => {
             work_item_detail_scroll_state(state, rows, true)
         }
@@ -4260,6 +4286,28 @@ fn open_factory_dispatch_item_confirm(model: &TuiScreenModel) -> TuiOverlay {
             TuiOverlay::FactoryDispatchItemConfirm {
                 work_item_id: work_item_id.to_owned(),
             }
+        })
+}
+
+fn open_factory_confirm_state(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
+    let overlay = match interaction {
+        TuiInteraction::OpenFactoryDispatchItemConfirm => open_factory_dispatch_item_confirm(model),
+        TuiInteraction::OpenFactoryDrainConfirm => open_factory_drain_confirm(model),
+        _ => state.overlay().clone(),
+    };
+    state.clone().with_overlay(overlay)
+}
+
+fn open_factory_drain_confirm(model: &TuiScreenModel) -> TuiOverlay {
+    model
+        .next_ready_drain_target()
+        .map_or(TuiOverlay::None, |item| TuiOverlay::FactoryDrainConfirm {
+            work_item_id: item.work_item_id().to_owned(),
+            rank: item.rank().to_owned(),
         })
 }
 
@@ -6939,6 +6987,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -6964,6 +7013,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7079,6 +7129,7 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7111,6 +7162,7 @@ fn help_scroll(overlay: &TuiOverlay, rows: usize, down: bool, max_scroll: usize)
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7137,6 +7189,7 @@ fn help_focus(overlay: &TuiOverlay, focus: HelpFocus) -> TuiOverlay {
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7157,6 +7210,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7178,6 +7232,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7218,6 +7273,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandExplainer { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -7291,6 +7347,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandExplainer { .. }
+        | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
@@ -14485,6 +14542,61 @@ mod tests {
     }
 
     #[test]
+    fn factory_drain_confirm_opens_on_the_ranked_ready_item_only() {
+        let ready_events = [
+            lane_event(
+                "evt_drain_confirm_later",
+                "console-ready-later",
+                Lane::Ready,
+                None,
+                "a1",
+                "ready",
+            ),
+            lane_event(
+                "evt_drain_confirm_next",
+                "console-ready-next",
+                Lane::Ready,
+                None,
+                "a0",
+                "ready",
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+
+        let drain_confirm = reduce_tui_interaction(
+            &state,
+            &ready_events,
+            TuiInteraction::OpenFactoryDrainConfirm,
+        );
+
+        assert_eq!(
+            drain_confirm.overlay(),
+            &TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "console-ready-next".to_owned(),
+                rank: "a0".to_owned()
+            }
+        );
+        let drain_without_ready =
+            reduce_tui_interaction(&state, &[], TuiInteraction::OpenFactoryDrainConfirm);
+        assert_eq!(drain_without_ready.overlay(), &TuiOverlay::None);
+        let fallback_state = state.clone().with_overlay(TuiOverlay::Search {
+            query: "keep".to_owned(),
+        });
+        let fallback_model = build_tui_model_for_state(&ready_events, &state);
+        let fallback = super::open_factory_confirm_state(
+            &fallback_state,
+            &fallback_model,
+            TuiInteraction::OpenSearch,
+        );
+        assert_eq!(
+            fallback.overlay(),
+            &TuiOverlay::Search {
+                query: "keep".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn footer_hint_covers_every_overlay_with_its_own_non_empty_hints() {
         // Every overlay owns the hint line while open (matched before the pane),
         // so each renders its own non-empty, overlay-appropriate keys regardless
@@ -14504,6 +14616,10 @@ mod tests {
             },
             TuiOverlay::FactoryDispatchItemConfirm {
                 work_item_id: "wi-ready".to_owned(),
+            },
+            TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "wi-ready".to_owned(),
+                rank: "a0".to_owned(),
             },
             TuiOverlay::DriverHandoff {
                 command: r#"claude "/livespec-orchestrator-beads-fabro:implement wi-ready""#
