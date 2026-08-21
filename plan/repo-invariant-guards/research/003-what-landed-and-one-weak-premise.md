@@ -88,6 +88,14 @@ recorded here rather than filed as a defect.
 
 ## What remains
 
+> **SUPERSEDED 2026-08-21 by `004-the-gate-that-was-not-one.md`. BOTH bullets
+> below are now false.** `-mcj.3` closed (PR 780). And `-mvu22t` was never a
+> maintainer gate — the two claims inflating it ("fleet-wide", "exempt
+> docs/chore") were both measured false, and the decision was the session's to
+> make under standing directive 4. The section is left in place rather than
+> rewritten because it is the record of what this thread believed at the time,
+> and that belief surviving eight consecutive handoffs is itself the finding.
+
 - `-mcj.3` — HELD at `backlog` by the hp dispatch hold, not by anything about
   its content. Returns to `ready` when the hold lifts.
 - `-mvu22t` — the one genuine maintainer gate in this thread: its commit-msg hook
