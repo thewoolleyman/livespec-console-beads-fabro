@@ -71,6 +71,7 @@ fn run_checks(root: &Path) -> Vec<String> {
     findings.extend(check_tmux_socket_scoping(root));
     findings.extend(check_workspace_rust_version_matches_toolchain(root));
     findings.extend(check_fabro_image_rust_toolchain(root));
+    findings.extend(check_first_party_python_import_supply(root));
     findings
 }
 
@@ -1481,6 +1482,315 @@ const KNOWN_TMUX_SUBCOMMANDS: &[&str] = &[
     "source-file",
     "split-window",
 ];
+
+// ---------------------------------------------------------------------------
+// First-party Python import supply rule.
+// ---------------------------------------------------------------------------
+
+/// Third-party Python import roots this repo's own first-party Python may use,
+/// mapped to the distribution that must be declared by this repo or vendored
+/// under an in-repo `_vendor` tree.
+///
+/// This is deliberately a CLOSED allow-list. The static promise here is limited
+/// and honest: parsing import statements can prove that a source file asks for
+/// `returns`, and parsing `pyproject.toml` can prove this repo declares the
+/// `returns` distribution, but it cannot prove that the runtime interpreter will
+/// resolve that exact distribution instead of an ambient host package.
+const ALLOWED_PYTHON_IMPORT_DISTRIBUTIONS: &[(&str, &str)] = &[
+    ("livespec_runtime", "livespec-runtime"),
+    ("returns", "returns"),
+];
+
+/// Python import roots treated as stdlib by the source-level supply check. Any
+/// non-relative import root outside this set and outside the closed third-party
+/// allow-list is suspect by default.
+const PYTHON_STDLIB_IMPORT_ROOTS: &[&str] = &[
+    "__future__",
+    "collections",
+    "dataclasses",
+    "datetime",
+    "enum",
+    "functools",
+    "itertools",
+    "json",
+    "os",
+    "pathlib",
+    "re",
+    "shutil",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "textwrap",
+    "typing",
+    "unittest",
+];
+
+fn check_first_party_python_import_supply(root: &Path) -> Vec<String> {
+    let paths = first_party_python_files(root);
+    check_first_party_python_import_supply_paths(root, &paths)
+}
+
+fn check_first_party_python_import_supply_paths(root: &Path, paths: &[PathBuf]) -> Vec<String> {
+    let mut findings = Vec::new();
+    if paths.is_empty() {
+        findings.push(format!(
+            "first-party Python import-supply scan found no Python files under {} — \
+             the scan root moved or the walk is broken; refusing to pass without \
+             having read anything",
+            root.display()
+        ));
+        return findings;
+    }
+    let declared = match declared_python_distributions(root) {
+        Ok(declared) => declared,
+        Err(error) => {
+            findings.push(error);
+            BTreeSet::new()
+        }
+    };
+    let vendored = vendored_python_import_roots(root);
+    for path in paths {
+        let display = path.display().to_string();
+        let source = match fs::read_to_string(path) {
+            Ok(source) => source,
+            Err(error) => {
+                findings.push(format!("could not read {}: {error}", path.display()));
+                continue;
+            }
+        };
+        for import in python_import_roots(&source) {
+            if PYTHON_STDLIB_IMPORT_ROOTS.contains(&import.as_str()) || vendored.contains(&import) {
+                continue;
+            }
+            let Some(distribution) = allowed_python_distribution_for_import(&import) else {
+                findings.push(format!(
+                    "{display}: Python import `{import}` is not in the closed first-party \
+                     Python third-party import allow-list; declare the owning distribution \
+                     deliberately or vendor it under `_vendor`"
+                ));
+                continue;
+            };
+            if !declared.contains(distribution) {
+                findings.push(format!(
+                    "{display}: Python import `{import}` maps to distribution \
+                     `{distribution}`, but that distribution is not declared by this repo \
+                     and was not found under `_vendor`"
+                ));
+            }
+        }
+    }
+    findings
+}
+
+fn allowed_python_distribution_for_import(import: &str) -> Option<&'static str> {
+    ALLOWED_PYTHON_IMPORT_DISTRIBUTIONS
+        .iter()
+        .find_map(|(root, distribution)| (*root == import).then_some(*distribution))
+}
+
+fn first_party_python_files(root: &Path) -> Vec<PathBuf> {
+    git_ls_files_python(root).unwrap_or_else(|_| walk_first_party_python_files(root))
+}
+
+fn git_ls_files_python(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(root)
+        .args(["ls-files", "*.py"])
+        .output()
+        .map_err(|error| format!("could not execute git ls-files: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`git ls-files '*.py'` exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("git ls-files output was not UTF-8: {error}"))?;
+    Ok(stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| root.join(line))
+        .collect())
+}
+
+fn walk_first_party_python_files(root: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(path) = pending.pop() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if path != root
+                && path.file_name().is_some_and(|name| {
+                    ["target", ".git", "tmp", ".venv"]
+                        .iter()
+                        .any(|entry| name == *entry)
+                })
+            {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                pending.push(entry.path());
+            }
+            continue;
+        }
+        if path.extension().is_some_and(|extension| extension == "py") {
+            files.push(path);
+        }
+    }
+    files
+}
+
+fn declared_python_distributions(root: &Path) -> Result<BTreeSet<String>, String> {
+    let path = root.join("pyproject.toml");
+    let source = fs::read_to_string(&path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let value: toml::Value = toml::from_str(&source)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+    let mut declared = BTreeSet::new();
+    collect_dependency_array(
+        value
+            .get("project")
+            .and_then(|project| project.get("dependencies")),
+        &mut declared,
+    );
+    if let Some(groups) = value
+        .get("dependency-groups")
+        .and_then(toml::Value::as_table)
+    {
+        for group in groups.values() {
+            collect_dependency_array(Some(group), &mut declared);
+        }
+    }
+    if let Some(optional) = value
+        .get("project")
+        .and_then(|project| project.get("optional-dependencies"))
+        .and_then(toml::Value::as_table)
+    {
+        for group in optional.values() {
+            collect_dependency_array(Some(group), &mut declared);
+        }
+    }
+    Ok(declared)
+}
+
+fn collect_dependency_array(value: Option<&toml::Value>, declared: &mut BTreeSet<String>) {
+    let Some(array) = value.and_then(toml::Value::as_array) else {
+        return;
+    };
+    for entry in array {
+        if let Some(requirement) = entry.as_str()
+            && let Some(distribution) = requirement_distribution(requirement)
+        {
+            declared.insert(distribution);
+        }
+    }
+}
+
+fn requirement_distribution(requirement: &str) -> Option<String> {
+    let name: String = requirement
+        .trim()
+        .chars()
+        .take_while(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+        .collect();
+    (!name.is_empty()).then(|| normalize_distribution_name(&name))
+}
+
+fn normalize_distribution_name(name: &str) -> String {
+    name.to_ascii_lowercase().replace(['_', '.'], "-")
+}
+
+fn vendored_python_import_roots(root: &Path) -> BTreeSet<String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut vendored = BTreeSet::new();
+    while let Some(path) = pending.pop() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        if path.file_name().is_some_and(|name| name == "_vendor") {
+            if let Ok(entries) = fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    let child = entry.path();
+                    if child.is_dir()
+                        && let Some(name) = child.file_name().and_then(|name| name.to_str())
+                    {
+                        vendored.insert(name.to_owned());
+                    }
+                }
+            }
+            continue;
+        }
+        if path != root
+            && path.file_name().is_some_and(|name| {
+                ["target", ".git", "tmp", ".venv"]
+                    .iter()
+                    .any(|entry| name == *entry)
+            })
+        {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&path) {
+            for entry in entries.flatten() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    vendored
+}
+
+fn python_import_roots(source: &str) -> BTreeSet<String> {
+    let mut imports = BTreeSet::new();
+    for line in source.lines() {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("import ") {
+            for part in rest.split(',') {
+                if let Some(root) = python_import_root(part) {
+                    imports.insert(root);
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("from ") {
+            if rest.starts_with('.') {
+                continue;
+            }
+            if let Some((module, _)) = rest.split_once(" import ")
+                && let Some(root) = python_import_root(module)
+            {
+                imports.insert(root);
+            }
+        }
+    }
+    imports
+}
+
+fn python_import_root(import: &str) -> Option<String> {
+    let root = import
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    (!root.is_empty()
+        && root
+            .chars()
+            .all(|character| character == '_' || character.is_ascii_alphanumeric()))
+    .then(|| root.to_owned())
+}
 
 // ---------------------------------------------------------------------------
 // Zero-Beads-knowledge rule.
