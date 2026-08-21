@@ -2566,6 +2566,8 @@ struct RawDispatcherJournalEntry {
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
+    outcome_status: Option<String>,
+    #[serde(default)]
     outcome: Option<RawDispatcherJournalOutcome>,
 }
 
@@ -2590,6 +2592,18 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
         .dispatch_id
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "no dispatch id in journal entry".to_owned())?;
+    if raw.stage.as_deref() == Some("non-convergence-bounce") {
+        return Ok(ObservedDispatcherJournalEntry {
+            work_item_id,
+            dispatch_id,
+            kind: DispatcherJournalKind::BacklogBounce,
+            diagnostic: None,
+            terminal_status: raw
+                .outcome_status
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| Some("bounced".to_owned())),
+        });
+    }
     let Some(outcome) = raw.outcome else {
         return Ok(ObservedDispatcherJournalEntry {
             work_item_id,
@@ -2601,7 +2615,14 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
     };
     let stage = outcome.stage.as_deref().unwrap_or_default();
     let status = outcome.status.as_deref().unwrap_or_default();
-    if raw.stage.as_deref() == Some("outcome") && status == "completed" {
+    if raw.stage.as_deref() == Some("outcome")
+        && (status == "stalled-no-progress"
+            || (status == "failed"
+                && outcome
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("LIVESPEC_NON_CONVERGED"))))
+    {
         return Ok(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
@@ -2623,19 +2644,18 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
         "dispatcher-staleness-refused" => DispatcherJournalKind::DispatcherStalenessRefused,
         "invalid-source-state" | "admission-held" => DispatcherJournalKind::InvalidSourceState,
         "host-only-refused" => DispatcherJournalKind::HostOnlyRefused,
-        _other => DispatcherJournalKind::BacklogBounce,
+        _other => DispatcherJournalKind::Progress,
     };
     let diagnostic = outcome
         .detail
         .map(|detail| detail.trim().to_owned())
         .filter(|detail| !detail.is_empty());
-    let terminal_status = (!kind.is_refusal()).then(|| status.to_owned());
     Ok(ObservedDispatcherJournalEntry {
         work_item_id,
         dispatch_id,
         kind,
         diagnostic,
-        terminal_status,
+        terminal_status: None,
     })
 }
 
@@ -3935,6 +3955,11 @@ mod tests {
             "backlog-bounce"
         );
         assert_eq!(DispatcherJournalKind::Progress.label(), "progress");
+        assert!(!DispatcherJournalKind::BacklogBounce.is_refusal());
+        assert!(!DispatcherJournalKind::Progress.is_refusal());
+        assert!(DispatcherJournalKind::DispatcherStalenessRefused.is_refusal());
+        assert!(DispatcherJournalKind::InvalidSourceState.is_refusal());
+        assert!(DispatcherJournalKind::HostOnlyRefused.is_refusal());
         assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
         assert_eq!(GithubPullRequestState::Open.label(), "open");
         assert_eq!(
@@ -4472,7 +4497,7 @@ mod tests {
             dispatch_id: "dispatch_1".to_owned(),
             kind: DispatcherJournalKind::BacklogBounce,
             diagnostic: None,
-            terminal_status: None,
+            terminal_status: Some("stalled-no-progress".to_owned()),
             source_version: 8,
         }
     }
@@ -5478,17 +5503,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_dispatcher_completed_outcome_remains_backlog_bounce() -> Result<(), String> {
-        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-completed","stage":"outcome","outcome":{"stage":"completed","status":"completed","detail":"bounce observed"}}"#;
+    fn parse_dispatcher_non_convergence_outcome_is_backlog_bounce() -> Result<(), String> {
+        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-stalled","stage":"outcome","outcome":{"stage":"fabro-run","status":"stalled-no-progress","detail":"run made no progress"}}"#;
         let parsed = parsed_dispatcher(stdout)?;
-        let version = super::source_stream_seq(&["console-1", "dispatch-completed"]);
+        let version = super::source_stream_seq(&["console-1", "dispatch-stalled"]);
         let expected = DispatcherJournalEntry {
             repo: "console".to_owned(),
             work_item_id: "console-1".to_owned(),
-            dispatch_id: "dispatch-completed".to_owned(),
+            dispatch_id: "dispatch-stalled".to_owned(),
             kind: DispatcherJournalKind::BacklogBounce,
             diagnostic: None,
-            terminal_status: Some("completed".to_owned()),
+            terminal_status: Some("stalled-no-progress".to_owned()),
             source_version: version,
         };
         assert_eq!(
@@ -5501,21 +5526,97 @@ mod tests {
         );
         assert!(dispatcher_journal_payload_json(&expected).contains("terminal_status"));
 
-        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-unknown","stage":"outcome","outcome":{"stage":"unknown-refused","status":"failed","detail":"unknown refusal detail"}}"#;
+        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-dot","stage":"outcome","outcome":{"stage":"fabro-run","status":"failed","detail":"LIVESPEC_NON_CONVERGED: fix-loop cap hit"}}"#;
         let parsed = parsed_dispatcher(stdout)?;
-        let version = super::source_stream_seq(&["console-1", "dispatch-unknown"]);
+        let version = super::source_stream_seq(&["console-1", "dispatch-dot"]);
         assert_eq!(
             first_payload(&parsed),
             &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
                 repo: "console".to_owned(),
                 work_item_id: "console-1".to_owned(),
-                dispatch_id: "dispatch-unknown".to_owned(),
+                dispatch_id: "dispatch-dot".to_owned(),
                 kind: DispatcherJournalKind::BacklogBounce,
-                diagnostic: Some("unknown refusal detail".to_owned()),
+                diagnostic: None,
                 terminal_status: Some("failed".to_owned()),
                 source_version: version,
             })
         );
+        let stdout = r#"{"work_item_id":"console-1","dispatch_id":"dispatch-bounced","stage":"non-convergence-bounce","outcome_stage":"fabro-run","outcome_status":"stalled-no-progress"}"#;
+        let parsed = parsed_dispatcher(stdout)?;
+        let version = super::source_stream_seq(&["console-1", "dispatch-bounced"]);
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: "dispatch-bounced".to_owned(),
+                kind: DispatcherJournalKind::BacklogBounce,
+                diagnostic: None,
+                terminal_status: Some("stalled-no-progress".to_owned()),
+                source_version: version,
+            })
+        );
+        for (dispatch_id, field) in [
+            ("dispatch-bounced-default", ""),
+            ("dispatch-bounced-blank", r#","outcome_status":"   ""#),
+        ] {
+            let stdout = format!(
+                r#"{{"work_item_id":"console-1","dispatch_id":"{dispatch_id}","stage":"non-convergence-bounce"{field}}}"#
+            );
+            let parsed = parsed_dispatcher(&stdout)?;
+            let version = super::source_stream_seq(&["console-1", dispatch_id]);
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                    repo: "console".to_owned(),
+                    work_item_id: "console-1".to_owned(),
+                    dispatch_id: dispatch_id.to_owned(),
+                    kind: DispatcherJournalKind::BacklogBounce,
+                    diagnostic: None,
+                    terminal_status: Some("bounced".to_owned()),
+                    source_version: version,
+                })
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dispatcher_terminal_outcomes_without_bounce_signal_are_progress() -> Result<(), String>
+    {
+        for (dispatch_id, outcome) in [
+            (
+                "dispatch-completed",
+                r#""stage":"done","status":"green","detail":"merged""#,
+            ),
+            (
+                "dispatch-ordinary-failure",
+                r#""stage":"pr-view","status":"failed","detail":"no PR found for branch""#,
+            ),
+        ] {
+            let stdout = format!(
+                r#"{{"work_item_id":"console-1","dispatch_id":"{dispatch_id}","stage":"outcome","outcome":{{{outcome}}}}}"#
+            );
+            let parsed = parsed_dispatcher(&stdout)?;
+            let version = super::source_stream_seq(&["console-1", dispatch_id]);
+            assert_eq!(
+                first_payload(&parsed),
+                &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                    repo: "console".to_owned(),
+                    work_item_id: "console-1".to_owned(),
+                    dispatch_id: dispatch_id.to_owned(),
+                    kind: DispatcherJournalKind::Progress,
+                    diagnostic: (dispatch_id == "dispatch-ordinary-failure")
+                        .then(|| "no PR found for branch".to_owned()),
+                    terminal_status: None,
+                    source_version: version,
+                })
+            );
+            assert_eq!(
+                parsed.events[0].event().event_type(),
+                &EventType::DispatcherJournalProgressObserved
+            );
+        }
         Ok(())
     }
 
