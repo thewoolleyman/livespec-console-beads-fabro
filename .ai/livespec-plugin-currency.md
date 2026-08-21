@@ -56,3 +56,54 @@ Consequence for the "Beads runtime prerequisites" guidance in `AGENTS.md`
 pre-self-heal builds. On orchestrator **≥ 0.4.0 the plugin skills
 self-authenticate**, so a persistent `Access denied` there points at a genuinely
 missing/rotated secret or a wrapper misconfig — not merely "run under the wrapper."
+
+## A session's plugin root goes stale MID-SESSION, and dispatch refuses
+
+Found 2026-08-21 while dispatching from the `test-adequacy-gates` plan
+thread. `drive --action impl:<id>` failed with dispatcher exit code 3:
+
+    ERROR: dispatcher plugin build is stale; executing build 15a4ae9aff88
+    predates latest release 5dcbc6829ff9. Run `claude plugin update
+    livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro`
+    before dispatching.
+
+The Dispatcher has a **release-currency gate**
+(`commands/_dispatcher_staleness_gate.py`) that probes
+`git ls-remote https://github.com/thewoolleyman/livespec-orchestrator-beads-fabro.git
+refs/heads/release` and REFUSES admission when the executing build
+predates that SHA. It fires before anything about the work-item is
+considered, so the failure says nothing about the item.
+
+**The trap is that the session was current when it started.** Its
+SessionStart hook ran `just ensure-plugins`, which correctly reported
+`15a4ae9aff88` as the latest version. The marketplace moved to
+`5dcbc6829ff9` (v0.62.11) hours later, while the session was still
+running. A session resolves its plugin root ONCE, at start, so it keeps
+invoking the build it resolved — and that build is now refused. Nothing
+warns you; the first symptom is a dispatch that will not admit.
+
+So the "pins go stale silently" section above has a second, shorter
+clock: not just *a clone can sit on a months-old pin*, but **a live
+session can go stale within hours of its own successful currency check.**
+
+What to do when you see exit code 3 with this message:
+
+1. Re-run `mise exec -- just ensure-plugins` — it updates the PROJECT
+   pin. It does NOT retarget the running session, which is why the
+   remedy text alone is not sufficient.
+2. Invoke the new build's path explicitly for the dispatch, e.g.
+   `python3 ~/.claude/plugins/cache/livespec-orchestrator-beads-fabro/livespec-orchestrator-beads-fabro/<new-sha>/scripts/bin/drive.py …`,
+   or restart Claude Code. Restarting is cleaner if you have other
+   plugin-driven work to do; the explicit path is enough for one
+   dispatch.
+3. **Check `just check-fork-drift` after the pin moves**, before
+   assuming the bump was free. That check compares this repo's 8 pinned
+   fork files against the INSTALLED plugin build, so a pin move can
+   redden `just check` for every session in the repo. On the
+   `15a4ae9aff88` -> `5dcbc6829ff9` move it stayed green, but that is a
+   fact to verify, not to assume.
+
+Unrelated to ledger item `livespec-console-beads-fabro-3ej` ("livespec
+pin bumps cannot land here"), which concerns the `livespec` CORE pin in
+`.livespec.jsonc` frozen at v0.26.0 — same family, different pin,
+different failure mode.
