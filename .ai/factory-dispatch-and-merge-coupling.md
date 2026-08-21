@@ -66,6 +66,29 @@ NOT trip it and IS dispatchable. That fork is gated instead by
 `console-fork-drift-check`, which requires every divergence to be pinned and
 explained. Two different gates; do not assume the first one covers the second.
 
+### The workflow-edit refusal offers two overrides. Usually you must not take them.
+
+When the refusal fires it names its own escape hatches — `set-workflow-scope-override:<id>:citation-only`, or an inline declaration that the item ships no
+files under `.github/workflows/`. Both exist for items whose workflow path is
+INCIDENTAL: the item merely cites the path. Neither is a way to make a real
+workflow edit dispatchable.
+
+For an item that genuinely SHIPS a change under `.github/workflows/`, either
+override is a FALSE DECLARATION, and it would be recorded as the item's own
+statement about itself. The refusal already names the correct route in the same
+breath — "host-route it through an attended host session instead; the item remains
+open for that route" — so the item is not blocked, only routed. Take that.
+
+This is the one place in the dispatch path where the error message hands you a
+way to silence it, so it is worth naming the discipline: an override that changes
+what an item CLAIMS, rather than what it DOES, is not a fix.
+
+Confirmed 2026-08-21 on `-mcj.3`, which edited BOTH `.github/workflows/ci.yml`
+and `.fabro/workflows/implement-work-item/workflow.toml`: only the former tripped
+the refusal, exactly as the `.fabro/` note above predicts. It was host-routed and
+merged normally. The refusal fires at stage `host-only-refused` BEFORE any run
+exists, so it strands no claim — the item stays `ready`.
+
 ## Reading a dispatch outcome: three traps, measured 2026-08-21
 
 A dispatch that does not return green has several distinct shapes, and they call
