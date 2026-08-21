@@ -984,16 +984,18 @@ fn check_registry_bypass(crate_name: &str, file: &syn::File, display: &str) -> V
 }
 
 /// The `console-tui` functions allowed to construct the staging
-/// interactions: the registry-consulting key path, the invoker's confirm, and
-/// the generated menu's confirm — all three stage exclusively through
+/// interactions: the registry-consulting key path, the invoker's confirm, the
+/// command explainer continuation, and the generated menu's confirm — all stage
+/// exclusively through
 /// `action_registry`'s `staged_without_selection` / `stage_action`.
 ///
 /// The menu joined this list rather than being exempted from the rule: a menu
 /// that staged its own way would be a THIRD encoding of invocation, which is
 /// precisely what this check exists to prevent.
-const REGISTRY_STAGING_FNS: [&str; 3] = [
+const REGISTRY_STAGING_FNS: [&str; 4] = [
     "registry_action_input",
     "invoker_confirm_step",
+    "staged_action_step",
     "menu_confirm_step",
 ];
 

@@ -567,6 +567,24 @@ fn confirm_operator_action(
     if let TuiOverlay::ActionInvoker { selected_action } = model.overlay() {
         return invoker_confirm_step(state, events, &model, *selected_action, requested_by);
     }
+    if let TuiOverlay::CommandModal { .. } = model.overlay() {
+        return TuiRuntimeStep::new(
+            reduce_tui_interaction(state, events, TuiInteraction::OpenCommandExplainer),
+            TuiRuntimeEffect::Render,
+        );
+    }
+    if let TuiOverlay::CommandExplainer {
+        selected_action_index,
+    } = model.overlay()
+    {
+        return command_explainer_confirm_step(
+            state,
+            events,
+            &model,
+            *selected_action_index,
+            requested_by,
+        );
+    }
     // A menu item stages through the SAME path as its hotkey and the invoker
     // row. Anything else would be a third invocation route for one action.
     if let TuiOverlay::Menu { top, selected } = model.overlay() {
@@ -591,6 +609,7 @@ fn confirm_operator_action(
         TuiOverlay::None
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         // The invoker confirm returned above; this arm is unreachable for it.
         | TuiOverlay::ActionInvoker { .. }
         // The work-item detail modal is READ-ONLY: `enter_input` yields no
@@ -630,6 +649,90 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
             TuiRuntimeEffect::CopyDriverHandoff(command)
         }
     }
+}
+
+fn command_explainer_confirm_step(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    model: &TuiScreenModel,
+    selected_action_index: usize,
+    requested_by: &str,
+) -> TuiRuntimeStep {
+    let action = model
+        .detail()
+        .and_then(|detail| detail.actions().get(selected_action_index))
+        .copied();
+    let Some(action) = action else {
+        return TuiRuntimeStep::new(
+            state.clone(),
+            TuiRuntimeEffect::ApplicationError(ApplicationError::NoSelectedOperatorAction),
+        );
+    };
+    match action {
+        OperatorAction::OpenFabroAttach | OperatorAction::CopyFabroAttach => {
+            attach_command_explainer_step(
+                state,
+                events,
+                resolve_selected_operator_action(model, requested_by),
+            )
+        }
+        OperatorAction::Registered(id) => {
+            let staged = action_registry::action_for_id(id)
+                .and_then(|spec| staged_without_selection(model, spec));
+            staged_action_step(state, events, staged, requested_by)
+        }
+    }
+}
+
+fn attach_command_explainer_step(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    outcome: Result<OperatorActionOutcome, ApplicationError>,
+) -> TuiRuntimeStep {
+    let effect = outcome.map_or_else(TuiRuntimeEffect::ApplicationError, action_outcome_effect);
+    TuiRuntimeStep::new(
+        reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+        effect,
+    )
+}
+
+fn staged_action_step(
+    state: &TuiInteractionState,
+    events: &[ConsoleEvent],
+    staged: Option<action_registry::StagedAction>,
+    requested_by: &str,
+) -> TuiRuntimeStep {
+    let interaction = match staged {
+        Some(action_registry::StagedAction::Valve(valve)) => {
+            TuiInteraction::OpenValveConfirm(valve)
+        }
+        Some(action_registry::StagedAction::DriverHandoff) => TuiInteraction::OpenDriverHandoff,
+        Some(action_registry::StagedAction::FactoryDrain) => {
+            return TuiRuntimeStep::new(
+                reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
+                TuiRuntimeEffect::PersistCommand(console_application::factory_drain_command(
+                    requested_by,
+                )),
+            );
+        }
+        Some(action_registry::StagedAction::FactoryDispatchItem) => {
+            TuiInteraction::OpenFactoryDispatchItemConfirm
+        }
+        Some(action_registry::StagedAction::Global(action)) => match global_interaction(action) {
+            Some(global) => global,
+            None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
+        },
+        None => {
+            return TuiRuntimeStep::new(
+                state.clone(),
+                TuiRuntimeEffect::ApplicationError(ApplicationError::UnavailableOperatorAction),
+            );
+        }
+    };
+    TuiRuntimeStep::new(
+        reduce_tui_interaction(state, events, interaction),
+        TuiRuntimeEffect::Render,
+    )
 }
 
 /// The interaction a global registry action reduces to, or `None` for the one
@@ -748,9 +851,9 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         // The item modal is a READING surface, so up/down scroll its body
         // rather than moving a selection -- there is nothing to select in it.
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
-        TuiOverlay::DriverHandoff { .. } | TuiOverlay::FactoryDispatchItemConfirm { .. } => {
-            return None;
-        }
+        TuiOverlay::CommandExplainer { .. }
+        | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. } => return None,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectPreviousView,
             FocusPane::Content => TuiInteraction::SelectPrevious,
@@ -777,9 +880,9 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
             HelpFocus::Text => TuiInteraction::HelpScrollDown,
         },
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
-        TuiOverlay::DriverHandoff { .. } | TuiOverlay::FactoryDispatchItemConfirm { .. } => {
-            return None;
-        }
+        TuiOverlay::CommandExplainer { .. }
+        | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::FactoryDispatchItemConfirm { .. } => return None,
         TuiOverlay::None => match model.focus() {
             FocusPane::Nav => TuiInteraction::SelectNextView,
             FocusPane::Content => TuiInteraction::SelectNext,
@@ -797,6 +900,7 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
 fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.overlay() {
         TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
@@ -991,6 +1095,7 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::Menu { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
@@ -1239,6 +1344,7 @@ fn render_menu_bar(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
+        | TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::ActionInvoker { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. }
         | TuiOverlay::ValveConfirm { .. }
@@ -1518,6 +1624,17 @@ fn render_overlay(
                 model.detail(),
                 *selected_action_index,
                 overlay_rect(area),
+                buffer,
+            );
+            OverlayScrollExtents::ZERO
+        }
+        TuiOverlay::CommandExplainer {
+            selected_action_index,
+        } => {
+            render_command_explainer(
+                model.detail(),
+                *selected_action_index,
+                full_width_explainer_rect(area),
                 buffer,
             );
             OverlayScrollExtents::ZERO
@@ -2363,6 +2480,112 @@ fn render_command_modal(
     );
 }
 
+fn render_command_explainer(
+    detail: Option<&AttentionDetail>,
+    selected_action_index: usize,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    let Some(action) = detail
+        .and_then(|detail| detail.actions().get(selected_action_index))
+        .copied()
+    else {
+        return;
+    };
+    Clear.render(area, buffer);
+    Paragraph::new(command_explainer_lines(detail, action))
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title("Command Explainer"),
+        )
+        .render(area, buffer);
+}
+
+fn command_explainer_lines(
+    detail: Option<&AttentionDetail>,
+    action: OperatorAction,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(action.label().to_owned()),
+        Line::from(command_line_for_action(detail, action)),
+        Line::from(""),
+    ];
+    lines.extend(command_explanation_for_action(action));
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Enter continues through the normal console action path; Esc cancels.",
+    ));
+    lines
+}
+
+fn command_line_for_action(detail: Option<&AttentionDetail>, action: OperatorAction) -> String {
+    match action {
+        OperatorAction::OpenFabroAttach | OperatorAction::CopyFabroAttach => detail
+            .and_then(AttentionDetail::attach_command)
+            .unwrap_or("(no attach command available)")
+            .to_owned(),
+        OperatorAction::Registered(id) => format!("registry action: {id}"),
+    }
+}
+
+fn command_explanation_for_action(action: OperatorAction) -> Vec<Line<'static>> {
+    match action {
+        OperatorAction::OpenFabroAttach => vec![
+            Line::from("Uses the attach command already present on this detail record."),
+            Line::from("Continuing sends that exact command to the terminal effect sink."),
+        ],
+        OperatorAction::CopyFabroAttach => vec![
+            Line::from("Uses the attach command already present on this detail record."),
+            Line::from("Continuing copies that exact command through the terminal effect sink."),
+        ],
+        OperatorAction::Registered(id) => action_registry::action_for_id(id).map_or_else(
+            || {
+                vec![Line::from(
+                    "The registry entry for this action is not available.",
+                )]
+            },
+            registry_command_explanation,
+        ),
+    }
+}
+
+fn registry_command_explanation(spec: &'static action_registry::ActionSpec) -> Vec<Line<'static>> {
+    vec![
+        Line::from(format!("Registry id: {}", spec.id)),
+        Line::from(format!("Menu path: {}", spec.menu_path.join(" > "))),
+        Line::from(format!(
+            "Accelerator: {}",
+            action_registry::accelerator_display(spec)
+        )),
+        Line::from(registry_staging_explanation(spec)),
+    ]
+}
+
+fn registry_staging_explanation(spec: &'static action_registry::ActionSpec) -> String {
+    match spec.staging {
+        action_registry::ActionStaging::Valve(_stager) => {
+            let parameter = spec.parameter.map_or_else(
+                || "no payload".to_owned(),
+                |parameter| format!("{}: {}", parameter.name, parameter.choices.join(", ")),
+            );
+            format!("Continuing stages the registry valve-confirm flow ({parameter}).")
+        }
+        action_registry::ActionStaging::DriverHandoff => {
+            "Continuing opens the driver-handoff overlay for the selected work-item.".to_owned()
+        }
+        action_registry::ActionStaging::FactoryDrain => {
+            "Continuing persists the factory-drain command for ready work.".to_owned()
+        }
+        action_registry::ActionStaging::FactoryDispatchItem => {
+            "Continuing opens selected-item factory dispatch confirmation.".to_owned()
+        }
+        action_registry::ActionStaging::Global(_action) => {
+            "Continuing invokes the registered global console action.".to_owned()
+        }
+    }
+}
+
 fn action_item_line(
     index: usize,
     action: OperatorAction,
@@ -2388,6 +2611,19 @@ fn overlay_rect(area: Rect) -> Rect {
         area.y + ((area.height - height) / 2),
         width,
         height,
+    )
+}
+
+fn full_width_explainer_rect(area: Rect) -> Rect {
+    let vertical_margin = 3.min(area.height / 4);
+    let height = area
+        .height
+        .saturating_sub(vertical_margin.saturating_mul(2));
+    Rect::new(
+        area.x,
+        area.y + vertical_margin,
+        area.width.max(1),
+        height.max(1),
     )
 }
 
@@ -2777,12 +3013,14 @@ mod tests {
     use super::{
         DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
         TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
-        TuiTerminalInput, action_available_for_model, action_outcome_effect, attention_item_line,
-        buffer_to_text, detail_lines, effect_triggers_source_poll, help_lines_for_view,
+        TuiTerminalInput, action_available_for_model, action_outcome_effect,
+        attach_command_explainer_step, attention_item_line, buffer_to_text,
+        command_explainer_confirm_step, command_explainer_lines, command_explanation_for_action,
+        detail_lines, effect_triggers_source_poll, full_width_explainer_rect, help_lines_for_view,
         key_event_to_terminal_input, menu_confirm_step, registry_action_input,
-        render_command_modal, render_detail, render_menu_overlay, render_model,
-        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        step_tui_runtime,
+        registry_staging_explanation, render_command_explainer, render_command_modal,
+        render_detail, render_menu_overlay, render_model, render_summary_detail, render_to_text,
+        render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
     };
 
     #[test]
@@ -3834,12 +4072,7 @@ mod tests {
             "operator",
         );
 
-        assert_eq!(
-            step.effect(),
-            &TuiRuntimeEffect::ApplicationError(
-                console_application::ApplicationError::NoSelectedOperatorAction,
-            )
-        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
         assert_eq!(persisted_command(step.effect()), None);
         assert_eq!(step.state().overlay(), &TuiOverlay::None);
     }
@@ -4401,6 +4634,361 @@ mod tests {
 
         assert!(output.contains("Open Fabro attach"));
         assert!(output.contains("> Copy Fabro attach"));
+    }
+
+    #[test]
+    fn command_modal_enter_drills_into_explainer_before_staging() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandModal {
+                selected_action_index: 0,
+            },
+        );
+        let step = step_tui_runtime(&state, &pending_events(), TuiTerminalInput::Confirm, "op");
+
+        assert_eq!(
+            step.state().overlay(),
+            &TuiOverlay::CommandExplainer {
+                selected_action_index: 0
+            }
+        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[test]
+    fn command_explainer_enter_continues_through_existing_action_path() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandExplainer {
+                selected_action_index: 0,
+            },
+        );
+        let step = step_tui_runtime(&state, &pending_events(), TuiTerminalInput::Confirm, "op");
+
+        assert_eq!(
+            step.state().overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve
+            }
+        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[test]
+    fn command_explainer_uses_a_full_terminal_width_command_line() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            Some("fabro attach run --copy-safe".to_owned()),
+            vec![],
+            vec![OperatorAction::CopyFabroAttach],
+        );
+        let area = Rect::new(0, 0, 80, 24);
+        let overlay = full_width_explainer_rect(area);
+        let mut buffer = Buffer::empty(area);
+
+        render_command_explainer(Some(&detail), 0, overlay, &mut buffer);
+        let output = buffer_to_text(&buffer, area);
+        let command_row = output
+            .lines()
+            .find(|line| line.contains("fabro attach run --copy-safe"))
+            .unwrap_or_default();
+
+        assert_eq!(overlay.x, area.x);
+        assert_eq!(overlay.width, area.width);
+        assert!(command_row.contains("fabro attach run --copy-safe"));
+        assert!(!command_row.contains("Uses the attach command"));
+    }
+
+    #[test]
+    fn command_explainer_prose_is_derived_from_the_registry_entry() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            None,
+            vec![],
+            vec![OperatorAction::Registered("approve")],
+        );
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+
+        render_command_explainer(
+            Some(&detail),
+            0,
+            full_width_explainer_rect(area),
+            &mut buffer,
+        );
+        let output = buffer_to_text(&buffer, area);
+        let approve = action_registry::action_for_id("approve");
+        assert_eq!(
+            approve.map(|spec| output.contains(&format!("Registry id: {}", spec.id))),
+            Some(true)
+        );
+        assert_eq!(
+            approve
+                .map(|spec| output.contains(&format!("Menu path: {}", spec.menu_path.join(" > ")))),
+            Some(true)
+        );
+        assert_eq!(
+            approve.map(|spec| output.contains(&format!(
+                "Accelerator: {}",
+                action_registry::accelerator_display(spec)
+            ))),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn command_explainer_overlay_renders_through_the_model_overlay_path() {
+        let model = attention_model_for_lane(
+            Lane::PendingApproval,
+            TuiOverlay::CommandExplainer {
+                selected_action_index: 0,
+            },
+        );
+        let output = render_to_text(&model, 100, 30).unwrap_or_default();
+
+        assert!(output.contains("Command Explainer"));
+        assert!(output.contains("registry action: approve"));
+    }
+
+    #[test]
+    fn command_explainer_lines_cover_attach_and_unknown_registry_actions() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            Some("fabro attach run".to_owned()),
+            vec![],
+            vec![],
+        );
+        let open = command_explainer_lines(Some(&detail), OperatorAction::OpenFabroAttach)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let copy = command_explanation_for_action(OperatorAction::CopyFabroAttach)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let unknown = command_explanation_for_action(OperatorAction::Registered("missing-action"))
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(open.contains("Continuing sends that exact command"));
+        assert!(copy.contains("Continuing copies that exact command"));
+        assert!(unknown.contains("registry entry for this action is not available"));
+    }
+
+    #[test]
+    fn command_explainer_confirm_stages_the_selected_detail_action() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandExplainer {
+                selected_action_index: 0,
+            },
+        );
+        let events = pending_events();
+        let model = build_tui_model_for_state(&events, &state);
+
+        let step = command_explainer_confirm_step(&state, &events, &model, 0, "op");
+
+        assert_eq!(
+            step.state().overlay(),
+            &TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve
+            }
+        );
+        assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn command_explainer_confirm_covers_attach_detail_actions() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandExplainer {
+                selected_action_index: 0,
+            },
+        );
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            Some("fabro attach run".to_owned()),
+            vec![],
+            vec![OperatorAction::OpenFabroAttach],
+        );
+        let model = TuiScreenModel::coverage_fixture_with_detail(detail, state.overlay().clone());
+
+        let step = command_explainer_confirm_step(&state, &pending_events(), &model, 0, "op");
+
+        assert_eq!(step.state().overlay(), &TuiOverlay::None);
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::OpenAttachCommand("fabro attach run".to_owned())
+        );
+    }
+
+    #[test]
+    fn attach_command_explainer_step_closes_and_maps_the_resolved_outcome() {
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::CommandExplainer {
+                selected_action_index: 0,
+            },
+        );
+        let events = pending_events();
+
+        let opened = attach_command_explainer_step(
+            &state,
+            &events,
+            Ok(OperatorActionOutcome::OpenAttachCommand(
+                "fabro attach run".to_owned(),
+            )),
+        );
+        assert_eq!(opened.state().overlay(), &TuiOverlay::None);
+        assert_eq!(
+            opened.effect(),
+            &TuiRuntimeEffect::OpenAttachCommand("fabro attach run".to_owned())
+        );
+
+        let failed = attach_command_explainer_step(
+            &state,
+            &events,
+            Err(console_application::ApplicationError::NoSelectedOperatorAction),
+        );
+        assert_eq!(failed.state().overlay(), &TuiOverlay::None);
+        assert_eq!(
+            failed.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::NoSelectedOperatorAction
+            )
+        );
+    }
+
+    #[test]
+    fn command_explainer_render_is_inert_without_a_selected_action() {
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "run".to_owned(),
+            None,
+            vec![],
+            vec![],
+        );
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        let before = buffer_to_text(&buffer, area);
+
+        render_command_explainer(Some(&detail), 0, area, &mut buffer);
+
+        assert_eq!(buffer_to_text(&buffer, area), before);
+    }
+
+    #[test]
+    fn registry_staging_explainer_covers_every_staging_shape() {
+        for action_id in [
+            "approve",
+            "set-admission",
+            "driver-handoff",
+            "dispatch-ready",
+            "dispatch-selected-item",
+            "open-help",
+        ] {
+            let rendered = action_registry::action_for_id(action_id)
+                .map(registry_staging_explanation)
+                .unwrap_or_default();
+            assert!(!rendered.is_empty(), "{action_id}");
+        }
+        let no_payload = action_registry::action_for_id("driver-handoff")
+            .map(registry_staging_explanation)
+            .unwrap_or_default();
+        assert!(no_payload.contains("driver-handoff overlay"));
+    }
+
+    #[test]
+    fn staged_action_step_covers_every_registry_continuation_shape() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let events = pending_events();
+        let model = attention_model_for_lane(Lane::PendingApproval, TuiOverlay::None);
+
+        let no_action = command_explainer_confirm_step(&state, &events, &model, 99, "op");
+        assert_eq!(
+            no_action.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::NoSelectedOperatorAction
+            )
+        );
+
+        let valve = staged_action_step(
+            &state,
+            &events,
+            Some(action_registry::StagedAction::Valve(PendingValve::Approve)),
+            "op",
+        );
+        assert_eq!(valve.effect(), &TuiRuntimeEffect::Render);
+
+        let handoff = staged_action_step(
+            &state,
+            &events,
+            Some(action_registry::StagedAction::DriverHandoff),
+            "op",
+        );
+        assert_eq!(handoff.effect(), &TuiRuntimeEffect::Render);
+
+        let drain = staged_action_step(
+            &state,
+            &events,
+            Some(action_registry::StagedAction::FactoryDrain),
+            "op",
+        );
+        assert!(matches!(
+            drain.effect(),
+            TuiRuntimeEffect::PersistCommand(command)
+                if *command.command_type() == CommandType::FactoryDrainRequested
+        ));
+
+        let dispatch_item = staged_action_step(
+            &state,
+            &events,
+            Some(action_registry::StagedAction::FactoryDispatchItem),
+            "op",
+        );
+        assert_eq!(dispatch_item.effect(), &TuiRuntimeEffect::Render);
+
+        let help = staged_action_step(
+            &state,
+            &events,
+            Some(action_registry::StagedAction::Global(
+                action_registry::GlobalAction::OpenHelp,
+            )),
+            "op",
+        );
+        assert_eq!(help.effect(), &TuiRuntimeEffect::Render);
+
+        let quit = staged_action_step(
+            &state,
+            &events,
+            Some(action_registry::StagedAction::Global(
+                action_registry::GlobalAction::Quit,
+            )),
+            "op",
+        );
+        assert_eq!(quit.effect(), &TuiRuntimeEffect::Quit);
+
+        let unavailable = staged_action_step(&state, &events, None, "op");
+        assert_eq!(
+            unavailable.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::UnavailableOperatorAction
+            )
+        );
     }
 
     #[test]
