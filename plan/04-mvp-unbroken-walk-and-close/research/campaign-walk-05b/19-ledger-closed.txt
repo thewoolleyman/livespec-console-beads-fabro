@@ -1,0 +1,4 @@
+status: closed | closed_at: 2026-08-21T06:47:52Z | updated: 2026-08-21T06:47:52Z
+LEDGER CONFIRMS CLOSED
+
+[exited with code 0]
