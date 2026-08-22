@@ -131,7 +131,6 @@ jobs:
         target:
           - check-format
           - check-clippy
-          - check-test
           - check-nextest
           - check-coverage
           - check-deps
