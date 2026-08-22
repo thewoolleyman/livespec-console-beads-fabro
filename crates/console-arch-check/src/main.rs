@@ -22,7 +22,12 @@ use std::process::ExitCode;
 use cargo_metadata::{DependencyKind, MetadataCommand};
 use syn::visit::Visit;
 
-/// Workspace crates whose source is scanned for the AST-level rules.
+/// Product workspace crates whose source is scanned for the AST-level rules.
+///
+/// Every workspace package must be present here or in
+/// [`SOURCE_RULE_EXCLUDED_CRATES`]. That closed set is asserted from
+/// `cargo metadata` so a newly-added product crate cannot silently miss the
+/// source-level architecture rules.
 const SCANNED_CRATES: &[&str] = &[
     "console-application",
     "console-cli",
@@ -30,6 +35,40 @@ const SCANNED_CRATES: &[&str] = &[
     "console-eventstore",
     "console-tui",
 ];
+
+/// Workspace crates deliberately excluded from the product source-level rules,
+/// with the reason for each exclusion kept beside the crate name.
+const SOURCE_RULE_EXCLUDED_CRATES: &[CrateSourceRuleExclusion] = &[
+    CrateSourceRuleExclusion {
+        name: "console-arch-check",
+        reason: "architecture checker tooling, not console product code",
+    },
+    CrateSourceRuleExclusion {
+        name: "console-ci-parity-check",
+        reason: "CI guardrail tooling, not console product code",
+    },
+    CrateSourceRuleExclusion {
+        name: "console-completeness-check",
+        reason: "spec coverage checker tooling, not console product code",
+    },
+    CrateSourceRuleExclusion {
+        name: "console-fork-drift-check",
+        reason: "repository guardrail tooling, not console product code",
+    },
+    CrateSourceRuleExclusion {
+        name: "console-red-green-replay-check",
+        reason: "commit discipline checker tooling, not console product code",
+    },
+    CrateSourceRuleExclusion {
+        name: "console-spec-check",
+        reason: "live-spec conformance checker tooling, not console product code",
+    },
+];
+
+struct CrateSourceRuleExclusion {
+    name: &'static str,
+    reason: &'static str,
+}
 
 /// External crates a purity-constrained crate (domain, UI) must never
 /// depend on directly: persistence, HTTP, async-runtime, and
@@ -63,6 +102,7 @@ fn main() -> ExitCode {
 /// returning a flat list of human-readable findings (empty == pass).
 fn run_checks(root: &Path) -> Vec<String> {
     let mut findings = check_crate_graph(root);
+    findings.extend(check_source_rule_crate_coverage(root));
     for crate_name in SCANNED_CRATES {
         let crate_dir = root.join("crates").join(crate_name);
         findings.extend(check_crate_sources(crate_name, &crate_dir));
@@ -558,7 +598,22 @@ fn check_crate_graph(root: &Path) -> Vec<String> {
             }
         })
         .collect();
-    check_layering(&nodes)
+    let mut findings = check_crate_graph_non_vacuity(&nodes);
+    if findings.is_empty() {
+        findings.extend(check_layering(&nodes));
+    }
+    findings
+}
+
+fn check_crate_graph_non_vacuity(nodes: &[CrateNode]) -> Vec<String> {
+    if nodes.is_empty() {
+        return vec![
+            "crate graph check read zero workspace packages from cargo metadata — refusing to \
+             pass without a non-empty workspace package graph"
+                .to_owned(),
+        ];
+    }
+    Vec::new()
 }
 
 /// Pure layering rule set over the reduced crate graph.
@@ -655,6 +710,109 @@ fn check_crate_sources(crate_name: &str, crate_dir: &Path) -> Vec<String> {
         findings.extend(check_registry_bypass(crate_name, &file, &display));
     }
     findings
+}
+
+fn check_source_rule_crate_coverage(root: &Path) -> Vec<String> {
+    let manifest = root.join("Cargo.toml");
+    let metadata = match MetadataCommand::new().manifest_path(&manifest).exec() {
+        Ok(metadata) => metadata,
+        Err(error) => return vec![format!("could not load cargo metadata: {error}")],
+    };
+    let mut findings = Vec::new();
+    let mut workspace_crates = BTreeSet::new();
+    for package in metadata.workspace_packages() {
+        let Some(crate_dir) = package
+            .manifest_path
+            .parent()
+            .and_then(|path| path.file_name())
+        else {
+            findings.push(format!(
+                "could not derive source-rule crate directory for workspace package `{}` \
+                 from manifest path `{}`",
+                package.name, package.manifest_path
+            ));
+            continue;
+        };
+        workspace_crates.insert(crate_dir.to_owned());
+    }
+    findings.extend(check_source_rule_crate_coverage_for_names(
+        &workspace_crates,
+    ));
+    findings
+}
+
+fn check_source_rule_crate_coverage_for_names(workspace_crates: &BTreeSet<String>) -> Vec<String> {
+    let mut findings = Vec::new();
+    if workspace_crates.is_empty() {
+        findings.push(
+            "source-rule crate coverage check read zero workspace packages from cargo metadata — \
+             refusing to pass without a non-empty workspace package set"
+                .to_owned(),
+        );
+        return findings;
+    }
+
+    let scanned: BTreeSet<&str> = SCANNED_CRATES.iter().copied().collect();
+    let excluded: BTreeSet<&str> = SOURCE_RULE_EXCLUDED_CRATES
+        .iter()
+        .map(|exclusion| exclusion.name)
+        .collect();
+
+    for crate_name in workspace_crates {
+        if !scanned.contains(crate_name.as_str()) && !excluded.contains(crate_name.as_str()) {
+            findings.push(format!(
+                "workspace crate `{crate_name}` is not covered by source-level architecture \
+                 rules: add it to SCANNED_CRATES or declare it in SOURCE_RULE_EXCLUDED_CRATES \
+                 with a reason"
+            ));
+        }
+    }
+
+    for crate_name in &scanned {
+        if !workspace_crates.contains(*crate_name) {
+            findings.push(format!(
+                "SCANNED_CRATES names `{crate_name}`, but cargo metadata has no such workspace \
+                 package"
+            ));
+        }
+    }
+
+    for exclusion in SOURCE_RULE_EXCLUDED_CRATES {
+        if exclusion.reason.trim().is_empty() {
+            findings.push(format!(
+                "SOURCE_RULE_EXCLUDED_CRATES entry `{}` must carry a non-empty reason",
+                exclusion.name
+            ));
+        }
+        if !workspace_crates.contains(exclusion.name) {
+            findings.push(format!(
+                "SOURCE_RULE_EXCLUDED_CRATES names `{}`, but cargo metadata has no such \
+                 workspace package",
+                exclusion.name
+            ));
+        }
+    }
+
+    let duplicate_names = duplicate_source_rule_members();
+    findings.extend(duplicate_names.into_iter().map(|crate_name| {
+        format!(
+            "workspace crate `{crate_name}` appears in both SCANNED_CRATES and \
+             SOURCE_RULE_EXCLUDED_CRATES"
+        )
+    }));
+    findings
+}
+
+fn duplicate_source_rule_members() -> Vec<&'static str> {
+    let excluded: BTreeSet<&str> = SOURCE_RULE_EXCLUDED_CRATES
+        .iter()
+        .map(|exclusion| exclusion.name)
+        .collect();
+    SCANNED_CRATES
+        .iter()
+        .copied()
+        .filter(|crate_name| excluded.contains(crate_name))
+        .collect()
 }
 
 /// Rule: every `tmux` invocation in the workspace must run on a PRIVATE socket
@@ -2340,10 +2498,12 @@ mod tests {
     use super::{
         CrateNode, ObservedRustToolchain, check_adapter_isolation,
         check_backing_cli_default_tokens, check_beads_native_source_paths,
-        check_fabro_image_rust_toolchain_with_probe, check_forbid_unsafe, check_layering,
-        check_registry_bypass, check_tmux_socket_scoping, check_tmux_socket_scoping_source,
-        check_type_placement, check_unwrap_expect, check_workspace_rust_version_matches_toolchain,
-        check_zero_beads_source_paths, fabro_python_rust_image, observed_rust_toolchain,
+        check_crate_graph_non_vacuity, check_fabro_image_rust_toolchain_with_probe,
+        check_forbid_unsafe, check_layering, check_registry_bypass,
+        check_source_rule_crate_coverage_for_names, check_tmux_socket_scoping,
+        check_tmux_socket_scoping_source, check_type_placement, check_unwrap_expect,
+        check_workspace_rust_version_matches_toolchain, check_zero_beads_source_paths,
+        fabro_python_rust_image, observed_rust_toolchain,
         observed_rust_toolchain_from_image_config, rust_files_for_tmux_scan,
     };
 
@@ -2404,6 +2564,75 @@ mod tests {
             &["rusqlite"],
         )];
         assert!(check_layering(&nodes).is_empty());
+    }
+
+    #[test]
+    fn crate_graph_that_reads_no_workspace_packages_is_flagged() {
+        let findings = check_crate_graph_non_vacuity(&[]);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("zero workspace packages"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn source_rule_coverage_allows_the_current_declared_workspace_set() {
+        let workspace_crates = workspace_crates(&[
+            "console-application",
+            "console-arch-check",
+            "console-ci-parity-check",
+            "console-cli",
+            "console-completeness-check",
+            "console-domain",
+            "console-eventstore",
+            "console-fork-drift-check",
+            "console-red-green-replay-check",
+            "console-spec-check",
+            "console-tui",
+        ]);
+
+        let findings = check_source_rule_crate_coverage_for_names(&workspace_crates);
+
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn source_rule_coverage_flags_an_undeclared_workspace_member() {
+        let workspace_crates = workspace_crates(&[
+            "console-application",
+            "console-arch-check",
+            "console-ci-parity-check",
+            "console-cli",
+            "console-completeness-check",
+            "console-domain",
+            "console-eventstore",
+            "console-fork-drift-check",
+            "console-red-green-replay-check",
+            "console-spec-check",
+            "console-tui",
+            "console-new-product",
+        ]);
+
+        let findings = check_source_rule_crate_coverage_for_names(&workspace_crates);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("console-new-product"), "{findings:?}");
+        assert!(findings[0].contains("SCANNED_CRATES"), "{findings:?}");
+        assert!(
+            findings[0].contains("SOURCE_RULE_EXCLUDED_CRATES"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn source_rule_coverage_that_reads_no_workspace_packages_is_flagged() {
+        let findings = check_source_rule_crate_coverage_for_names(&BTreeSet::new());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("zero workspace packages"),
+            "{findings:?}"
+        );
     }
 
     #[test]
@@ -3311,6 +3540,10 @@ mod tests {
         fs::remove_dir_all(&path).ok();
         fs::create_dir_all(&path)?;
         Ok(path)
+    }
+
+    fn workspace_crates(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
     }
 
     fn write_backing_cli_source(root: &Path, source: &str) -> std::io::Result<()> {
