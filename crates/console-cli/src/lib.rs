@@ -2616,11 +2616,11 @@ mod tests {
     use console_application::{
         ApplicationError, AttentionItem, AutonomousAudit, AutonomousDecision,
         AutonomousDecisionsPort, DispatcherOverride, FactoryCommandOutcome,
-        FactoryDispatchItemPort, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        LaneColumn, LaneFocus, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiView, build_tui_model, project_attention,
-        project_lane_board,
+        FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome,
+        FactoryDrainRequest, LaneColumn, LaneFocus, OrchestratorActionOutcome,
+        OrchestratorActionPort, OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiView, build_tui_model,
+        handle_factory_drain_command, project_attention, project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll,
             AdapterPollRequest, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
@@ -2628,7 +2628,7 @@ mod tests {
             NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
             NotObservedFinding, ObservedSourceAdapter, PullSourcePort, SourceAdapterKind,
             SourceEventAppendPort, SourcePayload, SourceProbe, SourceProbeOutcome,
-            WorkItemSnapshot, normalize_work_item_snapshot,
+            WorkItemSnapshot, diff_needs_attention, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -2651,15 +2651,16 @@ mod tests {
         append_demo_events_to_store, append_factory_drain_requested_events, backfill_demo_report,
         backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
         config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
-        event_append_from_console_event, events_tail_report, factory_command_from_stored,
-        handle_pending_config_commands, handle_pending_control_commands,
-        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
-        handle_pending_work_item_commands, ingest_needs_attention, initial_source_seed,
-        is_failed_once_only_valve_retry, live_source_adapters, load_tui_events_from_store,
-        normalized_payload_json, observe_and_reflect_autonomous_decisions,
-        older_factory_command_blocks_control_command, persist_tui_runtime_effects,
-        plan_page_report, python_normalized_invocation, refresh_sources, render_tui_preview,
-        resolve_console_repo, run, run_store_backed_tui_session, run_with_store, serve_report,
+        event_append_from_command_event, event_append_from_console_event, events_tail_report,
+        factory_command_from_stored, handle_pending_config_commands,
+        handle_pending_control_commands, handle_pending_factory_commands,
+        handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
+        ingest_needs_attention, initial_source_seed, is_failed_once_only_valve_retry,
+        live_source_adapters, load_tui_events_from_store, normalized_payload_json,
+        observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
+        persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
+        refresh_sources, render_tui_preview, resolve_console_repo, run,
+        run_store_backed_tui_session, run_with_store, serve_report,
         serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
         work_item_command_from_stored,
     };
@@ -2738,6 +2739,32 @@ mod tests {
     /// factory commands but not the needs-attention stream.
     fn empty_needs_attention_port() -> ScriptedNeedsAttentionPort {
         ScriptedNeedsAttentionPort::observing(Vec::new())
+    }
+
+    fn duplicate_collision_append(
+        normalized: &NormalizedSourceEvent,
+        observed_at: &str,
+    ) -> EventAppend {
+        let event = normalized.event();
+        EventAppend::new(
+            ConsoleEvent::new(
+                format!("evt:collision:{}", normalized.source_event_id()),
+                1,
+                event.context().to_owned(),
+                EventType::FabroHumanGateObserved,
+                event.source().to_owned(),
+                event.stream_id().to_owned(),
+                event.stream_seq(),
+            ),
+            event.stream_id().to_owned(),
+            observed_at.to_owned(),
+            observed_at.to_owned(),
+            None,
+            format!("corr_collision_{}", normalized.source_event_id()),
+            Some(normalized.source_event_id().to_owned()),
+            "{}".to_owned(),
+            "{}".to_owned(),
+        )
     }
 
     /// A single well-shaped attention item for building snapshot fixtures.
@@ -4237,7 +4264,7 @@ mod tests {
 
     #[test]
     fn needs_attention_ingest_counts_only_inserted_diff_and_impl_appends() {
-        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::DuplicateAppends);
+        let mut sqlite = SqliteEventStore::open_in_memory().ok_test();
         let attention_item = AttentionItemSnapshot::new(
             "impl:livespec-console-beads-fabro-0c5",
             "implementation",
@@ -4254,14 +4281,25 @@ mod tests {
                 "implement:livespec-console-beads-fabro-0c5",
             ),
         );
+        let seeded_events = diff_needs_attention(
+            "livespec-console-beads-fabro",
+            &[],
+            std::slice::from_ref(&attention_item),
+        );
+        for event in &seeded_events {
+            let append = duplicate_collision_append(event, "2026-08-17T21:29:00Z");
+            sqlite.append_event(&append).ok_test();
+        }
         let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
-        let inserted =
-            ingest_needs_attention(&mut store, &needs_attention, "2026-08-17T21:29:00Z").ok_test();
+        let first =
+            ingest_needs_attention(&mut sqlite, &needs_attention, "2026-08-17T21:29:00Z").ok_test();
+        let second =
+            ingest_needs_attention(&mut sqlite, &needs_attention, "2026-08-17T21:29:00Z").ok_test();
 
-        check((inserted) == (0), "assert_eq failed");
-        check((store.appended_event_count) == (2), "assert_eq failed");
+        check((first) == (1), "assert_eq failed");
+        check((second) == (0), "assert_eq failed");
     }
 
     #[test]
@@ -5782,7 +5820,30 @@ mod tests {
 
     #[test]
     fn finalizing_pending_command_counts_only_inserted_events() {
-        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::DuplicateAppends);
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_ready_work_item(&mut store, "2026-06-23T00:00:02Z");
+        persist_tui_runtime_effects(
+            &mut store,
+            &[factory_drain_effect()],
+            "2026-06-23T00:00:03Z",
+        )
+        .ok_test();
+        let stored = store.list_commands().ok_test();
+        let command = CommandEnvelope::new(
+            stored[0].command_id().to_owned(),
+            CommandType::FactoryDrainRequested,
+            "fleet:livespec".to_owned(),
+            stored[0].idempotency_key().to_owned(),
+            stored[0].requested_by().to_owned(),
+        );
+        let mut preseed_port = SimulatedFactoryDrainPort;
+        let outcome =
+            handle_factory_drain_command(&command, &FactoryDrainPolicy::new(1), &mut preseed_port)
+                .ok_test();
+        for event in outcome.events() {
+            let append = event_append_from_command_event(event, &command, "2026-06-23T00:00:04Z");
+            store.append_event(&append).ok_test();
+        }
         let mut port = SimulatedFactoryDrainPort;
 
         let outcomes =
@@ -5793,7 +5854,6 @@ mod tests {
             (outcomes[0].appended_event_count()) == (0),
             "assert_eq failed",
         );
-        check((store.appended_event_count) == (3), "assert_eq failed");
     }
 
     #[test]
@@ -10189,7 +10249,6 @@ mod tests {
         Completes,
         ConfigAppendFails,
         ConfigClaimMiss,
-        DuplicateAppends,
         FactoryClaimMiss,
         ListFails,
         MissingAggregate,
@@ -10326,9 +10385,6 @@ mod tests {
                 return Err(EventStoreError::InvalidSequence);
             }
             self.appended_event_count += 1;
-            if self.mode == ScriptedStoreMode::DuplicateAppends {
-                return Ok(AppendOutcome::new(1, AppendStatus::Duplicate));
-            }
             Ok(AppendOutcome::new(1, AppendStatus::Inserted))
         }
 
