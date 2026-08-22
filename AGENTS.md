@@ -385,9 +385,16 @@ with no `commit-msg` section. That hook is stage 3
 lifted 2026-08-22 once the field evidence it asked for was recorded on the item
 — stage 2's range check exercised in BOTH directions on real branches (a
 product-Rust branch with earned trailers passing, and a trailer-less control
-failing with `red-green-replay-range-missing-trailers`). Until stage 3 lands,
-per-commit gating does not exist; `just check` is the only thing enforcing the
-ritual, so a commit written outside it is caught at push, not at commit.
+failing with `red-green-replay-range-missing-trailers`). Stage 3 has now landed:
+`lefthook.yml` carries a `commit-msg` section, so the checker runs at COMMIT
+time, decides Red / Green / SuiteGreen from the staged content, and writes the
+TDD trailers itself once the tests it requires pass. A commit staging no product
+Rust is untouched.
+
+The two layers are complementary, not redundant. The hook governs commits made
+while it is active; the range check in `just check` catches product-Rust commits
+that entered history another way — merged in from a branch predating the hook,
+cherry-picked, or rebased in.
 Follow the checker contract in
 `crates/console-red-green-replay-check/src/lib.rs`: "Content is the trigger" and
 "Subject prefixes never exempt product Rust from the ritual." A changeset

@@ -9,3 +9,25 @@ pre-push:
   commands:
     check:
       run: just check-pre-push
+
+# Red-Green-Replay stage 3 (livespec-console-beads-fabro-mvu22t.3). The checker
+# takes the commit-message path as argv[1] and decides Red / Green / SuiteGreen
+# from the STAGED CONTENT, writing the TDD trailers itself once the tests it
+# requires pass. Content is the trigger: a changeset staging no product Rust is
+# a no-op, so docs/spec/config commits are untouched.
+#
+# Invoked directly rather than via a `just check-*` recipe on purpose. It cannot
+# run inside the `just check` aggregate (it needs a message path), and this repo
+# carries no aggregate-completeness gate -- see the justfile's warning about
+# `check-`-prefixed slugs being adopted into `check:` by the dev-tooling
+# reconciler.
+#
+# This does NOT make the range check redundant. The hook governs commits made
+# while it is active; the range check catches product-Rust commits that entered
+# history another way -- merged in from a branch predating the hook, cherry-
+# picked, or rebased in. Measured: a merge of such a branch passes the hook and
+# is still correctly failed by the range check on the underlying commit.
+commit-msg:
+  commands:
+    red-green-replay:
+      run: cargo run --quiet --package console-red-green-replay-check -- {1}
