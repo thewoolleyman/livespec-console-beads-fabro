@@ -2754,7 +2754,7 @@ mod tests {
 
     fn scripted_source_list() -> Vec<(String, ScriptedSource)> {
         source_polls_from_seed(&initial_source_seed())
-            .unwrap_or_default()
+            .ok_test()
             .into_iter()
             .map(|(adapter_id, poll)| (adapter_id.to_owned(), ScriptedSource::new(poll)))
             .collect()
@@ -4236,6 +4236,35 @@ mod tests {
     }
 
     #[test]
+    fn needs_attention_ingest_counts_only_inserted_diff_and_impl_appends() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::DuplicateAppends);
+        let attention_item = AttentionItemSnapshot::new(
+            "impl:livespec-console-beads-fabro-0c5",
+            "implementation",
+            "high",
+            "Ready implementation work",
+            AttentionSourceRef::new(
+                "livespec-console-beads-fabro",
+                Some("livespec-console-beads-fabro-0c5"),
+                None,
+            ),
+            AttentionHandoff::new(
+                "implement",
+                None,
+                "implement:livespec-console-beads-fabro-0c5",
+            ),
+        );
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let inserted =
+            ingest_needs_attention(&mut store, &needs_attention, "2026-08-17T21:29:00Z").ok_test();
+
+        check((inserted) == (0), "assert_eq failed");
+        check((store.appended_event_count) == (2), "assert_eq failed");
+    }
+
+    #[test]
     fn store_backed_refresh_reflects_the_operators_action_and_signals_a_poll() {
         // Bug B: after the operator drains, a CHEAP `refresh_events` re-list (no
         // source poll on the UI thread) already reflects the operator's OWN
@@ -4399,6 +4428,27 @@ mod tests {
             store.list_console_events().ok_test().is_empty(),
             "assert failed",
         );
+    }
+
+    #[test]
+    fn factory_drain_requested_event_helper_counts_only_inserted_appends() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let persisted = persist_tui_runtime_effects(
+            &mut store,
+            &[factory_drain_effect()],
+            "2026-08-17T23:56:00Z",
+        )
+        .ok_test();
+
+        let first =
+            append_factory_drain_requested_events(&mut store, &persisted, "2026-08-17T23:56:01Z")
+                .ok_test();
+        let second =
+            append_factory_drain_requested_events(&mut store, &persisted, "2026-08-17T23:56:02Z")
+                .ok_test();
+
+        check((first) == (1), "assert_eq failed");
+        check((second) == (0), "assert_eq failed");
     }
 
     #[test]
@@ -5728,6 +5778,22 @@ mod tests {
                 ]),
             "assert_eq failed",
         );
+    }
+
+    #[test]
+    fn finalizing_pending_command_counts_only_inserted_events() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::DuplicateAppends);
+        let mut port = SimulatedFactoryDrainPort;
+
+        let outcomes =
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:04Z", &mut port)
+                .ok_test();
+
+        check(
+            (outcomes[0].appended_event_count()) == (0),
+            "assert_eq failed",
+        );
+        check((store.appended_event_count) == (3), "assert_eq failed");
     }
 
     #[test]
@@ -9053,6 +9119,14 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "ok_runtime_source_polls failed")]
+    fn ok_runtime_source_polls_panics() {
+        let result: ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> =
+            Err(ConsoleRuntimeError::TuiRuntimeFailed);
+        result.ok_test();
+    }
+
+    #[test]
     #[should_panic(expected = "ok_runtime_tui_outcome failed")]
     fn ok_runtime_tui_outcome_panics() {
         let result: ConsoleRuntimeResult<TuiSessionOutcome> =
@@ -9181,6 +9255,8 @@ mod tests {
         let _poll = (Ok(AdapterPoll::new("checkpoint", Vec::new()).ok_test())
             as Result<AdapterPoll, AdapterError>)
             .ok_test();
+        let _source_polls =
+            (Ok(Vec::new()) as ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>>).ok_test();
         (Ok(()) as Result<(), ApplicationError>).ok_test();
         (Ok(()) as Result<(), Box<dyn Error>>).ok_test();
     }
@@ -9424,6 +9500,18 @@ mod tests {
             match self {
                 Ok(value) => value,
                 Err(error) => panic!("ok_runtime_observed_adapters failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for ConsoleRuntimeResult<Vec<(&'static str, AdapterPoll)>> {
+        type Output = Vec<(&'static str, AdapterPoll)>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<(&'static str, AdapterPoll)> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_runtime_source_polls failed: {error:?}"),
             }
         }
     }
@@ -10101,6 +10189,7 @@ mod tests {
         Completes,
         ConfigAppendFails,
         ConfigClaimMiss,
+        DuplicateAppends,
         FactoryClaimMiss,
         ListFails,
         MissingAggregate,
@@ -10237,6 +10326,9 @@ mod tests {
                 return Err(EventStoreError::InvalidSequence);
             }
             self.appended_event_count += 1;
+            if self.mode == ScriptedStoreMode::DuplicateAppends {
+                return Ok(AppendOutcome::new(1, AppendStatus::Duplicate));
+            }
             Ok(AppendOutcome::new(1, AppendStatus::Inserted))
         }
 
