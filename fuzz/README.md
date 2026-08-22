@@ -52,6 +52,25 @@ git add fuzz/regressions/<target>/crash-<hash>
 Name it for the defect if you know it. Then fix the panic — a committed
 reproducer with no fix is a red gate, not a record.
 
+## Exit codes: a crash and a broken toolchain are not the same thing
+
+| exit | meaning |
+|---|---|
+| 0 | every target built and ran clean |
+| 1 | a target **crashed** — a real finding; the reproducer is in `fuzz/artifacts/` |
+| 2 | a target **could not be built** — a tooling error, not a finding |
+
+The distinction is load-bearing and was learned the hard way. `cargo fuzz run`
+exits non-zero for both cases, and the first version of this gate conflated
+them: CI ran in a container with no C++ compiler — `libfuzzer-sys` builds
+libFuzzer from source — and the gate announced `CRASHED targets:` for all three.
+A tooling error that reads as a fuzzing finding sends whoever is on the gate
+hunting a bug that does not exist.
+
+So `just check-fuzz` builds each target before running it, and reports the two
+failure modes separately. If you see exit 2, check for a C++ compiler on PATH
+before you look at the fuzz targets at all.
+
 ## Running
 
 ```bash
