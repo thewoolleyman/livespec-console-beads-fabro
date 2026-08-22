@@ -1,0 +1,42 @@
+# cargo-mutants configuration for the merge-gate mutation job
+# (livespec-console-beads-fabro-txtzn5.10).
+#
+# THE JUSTIFIED-SURVIVOR ALLOW-LIST. `exclude_re` entries are matched against
+# the mutant names shown by `cargo mutants --list`. An entry here asserts that a
+# surviving mutant is EQUIVALENT — it changes no observable behaviour — so no
+# test could ever catch it.
+#
+# CLASSIFY BEFORE YOU ADD. A survivor is one of two things and they need
+# opposite responses:
+#   GAP        — the mutation changes behaviour and nothing catches it.
+#                Write a TEST. Do NOT add it here; an entry would hide a real
+#                hole.
+#   EQUIVALENT — the mutation changes no behaviour, so no test can catch it.
+#                An entry here is the only correct disposition.
+# Record which one it is, and why, in the comment beside the entry. "It kept
+# failing CI" is not a justification.
+#
+# Survivors found while building this gate, each classified rather than parked:
+#   - schema_version -> 1 was a genuine GAP and was fixed by a test (PR #812).
+#   - The unreachable DriverHandoff arm (-6zoq) was EXPECTED to produce a
+#     survivor and MEASURABLY DOES NOT: cargo-mutants never generates a
+#     match-arm deletion there, so there is nothing to exclude.
+#   - coverage_fixture_* is the one real EQUIVALENT case; see below.
+exclude_re = [
+  # EQUIVALENT, and the reason is structural rather than a judgement call.
+  # `TuiScreenModel::coverage_fixture_with_detail` is `#[cfg(coverage)]` — a
+  # fixture builder that exists ONLY for coverage-only cross-crate tests. This
+  # gate runs under plain nextest, where `cfg(coverage)` is NOT set, so the
+  # function is not compiled at all. Mutating code that is never built cannot
+  # change observable behaviour, so every mutant in it survives trivially and
+  # NO test could ever catch one.
+  #
+  # Measured: without this entry, a diff touching that region reports
+  # "1 missed" and the gate exits 2 on a function the test binary does not
+  # even contain.
+  #
+  # Scoped to the `coverage_fixture` naming convention on purpose. Do NOT widen
+  # it to all of `console-application` to quiet an unrelated survivor — that
+  # would silently cover real product logic.
+  "coverage_fixture",
+]

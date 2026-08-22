@@ -118,11 +118,23 @@ while `attention_detail_actions` always builds its context with
 site**, and removing it cannot change behaviour. No test can catch a change that
 changes nothing, so the suite is not at fault.
 
-That unreachable arm is a small real finding in its own right — filed separately.
-It also predicts a **justified survivor** for the future mutation gate
-(`-txtzn5.10`): a `--in-diff` sweep touching this filter will report a surviving
-mutant there forever, and the allow-list entry should cite this analysis rather
-than someone re-deriving it.
+That unreachable arm is a small real finding in its own right — filed separately
+as `-6zoq`.
+
+> **Correction, 2026-08-22.** This section originally went on to claim the arm
+> "predicts a justified survivor" for the `-txtzn5.10` mutation gate. **That was
+> wrong, and measuring it is what showed it.** cargo-mutants does not generate a
+> match-arm deletion here at all — the complete mutant set for
+> `attention_detail_actions` is three (two return-value replacements and one
+> `&&`→`||`), of which one is caught and two are unviable. Zero survive, so
+> there is nothing to allow-list.
+>
+> The error was assuming the tool would perform the same equivalent mutation I
+> had performed by hand. It does not: cargo-mutants mutates return values,
+> binary operators and struct fields — not individual alternatives inside a
+> `matches!` pattern. **Proving a change is behaviour-preserving says nothing
+> about whether the tool will ever make it.** The dead-code finding stands; the
+> mutation-gate justification for prioritising it does not.
 
 **The general lesson.** Before reporting a surviving mutant as a test-adequacy
 gap, prove the mutation is behaviour-changing at the call site under test. The
