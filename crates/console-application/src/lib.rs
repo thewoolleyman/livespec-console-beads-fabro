@@ -1022,6 +1022,7 @@ pub struct TuiInteractionState {
     selected_setting_index: usize,
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: PluginResolution,
+    transient_status: Option<String>,
 }
 
 impl TuiInteractionState {
@@ -1049,6 +1050,7 @@ impl TuiInteractionState {
             selected_setting_index: 0,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
+            transient_status: None,
         }
     }
 
@@ -1080,6 +1082,7 @@ impl TuiInteractionState {
             selected_setting_index: 0,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
+            transient_status: None,
         }
     }
 
@@ -1271,6 +1274,13 @@ impl TuiInteractionState {
     /// Return this value with the resolved orchestrator plugin summary replaced.
     pub fn with_plugin_resolution(mut self, plugin_resolution: PluginResolution) -> Self {
         self.plugin_resolution = plugin_resolution;
+        self
+    }
+
+    #[must_use]
+    /// Return this value with the transient header status replaced.
+    pub fn with_transient_status(mut self, transient_status: Option<String>) -> Self {
+        self.transient_status = transient_status;
         self
     }
 
@@ -1642,6 +1652,7 @@ pub struct TuiScreenModel {
     plugin_resolution: PluginResolution,
     unavailable_sources: Vec<String>,
     factory_activity: Option<String>,
+    transient_status: Option<String>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
 }
@@ -1704,6 +1715,7 @@ impl TuiScreenModel {
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
             factory_activity: None,
+            transient_status: None,
             header: String::new(),
             action_failures: BTreeMap::new(),
         }
@@ -1947,6 +1959,7 @@ impl TuiScreenModel {
             self.active_view.label(),
             self.attention_items.len(),
             self.factory_activity.as_deref(),
+            self.transient_status.as_deref(),
             &self.unavailable_sources,
             width,
         )
@@ -3619,15 +3632,17 @@ pub fn build_tui_model_for_state(
         // order for wide terminals and sheds narrow-terminal fields by declared
         // information-value priority, not by this string's field positions.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
             attention_count,
             factory_activity_segment(factory_activity.as_deref()),
+            transient_status_segment(state.transient_status.as_deref()),
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
         factory_activity,
+        transient_status: state.transient_status.clone(),
     }
 }
 
@@ -3738,6 +3753,10 @@ fn factory_activity_segment(activity: Option<&str>) -> String {
     activity.map_or_else(String::new, |value| format!(" | factory: {value}"))
 }
 
+fn transient_status_segment(status: Option<&str>) -> String {
+    status.map_or_else(String::new, |value| format!(" | status: {value}"))
+}
+
 fn factory_drain_activity(events: &[ConsoleEvent]) -> Option<String> {
     events
         .iter()
@@ -3836,6 +3855,7 @@ fn fit_header_line(
     view: &str,
     attention: usize,
     factory_activity: Option<&str>,
+    transient_status: Option<&str>,
     unavailable_sources: &[String],
     width: usize,
 ) -> String {
@@ -3867,11 +3887,15 @@ fn fit_header_line(
             text: format!("factory: {activity}"),
             priority: HeaderSegmentPriority::TransientState,
         }),
+        transient_status.map(|status| HeaderField {
+            text: format!("status: {status}"),
+            priority: HeaderSegmentPriority::TransientState,
+        }),
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<HeaderField>; 6], source_idx: usize| -> String {
+    let compose = |fields: &[Option<HeaderField>; 7], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_ref().map(|field| field.text.as_str()))
@@ -9680,6 +9704,7 @@ mod tests {
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             factory_activity: None,
+            transient_status: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
         };
@@ -9724,6 +9749,7 @@ mod tests {
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             factory_activity: None,
+            transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
         };
@@ -10322,6 +10348,7 @@ mod tests {
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             factory_activity: None,
+            transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
         };
@@ -13676,6 +13703,22 @@ mod tests {
     }
 
     #[test]
+    fn header_line_carries_transient_status_refusals() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_transient_status(Some("Dispatch ready work unavailable".to_owned()));
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert!(
+            model
+                .header()
+                .contains("status: Dispatch ready work unavailable")
+        );
+        let narrow = model.header_line(70);
+        assert!(narrow.chars().count() <= 70);
+        assert!(narrow.contains("status: Dispatch ready work unavailable"));
+    }
+
+    #[test]
     fn footer_presents_the_settings_edit_shortcut() {
         // The Settings pane's Status-line hints surface its edit key. Built as a
         // real model (Settings is the last view, reached by clamping
@@ -16151,6 +16194,7 @@ mod tests {
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
             factory_activity: None,
+            transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
         };
@@ -16373,6 +16417,7 @@ mod tests {
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
             factory_activity: None,
+            transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
         };

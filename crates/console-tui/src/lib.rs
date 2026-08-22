@@ -506,9 +506,8 @@ fn menu_confirm_step(
     selected: usize,
     _requested_by: &str,
 ) -> TuiRuntimeStep {
-    let staged = action_registry::menu_actions(top)
-        .get(selected)
-        .and_then(|spec| staged_without_selection(model, spec));
+    let selected_spec = action_registry::menu_actions(top).get(selected).copied();
+    let staged = selected_spec.and_then(|spec| staged_without_selection(model, spec));
     let interaction = match staged {
         Some(action_registry::StagedAction::Valve(valve)) => {
             TuiInteraction::OpenValveConfirm(valve)
@@ -525,8 +524,16 @@ fn menu_confirm_step(
             None => return TuiRuntimeStep::new(state.clone(), TuiRuntimeEffect::Quit),
         },
         None => {
+            let next_state = selected_spec.map_or_else(
+                || state.clone(),
+                |spec| {
+                    state
+                        .clone()
+                        .with_transient_status(Some(unavailable_action_refusal(spec)))
+                },
+            );
             return TuiRuntimeStep::new(
-                state.clone(),
+                next_state,
                 TuiRuntimeEffect::ApplicationError(ApplicationError::UnavailableOperatorAction),
             );
         }
@@ -535,6 +542,10 @@ fn menu_confirm_step(
         reduce_tui_interaction(state, events, interaction),
         TuiRuntimeEffect::Render,
     )
+}
+
+fn unavailable_action_refusal(spec: &action_registry::ActionSpec) -> String {
+    format!("{} unavailable: {}", spec.label, spec.availability_summary)
 }
 
 fn confirm_operator_action(
@@ -6573,7 +6584,14 @@ mod tests {
                 console_application::ApplicationError::UnavailableOperatorAction
             )
         );
-        assert_eq!(step.state(), &state);
+        assert_eq!(step.state().overlay(), &TuiOverlay::Menu { top, selected });
+        let model = build_tui_model_for_state(&[], step.state());
+        assert!(
+            model.header().contains(
+                action_registry::action_for_id("dispatch-ready")
+                    .map_or("", |spec| spec.availability_summary)
+            )
+        );
     }
 
     #[test]
@@ -6591,6 +6609,31 @@ mod tests {
             TuiTerminalInput::Confirm,
             "operator",
         );
+
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::UnavailableOperatorAction
+            )
+        );
+        assert_eq!(step.state().overlay(), &TuiOverlay::Menu { top, selected });
+        let model = build_tui_model_for_state(&pending_events(), step.state());
+        assert!(model.header().contains(
+            action_registry::action_for_id("accept").map_or("", |spec| spec.availability_summary)
+        ));
+    }
+
+    #[test]
+    fn unavailable_menu_confirmation_without_a_row_keeps_the_menu_open() {
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::Menu {
+                top: 0,
+                selected: usize::MAX,
+            },
+        );
+        let step = step_tui_runtime(&state, &[], TuiTerminalInput::Confirm, "operator");
 
         assert_eq!(
             step.effect(),
