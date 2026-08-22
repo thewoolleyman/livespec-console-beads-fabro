@@ -513,18 +513,22 @@ check-mutants-smoke:
 #
 # Exit 2 from cargo-mutants means a mutant SURVIVED; that must fail the gate.
 # Before silencing one, classify it — see .cargo/mutants.toml.
+#
+# An empty diff is a legitimate no-op here, not a fault.
+# errexit is deliberately omitted; the tooling install and the diff are guarded directly.
+[positional-arguments]
 check-mutants base="origin/master":
     #!/usr/bin/env bash
     set -uo pipefail
     just ensure-mutants-tooling || exit $?
     diff_file="$(mktemp)"
     trap 'rm -f "$diff_file"' EXIT
-    if ! git diff "{{base}}...HEAD" > "$diff_file"; then
-      echo "check-mutants: cannot diff against {{base}} — fetch it first" >&2
+    if ! git diff "$1...HEAD" > "$diff_file"; then
+      echo "check-mutants: cannot diff against $1 — fetch it first" >&2
       exit 1
     fi
     if [ ! -s "$diff_file" ]; then
-      echo "check-mutants: empty diff vs {{base}}; no mutants to test"
+      echo "check-mutants: empty diff vs $1; no mutants to test"
       exit 0
     fi
     cargo mutants --in-diff "$diff_file" --test-tool nextest \
