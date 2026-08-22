@@ -504,6 +504,32 @@ check-mutants-smoke:
     just ensure-mutants-tooling || exit $?
     cargo mutants --workspace --list --package console-domain --package console-application
 
+# Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Scoped to
+# the code a change actually touches via --in-diff, because a FULL sweep of
+# these two packages is 1456 mutants and takes at least 46 minutes — measured,
+# and that figure is a floor. DELIBERATELY ABSENT from the `just check`
+# aggregate: SPECIFICATION/non-functional-requirements.md ratifies that
+# `just check` MUST NOT include mutation runs.
+#
+# Exit 2 from cargo-mutants means a mutant SURVIVED; that must fail the gate.
+# Before silencing one, classify it — see .cargo/mutants.toml.
+check-mutants base="origin/master":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-mutants-tooling || exit $?
+    diff_file="$(mktemp)"
+    trap 'rm -f "$diff_file"' EXIT
+    if ! git diff "{{base}}...HEAD" > "$diff_file"; then
+      echo "check-mutants: cannot diff against {{base}} — fetch it first" >&2
+      exit 1
+    fi
+    if [ ! -s "$diff_file" ]; then
+      echo "check-mutants: empty diff vs {{base}}; no mutants to test"
+      exit 0
+    fi
+    cargo mutants --in-diff "$diff_file" --test-tool nextest \
+      --package console-domain --package console-application
+
 # errexit is deliberately omitted; fast hook checks are guarded directly.
 check-pre-commit:
     #!/usr/bin/env bash

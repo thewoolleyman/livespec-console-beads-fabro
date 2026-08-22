@@ -1,5 +1,9 @@
 /target/
 /mutants.out/
+# cargo-mutants rotates the previous run's output here on the SECOND run, so it
+# only appears once someone has run the gate twice — which is exactly when a
+# `git add -A` sweeps ~5000 lines of build artifacts into a commit.
+/mutants.out.old/
 /.venv/
 /.beads/metadata.json
 /.DS_Store

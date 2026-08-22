@@ -368,6 +368,41 @@ jobs:
       - name: just check-e2e-tmux
         run: just check-e2e-tmux
 
+  # Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Scoped by
+  # --in-diff to the code the PR actually touches: a FULL sweep of these two
+  # packages is 1456 mutants and at least 46 minutes (measured; that is a
+  # floor), which is not a merge gate. fetch-depth 0 is REQUIRED — the diff is
+  # computed against the base ref, and a shallow checkout cannot reach it.
+  check-mutants:
+    name: check-mutants
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    container:
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.32.0
+    env:
+      MISE_DATA_DIR: /root/.local/share/mise
+      MISE_NOT_FOUND_AUTO_INSTALL: "0"
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Trust the workspace for git under hosted routing (baked container runs
+      # git as ROOT over a uid-1001 checkout -> "dubious ownership" exit 128).
+      # See the `check` job for the full rationale. No-op on the self-hosted lane.
+      - name: Trust workspace for git (hosted container root-vs-checkout uid)
+        run: git config --global --add safe.directory '*'
+
+      - name: mise trust + install (baked tools — install is a near-no-op)
+        run: |
+          mise trust
+          mise install
+
+      - name: just check-mutants
+        run: just check-mutants "origin/${{ github.base_ref || github.event.repository.default_branch }}"
+
   # Single all-green gate job (livespec epic livespec-cf4bcu,
   # fleet-ci-aggregate-coverage). This is the SOLE branch-protection
   # required context: it `needs:` every check-bearing job, so requiring
@@ -380,12 +415,12 @@ jobs:
   # "needs every check-bearing job" is an INVARIANT TO MAINTAIN, not a
   # property that holds automatically — it was false for the whole span
   # `check-e2e-tmux` sat advisory, and this comment asserted it anyway.
-  # This workflow defines exactly three check-bearing jobs and all three
-  # are listed. Adding a fourth without adding it here silently reopens
+  # This workflow defines exactly FOUR check-bearing jobs and all four
+  # are listed. Adding a fifth without adding it here silently reopens
   # the gap.
   ci-green:
     name: ci-green
-    needs: [check, check-doctor-static, check-e2e-tmux]
+    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -399,7 +434,7 @@ jobs:
   # check-bearing job so this runs last, after each job's timing is final.
   export-telemetry:
     name: export-telemetry
-    needs: [check, check-doctor-static, check-e2e-tmux]
+    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants]
     if: ${{ !cancelled() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
