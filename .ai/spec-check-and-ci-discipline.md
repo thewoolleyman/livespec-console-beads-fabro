@@ -65,6 +65,20 @@ starting — and they have **opposite** fixes:
   (pod phase `Running`, readiness true, zero gated pods, node headroom
   to spare). Raising capacity CANNOT clear it.
 
+**The GitHub REST runner list is NOT a signal here — do not reach for it.**
+Both confirmations below need cluster access. A session that has the forge API
+but no `kubectl` will naturally try
+`gh api repos/<owner>/<repo>/actions/runners`, and on this pool that reads like
+a total outage while nothing is wrong. Measured 2026-08-22: it returned every
+runner `offline`, `busy: false`, with `os: unknown`, `version: null` and empty
+`labels`, and `total_count` churning between reads (14 → 13) — while that same
+commit's checks were starting and completing normally. These are EPHEMERAL ARC
+registrations; rows linger after their pods exit, so lingering `offline` rows
+are this pool's normal steady state, not a health reading. **Measure the jobs,
+not the runners:** the check-runs for the commit in question tell you whether
+work is actually starting. Reporting a fleet outage off that endpoint is a false
+alarm this repo has already almost raised once.
+
 **Rule: before attributing a stall to capacity, prove it.** Zero gated
 pods plus spare capacity plus a job sitting queued with an empty
 `runner_name` means wedge, not saturation. A fleet detector
