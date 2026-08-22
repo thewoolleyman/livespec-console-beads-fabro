@@ -529,6 +529,26 @@ mod tests {
     }
 
     #[test]
+    fn event_schema_version_reports_the_constructed_version() {
+        // Pinned with a version that is deliberately NOT 1. Its sibling above
+        // constructs schema_version 1, so a getter replaced by the constant 1
+        // satisfies that assertion and the substitution goes unnoticed.
+        // cargo-mutants surfaced exactly that survivor:
+        //   replace ConsoleEvent::schema_version -> u16 with 1
+        let event = ConsoleEvent::new(
+            "evt_7".to_owned(),
+            7,
+            "factory".to_owned(),
+            EventType::FactoryDrainRequested,
+            "console".to_owned(),
+            "factory:repo".to_owned(),
+            1,
+        );
+
+        assert_eq!(event.schema_version(), 7);
+    }
+
+    #[test]
     fn event_payload_defaults_to_empty_object_and_round_trips() {
         let envelope =
             ConsoleEvent::fixture("evt_1", EventType::WorkItemSnapshotObserved, "source");
