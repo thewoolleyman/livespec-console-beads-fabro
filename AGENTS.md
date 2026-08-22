@@ -381,10 +381,13 @@ aggregate as `check-red-green-replay` (stage 2, landed 2026-08-21 via PR #804),
 so the ritual is enforced on every `just check` run. What is NOT yet enforced is
 per-commit gating: `lefthook.yml` still carries only `pre-commit` and `pre-push`,
 with no `commit-msg` section. That hook is stage 3
-(`livespec-console-beads-fabro-mvu22t.3`) and it is DELIBERATELY HELD at backlog
-— do not set it ready and do not dispatch it. Its hold lifts only once field
-evidence that stage 2 has run in `just check` on real branches is recorded on
-that item; stage 2 merging is NOT that evidence.
+(`livespec-console-beads-fabro-mvu22t.3`), which is now `ready`: its hold was
+lifted 2026-08-22 once the field evidence it asked for was recorded on the item
+— stage 2's range check exercised in BOTH directions on real branches (a
+product-Rust branch with earned trailers passing, and a trailer-less control
+failing with `red-green-replay-range-missing-trailers`). Until stage 3 lands,
+per-commit gating does not exist; `just check` is the only thing enforcing the
+ritual, so a commit written outside it is caught at push, not at commit.
 Follow the checker contract in
 `crates/console-red-green-replay-check/src/lib.rs`: "Content is the trigger" and
 "Subject prefixes never exempt product Rust from the ritual." A changeset
