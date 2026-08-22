@@ -167,3 +167,79 @@ and the count responds sharply when they land.
 
 Re-measure before quoting any figure here. That is the one instruction
 this note has always been trying to give.
+
+## Second amendment: a window where replenishment was ZERO — 2026-08-22
+
+Measured the day after the a1/a2 lane closed, on `origin/master` at
+`b100d3c` (via the `-txtzn5.10` gate branch, whose own two commits carry
+no Rust):
+
+| point | total regions | uncovered | uncovered rate |
+|---|---|---|---|
+| session start (`593e428`), 08-21 | 41,751 | 893 | 2.139% |
+| after a0, 08-21 | 43,861 | 940 | 2.143% |
+| after `.6` + `.2`, 08-21 | 45,552 | 782 | 1.717% |
+| all eight slices landed, 08-21 | 48,735 | 103 | 0.211% |
+| **now, 08-22** | **48,860** | **103** | **0.211%** |
+
+**+125 regions of new code landed in the last day and not one of them is
+uncovered.** The uncovered count did not move at all — not by one.
+
+This is the first window in this thread's record with zero
+replenishment, and it is the direct opposite of the window this note's
+body was built on, where new code landed at 97.54% and added 47
+uncovered regions in a day.
+
+### What it changes, and what it does not
+
+It does **not** retire the body's ordering argument. That argument says a
+gate sequenced behind a moving target may never arrive, and one clean day
+does not establish that the target has stopped moving — the same
+objection this note has always raised against its own 52/day figure
+applies with equal force here. One window is not a rate in either
+direction.
+
+What it does remove is the **premise that made the argument urgent**. The
+body's sharpest claim is that "the count cannot reach zero while new code
+lands at ~97.5% region coverage". Over the last day new code landed at
+100%, so on this evidence the count *can* hold — and the `-txtzn5.11`
+flip is no longer facing a target that provably outruns it.
+
+Two candidate readings, and this note does not choose between them:
+
+- **The gate taught the codebase.** Eight slices landing in one day made
+  region coverage visible to everyone touching `crates/`, and the new
+  code was written to match. If so the effect is durable and the flip is
+  much closer than the body suggests.
+- **One quiet day.** 08-21 was an unusually busy day with four other
+  tracks merging; 08-22 added only 125 regions against that day's 6,984.
+  A tenth of the volume is a much easier day to keep clean, and nothing
+  here proves the pattern survives the next busy one.
+
+Distinguishing them needs a second clean window at comparable volume.
+Until then, quote the measurement, not the interpretation.
+
+### The residual, by file
+
+103 uncovered across exactly **five** files; the other eight instrumented
+files are at 100.00%:
+
+| file | uncovered |
+|---|---|
+| `console-cli/src/lib.rs` | 50 |
+| `console-red-green-replay-check/src/lib.rs` | 24 |
+| `console-eventstore/src/lib.rs` | 21 |
+| `console-application/src/lib.rs` | 4 |
+| `console-application/src/source_adapters.rs` | 4 |
+
+The 24 in `console-red-green-replay-check` are worth separating from the
+rest: that crate did not exist on the morning of 08-21. No slice missed
+those regions — they arrived with the crate, and they are the
+replenishment thesis showing up as a single line item rather than as a
+diffuse drift. The 79 that are genuinely this thread's residual are
+`console-cli` 50, `console-eventstore` 21, and `console-application` 8.
+
+Reproduce exactly as the body's "Reproducing" section says. The number
+above is a measurement taken on 08-22; re-measure before quoting it,
+which is the one instruction this note has been giving throughout and
+which the 08-21 sessions had to enforce on each other twice.
