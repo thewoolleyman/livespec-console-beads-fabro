@@ -17,9 +17,14 @@
       "reason": "Runs in the janitor/local aggregate because its upstream lane depends on installed orchestrator plugin state that CI does not provision; the gate itself prints a loud skip when that lane cannot resolve."
     },
     {
+      "name": "check-fuzz",
+      "present_in_just_check": false,
+      "reason": "Merge-gate fuzz run (livespec-console-beads-fabro-txtzn5.9). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include fuzz runs. At >=60s per target across three targets it is also a minutes-long floor by construction, which is not what a local pre-commit aggregate is for."
+    },
+    {
       "name": "check-mutants",
       "present_in_just_check": false,
-      "reason": "Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include mutation runs. It also cannot run there \u2014 it needs a base ref to diff against, which a local aggregate invocation has no way to supply."
+      "reason": "Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include mutation runs. It also cannot run there — it needs a base ref to diff against, which a local aggregate invocation has no way to supply."
     },
     {
       "name": "check-plan-anchor-declared",

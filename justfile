@@ -490,6 +490,47 @@ check-doctor-static:
     fi
     python3 "$core_root/scripts/bin/doctor_static.py" --project-root .
 
+# Merge-gate fuzz run (livespec-console-beads-fabro-txtzn5.9). Every target gets
+# at least 60 seconds, and the COMMITTED regression corpus under
+# fuzz/regressions/<target>/ is replayed on every run, so a crash that was ever
+# found can never come back unnoticed. DELIBERATELY ABSENT from the `just check`
+# aggregate: SPECIFICATION/non-functional-requirements.md ratifies that
+# `just check` MUST NOT include fuzz runs.
+#
+# cargo-fuzz exits non-zero on a crash and writes the reproducing input to
+# fuzz/artifacts/<target>/. Commit that input into fuzz/regressions/<target>/
+# and fix the panic; see fuzz/README.md.
+#
+# The loop runs every target even after one fails, then reports the full set.
+# Stopping at the first crash hides how many targets are broken, which is the
+# question you want answered when a gate goes red.
+#
+# errexit is deliberately omitted; the tooling install and each target are guarded directly.
+check-fuzz:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-fuzz-tooling || exit $?
+    failed=()
+    for target in event_envelope adapter_normalization source_payload; do
+      echo "=== fuzz ${target} (>=60s, replaying fuzz/regressions/${target}) ==="
+      # corpus/ is gitignored in full, so a FRESH CHECKOUT HAS NO CORPUS DIRS.
+      # libFuzzer creates only the first corpus path it is handed and errors on
+      # a missing later one, so without this every CI run would fail before it
+      # fuzzed a single input.
+      mkdir -p "fuzz/corpus/${target}"
+      if ! cargo +nightly fuzz run "${target}" \
+          "fuzz/corpus/${target}" "fuzz/regressions/${target}" \
+          -- -max_total_time=60; then
+        failed+=("${target}")
+      fi
+    done
+    if [ ${#failed[@]} -ne 0 ]; then
+      echo "check-fuzz: CRASHED targets: ${failed[*]}" >&2
+      echo "check-fuzz: reproducing inputs are under fuzz/artifacts/; see fuzz/README.md" >&2
+      exit 1
+    fi
+    echo "check-fuzz: all targets clean"
+
 # errexit is deliberately omitted; fuzz tooling install is guarded directly.
 check-fuzz-smoke:
     #!/usr/bin/env bash

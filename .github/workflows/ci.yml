@@ -403,6 +403,56 @@ jobs:
       - name: just check-mutants
         run: just check-mutants "origin/${{ github.base_ref || github.event.repository.default_branch }}"
 
+  # Merge-gate fuzz run (livespec-console-beads-fabro-txtzn5.9). Three targets,
+  # >=60s each, replaying the COMMITTED regression corpus under
+  # fuzz/regressions/<target>/ so a crash that was ever found cannot come back
+  # unnoticed. Needs the NIGHTLY toolchain: cargo-fuzz builds with
+  # -Zsanitizer=address, which stable does not accept. `just ensure-fuzz-tooling`
+  # installs both cargo-fuzz and the nightly toolchain, so no extra CI step is
+  # needed here; the install is what makes this job's first run slow and later
+  # ones warm.
+  #
+  # NOT a matrix job on purpose. It carries no tmux dependency and must not pull
+  # tmux into the default matrix (this slice's ratified constraint), so it runs
+  # as its own dedicated job exactly like check-mutants.
+  check-fuzz:
+    name: check-fuzz
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    container:
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.32.0
+    env:
+      MISE_DATA_DIR: /root/.local/share/mise
+      MISE_NOT_FOUND_AUTO_INSTALL: "0"
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Trust the workspace for git under hosted routing (baked container runs
+      # git as ROOT over a uid-1001 checkout -> "dubious ownership" exit 128).
+      # See the `check` job for the full rationale. No-op on the self-hosted lane.
+      - name: Trust workspace for git (hosted container root-vs-checkout uid)
+        run: git config --global --add safe.directory '*'
+
+      - name: mise trust + install (baked tools — install is a near-no-op)
+        run: |
+          mise trust
+          mise install
+
+      - name: just check-fuzz
+        run: just check-fuzz
+
+      # A crash is only actionable with the input that produced it. Without this
+      # the gate reports "it crashed" and the reproducer dies with the runner.
+      - name: Upload crash reproducers
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
   # Single all-green gate job (livespec epic livespec-cf4bcu,
   # fleet-ci-aggregate-coverage). This is the SOLE branch-protection
   # required context: it `needs:` every check-bearing job, so requiring
@@ -415,12 +465,12 @@ jobs:
   # "needs every check-bearing job" is an INVARIANT TO MAINTAIN, not a
   # property that holds automatically — it was false for the whole span
   # `check-e2e-tmux` sat advisory, and this comment asserted it anyway.
-  # This workflow defines exactly FOUR check-bearing jobs and all four
-  # are listed. Adding a fifth without adding it here silently reopens
+  # This workflow defines exactly FIVE check-bearing jobs and all five
+  # are listed. Adding a sixth without adding it here silently reopens
   # the gap.
   ci-green:
     name: ci-green
-    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants]
+    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants, check-fuzz]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -434,7 +484,7 @@ jobs:
   # check-bearing job so this runs last, after each job's timing is final.
   export-telemetry:
     name: export-telemetry
-    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants]
+    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants, check-fuzz]
     if: ${{ !cancelled() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
