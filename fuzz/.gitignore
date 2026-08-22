@@ -1,4 +1,10 @@
+# Generated fuzzing state is NEVER committed. libFuzzer writes thousands of
+# generated inputs into corpus/ and crash artifacts into artifacts/, both of
+# which churn on every run.
 artifacts/
 target/
-corpus/event_envelope/*
-!corpus/event_envelope/.gitkeep
+corpus/
+
+# The COMMITTED regression corpus lives in regressions/, NOT in corpus/, and is
+# deliberately outside this ignore. See fuzz/README.md for why the two are
+# separate directories rather than one directory with exceptions.

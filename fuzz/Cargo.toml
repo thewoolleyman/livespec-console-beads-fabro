@@ -18,3 +18,17 @@ path = "fuzz_targets/event_envelope.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "adapter_normalization"
+path = "fuzz_targets/adapter_normalization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "source_payload"
+path = "fuzz_targets/source_payload.rs"
+test = false
+doc = false
+bench = false
