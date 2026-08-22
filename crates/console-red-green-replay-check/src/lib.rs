@@ -376,13 +376,14 @@ fn scope_for_tests(tests: &[String]) -> TestScope {
 
 fn integration_scope(path: &str) -> Option<TestScope> {
     let parts = path.split('/').collect::<Vec<_>>();
-    let target = Path::new(parts.get(3)?).file_stem()?.to_str()?;
-    (parts.len() == 4 && parts[0] == "crates" && parts[2] == "tests" && is_rust(parts[3])).then(
-        || TestScope::Integration {
-            package: parts[1].to_owned(),
-            target: target.to_owned(),
-        },
-    )
+    if !(parts.len() == 4 && parts[0] == "crates" && parts[2] == "tests" && is_rust(parts[3])) {
+        return None;
+    }
+    let target = &parts[3][..parts[3].len() - 3];
+    Some(TestScope::Integration {
+        package: parts[1].to_owned(),
+        target: target.to_owned(),
+    })
 }
 
 fn is_rust(path: &str) -> bool {
@@ -451,7 +452,7 @@ fn unix_seconds_to_utc(seconds: u64) -> (i32, u32, u32, u32, u32, u32) {
 
 fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
     let days = days_since_unix_epoch + 719_468;
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let era = days / 146_097;
     let day_of_era = days - era * 146_097;
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
@@ -522,21 +523,32 @@ mod tests {
         }
     }
 
+    #[track_caller]
+    fn check(condition: bool, context: &str) {
+        assert!(condition, "{context}: condition was false");
+    }
+
     fn temp_file(name: &str, text: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("console-rgr-{}-{name}", std::process::id()));
         let result = fs::write(&path, text);
-        assert!(result.is_ok(), "temp write failed: {result:?}");
+        check(result.is_ok(), &format!("temp write failed: {result:?}"));
         path
     }
 
     fn temp_workspace_file(rel_path: &str, text: &str) -> PathBuf {
         let path = PathBuf::from(rel_path);
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         let write = fs::write(&path, text);
-        assert!(write.is_ok(), "workspace temp write failed: {write:?}");
+        check(
+            write.is_ok(),
+            &format!("workspace temp write failed: {write:?}"),
+        );
         path
+    }
+
+    #[test]
+    #[should_panic(expected = "condition was false")]
+    fn check_panics_with_context_when_condition_is_false() {
+        check(false, "expected panic");
     }
 
     #[test]
@@ -544,7 +556,7 @@ mod tests {
         let parsed: Result<serde_json::Value, serde_json::Error> = serde_json::from_str(
             include_str!("../../../tests/fixtures/red-green-replay-parity-vectors.json"),
         );
-        assert!(parsed.is_ok(), "fixture must parse: {parsed:?}");
+        check(parsed.is_ok(), &format!("fixture must parse: {parsed:?}"));
         let fixture = parsed.unwrap_or(serde_json::Value::Null);
         assert_eq!(
             fixture["ported_from_upstream_commit"],
@@ -611,7 +623,7 @@ mod tests {
         let test_rel = test_path.to_string_lossy().into_owned();
         let runner = FakeRunner::new(Vec::new(), vec![CommandOutput::failure("failed")]);
         let result = handle_red(&runner, &msg_path, std::slice::from_ref(&test_rel));
-        assert!(result.is_ok(), "red leg should pass: {result:?}");
+        check(result.is_ok(), &format!("red leg should pass: {result:?}"));
         let msg = fs::read_to_string(&msg_path);
         assert!(
             msg.as_ref()
@@ -647,11 +659,29 @@ mod tests {
     }
 
     #[test]
+    fn red_leg_propagates_targeted_cargo_runner_failure() {
+        let test_path = temp_file("red-cargo-error.rs", "fn x() {}\n");
+        let msg_path = temp_file("msg-red-cargo-error", "feat: x\n");
+        let runner = FakeRunner::new(Vec::new(), Vec::new());
+        let result = handle_red(
+            &runner,
+            &msg_path,
+            &[test_path.to_string_lossy().into_owned()],
+        );
+        assert!(result.is_err_and(|err| err.contains("missing fake cargo output")));
+        let _ = fs::remove_file(test_path);
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
     fn green_leg_checks_same_test_then_writes_green_trailers() {
         let test_path = temp_file("green.rs", "fn x() {}\n");
         let msg_path = temp_file("msg-green", "fix: x\n");
         let checksum = file_checksum(&test_path);
-        assert!(checksum.is_ok(), "checksum should compute: {checksum:?}");
+        check(
+            checksum.is_ok(),
+            &format!("checksum should compute: {checksum:?}"),
+        );
         let runner = FakeRunner::new(
             vec![
                 CommandOutput::success(&test_path.to_string_lossy()),
@@ -661,7 +691,10 @@ mod tests {
             vec![CommandOutput::success("pass")],
         );
         let result = handle_green(&runner, &msg_path);
-        assert!(result.is_ok(), "green leg should pass: {result:?}");
+        check(
+            result.is_ok(),
+            &format!("green leg should pass: {result:?}"),
+        );
         let msg = fs::read_to_string(&msg_path);
         assert!(
             msg.as_ref()
@@ -689,7 +722,10 @@ mod tests {
         );
         assert!(handle_green(&mismatch, &msg_path).is_err_and(|err| err.contains("checksum")));
         let checksum = file_checksum(&test_path);
-        assert!(checksum.is_ok(), "checksum should compute: {checksum:?}");
+        check(
+            checksum.is_ok(),
+            &format!("checksum should compute: {checksum:?}"),
+        );
         let failing = FakeRunner::new(
             vec![
                 CommandOutput::success(&test_path.to_string_lossy()),
@@ -699,6 +735,73 @@ mod tests {
         );
         assert!(handle_green(&failing, &msg_path).is_err_and(|err| err.contains("still-failing")));
         let _ = fs::remove_file(test_path);
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn green_leg_propagates_runner_failures_for_trailers_cargo_and_parent() {
+        let test_path = temp_file("green-runner-failures.rs", "fn x() {}\n");
+        let msg_path = temp_file("msg-green-runner-failures", "fix: x\n");
+        let checksum = file_checksum(&test_path).unwrap_or_default();
+
+        let missing_test_trailer = FakeRunner::new(Vec::new(), Vec::new());
+        assert!(
+            handle_green(&missing_test_trailer, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        let missing_checksum_trailer = FakeRunner::new(
+            vec![CommandOutput::success(&test_path.to_string_lossy())],
+            Vec::new(),
+        );
+        assert!(
+            handle_green(&missing_checksum_trailer, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        let cargo_error = FakeRunner::new(
+            vec![
+                CommandOutput::success(&test_path.to_string_lossy()),
+                CommandOutput::success(&checksum),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            handle_green(&cargo_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake cargo output"))
+        );
+
+        let parent_error = FakeRunner::new(
+            vec![
+                CommandOutput::success(&test_path.to_string_lossy()),
+                CommandOutput::success(&checksum),
+            ],
+            vec![CommandOutput::success("pass")],
+        );
+        assert!(
+            handle_green(&parent_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        let _ = fs::remove_file(test_path);
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn green_leg_reports_missing_current_test_file() {
+        let missing_test_path = std::env::temp_dir().join(format!(
+            "console-rgr-{}-missing-green.rs",
+            std::process::id()
+        ));
+        let msg_path = temp_file("msg-green-missing-file", "fix: x\n");
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success(&missing_test_path.to_string_lossy()),
+                CommandOutput::success("sha256:not-read"),
+            ],
+            Vec::new(),
+        );
+        assert!(handle_green(&runner, &msg_path).is_err_and(|err| err.contains("cannot read")));
         let _ = fs::remove_file(msg_path);
     }
 
@@ -723,6 +826,17 @@ mod tests {
     }
 
     #[test]
+    fn suite_green_propagates_workspace_cargo_runner_failure() {
+        let msg_path = temp_file("msg-suite-cargo-error", "chore: x\n");
+        let runner = FakeRunner::new(Vec::new(), Vec::new());
+        assert!(
+            handle_suite_green(&runner, &msg_path)
+                .is_err_and(|err| err.contains("missing fake cargo output"))
+        );
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
     fn no_arg_range_rejects_unresolvable_base_and_missing_trailer_shape() {
         let missing_base = FakeRunner::new(vec![CommandOutput::failure("fatal")], Vec::new());
         assert!(validate_default_range(&missing_base).is_err_and(|err| err.contains("base")));
@@ -738,6 +852,22 @@ mod tests {
         assert!(
             validate_default_range(&missing_trailers)
                 .is_err_and(|err| err.contains("missing-trailers"))
+        );
+    }
+
+    #[test]
+    fn no_arg_range_propagates_missing_commit_message_lookup() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("origin/master\n"),
+                CommandOutput::success("abc\n"),
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            validate_default_range(&runner)
+                .is_err_and(|err| err.contains("missing fake git output"))
         );
     }
 
@@ -812,11 +942,45 @@ mod tests {
     }
 
     #[test]
+    fn commit_msg_propagates_runner_failures_after_staged_file_classification() {
+        let msg_path = temp_file("msg-dispatch-runner-failures", "feat: x\n");
+        let staged_files_error = FakeRunner::new(Vec::new(), Vec::new());
+        assert!(
+            check_commit_msg(&staged_files_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        let awaiting_error = FakeRunner::new(
+            vec![CommandOutput::success("crates/x/src/lib.rs\n")],
+            Vec::new(),
+        );
+        assert!(
+            check_commit_msg(&awaiting_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        let suite_error = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success("head\n"),
+                CommandOutput::success("message\n"),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            check_commit_msg(&suite_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake cargo output"))
+        );
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
     fn commit_msg_mode_routes_all_outer_branches() {
         let msg_path = temp_file("msg-dispatch", "feat: x\n");
         let pass = FakeRunner::new(vec![CommandOutput::success("docs/readme.md\n")], Vec::new());
         assert!(check_commit_msg(&pass, &msg_path).is_ok());
         let red_path = format!("tests/dispatch-red-{}.rs", std::process::id());
+        let _ = fs::create_dir_all("tests");
         let red_test = temp_workspace_file(&red_path, "fn x() {}\n");
         let red = FakeRunner::new(
             vec![CommandOutput::success(&format!("{red_path}\n"))],
@@ -844,7 +1008,10 @@ mod tests {
         assert!(check_commit_msg(&suite, &msg_path).is_ok());
         let green_test = temp_file("dispatch-green.rs", "fn x() {}\n");
         let checksum = file_checksum(&green_test);
-        assert!(checksum.is_ok(), "checksum should compute: {checksum:?}");
+        check(
+            checksum.is_ok(),
+            &format!("checksum should compute: {checksum:?}"),
+        );
         let green = FakeRunner::new(
             vec![
                 CommandOutput::success("crates/x/src/lib.rs\n"),
@@ -889,6 +1056,12 @@ mod tests {
             scope_for_tests(&["crates/console-cli/src/tests/helpers.rs".to_owned()]),
             TestScope::Workspace
         );
+    }
+
+    #[test]
+    fn unix_timestamp_conversion_covers_january_february_month_mapping() {
+        assert_eq!(unix_seconds_to_utc(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(unix_seconds_to_utc(2_678_400), (1970, 2, 1, 0, 0, 0));
     }
 
     fn trailer_value(text: &str, key: &str) -> Option<String> {
