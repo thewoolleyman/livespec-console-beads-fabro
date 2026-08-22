@@ -497,35 +497,55 @@ check-doctor-static:
 # aggregate: SPECIFICATION/non-functional-requirements.md ratifies that
 # `just check` MUST NOT include fuzz runs.
 #
-# cargo-fuzz exits non-zero on a crash and writes the reproducing input to
-# fuzz/artifacts/<target>/. Commit that input into fuzz/regressions/<target>/
-# and fix the panic; see fuzz/README.md.
+# BUILD FAILURE AND CRASH ARE REPORTED SEPARATELY, and that distinction is
+# load-bearing. cargo-fuzz exits non-zero for BOTH "a target crashed" and "the
+# target could not be built", and an earlier version of this recipe conflated
+# them: CI hit a missing C++ compiler (libfuzzer-sys builds libFuzzer from
+# source) and the gate announced "CRASHED targets: <all three>". A tooling
+# error that reads as a fuzzing finding sends whoever is on the gate hunting a
+# bug that does not exist. So each target is BUILT first, and a build failure
+# exits 2 with its own message while a crash exits 1.
+#
+# On a crash, cargo-fuzz writes the reproducing input to fuzz/artifacts/<target>/.
+# Commit that input into fuzz/regressions/<target>/ and fix the panic; see
+# fuzz/README.md.
 #
 # The loop runs every target even after one fails, then reports the full set.
 # Stopping at the first crash hides how many targets are broken, which is the
 # question you want answered when a gate goes red.
 #
-# errexit is deliberately omitted; the tooling install and each target are guarded directly.
+# errexit is deliberately omitted; the tooling install, the build and each run are guarded directly.
 check-fuzz:
     #!/usr/bin/env bash
     set -uo pipefail
     just ensure-fuzz-tooling || exit $?
-    failed=()
+    crashed=()
+    unbuildable=()
     for target in event_envelope adapter_normalization source_payload; do
-      echo "=== fuzz ${target} (>=60s, replaying fuzz/regressions/${target}) ==="
       # corpus/ is gitignored in full, so a FRESH CHECKOUT HAS NO CORPUS DIRS.
       # libFuzzer creates only the first corpus path it is handed and errors on
       # a missing later one, so without this every CI run would fail before it
       # fuzzed a single input.
       mkdir -p "fuzz/corpus/${target}"
+      echo "=== build ${target} ==="
+      if ! cargo +nightly fuzz build "${target}"; then
+        unbuildable+=("${target}")
+        continue
+      fi
+      echo "=== fuzz ${target} (>=60s, replaying fuzz/regressions/${target}) ==="
       if ! cargo +nightly fuzz run "${target}" \
           "fuzz/corpus/${target}" "fuzz/regressions/${target}" \
           -- -max_total_time=60; then
-        failed+=("${target}")
+        crashed+=("${target}")
       fi
     done
-    if [ ${#failed[@]} -ne 0 ]; then
-      echo "check-fuzz: CRASHED targets: ${failed[*]}" >&2
+    if [ ${#unbuildable[@]} -ne 0 ]; then
+      echo "check-fuzz: TOOLING ERROR -- could not BUILD: ${unbuildable[*]}" >&2
+      echo "check-fuzz: this is NOT a fuzzing finding. libfuzzer-sys compiles libFuzzer from source and needs a C++ compiler on PATH." >&2
+      exit 2
+    fi
+    if [ ${#crashed[@]} -ne 0 ]; then
+      echo "check-fuzz: CRASHED targets: ${crashed[*]}" >&2
       echo "check-fuzz: reproducing inputs are under fuzz/artifacts/; see fuzz/README.md" >&2
       exit 1
     fi

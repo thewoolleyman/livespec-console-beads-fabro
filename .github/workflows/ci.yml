@@ -440,6 +440,25 @@ jobs:
           mise trust
           mise install
 
+      # libfuzzer-sys compiles libFuzzer FROM SOURCE in its build script, so it
+      # needs a C++ compiler. The sandbox image ships a Rust toolchain but no
+      # c++, and without this the job fails in cc-rs with
+      # `ToolNotFound: failed to find tool "c++"` before a single input is
+      # fuzzed. Measured on this job's first run. Prefer an already-present
+      # clang++ over an apt install so the common case costs nothing.
+      - name: Ensure a C++ compiler for libfuzzer-sys
+        run: |
+          if command -v c++ >/dev/null 2>&1; then
+            echo "c++ already present: $(command -v c++)"
+          elif command -v clang++ >/dev/null 2>&1; then
+            echo "using clang++ at $(command -v clang++)"
+            echo "CXX=clang++" >> "$GITHUB_ENV"
+          else
+            echo "no C++ compiler found; installing g++"
+            apt-get update
+            apt-get install -y --no-install-recommends g++
+          fi
+
       - name: just check-fuzz
         run: just check-fuzz
 
