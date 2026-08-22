@@ -102,12 +102,30 @@ contents = "write"
 pull_requests = "write"
 
 [run.inputs]
-# ACP coding-agent adapter for the implement/fix/pr/review_fix nodes (the
+# ACP coding-agent adapter for the implement/fix/review_fix nodes (the
 # IMPLEMENTER nodes). Defaults to the Claude adapter; the Dispatcher
 # overrides it per provider via `fabro run --input acp_adapter=...` to route
 # the implementer work to a Codex worker (Slice B / bd-ib-g7e34u wires the
 # Codex credential projection that makes that switch live).
+#
+# The `pr` node is NO LONGER on this adapter -- see `pr_adapter` below.
 acp_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
+
+# ACP adapter for the PR node. PORTED FROM UPSTREAM 2026-08-22
+# (livespec-console-beads-fabro-t1g7). Defaults to the same un-pinned Claude
+# adapter as `acp_adapter` so a bare `fabro run` of this config still works;
+# the Dispatcher always overrides it via `fabro run --input pr_adapter=...`
+# with the Codex adapter rendered from this repo's own
+# `dispatcher.codex_models.pr` tier (built-in default `gpt-5.4-mini` at
+# `high`) -- `_dispatcher_engine.py::dispatch_fabro_run_inputs` emits the pair
+# unconditionally, so the supply side was already live before this port.
+#
+# It exists as a SEPARATE input from `acp_adapter` so the publish node's model
+# moves independently of the implementer's. The pr prompt is a fixed `git`/`gh`
+# recipe (and this fork keeps prompts/pr.md byte-identical to upstream), so it
+# does not need the implementer tier; implement / fix / review_fix continue to
+# share `acp_adapter`.
+pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 
 # ACP adapter for the REVIEW node (Slice A / bd-ib-egms32) — the Claude
 # subscription, pinned to Opus 4.8 + high thinking. The model CANNOT be set

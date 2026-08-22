@@ -1,6 +1,6 @@
 {
-  "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. The workflow.toml digest normalizes only the upstream docker pin value. See crates/console-fork-drift-check/src/lib.rs.",
-  "upstream_plugin_version": "d9b6a5162841",
+  "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
+  "upstream_plugin_version": "901227d9ffd8",
   "files": [
     {
       "path": "prompts/disposition.md",
@@ -24,13 +24,13 @@
       "path": "prompts/pr.md",
       "upstream_sha256": "02a9430cf61ce156263ee0609052851b61be531c987ee8431f00ebe57b3df6e2",
       "present_in_fork": true,
-      "reason": "SYNCED VERBATIM from upstream 2026-07-28 (PR #476, merged 2026-07-28T22:08:32Z) \u2014 our copy had been frozen at 3fa2d5c and lacked the fetch+rebase publish leg that upstream landed as bd-ib-qq7f (PR #905). Keep it verbatim: a local 'improvement' to borrowed prose becomes a divergence nobody remembers agreeing to. The retry's exact-match ci.yml scoping is a known upstream wart, filed with factory-hardening; we inherit the fix when they ship it."
+      "reason": "SYNCED VERBATIM from upstream 2026-07-28 (PR #476, merged 2026-07-28T22:08:32Z) — our copy had been frozen at 3fa2d5c and lacked the fetch+rebase publish leg that upstream landed as bd-ib-qq7f (PR #905). Keep it verbatim: a local 'improvement' to borrowed prose becomes a divergence nobody remembers agreeing to. The retry's exact-match ci.yml scoping is a known upstream wart, filed with factory-hardening; we inherit the fix when they ship it."
     },
     {
       "path": "prompts/review-fix.md",
       "upstream_sha256": "01f5d19825ec84bbe0152278b74846a6b13c8f1271ebcac30539aac62349bee0",
       "present_in_fork": true,
-      "reason": "DELIBERATELY NOT SYNCED, same reason as review.md \u2014 and upstream has additionally rewritten it to consume a `disposition` record that our graph does not produce, so syncing it alone would reference a stage we do not run."
+      "reason": "DELIBERATELY NOT SYNCED, same reason as review.md — and upstream has additionally rewritten it to consume a `disposition` record that our graph does not produce, so syncing it alone would reference a stage we do not run."
     },
     {
       "path": "prompts/review.md",
@@ -40,15 +40,15 @@
     },
     {
       "path": "workflow.fabro",
-      "upstream_sha256": "96e8169b27ad61633da43231b8e02bb38b442b8e55198fc5dfc5eb75c739ce10",
+      "upstream_sha256": "274972e59d0ea4248102589f68e4dbcb8f754dfadba5922692a3a395322d9607",
       "present_in_fork": true,
-      "reason": "DIVERGED. Our graph encodes the advisory ship-on-cap review gate (see :9-10, bd-ib-egms32) and omits upstream's disposition stage. This is the file the fork exists to own; treat any upstream movement here as a design review, never a sync."
+      "reason": "DIVERGED, and the divergence is now itemised by the 2026-08-22 design review (livespec-console-beads-fabro-t1g7). This is the file the fork exists to own; treat any upstream movement here as a design review, never a sync. (1) REVIEW GATE = KEEP. Our graph keeps the ADVISORY ship-on-cap gate (see :9-10, bd-ib-egms32) while upstream moved its default to BLOCKING. Both cite the same work-item; the advisory form is this repo's ratified policy and it did NOT move upstream since the previous pin, so nothing new compels revisiting it. Do not re-litigate on a future drift unless upstream's rationale itself changes. (2) JANITOR WORKFLOW-DRIFT GATE = PORTED 2026-08-22. The janitor node now runs `just check-no-workflow-edits check`, matching upstream. Additive, not redundant: the recipe already existed in our justfile (adopted 2026-07-28 for the POST-MERGE janitor) but the in-workflow janitor ran bare `just check`. Its `origin/master` merge-base precondition is already established by the `git fetch --unshallow` prepare step. (3) pr_adapter TIER SPLIT = PORTED 2026-08-22. The pr node moved to `{{ inputs.pr_adapter }}`. This was the ONLY upstream movement in this file since the previous pin; (1) and (2) were already divergent at that pin. Safe because the Dispatcher already emitted `pr_adapter=` unconditionally (_dispatcher_engine.py::dispatch_fabro_run_inputs) and our prompts/pr.md is byte-identical to upstream's. OMISSION UNCHANGED: our graph still omits upstream's disposition stage."
     },
     {
       "path": "workflow.toml",
-      "upstream_sha256_ignoring_docker_pin": "7d005fb7fdb547febe8f6743c8cddfac0d0e128c94825fe62206041847324317",
+      "upstream_sha256_ignoring_docker_pin": "66bad802afa319b6448f16bdc51a8b8db56c539e01fe582f7a06132566e100b3",
       "present_in_fork": true,
-      "reason": "DIVERGED: this Rust console fork deliberately pins the Rust-capable `python-rust-agent-` sandbox image, while upstream pins the Python-only `python-agent-` image. The fork-drift gate normalizes exactly that upstream docker value before hashing workflow.toml, so upstream docker tag bumps no longer require re-review; every other upstream byte in workflow.toml remains pinned and must still be reviewed or ported"
+      "reason": "DIVERGED: this Rust console fork deliberately pins the Rust-capable `python-rust-agent-` sandbox image, while upstream pins the Python-only `python-agent-` image. The fork-drift gate normalizes exactly that upstream docker value before hashing workflow.toml, so upstream docker tag bumps no longer require re-review; every other upstream byte in workflow.toml remains pinned and must still be reviewed or ported. 2026-08-22 (livespec-console-beads-fabro-t1g7): the only non-docker upstream movement since the previous pin was the new `pr_adapter` input declaration, which is now PORTED verbatim in intent (same default, same separate-from-acp_adapter rationale) alongside the workflow.fabro pr-node change."
     }
   ]
 }

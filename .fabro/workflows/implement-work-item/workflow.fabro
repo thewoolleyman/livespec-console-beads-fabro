@@ -85,11 +85,24 @@ digraph ImplementWorkItem {
     // stage (livespec non-functional-requirements.md §"Orchestrator-
     // internal Dispatcher guidance"). Script outcome routes the edges:
     // exit 0 -> succeeded -> pr; non-zero -> failed -> fix loop.
+    //
+    // `check-no-workflow-edits` runs FIRST, ported from upstream 2026-08-22
+    // (livespec-console-beads-fabro-t1g7): workflow-file drift is refused
+    // BEFORE the expensive `just check`. It is additive here rather than
+    // redundant. This repo already refuses a workflow-editing item at
+    // DISPATCH time and already runs the recipe in the POST-MERGE janitor
+    // (the orchestrator's `_DEFAULT_JANITOR`), but the in-workflow janitor
+    // ran bare `just check` -- so a branch that acquired a
+    // `.github/workflows/` edit DURING the run reached the pr node, where
+    // the fleet App's contents-only push token turns it into a GitHub push
+    // rejection instead of a routed janitor failure. The recipe needs an
+    // `origin/master` merge-base, which the `git fetch --unshallow` prepare
+    // step in workflow.toml already establishes for `just check` itself.
     janitor [
         label="Janitor: just check"
         shape=parallelogram
         timeout="3600s"
-        script="mise exec -- just check"
+        script="mise exec -- just check-no-workflow-edits check"
     ]
 
     fix [
@@ -107,10 +120,22 @@ digraph ImplementWorkItem {
     // unreachable here — the only edge into exit is `pr -> exit`, taken
     // when pr did NOT fail — it exists to satisfy fabro's
     // goal_gate_has_retry lint alongside the real node-retry budget.
+    //
+    // Runs on `pr_adapter`, NOT the shared implementer `acp_adapter`: this node
+    // executes a fixed `git`/`gh` publish recipe (@prompts/pr.md, which this
+    // fork keeps byte-identical to upstream) with no design judgement in it, so
+    // it takes the cheap Codex tier while implement / fix / review_fix stay on
+    // the implementer tier. Ported from upstream 2026-08-22
+    // (livespec-console-beads-fabro-t1g7). Both adapters are rendered by the
+    // Dispatcher from the dispatch target's `dispatcher.codex_models` config
+    // (commands/_config.py `resolve_codex_model_tiers`); the model rides the
+    // adapter's own `-c model=` override because fabro REJECTS `model` /
+    // `reasoning_effort` as acp node attrs, exactly as the review node's
+    // ANTHROPIC_MODEL prefix does on the Claude side.
     pr [
         label="Open PR + arm rebase auto-merge"
         backend="acp"
-        acp.command="{{ inputs.acp_adapter }}"
+        acp.command="{{ inputs.pr_adapter }}"
         timeout="1800s"
         max_retries=1
         goal_gate=true
