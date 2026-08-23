@@ -275,7 +275,7 @@ pub fn persist_tui_runtime_effects(
         // next).
         let sequence = store.command_count()?;
         let existing_commands = store.list_commands()?;
-        let command_requested_at = current_command_requested_at();
+        let command_requested_at = current_command_requested_at()?;
         let Some(append) = command_append_from_tui_effect(
             effect,
             &command_requested_at,
@@ -289,13 +289,10 @@ pub fn persist_tui_runtime_effects(
     Ok(outcomes)
 }
 
-fn current_command_requested_at() -> String {
-    OffsetDateTime::now_utc().to_string()
-}
-
-#[cfg(test)]
-fn command_requested_at_result<E>(result: Result<String, E>) -> EventStoreResult<String> {
-    result.map_err(|_error| EventStoreError::InvalidSequence)
+fn current_command_requested_at() -> EventStoreResult<String> {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|_error| EventStoreError::InvalidSequence)
 }
 
 /// Port interface for event append store behavior supplied by an outer layer.
@@ -2692,14 +2689,14 @@ mod tests {
         ResolveInputs, ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
         SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, append_factory_drain_requested_events, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, command_requested_at_result,
-        command_status_update_runtime_result, config_command_from_stored, demo_events,
-        distinguish_repeatable_command, doctor_report, event_append_from_command_event,
-        event_append_from_console_event, events_tail_report, factory_command_from_stored,
-        final_tui_events_result, handle_pending_config_commands, handle_pending_control_commands,
-        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
-        handle_pending_work_item_commands, ingest_and_reflect, ingest_needs_attention,
-        initial_source_seed, is_failed_once_only_valve_retry, live_source_adapters,
+        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
+        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
+        event_append_from_command_event, event_append_from_console_event, events_tail_report,
+        factory_command_from_stored, final_tui_events_result, handle_pending_config_commands,
+        handle_pending_control_commands, handle_pending_factory_commands,
+        handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
+        ingest_and_reflect, ingest_needs_attention, initial_source_seed,
+        is_failed_once_only_valve_retry, live_source_adapters,
         live_source_adapters_from_resolution, load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
@@ -8918,15 +8915,6 @@ mod tests {
 
     #[test]
     fn small_result_seams_report_success_and_errors() {
-        check(
-            (command_requested_at_result::<()>(Ok("2026-08-23T00:00:00Z".to_owned())).ok_test())
-                == ("2026-08-23T00:00:00Z"),
-            "assert_eq failed",
-        );
-        check_event_store_error(err_eventstore_string(command_requested_at_result::<()>(
-            Err(()),
-        )));
-
         let events = vec![ConsoleEvent::fixture(
             "evt-1",
             EventType::WorkItemSnapshotObserved,
