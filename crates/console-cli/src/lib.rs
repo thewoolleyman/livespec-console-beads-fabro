@@ -1010,9 +1010,17 @@ fn source_polls_from_seed(
         FabroRunState::HumanGate,
         3,
     )?;
-    let livespec_snapshot = LivespecNextSnapshot::new(seed.repo, LivespecNextAction::Revise, 4)?;
-    let github_snapshot =
-        GithubPullRequestSnapshot::new(seed.repo, 24, GithubPullRequestState::ChecksPassing, 5)?;
+    let livespec_snapshot = LivespecNextSnapshot::new(
+        seed.repo,
+        LivespecNextAction::Revise,
+        seed.livespec_source_version,
+    )?;
+    let github_snapshot = GithubPullRequestSnapshot::new(
+        seed.repo,
+        24,
+        GithubPullRequestState::ChecksPassing,
+        seed.github_source_version,
+    )?;
     Ok(vec![
         (
             "orchestrator:livespec-console-beads-fabro",
@@ -1044,6 +1052,8 @@ struct InitialSourceSeed<'a> {
     work_item_id: &'a str,
     dispatch_id: &'a str,
     run_id: &'a str,
+    livespec_source_version: u64,
+    github_source_version: u64,
 }
 
 #[cfg(test)]
@@ -1053,6 +1063,8 @@ const fn initial_source_seed() -> InitialSourceSeed<'static> {
         work_item_id: "livespec-console-beads-fabro-y45jhj",
         dispatch_id: "dispatch_1",
         run_id: "run_1",
+        livespec_source_version: 4,
+        github_source_version: 5,
     }
 }
 
@@ -3270,6 +3282,20 @@ mod tests {
                     ..initial_source_seed()
                 },
                 AdapterError::EmptyRunId,
+            ),
+            (
+                InitialSourceSeed {
+                    livespec_source_version: 0,
+                    ..initial_source_seed()
+                },
+                AdapterError::InvalidSourceVersion,
+            ),
+            (
+                InitialSourceSeed {
+                    github_source_version: 0,
+                    ..initial_source_seed()
+                },
+                AdapterError::InvalidSourceVersion,
             ),
         ] {
             let result = source_polls_from_seed(&seed);
