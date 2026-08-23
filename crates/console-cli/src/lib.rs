@@ -275,7 +275,7 @@ pub fn persist_tui_runtime_effects(
         // next).
         let sequence = store.command_count()?;
         let existing_commands = store.list_commands()?;
-        let command_requested_at = current_command_requested_at()?;
+        let command_requested_at = current_command_requested_at();
         let Some(append) = command_append_from_tui_effect(
             effect,
             &command_requested_at,
@@ -289,10 +289,13 @@ pub fn persist_tui_runtime_effects(
     Ok(outcomes)
 }
 
-fn current_command_requested_at() -> EventStoreResult<String> {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|_error| EventStoreError::InvalidSequence)
+fn current_command_requested_at() -> String {
+    OffsetDateTime::now_utc().to_string()
+}
+
+#[cfg(test)]
+fn command_requested_at_result<E>(result: Result<String, E>) -> EventStoreResult<String> {
+    result.map_err(|_error| EventStoreError::InvalidSequence)
 }
 
 /// Port interface for event append store behavior supplied by an outer layer.
@@ -685,22 +688,13 @@ pub fn run_store_backed_tui_session(
     let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
     let _work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
     let _config_handled = handle_pending_config_commands(store, observed_at, work_item_port)?;
-    let final_events = store.list_console_events()?;
-    let attention_count = project_attention(&final_events).len();
-    let backfilled_event_count = ingestion
-        .iter()
-        .map(AdapterIngestionSummary::appended_event_count)
-        .sum();
-    let persisted_command_count = live_persisted_count + persisted.len();
-    let handled_command_count = live_handled_count + handled.len();
-    Ok(TuiSessionOutcome::new(
-        backfilled_event_count,
+    tui_session_outcome_from_final_events(
+        &ingestion,
         presented_events.len(),
-        persisted_command_count,
-        handled_command_count,
-        final_events.len(),
-        attention_count,
-    ))
+        live_persisted_count + persisted.len(),
+        live_handled_count + handled.len(),
+        store.list_console_events(),
+    )
 }
 
 /// Return the backfill demo report value.
@@ -805,13 +799,50 @@ pub fn live_source_adapters<'a>(
     probe: &'a dyn SourceProbe,
     repo: &str,
 ) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
-    let resolution = BackingCliResolution::from_environment()?;
+    live_source_adapters_from_resolution(probe, repo, BackingCliResolution::from_environment())
+}
+
+fn live_source_adapters_from_resolution<'a>(
+    probe: &'a dyn SourceProbe,
+    repo: &str,
+    resolution: Result<BackingCliResolution, BackingCliResolutionError>,
+) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
+    let resolution = resolution?;
     live_source_adapters_with_programs(
         probe,
         repo,
         resolution.programs(),
         &resolution.dispatcher_journal_path(),
     )
+}
+
+fn final_tui_events_result(
+    result: EventStoreResult<Vec<ConsoleEvent>>,
+) -> ConsoleRuntimeResult<Vec<ConsoleEvent>> {
+    result.map_err(ConsoleRuntimeError::EventStore)
+}
+
+fn tui_session_outcome_from_final_events(
+    ingestion: &[AdapterIngestionSummary],
+    presented_event_count: usize,
+    persisted_command_count: usize,
+    handled_command_count: usize,
+    final_events: EventStoreResult<Vec<ConsoleEvent>>,
+) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+    let final_events = final_tui_events_result(final_events)?;
+    let attention_count = project_attention(&final_events).len();
+    let backfilled_event_count = ingestion
+        .iter()
+        .map(AdapterIngestionSummary::appended_event_count)
+        .sum();
+    Ok(TuiSessionOutcome::new(
+        backfilled_event_count,
+        presented_event_count,
+        persisted_command_count,
+        handled_command_count,
+        final_events.len(),
+        attention_count,
+    ))
 }
 
 /// Build real source adapters with an explicit backing CLI resolution.
@@ -2661,20 +2692,21 @@ mod tests {
         ResolveInputs, ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
         SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, append_factory_drain_requested_events, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
-        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
-        event_append_from_command_event, event_append_from_console_event, events_tail_report,
-        factory_command_from_stored, handle_pending_config_commands,
-        handle_pending_control_commands, handle_pending_factory_commands,
-        handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
-        ingest_needs_attention, initial_source_seed, is_failed_once_only_valve_retry,
-        live_source_adapters, load_tui_events_from_store, normalized_payload_json,
+        backfill_source_adapters, backfill_source_report, command_requested_at_result,
+        command_status_update_runtime_result, config_command_from_stored, demo_events,
+        distinguish_repeatable_command, doctor_report, event_append_from_command_event,
+        event_append_from_console_event, events_tail_report, factory_command_from_stored,
+        final_tui_events_result, handle_pending_config_commands, handle_pending_control_commands,
+        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
+        handle_pending_work_item_commands, ingest_and_reflect, ingest_needs_attention,
+        initial_source_seed, is_failed_once_only_valve_retry, live_source_adapters,
+        live_source_adapters_from_resolution, load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
         refresh_sources, render_tui_preview, resolve_console_repo, run,
         run_store_backed_tui_session, run_with_store, serve_report,
         serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
-        work_item_command_from_stored,
+        tui_session_outcome_from_final_events, work_item_command_from_stored,
     };
 
     #[test]
@@ -5967,7 +5999,7 @@ mod tests {
 
     #[test]
     fn pending_factory_commands_return_list_errors() {
-        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ListFails);
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ListCommands);
         let mut port = SimulatedFactoryDrainPort;
 
         let outcome =
@@ -6010,7 +6042,7 @@ mod tests {
 
     #[test]
     fn pending_factory_commands_return_append_errors() {
-        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::AppendFails);
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::AppendCommand);
         let mut port = SimulatedFactoryDrainPort;
 
         let outcome =
@@ -6546,7 +6578,7 @@ mod tests {
 
     #[test]
     fn pending_config_commands_propagate_store_append_errors() {
-        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigAppendFails);
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigAppendCommand);
         let mut port = SimulatedWorkItemActionPort::default();
 
         let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:03Z", &mut port);
@@ -7330,7 +7362,7 @@ mod tests {
 
     #[test]
     fn pending_work_item_commands_propagate_store_errors() {
-        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemAppendFails);
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemAppendCommand);
         let mut port =
             SimulatedWorkItemActionPort::returning(OrchestratorActionOutcome::completed());
 
@@ -8726,6 +8758,313 @@ mod tests {
         cleanup_store(&path);
     }
 
+    #[test]
+    fn tui_persistence_reports_each_command_read_and_append_error() {
+        for mode in [
+            ScriptedCommandAppendStoreMode::CommandCount,
+            ScriptedCommandAppendStoreMode::ListCommands,
+            ScriptedCommandAppendStoreMode::AppendCommand,
+        ] {
+            let mut store = ScriptedCommandAppendStore::new(mode);
+
+            let error = err_eventstore_command_outcomes(persist_tui_runtime_effects(
+                &mut store,
+                &[factory_drain_effect()],
+                "2026-06-23T00:00:02Z",
+            ));
+
+            check_event_store_error(error);
+        }
+
+        let mut completing_store =
+            ScriptedCommandAppendStore::new(ScriptedCommandAppendStoreMode::Completes);
+        let outcomes = persist_tui_runtime_effects(
+            &mut completing_store,
+            &[factory_drain_effect()],
+            "2026-06-23T00:00:02Z",
+        )
+        .ok_test();
+        check((outcomes.len()) == (1), "assert_eq failed");
+    }
+
+    #[test]
+    fn real_store_live_effect_sink_reports_persistence_and_request_event_errors() {
+        let (persistence_path, mut persistence_store) = file_store("live-effect-persist");
+        corrupt_store(&persistence_path, "drop table commands");
+        let error = effect_sink_error(
+            StoreBackedTuiRuntimeEffectSink::new(
+                &mut persistence_store,
+                "2026-08-23T00:00:00Z",
+                &mut SimulatedFactoryDrainPort,
+                &mut SimulatedWorkItemActionPort::default(),
+                &empty_decisions_port(),
+                &poll_requester(),
+                &async_command_requester(),
+            )
+            .handle_runtime_effect(&factory_drain_effect()),
+        );
+        check(!error.is_empty(), "assert failed");
+        cleanup_store(&persistence_path);
+
+        let (path, mut event_store) = file_store("live-effect-request-events");
+        persist_tui_runtime_effects(
+            &mut event_store,
+            &[factory_drain_effect()],
+            "2026-08-23T00:00:00Z",
+        )
+        .ok_test();
+        corrupt_store(&path, "drop table events");
+        let error = effect_sink_error(
+            StoreBackedTuiRuntimeEffectSink::new(
+                &mut event_store,
+                "2026-08-23T00:00:01Z",
+                &mut SimulatedFactoryDrainPort,
+                &mut SimulatedWorkItemActionPort::default(),
+                &empty_decisions_port(),
+                &poll_requester(),
+                &async_command_requester(),
+            )
+            .handle_runtime_effect(&factory_drain_effect()),
+        );
+        check(!error.is_empty(), "assert failed");
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_live_effect_sink_reports_inline_factory_and_config_handler_errors() {
+        let (factory_path, mut factory_store) = file_store("live-effect-inline-factory");
+        append_work_item_lane(&mut factory_store, "ready-work", "ready", 1, TS0);
+        let error = effect_sink_error(
+            StoreBackedTuiRuntimeEffectSink::new(
+                &mut factory_store,
+                "2026-08-23T00:00:00Z",
+                &mut ErroringFactoryDrainPort,
+                &mut SimulatedWorkItemActionPort::default(),
+                &empty_decisions_port(),
+                &poll_requester(),
+                &command_requester(),
+            )
+            .handle_runtime_effect(&factory_drain_effect()),
+        );
+        check(!error.is_empty(), "assert failed");
+        cleanup_store(&factory_path);
+
+        let (config_path, mut config_store) = file_store("live-effect-inline-config");
+        let error = effect_sink_error(
+            StoreBackedTuiRuntimeEffectSink::new(
+                &mut config_store,
+                "2026-08-23T00:00:00Z",
+                &mut SimulatedFactoryDrainPort,
+                &mut ErroringWorkItemActionPort,
+                &empty_decisions_port(),
+                &poll_requester(),
+                &command_requester(),
+            )
+            .handle_runtime_effect(&dispatcher_setting_set_effect()),
+        );
+        check(!error.is_empty(), "assert failed");
+        cleanup_store(&config_path);
+    }
+
+    #[test]
+    fn real_store_live_session_reports_each_store_error_after_startup() {
+        for mode in [
+            SessionStoreFailureMode::PresentedEvents,
+            SessionStoreFailureMode::ReturnedEffectsPersist,
+            SessionStoreFailureMode::FactoryCommands,
+            SessionStoreFailureMode::WorkItemCommands,
+            SessionStoreFailureMode::ConfigCommands,
+            SessionStoreFailureMode::FinalEvents,
+        ] {
+            let error = run_session_with_store_failure(mode);
+            check_runtime_store_or_application_error(error);
+        }
+    }
+
+    #[test]
+    fn real_store_factory_request_event_helper_reports_list_and_parse_errors() {
+        let missing_commands = [CommandAppendOutcome::new(
+            "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+            CommandAppendStatus::Inserted,
+        )];
+        let (list_path, mut list_store) = file_store("request-helper-list");
+        corrupt_store(&list_path, "drop table commands");
+        let list_error = err_runtime_usize(append_factory_drain_requested_events(
+            &mut list_store,
+            &missing_commands,
+            "2026-08-23T00:00:00Z",
+        ));
+        check_runtime_event_store_error(list_error);
+        cleanup_store(&list_path);
+
+        let (parse_path, mut parse_store) = file_store("request-helper-parse");
+        let parse_outcomes = persist_tui_runtime_effects(
+            &mut parse_store,
+            &[factory_drain_effect()],
+            "2026-08-23T00:00:00Z",
+        )
+        .ok_test();
+        corrupt_store(
+            &parse_path,
+            "update commands set aggregate_id = null where type = 'factory.drain_requested'",
+        );
+        let _parse_error = err_runtime_usize(append_factory_drain_requested_events(
+            &mut parse_store,
+            &parse_outcomes,
+            "2026-08-23T00:00:01Z",
+        ));
+        cleanup_store(&parse_path);
+    }
+
+    #[test]
+    fn small_result_seams_report_success_and_errors() {
+        check(
+            (command_requested_at_result::<()>(Ok("2026-08-23T00:00:00Z".to_owned())).ok_test())
+                == ("2026-08-23T00:00:00Z"),
+            "assert_eq failed",
+        );
+        check_event_store_error(err_eventstore_string(command_requested_at_result::<()>(
+            Err(()),
+        )));
+
+        let events = vec![ConsoleEvent::fixture(
+            "evt-1",
+            EventType::WorkItemSnapshotObserved,
+            "test",
+        )];
+        check(
+            (final_tui_events_result(Ok(events.clone())).ok_test()) == (events),
+            "assert_eq failed",
+        );
+        check_runtime_event_store_error(err_runtime_console_events(final_tui_events_result(Err(
+            EventStoreError::InvalidSequence,
+        ))));
+        check_runtime_event_store_error(err_runtime_tui_outcome(
+            tui_session_outcome_from_final_events(
+                &[],
+                0,
+                0,
+                0,
+                Err(EventStoreError::InvalidSequence),
+            ),
+        ));
+
+        let result = live_source_adapters_from_resolution(
+            &UnavailableProbe,
+            "console",
+            Err(BackingCliResolutionError::new("missing script".to_owned())),
+        )
+        .map(|_adapters| ());
+        check(result.is_err(), "assert failed");
+    }
+
+    #[test]
+    fn real_store_live_refresh_reports_reflection_and_event_list_errors() {
+        let (reflection_path, mut reflection_store) = file_store("live-refresh-reflection");
+        let decisions = SimulatedDecisionsPort::returning(AutonomousAudit::new(
+            vec![ok_decision(AutonomousDecision::from_auto_disposition(
+                "wi-1",
+                "auto-approve",
+                vec!["auto_approve_ready".to_owned()],
+            ))],
+            Vec::new(),
+        ));
+        corrupt_store(&reflection_path, "drop table commands");
+        let reflection_error = effect_sink_error(
+            StoreBackedTuiRuntimeEffectSink::new(
+                &mut reflection_store,
+                "2026-08-23T00:00:00Z",
+                &mut SimulatedFactoryDrainPort,
+                &mut SimulatedWorkItemActionPort::default(),
+                &decisions,
+                &poll_requester(),
+                &command_requester(),
+            )
+            .refresh_events(false)
+            .map(|_| TuiRuntimeEffectSinkOutcome::Applied),
+        );
+        check(!reflection_error.is_empty(), "assert failed");
+        cleanup_store(&reflection_path);
+
+        let (events_path, mut events_store) = file_store("live-refresh-events");
+        corrupt_store(&events_path, "drop table events");
+        let events_error = effect_sink_error(
+            StoreBackedTuiRuntimeEffectSink::new(
+                &mut events_store,
+                "2026-08-23T00:00:00Z",
+                &mut SimulatedFactoryDrainPort,
+                &mut SimulatedWorkItemActionPort::default(),
+                &empty_decisions_port(),
+                &poll_requester(),
+                &command_requester(),
+            )
+            .refresh_events(false)
+            .map(|_| TuiRuntimeEffectSinkOutcome::Applied),
+        );
+        check(!events_error.is_empty(), "assert failed");
+        cleanup_store(&events_path);
+    }
+
+    #[test]
+    fn real_store_ingest_and_reflect_reports_reflection_errors_after_refresh() {
+        let (path, mut store) = file_store("ingest-reflect-reflection");
+        let decisions = SimulatedDecisionsPort::returning(AutonomousAudit::new(
+            vec![ok_decision(AutonomousDecision::from_auto_disposition(
+                "wi-1",
+                "auto-approve",
+                vec!["auto_approve_ready".to_owned()],
+            ))],
+            Vec::new(),
+        ));
+        corrupt_store(&path, "drop table commands");
+
+        let error = err_runtime_summaries(ingest_and_reflect(
+            &mut store,
+            "2026-08-23T00:00:00Z",
+            &[],
+            &NeedsAttentionIngest::new(
+                &empty_needs_attention_port(),
+                "livespec-console-beads-fabro",
+            ),
+            &decisions,
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_refresh_and_backfill_reports_source_and_attention_errors() {
+        let (source_path, mut source_store) = file_store("refresh-source-checkpoint-load");
+        corrupt_store(&source_path, "drop table checkpoints");
+        let source = ScriptedSource::new(
+            AdapterPoll::new("1", vec![dispatcher_source_event("evt-refresh-source", 1)]).ok_test(),
+        );
+        let source_error = err_runtime_summaries(refresh_sources(
+            &mut source_store,
+            "2026-08-23T00:00:00Z",
+            &[("dispatcher:console", &source)],
+            &NeedsAttentionIngest::new(&empty_needs_attention_port(), "console"),
+        ));
+        check_runtime_adapter_error(source_error);
+        cleanup_store(&source_path);
+
+        let (report_path, mut report_store) = file_store("backfill-report-attention");
+        corrupt_store(&report_path, "drop table events");
+        let attention = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let report_error = err_runtime_string(backfill_source_report(
+            &mut report_store,
+            "2026-08-23T00:00:00Z",
+            &[],
+            &NeedsAttentionIngest::new(&attention, "livespec-console-beads-fabro"),
+        ));
+        check_runtime_event_store_error(report_error);
+        cleanup_store(&report_path);
+    }
+
     fn plan_snapshot_event(
         event_id: &str,
         work_item_id: &str,
@@ -8876,6 +9215,27 @@ mod tests {
         }
     }
 
+    struct CorruptingWorkItemActionPort {
+        path: PathBuf,
+        sql: &'static str,
+    }
+
+    impl CorruptingWorkItemActionPort {
+        fn new(path: PathBuf, sql: &'static str) -> Self {
+            Self { path, sql }
+        }
+    }
+
+    impl OrchestratorActionPort for CorruptingWorkItemActionPort {
+        fn run_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> Result<OrchestratorActionOutcome, ApplicationError> {
+            corrupt_store(&self.path, self.sql);
+            Ok(OrchestratorActionOutcome::Completed)
+        }
+    }
+
     /// Scriptable autonomous-decisions port double: returns a canned audit so the
     /// observe/reflect path can be driven without a live Dispatcher journal.
     struct SimulatedDecisionsPort {
@@ -8891,6 +9251,24 @@ mod tests {
     impl AutonomousDecisionsPort for SimulatedDecisionsPort {
         fn read_autonomous_decisions(&self) -> AutonomousAudit {
             self.audit.clone()
+        }
+    }
+
+    struct CorruptingDecisionsPort {
+        path: PathBuf,
+        sql: &'static str,
+    }
+
+    impl CorruptingDecisionsPort {
+        fn new(path: PathBuf, sql: &'static str) -> Self {
+            Self { path, sql }
+        }
+    }
+
+    impl AutonomousDecisionsPort for CorruptingDecisionsPort {
+        fn read_autonomous_decisions(&self) -> AutonomousAudit {
+            corrupt_store(&self.path, self.sql);
+            AutonomousAudit::default()
         }
     }
 
@@ -8987,6 +9365,28 @@ mod tests {
     }
 
     #[test]
+    fn check_runtime_store_or_application_error_accepts_mapped_errors() {
+        check_runtime_store_or_application_error(ConsoleRuntimeError::TuiRuntimeFailed);
+        check_runtime_store_or_application_error(ConsoleRuntimeError::Application(
+            ApplicationError::FactoryDrainPortFailed,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "check_runtime_store_or_application_error failed")]
+    fn check_runtime_store_or_application_error_panics() {
+        check_runtime_store_or_application_error(ConsoleRuntimeError::Adapter(
+            AdapterError::EmptyCheckpoint,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "check_runtime_adapter_error failed")]
+    fn check_runtime_adapter_error_panics() {
+        check_runtime_adapter_error(ConsoleRuntimeError::TuiRuntimeFailed);
+    }
+
+    #[test]
     #[should_panic(expected = "ok_store failed")]
     fn ok_store_panics() {
         ok_store(Err(EventStoreError::InvalidSequence));
@@ -9044,6 +9444,24 @@ mod tests {
     #[should_panic(expected = "err_runtime_usize failed")]
     fn err_runtime_usize_panics() {
         err_runtime_usize(Ok(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_runtime_string failed")]
+    fn err_runtime_string_panics() {
+        err_runtime_string(Ok("ok".to_owned()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_runtime_console_events failed")]
+    fn err_runtime_console_events_panics() {
+        err_runtime_console_events(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "effect_sink_error failed")]
+    fn effect_sink_error_panics() {
+        effect_sink_error(Ok(TuiRuntimeEffectSinkOutcome::Applied));
     }
 
     #[test]
@@ -9800,6 +10218,24 @@ mod tests {
     }
 
     #[track_caller]
+    fn check_runtime_store_or_application_error(error: ConsoleRuntimeError) {
+        match error {
+            ConsoleRuntimeError::EventStore(error) => check_event_store_error(error),
+            ConsoleRuntimeError::Application(ApplicationError::FactoryDrainPortFailed)
+            | ConsoleRuntimeError::TuiRuntimeFailed => {}
+            other => panic!("check_runtime_store_or_application_error failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn check_runtime_adapter_error(error: ConsoleRuntimeError) {
+        match error {
+            ConsoleRuntimeError::Adapter(_error) => {}
+            other => panic!("check_runtime_adapter_error failed: {other:?}"),
+        }
+    }
+
+    #[track_caller]
     fn ok_store(result: EventStoreResult<SqliteEventStore>) -> SqliteEventStore {
         match result {
             Ok(value) => value,
@@ -9883,6 +10319,24 @@ mod tests {
     fn err_runtime_usize(result: ConsoleRuntimeResult<usize>) -> ConsoleRuntimeError {
         match result {
             Ok(_value) => panic!("err_runtime_usize failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_runtime_string(result: ConsoleRuntimeResult<String>) -> ConsoleRuntimeError {
+        match result {
+            Ok(_value) => panic!("err_runtime_string failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_runtime_console_events(
+        result: ConsoleRuntimeResult<Vec<ConsoleEvent>>,
+    ) -> ConsoleRuntimeError {
+        match result {
+            Ok(_value) => panic!("err_runtime_console_events failed"),
             Err(error) => error,
         }
     }
@@ -10241,6 +10695,30 @@ mod tests {
         }
     }
 
+    struct CorruptingTuiSessionRunner {
+        path: PathBuf,
+        effects: Vec<TuiRuntimeEffect>,
+        sql: &'static str,
+    }
+
+    impl CorruptingTuiSessionRunner {
+        fn new(path: PathBuf, effects: Vec<TuiRuntimeEffect>, sql: &'static str) -> Self {
+            Self { path, effects, sql }
+        }
+    }
+
+    impl TuiSessionRunner for CorruptingTuiSessionRunner {
+        fn run_tui(
+            &mut self,
+            _events: &[ConsoleEvent],
+            _requested_by: &str,
+            _session: &mut dyn TuiLiveSession,
+        ) -> ConsoleRuntimeResult<Vec<TuiRuntimeEffect>> {
+            corrupt_store(&self.path, self.sql);
+            Ok(self.effects.clone())
+        }
+    }
+
     struct CommandAppendFailingStore;
 
     impl CommandAppendStore for CommandAppendFailingStore {
@@ -10260,6 +10738,218 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum ScriptedCommandAppendStoreMode {
+        Completes,
+        CommandCount,
+        ListCommands,
+        AppendCommand,
+    }
+
+    struct ScriptedCommandAppendStore {
+        mode: ScriptedCommandAppendStoreMode,
+    }
+
+    impl ScriptedCommandAppendStore {
+        const fn new(mode: ScriptedCommandAppendStoreMode) -> Self {
+            Self { mode }
+        }
+    }
+
+    impl CommandAppendStore for ScriptedCommandAppendStore {
+        fn append_command(
+            &mut self,
+            _append: &CommandAppend,
+        ) -> EventStoreResult<CommandAppendOutcome> {
+            if matches!(self.mode, ScriptedCommandAppendStoreMode::AppendCommand) {
+                return Err(EventStoreError::InvalidSequence);
+            }
+            Ok(CommandAppendOutcome::new(
+                "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
+                CommandAppendStatus::Inserted,
+            ))
+        }
+
+        fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
+            if matches!(self.mode, ScriptedCommandAppendStoreMode::ListCommands) {
+                return Err(EventStoreError::InvalidSequence);
+            }
+            Ok(Vec::new())
+        }
+
+        fn command_count(&self) -> EventStoreResult<usize> {
+            if matches!(self.mode, ScriptedCommandAppendStoreMode::CommandCount) {
+                return Err(EventStoreError::InvalidSequence);
+            }
+            Ok(0)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum SessionStoreFailureMode {
+        PresentedEvents,
+        ReturnedEffectsPersist,
+        FactoryCommands,
+        WorkItemCommands,
+        ConfigCommands,
+        FinalEvents,
+    }
+
+    fn effect_sink_error(result: std::io::Result<TuiRuntimeEffectSinkOutcome>) -> String {
+        match result {
+            Ok(_value) => panic!("effect_sink_error failed"),
+            Err(error) => format!("{error:?}"),
+        }
+    }
+
+    fn run_session_with_store_failure(mode: SessionStoreFailureMode) -> ConsoleRuntimeError {
+        let (path, mut store) = file_store(&format!("session-{mode:?}"));
+        let result = match mode {
+            SessionStoreFailureMode::PresentedEvents => {
+                run_session_with_presented_events_failure(&mut store, path.clone())
+            }
+            SessionStoreFailureMode::ReturnedEffectsPersist => {
+                run_session_with_returned_effects_failure(&mut store, path.clone())
+            }
+            SessionStoreFailureMode::FactoryCommands => {
+                run_session_with_factory_commands_failure(&mut store, &path)
+            }
+            SessionStoreFailureMode::WorkItemCommands => {
+                run_session_with_work_item_commands_failure(&mut store)
+            }
+            SessionStoreFailureMode::ConfigCommands => run_session_with_config_commands_failure(
+                &mut store,
+                &mut ErroringWorkItemActionPort,
+            ),
+            SessionStoreFailureMode::FinalEvents => {
+                let mut port = CorruptingWorkItemActionPort::new(path.clone(), "drop table events");
+                run_session_with_config_commands_failure(&mut store, &mut port)
+            }
+        };
+        cleanup_store(&path);
+        err_runtime_tui_outcome(result)
+    }
+
+    fn run_session_with_presented_events_failure(
+        store: &mut SqliteEventStore,
+        path: PathBuf,
+    ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+        let decisions = CorruptingDecisionsPort::new(path, "drop table events");
+        let mut runner = ScriptedTuiSessionRunner::new(Vec::new());
+        run_session_with_runner_and_ports(
+            store,
+            &mut runner,
+            &mut SimulatedFactoryDrainPort,
+            &mut SimulatedWorkItemActionPort::default(),
+            &decisions,
+            &empty_needs_attention_port(),
+        )
+    }
+
+    fn run_session_with_returned_effects_failure(
+        store: &mut SqliteEventStore,
+        path: PathBuf,
+    ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+        let mut runner = CorruptingTuiSessionRunner::new(
+            path,
+            vec![factory_drain_effect()],
+            "drop table commands",
+        );
+        run_session_with_runner_and_ports(
+            store,
+            &mut runner,
+            &mut SimulatedFactoryDrainPort,
+            &mut SimulatedWorkItemActionPort::default(),
+            &empty_decisions_port(),
+            &empty_needs_attention_port(),
+        )
+    }
+
+    fn run_session_with_factory_commands_failure(
+        store: &mut SqliteEventStore,
+        path: &Path,
+    ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+        persist_tui_runtime_effects(store, &[factory_drain_effect()], "2026-08-23T00:00:00Z")
+            .ok_test();
+        corrupt_store(path, "drop table commands");
+        let mut runner = ScriptedTuiSessionRunner::new(Vec::new());
+        run_session_with_runner_and_ports(
+            store,
+            &mut runner,
+            &mut SimulatedFactoryDrainPort,
+            &mut SimulatedWorkItemActionPort::default(),
+            &empty_decisions_port(),
+            &empty_needs_attention_port(),
+        )
+    }
+
+    fn run_session_with_work_item_commands_failure(
+        store: &mut SqliteEventStore,
+    ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+        append_work_item_lane(store, "console-pending", "pending-approval", 1, TS0);
+        let events = store.list_console_events().ok_test();
+        let mut runner = ScriptedTuiSessionRunner::new(vec![valve_effect(
+            &events,
+            PendingValve::SetAdmission(AdmissionPolicy::Auto),
+        )]);
+        let attention_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "console-pending",
+            "Set admission policy",
+        )]);
+        run_session_with_runner_and_ports(
+            store,
+            &mut runner,
+            &mut SimulatedFactoryDrainPort,
+            &mut ErroringWorkItemActionPort,
+            &empty_decisions_port(),
+            &attention_port,
+        )
+    }
+
+    fn run_session_with_config_commands_failure(
+        store: &mut SqliteEventStore,
+        work_item_port: &mut dyn OrchestratorActionPort,
+    ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+        let mut runner = ScriptedTuiSessionRunner::new(vec![dispatcher_setting_set_effect()]);
+        run_session_with_runner_and_ports(
+            store,
+            &mut runner,
+            &mut SimulatedFactoryDrainPort,
+            work_item_port,
+            &empty_decisions_port(),
+            &empty_needs_attention_port(),
+        )
+    }
+
+    fn run_session_with_runner_and_ports(
+        store: &mut SqliteEventStore,
+        runner: &mut dyn TuiSessionRunner,
+        factory_port: &mut dyn FactoryDrainPort,
+        work_item_port: &mut dyn OrchestratorActionPort,
+        decisions_port: &dyn AutonomousDecisionsPort,
+        needs_attention_port: &dyn NeedsAttentionSnapshotPort,
+    ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+        let empty_sources: Vec<(String, ScriptedSource)> = Vec::new();
+        let sources = scripted_source_refs(&empty_sources);
+        let needs_attention =
+            NeedsAttentionIngest::new(needs_attention_port, "livespec-console-beads-fabro");
+        let poll_requester = poll_requester();
+        let command_requester = command_requester();
+        run_store_backed_tui_session(
+            store,
+            "2026-08-23T00:00:00Z",
+            "operator",
+            runner,
+            &sources,
+            factory_port,
+            work_item_port,
+            decisions_port,
+            &needs_attention,
+            &poll_requester,
+            &command_requester,
+        )
+    }
+
     struct EventAppendFailingStore;
 
     impl EventAppendStore for EventAppendFailingStore {
@@ -10270,18 +10960,18 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptedStoreMode {
-        AppendFails,
+        AppendCommand,
         AutonomousReflectionClaimMiss,
         Completes,
-        ConfigAppendFails,
+        ConfigAppendCommand,
         ConfigClaimMiss,
         FactoryClaimMiss,
-        ListFails,
+        ListCommands,
         MissingAggregate,
         NonFactoryPending,
         RecoveryFails,
         StatusUpdateFails,
-        WorkItemAppendFails,
+        WorkItemAppendCommand,
         WorkItemClaimMiss,
     }
 
@@ -10333,7 +11023,7 @@ mod tests {
             }
             if matches!(
                 self.mode,
-                ScriptedStoreMode::WorkItemAppendFails | ScriptedStoreMode::WorkItemClaimMiss
+                ScriptedStoreMode::WorkItemAppendCommand | ScriptedStoreMode::WorkItemClaimMiss
             ) {
                 return vec![StoredCommand::new(
                     "cmd_approve".to_owned(),
@@ -10347,7 +11037,7 @@ mod tests {
             }
             if matches!(
                 self.mode,
-                ScriptedStoreMode::ConfigAppendFails | ScriptedStoreMode::ConfigClaimMiss
+                ScriptedStoreMode::ConfigAppendCommand | ScriptedStoreMode::ConfigClaimMiss
             ) {
                 return vec![StoredCommand::new(
                     "cmd_setting".to_owned(),
@@ -10369,7 +11059,7 @@ mod tests {
 
     impl FactoryCommandStore for ScriptedFactoryCommandStore {
         fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
-            if self.mode == ScriptedStoreMode::ListFails {
+            if self.mode == ScriptedStoreMode::ListCommands {
                 return Err(EventStoreError::InvalidSequence);
             }
             Ok(self.commands())
@@ -10404,9 +11094,9 @@ mod tests {
         fn append_event(&mut self, _append: &EventAppend) -> EventStoreResult<AppendOutcome> {
             if matches!(
                 self.mode,
-                ScriptedStoreMode::AppendFails
-                    | ScriptedStoreMode::WorkItemAppendFails
-                    | ScriptedStoreMode::ConfigAppendFails
+                ScriptedStoreMode::AppendCommand
+                    | ScriptedStoreMode::WorkItemAppendCommand
+                    | ScriptedStoreMode::ConfigAppendCommand
             ) {
                 return Err(EventStoreError::InvalidSequence);
             }
