@@ -81,6 +81,24 @@ digraph ImplementWorkItem {
         prompt="@prompts/implement.md"
     ]
 
+    // Dead-implementer circuit breaker (C5 / bd-ib-vdpb, ported from
+    // upstream 2026-08-25): after the implementer node is done with its
+    // own retry budget, require a byte change relative to the dispatch
+    // base BEFORE spending janitor, review, or review-fix turns. A real
+    // but wrong implementation has a diff and proceeds normally; a
+    // protocol-dead implementer that left the tree byte-identical emits
+    // the sentinel the Dispatcher journals from the failed `fabro-run`
+    // stage detail. The script line is byte-identical to upstream's
+    // (its sentinel text is the Dispatcher-facing contract, disposition
+    // mention included); only this comment differs — our graph has no
+    // disposition stage.
+    implementation_diff [
+        label="Check implementer changed tree"
+        shape=parallelogram
+        timeout="60s"
+        script="git diff --quiet origin/master...HEAD; status=$?; if test \"$status\" -eq 0; then echo 'LIVESPEC_DEAD_IMPLEMENTER: implementer terminated without changing the worktree relative to dispatch base origin/master...HEAD; stop before janitor/review/disposition' >&2; exit 1; fi; if test \"$status\" -eq 1; then exit 0; fi; echo 'LIVESPEC_DEAD_IMPLEMENTER_CHECK_FAILED: git diff against origin/master...HEAD failed; fail closed before review' >&2; exit \"$status\""
+    ]
+
     // Janitor hard gate: a non-zero `just check` MUST prevent the PR
     // stage (livespec non-functional-requirements.md §"Orchestrator-
     // internal Dispatcher guidance"). Script outcome routes the edges:
@@ -183,6 +201,19 @@ digraph ImplementWorkItem {
         prompt="@prompts/review-fix.md"
     ]
 
+    // Terminal dead-implementer node (C5 / bd-ib-vdpb, ported from
+    // upstream 2026-08-25): a deliberate dead end for unchanged
+    // implement output. It terminates non-green before janitor/review
+    // rounds and carries the governing condition in stderr, which the
+    // Dispatcher persists with the work-item id in the fabro-run
+    // journal record. Script line byte-identical to upstream's.
+    dead_implementer [
+        label="Dead implementer: unchanged tree; stop before review"
+        shape=parallelogram
+        timeout="60s"
+        script="echo 'LIVESPEC_DEAD_IMPLEMENTER: unchanged tree after implementer; no janitor/review/disposition rounds will run against dispatch base' >&2; exit 1"
+    ]
+
     // In-loop human escalation (livespec-impl-beads-4zl): outcomes the
     // loop cannot auto-resolve park the run at this gate — Fabro's
     // native `blocked` status — instead of going quiet. A foreground
@@ -249,9 +280,16 @@ digraph ImplementWorkItem {
     // A failed implement (structured needs-human ending, see
     // prompts/implement.md) routes to the human gate — conditional
     // edges take priority over the unconditional fallback; everything
-    // else proceeds to the janitor.
+    // else proceeds to the diff breaker before any downstream spend.
     implement -> escalate [label="Blocked", condition="outcome=failed"]
-    implement -> janitor
+    implement -> implementation_diff
+
+    // Changed-tree routing: exit 0 means `git diff --quiet` found a
+    // diff, so the existing janitor -> review path remains intact.
+    // Non-zero means either a byte-identical tree or an inability to
+    // prove the tree changed; both fail closed before review.
+    implementation_diff -> janitor          [label="changed", condition="outcome=succeeded"]
+    implementation_diff -> dead_implementer [label="unchanged or unprovable"]
 
     // Janitor outcome routing: exit 0 -> Green -> review (-> pr on
     // approve); non-zero -> Red -> fix while the loop budget remains,
