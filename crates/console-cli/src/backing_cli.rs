@@ -13,6 +13,7 @@ const DRAIN_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRAIN_PROGRAM";
 const DRIVE_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRIVE_PROGRAM";
 const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
 const GH_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_GH_PROGRAM";
+const INVOKER_ENV: &str = "LIVESPEC_INVOKER";
 
 /// Home-relative install locations probed for the `fabro` binary, in order,
 /// when it is not overridden by [`FABRO_PROGRAM_ENV`]. The cockpit runs under
@@ -226,6 +227,33 @@ pub struct PluginResolution {
     version: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// The principal the console asserts for actions it records or forwards.
+pub struct ConsoleInvokerResolution {
+    principal: String,
+    source: String,
+}
+
+impl ConsoleInvokerResolution {
+    #[must_use]
+    /// Build an invoker resolution.
+    pub const fn new(principal: String, source: String) -> Self {
+        Self { principal, source }
+    }
+
+    #[must_use]
+    /// Return the console-asserted principal (`console:<principal>`).
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    #[must_use]
+    /// Return where the principal came from: `flag`, `env`, or `fallback`.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
 impl PluginResolution {
     #[must_use]
     /// Build a resolved plugin summary.
@@ -275,6 +303,34 @@ pub struct ResolveInputs {
     pub current_dir: PathBuf,
     /// Home directory for the installed Claude plugin cache.
     pub home_dir: Option<PathBuf>,
+}
+
+#[must_use]
+/// Resolve the console invoker using the orchestrator contract:
+/// `--invoker`, then non-empty `LIVESPEC_INVOKER`, then an unattributed
+/// `<os-user>@<hostname>` mark.
+pub fn resolve_console_invoker(
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    os_user: &str,
+    hostname: &str,
+) -> ConsoleInvokerResolution {
+    if let Some(value) = flag_value(args, "--invoker").filter(|value| !value.is_empty()) {
+        return ConsoleInvokerResolution::new(format!("console:{value}"), "flag".to_owned());
+    }
+    if let Some(value) = env.get(INVOKER_ENV).filter(|value| !value.is_empty()) {
+        return ConsoleInvokerResolution::new(format!("console:{value}"), "env".to_owned());
+    }
+    ConsoleInvokerResolution::new(
+        format!("console:unattributed:{os_user}@{hostname}"),
+        "fallback".to_owned(),
+    )
+}
+
+fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].as_str())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
