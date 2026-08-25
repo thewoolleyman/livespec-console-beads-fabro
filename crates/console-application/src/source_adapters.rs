@@ -2872,29 +2872,71 @@ impl NeedsAttentionSnapshotPort for ProbeNeedsAttentionPort<'_> {
 ///
 /// The output is a JSON object with a flat `attention[]` array. An empty array
 /// is a valid empty snapshot (nothing needs attention). A payload that is not
-/// the expected shape, or an item missing a stable `id`, returns an honest
-/// reason so the adapter records a not-observed finding instead of fabricating
-/// an inbox.
+/// an object carrying an `attention` array returns an honest reason so the
+/// adapter records a not-observed finding instead of fabricating an inbox.
+/// Malformed items inside a readable array are skipped individually and surfaced
+/// as synthetic attention rows so one bad item cannot blind the whole inbox.
 ///
 /// # Errors
 /// Returns a reason string when the output is not a JSON object carrying an
-/// `attention` array of well-shaped items, or when any item lacks a stable `id`.
+/// `attention` array.
 pub fn parse_needs_attention_snapshot(stdout: &str) -> Result<Vec<AttentionItemSnapshot>, String> {
-    #[derive(serde::Deserialize)]
-    struct Envelope {
-        #[serde(default)]
-        attention: Vec<AttentionItemSnapshot>,
-    }
-
-    let envelope: Envelope = serde_json::from_str(stdout).map_err(|_error| {
+    let envelope: serde_json::Value = serde_json::from_str(stdout).map_err(|_error| {
         "needs-attention output is not a JSON object with an attention array".to_owned()
     })?;
-    for item in &envelope.attention {
-        if item.id.trim().is_empty() {
-            return Err("needs-attention item is missing a stable id".to_owned());
+    let Some(attention) = envelope
+        .as_object()
+        .and_then(|object| object.get("attention"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Err(
+            "needs-attention output is not a JSON object with an attention array".to_owned(),
+        );
+    };
+
+    let mut items = Vec::new();
+    for (index, value) in attention.iter().enumerate() {
+        match serde_json::from_value::<AttentionItemSnapshot>(value.clone()) {
+            Ok(item) if !item.id.trim().is_empty() => items.push(item),
+            Ok(_item) => items.push(malformed_attention_item(value, index, "missing stable id")),
+            Err(error) => items.push(malformed_attention_item(
+                value,
+                index,
+                &format!("malformed item: {error}"),
+            )),
         }
     }
-    Ok(envelope.attention)
+    Ok(items)
+}
+
+fn malformed_attention_item(
+    value: &serde_json::Value,
+    index: usize,
+    reason: &str,
+) -> AttentionItemSnapshot {
+    let name = value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map_or_else(|| format!("index-{index}"), str::to_owned);
+    let repo = value
+        .get("source_ref")
+        .and_then(|source_ref| source_ref.get("repo"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("needs-attention");
+    AttentionItemSnapshot::new(
+        &format!("needs-attention-malformed:{name}"),
+        "needs-attention-malformed-item",
+        "high",
+        &format!("Skipped malformed needs-attention item {name}: {reason}"),
+        AttentionSourceRef::new(repo, None, None),
+        AttentionHandoff::new(
+            "inspect",
+            None,
+            &format!("inspect needs-attention item {name}"),
+        ),
+    )
 }
 
 /// Rebuild the prior ingested needs-attention snapshot from the console's own
@@ -6023,21 +6065,29 @@ mod tests {
         assert!(
             ok_attention_items(parse_needs_attention_snapshot(r#"{"attention":[]}"#)).is_empty()
         );
-        // A missing `attention` key defaults to an empty inbox.
-        assert!(ok_attention_items(parse_needs_attention_snapshot("{}")).is_empty());
     }
 
     #[test]
-    fn parse_needs_attention_snapshot_rejects_malformed_and_id_less_payloads() {
+    fn parse_needs_attention_snapshot_rejects_malformed_envelopes_and_surfaces_id_less_items() {
         assert_eq!(
             parse_needs_attention_snapshot("not json"),
             Err("needs-attention output is not a JSON object with an attention array".to_owned())
         );
-        let id_less = r#"{"attention":[{"id":"  ","kind":"human-valve","urgency":"high","summary":"x","source_ref":{"repo":"console"},"handoff":{"kind":"approve","command":"approve"}}]}"#;
         assert_eq!(
-            parse_needs_attention_snapshot(id_less),
-            Err("needs-attention item is missing a stable id".to_owned())
+            parse_needs_attention_snapshot("{}"),
+            Err("needs-attention output is not a JSON object with an attention array".to_owned())
         );
+        let id_less = r#"{"attention":[{"id":"  ","kind":"human-valve","urgency":"high","summary":"x","source_ref":{"repo":"console"},"handoff":{"kind":"approve","command":"approve"}}]}"#;
+        let items = ok_attention_items(parse_needs_attention_snapshot(id_less));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id(), "needs-attention-malformed:index-0");
+        assert_eq!(items[0].kind(), "needs-attention-malformed-item");
+        assert!(items[0].summary().contains("missing stable id"));
+        let bad_field = r#"{"attention":[{"id":"wi-bad","kind":"human-valve","urgency":7,"summary":"x","source_ref":{"repo":"console"},"handoff":{"kind":"approve","command":"approve"}}]}"#;
+        let malformed_items = ok_attention_items(parse_needs_attention_snapshot(bad_field));
+        assert_eq!(malformed_items.len(), 1);
+        assert_eq!(malformed_items[0].id(), "needs-attention-malformed:wi-bad");
+        assert!(malformed_items[0].summary().contains("malformed item"));
     }
 
     #[test]
