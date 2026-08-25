@@ -180,11 +180,18 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // clauses that an unconditional not-wired port does not implement a
     // specified argv while a genuinely unrunnable invocation must still report
     // honestly and an unperformable verb must not render as available: 210
-    // normative clauses, 17/114/22/57.
+    // normative clauses, 17/114/22/57. The v042
+    // attention-item-sourced-tui-render-path revision added three contracts.md
+    // Initial-Adapters clauses making the needs-attention adapter's
+    // attention_item.* emissions exclusive: the console MUST NOT synthesize
+    // work-item lane state from attention items, a work-item referenced by an
+    // attention row MUST be rendered from genuinely-ingested work-item
+    // snapshots, and one the console never ingested MUST render as explicitly
+    // absent rather than be fabricated: 213 normative clauses, 17/117/22/57.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 17_usize),
-        ("contracts.md", 114),
+        ("contracts.md", 117),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 57),
     ];
@@ -196,7 +203,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 210,
+        total, 213,
         "total normative clauses across the console spec"
     );
     Ok(())
