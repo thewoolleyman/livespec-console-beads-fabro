@@ -1419,81 +1419,6 @@ pub fn normalize_work_item_snapshot(snapshot: &WorkItemSnapshot) -> AdapterPoll 
 }
 
 #[must_use]
-/// Normalize an implementation needs-attention item into a Ready work-item
-/// snapshot.
-///
-/// The needs-attention surface is an independently-polled source. When it
-/// reports an `impl:` row for a concrete work-item, the ledger has work ready
-/// for implementation even if the last work-item lane snapshot in the local
-/// store is stale. Emit a canonical Ready observation keyed by the attention
-/// row's content so the lane board and drain policy consume the same repaired
-/// projection while repeated polls stay idempotent.
-pub fn normalize_impl_attention_ready_snapshot(
-    item: &AttentionItemSnapshot,
-) -> Option<NormalizedSourceEvent> {
-    let work_item_id = item.source_ref().work_item()?;
-    if !item.id().starts_with("impl:") {
-        return None;
-    }
-    let source_version = source_stream_seq(&[
-        "needs-attention-ready",
-        item.id(),
-        item.source_ref().repo(),
-        work_item_id,
-        item.kind(),
-        item.urgency(),
-        item.summary(),
-        item.handoff().kind(),
-        item.handoff().action_id().unwrap_or_default(),
-        item.handoff().command(),
-    ]);
-    let detail = WorkItemDetail {
-        title: Some(item.summary().to_owned()),
-        ..WorkItemDetail::default()
-    };
-    let snapshot = WorkItemSnapshot::new(
-        item.source_ref().repo(),
-        work_item_id,
-        Lane::Ready,
-        None,
-        &rank_bottom_sentinel(),
-        "ready",
-        AdmissionPolicy::Manual,
-        AcceptancePolicy::AiThenHuman,
-        source_version,
-    )
-    .ok()?
-    .with_detail(detail);
-    Some(needs_attention_work_item_snapshot_event(&snapshot))
-}
-
-fn needs_attention_work_item_snapshot_event(snapshot: &WorkItemSnapshot) -> NormalizedSourceEvent {
-    NormalizedSourceEvent::new(
-        ConsoleEvent::new(
-            format!(
-                "evt:needs-attention:{}:{}:{}:ready-snapshot",
-                snapshot.repo(),
-                snapshot.work_item_id(),
-                snapshot.source_version()
-            ),
-            1,
-            "factory".to_owned(),
-            EventType::WorkItemSnapshotObserved,
-            SourceAdapterKind::NeedsAttention.source_name().to_owned(),
-            repo_stream(snapshot.repo()),
-            snapshot.source_version(),
-        ),
-        format!(
-            "needs-attention:{}:{}:{}:ready-snapshot",
-            snapshot.repo(),
-            snapshot.work_item_id(),
-            snapshot.source_version()
-        ),
-        SourcePayload::WorkItemSnapshot(snapshot.clone()),
-    )
-}
-
-#[must_use]
 /// Normalize livespec next snapshot into canonical source events.
 pub fn normalize_livespec_next_snapshot(snapshot: LivespecNextSnapshot) -> AdapterPoll {
     let source_version = snapshot.source_version();
@@ -3230,12 +3155,11 @@ mod tests {
         dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
         fabro_run_snapshot_payload_json, materialize_attention_items,
         normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_impl_attention_ready_snapshot,
-        normalize_livespec_next_snapshot, normalize_work_item_snapshot,
-        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
-        parse_orchestrator_observation, run_adapter_poll, work_item_snapshot_from_payload_json,
-        work_item_snapshot_payload_json,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+        normalize_work_item_snapshot, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
+        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -6295,37 +6219,6 @@ mod tests {
             Some("wi-a".to_owned())
         );
         assert_eq!(super::attention_resolved_id_from_payload_json("{}"), None);
-    }
-
-    #[test]
-    fn impl_attention_ready_snapshot_requires_work_item_and_valid_repo() {
-        let path_only = AttentionItemSnapshot::new(
-            "impl:path",
-            "implementation",
-            "high",
-            "path only",
-            AttentionSourceRef::new("console", None, Some("SPECIFICATION/scenarios.md")),
-            AttentionHandoff::new("implement", Some("implement"), "implement:path"),
-        );
-
-        check(
-            normalize_impl_attention_ready_snapshot(&path_only).is_none(),
-            "path-only impl attention cannot refresh a work-item lane",
-        );
-
-        let blank_repo = AttentionItemSnapshot::new(
-            "impl:wi-1",
-            "implementation",
-            "high",
-            "blank repo",
-            AttentionSourceRef::new(" ", Some("wi-1"), None),
-            AttentionHandoff::new("implement", Some("implement"), "implement:wi-1"),
-        );
-
-        check(
-            normalize_impl_attention_ready_snapshot(&blank_repo).is_none(),
-            "invalid impl attention repo should not fabricate a snapshot",
-        );
     }
 
     #[test]

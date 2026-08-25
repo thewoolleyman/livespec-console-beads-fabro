@@ -2499,11 +2499,24 @@ impl FactoryDrainPolicy {
 
     #[must_use]
     /// Build this value from events input.
+    ///
+    /// Ready-work evidence composes BOTH surfaces: the genuinely-ingested
+    /// work-item lane board AND the live `impl:` rows of the ingested
+    /// `attention_item.*` stream. The second leg is the aw6z staleness repair
+    /// relocated to policy-read time: the needs-attention adapter no longer
+    /// synthesizes Ready-lane snapshots (v042 Initial-Adapters exclusivity),
+    /// so a fresher composed surface showing ready implementation work must
+    /// count HERE, without mutating the work-item lane projection. The gate
+    /// only tests emptiness, so an item present on both surfaces is harmless.
     pub fn from_events(events: &[ConsoleEvent]) -> Self {
-        let ready_work_item_count = project_lane_board(events)
+        let lane_ready_count = project_lane_board(events)
             .column(Lane::Ready)
             .map_or(0, LaneColumn::count);
-        Self::new(ready_work_item_count)
+        let attention_ready_count = materialize_attention_items(events)
+            .iter()
+            .filter(|item| item.id().starts_with("impl:"))
+            .count();
+        Self::new(lane_ready_count + attention_ready_count)
     }
 
     #[must_use]
@@ -6868,7 +6881,7 @@ impl AttentionEntry {
     fn to_detail(&self, events: &[ConsoleEvent]) -> AttentionDetail {
         match self {
             Self::WorkItem(entry) => build_attention_detail(entry, events),
-            Self::NeedsAttention(item) => build_needs_attention_detail(item),
+            Self::NeedsAttention(item) => build_needs_attention_detail(item, events),
         }
     }
 }
@@ -6934,23 +6947,76 @@ fn attention_item_matches(item: &AttentionItemSnapshot, search_query: Option<&st
 
 /// The detail pane for an ingested needs-attention item: its true source repo,
 /// the subject it points at (its work-item, else its path, else its stable id),
-/// and the operator handoff command to run. It carries no fabro run and no lane
-/// valve actions -- those belong only to lane work-item entries -- so the
-/// fabro-run slot is a `-` placeholder and the actions / timeline are empty.
-fn build_needs_attention_detail(item: &AttentionItemSnapshot) -> AttentionDetail {
+/// and the operator handoff command to run (always the item's own handoff --
+/// the operator action the composed surface prescribes). Per the v042
+/// re-sourced Scenario 5, a row that references a work item JOINS that
+/// record's detail by id against genuinely-ingested work-item snapshots: the
+/// joined timeline and lane-derived valve actions come from the real ingested
+/// record, never from state synthesized off the attention row. A referenced
+/// record the console never ingested renders as explicitly absent, with no
+/// timeline and no actions -- absence is stated, not papered over.
+fn build_needs_attention_detail(
+    item: &AttentionItemSnapshot,
+    events: &[ConsoleEvent],
+) -> AttentionDetail {
     let source_ref = item.source_ref();
-    let subject = source_ref
-        .work_item()
-        .or_else(|| source_ref.path())
-        .unwrap_or_else(|| item.id());
+    let handoff_command = Some(item.handoff().command().to_owned());
+    if let Some(work_item_id) = source_ref.work_item() {
+        if let Some(entry) = latest_work_item_snapshot(events, work_item_id) {
+            return AttentionDetail::new(
+                source_ref.repo().to_owned(),
+                work_item_id.to_owned(),
+                "-".to_owned(),
+                handoff_command,
+                latest_timeline(events, entry.event.stream_id(), 3),
+                attention_detail_actions(&entry),
+            );
+        }
+        return AttentionDetail::new(
+            source_ref.repo().to_owned(),
+            format!("{work_item_id} (record not ingested)"),
+            "-".to_owned(),
+            handoff_command,
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    let subject = source_ref.path().unwrap_or_else(|| item.id());
     AttentionDetail::new(
         source_ref.repo().to_owned(),
         subject.to_owned(),
         "-".to_owned(),
-        Some(item.handoff().command().to_owned()),
+        handoff_command,
         Vec::new(),
         Vec::new(),
     )
+}
+
+/// The latest genuinely-ingested work-item snapshot for `work_item_id`, with
+/// its carrying event. Deliberately NOT filtered by [`requires_attention`]:
+/// the needs-attention detail joins ANY ingested record by id (v042
+/// Scenario 5); what it never does is synthesize one.
+fn latest_work_item_snapshot(
+    events: &[ConsoleEvent],
+    work_item_id: &str,
+) -> Option<AttentionSnapshot> {
+    let mut latest: Option<AttentionSnapshot> = None;
+    for event in events {
+        if *event.event_type() != EventType::WorkItemSnapshotObserved {
+            continue;
+        }
+        let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) else {
+            continue;
+        };
+        if snapshot.work_item_id() != work_item_id {
+            continue;
+        }
+        latest = Some(AttentionSnapshot {
+            event: event.clone(),
+            snapshot,
+        });
+    }
+    latest
 }
 
 #[must_use]
@@ -8581,9 +8647,12 @@ mod tests {
                 "drive-cmd",
             ),
         );
-        let detail = super::build_needs_attention_detail(&with_work_item);
+        // No ingested record for the referenced work item -> the subject
+        // carries the explicit-absence marker (v042 Scenario 5), with no
+        // synthesized timeline or actions.
+        let detail = super::build_needs_attention_detail(&with_work_item, &[]);
         assert_eq!(detail.repo(), orchestrator);
-        assert_eq!(detail.work_item(), "bd-ib-ss7rkr");
+        assert_eq!(detail.work_item(), "bd-ib-ss7rkr (record not ingested)");
         assert_eq!(detail.fabro_run(), "-");
         assert_eq!(detail.attach_command(), Some("drive-cmd"));
         assert!(detail.timeline().is_empty());
@@ -8599,7 +8668,7 @@ mod tests {
             AttentionHandoff::new("livespec-op", None, "prune-cmd"),
         );
         assert_eq!(
-            super::build_needs_attention_detail(&with_path).work_item(),
+            super::build_needs_attention_detail(&with_path, &[]).work_item(),
             "SPECIFICATION"
         );
 
@@ -8613,7 +8682,7 @@ mod tests {
             AttentionHandoff::new("shell", None, "shell-cmd"),
         );
         assert_eq!(
-            super::build_needs_attention_detail(&bare).work_item(),
+            super::build_needs_attention_detail(&bare, &[]).work_item(),
             "hygiene:stale-branch:refs/heads/x"
         );
     }
@@ -10503,6 +10572,30 @@ mod tests {
         check(
             run_id.is_none(),
             "malformed fabro gate payload should not produce an attach command",
+        );
+    }
+
+    #[test]
+    fn latest_work_item_snapshot_filters_by_id_and_takes_the_latest() {
+        let other = lane_event("evt_other", "wi-other", Lane::Ready, None, "a0", "ready");
+        let malformed = ConsoleEvent::fixture(
+            "evt_bad",
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json("{}".to_owned());
+        let first = lane_event("evt_first", "wi-x", Lane::Active, None, "a1", "active");
+        let second = lane_event("evt_second", "wi-x", Lane::Ready, None, "a2", "ready");
+        let events = [other, malformed, first, second];
+
+        let hit = super::latest_work_item_snapshot(&events, "wi-x");
+        check(hit.is_some(), "same-id snapshot should be found");
+        if let Some(entry) = hit {
+            check(entry.snapshot.lane() == Lane::Ready, "latest snapshot wins");
+        }
+        check(
+            super::latest_work_item_snapshot(&events, "wi-absent").is_none(),
+            "an id with no ingested snapshot resolves to none",
         );
     }
 
