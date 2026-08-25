@@ -10576,6 +10576,20 @@ mod tests {
     }
 
     #[test]
+    fn factory_drain_policy_composes_lane_and_attention_ready_counts() {
+        // Kills the +/-/* mutants on the composed sum: with one genuinely
+        // Ready lane item AND one live `impl:` attention row the count must be
+        // exactly 2 (1-1 would report an empty queue; 1*1 would under-count).
+        let lane = lane_event("evt_ready_sum", "wi-lane", Lane::Ready, None, "a0", "ready");
+        let row = attention_item("impl:wi-row", "impl-ready", "Ready implementation work");
+        let events = [lane, attention_appeared("evt_attn_sum", &row)];
+        assert_eq!(
+            super::FactoryDrainPolicy::from_events(&events),
+            super::FactoryDrainPolicy::new(2),
+        );
+    }
+
+    #[test]
     fn latest_work_item_snapshot_filters_by_id_and_takes_the_latest() {
         let other = lane_event("evt_other", "wi-other", Lane::Ready, None, "a0", "ready");
         let malformed = ConsoleEvent::fixture(
