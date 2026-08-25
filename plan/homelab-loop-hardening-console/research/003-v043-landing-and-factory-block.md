@@ -247,6 +247,65 @@ containing a non-resolving registration MUST NOT be able to print the
 clean line. Rejecting the placeholder while leaving the all-clear
 reachable would not close it.
 
+## A bound on unbounded work — two instances, opposite failures
+
+A factory dispatch is implement → PR → CI → merge → post-merge janitor.
+That is unbounded work. Bounding it with a timeout produced two failures
+in one day, in OPPOSITE directions, from the same root:
+
+- **This session, near-miss.** The dispatch was wrapped in
+  `timeout 1100`, sized for a command that had previously failed in
+  SECONDS. It came within 86 seconds of SIGTERM-ing a live run. The
+  timeout wrapper was killed on its own (`kill -9` on the `timeout` PID
+  only), which leaves the child running and reparented — `timeout`
+  signals its child on expiry and cannot do so once dead.
+- **Orchestrator, actual.** A 20-minute foreground dispatch timeout
+  FIRED during the post-merge janitor and STRANDED the claim: item
+  `active`, lock held, no live run, and the work ALREADY MERGED.
+
+The bound in this session's case was correctly sized for the behavior
+that had been OBSERVED — and was wrong precisely because the observed
+behavior was itself the defect. **A bound calibrated on broken behavior
+becomes a hazard the moment the thing starts working.** That is the same
+family as the rest of this note: a measurement standing in for a fact
+never established.
+
+**Rule:** never bound a factory dispatch with a timeout. Use an
+unbounded background run plus the completion notification.
+
+**If a dispatch IS severed:** the item may be `active` with a held lock
+while the work is already merged. The remedy is `reconcile-merged` —
+**never re-dispatch**, which would duplicate merged work against a held
+claim.
+
+## The stale-build refusal recurs, and why the obvious fix is a no-op
+
+The Dispatcher refuses to run a plugin build older than the latest
+release. This fired TWICE in one session:
+
+- session build `ed1013833793` vs release `fa53a71e9bac`;
+- then `fa53a71e9bac` vs release `3382863e68bd`, after the orchestrator
+  cut 0.73.0 mid-session.
+
+Both refusals happen BEFORE sandbox launch, so the item is untouched and
+safe to re-dispatch — this is a benign failure, but a confusing one.
+
+The trap: `claude plugin update … --scope project` reports **"already at
+the latest version"** both times, because the INSTALL is current. What
+is stale is the SESSION'S RESOLVED BINDING — the plugin-root path fixed
+when the session started. The update command cannot fix that; only a
+session restart re-binds it.
+
+**Workaround:** resolve the build path FRESH at each dispatch (read the
+newest directory under the plugin cache, or take the build id named in
+the refusal message) and invoke that build's `bin/drive.py` by absolute
+path. Do not reuse the path resolved at session start.
+
+This belongs in `.ai/livespec-plugin-currency.md` if it recurs a third
+time — the existing note covers keeping plugins current, but not the
+stale-BINDING-vs-stale-INSTALL distinction, which is what makes the
+diagnostic misleading.
+
 ## Next
 
 Retry `impl:livespec-console-beads-fabro-e55mov` once the credential
