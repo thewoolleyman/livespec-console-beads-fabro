@@ -381,9 +381,31 @@ fn integration_scope(path: &str) -> Option<TestScope> {
     }
     let target = &parts[3][..parts[3].len() - 3];
     Some(TestScope::Integration {
-        package: parts[1].to_owned(),
+        package: crate_package_name(Path::new("."), parts[1]),
         target: target.to_owned(),
     })
+}
+
+/// Resolve a crate directory's `[package] name` from its manifest under
+/// `<root>/crates/<dir>/Cargo.toml`. The directory name and the package name
+/// are not required to agree -- this workspace's `crates/console-cli` builds
+/// the package `livespec-console-beads-fabro`, and `cargo test --package
+/// <dir-name>` hard-errors on the mismatch, which would wedge every Red/Green
+/// verification of an integration test in such a crate. Falls back to the
+/// directory name when the manifest is unreadable or carries no `name` key.
+fn crate_package_name(root: &Path, dir: &str) -> String {
+    let manifest = root.join("crates").join(dir).join("Cargo.toml");
+    let Ok(text) = std::fs::read_to_string(&manifest) else {
+        return dir.to_owned();
+    };
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("name")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+        {
+            return value.trim().trim_matches('"').to_owned();
+        }
+    }
+    dir.to_owned()
 }
 
 fn is_rust(path: &str) -> bool {
@@ -1041,6 +1063,10 @@ mod tests {
 
     #[test]
     fn scope_for_integration_tests_targets_the_package_test_binary() {
+        // Under the unit-test cwd no `crates/console-cli/Cargo.toml` exists,
+        // so the package resolution exercises its directory-name fallback;
+        // the manifest-backed resolution is covered by
+        // `crate_package_name_resolves_the_manifest_package_name`.
         assert_eq!(
             scope_for_tests(&["crates/console-cli/tests/flow.rs".to_owned()]),
             TestScope::Integration {
@@ -1056,6 +1082,41 @@ mod tests {
             scope_for_tests(&["crates/console-cli/src/tests/helpers.rs".to_owned()]),
             TestScope::Workspace
         );
+    }
+
+    #[test]
+    fn crate_package_name_resolves_the_manifest_package_name() {
+        // The directory name and the package name are not required to agree
+        // (this workspace's `crates/console-cli` builds the package
+        // `livespec-console-beads-fabro`); the resolver must read the
+        // manifest, and fall back to the directory name only when no manifest
+        // is readable.
+        let root =
+            std::env::temp_dir().join(format!("console-rgr-{}-package-name", std::process::id()));
+        let crate_dir = root.join("crates").join("console-cli");
+        let nameless_dir = root.join("crates").join("nameless");
+        let _ = fs::create_dir_all(&crate_dir);
+        let _ = fs::create_dir_all(&nameless_dir);
+        let _ = fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"livespec-console-beads-fabro\"\nversion = \"0.0.0\"\n",
+        );
+        // `namespace` starts with `name` but carries no `=` after the strip,
+        // exercising the untaken prefix branch; the manifest also has no
+        // `name` key at all, exercising the fallback.
+        let _ = fs::write(
+            nameless_dir.join("Cargo.toml"),
+            "[package]\nnamespace = \"x\"\nversion = \"0.0.0\"\n",
+        );
+
+        assert_eq!(
+            crate_package_name(&root, "console-cli"),
+            "livespec-console-beads-fabro"
+        );
+        assert_eq!(crate_package_name(&root, "absent-dir"), "absent-dir");
+        assert_eq!(crate_package_name(&root, "nameless"), "nameless");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

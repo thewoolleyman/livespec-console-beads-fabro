@@ -49,10 +49,10 @@ use console_application::{
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
         diff_needs_attention, dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
-        materialize_attention_items, normalize_impl_attention_ready_snapshot,
-        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_payload_json,
+        materialize_attention_items, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
+        work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -993,15 +993,6 @@ pub fn ingest_needs_attention(
     let mut inserted = 0;
     for event in &events {
         let append = event_append_from_normalized_source_event(event, observed_at);
-        if store.append_event(&append)?.status() == AppendStatus::Inserted {
-            inserted += 1;
-        }
-    }
-    for item in &next {
-        let Some(event) = normalize_impl_attention_ready_snapshot(item) else {
-            continue;
-        };
-        let append = event_append_from_normalized_source_event(&event, observed_at);
         if store.append_event(&append)?.status() == AppendStatus::Inserted {
             inserted += 1;
         }
@@ -4237,11 +4228,14 @@ mod tests {
 
     #[test]
     fn needs_attention_impl_row_refreshes_stale_lane_and_drain_policy() {
-        // Regression for aw6z: a non-orchestrator ledger update made the
+        // Regression for aw6z, re-shaped by the v042 Initial-Adapters
+        // exclusivity clauses: a non-orchestrator ledger update made the
         // needs-attention source see ready implementation work while the lane
-        // stream still held an older Active snapshot. Ingesting the fresher
-        // `impl:` attention row must repair the lane projection before the drain
-        // policy gates a valid dispatch.
+        // stream still held an older Active snapshot. The fresher `impl:`
+        // attention row must unblock the drain policy — but as policy-time
+        // composition of the attention stream, NEVER by synthesizing a lane
+        // snapshot: the work-item lane projection stays exactly what the
+        // orchestrator emitted.
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         append_work_item_lane(
             &mut store,
@@ -4286,15 +4280,15 @@ mod tests {
 
         let inserted =
             ingest_needs_attention(&mut store, &needs_attention, "2026-08-17T21:28:00Z").ok_test();
-        check((inserted) == (2), "assert_eq failed");
+        check((inserted) == (1), "assert_eq failed");
         let after = store.list_console_events().ok_test();
         check(
-            (lane_work_item_ids(&after, Lane::Ready)) == (["livespec-console-beads-fabro-0c5"]),
-            "assert_eq failed",
+            lane_work_item_ids(&after, Lane::Ready).is_empty(),
+            "assert failed",
         );
         check(
-            lane_work_item_ids(&after, Lane::Active).is_empty(),
-            "assert failed",
+            (lane_work_item_ids(&after, Lane::Active)) == (["livespec-console-beads-fabro-0c5"]),
+            "assert_eq failed",
         );
         let policy = super::FactoryDrainPolicy::from_events(&after);
         check(policy.rejection_reason().is_none(), "assert_eq failed");
@@ -4353,7 +4347,10 @@ mod tests {
         let second =
             ingest_needs_attention(&mut sqlite, &needs_attention, "2026-08-17T21:29:00Z").ok_test();
 
-        check((first) == (1), "assert_eq failed");
+        // Every diff append collides with the pre-seeded duplicates, and the
+        // adapter emits nothing else (v042: no synthesized lane snapshots), so
+        // neither pass inserts.
+        check((first) == (0), "assert_eq failed");
         check((second) == (0), "assert_eq failed");
     }
 
