@@ -1,6 +1,6 @@
 {
   "action_id": "config-manifest",
-  "captured_key_set_digest": "39798fa70c4eb21ae8408608601edc2ca3fccb2463d9c25027d2f78e331f54e6",
+  "captured_key_set_digest": "b45d0e4148eb9be07754989969e7de91d6748d12b77b0852e3f3ffd158ee70c4",
   "kind": "config-manifest",
   "manifest": {
     "keys": [
@@ -37,6 +37,12 @@
         "default": 2,
         "key": "acceptance_rework_cap",
         "per_item_override": true,
+        "type": "positive_integer"
+      },
+      {
+        "default": 1,
+        "key": "drift_capture_merge_threshold",
+        "per_item_override": false,
         "type": "positive_integer"
       },
       {

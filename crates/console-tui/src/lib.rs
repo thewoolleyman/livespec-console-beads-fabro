@@ -2341,9 +2341,10 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             Line::from("Settings -- the dispatcher-settings surface: one row per orchestrator"),
             Line::from("setting, each showing the effective value and inline help."),
             Line::from(""),
-            Line::from("The six dispatcher policy settings:"),
+            Line::from("The seven dispatcher policy settings:"),
             Line::from("  auto_approve_ready, merge_on_review_cap, acceptance_mode,"),
-            Line::from("  review_fix_cap, acceptance_rework_cap, wip_cap."),
+            Line::from("  review_fix_cap, acceptance_rework_cap,"),
+            Line::from("  drift_capture_merge_threshold, wip_cap."),
             Line::from("enter / space  edit the selected setting row (an ordinary recorded write)"),
             Line::from("A non-default value that lets the factory act without a human is"),
             Line::from("labelled \"dangerous / use with caution\"."),
@@ -8272,7 +8273,7 @@ mod tests {
     #[test]
     fn help_overlay_auto_focuses_the_active_pane_section() {
         // `?` from the Settings pane auto-focuses the Settings section: the right
-        // pane names the six settings and the edit, not the item-lane actions,
+        // pane names the settings and the edit, not the item-lane actions,
         // and the menu marks Settings as selected.
         let settings = build_tui_model_for_state(
             &[],

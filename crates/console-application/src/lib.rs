@@ -5830,7 +5830,7 @@ impl DispatcherSettingSetRequest {
 
 /// Build the typed [`DispatcherSettingWrite`] for one `{ setting, value }` pair,
 /// or `None` when `setting` names no known key or `value` is the wrong type for
-/// that setting. The mapping is exhaustive over the six keys, so a key the type
+/// that setting. The mapping is exhaustive over the API-configurable keys, so a key the type
 /// system knows is handled here too.
 fn dispatcher_setting_write_from_key_value(
     setting: &str,
@@ -5851,6 +5851,9 @@ fn dispatcher_setting_write_from_key_value(
         "acceptance_rework_cap" => {
             u32_from_json(value).map(DispatcherSettingWrite::AcceptanceReworkCap)
         }
+        "drift_capture_merge_threshold" => {
+            u32_from_json(value).map(DispatcherSettingWrite::DriftCaptureMergeThreshold)
+        }
         "wip_cap" => u32_from_json(value).map(DispatcherSettingWrite::WipCap),
         _unknown => None,
     }
@@ -5870,7 +5873,7 @@ fn u32_from_json(value: &serde_json::Value) -> Option<u32> {
     value.as_u64().and_then(|number| u32::try_from(number).ok())
 }
 
-/// One of the six API-configurable dispatcher settings paired with the value to
+/// One of the API-configurable dispatcher settings paired with the value to
 /// write.
 ///
 /// The console commands each setting THROUGH the orchestrator's published
@@ -5887,6 +5890,8 @@ pub enum DispatcherSettingWrite {
     ReviewFixCap(u32),
     /// `acceptance_rework_cap` (int): the acceptance-rework attempt ceiling.
     AcceptanceReworkCap(u32),
+    /// `drift_capture_merge_threshold` (int): merge-only drift recency threshold.
+    DriftCaptureMergeThreshold(u32),
     /// `wip_cap` (int): the per-repo concurrency ceiling (no per-item override).
     WipCap(u32),
 }
@@ -5901,6 +5906,7 @@ impl DispatcherSettingWrite {
             Self::AcceptanceMode(_) => "acceptance_mode",
             Self::ReviewFixCap(_) => "review_fix_cap",
             Self::AcceptanceReworkCap(_) => "acceptance_rework_cap",
+            Self::DriftCaptureMergeThreshold(_) => "drift_capture_merge_threshold",
             Self::WipCap(_) => "wip_cap",
         }
     }
@@ -5913,9 +5919,10 @@ impl DispatcherSettingWrite {
         match self {
             Self::AutoApproveReady(value) | Self::MergeOnReviewCap(value) => value.to_string(),
             Self::AcceptanceMode(policy) => policy.label().to_owned(),
-            Self::ReviewFixCap(value) | Self::AcceptanceReworkCap(value) | Self::WipCap(value) => {
-                value.to_string()
-            }
+            Self::ReviewFixCap(value)
+            | Self::AcceptanceReworkCap(value)
+            | Self::DriftCaptureMergeThreshold(value)
+            | Self::WipCap(value) => value.to_string(),
         }
     }
 
@@ -5929,9 +5936,10 @@ impl DispatcherSettingWrite {
                 serde_json::Value::Bool(*value)
             }
             Self::AcceptanceMode(policy) => serde_json::Value::String(policy.label().to_owned()),
-            Self::ReviewFixCap(value) | Self::AcceptanceReworkCap(value) | Self::WipCap(value) => {
-                serde_json::Value::Number((*value).into())
-            }
+            Self::ReviewFixCap(value)
+            | Self::AcceptanceReworkCap(value)
+            | Self::DriftCaptureMergeThreshold(value)
+            | Self::WipCap(value) => serde_json::Value::Number((*value).into()),
         }
     }
 }
@@ -5948,6 +5956,9 @@ const INT_SETTING_MAX: u32 = 9;
 /// wraps to one rather than zero.
 const INT_SETTING_MIN: u32 = 1;
 
+/// Released orchestrator default for `dispatcher.drift_capture_merge_threshold`.
+const DRIFT_CAPTURE_MERGE_THRESHOLD_DEFAULT: u32 = 1;
+
 /// One step of the integer-setting dial: increment by one, wrapping from
 /// [`INT_SETTING_MAX`] back to [`INT_SETTING_MIN`] (an observed value below the
 /// minimum, including zero, is nudged up to the minimum).
@@ -5959,7 +5970,7 @@ const fn cycled_int_setting(value: u32) -> u32 {
     }
 }
 
-/// The six dispatcher policy settings the `Settings` view renders, in display
+/// The dispatcher policy settings the `Settings` view renders, in display
 /// order.
 ///
 /// This is the single source of truth binding each row's label, inline
@@ -5977,13 +5988,15 @@ pub enum DispatcherSettingRow {
     ReviewFixCap,
     /// The `acceptance_rework_cap` int row.
     AcceptanceReworkCap,
+    /// The `drift_capture_merge_threshold` int row.
+    DriftCaptureMergeThreshold,
     /// The `wip_cap` int row.
     WipCap,
 }
 
 impl DispatcherSettingRow {
     #[must_use]
-    /// The six rows in display order.
+    /// The rows in display order.
     pub const fn all() -> &'static [Self] {
         &[
             Self::AutoApproveReady,
@@ -5991,6 +6004,7 @@ impl DispatcherSettingRow {
             Self::AcceptanceMode,
             Self::ReviewFixCap,
             Self::AcceptanceReworkCap,
+            Self::DriftCaptureMergeThreshold,
             Self::WipCap,
         ]
     }
@@ -6004,6 +6018,7 @@ impl DispatcherSettingRow {
             Self::AcceptanceMode => "Acceptance mode",
             Self::ReviewFixCap => "Review fix cap",
             Self::AcceptanceReworkCap => "Acceptance rework cap",
+            Self::DriftCaptureMergeThreshold => "Drift capture merge threshold",
             Self::WipCap => "WIP cap",
         }
     }
@@ -6034,6 +6049,10 @@ impl DispatcherSettingRow {
                 "the acceptance-rework attempt ceiling before the factory escalates to a human. \
                  Enter/Space increments (wraps)."
             }
+            Self::DriftCaptureMergeThreshold => {
+                "the required count of recent merge-only drift detections before the factory \
+                 captures drift. Enter/Space increments (wraps)."
+            }
             Self::WipCap => {
                 "the per-repo concurrency ceiling (no per-item override). \
                  Enter/Space increments (wraps)."
@@ -6063,6 +6082,7 @@ impl DispatcherSettingRow {
             Self::AcceptanceMode => "acceptance_mode",
             Self::ReviewFixCap => "review_fix_cap",
             Self::AcceptanceReworkCap => "acceptance_rework_cap",
+            Self::DriftCaptureMergeThreshold => "drift_capture_merge_threshold",
             Self::WipCap => "wip_cap",
         }
     }
@@ -6076,6 +6096,9 @@ impl DispatcherSettingRow {
             Self::AcceptanceMode => settings.acceptance_mode().label().to_owned(),
             Self::ReviewFixCap => settings.review_fix_cap().to_string(),
             Self::AcceptanceReworkCap => settings.acceptance_rework_cap().to_string(),
+            Self::DriftCaptureMergeThreshold => {
+                settings.drift_capture_merge_threshold().to_string()
+            }
             Self::WipCap => settings.wip_cap().to_string(),
         }
     }
@@ -6101,6 +6124,9 @@ impl DispatcherSettingRow {
             }
             Self::AcceptanceReworkCap => DispatcherSettingWrite::AcceptanceReworkCap(
                 cycled_int_setting(settings.acceptance_rework_cap()),
+            ),
+            Self::DriftCaptureMergeThreshold => DispatcherSettingWrite::DriftCaptureMergeThreshold(
+                cycled_int_setting(settings.drift_capture_merge_threshold()),
             ),
             Self::WipCap => DispatcherSettingWrite::WipCap(cycled_int_setting(settings.wip_cap())),
         }
@@ -6176,7 +6202,7 @@ fn set_config_action_id(setting: &DispatcherSettingWrite) -> String {
     format!("set-config:{}:{}", setting.key(), setting.value_literal())
 }
 
-/// The six effective dispatcher settings as the orchestrator's `config` read
+/// The effective dispatcher settings as the orchestrator's `config` read
 /// reports them — a point-in-time read of the orchestrator-owned values, never
 /// persisted by the console.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6186,6 +6212,7 @@ pub struct DispatcherSettings {
     acceptance_mode: AcceptancePolicy,
     review_fix_cap: u32,
     acceptance_rework_cap: u32,
+    drift_capture_merge_threshold: u32,
     wip_cap: u32,
 }
 
@@ -6200,12 +6227,35 @@ impl DispatcherSettings {
         acceptance_rework_cap: u32,
         wip_cap: u32,
     ) -> Self {
+        Self::new_with_drift_capture_merge_threshold(
+            auto_approve_ready,
+            merge_on_review_cap,
+            acceptance_mode,
+            review_fix_cap,
+            acceptance_rework_cap,
+            DRIFT_CAPTURE_MERGE_THRESHOLD_DEFAULT,
+            wip_cap,
+        )
+    }
+
+    #[must_use]
+    /// Construct a new value with an explicit `drift_capture_merge_threshold`.
+    pub const fn new_with_drift_capture_merge_threshold(
+        auto_approve_ready: bool,
+        merge_on_review_cap: bool,
+        acceptance_mode: AcceptancePolicy,
+        review_fix_cap: u32,
+        acceptance_rework_cap: u32,
+        drift_capture_merge_threshold: u32,
+        wip_cap: u32,
+    ) -> Self {
         Self {
             auto_approve_ready,
             merge_on_review_cap,
             acceptance_mode,
             review_fix_cap,
             acceptance_rework_cap,
+            drift_capture_merge_threshold,
             wip_cap,
         }
     }
@@ -6241,6 +6291,12 @@ impl DispatcherSettings {
     }
 
     #[must_use]
+    /// The effective `drift_capture_merge_threshold` value.
+    pub const fn drift_capture_merge_threshold(&self) -> u32 {
+        self.drift_capture_merge_threshold
+    }
+
+    #[must_use]
     /// The effective `wip_cap` value.
     pub const fn wip_cap(&self) -> u32 {
         self.wip_cap
@@ -6250,7 +6306,7 @@ impl DispatcherSettings {
 /// The honest outcome of reading the effective dispatcher settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatcherSettingsRead {
-    /// The orchestrator reported all six settings.
+    /// The orchestrator reported all settings.
     Observed(DispatcherSettings),
     /// No trustworthy read was produced (the surface is not wired, the action
     /// failed, or its payload could not be parsed). The caller degrades to a
@@ -6258,7 +6314,7 @@ pub enum DispatcherSettingsRead {
     NotObserved,
 }
 
-/// Reads and writes the six API-configurable dispatcher settings THROUGH the
+/// Reads and writes the API-configurable dispatcher settings THROUGH the
 /// orchestrator's published `drive` config actions, riding the shared
 /// [`OrchestratorActionPort`].
 ///
@@ -6278,7 +6334,7 @@ impl<'a> DispatcherSettingsPort<'a> {
         Self { action_port }
     }
 
-    /// Read the effective values of all six settings through the `config` action.
+    /// Read the effective values of all settings through the `config` action.
     ///
     /// # Errors
     /// Returns an application error when the underlying port cannot produce a
@@ -6340,8 +6396,8 @@ struct ConfigReadSetting {
     value: serde_json::Value,
 }
 
-/// Parse the `config` read's `settings[]` array into the six effective values.
-/// `None` when the payload does not parse or any of the six keys is absent or
+/// Parse the `config` read's `settings[]` array into the effective values.
+/// `None` when the payload does not parse or any declared key is absent or
 /// mistyped, so the caller degrades to a not-observed finding.
 fn settings_from_config_read(stdout: &str) -> Option<DispatcherSettings> {
     let payload: ConfigReadPayload = serde_json::from_str(stdout).ok()?;
@@ -6349,12 +6405,13 @@ fn settings_from_config_read(stdout: &str) -> Option<DispatcherSettings> {
     for setting in payload.settings {
         let _ = by_key.insert(setting.key, setting.value);
     }
-    Some(DispatcherSettings::new(
+    Some(DispatcherSettings::new_with_drift_capture_merge_threshold(
         bool_setting(&by_key, "auto_approve_ready")?,
         bool_setting(&by_key, "merge_on_review_cap")?,
         acceptance_setting(&by_key, "acceptance_mode")?,
         u32_setting(&by_key, "review_fix_cap")?,
         u32_setting(&by_key, "acceptance_rework_cap")?,
+        u32_setting(&by_key, "drift_capture_merge_threshold")?,
         u32_setting(&by_key, "wip_cap")?,
     ))
 }
@@ -6789,6 +6846,9 @@ fn previous_setting_value_json(
         }
         DispatcherSettingWrite::AcceptanceReworkCap(_) => {
             serde_json::Value::Number(settings.acceptance_rework_cap().into())
+        }
+        DispatcherSettingWrite::DriftCaptureMergeThreshold(_) => {
+            serde_json::Value::Number(settings.drift_capture_merge_threshold().into())
         }
         DispatcherSettingWrite::WipCap(_) => serde_json::Value::Number(settings.wip_cap().into()),
     }
@@ -12804,6 +12864,7 @@ mod tests {
         { "key": "acceptance_mode", "value": "ai-only", "source": "explicit" },
         { "key": "review_fix_cap", "value": 4, "source": "explicit" },
         { "key": "acceptance_rework_cap", "value": 2, "source": "default" },
+        { "key": "drift_capture_merge_threshold", "value": 6, "source": "explicit" },
         { "key": "wip_cap", "value": 9, "source": "explicit" }
       ],
       "summary": "Read effective dispatcher settings."
@@ -12819,6 +12880,7 @@ mod tests {
         { "key": "acceptance_mode", "value": "ai-then-human", "source": "default" },
         { "key": "review_fix_cap", "value": 3, "source": "default" },
         { "key": "acceptance_rework_cap", "value": 2, "source": "default" },
+        { "key": "drift_capture_merge_threshold", "value": 1, "source": "default" },
         { "key": "wip_cap", "value": 5, "source": "default" }
       ]
     }"#;
@@ -12888,6 +12950,15 @@ mod tests {
         );
         assert_eq!(
             DispatcherSettingSetRequest::from_payload_json(
+                r#"{"repo":"repo-a","setting":"drift_capture_merge_threshold","value":1}"#
+            ),
+            Ok(DispatcherSettingSetRequest::new(
+                "repo-a".to_owned(),
+                DispatcherSettingWrite::DriftCaptureMergeThreshold(1)
+            ))
+        );
+        assert_eq!(
+            DispatcherSettingSetRequest::from_payload_json(
                 r#"{"repo":"repo-a","setting":"wip_cap","value":5}"#
             ),
             Ok(DispatcherSettingSetRequest::new(
@@ -12934,11 +13005,12 @@ mod tests {
         assert_eq!(settings.acceptance_mode(), AcceptancePolicy::HumanOnly);
         assert_eq!(settings.review_fix_cap(), 4);
         assert_eq!(settings.acceptance_rework_cap(), 2);
+        assert_eq!(settings.drift_capture_merge_threshold(), 1);
         assert_eq!(settings.wip_cap(), 9);
     }
 
     #[test]
-    fn settings_port_reads_all_six_effective_values_through_the_config_action() {
+    fn settings_port_reads_all_effective_values_through_the_config_action() {
         let probe = ArgRecordingProbe {
             outcome: SourceProbeOutcome::observed(CONFIG_READ_JSON, true),
             observed_args: RefCell::new(Vec::new()),
@@ -12950,14 +13022,17 @@ mod tests {
 
         assert_eq!(
             read,
-            Ok(DispatcherSettingsRead::Observed(DispatcherSettings::new(
-                true,
-                false,
-                AcceptancePolicy::AiOnly,
-                4,
-                2,
-                9,
-            )))
+            Ok(DispatcherSettingsRead::Observed(
+                DispatcherSettings::new_with_drift_capture_merge_threshold(
+                    true,
+                    false,
+                    AcceptancePolicy::AiOnly,
+                    4,
+                    2,
+                    6,
+                    9,
+                )
+            ))
         );
         // The read rode the `config` action-id, nothing more.
         assert_eq!(
@@ -13062,7 +13137,8 @@ mod tests {
             { "key": "merge_on_review_cap", "value": false },
             { "key": "acceptance_mode", "value": "ai-only" },
             { "key": "review_fix_cap", "value": "three" },
-            { "key": "acceptance_rework_cap", "value": 2 }
+            { "key": "acceptance_rework_cap", "value": 2 },
+            { "key": "drift_capture_merge_threshold", "value": 1 }
           ]
         }"#;
         let probe = ArgRecordingProbe {
@@ -13086,6 +13162,7 @@ mod tests {
               {"key":"acceptance_mode","value":"ai-only"},
               {"key":"review_fix_cap","value":4},
               {"key":"acceptance_rework_cap","value":2},
+              {"key":"drift_capture_merge_threshold","value":6},
               {"key":"wip_cap","value":9}
             ]}"#,
             r#"{"settings":[
@@ -13093,6 +13170,7 @@ mod tests {
               {"key":"acceptance_mode","value":"ai-only"},
               {"key":"review_fix_cap","value":4},
               {"key":"acceptance_rework_cap","value":2},
+              {"key":"drift_capture_merge_threshold","value":6},
               {"key":"wip_cap","value":9}
             ]}"#,
             r#"{"settings":[
@@ -13100,6 +13178,7 @@ mod tests {
               {"key":"merge_on_review_cap","value":false},
               {"key":"review_fix_cap","value":4},
               {"key":"acceptance_rework_cap","value":2},
+              {"key":"drift_capture_merge_threshold","value":6},
               {"key":"wip_cap","value":9}
             ]}"#,
             r#"{"settings":[
@@ -13107,6 +13186,7 @@ mod tests {
               {"key":"merge_on_review_cap","value":false},
               {"key":"acceptance_mode","value":"ai-only"},
               {"key":"review_fix_cap","value":4},
+              {"key":"drift_capture_merge_threshold","value":6},
               {"key":"wip_cap","value":9}
             ]}"#,
             r#"{"settings":[
@@ -13115,6 +13195,14 @@ mod tests {
               {"key":"acceptance_mode","value":"ai-only"},
               {"key":"review_fix_cap","value":4},
               {"key":"acceptance_rework_cap","value":2}
+            ]}"#,
+            r#"{"settings":[
+              {"key":"auto_approve_ready","value":true},
+              {"key":"merge_on_review_cap","value":false},
+              {"key":"acceptance_mode","value":"ai-only"},
+              {"key":"review_fix_cap","value":4},
+              {"key":"acceptance_rework_cap","value":2},
+              {"key":"wip_cap","value":9}
             ]}"#,
         ] {
             check(
@@ -13146,6 +13234,10 @@ mod tests {
             (
                 DispatcherSettingWrite::AcceptanceReworkCap(2),
                 "set-config:acceptance_rework_cap:2",
+            ),
+            (
+                DispatcherSettingWrite::DriftCaptureMergeThreshold(6),
+                "set-config:drift_capture_merge_threshold:6",
             ),
             (DispatcherSettingWrite::WipCap(5), "set-config:wip_cap:5"),
         ];
@@ -13322,6 +13414,13 @@ mod tests {
                 &DispatcherSettingWrite::AcceptanceReworkCap(5)
             ),
             serde_json::json!(2)
+        );
+        assert_eq!(
+            super::previous_setting_value_json(
+                &settings,
+                &DispatcherSettingWrite::DriftCaptureMergeThreshold(5)
+            ),
+            serde_json::json!(1)
         );
         assert_eq!(
             super::previous_setting_value_json(&settings, &DispatcherSettingWrite::WipCap(5)),
@@ -15185,7 +15284,7 @@ mod tests {
     fn dispatcher_setting_rows_render_each_effective_value_and_flag_dangerous_rows() {
         let settings = DispatcherSettings::new(true, false, AcceptancePolicy::AiOnly, 4, 2, 5);
         let rows: Vec<SettingRow> = dispatcher_setting_rows(&settings);
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
 
         let rendered: Vec<(&str, &str, bool)> = rows
             .iter()
@@ -15199,6 +15298,7 @@ mod tests {
                 ("Acceptance mode", "ai-only", true),
                 ("Review fix cap", "4", false),
                 ("Acceptance rework cap", "2", false),
+                ("Drift capture merge threshold", "1", false),
                 ("WIP cap", "5", false),
             ]
         );
@@ -15221,6 +15321,7 @@ mod tests {
                 "acceptance_mode",
                 "review_fix_cap",
                 "acceptance_rework_cap",
+                "drift_capture_merge_threshold",
                 "wip_cap",
             ]
         );
@@ -15230,7 +15331,15 @@ mod tests {
     fn dispatcher_setting_row_next_write_flips_cycles_and_increments() {
         // review_fix_cap 9 wraps to the minimum; acceptance_rework_cap 0 (below the
         // minimum) is nudged up to it; wip_cap 3 increments.
-        let settings = DispatcherSettings::new(false, true, AcceptancePolicy::AiThenHuman, 9, 0, 3);
+        let settings = DispatcherSettings::new_with_drift_capture_merge_threshold(
+            false,
+            true,
+            AcceptancePolicy::AiThenHuman,
+            9,
+            0,
+            9,
+            3,
+        );
         let writes: Vec<DispatcherSettingWrite> = DispatcherSettingRow::all()
             .iter()
             .map(|row| row.next_write(&settings))
@@ -15243,6 +15352,7 @@ mod tests {
                 DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::AiOnly),
                 DispatcherSettingWrite::ReviewFixCap(1),
                 DispatcherSettingWrite::AcceptanceReworkCap(1),
+                DispatcherSettingWrite::DriftCaptureMergeThreshold(1),
                 DispatcherSettingWrite::WipCap(4),
             ]
         );
@@ -15269,6 +15379,10 @@ mod tests {
         assert_eq!(
             DispatcherSettingWrite::AcceptanceReworkCap(6).value_json(),
             serde_json::json!(6)
+        );
+        assert_eq!(
+            DispatcherSettingWrite::DriftCaptureMergeThreshold(1).value_json(),
+            serde_json::json!(1)
         );
         assert_eq!(
             DispatcherSettingWrite::WipCap(7).value_json(),
@@ -15301,7 +15415,7 @@ mod tests {
     fn editing_an_int_row_submits_the_incremented_value() {
         let settings =
             DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
-        let model = settings_model(settings, 5); // WIP cap row
+        let model = settings_model(settings, 6); // WIP cap row
         let outcome = resolve_dispatcher_setting_edit(&model, "operator");
         assert!(matches!(
             &outcome,
@@ -15368,7 +15482,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_selection_moves_within_the_six_rows_and_clamps() {
+    fn settings_selection_moves_within_the_settings_rows_and_clamps() {
         let settings =
             DispatcherSettings::new(false, false, AcceptancePolicy::AiThenHuman, 3, 2, 5);
         let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
@@ -15378,12 +15492,12 @@ mod tests {
         let down = reduce_tui_interaction(&state, &[], TuiInteraction::SelectNext);
         assert_eq!(down.selected_setting_index(), 1);
 
-        // Stepping down past the last row clamps at the sixth (index 5).
+        // Stepping down past the last row clamps at the seventh (index 6).
         let mut walked = state.clone();
         for _ in 0..10 {
             walked = reduce_tui_interaction(&walked, &[], TuiInteraction::SelectNext);
         }
-        assert_eq!(walked.selected_setting_index(), 5);
+        assert_eq!(walked.selected_setting_index(), 6);
 
         // Stepping up from the top row stays at the first.
         let up = reduce_tui_interaction(&state, &[], TuiInteraction::SelectPrevious);

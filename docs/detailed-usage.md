@@ -484,7 +484,7 @@ modal, whichever section you are on and however far you have scrolled.
 
 ## Dispatcher settings
 
-The factory's routine autonomy is governed by six **dispatcher policy
+The factory's routine autonomy is governed by seven **dispatcher policy
 settings**. The orchestrator owns every one of them. The console only commands
 and observes: it holds no setting state, derives every value from the
 orchestrator's published read surface, and issues every write through the
@@ -506,13 +506,14 @@ labelled **dangerous / use with caution** wherever it appears.
 | `acceptance_mode` | enum `ai-then-human` \| `ai-only` \| `human-only` | **yes** when `ai-only` — the AI auto-accepts | `n` set-acceptance |
 | `review_fix_cap` | int | no | `f` (value, or `clear`) |
 | `acceptance_rework_cap` | int | no | `k` (value, or `clear`) |
+| `drift_capture_merge_threshold` | int | no | **none** — a per-repo merge-only drift recency threshold |
 | `wip_cap` | int | no | **none** — a per-repo ceiling, structurally not per-item |
 
 Every overridable setting has a per-item valve, so you can depart from the
 global default on a single work-item without changing the default. Setting an
 override to `clear` returns that item to inheriting the global value. Only
-`wip_cap` admits no override: it is a per-repo concurrency ceiling, so a
-per-item value would be meaningless.
+`drift_capture_merge_threshold` and `wip_cap` admit no override: both are
+per-repo settings, so a per-item value would be meaningless.
 
 When the console has no trustworthy read of the orchestrator's settings, the
 Settings view says so — `Dispatcher settings not observed` — rather than
