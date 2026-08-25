@@ -187,11 +187,16 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // work-item lane state from attention items, a work-item referenced by an
     // attention row MUST be rendered from genuinely-ingested work-item
     // snapshots, and one the console never ingested MUST render as explicitly
-    // absent rather than be fabricated: 213 normative clauses, 17/117/22/57.
+    // absent rather than be fabricated: 213 normative clauses, 17/117/22/57. The
+    // v043 console-consumer-tolerance-identity-and-settings-enumeration
+    // revision added the per-item envelope-tolerance paragraph, the operator
+    // principal-resolution subsection, and the de-enumerated settings clauses
+    // (contracts.md), plus the spec.md settings de-enumeration forced by
+    // ratification review: 230 normative clauses, 18/133/22/57.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
-        ("spec.md", 17_usize),
-        ("contracts.md", 117),
+        ("spec.md", 18_usize),
+        ("contracts.md", 133),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 57),
     ];
@@ -203,7 +208,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 213,
+        total, 230,
         "total normative clauses across the console spec"
     );
     Ok(())
