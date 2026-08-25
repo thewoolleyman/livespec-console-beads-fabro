@@ -296,10 +296,63 @@ is stale is the SESSION'S RESOLVED BINDING — the plugin-root path fixed
 when the session started. The update command cannot fix that; only a
 session restart re-binds it.
 
-**Workaround:** resolve the build path FRESH at each dispatch (read the
-newest directory under the plugin cache, or take the build id named in
-the refusal message) and invoke that build's `bin/drive.py` by absolute
-path. Do not reuse the path resolved at session start.
+**Workaround:** resolve the build id FRESH at each dispatch from the
+plugin's own authoritative version report, and invoke that build's
+`bin/drive.py` by absolute path. Do not reuse the path resolved at
+session start.
+
+```bash
+BUILD=$(claude plugin update livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro \
+          --scope project 2>&1 | grep -oE '[0-9a-f]{12}' | tail -1)
+```
+
+**Do NOT derive the build from the filesystem.** Two attempts at that
+failed here, and both failed SILENTLY enough to look plausible:
+
+- `ls -1t | grep -E '^[0-9a-f]{12}$'` returned nothing, because this
+  host's `ls` is decorated (inode, permissions, size, date columns), so
+  no line is a bare directory name. The variable came back empty and the
+  invocation ran against a malformed path.
+- Sorting the cache directories by mtime picked an OLDER build
+  (`96b13b96975b`) than the current one: directory mtimes do not track
+  install order.
+
+Only the authoritative report was right — and it returned `db09c5a0c98d`
+minutes after a refusal had named `3382863e68bd`, so the build moves
+fast enough that a value cached even briefly can already be stale.
+
+## The pattern behind several of today's failures
+
+Two distinct families are worth naming, because instances of both keep
+appearing and each is invisible from the error text alone.
+
+**Conclusion-over-proxy** — a summary line reports a CONCLUSION where
+the check measured only a PROXY:
+
+| Claim | Actually measured |
+| --- | --- |
+| `Observed condition: exhausted` | an ambiguous HTTP 429 |
+| `behavioral coverage clean (0 untested)` | a non-empty `test` string |
+| `bump-minor-pre-major VERIFIED LIVE` | a config key's presence |
+| a factory run reporting `green` | the dispatcher's report, while the run's own `run_turn` telemetry span never landed |
+
+The tell is an affirmative summary; the remedy is to make that line
+unreachable unless the thing it claims was actually measured.
+
+**Remedy-mismatched-to-condition** — a diagnostic whose prescribed fix
+cannot touch the actual condition:
+
+- "wait before retrying" for an EXPIRED credential (waiting never
+  clears it, and rotation appears on screen attributed to billing);
+- "run `claude plugin update`" for a stale session BINDING (the install
+  is already current; only a restart re-binds).
+
+Both send a competent operator confidently in the wrong direction, which
+is worse than an unhelpful error: the operator stops looking. When
+writing a diagnostic, the test is not "is this remedy true of some
+condition that produces this signal" but "is it true of EVERY condition
+that produces this signal" — and where the signal is ambiguous, name the
+ambiguity and order the remedies by asymmetric cost.
 
 This belongs in `.ai/livespec-plugin-currency.md` if it recurs a third
 time — the existing note covers keeping plugins current, but not the
