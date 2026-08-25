@@ -24,6 +24,30 @@
       {
         "gap_id": "gap-e63rj66x",
         "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-rilvqwxk",
+        "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-5hbmsogj",
+        "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-5heiupj6",
+        "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-spiv7nxq",
+        "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-atvxcnu2",
+        "scenario": "Scenario 2 -- Factory drain command"
+      },
+      {
+        "gap_id": "gap-qelsfzre",
+        "scenario": "Scenario 2 -- Factory drain command"
       }
     ]
   },
@@ -223,6 +247,34 @@
     "clauses": [
       {
         "gap_id": "gap-hi6r2ue4",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-lyuhjyrl",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-sk2oeaq4",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-4bhphbv6",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-6upuetwv",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-c6gb44t2",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-uakglovh",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      },
+      {
+        "gap_id": "gap-mazt7dm6",
         "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
       }
     ]
@@ -540,6 +592,14 @@
       {
         "gap_id": "gap-n7vt6nbj",
         "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-qqcw2wn4",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
+      },
+      {
+        "gap_id": "gap-5hnpkzc5",
+        "scenario": "Scenario 13 -- Operator distinguishes cockpit-blind from factory-idle"
       }
     ]
   },
@@ -748,6 +808,10 @@
       {
         "gap_id": "gap-xdltweos",
         "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
+      },
+      {
+        "gap_id": "gap-6h374smr",
+        "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`"
       }
     ]
   },
@@ -775,6 +839,22 @@
       },
       {
         "gap_id": "gap-di4d5msq",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-znxvlmza",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-oxraz3s4",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-g6ykcypy",
+        "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
+      },
+      {
+        "gap_id": "gap-n4pretzy",
         "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys"
       }
     ]
