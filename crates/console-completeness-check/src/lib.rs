@@ -499,13 +499,14 @@ mod tests {
     #[test]
     fn console_settings_rows_surface_every_dispatcher_row_with_help() {
         let rows = console_settings_rows();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         for row in &rows {
             assert!(!row.key().is_empty());
             assert!(!row.help().trim().is_empty());
         }
         let keys: Vec<&str> = rows.iter().map(SettingsRow::key).collect();
         assert!(keys.contains(&"auto_approve_ready"));
+        assert!(keys.contains(&"drift_capture_merge_threshold"));
         assert!(keys.contains(&"wip_cap"));
     }
 

@@ -33,6 +33,7 @@ const CONFIG_READ_JSON: &str = r#"{
     { "key": "acceptance_mode", "value": "ai-then-human", "source": "default" },
     { "key": "review_fix_cap", "value": 3, "source": "default" },
     { "key": "acceptance_rework_cap", "value": 2, "source": "default" },
+    { "key": "drift_capture_merge_threshold", "value": 1, "source": "default" },
     { "key": "wip_cap", "value": 5, "source": "default" }
   ]
 }"#;
