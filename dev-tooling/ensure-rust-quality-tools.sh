@@ -60,6 +60,13 @@ case "${mode}" in
         rustup toolchain install nightly --profile minimal
         ;;
     mutants)
+        # cargo-mutants runs the workspace's configured test tool (nextest)
+        # against the unmutated tree before mutating; a container provisioned
+        # with only this group therefore ALSO needs cargo-nextest, or the
+        # baseline fails with `no such command: nextest` before any mutant is
+        # tested. Latent until the first product-Rust diff exercised the
+        # baseline (PR #830).
+        install_prebuilt_if_missing cargo-nextest cargo-nextest
         install_if_missing cargo-mutants cargo-mutants
         ;;
     *)
