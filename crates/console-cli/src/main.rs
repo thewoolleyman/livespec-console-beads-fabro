@@ -37,7 +37,7 @@ use console_eventstore::SqliteEventStore;
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
     BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, PendingCommandRequester,
-    SourceAdapterRef, SourcePollRequester, TuiSessionRunner,
+    SourceAdapterRef, SourcePollRequester, TuiSessionRunner, resolve_console_invoker,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -73,7 +73,7 @@ fn main() {
     #[cfg(all(not(test), not(coverage)))]
     {
         if should_run_interactive_tui(&args) && std::io::stdout().is_terminal() {
-            match run_interactive_store_tui() {
+            match run_interactive_store_tui(&args) {
                 Ok(()) => {
                     std::process::exit(0);
                 }
@@ -157,9 +157,10 @@ fn run_store_backed_command(
         &["--repo", repo_path.as_str(), "--json"],
     );
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
+    let filtered_args = strip_invoker_args(args);
     Ok(
         livespec_console_beads_fabro::run_with_store_and_dispatch_port(
-            args,
+            &filtered_args,
             &mut store,
             &observed_at,
             &sources,
@@ -173,7 +174,7 @@ fn run_store_backed_command(
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn run_interactive_store_tui() -> Result<(), String> {
+fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let path = console_store_path();
     create_store_parent(&path)?;
     let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
@@ -208,6 +209,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
         .read_settings()
         .unwrap_or(DispatcherSettingsRead::NotObserved);
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
+    let invoker = console_invoker(args);
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo.clone(),
         dispatcher_settings,
@@ -233,7 +235,7 @@ fn run_interactive_store_tui() -> Result<(), String> {
     let session_result = livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
         &observed_at,
-        "operator",
+        invoker.principal(),
         &mut runner,
         &sources,
         &mut drain,
@@ -256,6 +258,39 @@ fn run_interactive_store_tui() -> Result<(), String> {
     }
     session_result.map_err(|error| format!("{error:?}"))?;
     Ok(())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn console_invoker(args: &[String]) -> livespec_console_beads_fabro::ConsoleInvokerResolution {
+    let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
+    resolve_console_invoker(args, &env, &os_user(), &hostname())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn strip_invoker_args(args: &[String]) -> Vec<String> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--invoker" {
+            index += 2;
+            continue;
+        }
+        filtered.push(args[index].clone());
+        index += 1;
+    }
+    filtered
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn os_user() -> String {
+    std::env::var("USER")
+        .or_else(|_error| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_error| "unknown".to_owned())
+}
+
+#[cfg(all(not(test), not(coverage)))]
+fn hostname() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_error| "unknown".to_owned())
 }
 
 /// The background source poller: it owns its own store connection and adapters

@@ -69,7 +69,8 @@ mod backing_cli;
 
 pub use backing_cli::{
     BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
-    PluginResolution, ResolveInputs, python_normalized_invocation,
+    ConsoleInvokerResolution, PluginResolution, ResolveInputs, python_normalized_invocation,
+    resolve_console_invoker,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2634,7 +2635,7 @@ fn help_text() -> String {
 mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
 
-    use crate::effect_sink_io_error;
+    use crate::{effect_sink_io_error, resolve_console_invoker};
 
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -5015,6 +5016,39 @@ mod tests {
         check((payload) == (expected), "assert_eq failed");
         check(
             (commands[0].error_json()) == (Some(payload)),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn work_item_action_port_receives_the_command_requested_by_identity() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let command = CommandEnvelope::new(
+            "cmd_work_item_approve_requested_wi_identity".to_owned(),
+            CommandType::WorkItemApproveRequested,
+            "wi-identity".to_owned(),
+            "wi-identity:work_item.approve_requested".to_owned(),
+            "console:flag-user".to_owned(),
+        );
+        persist_tui_runtime_effects(
+            &mut store,
+            &[TuiRuntimeEffect::PersistCommand(command)],
+            "2026-08-25T00:00:01Z",
+        )
+        .ok_test();
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcomes =
+            handle_pending_work_item_commands(&mut store, "2026-08-25T00:00:02Z", &mut port)
+                .ok_test();
+
+        check((outcomes.len()) == (1), "assert_eq failed");
+        check(
+            (port.observed_action_ids) == (["approve:wi-identity"]),
+            "assert_eq failed",
+        );
+        check(
+            (port.observed_requested_by) == ([r#"OrchestratorActionRequest { action_id: "approve:wi-identity", requested_by: "console:flag-user" }"#.to_owned()]),
             "assert_eq failed",
         );
     }
@@ -7891,6 +7925,68 @@ mod tests {
     }
 
     #[test]
+    fn invoker_resolution_uses_flag_before_environment() {
+        let mut env = resolver_empty_env();
+        env.insert("LIVESPEC_INVOKER".to_owned(), "env-user".to_owned());
+
+        let resolution = resolve_console_invoker(
+            &[
+                "console".to_owned(),
+                "tui".to_owned(),
+                "--invoker".to_owned(),
+                "flag-user".to_owned(),
+            ],
+            &env,
+            "os-user",
+            "host-a",
+        );
+
+        check(
+            (resolution.principal()) == ("console:flag-user"),
+            "assert_eq failed",
+        );
+        check((resolution.source()) == ("flag"), "assert_eq failed");
+    }
+
+    #[test]
+    fn invoker_resolution_uses_non_empty_environment_without_flag() {
+        let mut env = resolver_empty_env();
+        env.insert("LIVESPEC_INVOKER".to_owned(), "env-user".to_owned());
+
+        let resolution = resolve_console_invoker(
+            &["console".to_owned(), "tui".to_owned()],
+            &env,
+            "os-user",
+            "host-a",
+        );
+
+        check(
+            (resolution.principal()) == ("console:env-user"),
+            "assert_eq failed",
+        );
+        check((resolution.source()) == ("env"), "assert_eq failed");
+    }
+
+    #[test]
+    fn invoker_resolution_marks_unattributed_os_user_and_hostname_fallback() {
+        let mut env = resolver_empty_env();
+        env.insert("LIVESPEC_INVOKER".to_owned(), String::new());
+
+        let resolution = resolve_console_invoker(
+            &["console".to_owned(), "tui".to_owned()],
+            &env,
+            "os-user",
+            "host-a",
+        );
+
+        check(
+            (resolution.principal()) == ("console:unattributed:os-user@host-a"),
+            "assert_eq failed",
+        );
+        check((resolution.source()) == ("fallback"), "assert_eq failed");
+    }
+
+    #[test]
     fn dispatcher_journal_path_is_absolute_under_the_selected_repo() {
         // The dispatch source reads an ABSOLUTE journal path under the SELECTED
         // repo, not a working-directory-relative path, so it observes the right
@@ -9164,6 +9260,7 @@ mod tests {
     struct SimulatedWorkItemActionPort {
         outcome: Option<OrchestratorActionOutcome>,
         observed_action_ids: Vec<String>,
+        observed_requested_by: Vec<String>,
     }
 
     impl SimulatedWorkItemActionPort {
@@ -9171,6 +9268,7 @@ mod tests {
             Self {
                 outcome: Some(outcome),
                 observed_action_ids: Vec::new(),
+                observed_requested_by: Vec::new(),
             }
         }
     }
@@ -9182,6 +9280,7 @@ mod tests {
         ) -> Result<OrchestratorActionOutcome, ApplicationError> {
             self.observed_action_ids
                 .push(request.action_id().to_owned());
+            self.observed_requested_by.push(format!("{request:?}"));
             Ok(self
                 .outcome
                 .clone()

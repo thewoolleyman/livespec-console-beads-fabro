@@ -2672,19 +2672,38 @@ impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort<'_> {
 /// action-id-keyed so every valve/policy command rides the same surface.
 pub struct OrchestratorActionRequest {
     action_id: String,
+    requested_by: String,
 }
 
 impl OrchestratorActionRequest {
     #[must_use]
     /// Construct a new value from its required fields.
-    pub const fn new(action_id: String) -> Self {
-        Self { action_id }
+    pub fn new(action_id: String) -> Self {
+        Self {
+            action_id,
+            requested_by: "operator".to_owned(),
+        }
+    }
+
+    #[must_use]
+    /// Construct a new attributed request.
+    pub const fn attributed(action_id: String, requested_by: String) -> Self {
+        Self {
+            action_id,
+            requested_by,
+        }
     }
 
     #[must_use]
     /// Return the action id value.
     pub fn action_id(&self) -> &str {
         &self.action_id
+    }
+
+    #[must_use]
+    /// Return the asserted principal requesting the action.
+    pub fn requested_by(&self) -> &str {
+        &self.requested_by
     }
 }
 
@@ -2861,6 +2880,8 @@ impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
         let mut args: Vec<&str> = self.base_args.iter().map(String::as_str).collect();
         args.push("--action");
         args.push(request.action_id());
+        args.push("--invoker");
+        args.push(request.requested_by());
         Ok(match self.probe.run_command(&self.program, &args) {
             SourceProbeOutcome::Observed { success: true, .. } => {
                 OrchestratorActionOutcome::completed()
@@ -2890,6 +2911,8 @@ impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
         let mut args: Vec<&str> = self.base_args.iter().map(String::as_str).collect();
         args.push("--action");
         args.push(request.action_id());
+        args.push("--invoker");
+        args.push(request.requested_by());
         Ok(match self.probe.run_command(&self.program, &args) {
             SourceProbeOutcome::Observed {
                 stdout,
@@ -5608,7 +5631,10 @@ fn run_work_item_action(
     action_id: &str,
     port: &mut dyn OrchestratorActionPort,
 ) -> ApplicationResult<WorkItemCommandOutcome> {
-    let request = OrchestratorActionRequest::new(action_id.to_owned());
+    let request = OrchestratorActionRequest::attributed(
+        action_id.to_owned(),
+        command.requested_by().to_owned(),
+    );
     let port_outcome = port.run_action(&request)?;
     let mut events = vec![work_item_command_event(
         command,
@@ -6282,6 +6308,23 @@ impl<'a> DispatcherSettingsPort<'a> {
         let request = OrchestratorActionRequest::new(set_config_action_id(setting));
         self.action_port.run_action(&request)
     }
+
+    /// Write one setting through its action as the supplied principal.
+    ///
+    /// # Errors
+    /// Returns an application error when the underlying port cannot produce a
+    /// trustworthy outcome.
+    pub fn write_setting_attributed(
+        &mut self,
+        setting: &DispatcherSettingWrite,
+        requested_by: &str,
+    ) -> ApplicationResult<OrchestratorActionOutcome> {
+        let request = OrchestratorActionRequest::attributed(
+            set_config_action_id(setting),
+            requested_by.to_owned(),
+        );
+        self.action_port.run_action(&request)
+    }
 }
 
 /// The `config` read payload shape the orchestrator emits under `--json`: a
@@ -6686,7 +6729,9 @@ pub fn handle_config_dispatcher_setting_set_command(
         1,
         "{}",
     )];
-    let command_status = match settings_port.write_setting(write)? {
+    let command_status = match settings_port
+        .write_setting_attributed(write, command.requested_by())?
+    {
         OrchestratorActionOutcome::Completed => {
             events.push(config_command_event(
                 command,
@@ -12515,7 +12560,15 @@ mod tests {
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["drive", "--repo", "/repo", "--action", "approve:wi-1"]
+            [
+                "drive",
+                "--repo",
+                "/repo",
+                "--action",
+                "approve:wi-1",
+                "--invoker",
+                "operator",
+            ]
         );
         // The action port never reads files; the probe's file capability still
         // honours the honest-observation contract.
@@ -12910,7 +12963,14 @@ mod tests {
         assert_eq!(
             *probe.observed_args.borrow(),
             [
-                "drive.py", "--repo", "/orch", "--json", "--action", "config"
+                "drive.py",
+                "--repo",
+                "/orch",
+                "--json",
+                "--action",
+                "config",
+                "--invoker",
+                "operator",
             ]
         );
     }
@@ -13123,7 +13183,9 @@ mod tests {
                 "/orch",
                 "--json",
                 "--action",
-                "set-config:wip_cap:7"
+                "set-config:wip_cap:7",
+                "--invoker",
+                "operator",
             ]
         );
     }
