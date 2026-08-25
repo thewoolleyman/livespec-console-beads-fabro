@@ -136,6 +136,14 @@
       {
         "gap_id": "gap-6d4rptn2",
         "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-etdhc5zx",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
+      },
+      {
+        "gap_id": "gap-2saxvsp7",
+        "scenario": "Scenario 5 -- TUI-first operator workflow"
       }
     ]
   },
@@ -212,7 +220,12 @@
     "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/scenario_12_needs_attention_diff.rs::scenario_12_needs_attention_snapshot_diffed_at_ingest_into_attention_item_events",
-    "clauses": []
+    "clauses": [
+      {
+        "gap_id": "gap-hi6r2ue4",
+        "scenario": "Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events"
+      }
+    ]
   },
   {
     "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary",
