@@ -45,14 +45,9 @@ In `SPECIFICATION/contracts.md` §"Initial Adapters", the needs-attention adapte
 
 This posture is the producer-declared contract this console pins from the orchestrator plugin (repo `thewoolleyman/livespec-orchestrator-beads-fabro`, `SPECIFICATION/contracts.md` §"Per-item field stability and the consumer-tolerance posture", ratified v077 and released in v0.72.8), which states that a consumer whose parse discards the whole envelope on one bad item is non-conforming. The console MUST NOT re-derive or relax it.
 
-In `SPECIFICATION/scenarios.md`, a new scenario MUST be appended after Scenario 28:
+In `SPECIFICATION/scenarios.md` §"Scenario 12 -- needs-attention snapshot diffed at ingest into attention_item events", three scenarios MUST be appended to the existing `Feature: needs-attention snapshot diffed at ingest` block, after its current scenario. They are added under that existing heading deliberately: the parse that feeds the diff is the same adapter ingest behavior the heading already governs, and the behavioral-coverage gate binds a registered test per scenario HEADING, so a new heading would be untested until its code leg lands. The clauses added by this proposal MUST be linked to this heading in `tests/heading-coverage.json`.
 
 ```gherkin
-Feature: One bad attention item never blinds the inbox
-  As a LiveSpec operator
-  I want the needs-attention adapter to tolerate a bad item per item
-  So that one malformed or unknown-kind item cannot hide every other fact the inbox carries
-
 Scenario: A malformed item is skipped and named while the rest of the envelope is ingested
   Given a readable needs-attention envelope carrying one well-formed item and one malformed item
   When the adapter parses the envelope
@@ -107,14 +102,9 @@ The resolved principal MUST populate `requested_by` on every command the console
 This resolution order and the recommended form are consumed verbatim from the orchestrator plugin's ratified journal-invoker attribution contract (repo `thewoolleyman/livespec-orchestrator-beads-fabro`, `SPECIFICATION/contracts.md` §"Journal invoker attribution", ratified v073 and released in v0.72.4), which names `console:<principal>` as an example identity. The console MUST NOT invent a second, divergent resolution order.
 ```
 
-In `SPECIFICATION/scenarios.md`, a new scenario MUST be appended after the scenario added by the per-item-tolerance proposal:
+In `SPECIFICATION/scenarios.md` §"Scenario 2 -- Factory drain command", four scenarios MUST be appended to the existing `Feature: Factory drain command` block, after its current scenario. That heading is the canonical command-issue path this behavior attaches to — the console persists a command and invokes the orchestrator through its port — and, as above, the coverage gate binds a registered test per scenario HEADING, so the attribution scenarios ride the existing heading rather than opening an untested one. The clauses added by this proposal MUST be linked to this heading in `tests/heading-coverage.json`.
 
 ```gherkin
-Feature: Console acts are attributed to a resolved principal
-  As a LiveSpec operator
-  I want every console-issued act to carry who ordered it
-  So that an action taken through the console is attributable to a person rather than to a constant
-
 Scenario: An explicitly supplied invoker wins over the environment and the fallback
   Given the console is invoked with an explicit invoker argument
   And the invoker environment variable is also set to a different value
