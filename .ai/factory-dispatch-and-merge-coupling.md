@@ -197,6 +197,38 @@ retry after a real interval separates them at zero cost. A retry two minutes
 later is not evidence; on 2026-08-21 a retry ~78 minutes later ran clean through
 to a merge, which settled it as the rolling face with no secret rotated.
 
+## A `merge-poll` failure that names a PR number is not a severing
+
+Measured 2026-08-26. A dispatch returned `status: failed`, stage
+`merge-poll`, detail "PR did not reach MERGED within the poll budget", with
+a `pr_number` and a null `merge_sha`.
+
+That reads exactly like the severed-dispatch shape above — the one whose
+remedy is `reconcile-merged` and never a re-dispatch — and it was not.
+Timeline: PR #840 created 01:41:20Z, `check-e2e-tmux` failed 01:46:43Z, the
+dispatch reported after that. **The report was accurate.** The PR had not
+merged because CI was genuinely red. Nothing was severed, nothing was
+stranded, and there was nothing to reconcile.
+
+The rule "never run a dispatch under a short tool timeout" still stands and
+was followed here — the dispatch ran unbounded in the background. Running
+it unbounded does not prevent this report, because the budget that expired
+is the **Dispatcher's own** merge poll, not your tool timeout.
+
+So the two shapes need separating by the same evidence discipline the rest
+of this file uses:
+
+- **Severed** — your invocation died mid-flight (timeout, SIGTERM, lost
+  shell). The journal's last stage is mid-run and the forge may show the
+  work already merged. Remedy: `reconcile-merged`, never re-dispatch.
+- **Reported failed at `merge-poll` with a PR number** — the Dispatcher
+  polled, the PR did not merge, and it told you so. **Go read the PR.** It
+  is usually red CI. Do not assume the work landed, do not reconcile, and
+  do not re-dispatch onto a branch that already exists.
+
+Read the PR before choosing a remedy; the PR's own check state settles which
+shape you are in, and it costs one query.
+
 ## The sandbox never sees your work-item COMMENTS
 
 Measured 2026-08-21, after annotating eleven slices with the constraints their
