@@ -370,9 +370,18 @@ artifact and really is not attributable to your diff.
   so it gets backgrounded — and then a `FAILED targets: ...` line sits in
   the captured output under a zero exit code. **Grep the output for
   `FAILED targets:` AND confirm the ref actually moved** with
-  `git ls-remote --heads origin <branch>`. Observed twice on 2026-08-26,
-  the second time by the same session that had just warned another session
-  about it.
+  `git ls-remote --heads origin refs/heads/<branch>`. Observed twice on
+  2026-08-26, the second time by the same session that had just warned
+  another session about it.
+  **Pass the FULL refname, not a substring typed from memory.** That same
+  session then got a FALSE NEGATIVE out of its own check: `ls-remote | grep
+  jsonc-changelog` against a branch actually named
+  `docs/livespec-jsonc-reviewer-changelog`, where that substring never
+  occurs. The push had succeeded. A missed grep is indistinguishable from a
+  failed push, so a sloppy pattern turns the verification step into a second
+  way to be wrong — worse than not checking, because it reads as evidence.
+  Use the exact `refs/heads/<branch>` and check the exit status, or compare
+  the returned sha against `git rev-parse HEAD`.
 - **A fresh `git worktree add` has no `dev-tooling/`,** so
   `just check-baseline` fails there with `worktree_pack_absent` and blocks
   the push. Run **`just install-worktree-pack`** in every new worktree.
