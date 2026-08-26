@@ -50,9 +50,29 @@ you must NEVER `cd` to it or treat the absence of any such path as
      `mise exec -- git rebase origin/master`, then repeat the same
      `mise exec -- git push -u origin HEAD:refs/heads/feat/<work-item-id>`
      command. If that retry gets the same rejection, or if any other
-     push failure occurs, report the output verbatim and end with the
-     needs-human protocol below. Do NOT loop and do NOT retry on any
-     different error signature.
+     push failure occurs during this workflow-permission retry, report
+     the output verbatim and end with the needs-human protocol below.
+     Do NOT loop and do NOT retry on any different error signature in
+     this workflow-permission arm.
+   - If the remote rejects the push as `non-fast-forward` for the
+     assignment feature branch after the successful rebase above, first
+     reconcile only when you can prove the remote branch tip is this
+     run's own prior push. Fetch the assignment feature branch, inspect
+     the observed remote tip, and verify that the remote-only commits
+     are this run's own prior publication. If you cannot prove the
+     remote branch tip is this run's own prior push, report the output
+     verbatim and end with the needs-human protocol below.
+   - When the non-fast-forward branch is proven to be this run's own
+     prior publication, retry EXACTLY ONCE with an explicit lease against
+     the observed assignment feature-branch tip:
+     `mise exec -- git push --force-with-lease=refs/heads/feat/<work-item-id>:<observed-remote-tip> origin HEAD:refs/heads/feat/<work-item-id>`.
+     The retry targets only `refs/heads/feat/<work-item-id>`, never the
+     current run branch. The lease is what makes this overwrite safe: if
+     anyone updated the remote branch after your inspection, the lease
+     mismatch rejects the push and preserves the refusal path. A bare
+     `--force` push remains forbidden. If the leased retry fails with a
+     lease mismatch, or if any other push failure occurs, report the
+     output verbatim and end with the needs-human protocol below.
 4. Open the PR against master with
    `gh pr create --head feat/<work-item-id>` — title from the
    work-item, body drafted from the work-item acceptance criteria in
