@@ -231,9 +231,8 @@ fn process_input_tick(
     let effect = step.effect().clone();
     let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
     let mutated = effect_triggers_source_poll(&effect);
-    if session.handle_runtime_effect(&effect)? == TuiRuntimeEffectSinkOutcome::Deferred {
-        effects.push(effect);
-    }
+    let outcome = session.handle_runtime_effect(&effect)?;
+    apply_sink_outcome(state, effects, effect, outcome);
     if should_quit {
         return Ok(LoopTick::Quit);
     }
@@ -242,6 +241,33 @@ fn process_input_tick(
     } else {
         LoopTick::Idle
     })
+}
+
+/// Fold one sink outcome into the loop's state and deferred-effect list.
+///
+/// Split out of the terminal-bound tick so the DECISION is testable: the tick
+/// itself blocks on `event::poll` and is excluded from tests, which is how the
+/// session-killing behaviour this replaces went unnoticed.
+#[cfg(any(test, not(coverage)))]
+fn apply_sink_outcome(
+    state: &mut TuiInteractionState,
+    effects: &mut Vec<TuiRuntimeEffect>,
+    effect: TuiRuntimeEffect,
+    outcome: TuiRuntimeEffectSinkOutcome,
+) {
+    match outcome {
+        TuiRuntimeEffectSinkOutcome::Deferred => effects.push(effect),
+        TuiRuntimeEffectSinkOutcome::Applied => {}
+        // The store was busy: the effect did NOT land. Say so where the operator
+        // is already looking and keep the session alive, rather than killing the
+        // TUI over a momentary lock wait. Mirrors how a refused action is
+        // surfaced (see `unavailable_action_refusal`). The effect is NOT pushed
+        // to `effects`: it was not applied and must not be flushed later as if
+        // it had been.
+        TuiRuntimeEffectSinkOutcome::NotApplied(reason) => {
+            *state = state.clone().with_transient_status(Some(reason));
+        }
+    }
 }
 
 // `effect_triggers_source_poll` is used by the terminal loop (excluded from tests
@@ -301,13 +327,24 @@ pub enum TuiRuntimeEffect {
     ApplicationError(ApplicationError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// NOT `Copy`: `NotApplied` carries the operator-facing reason, and the reason
+// is the point — a bare marker would tell the operator their action vanished
+// without saying why.
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Outcome from handling one TUI runtime effect.
 pub enum TuiRuntimeEffectSinkOutcome {
     /// The sink applied the effect immediately; callers must not flush it again.
     Applied,
     /// The sink deferred the effect; callers should return it for later handling.
     Deferred,
+    /// The effect was NOT applied because the store was transiently contended,
+    /// carrying the operator-facing reason.
+    ///
+    /// The session MUST survive this: a momentary lock wait is not a reason to
+    /// destroy the operator's session. The caller surfaces the reason and keeps
+    /// running. It is deliberately NOT an `Err` — a real fault still is, and
+    /// still carries its cause.
+    NotApplied(String),
 }
 
 /// Sink for applying TUI runtime effects as the interactive loop produces them.
@@ -3005,6 +3042,7 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::apply_sink_outcome;
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{
@@ -3092,6 +3130,79 @@ mod tests {
     #[should_panic(expected = "selected_lane_item failed")]
     fn selected_lane_item_panics() {
         selected_lane_item(None);
+    }
+
+    #[test]
+    fn a_not_applied_effect_is_shown_to_the_operator_and_not_flushed_later() {
+        // livespec-console-beads-fabro-ddfbcx.1. A transient store contention
+        // must leave the session ALIVE, say so where the operator is already
+        // looking, and must NOT queue the effect for a later flush — it did not
+        // land, and flushing it later would apply an action the operator was
+        // told had failed.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("contention-test".to_owned());
+        let mut effects = Vec::new();
+
+        apply_sink_outcome(
+            &mut state,
+            &mut effects,
+            TuiRuntimeEffect::Render,
+            TuiRuntimeEffectSinkOutcome::NotApplied(
+                "store busy - action NOT applied, press the key again to retry".to_owned(),
+            ),
+        );
+
+        check(
+            effects.is_empty(),
+            "a NOT-applied effect must never be queued for a later flush",
+        );
+
+        let rendered =
+            render_to_text(&build_tui_model_for_state(&[], &state), 200, 40).unwrap_or_default();
+        assert!(
+            rendered.contains("NOT applied"),
+            "the operator must SEE that the action did not land: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_applied_effect_leaves_no_status_and_a_deferred_one_is_queued() {
+        // NEGATIVE CONTROL for the above, both directions: the status must not
+        // appear when nothing failed, and Deferred must still queue.
+        let base = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("contention-test".to_owned());
+
+        let mut applied_state = base.clone();
+        let mut applied_effects = Vec::new();
+        apply_sink_outcome(
+            &mut applied_state,
+            &mut applied_effects,
+            TuiRuntimeEffect::Render,
+            TuiRuntimeEffectSinkOutcome::Applied,
+        );
+        let rendered = render_to_text(&build_tui_model_for_state(&[], &applied_state), 200, 40)
+            .unwrap_or_default();
+        assert!(
+            !rendered.contains("NOT applied"),
+            "an applied effect must not claim it failed: {rendered}"
+        );
+        check(
+            applied_effects.is_empty(),
+            "an applied effect must not be queued",
+        );
+
+        let mut deferred_state = base;
+        let mut deferred_effects = Vec::new();
+        apply_sink_outcome(
+            &mut deferred_state,
+            &mut deferred_effects,
+            TuiRuntimeEffect::Render,
+            TuiRuntimeEffectSinkOutcome::Deferred,
+        );
+        check(
+            deferred_effects.len() == 1,
+            "a deferred effect must still be queued for later handling",
+        );
     }
 
     #[track_caller]
