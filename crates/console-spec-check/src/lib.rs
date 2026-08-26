@@ -414,6 +414,19 @@ pub struct UntestedScenario {
     pub scenario: String,
 }
 
+/// A live scenario H2 with an explicit pending-test registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTestRegistration {
+    /// Scenario file field.
+    pub scenario_file: String,
+    /// Scenario field.
+    pub scenario: String,
+    /// Registered pending-test sentinel.
+    pub test: String,
+    /// Reason field.
+    pub reason: String,
+}
+
 /// A concrete test registration that cannot be resolved to an existing file
 /// and, when a function is named, a matching Rust `fn`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,6 +454,8 @@ pub struct CoverageReport {
     pub unlinked_clauses: Vec<UnlinkedClause>,
     /// Untested scenarios field.
     pub untested_scenarios: Vec<UntestedScenario>,
+    /// Explicit pending-test registrations that are visible but non-blocking.
+    pub pending_test_registrations: Vec<PendingTestRegistration>,
     /// Invalid test registrations field.
     pub invalid_test_registrations: Vec<InvalidTestRegistration>,
 }
@@ -451,7 +466,16 @@ impl CoverageReport {
     pub const fn is_clean(&self) -> bool {
         self.unlinked_clauses.is_empty()
             && self.untested_scenarios.is_empty()
+            && self.pending_test_registrations.is_empty()
             && self.invalid_test_registrations.is_empty()
+    }
+
+    /// Whether the report has no blocking behavioral coverage failures.
+    #[must_use]
+    pub const fn has_blocking_failures(&self) -> bool {
+        !(self.unlinked_clauses.is_empty()
+            && self.untested_scenarios.is_empty()
+            && self.invalid_test_registrations.is_empty())
     }
 }
 
@@ -527,10 +551,14 @@ pub fn evaluate(
     let mut untested_scenarios =
         missing_tests("scenarios.md", operator_scenario_sections, registry);
     untested_scenarios.extend(missing_tests(NFR_FILE, nfr_scenario_sections, registry));
+    let mut pending_test_registrations =
+        pending_tests("scenarios.md", operator_scenario_sections, registry);
+    pending_test_registrations.extend(pending_tests(NFR_FILE, nfr_scenario_sections, registry));
 
     CoverageReport {
         unlinked_clauses,
         untested_scenarios,
+        pending_test_registrations,
         invalid_test_registrations: Vec::new(),
     }
 }
@@ -668,6 +696,26 @@ fn missing_tests(
         .collect()
 }
 
+fn pending_tests(
+    scenario_file: &str,
+    live: &[String],
+    registry: &[CoverageEntry],
+) -> Vec<PendingTestRegistration> {
+    let live = normalized_set(live);
+    registry
+        .iter()
+        .filter(|entry| entry.scenario_file == scenario_file)
+        .filter(|entry| live.contains(&normalize_scenario(&entry.scenario)))
+        .filter(|entry| is_reasoned_pending_todo_entry(entry))
+        .map(|entry| PendingTestRegistration {
+            scenario_file: entry.scenario_file.clone(),
+            scenario: entry.scenario.clone(),
+            test: entry.tests[0].clone(),
+            reason: entry.reason.clone(),
+        })
+        .collect()
+}
+
 fn has_registered_test(entry: &CoverageEntry) -> bool {
     if entry.tests.is_empty() {
         return false;
@@ -677,6 +725,10 @@ fn has_registered_test(entry: &CoverageEntry) -> bool {
     }
     let reason = entry.reason.trim();
     !reason.is_empty() && acknowledges_top_of_pyramid_tier(reason)
+}
+
+fn is_reasoned_pending_todo_entry(entry: &CoverageEntry) -> bool {
+    is_pending_todo_entry(entry) && has_registered_test(entry)
 }
 
 fn is_pending_todo_entry(entry: &CoverageEntry) -> bool {

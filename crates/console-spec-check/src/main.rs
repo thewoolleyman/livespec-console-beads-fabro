@@ -77,7 +77,7 @@ fn run() -> Result<ExitCode, String> {
     let mode = resolve_mode(std::env::var(SEVERITY_ENV).ok().as_deref());
     emit(&report, mode);
 
-    if report.is_clean() || mode == Mode::Warn {
+    if !report.has_blocking_failures() || mode == Mode::Warn {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::FAILURE)
@@ -109,6 +109,15 @@ fn emit(report: &CoverageReport, mode: Mode) {
             scenario.scenario_file, scenario.scenario
         );
     }
+    for registration in &report.pending_test_registrations {
+        eprintln!(
+            "pending: scenario has explicit pending test registration [{}] {} :: {} ({})",
+            registration.scenario_file,
+            registration.scenario,
+            registration.test,
+            registration.reason
+        );
+    }
     for registration in &report.invalid_test_registrations {
         match &registration.function {
             Some(function) => eprintln!(
@@ -132,16 +141,22 @@ fn emit(report: &CoverageReport, mode: Mode) {
     }
     let unlinked = report.unlinked_clauses.len();
     let untested = report.untested_scenarios.len();
+    let pending = report.pending_test_registrations.len();
     let invalid = report.invalid_test_registrations.len();
-    if unlinked == 0 && untested == 0 && invalid == 0 {
+    if unlinked == 0 && untested == 0 && pending == 0 && invalid == 0 {
         eprintln!(
             "console-spec-check: behavioral coverage clean (0 unlinked, 0 untested, 0 invalid test registrations)"
         );
     } else {
+        let summary_label = if report.has_blocking_failures() {
+            label
+        } else {
+            "pending"
+        };
         eprintln!(
-            "{label}: behavioral-coverage: {unlinked} unlinked clause(s), {untested} untested \
-             scenario(s), {invalid} invalid test registration(s) (lever {SEVERITY_ENV}; default \
-             `fail`, set to `warn` to report only)"
+            "{summary_label}: behavioral-coverage: {unlinked} unlinked clause(s), {untested} untested \
+             scenario(s), {pending} pending test registration(s), {invalid} invalid test \
+             registration(s) (lever {SEVERITY_ENV}; default `fail`, set to `warn` to report only)"
         );
     }
 }
