@@ -395,6 +395,22 @@ there is no CRITICAL to ignore and no misleading remedy to follow,
 because nothing is emitted at all. The only way to find it is to
 cross-check the epic's completion count against the forge.
 
+**One datapoint, and the half that stays open.** The orchestrator's own
+per-item dispatch of `bd-ib-ujihbw.1` (PR #1863) ended `closed` with
+`resolution: completed` — but closed BY THE SESSION that drove it, which
+supports this finding rather than contradicting it: closure is a session
+responsibility, that session discharged it, and nothing discharged it
+here. What remains unanswered is whether the Dispatcher's DRAIN path
+(`dispatcher.py loop`, as opposed to a per-item `impl:<id>` dispatch)
+closes what it drains. If the drain closes and only per-item dispatch
+does not, the defect narrows considerably. Neither this session nor the
+orchestrator's could answer it; it belongs in the upstream filing.
+
+**Standing practice until upstream rules**, adopted program-wide off
+this finding: after any green dispatch report, verify the merge on the
+forge, close the item explicitly with the evidence, and never trust an
+epic's completion count without a forge cross-check.
+
 Closed here against verified forge AND code evidence, with the trap
 recorded on each item's timeline. Not filed upstream: whether "the
 factory does not close items" is a defect or the intended division of
