@@ -181,9 +181,31 @@ prohibitions, both from `ci.yml`'s own comment above the job:
   TUI *exited*; it did not render slowly. A longer timeout only makes the
   same failure take longer to report.
 
-The open item is `livespec-console-beads-fabro-bss4rq`, deliberately blocked
-until a recurrence carries a cause. Its predecessor `-4vsy7u` (PR #842)
-fixed the diagnosability half described next.
+`-bss4rq` is CLOSED (2026-08-26) on a product-defect referral, not on a
+fix to the job. Its cause WAS captured — `SQLITE_BUSY`, extended code 5,
+mid-session — and then run to ground: three code-level candidates were each
+refuted, and local contention proved to be absorbed by a **20 ms** budget
+where the CI failure exhausted **5000 ms**. The decisive variable was
+environmental, not logical: `/tmp` on the dev host is **tmpfs**, so the e2e
+store never touches a disk locally, while CI runs in a k3s pod on shared
+disk. **Do not spend a session trying to reproduce this locally at the
+shipped settings** — 150 trials and a deliberately hostile rig cannot.
+The residue is `-ddfbcx.1`: the console *terminates the whole TUI session*
+on a transient store contention instead of degrading. Its predecessor
+`-4vsy7u` (PR #842) fixed the diagnosability half described next, and
+`-ddfbcx.2` (PR #848) closed the second hole `-4vsy7u` left — see below.
+
+Two more prohibitions carried from `-bss4rq`, both earned:
+
+- **Do not raise `busy_timeout`.** It waits longer on an unbounded
+  operation instead of bounding it.
+- **Do not "fix" the pragma ORDER in `initialize_connection`.** It reads
+  like free hygiene — arm `busy_timeout` before `journal_mode` — and it is
+  a **no-op**: rusqlite calls `sqlite3_busy_timeout(db, 5000)` inside
+  `Connection::open` (`inner_connection.rs:119`), before any user pragma
+  runs. A whole session recommended landing it as "strictly-better
+  hygiene ... costs nothing". It would have been a green commit that
+  changed no behaviour.
 
 ## A gate can be blind in the direction you did not check
 
@@ -296,6 +318,42 @@ disabling anything. Dispatcher and driver mechanics live outside this repo per
 `AGENTS.md` "Repository scope", so this is recorded as working knowledge here
 rather than filed as a defect here.
 
+## `check-coverage` cannot name the line it fails on — attribute it yourself
+
+The gate fails with *"N unnameable missed line(s) exceeds the recorded
+allowance"* and tells you to **take it to the maintainer and not raise the
+allowance**. Taking that literally can be wrong in both directions, because
+**the gate fails on the allowance check BEFORE its attribution step runs**,
+so it names nothing — and the miss may be a genuinely uncovered line *your
+change just introduced* rather than the llvm-cov instantiation-group merge
+artifact the disposition fixture describes.
+
+Measured 2026-08-26 on PR #848. The method, in order:
+
+1. **Get the baseline from clean master first.** `just check-coverage` on
+   `master` passes at 1 unnameable miss
+   (`console-application/src/lib.rs` `reduce_tui_interaction`). That is what
+   proves whether the extra one is yours.
+2. **Make the gate attribute it.** Produce the artifacts by hand —
+   `cargo llvm-cov --workspace --all-features --lib --json --output-path X`
+   and `cargo llvm-cov report --show-missing-lines > Y` — then run
+   `python3 dev-tooling/coverage-gate.py X Y Z` where `Z` is a **temporary,
+   never-committed** copy of the disposition fixture with a raised
+   allowance. It then prints the attribution block naming the exact
+   `file:line:col` and the mangled symbol.
+3. **Fix the code, not the fixture.** On #848 the attributed miss was
+   `console-cli/src/lib.rs:2547:30` — a `map_err(|error| helper(&error))`
+   **closure body** no test executes, where the bare-enum form it replaced
+   generated no such region. The cure was to take the error **by value** so
+   the mapping becomes a direct function reference
+   (`.map_err(checkpoint_save_failed)`) with no closure at all — the shape
+   `main.rs:562` already uses for `tui_runtime_io_failed`. Coverage then
+   passed at the **original** allowance with missed functions back to 0.
+
+Raising `max_unnameable_missed_lines` is the last resort the fixture says it
+is. Reach for it only after step 2 shows the miss really is the merge
+artifact and really is not attributable to your diff.
+
 ## Commit / push mechanics
 
 - Commits and pushes are **refused at the primary checkout** (baseline
@@ -306,3 +364,18 @@ rather than filed as a defect here.
   for a genuinely unrelated failure you have verified independently.
 - The repo allows **rebase merges only** (no squash, no merge commit) —
   `gh pr merge --auto --rebase`.
+- **A backgrounded `git push` can report exit 0 while the push FAILED.**
+  The wrapper's status is not the push's. The pre-push `just check` takes
+  ~250-320s here and routinely exceeds a 10-minute foreground tool timeout,
+  so it gets backgrounded — and then a `FAILED targets: ...` line sits in
+  the captured output under a zero exit code. **Grep the output for
+  `FAILED targets:` AND confirm the ref actually moved** with
+  `git ls-remote --heads origin <branch>`. Observed twice on 2026-08-26,
+  the second time by the same session that had just warned another session
+  about it.
+- **A fresh `git worktree add` has no `dev-tooling/`,** so
+  `just check-baseline` fails there with `worktree_pack_absent` and blocks
+  the push. Run **`just install-worktree-pack`** in every new worktree.
+  Prefer it to `just bootstrap`: bootstrap reconciles the claude-plugins row
+  and **advances the local plugin install**, which is what turns
+  `check-fork-drift` red on clean master (see that gate's own note).
