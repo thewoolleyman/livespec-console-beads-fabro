@@ -395,6 +395,28 @@ decision because the empty result read as "this token appears nowhere".
 **Quote the glob** (`--include='*.rs'`), and check the exit status rather
 than only the count.
 
+`set -o pipefail` **is not a defence, and it is what a careful reader reaches
+for.** Measured here: with the unquoted flag,
+`n=$(grep -rl ... --include=*.py 2>/dev/null | wc -l)` under `pipefail`
+yields `n=0` with a non-zero status. The VALUE is still fabricated — the
+abort happens at glob expansion, before the pipeline exists, so there is no
+failing stage for pipefail to catch and `wc -l` never sees input. What
+pipefail (and the plain assignment status) does give you is a **non-zero exit
+code**, which is the only thing that distinguishes it. So: read the STATUS,
+never the count alone. And `2>/dev/null` on such a command is actively
+harmful — it deletes the one human-visible signal, the `no matches found`
+line, while leaving the plausible `0` in place.
+
+Precise mechanism, because it bounds the risk: the glob carries the
+`--include=` prefix, so zsh is matching files literally named
+`--include=<something>.rs`, not `*.rs`. Since no such file normally exists,
+the outcome is a LOUD abort — stderr always carries the signal unless you
+suppress it. (A file literally named `--include=zzz.py` does make zsh rewrite
+the flag silently and grep then searches the wrong set; verified, but
+pathological.) The practical rule is therefore narrow: never redirect stderr
+away from a glob-bearing command, and never read its count without its
+status.
+
 **A count of 0 from `grep -c` is not a measurement** until the same pattern
 has been shown returning non-zero somewhere it should. The cheapest control
 needs no fixture: run it against a prior revision of the file you just
