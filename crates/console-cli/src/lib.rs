@@ -2510,13 +2510,35 @@ impl<'a> SqliteCheckpointPort<'a> {
     }
 }
 
+/// Build a checkpoint-LOAD failure while preserving the underlying store cause.
+///
+/// The bare-enum form discarded it, so every distinct store fault collapsed to
+/// the single opaque name `CheckpointLoadFailed` — the same defect
+/// `ConsoleRuntimeError::tui_runtime_failed` exists to prevent, one call site
+/// over. Mirrors the `AppendFailed` construction below.
+#[must_use]
+#[allow(clippy::needless_pass_by_value)]
+pub fn checkpoint_load_failed(error: EventStoreError) -> AdapterError {
+    AdapterError::CheckpointLoadFailed(format!("{error:?}"))
+}
+
+/// Build a checkpoint-SAVE failure while preserving the underlying store cause.
+///
+/// See [`checkpoint_load_failed`]. This is the variant that actually fired under
+/// measured store contention, and it named nothing.
+#[must_use]
+#[allow(clippy::needless_pass_by_value)]
+pub fn checkpoint_save_failed(error: EventStoreError) -> AdapterError {
+    AdapterError::CheckpointSaveFailed(format!("{error:?}"))
+}
+
 impl SourceCheckpointPort for SqliteCheckpointPort<'_> {
     fn load_checkpoint(&self, adapter_id: &str) -> Result<Option<String>, AdapterError> {
         self.shared
             .store
             .borrow()
             .load_checkpoint(adapter_id)
-            .map_err(|_error| AdapterError::CheckpointLoadFailed)
+            .map_err(checkpoint_load_failed)
     }
 
     fn save_checkpoint(&self, adapter_id: &str, checkpoint: &str) -> Result<(), AdapterError> {
@@ -2524,7 +2546,7 @@ impl SourceCheckpointPort for SqliteCheckpointPort<'_> {
             .store
             .borrow_mut()
             .save_checkpoint(adapter_id, checkpoint, &self.advanced_at)
-            .map_err(|_error| AdapterError::CheckpointSaveFailed)
+            .map_err(checkpoint_save_failed)
     }
 }
 
@@ -2669,7 +2691,10 @@ fn help_text() -> String {
 mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
 
-    use crate::{effect_sink_io_error, resolve_console_invoker};
+    use crate::{
+        checkpoint_load_failed, checkpoint_save_failed, effect_sink_io_error,
+        resolve_console_invoker,
+    };
 
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -5732,6 +5757,30 @@ mod tests {
             )
             .contains("InvalidSequence"),
             "assert failed",
+        );
+    }
+
+    #[test]
+    fn checkpoint_port_errors_carry_the_underlying_store_cause() {
+        // livespec-console-beads-fabro-ddfbcx.2. Both variants used to be bare
+        // enums, so a store fault reached a CI log as `Adapter(CheckpointSaveFailed)`
+        // and named nothing. Under measured store contention this was the MOST
+        // COMMON failure mode, so the flake it hid was the diagnosable one only by
+        // luck of which variant fired.
+        let load = checkpoint_load_failed(EventStoreError::CommandNotFound("cmd-1".to_owned()));
+        let save = checkpoint_save_failed(EventStoreError::CommandNotFound("cmd-1".to_owned()));
+
+        check(
+            load == AdapterError::CheckpointLoadFailed("CommandNotFound(\"cmd-1\")".to_owned()),
+            "checkpoint load failure must carry the store cause",
+        );
+        check(
+            save == AdapterError::CheckpointSaveFailed("CommandNotFound(\"cmd-1\")".to_owned()),
+            "checkpoint save failure must carry the store cause",
+        );
+        check(
+            format!("{save:?}").contains("cmd-1"),
+            "the rendered checkpoint failure must name the cause, not just the variant",
         );
     }
 
