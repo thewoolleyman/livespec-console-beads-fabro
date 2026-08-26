@@ -359,6 +359,49 @@ time — the existing note covers keeping plugins current, but not the
 stale-BINDING-vs-stale-INSTALL distinction, which is what makes the
 diagnostic misleading.
 
+## Merged work stays `active`, and nothing says so
+
+Found while cross-checking the plan epic's completion count against the
+forge, to write an accurate handoff. The epic read 2/6 while three
+children had merged green.
+
+Raw status after three successful factory dispatches:
+
+    e55mov -> active | resolution: None   (PR #834 merged, janitor green)
+    ets4om -> active | resolution: None   (PR #835 merged, janitor green)
+    evasgx -> active | resolution: None   (PR #836 merged, janitor green)
+
+Each dispatch had reported stage `done`, status `green`, detail
+"merged, post-merge janitor green", and each fix was verified present in
+`origin/master`. `dispatcher.py reconcile-merged --item <id>` (unforced)
+re-reported the SAME terminal record and did NOT change the status.
+
+**Neither the factory dispatch nor `reconcile-merged` closes a freeform
+factory-dispatched work-item.** Closure is the `implement` operation's
+freeform completed path. Absent someone running it, the ledger
+under-reports completed work indefinitely, with no signal emitted.
+
+**Why this is worse than bookkeeping.** The plan archive gate refuses
+while any child is undisposed, and undisposed means "status is not
+closed". Merged-but-active children therefore silently DEADLOCK the
+archive of the epic that owns them — an epic whose work is 100% merged
+can sit un-archivable forever, presenting as a stubborn gate rather than
+a wrong store.
+
+**It is the pattern inverted.** Every other instance in this note is a
+check claiming MORE than it measured. This is the ledger claiming LESS
+than reality. Both corrupt the record, but this direction is sneakier:
+there is no CRITICAL to ignore and no misleading remedy to follow,
+because nothing is emitted at all. The only way to find it is to
+cross-check the epic's completion count against the forge.
+
+Closed here against verified forge AND code evidence, with the trap
+recorded on each item's timeline. Not filed upstream: whether "the
+factory does not close items" is a defect or the intended division of
+labour between dispatch and `implement` is the orchestrator's call — but
+if it is intended, the gap is that nothing tells a caller their merged
+item still needs closing, which is still a defect.
+
 ## Next
 
 Retry `impl:livespec-console-beads-fabro-e55mov` once the credential
