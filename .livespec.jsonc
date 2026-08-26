@@ -84,12 +84,26 @@
   //   2026-08-16 — critique_mode, in_flight_alignment, revise_decision_mode,
   //     ratification_review, spec_pr_merge armed to their safe fully-autonomous
   //     values (epic livespec-jvdvx4 fleet-wide rollout, child livespec-jvdvx4.15).
-  //     ratification_reviewer_model is set to "fable" (the fleet convention,
-  //     matching livespec core) because ratification_review: "auto-spawn" is
-  //     inert without a configured reviewer model (effective_ratification_review
-  //     falls back to requiring human input when it is unset).
+  //     ratification_reviewer_model was set to "fable" (then the fleet
+  //     convention, matching livespec core) because ratification_review:
+  //     "auto-spawn" is inert without a configured reviewer model
+  //     (effective_ratification_review falls back to requiring human input when
+  //     it is unset). THAT VALUE IS SUPERSEDED — see the 2026-08-26 entry; the
+  //     REASON for having a value at all still stands.
   //     doctor_dispositions and dispatcher.merge_on_review_cap are deliberately
   //     out of scope for this pass (see the child item for why).
+  //   2026-08-26 — ratification_reviewer_model moved "fable" -> "opus"
+  //     (PR #847, merge sha 1028f593), maintainer-directed across the fleet.
+  //     Fable account capacity was exhausted that day and a ratification
+  //     reviewer died mid-review returning no verdict; because a revise requires
+  //     conforming evidence from the DESIGNATED model, every fable-designated
+  //     repository was hard-blocked from ratifying anything. This repository's
+  //     designation is ordinary adopter configuration — no ratified clause
+  //     requires it to name a particular model — so this is a configuration
+  //     change, not a deviation from ratified text. The independent-review floor
+  //     is UNTOUCHED: the reviewer is still separately spawned and read-only,
+  //     and evidence still declares reviewer_model honestly and still requires
+  //     the literal NO BLOCKERS verdict plus the content digest.
   "spec_governance": {
     "propose_change_mode": "batch",
     "critique_mode": "batch",
