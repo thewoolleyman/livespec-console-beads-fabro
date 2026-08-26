@@ -10,9 +10,9 @@
 
 use super::{
     Audience, ClauseLink, CoverageEntry, CoverageReport, InvalidTestRegistration, Mode, NFR_FILE,
-    SpecSource, UnlinkedClause, UntestedScenario, contains_whole_word, derive_gap_id, evaluate,
-    extract_rules, nfr_scenarios, normalize_scenario, operator_scenarios, parse_heading,
-    parse_registry, push_heading, resolve_mode, validate_test_registrations,
+    PendingTestRegistration, SpecSource, UnlinkedClause, UntestedScenario, contains_whole_word,
+    derive_gap_id, evaluate, extract_rules, nfr_scenarios, normalize_scenario, operator_scenarios,
+    parse_heading, parse_registry, push_heading, resolve_mode, validate_test_registrations,
 };
 
 const FIXTURE: &str = include_str!("../tests/data/parity_fixture.md");
@@ -580,8 +580,30 @@ fn evaluate_accepts_reasoned_pending_todo_scenarios() {
     let report = evaluate(&sources, &registry, &operator, &nfr);
     assert!(
         report.untested_scenarios.is_empty(),
-        "reasoned TODO entries are valid pending registrations"
+        "reasoned TODO entries are non-blocking pending registrations"
     );
+    assert_eq!(
+        report.pending_test_registrations,
+        vec![
+            PendingTestRegistration {
+                scenario_file: "scenarios.md".to_string(),
+                scenario: "Pending Op".to_string(),
+                test: "TODO".to_string(),
+                reason: "Test tier: a top-of-pyramid acceptance test will cover this scenario."
+                    .to_string(),
+            },
+            PendingTestRegistration {
+                scenario_file: NFR_FILE.to_string(),
+                scenario: "Pending Nfr".to_string(),
+                test: "TODO".to_string(),
+                reason: "Test tier: integration coverage will land with the implementation slice."
+                    .to_string(),
+            },
+        ],
+        "pending registrations must be visible so the checker cannot print a clean all-clear",
+    );
+    assert!(!report.has_blocking_failures());
+    assert!(!report.is_clean());
 }
 
 #[test]
@@ -807,9 +829,11 @@ fn coverage_report_is_clean_only_when_empty() {
     let clean = CoverageReport {
         unlinked_clauses: Vec::new(),
         untested_scenarios: Vec::new(),
+        pending_test_registrations: Vec::new(),
         invalid_test_registrations: Vec::new(),
     };
     assert!(clean.is_clean());
+    assert!(!clean.has_blocking_failures());
 
     let with_unlinked = CoverageReport {
         unlinked_clauses: vec![UnlinkedClause {
@@ -819,9 +843,11 @@ fn coverage_report_is_clean_only_when_empty() {
             clause: "c".to_string(),
         }],
         untested_scenarios: Vec::new(),
+        pending_test_registrations: Vec::new(),
         invalid_test_registrations: Vec::new(),
     };
     assert!(!with_unlinked.is_clean());
+    assert!(with_unlinked.has_blocking_failures());
 
     let with_untested = CoverageReport {
         unlinked_clauses: Vec::new(),
@@ -829,13 +855,30 @@ fn coverage_report_is_clean_only_when_empty() {
             scenario_file: "f".to_string(),
             scenario: "s".to_string(),
         }],
+        pending_test_registrations: Vec::new(),
         invalid_test_registrations: Vec::new(),
     };
     assert!(!with_untested.is_clean());
+    assert!(with_untested.has_blocking_failures());
+
+    let with_pending = CoverageReport {
+        unlinked_clauses: Vec::new(),
+        untested_scenarios: Vec::new(),
+        pending_test_registrations: vec![PendingTestRegistration {
+            scenario_file: "f".to_string(),
+            scenario: "s".to_string(),
+            test: "TODO".to_string(),
+            reason: "Test tier: acceptance coverage is pending.".to_string(),
+        }],
+        invalid_test_registrations: Vec::new(),
+    };
+    assert!(!with_pending.is_clean());
+    assert!(!with_pending.has_blocking_failures());
 
     let with_invalid_test = CoverageReport {
         unlinked_clauses: Vec::new(),
         untested_scenarios: Vec::new(),
+        pending_test_registrations: Vec::new(),
         invalid_test_registrations: vec![InvalidTestRegistration {
             scenario_file: "f".to_string(),
             scenario: "s".to_string(),
