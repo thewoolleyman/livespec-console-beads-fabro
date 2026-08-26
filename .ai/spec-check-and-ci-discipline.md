@@ -384,6 +384,24 @@ CI polling — *never treat empty captured output as success; a `|| echo "[]"`
 fallback swallows real errors*. It is just as wrong in a measurement rig, and
 harder to notice there because the fabricated value looks like data.
 
+**A shell that eats an argument produces the same fabricated null.** The
+default shell here is **zsh**, where an UNQUOTED `--include=*.rs` is treated
+as a glob; with no file of that name it raises `no matches found` and
+**aborts the whole command**. A `grep -c ... | wc -l` wrapper then reports a
+confident `0` for a command that never ran. Observed twice on 2026-08-26 —
+once in this repo (`grep -rn ... --include=*.rs` → `(eval):1: no matches
+found`) and once in a sibling repo, where it nearly invalidated a parking
+decision because the empty result read as "this token appears nowhere".
+**Quote the glob** (`--include='*.rs'`), and check the exit status rather
+than only the count.
+
+**A count of 0 from `grep -c` is not a measurement** until the same pattern
+has been shown returning non-zero somewhere it should. The cheapest control
+needs no fixture: run it against a prior revision of the file you just
+changed — `git show <pre-fix-sha>:<path> | grep -c "<pattern>"`. That is how
+this repo's "zero bare cause-discarding sites remain" claim was upgraded from
+an assertion to evidence (2 before the fix, 0 after, same pattern).
+
 **Two rules follow.** Never let a harness substitute a plausible default for
 a missing measurement — fail loudly instead. And when a null is load-bearing,
 run the experiment that should make it non-null and show that it does.
