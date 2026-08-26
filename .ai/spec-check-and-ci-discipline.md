@@ -133,6 +133,97 @@ spec/feature work lives on `spec/*` branches in worktrees, so a bare
 `cargo test` in the primary checkout tests master, not the branch. Check
 out (or worktree) the CI'd SHA before saying "passes locally."
 
+## Flaky vs. caused: only a re-run of the FAILED JOB on the SAME COMMIT tells them apart
+
+A red check on a PR has two very different causes — the PR broke it, or the
+job is flaky — and the evidence that feels most convincing does not
+distinguish them.
+
+Measured 2026-08-26 on PR #840. `check-e2e-tmux` failed
+(`tmux_tui_e2e_lifecycle_walkthrough_two_repos`, "timed out after 20s
+waiting for a settled frame containing `attention: 0`", last capture
+`tui error: TuiRuntimeFailed` / `TUI_EXIT=1`). Two independent measurements
+both pointed at the PR's own change:
+
+- **A green control PR.** #841 — `master` plus a prose-only change — passed
+  the same job in the same CI, and `master`'s last three runs were green.
+- **A green local run.** The same suite on #840's exact branch passed 11/11
+  locally.
+
+Read together those look conclusive, and they compose into one specific
+wrong story: *the PR broke it, and the local pass is an environment
+difference.* Both are true statements that say nothing about causation.
+
+**Re-running the FAILED JOB on the IDENTICAL commit passed.** Same bytes,
+both outcomes — the only measurement that separates the two hypotheses,
+because it holds the code fixed and varies only the run. Use the run-rerun
+subcommand with its failed-only flag.
+
+The near-miss is the point: the verdict the control invited was "this change
+broke the e2e test", which would have sent a session hunting a defect that
+does not exist. **Do not attribute a red check to a change until you have
+re-run that job on the same commit.** A green control and a green local run
+are both compatible with flakiness, and neither is evidence against it.
+
+### `check-e2e-tmux` is known-flaky, and is MERGE-BLOCKING on purpose
+
+Treat a `check-e2e-tmux` red as unattributed until re-run. Two standing
+prohibitions, both from `ci.yml`'s own comment above the job:
+
+- **Do not revert it to advisory.** That comment records why: PRs #360,
+  #361, #362 and #365 each merged with `check-e2e-tmux = FAILURE` while
+  `ci-green` reported SUCCESS, and master's CI sat red for that whole span,
+  "because an advisory check is one nobody is required to read." It assigns
+  the remedy explicitly: "If that dependency makes the job flaky, fix the
+  job."
+- **Do not raise `RENDER_TIMEOUT`**
+  (`crates/console-cli/tests/tmux_tui_e2e.rs`). In the observed failure the
+  TUI *exited*; it did not render slowly. A longer timeout only makes the
+  same failure take longer to report.
+
+The open item is `livespec-console-beads-fabro-bss4rq`, deliberately blocked
+until a recurrence carries a cause. Its predecessor `-4vsy7u` (PR #842)
+fixed the diagnosability half described next.
+
+## A gate can be blind in the direction you did not check
+
+Three shapes, all measured in this repo on 2026-08-26. Each gate ran,
+reported, and the report was about the wrong question.
+
+**A "capture" fixture can be hand-authored, and CI cannot tell.**
+`tests/fixtures/orchestrator-config-manifest.json` is documented in
+`crates/console-completeness-check/src/lib.rs` as a committed capture of the
+orchestrator's `config-manifest`, refreshed by
+`just refresh-config-manifest`. A seventh key was written into it by hand
+with the `captured_key_set_digest` re-stamped to match. No orchestrator
+build published that key — a live capture returned six. The capture is
+hermetic by design (CI runs offline), so nothing in CI could distinguish a
+genuine capture from a fabricated one, and a real refresh would have
+*reverted* the merged work. If a pin must ever run ahead of its producer,
+use the declared-hand-maintained form this repo already ships in
+`tests/fixtures/drive-human-action-surface.json`, whose own leading comment
+says it is hand-reviewed and which demands a reason per divergence — "an
+allowlist says 'ignore this'; a reason says 'here is why'." Never silently
+inside a file whose doc comment claims it was captured.
+
+**A one-directional completeness check is blind to extras.**
+`CompletenessReport` reported only *declared keys missing from* console
+surfaces. An extra console row for an *undeclared* key was not a finding, so
+the fabricated row above stayed invisible to the very gate meant to police
+that lockstep — and the console offered an operator a dial the orchestrator
+answers with `invalid-config-key`. The converse leg landed in PR #840. When
+you write a "must appear in all N places" gate, ask what it says about the
+N+1th thing that appears in only one place.
+
+**An error mapped to a bare enum destroys the diagnosis.**
+`crates/console-cli/src/main.rs` wrapped the whole TUI session launch in
+`.map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)`. Every distinct
+runtime failure — store error, port failure, panic — collapsed into one
+opaque name, so a CI log's *complete* available diagnosis was the string
+`TuiRuntimeFailed`. A failure that cannot be diagnosed cannot be fixed.
+Fixed in PR #842: the variant carries its cause and `Display` renders it, so
+the binary's stderr line now puts the real cause in the tmux frame.
+
 ## A green PR is a statement about its TIP, not about the merge result
 
 A PR's checks ran against its own branch tip. They say nothing about the
