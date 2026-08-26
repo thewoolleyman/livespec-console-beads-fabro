@@ -559,7 +559,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             self.plugin_resolution.clone(),
             session,
         )
-        .map_err(|_error| ConsoleRuntimeError::TuiRuntimeFailed)
+        .map_err(ConsoleRuntimeError::tui_runtime_io_failed)
     }
 }
 
