@@ -63,8 +63,11 @@ pub fn console_settings_rows() -> Vec<SettingsRow> {
         .collect()
 }
 
-/// The result of the completeness check: the declared keys missing from each of
-/// the three required console surfaces. All-empty means the surfaces are complete.
+/// The result of the completeness check.
+///
+/// Tracks declared keys missing from each required console surface, plus console
+/// rows not declared by the orchestrator. All-empty means the surfaces are
+/// complete.
 // The three fields deliberately share the `missing_` prefix — one per surface a
 // key must reach — which is the clearest naming; the pedantic same-prefix lint is
 // not helpful here.
@@ -74,6 +77,7 @@ pub struct CompletenessReport {
     missing_settings_row: Vec<String>,
     missing_help: Vec<String>,
     missing_doc: Vec<String>,
+    undeclared_settings_row: Vec<String>,
 }
 
 impl CompletenessReport {
@@ -83,6 +87,7 @@ impl CompletenessReport {
         self.missing_settings_row.is_empty()
             && self.missing_help.is_empty()
             && self.missing_doc.is_empty()
+            && self.undeclared_settings_row.is_empty()
     }
 
     #[must_use]
@@ -104,6 +109,13 @@ impl CompletenessReport {
     }
 
     #[must_use]
+    /// Console Settings rows whose key is absent from the captured
+    /// `config-manifest` declared-key set.
+    pub fn undeclared_settings_row(&self) -> &[String] {
+        &self.undeclared_settings_row
+    }
+
+    #[must_use]
     /// One diagnostic line per missing (key, surface) pair, each NAMING the key so
     /// the operator can see exactly which declared key fell out of lockstep.
     pub fn diagnostics(&self) -> Vec<String> {
@@ -119,6 +131,11 @@ impl CompletenessReport {
         for key in &self.missing_doc {
             lines.push(format!(
                 "declared key `{key}` is not documented in the settings doc"
+            ));
+        }
+        for key in &self.undeclared_settings_row {
+            lines.push(format!(
+                "console Settings row `{key}` is not declared by the config-manifest"
             ));
         }
         lines
@@ -255,6 +272,11 @@ pub fn evaluate(
         }
         if !section.contains(key.as_str()) {
             report.missing_doc.push(key.clone());
+        }
+    }
+    for row in rows {
+        if !declared.iter().any(|key| key == row.key()) {
+            report.undeclared_settings_row.push(row.key().to_owned());
         }
     }
     report
@@ -499,15 +521,15 @@ mod tests {
     #[test]
     fn console_settings_rows_surface_every_dispatcher_row_with_help() {
         let rows = console_settings_rows();
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 6);
         for row in &rows {
             assert!(!row.key().is_empty());
             assert!(!row.help().trim().is_empty());
         }
         let keys: Vec<&str> = rows.iter().map(SettingsRow::key).collect();
         assert!(keys.contains(&"auto_approve_ready"));
-        assert!(keys.contains(&"drift_capture_merge_threshold"));
         assert!(keys.contains(&"wip_cap"));
+        assert!(!keys.contains(&"drift_capture_merge_threshold"));
     }
 
     #[test]
@@ -559,12 +581,35 @@ mod tests {
         );
         assert!(report.missing_help().is_empty());
         assert!(report.missing_doc().is_empty());
+        assert!(report.undeclared_settings_row().is_empty());
         assert!(
             report
                 .diagnostics()
                 .iter()
                 .any(|line| line.contains("new_upstream_key")
                     && line.contains("no console Settings row"))
+        );
+    }
+
+    #[test]
+    fn evaluate_names_a_settings_row_absent_from_the_declared_key_set() {
+        let declared = vec!["auto_approve_ready".to_owned()];
+        let rows = vec![
+            row("auto_approve_ready", "help"),
+            row("undeclared_console_row", "help"),
+        ];
+        let settings_doc = settings_doc_with_section(&["auto_approve_ready"]);
+        let report = evaluate(&declared, &rows, &settings_doc);
+        assert_eq!(
+            report.undeclared_settings_row(),
+            ["undeclared_console_row".to_owned()]
+        );
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .any(|line| line.contains("undeclared_console_row")
+                    && line.contains("not declared by the config-manifest"))
         );
     }
 
@@ -576,6 +621,7 @@ mod tests {
         let report = evaluate(&declared, &rows, &settings_doc);
         assert_eq!(report.missing_help(), ["wip_cap".to_owned()]);
         assert!(report.missing_settings_row().is_empty());
+        assert!(report.undeclared_settings_row().is_empty());
         assert!(
             report
                 .diagnostics()
@@ -593,6 +639,7 @@ mod tests {
         assert_eq!(report.missing_doc(), ["wip_cap".to_owned()]);
         assert!(report.missing_settings_row().is_empty());
         assert!(report.missing_help().is_empty());
+        assert!(report.undeclared_settings_row().is_empty());
         assert!(
             report
                 .diagnostics()
