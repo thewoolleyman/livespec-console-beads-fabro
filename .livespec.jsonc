@@ -94,7 +94,7 @@
     "propose_change_mode": "batch",
     "critique_mode": "batch",
     "in_flight_alignment": "default-align",
-    "ratification_reviewer_model": "fable",
+    "ratification_reviewer_model": "opus",
     "revise_decision_mode": "delegated",
     "ratification_review": "auto-spawn",
     "spec_pr_merge": "auto-on-green"
