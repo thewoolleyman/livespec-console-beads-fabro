@@ -1,6 +1,6 @@
 {
   "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
-  "upstream_plugin_version": "a049a268ef80",
+  "upstream_plugin_version": "ca102fd15f1e",
   "files": [
     {
       "path": "prompts/disposition.md",
@@ -22,9 +22,9 @@
     },
     {
       "path": "prompts/pr.md",
-      "upstream_sha256": "02a9430cf61ce156263ee0609052851b61be531c987ee8431f00ebe57b3df6e2",
+      "upstream_sha256": "c8459c5eacbcec8fcc7b03f44d8c56a293bae7bbb3cfc6c7ed004936643975ad",
       "present_in_fork": true,
-      "reason": "SYNCED VERBATIM from upstream 2026-07-28 (PR #476, merged 2026-07-28T22:08:32Z) — our copy had been frozen at 3fa2d5c and lacked the fetch+rebase publish leg that upstream landed as bd-ib-qq7f (PR #905). Keep it verbatim: a local 'improvement' to borrowed prose becomes a divergence nobody remembers agreeing to. The retry's exact-match ci.yml scoping is a known upstream wart, filed with factory-hardening; we inherit the fix when they ship it."
+      "reason": "SYNCED VERBATIM from upstream 2026-08-26 (PR #1872, merged 2026-08-26T01:46:04Z as 1a30cdc8, released in v0.75.1) — the publish stage now proves the remote tip is this run's own prior push and then retries EXACTLY ONCE with `git push --force-with-lease=<assignment-branch>:<observed-tip>`, scoped to the assignment feature branch. A bare `--force` stays forbidden, and a lease mismatch still parks. This supersedes the previous entry's closing promise — 'the retry's exact-match ci.yml scoping is a known upstream wart ... we inherit the fix when they ship it' — which is now DISCHARGED: they shipped it and this is the inheritance. Keep it verbatim: a local 'improvement' to borrowed prose becomes a divergence nobody remembers agreeing to, and this repo VENDORS its copy at the repository root while sibling consumers resolve theirs from the installed plugin cache, so nothing here is inherited automatically — every upstream fix to this file arrives as a deliberate sync like this one."
     },
     {
       "path": "prompts/review-fix.md",
