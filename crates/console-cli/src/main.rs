@@ -220,7 +220,20 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // symptom). The poller is fully self-contained — it re-resolves its own
     // adapters + probe and opens its OWN store connection (SqliteEventStore is
     // WAL, so a second connection is safe) — so nothing non-`Send` crosses the
-    // thread boundary. The UI thread pings it (via `ChannelPollRequester`) after a
+    // thread boundary.
+    //
+    // MEASURED WRITER COUNT, because an earlier version of this comment said
+    // "TWO writers" and that understates it fourfold: one walkthrough opens
+    // EIGHT store connections across SIX threads per console process. The UI
+    // thread and this poller are only two of them — the control-command lane
+    // (`handle_pending_control_command_lane`) and the factory lane
+    // (`handle_pending_factory_command_lane`, spawned and deliberately unjoined)
+    // each open a FRESH `SqliteEventStore` per invocation, and every open also
+    // runs `execute_batch(SCHEMA)`, which is itself a write transaction.
+    //
+    // That is why a transient `SQLITE_BUSY` is a reachable outcome rather than a
+    // theoretical one, and why the effect sink tolerates it instead of letting
+    // it end the session (livespec-console-beads-fabro-ddfbcx.1). The UI thread pings it (via `ChannelPollRequester`) after a
     // ledger-mutating effect, and the channel doubles as the shutdown signal.
     let (poll_tx, poll_rx) = std::sync::mpsc::channel::<PollMessage>();
     let poller = std::thread::spawn(move || poller_loop(&poll_rx));

@@ -86,6 +86,31 @@ pub enum EventStoreError {
     UnknownEventType(String),
 }
 
+impl EventStoreError {
+    /// Is this a TRANSIENT contention failure rather than a real fault?
+    ///
+    /// `SQLite` returns `SQLITE_BUSY` / `SQLITE_LOCKED` when a peer connection
+    /// held the write lock longer than the busy timeout. Nothing was computed
+    /// wrongly and nothing was committed — the same call may simply succeed a
+    /// moment later. The live TUI runs several writer connections (the UI
+    /// thread's effect appends, the off-thread source poller, and a fresh
+    /// connection per command-lane invocation), so this is a reachable outcome
+    /// rather than a theoretical one.
+    ///
+    /// Deliberately keyed on the `SQLite` PRIMARY code, never on the message
+    /// text: the rendered string is a diagnostic, not a contract.
+    #[must_use]
+    pub const fn is_transient_contention(&self) -> bool {
+        match self {
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => matches!(
+                error.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ),
+            _ => false,
+        }
+    }
+}
+
 impl From<rusqlite::Error> for EventStoreError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
@@ -924,6 +949,55 @@ mod tests {
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use rusqlite::{Connection, Rows, Statement, Transaction};
+
+    #[test]
+    fn transient_contention_is_keyed_on_the_sqlite_code_not_the_message() {
+        // livespec-console-beads-fabro-ddfbcx.1. A momentary lock wait must be
+        // distinguishable from a real fault WITHOUT sniffing the rendered
+        // string, which is a diagnostic and not a contract.
+        let busy = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".to_owned()),
+        ));
+        let locked = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(6),
+            None,
+        ));
+        // A BUSY carrying no message at all is still transient — the code, not
+        // the text, decides.
+        let busy_without_message = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            None,
+        ));
+
+        check(busy.is_transient_contention(), "SQLITE_BUSY is transient");
+        check(
+            locked.is_transient_contention(),
+            "SQLITE_LOCKED is transient",
+        );
+        check(
+            busy_without_message.is_transient_contention(),
+            "a BUSY with no message text is still transient",
+        );
+
+        // NEGATIVE CONTROLS: real faults must NOT be absorbed as contention.
+        let corrupt = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(11),
+            Some("database disk image is malformed".to_owned()),
+        ));
+        check(
+            !corrupt.is_transient_contention(),
+            "corruption is NOT transient contention",
+        );
+        check(
+            !EventStoreError::InvalidSequence.is_transient_contention(),
+            "a non-sqlite variant is NOT transient contention",
+        );
+        check(
+            !EventStoreError::UnknownEventType("x".to_owned()).is_transient_contention(),
+            "an unknown event type is NOT transient contention",
+        );
+    }
 
     #[test]
     fn opened_store_uses_wal_mode_and_creates_required_tables() {

@@ -389,6 +389,68 @@ struct StoreBackedTuiRuntimeEffectSink<'a> {
     command_requester: &'a dyn PendingCommandRequester,
     persisted_command_count: usize,
     handled_command_count: usize,
+    // Consecutive TRANSIENT refresh failures tolerated so far. A re-list that
+    // loses the write lock costs nothing to skip — the loop re-runs 250 ms
+    // later and the frame is one tick stale — but tolerating it FOREVER would
+    // silently freeze the operator's data behind a live-looking UI. Bounded, so
+    // a persistent fault still surfaces with its cause.
+    consecutive_transient_refresh_failures: usize,
+}
+
+/// How many consecutive TRANSIENT re-list failures the sink absorbs before it
+/// stops calling the store healthy and propagates the fault.
+///
+/// Small on purpose: each attempt has already waited out `SQLite`'s 5 s busy
+/// timeout, so three in a row means the store has been unavailable for the
+/// better part of fifteen seconds, which is a fault and not contention.
+const MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES: usize = 3;
+
+/// The operator-facing line for an effect the store refused under contention.
+///
+/// Says NOT APPLIED in as many words: an operator who pressed approve and saw
+/// nothing happen must never conclude the item was approved. Retrying is the
+/// operator's call — the console does NOT retry behind their back, because
+/// `SQLite`'s busy timeout has ALREADY waited 5 s on this attempt and a second
+/// hidden attempt would freeze the UI for another 5 s in exactly the moment
+/// responsiveness matters most.
+/// Decide what a FAILED effect-persist means for the session.
+///
+/// Transient contention is reported as `NotApplied` so the session survives; a
+/// real fault is still an `Err` carrying its cause, so this does not regress
+/// the diagnosability leg (livespec-console-beads-fabro-4vsy7u).
+fn sink_outcome_for_persist_error(
+    error: EventStoreError,
+) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+    if error.is_transient_contention() {
+        return Ok(TuiRuntimeEffectSinkOutcome::NotApplied(store_busy_status(
+            &error,
+        )));
+    }
+    Err(effect_sink_io_error(error))
+}
+
+/// Decide what a FAILED store re-list means, given how many transient failures
+/// have already run consecutively.
+///
+/// `Ok(None)` tells the loop to keep its current snapshot — the next tick
+/// re-lists 250 ms later, so the cost is one stale frame. Bounded: past
+/// [`MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES`] the fault propagates with its
+/// cause rather than freezing the operator's data behind a live-looking UI.
+fn tolerate_transient_refresh(
+    consecutive_failures: &mut usize,
+    error: EventStoreError,
+) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
+    if error.is_transient_contention() {
+        *consecutive_failures += 1;
+        if *consecutive_failures <= MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES {
+            return Ok(None);
+        }
+    }
+    Err(effect_sink_io_error(error))
+}
+
+fn store_busy_status(error: &EventStoreError) -> String {
+    format!("store busy - action NOT applied, press the key again to retry ({error:?})")
 }
 
 impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
@@ -402,6 +464,7 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
         command_requester: &'a dyn PendingCommandRequester,
     ) -> Self {
         Self {
+            consecutive_transient_refresh_failures: 0,
             store,
             observed_at,
             factory_port,
@@ -428,9 +491,14 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
         &mut self,
         effect: &TuiRuntimeEffect,
     ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
-        let persisted =
-            persist_tui_runtime_effects(self.store, std::slice::from_ref(effect), self.observed_at)
-                .map_err(effect_sink_io_error)?;
+        let persisted = match persist_tui_runtime_effects(
+            self.store,
+            std::slice::from_ref(effect),
+            self.observed_at,
+        ) {
+            Ok(persisted) => persisted,
+            Err(error) => return sink_outcome_for_persist_error(error),
+        };
         if !persisted.is_empty() {
             if !self.command_requester.handles_pending_commands_inline() {
                 append_factory_drain_requested_events(self.store, &persisted, self.observed_at)
@@ -521,10 +589,16 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
         if request_poll {
             self.poll_requester.request_poll();
         }
-        let events = self
-            .store
-            .list_console_events()
-            .map_err(effect_sink_io_error)?;
+        let events = match self.store.list_console_events() {
+            Ok(events) => events,
+            Err(error) => {
+                return tolerate_transient_refresh(
+                    &mut self.consecutive_transient_refresh_failures,
+                    error,
+                );
+            }
+        };
+        self.consecutive_transient_refresh_failures = 0;
         Ok(Some(events))
     }
 }
@@ -2692,8 +2766,9 @@ mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
 
     use crate::{
-        checkpoint_load_failed, checkpoint_save_failed, effect_sink_io_error,
-        resolve_console_invoker,
+        MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, checkpoint_load_failed, checkpoint_save_failed,
+        effect_sink_io_error, resolve_console_invoker, sink_outcome_for_persist_error,
+        tolerate_transient_refresh,
     };
 
     use std::cell::RefCell;
@@ -5757,6 +5832,105 @@ mod tests {
             )
             .contains("InvalidSequence"),
             "assert failed",
+        );
+    }
+
+    fn busy_error() -> EventStoreError {
+        EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".to_owned()),
+        ))
+    }
+
+    #[test]
+    fn a_transient_store_failure_does_not_kill_the_session() {
+        // livespec-console-beads-fabro-ddfbcx.1. A momentary lock wait used to
+        // propagate out of the TUI loop and terminate the WHOLE session.
+        // Rendered rather than matched: a match arm for the unexpected case is a
+        // branch no passing run takes, which the coverage gate correctly refuses.
+        let rendered = format!("{:?}", sink_outcome_for_persist_error(busy_error()));
+
+        check(
+            rendered.contains("NotApplied"),
+            "transient contention must NOT end the session",
+        );
+        check(
+            rendered.contains("NOT applied"),
+            "the operator must be told the action did not land",
+        );
+        check(
+            rendered.contains("DatabaseBusy"),
+            "the reason must carry the underlying cause",
+        );
+    }
+
+    #[test]
+    fn a_real_store_fault_still_fails_with_its_cause() {
+        // NEGATIVE CONTROL for the above: tolerance must not swallow real faults,
+        // which is the defect -4vsy7u closed.
+        let corrupt = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(11),
+            Some("database disk image is malformed".to_owned()),
+        ));
+
+        let rendered = format!("{:?}", sink_outcome_for_persist_error(corrupt));
+
+        check(
+            rendered.starts_with("Err"),
+            "a corrupt database must NOT be absorbed as contention",
+        );
+        check(
+            rendered.contains("malformed"),
+            "a real fault must still carry its cause",
+        );
+    }
+
+    #[test]
+    fn transient_refresh_failures_are_tolerated_but_bounded() {
+        // Under the bound a re-list failure keeps the current snapshot: the next
+        // tick re-lists 250 ms later, so the cost is one stale frame.
+        // Rendered rather than matched: `matches!` compiles to a `_ => false`
+        // arm that a passing run never takes, and the coverage gate correctly
+        // refuses an uncovered branch even in a test.
+        let mut failures = 0;
+        let tolerated: Vec<String> = (0..MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES)
+            .map(|_index| {
+                format!(
+                    "{:?}",
+                    tolerate_transient_refresh(&mut failures, busy_error())
+                )
+            })
+            .collect();
+
+        check(
+            tolerated == vec!["Ok(None)"; MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES],
+            "every attempt within the bound keeps the snapshot",
+        );
+        check(
+            failures == MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES,
+            "every tolerated failure must be counted",
+        );
+
+        // PAST the bound the fault propagates rather than freezing the operator's
+        // data behind a live-looking UI.
+        check(
+            tolerate_transient_refresh(&mut failures, busy_error()).is_err(),
+            "past the bound a persistent contention must surface",
+        );
+    }
+
+    #[test]
+    fn a_non_transient_refresh_failure_is_never_tolerated() {
+        // NEGATIVE CONTROL: the bound applies to contention only.
+        let mut failures = 0;
+
+        check(
+            tolerate_transient_refresh(&mut failures, EventStoreError::InvalidSequence).is_err(),
+            "a non-contention refresh failure must surface immediately",
+        );
+        check(
+            failures == 0,
+            "a non-contention failure must not consume the contention budget",
         );
     }
 
