@@ -453,6 +453,22 @@ an assertion to evidence (2 before the fix, 0 after, same pattern).
 a missing measurement — fail loudly instead. And when a null is load-bearing,
 run the experiment that should make it non-null and show that it does.
 
+**The limit of this rule, which matters more than the rule.** A positive
+control proves the check *fires*. It does NOT prove the check measures the
+thing you asked about — and there is a failure mode that defeats it. Reading
+`${pipestatus[1]}` after a command-substitution assignment returns a real,
+correctly-formed exit status **for a different pipeline entirely**. Nothing is
+absent, nothing is malformed, no status is suppressed, and the instrument
+fires perfectly every time. A control that only shows "it produced output"
+passes it happily. (Observed in a sibling repo on 2026-08-26, where it nearly
+reversed a correct conclusion.)
+
+So the control has to be a **fixture with a known EXPECTED VALUE**, not merely
+a non-empty result. "The grep returned something" is not a control; "the grep
+returned 2 on a fixture built to contain exactly 2" is. That difference is
+the only thing separating a working check from one that is confidently
+answering a question you never asked.
+
 Related: a verification step can fail this way too — see the `ls-remote`
 false negative under *Commit / push mechanics*, where a missed grep and a
 failed push were indistinguishable.
