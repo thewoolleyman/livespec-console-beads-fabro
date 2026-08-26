@@ -400,18 +400,43 @@ for.** Measured here: with the unquoted flag,
 `n=$(grep -rl ... --include=*.py 2>/dev/null | wc -l)` under `pipefail`
 yields `n=0` with a non-zero status. The VALUE is still fabricated — the
 abort happens at glob expansion, before the pipeline exists, so there is no
-failing stage for pipefail to catch and `wc -l` never sees input. What
-pipefail (and the plain assignment status) does give you is a **non-zero exit
-code**, which is the only thing that distinguishes it. So: read the STATUS,
-never the count alone. And `2>/dev/null` on such a command is actively
-harmful — it deletes the one human-visible signal, the `no matches found`
-line, while leaving the plausible `0` in place.
+failing stage for pipefail to catch and `wc -l` never sees input. What pipefail
+DOES do is **preserve the exit status** — and without it the status is lost
+too, because the one you read is then `wc -l`'s, which is always 0. Measured
+side by side on the same fixture:
+
+| form | count | status |
+|---|---|---|
+| unquoted, **no** pipefail | `0` | **`0`** — value *and* signal lost |
+| unquoted, **with** pipefail | `0` | `1` |
+| quoted (positive control) | `2` | `0` |
+
+So the rule has three parts and drops dead without any one of them: **set
+pipefail, read the STATUS, never the count alone.** Advice to "check the exit
+status" is actively misleading on its own — in the bare idiom the guard reads
+clean while both the value and the signal are gone. And `2>/dev/null` is
+harmful here regardless: it deletes the `no matches found` line, the only
+human-visible signal, while leaving the plausible `0`.
+
+**If you would rather not depend on a shell option**, drop the pipe so there
+is nothing to swallow the status:
+
+```sh
+if out=$(grep -rl "$pat" "$dir" --include='*.rs' 2>/dev/null); then
+  n=$(printf '%s\n' "$out" | grep -c .)
+else
+  echo "grep failed — do not trust a count" >&2
+fi
+```
+
+Verified both ways: the quoted form yields `n=2` on a two-file fixture, and a
+failing grep reports `grep FAILED (status 1)` instead of a silent `0`.
 
 Precise mechanism, because it bounds the risk: the glob carries the
 `--include=` prefix, so zsh is matching files literally named
 `--include=<something>.rs`, not `*.rs`. Since no such file normally exists,
-the outcome is a LOUD abort — stderr always carries the signal unless you
-suppress it. (A file literally named `--include=zzz.py` does make zsh rewrite
+the outcome is a LOUD abort — stderr carries the signal unless you suppress
+it, or unless someone has created a file with that exact name. (A file literally named `--include=zzz.py` does make zsh rewrite
 the flag silently and grep then searches the wrong set; verified, but
 pathological.) The practical rule is therefore narrow: never redirect stderr
 away from a glob-bearing command, and never read its count without its
