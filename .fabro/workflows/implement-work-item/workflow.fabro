@@ -6,8 +6,11 @@
 // merged-or-failed implementation attempt:
 //
 //   implement (Red-Green-Replay) -> janitor hard gate (`mise exec --
-//   just check`, bounded fix loop) -> Claude review gate (advisory,
-//   ship-on-cap; work-item bd-ib-egms32) -> PR + rebase auto-merge
+//   just check`, bounded fix loop) -> Claude review gate (bounded fix
+//   rounds, then ship-on-cap ONLY IF the operator's
+//   `merge_on_review_cap` dial is on, else park at the human gate;
+//   work-items bd-ib-egms32, livespec-console-beads-fabro-7zq3lg)
+//   -> PR + rebase auto-merge
 //   arming, with an in-loop `escalate` human gate (work-item
 //   livespec-impl-beads-4zl) for outcomes the loop cannot
 //   auto-resolve: the run parks in Fabro's native `blocked` status and
