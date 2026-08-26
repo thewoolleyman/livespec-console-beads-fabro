@@ -1,6 +1,6 @@
 {
   "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
-  "upstream_plugin_version": "ca102fd15f1e",
+  "upstream_plugin_version": "a7d9c88ef0a4",
   "files": [
     {
       "path": "prompts/disposition.md",
@@ -46,9 +46,9 @@
     },
     {
       "path": "workflow.toml",
-      "upstream_sha256_ignoring_docker_pin": "66bad802afa319b6448f16bdc51a8b8db56c539e01fe582f7a06132566e100b3",
+      "upstream_sha256_ignoring_docker_pin": "1e439d1e3c5410ced50d6afcbb852d3332945b42861e165a38ad4d87fbbf9cba",
       "present_in_fork": true,
-      "reason": "DIVERGED: this Rust console fork deliberately pins the Rust-capable `python-rust-agent-` sandbox image, while upstream pins the Python-only `python-agent-` image. The fork-drift gate normalizes exactly that upstream docker value before hashing workflow.toml, so upstream docker tag bumps no longer require re-review; every other upstream byte in workflow.toml remains pinned and must still be reviewed or ported. 2026-08-22 (livespec-console-beads-fabro-t1g7): the only non-docker upstream movement since the previous pin was the new `pr_adapter` input declaration, which is now PORTED verbatim in intent (same default, same separate-from-acp_adapter rationale) alongside the workflow.fabro pr-node change."
+      "reason": "DIVERGED: this Rust console fork deliberately pins the Rust-capable `python-rust-agent-` sandbox image, while upstream pins the Python-only `python-agent-` image. The fork-drift gate normalizes exactly that upstream docker value before hashing workflow.toml, so upstream docker tag bumps no longer require re-review; every other upstream byte in workflow.toml remains pinned and must still be reviewed or ported. RE-PINNED 2026-08-26 to a7d9c88ef0a4 after a full review of four upstream changes (livespec-console-beads-fabro-7zq3lg carries the detail). NOT PORTED, each with a reason: (a) upstream's new `disposition_adapter` input -- this fork has no disposition node, and all four `disposition` occurrences in our workflow.fabro are prose in comments and diagnostic strings with zero graph references, matching the standing prompts/disposition.md pin; (b) upstream's new `review_fix_visit_cap` input -- this fork deliberately hardcodes that bound as an edge guard on review's own visit count, because a max_visits would hard-abort (VisitLimitExceeded) on the very visit that should ship; (c) upstream's implementer-model pin on `acp_adapter` (Opus 5 + high effort) -- the Dispatcher overrides that input at dispatch time anyway, so the fork default is only reached by a bare `fabro run`, and porting it would carry an unmet acceptance obligation upstream itself records (old adapter versions silently ignored the model env and defaulted to Haiku, so the resolved model must be verified in a run transcript, not asserted from the adapter string). (d) IS A KNOWN BEHAVIOURAL DIVERGENCE, DELIBERATELY LEFT LIVE AND NAMED, NOT ACCEPTED AS CORRECT: upstream now gates its ship-on-review-cap edge on `merge_on_review_cap_outcome`, parking at needs-human unless the operator enabled the escape hatch; this fork's `review -> pr` edge is CONDITIONLESS and therefore always ships on cap. Because `merge_on_review_cap` is one of the six keys this repo's own console Settings surface exposes, default false, the console presents a safety dial whose displayed state is the opposite of this fork's behaviour. Aligning with upstream is very likely correct but changes when the factory merges without reviewer sign-off and would start parking runs that previously shipped, so it is an explicit decision recorded on -7zq3lg rather than something to smuggle in behind a pin refresh. This pin refresh asserts ONLY that upstream's change was reviewed -- it does not assert that (d) is fine."
     }
   ]
 }
