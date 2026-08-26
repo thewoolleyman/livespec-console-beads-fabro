@@ -39,10 +39,10 @@ impl SourceAdapterKind {
 pub enum AdapterError {
     /// Append failed variant.
     AppendFailed(String),
-    /// Checkpoint load failed variant.
-    CheckpointLoadFailed,
-    /// Checkpoint save failed variant.
-    CheckpointSaveFailed,
+    /// Checkpoint load failed variant, carrying the underlying store cause.
+    CheckpointLoadFailed(String),
+    /// Checkpoint save failed variant, carrying the underlying store cause.
+    CheckpointSaveFailed(String),
     /// Empty adapter id variant.
     EmptyAdapterId,
     /// Empty checkpoint variant.
@@ -3291,7 +3291,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "CheckpointLoadFailed")]
     fn ok_adapter_poll_panics() {
-        ok_adapter_poll(Err(AdapterError::CheckpointLoadFailed));
+        ok_adapter_poll(Err(AdapterError::CheckpointLoadFailed(
+            "synthetic".to_owned(),
+        )));
     }
 
     #[test]
@@ -4800,14 +4802,14 @@ mod tests {
         );
         let mut log = MemoryEventLog::new(trace.clone(), None);
         let mut load_fails = FailingCheckpoints {
-            load: Err(AdapterError::CheckpointLoadFailed),
+            load: Err(AdapterError::CheckpointLoadFailed("synthetic".to_owned())),
             save: Ok(()),
         };
 
         let loaded = run_adapter_poll("adapter", 3, "now", &source, &mut load_fails, &mut log);
 
         check(
-            loaded == Err(AdapterError::CheckpointLoadFailed),
+            loaded == Err(AdapterError::CheckpointLoadFailed("synthetic".to_owned())),
             "checkpoint load errors should surface",
         );
 
@@ -4841,12 +4843,12 @@ mod tests {
 
         let mut save_fails = FailingCheckpoints {
             load: Ok(None),
-            save: Err(AdapterError::CheckpointSaveFailed),
+            save: Err(AdapterError::CheckpointSaveFailed("synthetic".to_owned())),
         };
         let saved = run_adapter_poll("adapter", 3, "now", &source, &mut save_fails, &mut log);
 
         check(
-            saved == Err(AdapterError::CheckpointSaveFailed),
+            saved == Err(AdapterError::CheckpointSaveFailed("synthetic".to_owned())),
             "checkpoint save errors should surface",
         );
     }
