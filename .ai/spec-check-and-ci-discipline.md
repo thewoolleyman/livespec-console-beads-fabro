@@ -354,6 +354,44 @@ Raising `max_unnameable_missed_lines` is the last resort the fixture says it
 is. Reach for it only after step 2 shows the miss really is the merge
 artifact and really is not attributable to your diff.
 
+## A null result needs a POSITIVE CONTROL, or it means nothing
+
+"Verified, nothing found" and "the instrument was never running" produce
+byte-identical output. Before reporting a null as evidence, prove the check
+can fire at all.
+
+Three of this repo's own measurements were re-audited under this rule on
+2026-08-26. Two survived because they happened to have controls; one did not
+and was withdrawn:
+
+- **Survived.** A write-latency instrument reported "no write took >= 50 ms".
+  Dropping the threshold showed 106 logged lines — the instrument was
+  demonstrably running.
+- **Survived.** A stress rig reported 150/150 passes. Turning `busy_timeout`
+  down to 0 produced 5 failures in 12 carrying the exact CI signature — the
+  rig can detect the failure it was looking for.
+- **WITHDRAWN.** A disk-backed run reported `max_write_ms=0` under induced
+  fsync load. The harness read the peak out of a log with
+  `m=$(... ) ; [ -z "$m" ] && m=0`, which turns *an empty or absent log*
+  into *"the slowest write took 0 ms"*. A later positive control showed the
+  induced load was real (400 `synchronous=FULL` commits on ext4: ~3.5 s
+  quiet, ~5.3 s loaded) and that a commit on that filesystem costs ~8.7 ms —
+  an order of magnitude above the reported figure. Those runs had measured
+  nothing.
+
+That defaulting line is the same anti-pattern `CLAUDE.md` already forbids for
+CI polling — *never treat empty captured output as success; a `|| echo "[]"`
+fallback swallows real errors*. It is just as wrong in a measurement rig, and
+harder to notice there because the fabricated value looks like data.
+
+**Two rules follow.** Never let a harness substitute a plausible default for
+a missing measurement — fail loudly instead. And when a null is load-bearing,
+run the experiment that should make it non-null and show that it does.
+
+Related: a verification step can fail this way too — see the `ls-remote`
+false negative under *Commit / push mechanics*, where a missed grep and a
+failed push were indistinguishable.
+
 ## Commit / push mechanics
 
 - Commits and pushes are **refused at the primary checkout** (baseline
