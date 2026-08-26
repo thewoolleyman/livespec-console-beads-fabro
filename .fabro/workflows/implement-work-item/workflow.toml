@@ -163,6 +163,32 @@ pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 # run does not substitute; CI never runs the review node.
 review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
+# Gates the `review -> pr` ship-on-review-cap edge. PORTED FROM UPSTREAM
+# 2026-08-26 (livespec-console-beads-fabro-7zq3lg), and it is a BEHAVIOUR
+# CHANGE for this fork, not a cosmetic sync.
+#
+# The Dispatcher renders this to `succeeded` only when the effective
+# `merge_on_review_cap` escape hatch is true for the item, and otherwise
+# leaves the sentinel below. No real node outcome can equal the sentinel, so
+# the gate is CLOSED by default and a non-converging review parks at the
+# human gate.
+#
+# WHY THIS FORK NEEDED IT. The Dispatcher has been emitting this input on
+# every run while this fork's graph ignored it, because our `review -> pr`
+# edge was conditionless and shipped on cap unconditionally. Meanwhile the
+# orchestrator declares `dispatcher.merge_on_review_cap` API-configurable and
+# THIS repo's console surfaces it as a Settings row with default false. So an
+# operator was shown a false-by-default safety dial governing exactly this
+# behaviour, the Dispatcher faithfully carried their choice into the run, and
+# the graph behaved as though the dial were permanently true. The dial's
+# displayed state was the inverse of what ran.
+#
+# NOT ported alongside it: upstream's `review_fix_visit_cap` input. This fork
+# deliberately keeps its own hardcoded edge guard (two fix rounds) rather than
+# adopting upstream's four-visit default; changing the round count is a
+# separate decision from making the safety dial real, and is not bundled here.
+merge_on_review_cap_outcome = "__merge_on_review_cap_disabled__"
+
 [run.environment]
 id = "livespec-ci"
 
