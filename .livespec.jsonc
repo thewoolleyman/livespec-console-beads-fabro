@@ -205,7 +205,46 @@
         "hp": { "server": "https://hp-xubuntu.perch-rudd.ts.net:32276" },
         "vps": { "server": "https://vps.perch-rudd.ts.net:32276" }
       },
-      "default_factory": "hp"
+      "default_factory": "hp",
+
+      // TEMPORARY: park the `pr` node on the Claude adapter, off Codex.
+      //
+      // WHY. `dispatcher.codex_models` expands UNCONDITIONALLY -- its `pr`
+      // tier fires even for a target that configures nothing, which is this
+      // repo -- and renders a whole Codex command line prefixed with
+      // `CODEX_CONFIG={...}`. Upstream ships a defect (orchestrator commit
+      // 1d080136, first tagged v0.82.0, still present at v0.84.2) where that
+      // JSON's quotes do not survive the adapter-string parse, so a
+      // Codex-backed ACP node dies in startAcpServer at JSON.parse before
+      // doing any work. This repo's pin has been past v0.82.0 since
+      // 2026-08-26, so the factory's PUBLISH leg is dead while every gate
+      // here stays green -- CI never runs the pr node.
+      //
+      // WHY HERE AND NOT IN workflow.toml. `repository_acp_overlays` builds
+      // the codex-shorthand overlays first and then `overlays.update()`s the
+      // explicit `acp_nodes` table over them, so THIS key wins and the
+      // workflow default loses. Editing `pr_adapter` in
+      // `.fabro/workflows/implement-work-item/workflow.toml` would leave a
+      // green tree and an unchanged live adapter.
+      //
+      // WHY NOT THE DOCUMENTED TIER OPT-OUT. `codex_models.pr.model = ""`
+      // removes only the `model` / `model_reasoning_effort` keys INSIDE
+      // `CODEX_CONFIG`; the posture keys and the Codex command are emitted
+      // regardless, so the node stays on Codex and stays dead.
+      //
+      // COST NOTE: the `pr` tier exists to keep a scripted git/gh recipe off
+      // the expensive implementer tier. This parks it on the same Claude
+      // adapter the implementer uses, which is a deliberate cost regression
+      // taken over a dead publish leg. REVERT THIS once the upstream fix is
+      // released -- tracked on livespec-console-beads-fabro-emtu, upstream on
+      // livespec-dev-tooling-opdc.
+      //
+      // The value is byte-identical to workflow.toml's own `pr_adapter`
+      // default, so this restores the pre-shorthand behaviour rather than
+      // inventing a third adapter string.
+      "acp_nodes": {
+        "pr": "npx -y @agentclientprotocol/claude-agent-acp"
+      }
     }
   }
 }
