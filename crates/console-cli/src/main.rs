@@ -39,9 +39,10 @@ use console_eventstore::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
-    BackingCliResolution, ConsoleLane, ConsoleRuntimeError, NeedsAttentionIngest,
+    BackingCliResolution, ConsoleLane, ConsoleRuntimeError, LaneStartupStage, NeedsAttentionIngest,
     PendingCommandRequester, SourceAdapterRef, SourcePollRequester, TuiSessionRunner,
-    append_lane_diagnostic, lane_diagnostics_path, lane_open_failure_line, resolve_console_invoker,
+    append_lane_diagnostic, lane_diagnostics_path, lane_open_failure_line,
+    lane_startup_failure_line, resolve_console_invoker,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -175,6 +176,26 @@ fn run_store_backed_command(
             &needs_attention,
         ),
     )
+}
+
+/// Report a lane step that failed and cannot usefully be retried, then give up.
+///
+/// The companion to `open_lane_store`, and deliberately a DIFFERENT remedy. The
+/// store open races, so it is retried; these steps read configuration, the
+/// environment and the clock, where a failure is deterministic and a retry wins
+/// nothing. What they share is the part that was missing: a lane that gives up
+/// must say so.
+///
+/// This exists because the store-open report alone made the lane log a
+/// REASSURING signal wired to one of seven failure paths. An empty log read as
+/// "the lanes are fine" while six ways of dying still wrote nothing — and a
+/// guard that manufactures confidence is worse than no guard.
+#[cfg(all(not(test), not(coverage)))]
+fn report_lane_startup_failure(lane: ConsoleLane, stage: LaneStartupStage, detail: &str) {
+    let path = console_store_path();
+    let at = current_requested_at().unwrap_or_else(|_error| "unknown-time".to_owned());
+    let report = lane_startup_failure_line(lane, stage, detail, &at);
+    let _ = append_lane_diagnostic(&lane_diagnostics_path(&path), &report);
 }
 
 /// Open the store for an off-thread LANE, tolerating transient contention and
@@ -390,8 +411,16 @@ fn hostname() -> String {
 /// is exercised directly.
 #[cfg(all(not(test), not(coverage)))]
 fn poller_loop(poll_rx: &Receiver<PollMessage>) {
-    let Ok(resolution) = BackingCliResolution::from_environment() else {
-        return;
+    let resolution = match BackingCliResolution::from_environment() {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            report_lane_startup_failure(
+                ConsoleLane::SourcePoller,
+                LaneStartupStage::BackingCliResolution,
+                &error.to_string(),
+            );
+            return;
+        }
     };
     let path = console_store_path();
     let Some(mut store) = open_lane_store(ConsoleLane::SourcePoller, &path) else {
@@ -400,13 +429,21 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
     let repo = console_repo();
     let probe = SystemSourceProbe::new(resolution.selected_repo_path());
     let journal_path = resolution.dispatcher_journal_path();
-    let Ok(adapters) = livespec_console_beads_fabro::live_source_adapters_with_programs(
+    let adapters = match livespec_console_beads_fabro::live_source_adapters_with_programs(
         &probe,
         &repo,
         resolution.programs(),
         &journal_path,
-    ) else {
-        return;
+    ) {
+        Ok(adapters) => adapters,
+        Err(error) => {
+            report_lane_startup_failure(
+                ConsoleLane::SourcePoller,
+                LaneStartupStage::SourceAdapters,
+                &format!("{error:?}"),
+            );
+            return;
+        }
     };
     let sources = source_refs(&adapters);
     let needs_attention_port =
@@ -472,15 +509,31 @@ fn spawn_factory_command_worker() {
 
 #[cfg(all(not(test), not(coverage)))]
 fn handle_pending_factory_command_lane() {
-    let Ok(resolution) = BackingCliResolution::from_environment() else {
-        return;
+    let resolution = match BackingCliResolution::from_environment() {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            report_lane_startup_failure(
+                ConsoleLane::FactoryCommand,
+                LaneStartupStage::BackingCliResolution,
+                &error.to_string(),
+            );
+            return;
+        }
     };
     let path = console_store_path();
     let Some(mut store) = open_lane_store(ConsoleLane::FactoryCommand, &path) else {
         return;
     };
-    let Ok(observed_at) = current_requested_at() else {
-        return;
+    let observed_at = match current_requested_at() {
+        Ok(observed_at) => observed_at,
+        Err(error) => {
+            report_lane_startup_failure(
+                ConsoleLane::FactoryCommand,
+                LaneStartupStage::ObservationClock,
+                &error,
+            );
+            return;
+        }
     };
     let repo_path = resolution.drive_repo_arg();
     let probe = SystemSourceProbe::new(resolution.selected_repo_path());
@@ -514,15 +567,31 @@ fn handle_pending_factory_command_lane() {
 
 #[cfg(all(not(test), not(coverage)))]
 fn handle_pending_control_command_lane() {
-    let Ok(resolution) = BackingCliResolution::from_environment() else {
-        return;
+    let resolution = match BackingCliResolution::from_environment() {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            report_lane_startup_failure(
+                ConsoleLane::ControlCommand,
+                LaneStartupStage::BackingCliResolution,
+                &error.to_string(),
+            );
+            return;
+        }
     };
     let path = console_store_path();
     let Some(mut store) = open_lane_store(ConsoleLane::ControlCommand, &path) else {
         return;
     };
-    let Ok(observed_at) = current_requested_at() else {
-        return;
+    let observed_at = match current_requested_at() {
+        Ok(observed_at) => observed_at,
+        Err(error) => {
+            report_lane_startup_failure(
+                ConsoleLane::ControlCommand,
+                LaneStartupStage::ObservationClock,
+                &error,
+            );
+            return;
+        }
     };
     let repo_path = resolution.drive_repo_arg();
     let probe = SystemSourceProbe::new(resolution.selected_repo_path());

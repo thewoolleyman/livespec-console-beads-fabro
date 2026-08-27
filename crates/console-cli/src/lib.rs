@@ -789,7 +789,7 @@ pub fn run_store_backed_tui_session(
 
 /// The token every lane-open failure line carries, so a reader — an operator or
 /// the e2e harness — can find them with one fixed grep.
-pub const LANE_OPEN_FAILURE_MARKER: &str = "lane-store-open-failed";
+pub const LANE_FAILURE_MARKER: &str = "lane-startup-failed";
 
 /// The off-thread lanes that open a store connection of their own.
 ///
@@ -847,6 +847,55 @@ pub fn lane_diagnostics_path(store_path: &Path) -> PathBuf {
     )
 }
 
+/// Which step of a lane's startup failed.
+///
+/// The store open is only ONE of the seven ways a lane can die before it does
+/// any work. Naming the step is what lets a reader tell a racing store apart
+/// from a broken environment — two failures with completely different fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneStartupStage {
+    /// Resolving the backing-CLI configuration from the environment.
+    BackingCliResolution,
+    /// Building the live source adapters.
+    SourceAdapters,
+    /// Reading the observation clock.
+    ObservationClock,
+}
+
+impl LaneStartupStage {
+    /// The stable label this step reports itself by.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BackingCliResolution => "backing-cli-resolution",
+            Self::SourceAdapters => "source-adapters",
+            Self::ObservationClock => "observation-clock",
+        }
+    }
+}
+
+/// Render the one-line diagnostic for a lane that failed a NON-RETRYABLE step.
+///
+/// Deliberately separate from the store-open renderer, because the remedy is
+/// different and the line should not imply otherwise. These steps read
+/// configuration, the environment, and the clock: a failure is DETERMINISTIC, so
+/// there is nothing for a retry to win, and the line carries no attempt count.
+/// What it must do is exist at all — which is the whole point.
+#[must_use]
+pub fn lane_startup_failure_line(
+    lane: ConsoleLane,
+    stage: LaneStartupStage,
+    detail: &str,
+    at: &str,
+) -> String {
+    let detail = detail.replace('\n', " ");
+    format!(
+        "{at} {LANE_FAILURE_MARKER} lane={} stage={} detail={detail}",
+        lane.label(),
+        stage.label()
+    )
+}
+
 /// Render the one-line diagnostic for a lane that could not open the store.
 ///
 /// ONE line, always: these are appended from several threads and a multi-line
@@ -862,7 +911,7 @@ pub fn lane_open_failure_line(
 ) -> String {
     let cause = format!("{error:?}").replace('\n', " ");
     format!(
-        "{at} {LANE_OPEN_FAILURE_MARKER} lane={} attempts={attempts} cause={cause}",
+        "{at} {LANE_FAILURE_MARKER} lane={} stage=store-open attempts={attempts} cause={cause}",
         lane.label()
     )
 }
@@ -874,10 +923,10 @@ pub fn lane_open_failure_line(
 /// return "nothing found" is indistinguishable from a check that is not running,
 /// and this thread has shipped that shape before.
 #[must_use]
-pub fn lane_open_failures_in(contents: &str) -> Vec<&str> {
+pub fn lane_failures_in(contents: &str) -> Vec<&str> {
     contents
         .lines()
-        .filter(|line| line.contains(LANE_OPEN_FAILURE_MARKER))
+        .filter(|line| line.contains(LANE_FAILURE_MARKER))
         .collect()
 }
 
@@ -3003,22 +3052,22 @@ mod tests {
     use super::{
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleLane,
         ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore,
-        InitialSourceSeed, LANE_OPEN_FAILURE_MARKER, NeedsAttentionIngest, PendingCommandOutcome,
-        PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
-        ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
-        SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome,
-        TuiSessionRunner, append_demo_events_to_store, append_factory_drain_requested_events,
-        append_lane_diagnostic, backfill_demo_report, backfill_source_adapters,
-        backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
-        demo_events, distinguish_repeatable_command, doctor_report,
+        InitialSourceSeed, LANE_FAILURE_MARKER, LaneStartupStage, NeedsAttentionIngest,
+        PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
+        STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
+        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
+        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
+        append_factory_drain_requested_events, append_lane_diagnostic, backfill_demo_report,
+        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
+        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_command_event, event_append_from_console_event, events_tail_report,
         factory_command_from_stored, final_tui_events_result, handle_pending_config_commands,
         handle_pending_control_commands, handle_pending_factory_commands,
         handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
         ingest_and_reflect, ingest_needs_attention, initial_source_seed,
-        is_failed_once_only_valve_retry, lane_diagnostics_path, lane_open_failure_line,
-        lane_open_failures_in, live_source_adapters, live_source_adapters_from_resolution,
-        load_tui_events_from_store, normalized_payload_json,
+        is_failed_once_only_valve_retry, lane_diagnostics_path, lane_failures_in,
+        lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
+        live_source_adapters_from_resolution, load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
         refresh_sources, render_tui_preview, resolve_console_repo, run,
@@ -6167,7 +6216,7 @@ mod tests {
             lane_open_failure_line(ConsoleLane::SourcePoller, 3, &cause, "2026-08-27T13:00:00Z");
 
         check(
-            line.contains(LANE_OPEN_FAILURE_MARKER),
+            line.contains(LANE_FAILURE_MARKER),
             "the line carries the marker a reader greps for",
         );
         check(
@@ -6249,6 +6298,99 @@ mod tests {
     }
 
     #[test]
+    fn a_non_retryable_lane_step_reports_without_implying_a_retry() {
+        // The store open is only ONE of the seven ways a lane dies before doing
+        // any work. The other six read configuration, the environment and the
+        // clock, where a failure is DETERMINISTIC — so the line must not carry
+        // an attempt count that would imply anything was retried.
+        let line = lane_startup_failure_line(
+            ConsoleLane::SourcePoller,
+            LaneStartupStage::BackingCliResolution,
+            "no backing cli on PATH",
+            "2026-08-27T14:00:00Z",
+        );
+
+        check(
+            line.contains("stage=backing-cli-resolution"),
+            "the line names WHICH step failed, not just which lane",
+        );
+        check(
+            line.contains("lane=source-poller"),
+            "the line still names the lane",
+        );
+        check(
+            line.contains("no backing cli on PATH"),
+            "the line carries the underlying detail",
+        );
+        check(
+            !line.contains("attempts="),
+            "a deterministic failure does NOT claim attempts were made",
+        );
+        check(
+            !line.contains('\n'),
+            "the line is ONE line, like every other lane record",
+        );
+    }
+
+    #[test]
+    fn every_startup_stage_renders_a_distinct_label() {
+        let labels = [
+            LaneStartupStage::BackingCliResolution.label(),
+            LaneStartupStage::SourceAdapters.label(),
+            LaneStartupStage::ObservationClock.label(),
+        ];
+        let mut sorted = labels;
+        sorted.sort_unstable();
+        let mut deduped = sorted.to_vec();
+        deduped.dedup();
+
+        check(deduped.len() == labels.len(), "no two stages share a label");
+        check(
+            labels.iter().all(|label| !label.is_empty()),
+            "every stage has a non-empty label",
+        );
+    }
+
+    #[test]
+    fn the_scan_finds_both_lane_failure_shapes() {
+        // THE POINT OF THIS CHANGE, asserted directly. An empty lane log now
+        // reads as "the lanes are fine". That is only honest if the scan sees
+        // every shape a lane can report — a surface wired to one of seven paths
+        // is a REASSURING signal, and reassuring signals are the ones nobody
+        // re-checks.
+        let cause = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            None,
+        ));
+        let open_line =
+            lane_open_failure_line(ConsoleLane::SourcePoller, 3, &cause, "2026-08-27T14:00:00Z");
+        let startup_line = lane_startup_failure_line(
+            ConsoleLane::ControlCommand,
+            LaneStartupStage::ObservationClock,
+            "clock unavailable",
+            "2026-08-27T14:00:01Z",
+        );
+        let log = format!("{open_line}\nunrelated line\n{startup_line}");
+
+        check(
+            lane_failures_in(&log).len() == 2,
+            "the scan finds BOTH the store-open shape and the non-retryable shape",
+        );
+        check(
+            lane_failures_in(&log)
+                .iter()
+                .any(|line| line.contains("stage=store-open")),
+            "the store-open shape stays identifiable",
+        );
+        check(
+            lane_failures_in(&log)
+                .iter()
+                .any(|line| line.contains("stage=observation-clock")),
+            "the non-retryable shape stays identifiable",
+        );
+    }
+
+    #[test]
     fn the_lane_failure_scan_fires_and_stays_quiet_in_the_right_cases() {
         // TWO-SIDED CONTROL on the e2e negative control itself. The passing-run
         // assertion is only worth anything if it CAN fail, and "nothing found"
@@ -6267,25 +6409,24 @@ mod tests {
         // FIRES: a real rendered failure line is found, through the same
         // renderer the binary writes with — not a hand-typed lookalike.
         check(
-            lane_open_failures_in(&failure_line).len() == 1,
+            lane_failures_in(&failure_line).len() == 1,
             "a rendered lane failure line IS detected",
         );
 
         // QUIET: unrelated content, including an empty log, is not a failure.
         check(
-            lane_open_failures_in("").is_empty(),
+            lane_failures_in("").is_empty(),
             "an empty log reports no failures",
         );
         check(
-            lane_open_failures_in("2026-08-27T13:00:00Z lane=source-poller opened fine\n")
-                .is_empty(),
+            lane_failures_in("2026-08-27T13:00:00Z lane=source-poller opened fine\n").is_empty(),
             "a line mentioning a lane but not the marker is NOT a failure",
         );
 
         // And it counts rather than merely detects, so a report can say how many.
         let two = format!("{failure_line}\nunrelated line\n{failure_line}");
         check(
-            lane_open_failures_in(&two).len() == 2,
+            lane_failures_in(&two).len() == 2,
             "every failure line is reported, not just the first",
         );
     }
