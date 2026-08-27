@@ -501,6 +501,25 @@ failed push were indistinguishable.
   way to be wrong — worse than not checking, because it reads as evidence.
   Use the exact `refs/heads/<branch>` and check the exit status, or compare
   the returned sha against `git rev-parse HEAD`.
+- **A KILLED background push writes a log the failure-grep reads as CLEAN.**
+  This is the sharper form of the bullet above, and the grep cannot catch
+  it: a push killed during the pre-push hook produces a **282-byte** log
+  containing only the lefthook banner, so `grep -c "FAILED targets:"`
+  returns **0** — not because the gate passed, but because the log never got
+  far enough to contain anything. Zero hits means "no failure line was
+  written", which is a different claim from "no failure occurred", and only
+  one of the two is what you wanted to test. **The ref check is the only
+  discriminator**, and it is why that check is not optional even when the
+  log looks clean. Measured 2026-08-27 on `fix/pr-node-off-codex`: two
+  backgrounded pushes killed at an identical 282 bytes with no remote ref,
+  then the IDENTICAL command run in the FOREGROUND succeeded in 283s — so
+  the kills were harness-side, not a gate failure, and re-running rather
+  than debugging the change was correct. Raising the background timeout did
+  not help; running it in the foreground did.
+  The general rule this instance earns: **an absent signal is not a negative
+  result.** Before trusting a zero, confirm the producer ran far enough to
+  have emitted a non-zero — the same positive-control discipline this file
+  requires of null measurements, applied to a grep.
 - **A fresh `git worktree add` has no `dev-tooling/`,** so
   `just check-baseline` fails there with `worktree_pack_absent` and blocks
   the push. Run **`just install-worktree-pack`** in every new worktree.
