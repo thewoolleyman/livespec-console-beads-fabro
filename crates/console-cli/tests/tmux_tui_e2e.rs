@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use console_domain::EventType;
 use console_eventstore::SqliteEventStore;
-use livespec_console_beads_fabro::{lane_diagnostics_path, lane_open_failures_in};
+use livespec_console_beads_fabro::{lane_diagnostics_path, lane_failures_in};
 use support::attention_rows::{PathBackedAttentionFixture, ROW_SUMMARY};
 use support::lifecycle::{ITEM_ID, LifecycleFixture};
 use support::{HarnessResult, RepoFixture, TmuxConsole};
@@ -159,11 +159,18 @@ fn assert_store_side_effects(store_path: &Path) -> HarnessResult<()> {
 /// NEGATIVE CONTROL for livespec-console-beads-fabro-k9vt2m, asserted on a run
 /// that PASSES.
 ///
-/// The three off-thread lanes now append a marked line when their store open is
-/// exhausted, instead of returning silently. A surface only discriminates if it
-/// is quiet when nothing is wrong — so a healthy walkthrough must leave no such
-/// line. Without this, an always-firing report would read exactly like a working
-/// one, which is the failure shape this whole thread keeps paying for.
+/// The three off-thread lanes now append a marked line whenever a startup step
+/// gives up — the store open after its bounded retry, and the non-retryable
+/// resolution / adapter / clock steps at once — instead of returning silently. A
+/// surface only discriminates if it is quiet when nothing is wrong, so a healthy
+/// walkthrough must leave no such line. Without this, an always-firing report
+/// would read exactly like a working one, which is the failure shape this whole
+/// thread keeps paying for.
+///
+/// Reads through `lane_failures_in`, which finds EVERY lane-failure shape rather
+/// than only the store-open one: a passing-run assertion wired to a subset of
+/// the failure paths is precisely the reassuring-but-partial guard this repo has
+/// shipped before.
 ///
 /// Read through the SAME `lane_diagnostics_path` derivation the binary uses, so
 /// a change to where the log lives cannot silently move it out from under this
@@ -174,7 +181,7 @@ fn assert_no_lane_open_failures(store_path: &Path) {
         // No log at all is the expected healthy outcome: nothing reported.
         return;
     };
-    let failures = lane_open_failures_in(&contents);
+    let failures = lane_failures_in(&contents);
     assert!(
         failures.is_empty(),
         "a lane could not open the store during a run that otherwise passed — \
