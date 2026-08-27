@@ -2290,6 +2290,47 @@ fn global_help_lines() -> Vec<Line<'static>> {
         .collect()
 }
 
+/// What invoking this action's ACCELERATOR actually opens, derived from its
+/// registry `staging`.
+///
+/// The Help modal used to infer this from `spec.parameter.is_none()` and print
+/// "(confirm modal)" for every payload-free action. Parameterless is not the
+/// same as confirm-modal, and the result was a help screen that asserted
+/// something false about five entries: `?` opens the Help overlay, `/` a Search
+/// panel, `:` the command palette, `v` the menu bar, and `q` quits outright.
+/// None of them confirms anything.
+///
+/// That is the SECOND-ENCODING defect the registry exists to retire, one level
+/// down: the roster was derived from the registry while the DESCRIPTION beside
+/// each entry was guessed from an unrelated field. `staging` already carries the
+/// answer — `global_interaction` maps each global straight onto the overlay it
+/// opens — so this reads it instead of guessing.
+///
+/// Found by dogfooding the real TUI (livespec-console-beads-fabro-ddfbcx), and
+/// the `/` case was confirmed by pressing it: the pane that opens is titled
+/// "Search".
+///
+/// SCOPE NOTE, deliberately conservative: the three non-global, non-handoff
+/// stagings keep "confirm modal". Their accelerator-path behaviour was NOT
+/// independently verified here — they are menu-routed rather than hotkeyed —
+/// so they are left reading exactly as they did rather than restated on an
+/// unchecked assumption.
+const fn help_outcome(spec: &action_registry::ActionSpec) -> &'static str {
+    match spec.staging {
+        action_registry::ActionStaging::DriverHandoff => "driver-handoff overlay",
+        action_registry::ActionStaging::Global(action) => match action {
+            action_registry::GlobalAction::OpenSearch => "search overlay",
+            action_registry::GlobalAction::OpenCommandPalette => "command palette",
+            action_registry::GlobalAction::OpenHelp => "help overlay",
+            action_registry::GlobalAction::OpenMenu => "menu bar",
+            action_registry::GlobalAction::Quit => "quits at once",
+        },
+        action_registry::ActionStaging::Valve(_)
+        | action_registry::ActionStaging::FactoryDrain
+        | action_registry::ActionStaging::FactoryDispatchItem => "confirm modal",
+    }
+}
+
 /// The per-item action roster, DERIVED from the action registry: one line per
 /// action the surface can offer, in canonical order, so the Help modal cannot
 /// drift from the real action set (the second-encoding defect class the
@@ -2300,7 +2341,7 @@ fn registry_help_lines(surface: action_registry::ActionSurface) -> Vec<Line<'sta
         .filter(|spec| action_registry::action_offered_on_surface(spec, surface))
         .map(|spec| {
             let text = spec.parameter.map_or_else(
-                || format!("{} (confirm modal)", spec.label),
+                || format!("{} ({})", spec.label, help_outcome(spec)),
                 |parameter| {
                     format!(
                         "{} -- {}: {} (up/down cycle)",
@@ -3072,10 +3113,11 @@ mod tests {
         attach_command_explainer_step, attention_item_line, buffer_to_text,
         command_explainer_confirm_step, command_explainer_lines, command_explanation_for_action,
         detail_lines, effect_triggers_source_poll, full_width_explainer_rect, global_help_lines,
-        help_lines_for_view, key_event_to_terminal_input, menu_confirm_step, registry_action_input,
-        registry_staging_explanation, render_command_explainer, render_command_modal,
-        render_detail, render_menu_overlay, render_model, render_summary_detail, render_to_text,
-        render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
+        help_lines_for_view, help_outcome, key_event_to_terminal_input, menu_confirm_step,
+        registry_action_input, registry_staging_explanation, render_command_explainer,
+        render_command_modal, render_detail, render_menu_overlay, render_model,
+        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
+        staged_action_step, step_tui_runtime,
     };
 
     macro_rules! assert {
@@ -3211,6 +3253,66 @@ mod tests {
         if !condition {
             panic!("{context}");
         }
+    }
+
+    #[test]
+    fn help_never_calls_a_navigation_action_a_confirm_modal() {
+        // Found by DOGFOODING the real TUI. The Help modal printed
+        // "Help (confirm modal)", "Search (confirm modal)", "Menu bar (confirm
+        // modal)" and "Quit (confirm modal)" — none of which confirms anything.
+        // Pressing `/` was checked against a live session: the pane that opens
+        // is titled "Search".
+        //
+        // The cause was that the roster is DERIVED from the registry while the
+        // description beside it was GUESSED from `parameter.is_none()`. This
+        // asserts the description is read from `staging` instead.
+        for spec in action_registry::ACTION_REGISTRY {
+            let action_registry::ActionStaging::Global(global) = spec.staging else {
+                continue;
+            };
+            let outcome = help_outcome(spec);
+            check(
+                outcome != "confirm modal",
+                "a global navigation action must not be described as a confirm modal",
+            );
+            // And each one is described DISTINCTLY, so the help says which
+            // surface opens rather than merely that it is not a confirm.
+            let expected = match global {
+                action_registry::GlobalAction::OpenSearch => "search overlay",
+                action_registry::GlobalAction::OpenCommandPalette => "command palette",
+                action_registry::GlobalAction::OpenHelp => "help overlay",
+                action_registry::GlobalAction::OpenMenu => "menu bar",
+                action_registry::GlobalAction::Quit => "quits at once",
+            };
+            check(
+                outcome == expected,
+                "each global action names the surface its accelerator actually opens",
+            );
+        }
+    }
+
+    #[test]
+    fn help_still_calls_a_staged_valve_a_confirm_modal() {
+        // NEGATIVE CONTROL. The fix must not sweep the phrase away wholesale —
+        // a staged valve genuinely does open a confirm modal, and losing that
+        // would trade one dishonest help screen for another.
+        // Collected rather than unwrapped: a `let ... else { panic! }` is a
+        // branch no passing run takes, and the coverage gate correctly refuses
+        // it.
+        let staged: Vec<&'static str> = action_registry::ACTION_REGISTRY
+            .iter()
+            .filter(|spec| matches!(spec.staging, action_registry::ActionStaging::Valve(_)))
+            .map(help_outcome)
+            .collect();
+
+        check(
+            !staged.is_empty(),
+            "the registry carries at least one valve-staged action to control against",
+        );
+        check(
+            staged.iter().all(|outcome| *outcome == "confirm modal"),
+            "a valve-staged action is still described as a confirm modal",
+        );
     }
 
     #[track_caller]
