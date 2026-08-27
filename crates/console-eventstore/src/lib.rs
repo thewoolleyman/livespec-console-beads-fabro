@@ -21,6 +21,7 @@
 
 use std::num::TryFromIntError;
 use std::path::Path;
+use std::time::Duration;
 
 use console_domain::{CommandEnvelope, ConsoleEvent, EventType};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -108,6 +109,88 @@ impl EventStoreError {
             ),
             _ => false,
         }
+    }
+}
+
+/// How many times a store OPEN is attempted before the failure is reported.
+///
+/// Each failed attempt has ALREADY waited out `SQLite`'s 5 s busy timeout
+/// (rusqlite arms `sqlite3_busy_timeout(db, 5000)` inside `Connection::open`,
+/// before any user pragma runs), so the bound is deliberately small: three
+/// attempts is at most ~15 s, which stays inside the e2e harness's 20 s
+/// first-frame budget and therefore still lets an exhausted open print its
+/// cause where the harness captures it.
+pub const STORE_OPEN_ATTEMPTS: u32 = 3;
+
+/// The pause before the next open attempt.
+///
+/// Deliberately SHORT and NOT a substitute for the busy timeout. The attempt
+/// that just failed already spent five seconds waiting for the peer, so a long
+/// sleep here buys nothing and only eats the startup budget.
+#[must_use]
+pub fn open_retry_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(50 * u64::from(attempt))
+}
+
+/// Should another open attempt follow `error` on attempt `attempt` of `attempts`?
+///
+/// Only TRANSIENT contention is retried, and only inside the bound. A real
+/// fault is returned on its first attempt so a retry loop can never mask
+/// corruption.
+#[must_use]
+pub const fn should_retry_open(error: &EventStoreError, attempt: u32, attempts: u32) -> bool {
+    error.is_transient_contention() && attempt < attempts
+}
+
+/// Open the store, tolerating TRANSIENT contention up to `attempts` times.
+///
+/// This is the STARTUP counterpart to the running loop's contention tolerance,
+/// and it deliberately makes the OPPOSITE call (livespec-console-beads-fabro-bss4rq).
+/// The loop refuses a hidden retry because there is a live frame to report NOT
+/// APPLIED onto and an operator whose keystroke is the natural retry. At startup
+/// none of that holds — there is no frame yet and no gesture to inherit, so the
+/// choice is retry or die — and an open is IDEMPOTENT, so retrying it cannot
+/// double-apply anything the way re-issuing a write could.
+///
+/// `open` and `pause` are taken as `dyn` callbacks rather than generics so the
+/// real filesystem open and the real sleep stay in the composition root, where
+/// this bounded loop can be exercised against scripted failures instead of a
+/// contrived race.
+pub fn open_tolerating_contention(
+    attempts: u32,
+    open: &mut dyn FnMut() -> EventStoreResult<SqliteEventStore>,
+    pause: &mut dyn FnMut(u32),
+) -> EventStoreResult<SqliteEventStore> {
+    let mut attempt: u32 = 1;
+    loop {
+        let error = match open() {
+            Ok(store) => return Ok(store),
+            Err(error) => error,
+        };
+        if !should_retry_open(&error, attempt, attempts) {
+            return Err(error);
+        }
+        pause(attempt);
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+/// Render the operator-facing line for a store open that could not proceed.
+///
+/// The cause is carried VERBATIM in every case: livespec-console-beads-fabro-4vsy7u
+/// bought that diagnosability after ten days of an undiagnosable flake, and an
+/// exhausted-retry message must not spend it. Contention additionally names
+/// itself and the bound it exhausted, so "the store stayed busy" is
+/// distinguishable from "the store is broken".
+#[must_use]
+pub fn render_open_failure(error: &EventStoreError, attempts: u32) -> String {
+    if error.is_transient_contention() {
+        format!(
+            "store busy: {attempts} open attempts each waited out SQLite's busy timeout \
+             and the write lock never cleared: {error:?}"
+        )
+    } else {
+        format!("{error:?}")
     }
 }
 
@@ -941,7 +1024,8 @@ mod tests {
 
     use super::{
         AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
-        EventStoreError, EventStoreResult, SqliteEventStore, StoredCommand, sequence_from_rowid,
+        EventStoreError, EventStoreResult, STORE_OPEN_ATTEMPTS, SqliteEventStore, StoredCommand,
+        open_retry_backoff, open_tolerating_contention, render_open_failure, sequence_from_rowid,
     };
     use console_application::{
         build_tui_model,
@@ -997,6 +1081,147 @@ mod tests {
             !EventStoreError::UnknownEventType("x".to_owned()).is_transient_contention(),
             "an unknown event type is NOT transient contention",
         );
+    }
+
+    #[test]
+    fn startup_open_retries_transient_contention_within_its_bound() {
+        // livespec-console-beads-fabro-bss4rq. Startup contention used to kill
+        // the session before the first frame: `SqliteEventStore::open` runs
+        // `execute_batch(SCHEMA)`, itself a write, and one walkthrough opens
+        // EIGHT connections across SIX threads. An open is IDEMPOTENT and there
+        // is no rendered surface yet on which to say NOT APPLIED, so the call
+        // here is the OPPOSITE of ddfbcx.1's refusal-to-retry: retry, bounded.
+        let (attempts_made, paused_before, opened) =
+            drive_bounded_open(3, &|attempt| (attempt < 3).then(busy_error));
+
+        check(opened, "a store that frees up within the bound opens");
+        check(
+            attempts_made == 3,
+            "the opener is called once per attempt until it succeeds",
+        );
+        // Rendered, not matched: a `matches!` arm — or a `let ... else` panic —
+        // is a branch no passing run takes, and the coverage gate refuses it.
+        check(
+            format!("{paused_before:?}") == "[1, 2]",
+            "each retry pauses once, and the successful attempt does not",
+        );
+    }
+
+    #[test]
+    fn startup_open_gives_up_at_the_bound_without_exceeding_it() {
+        let (attempts_made, paused_before, opened) =
+            drive_bounded_open(STORE_OPEN_ATTEMPTS, &|_attempt| Some(busy_error()));
+
+        check(
+            !opened,
+            "a store busy for every attempt must not report success",
+        );
+        check(
+            attempts_made == STORE_OPEN_ATTEMPTS,
+            "the bound is exhausted exactly, never exceeded",
+        );
+        check(
+            format!("{paused_before:?}") == "[1, 2]",
+            "the exhausted attempt does not pause on its way out",
+        );
+    }
+
+    #[test]
+    fn startup_open_does_not_retry_a_real_fault() {
+        // NEGATIVE CONTROL. Without this the fix would mask corruption behind a
+        // retry loop and a contention-flavoured message.
+        let (attempts_made, paused_before, opened) =
+            drive_bounded_open(STORE_OPEN_ATTEMPTS, &|_attempt| Some(corrupt_error()));
+
+        check(!opened, "a corrupt database must not report success");
+        check(
+            attempts_made == 1,
+            "a real fault is returned on its first attempt, never retried",
+        );
+        check(
+            paused_before.is_empty(),
+            "a real fault never pauses for a retry",
+        );
+    }
+
+    #[test]
+    fn exhausted_open_names_the_contention_and_still_carries_the_cause() {
+        // 4vsy7u bought this diagnosability after ten days of an undiagnosable
+        // flake; an exhausted-retry message must not spend it.
+        let contention = render_open_failure(&busy_error(), STORE_OPEN_ATTEMPTS);
+        check(
+            contention.contains("DatabaseBusy"),
+            "the exhausted line carries the sqlite cause verbatim",
+        );
+        check(
+            contention.contains("store busy"),
+            "the exhausted line names the contention rather than a bare failure",
+        );
+
+        // NEGATIVE CONTROL on the rendering itself: a real fault must not be
+        // dressed up as contention.
+        let fault = render_open_failure(&corrupt_error(), STORE_OPEN_ATTEMPTS);
+        check(
+            fault.contains("malformed"),
+            "a real fault still carries its cause",
+        );
+        check(
+            !fault.contains("store busy"),
+            "a real fault is NOT reported as contention",
+        );
+    }
+
+    #[test]
+    fn open_retry_backoff_stays_short_and_grows() {
+        // The failed attempt ALREADY waited out SQLite's 5 s busy timeout, so
+        // the peer has had its wait. A long sleep here only eats the startup
+        // budget the e2e harness measures against.
+        let first = open_retry_backoff(1);
+        let second = open_retry_backoff(2);
+
+        check(first < second, "the backoff grows with the attempt");
+        check(
+            second <= std::time::Duration::from_millis(500),
+            "the backoff stays far below the busy timeout already paid",
+        );
+    }
+
+    /// Drive `open_tolerating_contention` against a scripted opener.
+    ///
+    /// `script` decides, per 1-based attempt, whether that open fails and with
+    /// what. Returning `None` opens a real in-memory store. Every test above
+    /// shares this one body so the callback lines it needs are exercised by the
+    /// case that actually retries, rather than each test contributing its own
+    /// never-taken copy.
+    fn drive_bounded_open(
+        attempts: u32,
+        script: &dyn Fn(u32) -> Option<EventStoreError>,
+    ) -> (u32, Vec<u32>, bool) {
+        let mut attempts_made = 0_u32;
+        let mut paused_before = Vec::new();
+        let outcome = open_tolerating_contention(
+            attempts,
+            &mut || {
+                attempts_made = attempts_made.saturating_add(1);
+                script(attempts_made).map_or_else(SqliteEventStore::open_in_memory, Err)
+            },
+            &mut |attempt| paused_before.push(attempt),
+        );
+        (attempts_made, paused_before, outcome.is_ok())
+    }
+
+    fn busy_error() -> EventStoreError {
+        EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".to_owned()),
+        ))
+    }
+
+    fn corrupt_error() -> EventStoreError {
+        EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(11),
+            Some("database disk image is malformed".to_owned()),
+        ))
     }
 
     #[test]
