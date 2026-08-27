@@ -7619,13 +7619,32 @@ fn events_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
 }
 
 fn repos_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
-    let mut repos = events.iter().map(repo_id).collect::<Vec<_>>();
+    let mut repos = events.iter().filter_map(repo_id).collect::<Vec<_>>();
     repos.sort();
     repos.dedup();
-    vec![ViewSummaryItem::new(
+    let unattributable = events.len()
+        - events
+            .iter()
+            .filter(|event| repo_id(event).is_some())
+            .count();
+    let mut items = vec![ViewSummaryItem::new(
         format!("Repos observed: {}", repos.len()),
         repos.join(", "),
-    )]
+    )];
+    // NOT SILENT. Dropping the unattributable events without saying so would
+    // turn "Repos observed: 1" into a number that quietly excludes a fifth of
+    // the store, which is the same reassuring-but-partial signal this projection
+    // just stopped producing in the other direction.
+    if unattributable > 0 {
+        items.push(ViewSummaryItem::new(
+            format!("Events with no derivable repo: {unattributable}"),
+            "Their stream key does not carry one. Every event is expected to \
+             stream under `{context}:{repo}`; these carry a bare id instead, so \
+             the repo cannot be recovered from the key and is NOT guessed."
+                .to_owned(),
+        ));
+    }
+    items
 }
 
 fn latest_event_summary(event: &ConsoleEvent) -> String {
@@ -7658,12 +7677,29 @@ fn count_events(events: &[ConsoleEvent], event_type: EventType) -> usize {
 ///   carries only the id, so it falls back to the stream key's middle segment.
 /// - Every other event streams under `{context}:{repo}` (`repo:{repo}`,
 ///   `factory:{repo}`, ...); the repo is the segment AFTER the first colon.
-fn repo_id(event: &ConsoleEvent) -> String {
+/// - A THIRD shape exists in real stores and this derivation used to invent a
+///   repo for it: a key with NO COLON AT ALL, carrying a bare work-item id.
+///   `command.accepted` and `attention_item.resolved` both stream that way.
+///   Measured in a live console store: 140 of 765 events, 65 distinct ids.
+///
+/// Returns `None` when the repo is NOT derivable rather than guessing one. The
+/// old fallbacks — the whole key for a colonless stream, and the literal `"-"`
+/// for an attention key with no middle segment — turned those 140 events into 66
+/// fictitious repos, so "Repos observed" rendered 67 against a single-tenant
+/// store, listing work-item ids and a bare dash to the operator as repositories.
+/// That contradicted this module's own stated invariant, that the projection
+/// "collapses to the single observed tenant".
+///
+/// The ROOT CAUSE is upstream of here: those streams do not follow the
+/// `{context}:{repo}` contract the second bullet describes. Correcting the keys
+/// themselves is event-identity work and belongs to that thread; this function's
+/// job is to stop manufacturing data it does not have.
+fn repo_id(event: &ConsoleEvent) -> Option<String> {
     match event.event_type() {
         EventType::AttentionItemAppeared | EventType::AttentionItemChanged => {
             attention_item_snapshot_from_payload_json(event.payload_json()).map_or_else(
                 || attention_stream_repo(event.stream_id()),
-                |item| item.source_ref().repo().to_owned(),
+                |item| Some(item.source_ref().repo().to_owned()),
             )
         }
         EventType::AttentionItemResolved => attention_stream_repo(event.stream_id()),
@@ -7673,22 +7709,23 @@ fn repo_id(event: &ConsoleEvent) -> String {
 
 /// The repo segment of a `{context}:{repo}` stream key: the text after the first
 /// colon, or the whole key when it carries no colon.
-fn stream_prefix_repo(stream_id: &str) -> String {
+fn stream_prefix_repo(stream_id: &str) -> Option<String> {
     stream_id
         .split_once(':')
-        .map_or_else(|| stream_id.to_owned(), |(_context, repo)| repo.to_owned())
+        .map(|(_context, repo)| repo.to_owned())
+        .filter(|repo| !repo.is_empty())
 }
 
 /// The repo segment of an `attention_item:{repo}:{id}` stream key: its middle
 /// segment. Falls back to `-` when the key carries no middle segment (an
 /// attention stream key is always three-part, so this is a defensive default).
-fn attention_stream_repo(stream_id: &str) -> String {
+fn attention_stream_repo(stream_id: &str) -> Option<String> {
     let mut parts = stream_id.splitn(3, ':');
     let _context = parts.next();
     parts
         .next()
         .filter(|repo| !repo.is_empty())
-        .map_or_else(|| "-".to_owned(), ToOwned::to_owned)
+        .map(ToOwned::to_owned)
 }
 
 fn fabro_run_id(event: &ConsoleEvent) -> Option<String> {
@@ -10940,11 +10977,16 @@ mod tests {
             1,
         );
 
-        assert_eq!(super::repo_id(&gate), "livespec-console-beads-fabro");
         assert_eq!(
-            super::repo_id(&plain_stream),
-            "livespec-console-beads-fabro"
+            super::repo_id(&gate),
+            Some("livespec-console-beads-fabro".to_owned())
         );
+        // A COLONLESS key yields no repo. This fixture used to assert the whole
+        // key came back, and it passed only because the key it chose happens to
+        // BE a repo name. Real colonless keys are bare work-item ids, so the old
+        // fallback returned a work-item id as a repository — a test that could
+        // not fail on the shape production actually produces.
+        assert_eq!(super::repo_id(&plain_stream), None);
         assert_eq!(super::fabro_run_id(&gate), Some("run_17".to_owned()));
         assert_eq!(super::fabro_run_id(&fallback), None);
     }
@@ -10986,7 +11028,7 @@ mod tests {
 
         assert_eq!(
             super::repo_id(&appeared),
-            "livespec-orchestrator-beads-fabro"
+            Some("livespec-orchestrator-beads-fabro".to_owned())
         );
     }
 
@@ -11003,9 +11045,14 @@ mod tests {
             "repo:livespec-orchestrator-beads-fabro".to_owned(),
             1,
         );
-        assert_eq!(super::repo_id(&pull), "livespec-orchestrator-beads-fabro");
+        assert_eq!(
+            super::repo_id(&pull),
+            Some("livespec-orchestrator-beads-fabro".to_owned())
+        );
 
-        // A stream key with no colon degrades to the whole key.
+        // A stream key with no colon yields NO repo. It used to degrade to the
+        // whole key, which is how bare work-item ids reached the operator as
+        // repositories.
         let plain = ConsoleEvent::new(
             "evt_plain".to_owned(),
             1,
@@ -11015,7 +11062,7 @@ mod tests {
             "livespec-orchestrator-beads-fabro".to_owned(),
             1,
         );
-        assert_eq!(super::repo_id(&plain), "livespec-orchestrator-beads-fabro");
+        assert_eq!(super::repo_id(&plain), None);
 
         // A `resolved` event carries only an id in its payload, so its repo comes
         // from the middle segment of the `attention_item:{repo}:{id}` stream key.
@@ -11034,10 +11081,10 @@ mod tests {
         ));
         assert_eq!(
             super::repo_id(&resolved),
-            "livespec-orchestrator-beads-fabro"
+            Some("livespec-orchestrator-beads-fabro".to_owned())
         );
 
-        // A malformed attention stream key (no middle segment) degrades to `-`.
+        // A malformed attention stream key (no middle segment) yields NO repo.
         let malformed = ConsoleEvent::new(
             "evt_malformed".to_owned(),
             1,
@@ -11048,7 +11095,9 @@ mod tests {
             1,
         )
         .with_payload_json(attention_resolved_payload_json("x"));
-        assert_eq!(super::repo_id(&malformed), "-");
+        // An attention key with no middle segment yields no repo. The old `"-"`
+        // was rendered to the operator as if it were a repository.
+        assert_eq!(super::repo_id(&malformed), None);
 
         // An `appeared` event whose payload is not a complete item degrades to the
         // stream key's middle segment.
@@ -11065,7 +11114,96 @@ mod tests {
         .with_payload_json("{}".to_owned());
         assert_eq!(
             super::repo_id(&corrupt),
-            "livespec-orchestrator-beads-fabro"
+            Some("livespec-orchestrator-beads-fabro".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_single_tenant_store_reports_one_repo_not_one_per_work_item() {
+        // FOUND BY DOGFOODING. A live single-tenant console rendered
+        // "Repos observed: 67" and listed work-item ids and a bare "-" to the
+        // operator as repositories. Measured in that store: 765 events, of which
+        // 140 (65 distinct ids) stream under a key with NO COLON — every
+        // `command.accepted` and every `attention_item.resolved`. The old
+        // fallbacks turned each into a fictitious repo.
+        //
+        // The previous unit tests all passed. They covered the colonless shape
+        // with a fixture whose key WAS a repo name, so the fallback looked
+        // correct; production keys are bare work-item ids. This fixture uses the
+        // shape production actually produces.
+        let repo_scoped = ConsoleEvent::new(
+            "evt_repo_scoped".to_owned(),
+            1,
+            "repo".to_owned(),
+            EventType::LivespecReviseRequired,
+            "livespec".to_owned(),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            1,
+        );
+        let bare_work_item = ConsoleEvent::new(
+            "evt_bare".to_owned(),
+            2,
+            "orchestrator".to_owned(),
+            EventType::LivespecReviseRequired,
+            "livespec".to_owned(),
+            "livespec-console-beads-fabro-3lxx7t".to_owned(),
+            1,
+        );
+        let another_bare = ConsoleEvent::new(
+            "evt_bare_2".to_owned(),
+            3,
+            "orchestrator".to_owned(),
+            EventType::LivespecReviseRequired,
+            "livespec".to_owned(),
+            "livespec-console-beads-fabro-6yii4r".to_owned(),
+            1,
+        );
+
+        let items = super::repos_view_items(&[repo_scoped, bare_work_item, another_bare]);
+        let rendered = format!("{items:?}");
+
+        // `check` with a STATIC context, not `assert!` with an interpolated
+        // message: the format arm of a failure message is a branch no passing run
+        // takes, and check-coverage refuses it.
+        check(
+            rendered.contains("Repos observed: 1"),
+            "a single-tenant store must report ONE repo",
+        );
+        check(
+            !rendered.contains("3lxx7t"),
+            "a bare work-item id must not be listed as a repository",
+        );
+        // NOT SILENT: the two events it could not attribute are counted out loud.
+        check(
+            rendered.contains("Events with no derivable repo: 2"),
+            "the dropped events must be reported, not quietly excluded",
+        );
+    }
+
+    #[test]
+    fn a_store_whose_events_all_carry_a_repo_reports_no_unattributable_line() {
+        // NEGATIVE CONTROL on that second line. If it appeared unconditionally it
+        // would be noise on a healthy store, and an operator would learn to skip
+        // it — which is how a real warning stops being read.
+        let repo_scoped = ConsoleEvent::new(
+            "evt_only".to_owned(),
+            1,
+            "repo".to_owned(),
+            EventType::LivespecReviseRequired,
+            "livespec".to_owned(),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            1,
+        );
+
+        let rendered = format!("{:?}", super::repos_view_items(&[repo_scoped]));
+
+        check(
+            rendered.contains("Repos observed: 1"),
+            "the healthy store still reports its one repo",
+        );
+        check(
+            !rendered.contains("no derivable repo"),
+            "a store with nothing to report must stay quiet",
         );
     }
 
