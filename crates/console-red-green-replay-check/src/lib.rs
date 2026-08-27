@@ -25,6 +25,7 @@ pub const RANGE_BASE: &str = "origin/master";
 const RED_TEST_KEY: &str = "TDD-Red-Test";
 const RED_CHECKSUM_KEY: &str = "TDD-Red-Test-File-Checksum";
 const RED_TRAILER_TOKEN: &str = "TDD-Red-Test-File-Checksum:";
+const GREEN_VERIFIED_KEY: &str = "TDD-Green-Verified-At";
 const GREEN_TRAILER_TOKEN: &str = "TDD-Green-Verified-At:";
 const SUITE_TRAILER_TOKEN: &str = "TDD-Suite-Green-Captured-At:";
 
@@ -217,6 +218,20 @@ fn handle_red(runner: &impl Runner, msg_path: &Path, tests: &[String]) -> Result
 
 fn handle_green(runner: &impl Runner, msg_path: &Path) -> Result<(), String> {
     let test_path = head_trailer_value(runner, RED_TEST_KEY)?;
+    if test_path.is_empty() {
+        // Defence in depth behind the detector above. Reaching here with no
+        // readable test path means HEAD's trailer block is malformed rather
+        // than absent, and the previous behaviour was to hand the empty string
+        // to `file_checksum` and surface `cannot read :` -- an error naming
+        // neither the cause nor the fix.
+        let head = current_head_sha(runner)?;
+        return Err(format!(
+            "red-green-replay-red-test-trailer-missing: HEAD {head} is red-awaiting \
+             but carries no readable `{RED_TEST_KEY}` trailer. Git reads trailers from \
+             the final trailer block only, so the Red trailers must form the LAST block \
+             of the message with no prose after them. Amend {head} so they do."
+        ));
+    }
     let recorded_checksum = head_trailer_value(runner, RED_CHECKSUM_KEY)?;
     let current_checksum = file_checksum(Path::new(&test_path))?;
     if current_checksum != recorded_checksum {
@@ -281,8 +296,18 @@ fn head_red_awaiting_green(runner: &impl Runner) -> Result<bool, String> {
             summary(&resolved.stderr)
         ));
     }
-    let message = git_stdout(runner, &["log", "-1", "--format=%B"])?;
-    Ok(message.contains(RED_TRAILER_TOKEN) && !message.contains(GREEN_TRAILER_TOKEN))
+    // ONE PARSING SURFACE, and this is the whole point of the function.
+    // Green verification reads its inputs through git's own trailer parser,
+    // which honours the FINAL trailer block only. This used to substring-scan
+    // the raw `%B` instead, so a message carrying the Red tokens outside that
+    // block -- prose quoting the ritual, or a pair trailer above a trailing
+    // paragraph -- was classified red-awaiting here and then yielded an EMPTY
+    // test path there, wedging the branch with `cannot read :`. Two readers of
+    // the same fact must not disagree about what counts as a trailer
+    // (livespec-console-beads-fabro-gwcq2f).
+    let red = head_trailer_value(runner, RED_CHECKSUM_KEY)?;
+    let green = head_trailer_value(runner, GREEN_VERIFIED_KEY)?;
+    Ok(!red.is_empty() && green.is_empty())
 }
 
 fn head_trailer_value(runner: &impl Runner, key: &str) -> Result<String, String> {
@@ -935,10 +960,13 @@ mod tests {
             head_red_awaiting_green(&failed_probe)
                 .is_err_and(|err| err.contains("git-command-failed"))
         );
+        // Two trailer reads now, not one raw-message read: the checksum
+        // trailer then the green trailer, both VALUE-ONLY as git reports them.
         let not_red = FakeRunner::new(
             vec![
                 CommandOutput::success("head"),
-                CommandOutput::success("message"),
+                CommandOutput::success(""),
+                CommandOutput::success(""),
             ],
             Vec::new(),
         );
@@ -946,7 +974,8 @@ mod tests {
         let red = FakeRunner::new(
             vec![
                 CommandOutput::success("head"),
-                CommandOutput::success("TDD-Red-Test-File-Checksum: sha256:a\n"),
+                CommandOutput::success("sha256:a\n"),
+                CommandOutput::success(""),
             ],
             Vec::new(),
         );
@@ -954,13 +983,58 @@ mod tests {
         let pair = FakeRunner::new(
             vec![
                 CommandOutput::success("head"),
-                CommandOutput::success(
-                    "TDD-Red-Test-File-Checksum: sha256:a\nTDD-Green-Verified-At: now\n",
-                ),
+                CommandOutput::success("sha256:a\n"),
+                CommandOutput::success("now\n"),
             ],
             Vec::new(),
         );
         assert_eq!(head_red_awaiting_green(&pair), Ok(false));
+    }
+
+    /// The Green-mode guard. Covered here rather than only in
+    /// `tests/trailer_block_parity.rs` because the coverage gate measures
+    /// `--lib` targets, so an integration test leaves this arm reading as
+    /// uncovered production code.
+    #[test]
+    fn green_mode_without_a_readable_red_test_trailer_names_the_commit_and_the_rule() {
+        let msg_path = temp_file("msg-green-missing-red-test", "fix: x\n");
+        let malformed = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success("head\n"),
+                CommandOutput::success("sha256:a\n"),
+                CommandOutput::success(""),
+                CommandOutput::success(""),
+                CommandOutput::success("0f1e2d3c4b5a6978\n"),
+            ],
+            Vec::new(),
+        );
+        let failure = check_commit_msg(&malformed, &msg_path);
+        check(
+            failure
+                .as_ref()
+                .is_err_and(|err| err.contains("red-green-replay-red-test-trailer-missing")),
+            &format!("expected the named failure, got {failure:?}"),
+        );
+        check(
+            failure
+                .as_ref()
+                .is_err_and(|err| err.contains("0f1e2d3c4b5a6978")),
+            &format!("expected the offending HEAD named, got {failure:?}"),
+        );
+        check(
+            failure
+                .as_ref()
+                .is_err_and(|err| err.contains("final trailer block")),
+            &format!("expected the trailer-block rule stated, got {failure:?}"),
+        );
+        check(
+            !failure
+                .as_ref()
+                .is_err_and(|err| err.contains("cannot read :")),
+            &format!("expected the un-actionable empty-path error gone, got {failure:?}"),
+        );
+        let _ = fs::remove_file(msg_path);
     }
 
     #[test]
@@ -985,7 +1059,8 @@ mod tests {
             vec![
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
-                CommandOutput::success("message\n"),
+                CommandOutput::success(""),
+                CommandOutput::success(""),
             ],
             Vec::new(),
         );
@@ -1023,7 +1098,8 @@ mod tests {
             vec![
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
-                CommandOutput::success("message\n"),
+                CommandOutput::success(""),
+                CommandOutput::success(""),
             ],
             vec![CommandOutput::success("pass")],
         );
@@ -1038,7 +1114,8 @@ mod tests {
             vec![
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
-                CommandOutput::success("TDD-Red-Test-File-Checksum: sha256:a\n"),
+                CommandOutput::success("sha256:a\n"),
+                CommandOutput::success(""),
                 CommandOutput::success(&green_test.to_string_lossy()),
                 CommandOutput::success(&checksum.unwrap_or_default()),
                 CommandOutput::success("parent"),
