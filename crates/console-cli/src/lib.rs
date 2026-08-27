@@ -16,7 +16,7 @@
 #![warn(missing_docs)]
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
@@ -785,6 +785,113 @@ pub fn run_store_backed_tui_session(
         live_handled_count + handled.len(),
         store.list_console_events(),
     )
+}
+
+/// The token every lane-open failure line carries, so a reader — an operator or
+/// the e2e harness — can find them with one fixed grep.
+pub const LANE_OPEN_FAILURE_MARKER: &str = "lane-store-open-failed";
+
+/// The off-thread lanes that open a store connection of their own.
+///
+/// Each one used to swallow a failed open and `return`, which is why no captured
+/// frame has ever implicated them: by construction they produced no output at
+/// all. That absence read as health (livespec-console-beads-fabro-k9vt2m).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleLane {
+    /// The source poller, spawned ONCE per session. A lost open here stops
+    /// source refresh for the whole session, leaving a stale view that renders
+    /// normally.
+    SourcePoller,
+    /// The factory command lane, spawned per invocation. A lost open here drops
+    /// one operator command silently.
+    FactoryCommand,
+    /// The control command lane, spawned per invocation, with the same
+    /// per-command consequence.
+    ControlCommand,
+}
+
+impl ConsoleLane {
+    /// The stable label this lane reports itself by.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SourcePoller => "source-poller",
+            Self::FactoryCommand => "factory-command",
+            Self::ControlCommand => "control-command",
+        }
+    }
+}
+
+/// Where lane diagnostics are appended, derived from the store path.
+///
+/// A SIBLING of the store, deliberately. The store is exactly what is
+/// unavailable when this surface is needed, so it cannot be the surface itself;
+/// and deriving the location from the store path keeps the log inside whatever
+/// isolated directory a run was given rather than in a fixed global place.
+#[must_use]
+pub fn lane_diagnostics_path(store_path: &Path) -> PathBuf {
+    let stem = store_path.file_stem().map_or_else(
+        || "livespec-console".to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    );
+    let name = format!("{stem}-lanes.log");
+    store_path.parent().map_or_else(
+        || PathBuf::from(name.clone()),
+        |parent| {
+            if parent.as_os_str().is_empty() {
+                PathBuf::from(name.clone())
+            } else {
+                parent.join(&name)
+            }
+        },
+    )
+}
+
+/// Render the one-line diagnostic for a lane that could not open the store.
+///
+/// ONE line, always: these are appended from several threads and a multi-line
+/// record could interleave into an earlier one. It names the lane (the three
+/// fail very differently), carries the store cause verbatim, and is timestamped
+/// so a reader can correlate it with a run.
+#[must_use]
+pub fn lane_open_failure_line(
+    lane: ConsoleLane,
+    attempts: u32,
+    error: &EventStoreError,
+    at: &str,
+) -> String {
+    let cause = format!("{error:?}").replace('\n', " ");
+    format!(
+        "{at} {LANE_OPEN_FAILURE_MARKER} lane={} attempts={attempts} cause={cause}",
+        lane.label()
+    )
+}
+
+/// The lane-open failure lines in a diagnostics log's contents.
+///
+/// Extracted from the e2e assertion rather than inlined there so it can be
+/// controlled in BOTH directions by a unit test: a check that can only ever
+/// return "nothing found" is indistinguishable from a check that is not running,
+/// and this thread has shipped that shape before.
+#[must_use]
+pub fn lane_open_failures_in(contents: &str) -> Vec<&str> {
+    contents
+        .lines()
+        .filter(|line| line.contains(LANE_OPEN_FAILURE_MARKER))
+        .collect()
+}
+
+/// Append one diagnostic line to the lane log, creating it if absent.
+///
+/// Append rather than write: several lanes may report in one session, and the
+/// first report must survive the second.
+pub fn append_lane_diagnostic(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
 }
 
 /// How many times the pre-first-frame store sequence is attempted.
@@ -2894,13 +3001,14 @@ mod tests {
     };
 
     use super::{
-        BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
-        ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
-        NeedsAttentionIngest, PendingCommandOutcome, PendingCommandRequester, PluginResolution,
-        ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
-        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
-        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
-        append_factory_drain_requested_events, backfill_demo_report, backfill_source_adapters,
+        BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleLane,
+        ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore,
+        InitialSourceSeed, LANE_OPEN_FAILURE_MARKER, NeedsAttentionIngest, PendingCommandOutcome,
+        PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
+        ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
+        SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome,
+        TuiSessionRunner, append_demo_events_to_store, append_factory_drain_requested_events,
+        append_lane_diagnostic, backfill_demo_report, backfill_source_adapters,
         backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
         demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_command_event, event_append_from_console_event, events_tail_report,
@@ -2908,8 +3016,9 @@ mod tests {
         handle_pending_control_commands, handle_pending_factory_commands,
         handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
         ingest_and_reflect, ingest_needs_attention, initial_source_seed,
-        is_failed_once_only_valve_retry, live_source_adapters,
-        live_source_adapters_from_resolution, load_tui_events_from_store, normalized_payload_json,
+        is_failed_once_only_valve_retry, lane_diagnostics_path, lane_open_failure_line,
+        lane_open_failures_in, live_source_adapters, live_source_adapters_from_resolution,
+        load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
         refresh_sources, render_tui_preview, resolve_console_repo, run,
@@ -6042,6 +6151,175 @@ mod tests {
         check(
             format!("{save:?}").contains("cmd-1"),
             "the rendered checkpoint failure must name the cause, not just the variant",
+        );
+    }
+
+    #[test]
+    fn a_lane_open_failure_names_its_lane_and_carries_the_store_cause() {
+        // livespec-console-beads-fabro-k9vt2m. These three lanes used to swallow
+        // a failed open and `return`, producing NOTHING — which is why no
+        // captured frame has ever implicated them. The line is the surface.
+        let cause = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".to_owned()),
+        ));
+        let line =
+            lane_open_failure_line(ConsoleLane::SourcePoller, 3, &cause, "2026-08-27T13:00:00Z");
+
+        check(
+            line.contains(LANE_OPEN_FAILURE_MARKER),
+            "the line carries the marker a reader greps for",
+        );
+        check(
+            line.contains("source-poller"),
+            "the line names WHICH lane failed",
+        );
+        check(
+            line.contains("DatabaseBusy"),
+            "the line carries the store cause verbatim",
+        );
+        check(
+            line.contains("2026-08-27T13:00:00Z"),
+            "the line is timestamped so a reader can correlate it with a run",
+        );
+        check(
+            !line.contains('\n'),
+            "the line is ONE line, so an append cannot corrupt an earlier record",
+        );
+    }
+
+    #[test]
+    fn every_lane_renders_a_distinct_label() {
+        // Without distinct labels the surface tells a reader that SOMETHING
+        // failed but not what stopped working, and the three lanes fail very
+        // differently: the poller dies for the session, the command lanes drop
+        // one operator command each.
+        let labels = [
+            ConsoleLane::SourcePoller.label(),
+            ConsoleLane::FactoryCommand.label(),
+            ConsoleLane::ControlCommand.label(),
+        ];
+        let mut sorted = labels;
+        sorted.sort_unstable();
+        let mut deduped = sorted.to_vec();
+        deduped.dedup();
+
+        check(deduped.len() == labels.len(), "no two lanes share a label");
+        check(
+            labels.iter().all(|label| !label.is_empty()),
+            "every lane has a non-empty label",
+        );
+    }
+
+    #[test]
+    fn lane_diagnostics_sit_beside_the_store_they_could_not_open() {
+        // The store is exactly what is unavailable when this fires, so the store
+        // cannot be the surface. A sibling file can be read by the operator and
+        // grepped by the e2e harness, and putting it beside the store keeps it
+        // inside whatever isolated directory a run was given.
+        let beside = lane_diagnostics_path(Path::new("tmp/livespec-console.sqlite"));
+        check(
+            format!("{}", beside.display()) == "tmp/livespec-console-lanes.log",
+            "the log is a sibling of the store, named from its stem",
+        );
+
+        // Edge cases that would otherwise panic or escape the run's directory.
+        let bare = lane_diagnostics_path(Path::new("store.sqlite"));
+        check(
+            format!("{}", bare.display()) == "store-lanes.log",
+            "a store path with no directory stays in the working directory",
+        );
+        let extensionless = lane_diagnostics_path(Path::new("/var/lib/console"));
+        check(
+            format!("{}", extensionless.display()) == "/var/lib/console-lanes.log",
+            "a store path with no extension is still given a log sibling",
+        );
+
+        // A DEGENERATE store path — the filesystem root has neither a file stem
+        // nor a parent. It cannot reach the binary (`console_store_path` always
+        // yields a filename), but a path helper that panics or produces
+        // something surprising on it is a trap for the next caller, and both
+        // fallbacks are otherwise untaken code.
+        let degenerate = lane_diagnostics_path(Path::new("/"));
+        check(
+            format!("{}", degenerate.display()) == "livespec-console-lanes.log",
+            "a store path with no stem and no parent falls back to a named log \
+             in the working directory",
+        );
+    }
+
+    #[test]
+    fn the_lane_failure_scan_fires_and_stays_quiet_in_the_right_cases() {
+        // TWO-SIDED CONTROL on the e2e negative control itself. The passing-run
+        // assertion is only worth anything if it CAN fail, and "nothing found"
+        // is byte-identical to "the instrument was not running".
+        let cause = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            None,
+        ));
+        let failure_line = lane_open_failure_line(
+            ConsoleLane::FactoryCommand,
+            3,
+            &cause,
+            "2026-08-27T13:00:00Z",
+        );
+
+        // FIRES: a real rendered failure line is found, through the same
+        // renderer the binary writes with — not a hand-typed lookalike.
+        check(
+            lane_open_failures_in(&failure_line).len() == 1,
+            "a rendered lane failure line IS detected",
+        );
+
+        // QUIET: unrelated content, including an empty log, is not a failure.
+        check(
+            lane_open_failures_in("").is_empty(),
+            "an empty log reports no failures",
+        );
+        check(
+            lane_open_failures_in("2026-08-27T13:00:00Z lane=source-poller opened fine\n")
+                .is_empty(),
+            "a line mentioning a lane but not the marker is NOT a failure",
+        );
+
+        // And it counts rather than merely detects, so a report can say how many.
+        let two = format!("{failure_line}\nunrelated line\n{failure_line}");
+        check(
+            lane_open_failures_in(&two).len() == 2,
+            "every failure line is reported, not just the first",
+        );
+    }
+
+    #[test]
+    fn appending_a_lane_diagnostic_is_readable_and_does_not_clobber_earlier_ones() {
+        // POSITIVE CONTROL on the write itself. A surface nobody has proven
+        // writable is the same as no surface, which is the defect this item
+        // exists to close — so this asserts the bytes come back, not merely that
+        // the call returned Ok.
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-lane-diagnostics-{}.log",
+            std::process::id()
+        ));
+        let _remove_result = std::fs::remove_file(&path);
+
+        let first = append_lane_diagnostic(&path, "first lane line");
+        let second = append_lane_diagnostic(&path, "second lane line");
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        let _cleanup = std::fs::remove_file(&path);
+
+        check(first.is_ok(), "the first append succeeds");
+        check(second.is_ok(), "the second append succeeds");
+        check(
+            contents.contains("first lane line"),
+            "the first line is readable back",
+        );
+        check(
+            contents.contains("second lane line"),
+            "the second line is readable back",
+        );
+        check(
+            contents.lines().count() == 2,
+            "appending adds a line rather than replacing the file",
         );
     }
 

@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use console_domain::EventType;
 use console_eventstore::SqliteEventStore;
+use livespec_console_beads_fabro::{lane_diagnostics_path, lane_open_failures_in};
 use support::attention_rows::{PathBackedAttentionFixture, ROW_SUMMARY};
 use support::lifecycle::{ITEM_ID, LifecycleFixture};
 use support::{HarnessResult, RepoFixture, TmuxConsole};
@@ -151,7 +152,37 @@ fn assert_store_side_effects(store_path: &Path) -> HarnessResult<()> {
          the gh stub / PATH shadow is not taking effect",
         store_path.display()
     );
+    assert_no_lane_open_failures(store_path);
     Ok(())
+}
+
+/// NEGATIVE CONTROL for livespec-console-beads-fabro-k9vt2m, asserted on a run
+/// that PASSES.
+///
+/// The three off-thread lanes now append a marked line when their store open is
+/// exhausted, instead of returning silently. A surface only discriminates if it
+/// is quiet when nothing is wrong — so a healthy walkthrough must leave no such
+/// line. Without this, an always-firing report would read exactly like a working
+/// one, which is the failure shape this whole thread keeps paying for.
+///
+/// Read through the SAME `lane_diagnostics_path` derivation the binary uses, so
+/// a change to where the log lives cannot silently move it out from under this
+/// assertion and leave a check that can never fail.
+fn assert_no_lane_open_failures(store_path: &Path) {
+    let log_path = lane_diagnostics_path(store_path);
+    let Ok(contents) = std::fs::read_to_string(&log_path) else {
+        // No log at all is the expected healthy outcome: nothing reported.
+        return;
+    };
+    let failures = lane_open_failures_in(&contents);
+    assert!(
+        failures.is_empty(),
+        "a lane could not open the store during a run that otherwise passed — \
+         {} line(s) in {}:\n{}",
+        failures.len(),
+        log_path.display(),
+        failures.join("\n")
+    );
 }
 
 /// Scenario 18 / B4 — the navigable, pane-specific modal Help overlay, driven

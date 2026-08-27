@@ -39,8 +39,9 @@ use console_eventstore::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
-    BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, PendingCommandRequester,
-    SourceAdapterRef, SourcePollRequester, TuiSessionRunner, resolve_console_invoker,
+    BackingCliResolution, ConsoleLane, ConsoleRuntimeError, NeedsAttentionIngest,
+    PendingCommandRequester, SourceAdapterRef, SourcePollRequester, TuiSessionRunner,
+    append_lane_diagnostic, lane_diagnostics_path, lane_open_failure_line, resolve_console_invoker,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -174,6 +175,55 @@ fn run_store_backed_command(
             &needs_attention,
         ),
     )
+}
+
+/// Open the store for an off-thread LANE, tolerating transient contention and
+/// reporting an exhausted open instead of vanishing.
+///
+/// livespec-console-beads-fabro-k9vt2m. All three lanes previously wrote
+/// `let Ok(mut store) = SqliteEventStore::open(&path) else { return; }` — a
+/// failed open produced no store, no message, and no thread. The poller case is
+/// the sharp one: it is spawned ONCE, so a lost race left the session silently
+/// non-refreshing for its whole life, rendering a stale view that looks entirely
+/// normal.
+///
+/// RETRY IS ADOPTED HERE, and the choice is made against both prior decisions
+/// rather than copied from either:
+///
+/// - `bss4rq` retries at startup because an open is idempotent and there is no
+///   rendered surface yet. The idempotence half transfers exactly — this is the
+///   same `SqliteEventStore::open`, and re-running it cannot double-apply
+///   anything. The surface half does NOT: the session around these lanes is live
+///   and rendering.
+/// - `ddfbcx.1` refuses to retry in the running loop because there IS a rendered
+///   surface and an operator keystroke to inherit as the retry. Neither holds
+///   for a lane: an operator cannot re-trigger the poller, and a command lane's
+///   invocation is already spent.
+///
+/// So these lanes get BOTH — a bounded retry, because nothing else will retry
+/// for them, and a report on exhaustion, because a lane that gives up silently
+/// is the defect itself. The report is a sibling file rather than stderr:
+/// stderr during a live TUI would scribble on the alternate screen.
+///
+/// A failure to write the report is itself swallowed, and that is deliberate —
+/// there is no further surface to escalate to, and a lane must not die trying to
+/// announce that it is dying.
+#[cfg(all(not(test), not(coverage)))]
+fn open_lane_store(lane: ConsoleLane, path: &Path) -> Option<SqliteEventStore> {
+    let opened = open_tolerating_contention(
+        STORE_OPEN_ATTEMPTS,
+        &mut || SqliteEventStore::open(path),
+        &mut |attempt| std::thread::sleep(open_retry_backoff(attempt)),
+    );
+    match opened {
+        Ok(store) => Some(store),
+        Err(error) => {
+            let at = current_requested_at().unwrap_or_else(|_error| "unknown-time".to_owned());
+            let report = lane_open_failure_line(lane, STORE_OPEN_ATTEMPTS, &error, &at);
+            let _ = append_lane_diagnostic(&lane_diagnostics_path(path), &report);
+            None
+        }
+    }
 }
 
 /// Open the console store for a STARTUP sequence, tolerating transient contention.
@@ -344,7 +394,7 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
         return;
     };
     let path = console_store_path();
-    let Ok(mut store) = SqliteEventStore::open(&path) else {
+    let Some(mut store) = open_lane_store(ConsoleLane::SourcePoller, &path) else {
         return;
     };
     let repo = console_repo();
@@ -426,7 +476,7 @@ fn handle_pending_factory_command_lane() {
         return;
     };
     let path = console_store_path();
-    let Ok(mut store) = SqliteEventStore::open(&path) else {
+    let Some(mut store) = open_lane_store(ConsoleLane::FactoryCommand, &path) else {
         return;
     };
     let Ok(observed_at) = current_requested_at() else {
@@ -468,7 +518,7 @@ fn handle_pending_control_command_lane() {
         return;
     };
     let path = console_store_path();
-    let Ok(mut store) = SqliteEventStore::open(&path) else {
+    let Some(mut store) = open_lane_store(ConsoleLane::ControlCommand, &path) else {
         return;
     };
     let Ok(observed_at) = current_requested_at() else {
