@@ -736,9 +736,27 @@ pub fn run_store_backed_tui_session(
     // first-ever run. This ONE synchronous ingest happens before the UI loop
     // starts; ongoing polling then runs on the off-thread poller (see the
     // binary's `poller_loop`), so the UI thread never blocks on a source poll.
-    let ingestion =
-        ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
-    let presented_events = store.list_console_events()?;
+    //
+    // BOTH steps below are STORE WORK on the pre-first-frame path, and both used
+    // a bare `?` that ended the session before the operator saw anything
+    // (livespec-console-beads-fabro-bss4rq). CI run 33060628908 timed out waiting
+    // for the FIRST frame carrying
+    // `EventStore(Sqlite(SqliteFailure(.. DatabaseBusy ..)))` — the `EventStore(`
+    // wrapper is the Debug of `ConsoleRuntimeError`, which only this path
+    // produces; the store OPEN renders a bare `Sqlite(..)` with no wrapper.
+    let readout = tolerate_startup_contention(STARTUP_STORE_ATTEMPTS, &mut || {
+        let ingestion =
+            ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
+        let presented_events = store.list_console_events()?;
+        Ok(StartupReadout {
+            ingestion,
+            presented_events,
+        })
+    })?;
+    let StartupReadout {
+        ingestion,
+        presented_events,
+    } = readout;
     let (effects, live_persisted_count, live_handled_count) = {
         let mut effect_sink = StoreBackedTuiRuntimeEffectSink::new(
             store,
@@ -767,6 +785,59 @@ pub fn run_store_backed_tui_session(
         live_handled_count + handled.len(),
         store.list_console_events(),
     )
+}
+
+/// How many times the pre-first-frame store sequence is attempted.
+///
+/// Matches `console_eventstore::STORE_OPEN_ATTEMPTS` in spirit and for the same
+/// reason: each failed attempt has already waited out `SQLite`'s 5 s busy
+/// timeout, so the bound stays small enough that an exhausted startup still
+/// reports inside the e2e harness's 20 s first-frame budget.
+const STARTUP_STORE_ATTEMPTS: u32 = 3;
+
+/// What the pre-first-frame store sequence produces: one ingest pass and the
+/// events it leaves behind.
+///
+/// Bundled into one value so the retry below is a CONCRETE function rather than
+/// a generic combinator — the retried step is injectable, so scripted
+/// contention exercises the loop without a contrived race.
+struct StartupReadout {
+    ingestion: Vec<AdapterIngestionSummary>,
+    presented_events: Vec<ConsoleEvent>,
+}
+
+/// Retry the pre-first-frame store sequence while it fails on TRANSIENT contention.
+///
+/// This is the site the `bss4rq` evidence actually names, and it is neither of
+/// the two `ddfbcx.1` covered: those live in `StoreBackedTuiRuntimeEffectSink`,
+/// inside the RUNNING loop, and cannot be reached until a frame has been served.
+///
+/// Retrying is safe here in a way it deliberately was not for `ddfbcx.1`'s
+/// effect case. The ingest appends events the store DEDUPLICATES by event id and
+/// source-event id and advances checkpoints by upsert, and listing events is a
+/// pure read — so a re-run cannot double-apply anything. There is also no
+/// rendered surface yet on which to say NOT APPLIED, so the choice is retry or
+/// die.
+///
+/// NO SLEEP between attempts, on purpose: the attempt that just failed already
+/// spent five seconds inside `SQLite`'s busy timeout, which is three orders of
+/// magnitude more waiting than a backoff here would add. Keeping the loop free
+/// of effects is also what lets it be tested at all.
+fn tolerate_startup_contention(
+    attempts: u32,
+    step: &mut dyn FnMut() -> ConsoleRuntimeResult<StartupReadout>,
+) -> ConsoleRuntimeResult<StartupReadout> {
+    let mut attempt: u32 = 1;
+    loop {
+        let error = match step() {
+            Ok(readout) => return Ok(readout),
+            Err(error) => error,
+        };
+        if !error.is_transient_contention() || attempt >= attempts {
+            return Err(error);
+        }
+        attempt = attempt.saturating_add(1);
+    }
 }
 
 /// Return the backfill demo report value.
@@ -1310,6 +1381,20 @@ pub enum ConsoleRuntimeError {
 }
 
 impl ConsoleRuntimeError {
+    /// Is this a TRANSIENT store contention failure rather than a real fault?
+    ///
+    /// Defers to `EventStoreError::is_transient_contention`, so transience stays
+    /// keyed on the `SQLite` PRIMARY code and never on rendered text. Only the
+    /// store variant can be transient: an adapter, application, resolution or
+    /// TUI failure names something that will not resolve itself on a retry.
+    #[must_use]
+    pub const fn is_transient_contention(&self) -> bool {
+        match self {
+            Self::EventStore(error) => error.is_transient_contention(),
+            _ => false,
+        }
+    }
+
     /// Build a TUI runtime failure while preserving the underlying cause text.
     #[must_use]
     pub const fn tui_runtime_failed(cause: String) -> Self {
@@ -2812,11 +2897,12 @@ mod tests {
         BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleRuntimeError,
         ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore, InitialSourceSeed,
         NeedsAttentionIngest, PendingCommandOutcome, PendingCommandRequester, PluginResolution,
-        ResolveInputs, ScriptedSource, SharedSqliteStore, SourceAdapterRef, SourcePollRequester,
-        SqliteSourceEventLog, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
-        append_demo_events_to_store, append_factory_drain_requested_events, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
-        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
+        ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
+        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
+        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
+        append_factory_drain_requested_events, backfill_demo_report, backfill_source_adapters,
+        backfill_source_report, command_status_update_runtime_result, config_command_from_stored,
+        demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_command_event, event_append_from_console_event, events_tail_report,
         factory_command_from_stored, final_tui_events_result, handle_pending_config_commands,
         handle_pending_control_commands, handle_pending_factory_commands,
@@ -2829,7 +2915,8 @@ mod tests {
         refresh_sources, render_tui_preview, resolve_console_repo, run,
         run_store_backed_tui_session, run_with_store, serve_report,
         serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
-        tui_session_outcome_from_final_events, work_item_command_from_stored,
+        tolerate_startup_contention, tui_session_outcome_from_final_events,
+        work_item_command_from_stored,
     };
 
     #[test]
@@ -5956,6 +6043,131 @@ mod tests {
             format!("{save:?}").contains("cmd-1"),
             "the rendered checkpoint failure must name the cause, not just the variant",
         );
+    }
+
+    #[test]
+    fn pre_first_frame_store_work_retries_transient_contention() {
+        // livespec-console-beads-fabro-bss4rq. The evidenced site. CI run
+        // 33060628908 died waiting for the FIRST frame, so it never reached the
+        // running loop ddfbcx.1 hardened; the ingest-and-list pass that runs
+        // before `run_tui` is what failed.
+        let (attempts_made, readout) = drive_startup_retry(3, 2);
+
+        check(
+            readout.is_some(),
+            "a store that frees up within the bound proceeds",
+        );
+        check(
+            attempts_made == 3,
+            "the step is re-run once per attempt until it succeeds",
+        );
+    }
+
+    #[test]
+    fn pre_first_frame_store_work_gives_up_at_the_bound() {
+        let (attempts_made, readout) = drive_startup_retry(STARTUP_STORE_ATTEMPTS, u32::MAX);
+
+        check(
+            readout.is_none(),
+            "a store busy throughout must not report success",
+        );
+        check(
+            attempts_made == STARTUP_STORE_ATTEMPTS,
+            "the bound is exhausted exactly, never exceeded",
+        );
+    }
+
+    #[test]
+    fn only_a_transient_store_failure_is_retried_before_the_first_frame() {
+        // NEGATIVE CONTROLS on the predicate itself. Retrying anything else
+        // would spin on a fault that cannot resolve, and would delay the
+        // operator-facing report of a real problem.
+        let busy = ConsoleRuntimeError::EventStore(EventStoreError::Sqlite(
+            rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(5), None),
+        ));
+        let corrupt = ConsoleRuntimeError::EventStore(EventStoreError::Sqlite(
+            rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(11), None),
+        ));
+        let sequence = ConsoleRuntimeError::EventStore(EventStoreError::InvalidSequence);
+        let resolution = ConsoleRuntimeError::BackingCliResolution("no cli".to_owned());
+        let runtime = ConsoleRuntimeError::tui_runtime_failed("runtime failed".to_owned());
+
+        check(
+            busy.is_transient_contention(),
+            "a store BUSY before the first frame is transient",
+        );
+        check(
+            !corrupt.is_transient_contention(),
+            "corruption is NOT transient and must be reported at once",
+        );
+        check(
+            !sequence.is_transient_contention(),
+            "a non-sqlite store fault is NOT transient",
+        );
+        check(
+            !resolution.is_transient_contention(),
+            "a backing-cli resolution failure is NOT transient",
+        );
+        check(
+            !runtime.is_transient_contention(),
+            "a tui runtime failure is NOT transient",
+        );
+    }
+
+    #[test]
+    fn the_evidenced_failure_renders_as_the_session_path_not_the_store_open() {
+        // The provenance check that redirected this fix. CI run 33060628908
+        // captured `EventStore(Sqlite(SqliteFailure(..)))`. That `EventStore(`
+        // wrapper is `ConsoleRuntimeError`'s Debug and ONLY the session path
+        // produces it; the store OPEN reports a bare `EventStoreError`, which
+        // renders with no wrapper at all. Without this control the two sites are
+        // indistinguishable in a captured frame, which is how the remedy was
+        // first aimed at the wrong one.
+        let store_error = EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".to_owned()),
+        ));
+        let open_shape = format!("{store_error:?}");
+        let session_shape = format!("{:?}", ConsoleRuntimeError::EventStore(store_error));
+
+        check(
+            session_shape.starts_with("EventStore("),
+            "the session path carries the ConsoleRuntimeError wrapper",
+        );
+        check(
+            !open_shape.starts_with("EventStore("),
+            "the store open reports the bare store error, with no wrapper",
+        );
+        check(
+            open_shape.starts_with("Sqlite("),
+            "the store open's rendering starts at the sqlite cause",
+        );
+    }
+
+    /// Drive `tolerate_startup_contention` against a scripted step.
+    ///
+    /// The step reports transient contention until `busy_through` attempts have
+    /// been made, then succeeds. Returns the attempts made and the readout, if
+    /// any. Shared by the cases above so the callback lines are exercised by the
+    /// case that actually retries.
+    fn drive_startup_retry(attempts: u32, busy_through: u32) -> (u32, Option<StartupReadout>) {
+        let mut attempts_made = 0_u32;
+        let outcome = tolerate_startup_contention(attempts, &mut || {
+            attempts_made = attempts_made.saturating_add(1);
+            if attempts_made <= busy_through {
+                return Err(ConsoleRuntimeError::EventStore(EventStoreError::Sqlite(
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(5),
+                        Some("database is locked".to_owned()),
+                    ),
+                )));
+            }
+            Ok(StartupReadout {
+                ingestion: Vec::new(),
+                presented_events: Vec::new(),
+            })
+        });
+        (attempts_made, outcome.ok())
     }
 
     #[test]
