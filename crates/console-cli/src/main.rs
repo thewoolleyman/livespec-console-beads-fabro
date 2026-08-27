@@ -33,7 +33,10 @@ use console_application::{
     JournalAutonomousDecisionsPort, PluginResolution as TuiPluginResolution,
 };
 #[cfg(all(not(test), not(coverage)))]
-use console_eventstore::SqliteEventStore;
+use console_eventstore::{
+    STORE_OPEN_ATTEMPTS, SqliteEventStore, open_retry_backoff, open_tolerating_contention,
+    render_open_failure,
+};
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
     BackingCliResolution, ConsoleRuntimeError, NeedsAttentionIngest, PendingCommandRequester,
@@ -123,7 +126,7 @@ fn run_store_backed_command(
 ) -> Result<livespec_console_beads_fabro::RunOutput, String> {
     let path = console_store_path();
     create_store_parent(&path)?;
-    let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
+    let mut store = open_console_store(&path)?;
     let observed_at = current_requested_at()?;
     let repo = console_repo();
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
@@ -173,11 +176,33 @@ fn run_store_backed_command(
     )
 }
 
+/// Open the console store for a STARTUP sequence, tolerating transient contention.
+///
+/// livespec-console-beads-fabro-bss4rq. Every open also runs
+/// `execute_batch(SCHEMA)`, which is itself a write transaction, and one
+/// walkthrough opens EIGHT connections across SIX threads per console process
+/// (see the writer-count note in `run_interactive_store_tui`). A bare `?` here
+/// therefore killed the session on a momentary `SQLITE_BUSY` — before the first
+/// frame, so the operator saw nothing at all.
+///
+/// The loop, the bound, and the rendered failure live in `console_eventstore`
+/// where they are tested against scripted failures; this composition root holds
+/// only the two effects that cannot be: the real open and the real sleep.
+#[cfg(all(not(test), not(coverage)))]
+fn open_console_store(path: &Path) -> Result<SqliteEventStore, String> {
+    open_tolerating_contention(
+        STORE_OPEN_ATTEMPTS,
+        &mut || SqliteEventStore::open(path),
+        &mut |attempt| std::thread::sleep(open_retry_backoff(attempt)),
+    )
+    .map_err(|error| render_open_failure(&error, STORE_OPEN_ATTEMPTS))
+}
+
 #[cfg(all(not(test), not(coverage)))]
 fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let path = console_store_path();
     create_store_parent(&path)?;
-    let mut store = SqliteEventStore::open(&path).map_err(|error| format!("{error:?}"))?;
+    let mut store = open_console_store(&path)?;
     let observed_at = current_requested_at()?;
     let repo = console_repo();
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
