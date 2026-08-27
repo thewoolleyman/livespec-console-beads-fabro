@@ -360,11 +360,41 @@ check-baseline` is the fail-closed verifier wired into `just check`.
 2. If the change will modify tracked files, create a dedicated worktree from the
    primary checkout's `master` and do all edits there. Every worktree lives under
    the per-user root `~/.worktrees/livespec-console-beads-fabro/<branch>` — NEVER
-   as a peer of the clones under `/data/projects`:
+   as a peer of the clones under `/data/projects`. **Create it with the recipe,
+   NOT with `git worktree add`:**
 
    ```bash
-   mise exec -- git worktree add -b <branch> "$HOME/.worktrees/livespec-console-beads-fabro/<branch>" master
+   mise exec -- just worktree-create <branch> master
    ```
+
+   `worktree-create` provisions the worktree-discipline pack into `dev-tooling/`
+   and hydrates. Raw `git worktree add` does neither, and **a worktree without
+   that pack can neither commit a `.py` change nor push at all** —
+   `check-primary-checkout-commit-refuse-hook-installed` fails with
+   `worktree_pack_absent` in both the pre-commit and pre-push aggregates. **A
+   docs-only branch is NOT exempt**; do not assume a prose change takes a fast
+   path around it.
+
+   Two properties make this expensive to learn by hitting it:
+
+   - The check is only reachable through a full `just check`, so it fires at
+     COMMIT or PUSH time — after the work is done — not at worktree-creation
+     time.
+   - A hook-rejected `git commit` leaves the change **STAGED**, so a following
+     `git log` shows some other track's commit at HEAD and reads as success.
+     **After a hook-gated commit, `git status` is the check that tells the
+     truth, not `git log`.**
+
+   `just install-worktree-pack` rescues a worktree that already exists without
+   the pack, and it must also be re-run in any worktree created across a
+   `livespec-dev-tooling` pin bump, because `worktree-create` provisions by
+   copying from the primary checkout. Prefer either over `just bootstrap`, which
+   reconciles the claude-plugins row and **advances the local plugin install** —
+   the thing that turns `check-fork-drift` red on clean `master`. The rest of the
+   lifecycle has recipes too: `just worktree-hydrate`,
+   `just worktree-land [base_ref]`, and `just worktree-reap [--execute]` for
+   orphans. `dev-tooling/*` is gitignored and byte-verified against the package
+   source — never hand-edit the installed copy.
 
 3. Use `mise exec -- git commit ...` and `mise exec -- git push ...` so the
    mise-managed lefthook hooks actually run. Never pass `--no-verify`; if a hook
