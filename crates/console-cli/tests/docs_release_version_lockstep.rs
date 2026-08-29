@@ -20,15 +20,30 @@
 //!
 //! # What it actually asserts
 //!
-//! Only that the version those claims were last REVIEWED against is still the
-//! version release-please has released. When release-please bumps
-//! `.release-please-manifest.json`, this test fails; you re-read the claims
-//! enumerated below, correct any that the new release has invalidated, and
-//! bump `DOCS_REVIEWED_AGAINST` deliberately.
+//! Only that the version those claims were last REVIEWED against is still
+//! CURRENT with the version release-please has released — reviewed may equal
+//! released, or run ahead of it, but never fall behind. When release-please
+//! bumps `.release-please-manifest.json` past `DOCS_REVIEWED_AGAINST`, this
+//! test fails; you re-read the claims enumerated below, correct any that the
+//! new release has invalidated, and bump `DOCS_REVIEWED_AGAINST` deliberately.
 //!
 //! This is the same pinned-ground-truth idiom as `console-spec-check`'s
 //! normative-clause counts, which the repo treats as intentional friction: it
 //! forces a conscious update whenever the thing it pins moves.
+//!
+//! # Why ordering, not equality
+//!
+//! The manifest bump IS the release PR's diff, and release-please
+//! force-pushes that PR's branch on every `master` push — so a commit made
+//! directly on the release branch is never durable, and an equality pin
+//! against the manifest has no green path: the release PR is red until
+//! merged (manifest ahead of the pin) by construction, and merging it is the
+//! only way to move the manifest, which happens on `master` AFTER the review
+//! this gate is meant to force. The review has to be recordable on `master`
+//! AHEAD of the release it describes. Docs-behind-release is the rot this
+//! gate exists to catch; docs-ahead is just the ordinary state of a
+//! maintainer re-reading claims before release-please cuts the release that
+//! makes them true.
 //!
 //! Deliberately NOT "every version mentioned must equal the current release".
 //! Some of these claims are HISTORICAL and must not be rewritten on each
@@ -76,7 +91,16 @@ const MANIFEST: &str = ".release-please-manifest.json";
 /// Note the companion test below requires the doc to MENTION `v<pin>`, so a
 /// bump that leaves only historical `v0.2.0` claims in place will fail it —
 /// claim (3) is what keeps the pin anchored to live text.
-const DOCS_REVIEWED_AGAINST: &str = "0.3.0";
+///
+/// ## The 0.4.0 re-read
+///
+/// Claims (1) and (2) above are still HISTORICAL at `v0.2.0` and untouched —
+/// they record what the B8 acceptance run actually exercised, and 0.4.0 has
+/// not been through a fresh one. Claim (3) is retargeted to `v0.4.0`; its
+/// superset-of-the-acceptance-run claim was re-checked and still holds — 0.4.0
+/// is additive (feature and fix commits) over 0.3.0, and nothing the
+/// acceptance run exercised was removed.
+const DOCS_REVIEWED_AGAINST: &str = "0.4.0";
 
 fn repo_root() -> std::io::Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -101,6 +125,30 @@ fn released_version(manifest: &str) -> Option<String> {
     Some(rest[..closing].to_string())
 }
 
+/// Parses a bare `MAJOR.MINOR.PATCH` version string, without a semver
+/// dependency: exactly three dot-separated numeric fields.
+fn semver(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+/// True when the reviewed version is still current with the released
+/// version: equal to it, or ahead of it. Unparseable input is treated as NOT
+/// current, so a malformed pin or manifest fails this gate loudly instead of
+/// silently passing.
+fn review_is_current(reviewed: &str, released: &str) -> bool {
+    match (semver(reviewed), semver(released)) {
+        (Some(r), Some(rel)) => r >= rel,
+        _ => false,
+    }
+}
+
 #[test]
 fn version_scoped_install_claims_were_reviewed_against_the_current_release() -> std::io::Result<()>
 {
@@ -112,17 +160,27 @@ fn version_scoped_install_claims_were_reviewed_against_the_current_release() -> 
          reads must still be present"
     );
 
-    assert_eq!(
-        released, DOCS_REVIEWED_AGAINST,
+    assert!(
+        semver(DOCS_REVIEWED_AGAINST).is_some(),
+        "DOCS_REVIEWED_AGAINST (\"{DOCS_REVIEWED_AGAINST}\") does not parse as MAJOR.MINOR.PATCH"
+    );
+    assert!(
+        semver(&released).is_some(),
+        "the released version read from {MANIFEST} (\"{released}\") does not parse as \
+         MAJOR.MINOR.PATCH"
+    );
+
+    assert!(
+        review_is_current(DOCS_REVIEWED_AGAINST, &released),
         "\n\
          A new version ({released}) has been released, but {INSTALL_DOC}'s version-scoped \
-         claims were last read against {DOCS_REVIEWED_AGAINST}.\n\n\
+         claims were last read against {DOCS_REVIEWED_AGAINST}, which is now BEHIND it.\n\n\
          Those claims do not update themselves, and nothing else in this repo will notice: \
          they describe a PUBLISHED ARTIFACT, so the working tree stays internally consistent \
          while they go stale.\n\n\
          Re-read them in the doc (the `DOCS_REVIEWED_AGAINST` doc comment enumerates each one \
          and says which are historical and which EXPIRE), correct what the new release \
-         invalidated, then set DOCS_REVIEWED_AGAINST = \"{released}\".\n"
+         invalidated, then set DOCS_REVIEWED_AGAINST to at least \"{released}\".\n"
     );
     Ok(())
 }
@@ -174,5 +232,51 @@ mod manifest_parsing {
     fn returns_none_when_the_root_key_is_absent() {
         assert_eq!(released_version(r#"{"crates/other": "0.1.0"}"#), None);
         assert_eq!(released_version("not json at all"), None);
+    }
+}
+
+#[cfg(test)]
+mod version_ordering {
+    use super::{review_is_current, semver};
+
+    #[test]
+    fn semver_parses_three_numeric_fields() {
+        assert_eq!(semver("0.4.0"), Some((0, 4, 0)));
+        assert_eq!(semver("1.10.20"), Some((1, 10, 20)));
+    }
+
+    #[test]
+    fn semver_rejects_malformed_input() {
+        assert_eq!(semver("0.4"), None);
+        assert_eq!(semver("0.4.0.1"), None);
+        assert_eq!(semver("a.b.c"), None);
+        assert_eq!(semver(""), None);
+        assert_eq!(semver("0.4.x"), None);
+    }
+
+    #[test]
+    fn equal_versions_are_current() {
+        assert!(review_is_current("0.4.0", "0.4.0"));
+    }
+
+    #[test]
+    fn a_reviewed_version_ahead_of_the_release_is_current() {
+        assert!(review_is_current("0.5.0", "0.4.0"));
+        // Numeric compare, not lexical: "0.10.0" must be seen as greater than
+        // "0.9.0", not less than it.
+        assert!(review_is_current("0.10.0", "0.9.0"));
+    }
+
+    #[test]
+    fn a_reviewed_version_behind_the_release_is_not_current() {
+        assert!(!review_is_current("0.3.0", "0.4.0"));
+        assert!(!review_is_current("0.9.0", "0.10.0"));
+    }
+
+    #[test]
+    fn unparseable_input_is_never_current() {
+        assert!(!review_is_current("not-a-version", "0.4.0"));
+        assert!(!review_is_current("0.4.0", "not-a-version"));
+        assert!(!review_is_current("not-a-version", "not-a-version"));
     }
 }
