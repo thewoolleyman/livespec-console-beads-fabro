@@ -38,7 +38,7 @@ Only linux `x86_64` is published today.
 > source build below.
 >
 > **The acceptance run has not been repeated since.** The globs above fetch
-> the CURRENT release, `v0.3.0`, which is a superset of the acceptance-run
+> the CURRENT release, `v0.4.0`, which is a superset of the acceptance-run
 > build — it carries the cross-repo fix described under
 > [Running against a different repository](#running-against-a-different-repository),
 > so it does not need the `cd` that `v0.2.0` did. That fix is
