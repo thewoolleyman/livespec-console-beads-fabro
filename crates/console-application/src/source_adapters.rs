@@ -6319,4 +6319,118 @@ mod tests {
         assert_eq!(handoff.action_id(), None);
         assert_eq!(handoff.command(), "revise");
     }
+
+    #[test]
+    fn stable_version_rejects_part_boundary_confusion() {
+        // Acceptance criterion 1: boundary injectivity. A trailing 0x1f byte in
+        // part N is indistinguishable from a leading one in part N+1 under the
+        // raw-separator encoding; both produce the same byte stream and therefore
+        // the same FNV hash. Length-prefixing eliminates the ambiguity.
+        assert_ne!(
+            super::stable_version(&["a\x1f", "b"]),
+            super::stable_version(&["a", "\x1fb"]),
+        );
+    }
+
+    #[test]
+    fn work_item_snapshot_version_rejects_rank_status_boundary_confusion() {
+        // Acceptance criterion 2a: work-item snapshot identity exercised through
+        // parse_orchestrator_observation. Parts 4 (rank) and 5 (status) are
+        // adjacent and wire-arbitrary; the two JSON payloads below differ only at
+        // that boundary and collide under the raw-separator encoding.
+        let obs_a = ObservedSource::new(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            r#"[{"id":"wi-1","lane":"ready","rank":"a\u001f","status":"b"}]"#,
+        );
+        let obs_b = ObservedSource::new(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            r#"[{"id":"wi-1","lane":"ready","rank":"a","status":"\u001fb"}]"#,
+        );
+        let events_a = ok_parsed_observation(parse_orchestrator_observation(&obs_a)).events;
+        let events_b = ok_parsed_observation(parse_orchestrator_observation(&obs_b)).events;
+        assert_ne!(events_a[0].source_event_id(), events_b[0].source_event_id(),);
+    }
+
+    #[test]
+    fn attention_item_version_rejects_summary_source_repo_boundary_confusion() {
+        // Acceptance criterion 2b: attention item identity exercised through
+        // diff_needs_attention. Parts 4 (summary) and 5 (source_ref().repo()) are
+        // adjacent and wire-arbitrary; the two items below differ only at that
+        // boundary. Both items have the same id and diff repo so the source_event_id
+        // embeds the version; equal versions collapse to identical ids on the
+        // event store's unique index and the changed state is never observed.
+        let item_a = AttentionItemSnapshot::new(
+            "wi-1",
+            "human-valve",
+            "high",
+            "Approve\x1f",
+            AttentionSourceRef::new("console", Some("wi-1"), None),
+            AttentionHandoff::new("approve", Some("approve"), "approve:wi-1"),
+        );
+        let item_b = AttentionItemSnapshot::new(
+            "wi-1",
+            "human-valve",
+            "high",
+            "Approve",
+            AttentionSourceRef::new("\x1fconsole", Some("wi-1"), None),
+            AttentionHandoff::new("approve", Some("approve"), "approve:wi-1"),
+        );
+        let events_a = diff_needs_attention("repo", &[], &[item_a]);
+        let events_b = diff_needs_attention("repo", &[], &[item_b]);
+        assert_ne!(events_a[0].source_event_id(), events_b[0].source_event_id(),);
+    }
+
+    #[test]
+    fn attention_resolved_version_rejects_repo_id_boundary_confusion() {
+        // Acceptance criterion 2c: attention item resolved event exercised through
+        // diff_needs_attention. Parts 0 (repo) and 1 (item.id()) are adjacent;
+        // the two pairs below collide under the raw-separator encoding. Comparison
+        // is on stream_seq (which carries the version) because the source_event_id
+        // template also embeds repo and id literally, so it differs even when the
+        // version is identical.
+        let item_b = AttentionItemSnapshot::new(
+            "b",
+            "human-valve",
+            "high",
+            "Pending",
+            AttentionSourceRef::new("console", Some("b"), None),
+            AttentionHandoff::new("approve", Some("approve"), "approve:b"),
+        );
+        let item_x1fb = AttentionItemSnapshot::new(
+            "\x1fb",
+            "human-valve",
+            "high",
+            "Pending",
+            AttentionSourceRef::new("console", Some("\x1fb"), None),
+            AttentionHandoff::new("approve", Some("approve"), "approve:\x1fb"),
+        );
+        let events_a = diff_needs_attention("a\x1f", &[item_b], &[]);
+        let events_b = diff_needs_attention("a", &[item_x1fb], &[]);
+        assert_ne!(
+            events_a[0].event().stream_seq(),
+            events_b[0].event().stream_seq(),
+        );
+    }
+
+    #[test]
+    fn stable_version_idempotence_and_range_invariants() {
+        // Acceptance criterion 3: idempotence — same inputs always yield the same
+        // version. A fix that generated a fresh id on every call would trade one
+        // bug for a worse one (infinite polling churn).
+        let v = super::stable_version(&["same", "inputs"]);
+        assert_eq!(super::stable_version(&["same", "inputs"]), v);
+
+        // Acceptance criterion 4: range invariants.
+        // stable_version forces the low bit so the result is always non-zero and odd.
+        let h = super::stable_version(&["any", "parts"]);
+        assert_ne!(h, 0);
+        assert_eq!(h & 1, 1);
+        // source_stream_seq masks to 63 bits so it round-trips through the event
+        // store's signed stream_seq column without overflow.
+        let s = super::source_stream_seq(&["x"]);
+        assert_ne!(s, 0);
+        assert_eq!(s & 0x8000_0000_0000_0000, 0);
+    }
 }
