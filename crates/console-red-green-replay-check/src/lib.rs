@@ -991,6 +991,22 @@ mod tests {
         assert_eq!(head_red_awaiting_green(&pair), Ok(false));
     }
 
+    #[test]
+    fn head_red_awaiting_green_propagates_green_verified_trailer_runner_failure() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("head\n"),
+                CommandOutput::success("sha256:abc"),
+                // GREEN_VERIFIED_KEY call has no further output in the queue
+            ],
+            Vec::new(),
+        );
+        assert!(
+            head_red_awaiting_green(&runner)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+    }
+
     /// The Green-mode guard. Covered here rather than only in
     /// `tests/trailer_block_parity.rs` because the coverage gate measures
     /// `--lib` targets, so an integration test leaves this arm reading as
@@ -1033,6 +1049,24 @@ mod tests {
                 .as_ref()
                 .is_err_and(|err| err.contains("cannot read :")),
             &format!("expected the un-actionable empty-path error gone, got {failure:?}"),
+        );
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn handle_green_propagates_head_sha_runner_failure_when_red_test_trailer_is_empty() {
+        let msg_path = temp_file("msg-green-head-sha-fail", "fix: x\n");
+        let runner = FakeRunner::new(
+            vec![
+                // head_trailer_value(RED_TEST_KEY) → "" (empty test path, enters if block)
+                CommandOutput::success(""),
+                // current_head_sha call has no further output in the queue
+            ],
+            Vec::new(),
+        );
+        assert!(
+            handle_green(&runner, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
         );
         let _ = fs::remove_file(msg_path);
     }
