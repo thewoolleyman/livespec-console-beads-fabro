@@ -266,7 +266,7 @@ impl CommandAppendStore for SqliteEventStore {
 pub fn persist_tui_runtime_effects(
     store: &mut dyn CommandAppendStore,
     effects: &[TuiRuntimeEffect],
-    _requested_at: &str,
+    requested_at: &str,
 ) -> EventStoreResult<Vec<CommandAppendOutcome>> {
     let mut outcomes = Vec::new();
     for effect in effects {
@@ -276,24 +276,18 @@ pub fn persist_tui_runtime_effects(
         // next).
         let sequence = store.command_count()?;
         let existing_commands = store.list_commands()?;
-        let command_requested_at = current_command_requested_at()?;
-        let Some(append) = command_append_from_tui_effect(
-            effect,
-            &command_requested_at,
-            sequence,
-            &existing_commands,
-        ) else {
+        // Record the caller's observed timestamp. An earlier revision reached
+        // for the wall clock here (a now-deleted global-clock helper) and
+        // silently discarded this argument; the command must carry the
+        // timestamp the caller actually observed.
+        let Some(append) =
+            command_append_from_tui_effect(effect, requested_at, sequence, &existing_commands)
+        else {
             continue;
         };
         outcomes.push(store.append_command(&append)?);
     }
     Ok(outcomes)
-}
-
-fn current_command_requested_at() -> EventStoreResult<String> {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|_error| EventStoreError::InvalidSequence)
 }
 
 /// Port interface for event append store behavior supplied by an outer layer.
@@ -4142,21 +4136,29 @@ mod tests {
     }
 
     #[test]
-    fn tui_persistence_stamps_each_command_request_separately() {
+    fn tui_persistence_stamps_each_command_with_its_supplied_request_time() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         let first = [factory_drain_effect()];
         let second = [factory_drain_effect()];
 
+        // Two operator actions observed at distinct times: each persisted
+        // command records the timestamp ITS OWN call supplied, deterministically
+        // — not a wall-clock reading taken inside the persist loop. (An earlier
+        // revision discarded the argument and stamped `now`, which happened to
+        // differ between calls only by accident of timing.)
         persist_tui_runtime_effects(&mut store, &first, "2026-06-23T00:00:02Z").ok_test();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        persist_tui_runtime_effects(&mut store, &second, "2026-06-23T00:00:02Z").ok_test();
+        persist_tui_runtime_effects(&mut store, &second, "2026-06-23T00:00:05Z").ok_test();
 
         let commands = store.list_commands().ok_test();
 
         check((commands.len()) == (2), "assert_eq failed");
         check(
-            (commands[0].requested_at()) != (commands[1].requested_at()),
-            "assert_ne failed",
+            (commands[0].requested_at()) == ("2026-06-23T00:00:02Z"),
+            "assert_eq failed",
+        );
+        check(
+            (commands[1].requested_at()) == ("2026-06-23T00:00:05Z"),
+            "assert_eq failed",
         );
         check(
             (commands[0].requested_at()) == (commands[0].updated_at()),
@@ -5452,6 +5454,28 @@ mod tests {
         let (repeat_actions, still_landed) = drive_effects(&mut store, &once, kind);
         check(repeat_actions.is_empty(), "assert failed");
         check((still_landed) == (1), "assert_eq failed");
+    }
+
+    #[test]
+    fn store_backed_persist_records_the_supplied_requested_at_not_wall_clock() {
+        // Regression: `persist_tui_runtime_effects` accepted a `requested_at`
+        // and then ignored it, stamping wall-clock time from a global-clock
+        // helper (`current_command_requested_at`). The supplied timestamp is
+        // what the caller observed, and it is what the persisted command must
+        // record — otherwise every caller's timestamp is silently discarded.
+        const SUPPLIED_REQUESTED_AT: &str = "2026-07-19T00:00:01Z";
+        let (mut store, events) = store_with_selectable_item();
+        let approve = valve_effect(&events, PendingValve::Approve);
+        let once = [approve];
+
+        persist_tui_runtime_effects(&mut store, &once, SUPPLIED_REQUESTED_AT).ok_test();
+
+        let commands = store.list_commands().ok_test();
+        check((commands.len()) == (1), "assert_eq failed");
+        check(
+            (commands[0].requested_at()) == (SUPPLIED_REQUESTED_AT),
+            "assert_eq failed",
+        );
     }
 
     #[test]
