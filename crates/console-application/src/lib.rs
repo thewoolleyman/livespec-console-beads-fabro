@@ -11537,6 +11537,30 @@ mod tests {
         }
     }
 
+    struct ErroringDispatchItemPort;
+
+    impl FactoryDispatchItemPort for ErroringDispatchItemPort {
+        fn dispatch_item(
+            &mut self,
+            _request: &FactoryDispatchItemRequest,
+        ) -> super::ApplicationResult<FactoryDispatchItemPortOutcome> {
+            Err(super::ApplicationError::FactoryDispatchItemPortFailed)
+        }
+    }
+
+    #[test]
+    fn handle_factory_dispatch_item_command_propagates_a_port_error() {
+        let command = factory_dispatch_item_command("console-selected", "operator");
+        let mut port = ErroringDispatchItemPort;
+
+        let result = handle_factory_dispatch_item_command(&command, &mut port);
+
+        assert_eq!(
+            result.map(|_outcome| ()),
+            Err(super::ApplicationError::FactoryDispatchItemPortFailed)
+        );
+    }
+
     struct StubDrainProbe {
         outcome: SourceProbeOutcome,
     }
