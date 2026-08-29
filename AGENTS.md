@@ -91,6 +91,13 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       marketplace upgrade`, "latest" = the `vX.Y.Z` tag, and the beads
       self-heal landing in orchestrator ≥ 0.4.0 (and how that qualifies the
       "Access denied ⇒ outside the wrapper" rule below).
+    - [`.ai/coverage-region-testability-discipline.md`](.ai/coverage-region-testability-discipline.md)
+      — "genuinely unreachable" is not a disposition: an uncovered region is
+      always resolved into deleted / tested / refactored-then-tested, never
+      annotated, and never `.expect()`-relabelled. The hidden-global heuristic
+      (a fallible call on an injected dependency is testable; one on a hidden
+      global — clock, env, fs — is an injectability smell to inject away), with
+      the discarded-timestamp latent bug as the worked example.
 - **Handoffs: update the living plan-thread handoff; NEVER print one inline.**
   Session handoffs live at `plan/<topic>/handoff.md` (one durable thread per
   topic; resume via `/livespec-orchestrator-beads-fabro:plan <topic>`); UPDATE
