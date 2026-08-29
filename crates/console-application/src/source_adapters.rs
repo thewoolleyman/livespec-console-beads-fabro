@@ -4715,6 +4715,8 @@ mod tests {
         trace: Trace,
         checkpoint: Option<String>,
         saved: Rc<RefCell<Vec<String>>>,
+        load_error: Option<AdapterError>,
+        save_error: Option<AdapterError>,
     }
 
     impl MemoryCheckpoints {
@@ -4723,7 +4725,19 @@ mod tests {
                 trace,
                 checkpoint: checkpoint.map(str::to_owned),
                 saved: Rc::new(RefCell::new(Vec::new())),
+                load_error: None,
+                save_error: None,
             }
+        }
+
+        fn failing_load(mut self, error: AdapterError) -> Self {
+            self.load_error = Some(error);
+            self
+        }
+
+        fn failing_save(mut self, error: AdapterError) -> Self {
+            self.save_error = Some(error);
+            self
         }
 
         fn saved(&self) -> Vec<String> {
@@ -4734,11 +4748,17 @@ mod tests {
     impl SourceCheckpointPort for MemoryCheckpoints {
         fn load_checkpoint(&self, adapter_id: &str) -> AdapterResult<Option<String>> {
             self.trace.push(format!("load:{adapter_id}"));
-            Ok(self.checkpoint.clone())
+            match &self.load_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(self.checkpoint.clone()),
+            }
         }
 
         fn save_checkpoint(&self, adapter_id: &str, checkpoint: &str) -> AdapterResult<()> {
             self.trace.push(format!("save:{adapter_id}:{checkpoint}"));
+            if let Some(error) = &self.save_error {
+                return Err(error.clone());
+            }
             self.saved
                 .borrow_mut()
                 .push(format!("{adapter_id}:{checkpoint}"));
@@ -4847,6 +4867,32 @@ mod tests {
         check(
             saved == Err(AdapterError::CheckpointSaveFailed("synthetic".to_owned())),
             "checkpoint save errors should surface",
+        );
+    }
+
+    #[test]
+    fn adapter_poll_surfaces_checkpoint_failures_through_the_memory_double() {
+        let trace = Trace::new();
+        let source = ScriptedSource::new(
+            trace.clone(),
+            Ok(ok_adapter_poll(AdapterPoll::new("next", Vec::new()))),
+        );
+        let mut log = MemoryEventLog::new(trace.clone(), None);
+
+        let mut load_fails = MemoryCheckpoints::new(trace.clone(), None)
+            .failing_load(AdapterError::CheckpointLoadFailed("synthetic".to_owned()));
+        let loaded = run_adapter_poll("adapter", 3, "now", &source, &mut load_fails, &mut log);
+        check(
+            loaded == Err(AdapterError::CheckpointLoadFailed("synthetic".to_owned())),
+            "memory checkpoint load failures should surface",
+        );
+
+        let mut save_fails = MemoryCheckpoints::new(trace, None)
+            .failing_save(AdapterError::CheckpointSaveFailed("synthetic".to_owned()));
+        let saved = run_adapter_poll("adapter", 3, "now", &source, &mut save_fails, &mut log);
+        check(
+            saved == Err(AdapterError::CheckpointSaveFailed("synthetic".to_owned())),
+            "memory checkpoint save failures should surface",
         );
     }
 
