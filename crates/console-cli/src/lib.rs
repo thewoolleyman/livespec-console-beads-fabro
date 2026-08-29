@@ -6489,6 +6489,23 @@ mod tests {
     }
 
     #[test]
+    fn append_lane_diagnostic_surfaces_an_unopenable_path() {
+        // NEGATIVE CONTROL: the write's `?` error arm. A path whose parent
+        // directory does not exist cannot be created/opened for append, so the
+        // OpenOptions open() fails and the error surfaces rather than panicking.
+        let path = std::env::temp_dir()
+            .join("livespec-console-lane-diagnostics-missing-parent-xyz")
+            .join("nested")
+            .join("lane.log");
+        let _ensure_absent =
+            std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).unwrap_or(&path));
+
+        let result = append_lane_diagnostic(&path, "unwritable");
+
+        check(result.is_err(), "an unopenable path surfaces as an error");
+    }
+
+    #[test]
     fn pre_first_frame_store_work_retries_transient_contention() {
         // livespec-console-beads-fabro-bss4rq. The evidenced site. CI run
         // 33060628908 died waiting for the FIRST frame, so it never reached the
