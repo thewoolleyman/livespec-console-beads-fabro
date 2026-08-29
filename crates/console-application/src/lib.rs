@@ -10615,6 +10615,16 @@ mod tests {
     }
 
     #[test]
+    fn tui_interaction_open_command_explainer_without_selection_leaves_no_overlay() {
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::OpenCommandExplainer);
+
+        assert_eq!(state.overlay(), &TuiOverlay::None);
+    }
+
+    #[test]
     fn attention_detail_omits_attach_for_orchestrator_only_snapshot() {
         let events = [
             lane_event(
