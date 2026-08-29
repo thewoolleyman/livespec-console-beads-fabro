@@ -513,14 +513,11 @@ impl WorkItemDetail {
     /// shadow-state failure the lane design set out to kill.
     ///
     /// Every field is LENGTH-PREFIXED before hashing rather than merely
-    /// separated. [`stable_version`] delimits its parts with a `0x1f` byte,
-    /// which is injective only while no part can CONTAIN that byte — true of
-    /// the lifecycle ids and labels it was built for, and false here, where the
-    /// fields are arbitrary operator markdown and embedded JSON. Without the
-    /// prefix, `title: "a"` + `description: "b\x1f"` and `title: "a\x1fb"` +
-    /// `description: ""` hash identically, so a real edit between those two
-    /// states would NOT bump the version and the console would show the stale
-    /// record forever — the very failure this digest exists to prevent.
+    /// concatenated. Without the prefix, `title: "a"` + `description: "b\x1f"`
+    /// and `title: "a\x1fb"` + `description: ""` would encode identically
+    /// within the concatenated string, so a real edit between those two states
+    /// would NOT bump the version and the console would show the stale record
+    /// forever — the very failure this digest exists to prevent.
     fn digest(&self) -> String {
         // Same treatment inside `depends_on`: joining on a bare `,` would let
         // `["a,b"]` and `["a", "b"]` collide.
@@ -2192,16 +2189,16 @@ fn first_json_u64(text: &str, key: &str) -> Option<u64> {
 
 /// Stable, non-zero version token for an observed state, so re-observing the
 /// same state yields the same source-event identity (idempotent) while a real
-/// change yields a new one. FNV-1a over the identifying fields; no dependency.
+/// change yields a new one. FNV-1a over the identifying fields, with each part
+/// length-prefixed (`"len:value"`) so the encoding is injective for all inputs:
+/// a trailing byte in part N cannot be misread as a leading byte in part N+1.
 fn stable_version(parts: &[&str]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in parts {
-        for byte in part.bytes() {
+        for byte in length_prefixed(part).bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-        hash ^= u64::from(b'\x1f');
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash | 1
 }
@@ -6035,6 +6032,36 @@ mod tests {
         assert_eq!(super::first_json_u64("{\"n\" 42}", "n"), None);
         assert_eq!(super::first_json_u64("{\"n\": x}", "n"), None);
         assert!(super::stable_version(&["a"]) != 0);
+    }
+
+    // Criterion 2a: parts 4 (rank) and 5 (status) in the work-item snapshot
+    // source_stream_seq call are adjacent; a trailing 0x1f in rank must NOT
+    // collide with a leading one in status.
+    #[test]
+    fn source_stream_seq_rank_status_adjacent_cannot_absorb_separator() {
+        let trailing_in_rank = super::source_stream_seq(&[
+            "repo",
+            "wi-1",
+            "ready",
+            "",
+            "a\x1f",
+            "b",
+            "manual",
+            "ai-then-human",
+            "digest",
+        ]);
+        let leading_in_status = super::source_stream_seq(&[
+            "repo",
+            "wi-1",
+            "ready",
+            "",
+            "a",
+            "\x1fb",
+            "manual",
+            "ai-then-human",
+            "digest",
+        ]);
+        assert_ne!(trailing_in_rank, leading_in_status);
     }
 
     fn needs_attention_json(id: &str) -> String {
