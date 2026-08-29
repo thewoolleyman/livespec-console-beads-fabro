@@ -10732,10 +10732,10 @@ mod tests {
         let events = [other, malformed, first, second];
 
         let hit = super::latest_work_item_snapshot(&events, "wi-x");
-        check(hit.is_some(), "same-id snapshot should be found");
-        if let Some(entry) = hit {
-            check(entry.snapshot.lane() == Lane::Ready, "latest snapshot wins");
-        }
+        check(
+            hit.map(|entry| entry.snapshot.lane()) == Some(Lane::Ready),
+            "same-id snapshot should be found with the latest snapshot winning",
+        );
         check(
             super::latest_work_item_snapshot(&events, "wi-absent").is_none(),
             "an id with no ingested snapshot resolves to none",
@@ -13329,6 +13329,13 @@ mod tests {
               {"key":"acceptance_mode","value":"ai-only"},
               {"key":"review_fix_cap","value":4},
               {"key":"acceptance_rework_cap","value":2}
+            ]}"#,
+            r#"{"settings":[
+              {"key":"auto_approve_ready","value":true},
+              {"key":"merge_on_review_cap","value":false},
+              {"key":"acceptance_mode","value":"ai-only"},
+              {"key":"acceptance_rework_cap","value":2},
+              {"key":"wip_cap","value":9}
             ]}"#,
         ] {
             check(
