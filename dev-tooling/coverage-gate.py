@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
-"""Line-coverage gate with ONE narrowly-recorded, now-EXPLAINED disposition.
+"""Line- AND region-coverage gate with ONE narrowly-recorded, now-EXPLAINED disposition.
 
-Replaces a bare `--fail-under-lines 100` with the same requirement PLUS an
-explicit accounting of a signature that flag cannot express: llvm-cov's summary
-counting more missed lines than any listing surface can NAME.
+Two enforcement points over one instrumented llvm-cov run:
+
+  * LINE coverage — replaces a bare `--fail-under-lines 100` with the same
+    requirement PLUS an explicit accounting of a signature that flag cannot
+    express (below).
+  * REGION coverage — the `coverage-region-gate` obligation ratified in
+    SPECIFICATION/non-functional-requirements.md v044: 0 uncovered regions in the
+    MERGED, cross-instantiation reachable-region view (a region is covered iff its
+    max execution count across instantiations is non-zero), NOT the raw
+    `--workspace --lib` summary region count. The summary over-reports uncovered
+    regions by an llvm-cov cross-object merge artifact — the same
+    `CoverageInfo::merge` scalar-max arithmetic explained below for lines — so a
+    bare `--fail-under-regions 100` would fail on a residue that corresponds to no
+    uncovered source region. See `_merged_region_uncovered` / `_region_gate`. No
+    coverage exclusions are permitted: the merged view is a MEASUREMENT correction,
+    not an exemption.
+
+The line requirement, unchanged:
 
 The requirement is unchanged for every line llvm-cov can attribute:
 
@@ -190,6 +205,88 @@ def _nameable(listing_path: Path) -> tuple[int, list[str]] | None:
     return count, rows
 
 
+def _merged_region_uncovered(export_path: Path) -> list[str] | None:
+    """Regions uncovered in the MERGED, cross-instantiation reachable-region view.
+
+    Per SPECIFICATION/non-functional-requirements.md (ratified v044): the region
+    target is the MERGED reachable-region view, NOT the raw `--workspace --lib`
+    summary region count. A source region is COVERED iff its MAXIMUM execution
+    count across all instantiations is non-zero. The merged view over-rides the
+    summary's per-instantiation-group scalar-max SUM, which over-reports uncovered
+    regions by an llvm-cov cross-object merge artifact — the same
+    `CoverageInfo::merge` arithmetic the line gate above accounts for, applied to
+    regions: a non-generic library item compiled into several crates' `--lib` test
+    binaries is counted uncovered in the objects that link but never call it, even
+    when every reachable region is exercised.
+
+    Only regions in files llvm-cov itself ATTRIBUTES to that file — the files
+    present in `data["files"]` — are considered. A `#[cfg(test)]` module compiled
+    into a SEPARATE file (e.g. `src/tests.rs`) appears in `functions[]` but NOT in
+    `files[]`, and llvm-cov excludes it from the region totals; counting it would
+    gate on test-helper branches llvm-cov does not, and would not reconcile with the
+    summary (measured: including it invented 50 phantom misses the summary of 2
+    cannot contain).
+
+    Returns the list of genuinely-uncovered source regions (empty when the merged
+    view is clean), or None on a parse failure (fail-closed).
+    """
+    try:
+        doc = json.loads(export_path.read_text())
+    except (OSError, ValueError) as error:
+        print(f"coverage-gate: cannot read llvm-cov export: {error}", file=sys.stderr)
+        return None
+
+    uncovered: list[str] = []
+    for data in doc.get("data", []):
+        attributed = {entry["filename"] for entry in data.get("files", [])}
+        region_max: dict[tuple[str, int, int, int, int], int] = {}
+        for record in data.get("functions", []):
+            filenames = record["filenames"]
+            for start_line, start_col, end_line, end_col, count, file_id, _exp, kind in record[
+                "regions"
+            ]:
+                if kind == _SKIPPED_REGION or file_id >= len(filenames):
+                    continue
+                filename = filenames[file_id]
+                if filename not in attributed:
+                    continue
+                key = (filename, start_line, start_col, end_line, end_col)
+                region_max[key] = max(region_max.get(key, 0), count)
+        for (filename, start_line, start_col, end_line, end_col), count in sorted(
+            region_max.items()
+        ):
+            if count == 0:
+                uncovered.append(
+                    f"  {filename}:{start_line}:{start_col}-{end_line}:{end_col} "
+                    "— 0 executions in the merged reachable-region view"
+                )
+    return uncovered
+
+
+def _region_gate(export_path: Path) -> int:
+    """Assert 0 uncovered regions in the merged reachable-region view (v044)."""
+    uncovered = _merged_region_uncovered(export_path)
+    if uncovered is None:
+        return _fail("could not compute the merged reachable-region view; refusing to pass")
+    if uncovered:
+        for row in uncovered:
+            print(row, file=sys.stderr)
+        return _fail(
+            f"{len(uncovered)} uncovered region(s) in the merged reachable-region view. "
+            "Every reachable region MUST be exercised: cover it with a test (for a `?` "
+            "error arm, drive the failing branch), or restructure genuinely-uncoverable "
+            "code. No coverage exclusions are permitted. This is the coverage-region-gate "
+            "obligation (SPECIFICATION/non-functional-requirements.md, v044)."
+        )
+    print(
+        "coverage-gate: PASS — 0 uncovered regions in the merged reachable-region view "
+        "(every region's max execution count across instantiations is non-zero). Any "
+        "residual in the raw --workspace --lib summary is a cross-object merge artifact; "
+        "the merged view is the ratified metric (v044)."
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         return _fail("usage: coverage-gate.py <llvm-cov-json> <missing-lines-txt> <disposition-json>")
@@ -243,7 +340,7 @@ def main(argv: list[str]) -> int:
 
     if not unnameable:
         print("coverage-gate: PASS — 0 missed lines, nothing dispositioned.")
-        return 0
+        return _region_gate(export_path)
 
     # 3. An unnameable miss passes only if the model can say WHERE it came from.
     attributed = _attribute(export_path)
@@ -273,7 +370,7 @@ def main(argv: list[str]) -> int:
     )
     for row in rows:
         print(row)
-    return 0
+    return _region_gate(export_path)
 
 
 if __name__ == "__main__":
