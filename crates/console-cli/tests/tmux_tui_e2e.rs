@@ -1103,6 +1103,38 @@ fn set_human_acceptance_leg(
     Ok(())
 }
 
+// Confirm an OPEN human-valve modal (`verb` is "approve" / "accept"), then settle
+// on its DRIVE ACTION landing before the caller waits on the rendered
+// "attention: 0" frame. Do NOT budget the whole async approve/accept ->
+// "attention: 0" chain against a single RENDER_TIMEOUT: the console does not run
+// drive actions on its render thread. Confirming the valve only sends main.rs's
+// command_worker a HandleNow, whose lane opens its OWN store connection (bounded
+// to 3 attempts, each waiting out SQLite's 5s busy_timeout) before the stub flips
+// the lane; only then does the 2s poller re-list needs-attention and empty the
+// inbox. Under the walkthrough's 8-connection/6-thread contention plus CI host
+// load, that async chain intermittently overran the lone 20s "attention: 0" wait
+// while the session stayed fully alive (livespec-console-beads-fabro-7yq7dk: no
+// TuiRuntimeFailed/TUI_EXIT line, the item stuck Pending approval). Waiting on the
+// drive log first gives the async drive its own bounded budget -- the same
+// wait_for_action settle set_human_acceptance_leg uses (tyeonw) -- so the frame
+// wait that follows only has to cover the poller re-list and render. It does NOT
+// weaken the gate: the action must still appear, and a log that never receives it
+// fails with the log attached, telling "emitted late" from "never emitted".
+fn confirm_valve_and_settle_drive(
+    console: &TmuxConsole,
+    fixture: &LifecycleFixture,
+    verb: &str,
+    step: &str,
+    tenant: &str,
+) -> HarnessResult<()> {
+    console.send_keys(&["Enter"])?;
+    let action = format!("{verb}:{ITEM_ID}");
+    fixture
+        .wait_for_action(&action, RENDER_TIMEOUT)
+        .map_err(|error| format!("{step}: confirming must drive {action} for {tenant}: {error}"))?;
+    Ok(())
+}
+
 /// Walk `docs/lifecycle-walkthrough.md` end to end against one repo.
 ///
 /// The item starts in `pending-approval` so the walk crosses BOTH human valves
@@ -1153,7 +1185,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
         "step 4: the Status line must switch to the modal's hints for {tenant}:\n{modal}"
     );
 
-    console.send_keys(&["Enter"])?;
+    confirm_valve_and_settle_drive(&console, &fixture, "approve", "step 5", tenant)?;
     let approved = console.wait_for_settled("attention: 0", RENDER_TIMEOUT)?;
     assert!(
         approved.contains("No attention item selected"),
@@ -1183,7 +1215,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
         "step 7: the accept modal must show its confirm affordance for {tenant}:\n{accept}"
     );
 
-    console.send_keys(&["Enter"])?;
+    confirm_valve_and_settle_drive(&console, &fixture, "accept", "step 8", tenant)?;
     let shipped = console.wait_for_settled("attention: 0", RENDER_TIMEOUT)?;
     assert!(
         shipped.contains("No attention item selected"),
