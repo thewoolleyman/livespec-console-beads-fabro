@@ -621,9 +621,13 @@ impl SqliteEventStore {
 
     /// Return the open in memory value.
     pub fn open_in_memory() -> EventStoreResult<Self> {
-        let connection = Connection::open_in_memory()?;
-        initialize_connection(&connection)?;
-        Ok(Self { connection })
+        // Route through `open` so the connection-creation and initialization
+        // error arms live in ONE place — covered by `open`'s failure tests —
+        // rather than duplicated here, where an in-memory open cannot be made
+        // to fail and its `?` arms would be permanently unreachable. SQLite
+        // treats the `:memory:` filename as a private in-memory database,
+        // identical to `Connection::open_in_memory`.
+        Self::open(Path::new(":memory:"))
     }
 
     /// Append event to the backing store.
@@ -737,7 +741,11 @@ impl SqliteEventStore {
     pub fn list_events(&self) -> EventStoreResult<Vec<StoredEvent>> {
         let sql = "select global_seq, event_id, type, source, source_event_id from events order by global_seq";
         let mut statement = self.connection.prepare(sql)?;
-        let mut rows = statement.query([])?;
+        // `raw_query` binds nothing and returns rows infallibly for this
+        // parameterless statement, so it avoids a permanently-unreachable `?`
+        // arm that `query([])` would introduce; step and row-decode errors
+        // still surface through `rows.next()?` below.
+        let mut rows = statement.raw_query();
         let mut events = Vec::new();
         while let Some(row) = rows.next()? {
             events.push(StoredEvent::new(
@@ -760,7 +768,11 @@ impl SqliteEventStore {
             order by global_seq
         ";
         let mut statement = self.connection.prepare(sql)?;
-        let mut rows = statement.query([])?;
+        // `raw_query` binds nothing and returns rows infallibly for this
+        // parameterless statement, so it avoids a permanently-unreachable `?`
+        // arm that `query([])` would introduce; step and row-decode errors
+        // still surface through `rows.next()?` below.
+        let mut rows = statement.raw_query();
         let mut events = Vec::new();
         while let Some(row) = rows.next()? {
             let event_type_name = row.get::<_, String>(3)?;
@@ -792,7 +804,11 @@ impl SqliteEventStore {
             order by requested_at, command_id
         ";
         let mut statement = self.connection.prepare(sql)?;
-        let mut rows = statement.query([])?;
+        // `raw_query` binds nothing and returns rows infallibly for this
+        // parameterless statement, so it avoids a permanently-unreachable `?`
+        // arm that `query([])` would introduce; step and row-decode errors
+        // still surface through `rows.next()?` below.
+        let mut rows = statement.raw_query();
         let mut commands = Vec::new();
         while let Some(row) = rows.next()? {
             commands.push(
@@ -948,12 +964,21 @@ impl SqliteEventStore {
 }
 
 fn initialize_connection(connection: &Connection) -> EventStoreResult<()> {
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
+    // One batched pragma statement instead of three separate `pragma_update`
+    // calls: the three settings then share a SINGLE fallible call site, so the
+    // failure arm is reachable by one test — a read-only connection rejects the
+    // journal_mode change — instead of requiring three distinct connection
+    // states that make each pragma fail in turn (foreign_keys and busy_timeout
+    // effectively never fail on their own). The applied settings are identical.
+    //
     // With WAL a reader never blocks a writer, but the two writers the live TUI
     // runs — the UI thread's effect appends and the off-thread source poller —
     // still serialize; wait out a peer's brief write rather than failing SQLITE_BUSY.
-    connection.pragma_update(None, "busy_timeout", 5000)?;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA foreign_keys=ON;
+         PRAGMA busy_timeout=5000;",
+    )?;
     connection.execute_batch(SCHEMA)?;
     Ok(())
 }
@@ -1032,7 +1057,7 @@ mod tests {
         source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane, LaneReason},
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
-    use rusqlite::{Connection, Rows, Statement, Transaction};
+    use rusqlite::{Connection, OpenFlags, Rows, Statement, Transaction};
 
     #[test]
     fn transient_contention_is_keyed_on_the_sqlite_code_not_the_message() {
@@ -2217,6 +2242,257 @@ mod tests {
         }
     }
 
+    // livespec-console-beads-fabro-txtzn5.14: the residual production `?`-arm
+    // regions that drop-table/bad-row injection did not reach — the duplicate
+    // and insert sequence-conversion arms, the transaction commit arms, the
+    // inner column-decode arms, the missing-row lookup arm, and the read-step
+    // corruption arm. The pragma-initialization, in-memory-open, and
+    // parameterless-query arms were closed by restructuring the production code
+    // (see `initialize_connection`, `open_in_memory`, and the `raw_query` reads).
+
+    const EVENTS_SCHEMA_COLUMNS: &str = "global_seq integer primary key, \
+         event_id text not null unique, context text not null, aggregate_id text not null, \
+         stream_id text not null, stream_seq integer not null, type text not null, \
+         schema_version integer not null, occurred_at text not null, observed_at text not null, \
+         causation_id text null, correlation_id text not null, source text not null, \
+         source_event_id text null, payload_json text not null, metadata_json text not null";
+
+    const COMMANDS_SCHEMA_COLUMNS: &str = "command_id text primary key, context text not null, \
+         type text not null, aggregate_id text null, idempotency_key text not null unique, \
+         requested_by text not null, requested_at text not null, causation_event_id text null, \
+         correlation_id text not null, status text not null, payload_json text not null, \
+         result_json text null, error_json text null, updated_at text not null";
+
+    #[test]
+    fn append_event_duplicate_with_negative_stored_sequence_reports_invalid_sequence() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // Seed a row carrying a NEGATIVE global_seq under a source-event id. An
+        // append on that same source-event id is a no-op insert, so the
+        // duplicate branch looks the stored sequence up and its conversion to a
+        // non-negative sequence fails inside `find_existing_sequence`.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "insert into events (global_seq, event_id, context, aggregate_id, stream_id, \
+             stream_seq, type, schema_version, occurred_at, observed_at, causation_id, \
+             correlation_id, source, source_event_id, payload_json, metadata_json) values \
+             (-1, 'evt_seed', 'fabro', 'agg', 'st', 1, 'fabro.human_gate_observed', 1, 't', 't', \
+             null, 'corr', 'fabro', 'sev_dup', '{}', '{}');",
+        ));
+
+        let error =
+            err_append_outcome(store.append_event(&event_append("evt_dup", Some("sev_dup"))));
+
+        check_invalid_sequence(error);
+    }
+
+    #[test]
+    fn append_event_insert_with_negative_rowid_reports_invalid_sequence() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // Seed a negative primary key so the NEXT auto-assigned rowid is also
+        // negative; the fresh insert then reports a negative last_insert_rowid
+        // whose conversion to a sequence fails.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "insert into events (global_seq, event_id, context, aggregate_id, stream_id, \
+             stream_seq, type, schema_version, occurred_at, observed_at, causation_id, \
+             correlation_id, source, source_event_id, payload_json, metadata_json) values \
+             (-9, 'evt_seed', 'fabro', 'agg', 'st', 1, 'fabro.human_gate_observed', 1, 't', 't', \
+             null, 'corr', 'fabro', null, '{}', '{}');",
+        ));
+
+        let error = err_append_outcome(store.append_event(&event_append("evt_distinct", None)));
+
+        check_invalid_sequence(error);
+    }
+
+    #[test]
+    fn append_event_reports_commit_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // Recreate `events` with a deferred foreign key the appended row
+        // violates (no parent row exists): the insert defers the check and the
+        // failure surfaces at `transaction.commit()`.
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop table events; create table parent(id text primary key); \
+             create table events ({EVENTS_SCHEMA_COLUMNS}, \
+             foreign key(aggregate_id) references parent(id) deferrable initially deferred);"
+        )));
+
+        let error = err_append_outcome(store.append_event(&event_append("evt_commit", None)));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn append_command_reports_commit_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // Same deferred-foreign-key technique for the command insert path: the
+        // insert defers and `transaction.commit()` fails.
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop table commands; create table parent(id text primary key); \
+             create table commands ({COMMANDS_SCHEMA_COLUMNS}, \
+             foreign key(aggregate_id) references parent(id) deferrable initially deferred);"
+        )));
+
+        let error = err_command_append_outcome(store.append_command(&command_append(
+            "cmd_commit",
+            "idem_commit",
+            CommandType::FactoryDrainRequested,
+        )));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn append_command_duplicate_with_blob_command_id_reports_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // Seed a command whose command_id is stored as a BLOB under a known
+        // idempotency key. Appending a command with that same idempotency key
+        // takes the duplicate branch, where reading the blob command_id back as
+        // text fails — exercising the `.optional()?` propagation and the
+        // duplicate-lookup `?` in `append_command`.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "insert into commands (command_id, context, type, aggregate_id, idempotency_key, \
+             requested_by, requested_at, causation_event_id, correlation_id, status, payload_json, \
+             updated_at) values (x'01', 'factory', 'factory.drain_requested', 'agg', 'idem_dup', \
+             'operator', '2026-06-23T00:00:02Z', null, 'corr', 'pending', '{}', \
+             '2026-06-23T00:00:02Z');",
+        ));
+
+        let error = err_command_append_outcome(store.append_command(&command_append(
+            "cmd_new",
+            "idem_dup",
+            CommandType::FactoryDrainRequested,
+        )));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn list_events_reports_blob_sequence_column_decode_failure() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // A BLOB in the global_seq column fails the inner `row.get::<_, i64>`
+        // decode, distinct from the negative-integer case that drives the outer
+        // sequence-conversion arm.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq, event_id, type, source, source_event_id); \
+             insert into events values (x'01', 'evt_1', 'fabro.human_gate_observed', 'fabro', null);",
+        ));
+
+        check_sqlite_error(err_events(store.list_events()));
+    }
+
+    #[test]
+    fn list_console_events_reports_blob_type_column_decode_failure() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // A BLOB in the type column fails the `row.get::<_, String>(3)` decode.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json); \
+             insert into events values (1, 'evt_1', 1, 'ctx', x'01', 'src', 'st', 1, '{}');",
+        ));
+
+        check_sqlite_error(err_console_events(store.list_console_events()));
+    }
+
+    #[test]
+    fn list_console_events_reports_blob_stream_seq_column_decode_failure() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // A BLOB in the stream_seq column fails the inner `row.get::<_, i64>(6)`
+        // decode, distinct from the negative-integer case that drives the outer
+        // sequence-conversion arm.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', 'src', \
+             'st', x'01', '{}');",
+        ));
+
+        check_sqlite_error(err_console_events(store.list_console_events()));
+    }
+
+    #[test]
+    fn find_existing_sequence_reports_missing_row() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // The lookup query succeeds but returns no row, so the `ok_or` arm that
+        // guards the sequence conversion fires.
+        let append = event_append("evt_absent", Some("sev_absent"));
+        let transaction = ok_transaction(store.connection.transaction());
+
+        let error = err_sequence(super::find_existing_sequence(&transaction, &append));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn list_events_reports_row_step_corruption() {
+        // Persist rows to a file, then corrupt every page after the intact
+        // schema page: `prepare` still reads the schema page, but stepping into
+        // the corrupted table b-tree fails at `rows.next()`.
+        let dir = std::env::temp_dir().join(format!(
+            "livespec-console-eventstore-corrupt-step-{}",
+            std::process::id()
+        ));
+        let _ignored = std::fs::remove_dir_all(&dir);
+        ok_unit(std::fs::create_dir_all(&dir));
+        let path = dir.join("db.sqlite");
+        {
+            let mut store = ok_store(SqliteEventStore::open(&path));
+            for index in 0..200 {
+                let _outcome = ok_append_outcome(
+                    store.append_event(&event_append(&format!("evt_{index}"), None)),
+                );
+            }
+            // Fold the WAL back into the main file so the corruption below is the
+            // only copy of the table data the reopened store can read.
+            ok_sqlite_unit(
+                store
+                    .connection
+                    .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);"),
+            );
+        }
+        let _ignored = std::fs::remove_file(dir.join("db.sqlite-wal"));
+        let _ignored = std::fs::remove_file(dir.join("db.sqlite-shm"));
+        let mut bytes = ok_bytes(std::fs::read(&path));
+        let page_size = ((usize::from(bytes[16]) << 8) | usize::from(bytes[17])).max(512);
+        for byte in bytes.iter_mut().skip(page_size) {
+            *byte = 0xAA;
+        }
+        ok_unit(std::fs::write(&path, &bytes));
+
+        let store = ok_store(SqliteEventStore::open(&path));
+
+        check_sqlite_error(err_events(store.list_events()));
+        let _ignored = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn initialize_connection_reports_pragma_failure_on_readonly_connection() {
+        // A read-only connection rejects the WAL journal_mode change, so the
+        // batched pragma initialization fails — the single fallible call site
+        // that replaced the three separate pragma updates.
+        let dir = std::env::temp_dir().join(format!(
+            "livespec-console-eventstore-readonly-pragma-{}",
+            std::process::id()
+        ));
+        let _ignored = std::fs::remove_dir_all(&dir);
+        ok_unit(std::fs::create_dir_all(&dir));
+        let path = dir.join("db.sqlite");
+        {
+            let seed = ok_connection(Connection::open(&path));
+            ok_sqlite_unit(seed.execute_batch("create table t(x);"));
+        }
+        let connection = ok_connection(Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ));
+
+        let error = err_eventstore_unit(super::initialize_connection(&connection));
+
+        check_sqlite_error(error);
+        let _ignored = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[should_panic(expected = "check failed")]
     fn check_false_panics() {
@@ -2259,6 +2535,12 @@ mod tests {
     #[should_panic(expected = "ok_unit failed")]
     fn ok_unit_panics() {
         ok_unit(Err(std::io::Error::other("boom")));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_bytes failed")]
+    fn ok_bytes_panics() {
+        let _bytes = ok_bytes(Err(std::io::Error::other("boom")));
     }
 
     #[test]
@@ -2524,6 +2806,14 @@ mod tests {
         match result {
             Ok(()) => {}
             Err(error) => panic!("ok_unit failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_bytes(result: Result<Vec<u8>, std::io::Error>) -> Vec<u8> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_bytes failed: {error:?}"),
         }
     }
 
