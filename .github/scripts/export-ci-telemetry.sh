@@ -9,16 +9,31 @@
 # non-zero -> the job goes red -> the existing CI-failure notification fires.
 # That makes a broken telemetry pipeline impossible to die silently.
 #
-# Wired to run on push(master)/merge_group only (never PRs), so it adds no
-# latency to PR feedback. Emits one `ci.run` root span + one `ci.job.<name>`
-# child per completed job. Span/trace ids are derived from the GitHub run/job
-# integer ids (deterministic, unique, valid hex).
+# Wired to run on push(master)/merge_group only (never PRs) by default; set
+# EXPORT_FAIL_SOFT=1 in the workflow for pull_request events to enable PR-run
+# emission without the closed-loop fail property. Emits one `ci.run` root span
+# + one `ci.job.<name>` child per completed job. Span/trace ids are derived
+# from the GitHub run/job integer ids (deterministic, unique, valid hex).
+#
+# After emitting the job-level spans, the script scans each critical-path job's
+# steps for steps named "Phase: compile", "Phase: test", or "Phase: fuzz" and
+# emits build-telemetry spans conforming to the shared attribute scheme
+# (plan/optimize-console-builds/telemetry-attribute-scheme.md):
+#   build.env=ci, build.phase, repo, git.commit.sha, toolchain.version
+# These phase steps are provided by the companion workflow diff (item 577xhi);
+# until that diff lands the phase-span loop is a no-op (0 matching steps).
+# Phase span failures are fail-hard on push, fail-soft when EXPORT_FAIL_SOFT=1.
 #
 # Required environment:
 #   REPO    - owner/name (e.g. thewoolleyman/livespec-console-beads-fabro)
 #   RUN_ID  - this workflow run's id (github.run_id)
 #   GH_TOKEN - gh auth token with actions:read (the workflow's GITHUB_TOKEN)
 #   HONEYCOMB_GITHUB_CI_INGEST_KEY_LIVESPEC - write-only Honeycomb ingest key
+#
+# Optional environment:
+#   EXPORT_FAIL_SOFT - set to 1 for PR runs: ingest/phase-span failures are
+#     logged as warnings rather than aborting the job.  Master-path (push)
+#     leaves this unset to retain the closed-loop fail-hard property.
 set -euo pipefail
 
 : "${REPO:?REPO required}"
@@ -126,10 +141,77 @@ http="$(curl -sS -o "$resp_file" -w '%{http_code}' "$ENDPOINT" \
 rejected="$(jq -r '.partialSuccess.rejectedSpans // 0' "$resp_file" 2>/dev/null || echo unknown)"
 
 echo "Honeycomb ingest: HTTP=$http spans=$span_count rejected=$rejected dataset=$DATASET trace=$trace_id"
-if [ "$http" != "200" ] || [ "$rejected" != "0" ]; then
-  echo "::error::CI telemetry export to Honeycomb FAILED (HTTP=$http rejected=$rejected). The telemetry pipeline is broken; fix it rather than ignore this." >&2
+main_ok=0
+if [ "$http" = "200" ] && [ "$rejected" = "0" ]; then
+  main_ok=1
+else
   echo "--- Honeycomb response ---" >&2
   cat "$resp_file" >&2 || true
-  exit 1
+  if [ "${EXPORT_FAIL_SOFT:-0}" = "1" ]; then
+    echo "CI telemetry main ingest failed (HTTP=$http rejected=$rejected) — non-fatal (PR fail-soft mode)." >&2
+  else
+    echo "::error::CI telemetry export to Honeycomb FAILED (HTTP=$http rejected=$rejected). The telemetry pipeline is broken; fix it rather than ignore this." >&2
+    exit 1
+  fi
 fi
-echo "CI telemetry exported and confirmed received by Honeycomb ($span_count spans, trace $trace_id)."
+
+# --- Phase-level spans for critical-path jobs ---
+# For each of the four critical-path jobs, scan the job's steps for steps whose
+# name starts with "Phase: compile", "Phase: test", or "Phase: fuzz".  Each
+# matching step produces one build-telemetry OTLP span (via emit-build-telemetry.sh)
+# carrying the shared scheme attributes: build.env=ci, build.phase, repo,
+# git.commit.sha, toolchain.version.
+#
+# The naming convention is provided by the companion workflow diff (item 577xhi);
+# until that diff lands this loop emits 0 spans (no matching step names exist).
+# Phase-span failures are fail-hard on push (EXPORT_FAIL_SOFT unset) and
+# fail-soft on PR runs (EXPORT_FAIL_SOFT=1), matching the main ingest contract.
+commit_sha="$(jq -r '.headSha // ""' <<<"$run_json")"
+toolchain_ver="$(grep '^channel' rust-toolchain.toml 2>/dev/null \
+  | sed 's/channel *= *"\(.*\)"/\1/' || echo unknown)"
+phase_span_count=0
+
+while IFS=$'\t' read -r phj_id phj_name; do
+  case "$phj_name" in
+    check-nextest|check-coverage|check-clippy|check-fuzz) ;;
+    *) continue ;;
+  esac
+
+  while IFS=$'\t' read -r step_name step_start_iso step_end_iso; do
+    [ -n "$step_start_iso" ] && [ "$step_start_iso" != "null" ] || continue
+    [ -n "$step_end_iso" ] && [ "$step_end_iso" != "null" ] || continue
+
+    build_phase=""
+    case "$step_name" in
+      "Phase: compile"*) build_phase="compile" ;;
+      "Phase: test"*)    build_phase="test" ;;
+      "Phase: fuzz"*)    build_phase="fuzz" ;;
+      *) continue ;;
+    esac
+
+    BUILD_EMIT_FAIL_SOFT="${EXPORT_FAIL_SOFT:-0}" \
+    HONEYCOMB_BUILD_INGEST_KEY="$KEY" \
+    BUILD_ENV="ci" \
+    BUILD_PHASE="$build_phase" \
+    BUILD_REPO="$REPO" \
+    BUILD_GIT_COMMIT_SHA="$commit_sha" \
+    BUILD_TOOLCHAIN_VER="$toolchain_ver" \
+    BUILD_SPAN_NAME="build.${phj_name}.${build_phase}" \
+    BUILD_START_NANO="$(iso_to_nanos "$step_start_iso")" \
+    BUILD_END_NANO="$(iso_to_nanos "$step_end_iso")" \
+      bash "$(dirname "$0")/emit-build-telemetry.sh"
+
+    phase_span_count=$((phase_span_count + 1))
+  done < <(jq -r --argjson jid "$phj_id" \
+    '.jobs[] | select(.databaseId == $jid) | (.steps // [])[] | [.name, (.startedAt // ""), (.completedAt // "")] | @tsv' \
+    <<<"$run_json")
+done < <(jq -r '.jobs[] | [.databaseId, .name] | @tsv' <<<"$run_json")
+
+if [ "$phase_span_count" -gt 0 ]; then
+  echo "Phase span emission: $phase_span_count build-telemetry phase spans emitted."
+else
+  echo "Phase span emission: 0 phase spans (companion workflow diff not yet applied — expected)."
+fi
+
+[ "$main_ok" = "1" ] && \
+  echo "CI telemetry exported and confirmed received by Honeycomb ($span_count spans, trace $trace_id)."
