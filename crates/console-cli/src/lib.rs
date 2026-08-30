@@ -1481,6 +1481,37 @@ pub fn serve_report_with_dispatch_port(
     // (Scenario 3) keeps this safe on a non-empty log.
     let ingestion =
         ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
+    let backfill_event_count: usize = ingestion
+        .iter()
+        .map(AdapterIngestionSummary::appended_event_count)
+        .sum();
+    serve_report_after_ingest(
+        store,
+        observed_at,
+        factory_port,
+        dispatch_item_port,
+        work_item_port,
+        backfill_event_count,
+    )
+}
+
+/// Handle pending commands and render the serve summary, given the backfill
+/// count already produced by ingest.
+///
+/// Split from [`serve_report_with_dispatch_port`] over `&mut dyn
+/// FactoryCommandStore` (rather than the concrete `SqliteEventStore` the
+/// ingest step needs) so the pending-command handling and the summary reads
+/// have their store failures exercised through the scripted store double —
+/// including the late `list_console_events`/`list_commands` reads, which fail
+/// only on a call after the handlers' own reads succeeded.
+fn serve_report_after_ingest(
+    store: &mut dyn FactoryCommandStore,
+    observed_at: &str,
+    factory_port: &mut dyn FactoryDrainPort,
+    dispatch_item_port: &mut dyn FactoryDispatchItemPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
+    backfill_event_count: usize,
+) -> ConsoleRuntimeResult<String> {
     let handled = handle_pending_factory_commands_with_dispatch_port(
         store,
         observed_at,
@@ -1493,10 +1524,6 @@ pub fn serve_report_with_dispatch_port(
     let commands = store.list_commands()?;
     let attention_count = project_attention(&events).len();
     let pending_count = count_commands_with_status(&commands, "pending");
-    let backfill_event_count: usize = ingestion
-        .iter()
-        .map(AdapterIngestionSummary::appended_event_count)
-        .sum();
     Ok(format!(
         "serve: store ready\nbackfill events: {backfill_event_count}\nevents: {}\nattention: {attention_count}\ncommands: {}\npending: {pending_count}\nfactory commands handled: {}\nwork-item commands handled: {}",
         events.len(),
@@ -2904,6 +2931,18 @@ impl PullSourcePort for ScriptedSource {
     }
 }
 
+#[cfg(test)]
+struct ErroringPullSource;
+
+#[cfg(test)]
+impl PullSourcePort for ErroringPullSource {
+    fn poll(&self, _request: &AdapterPollRequest) -> Result<AdapterPoll, AdapterError> {
+        Err(AdapterError::AppendFailed(
+            "serve ingest failure".to_owned(),
+        ))
+    }
+}
+
 fn run_events(subcommand: Option<&str>) -> RunOutput {
     match subcommand {
         Some("tail") => RunOutput::new(0, "events tail bootstrap: not yet wired".to_owned()),
@@ -3044,8 +3083,9 @@ mod tests {
     };
 
     use super::{
-        BackingCliResolution, BackingCliResolutionError, CommandAppendStore, ConsoleLane,
-        ConsoleRuntimeError, ConsoleRuntimeResult, EventAppendStore, FactoryCommandStore,
+        BackingCliResolution, BackingCliResolutionError, CommandAppendStore,
+        CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
+        ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
         InitialSourceSeed, LANE_FAILURE_MARKER, LaneStartupStage, NeedsAttentionIngest,
         PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
         STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
@@ -3065,7 +3105,7 @@ mod tests {
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
         refresh_sources, render_tui_preview, resolve_console_repo, run,
-        run_store_backed_tui_session, run_with_store, serve_report,
+        run_store_backed_tui_session, run_with_store, serve_report, serve_report_after_ingest,
         serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
         tolerate_startup_contention, tui_session_outcome_from_final_events,
         work_item_command_from_stored,
@@ -11709,6 +11749,389 @@ mod tests {
         check(store.list_commands().ok_test().is_empty(), "assert failed");
     }
 
+    // livespec-console-beads-fabro-txtzn5.18: the residual production `?`-arm
+    // regions in the pending-command handlers, each driven by a store double
+    // configured to fail (or return a malformed command) at the exact call.
+
+    #[test]
+    fn pending_factory_commands_propagate_a_claim_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::FactoryClaimFails);
+        let mut port = SimulatedFactoryDrainPort;
+
+        let outcome =
+            handle_pending_factory_commands(&mut store, "2026-06-23T00:00:03Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_commands_propagate_a_claim_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemClaimFails);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_config_commands_propagate_a_claim_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigClaimFails);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn observe_and_reflect_propagates_a_claim_error() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::AutonomousReflectionClaimFails);
+        let decision = AutonomousDecision::from_auto_disposition(
+            "wi-1",
+            "auto-approve",
+            vec!["auto_approve_ready".to_owned()],
+        );
+        check(decision.is_some(), "assert failed");
+        let audit = AutonomousAudit::new(decision.into_iter().collect(), Vec::new());
+        let decisions = SimulatedDecisionsPort::returning(audit);
+
+        let outcome = observe_and_reflect_autonomous_decisions(
+            &mut store,
+            "2026-07-11T00:00:01Z",
+            &decisions,
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn observe_and_reflect_propagates_a_finalize_error() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::AutonomousReflectionAppendFails);
+        let decision = AutonomousDecision::from_auto_disposition(
+            "wi-1",
+            "auto-approve",
+            vec!["auto_approve_ready".to_owned()],
+        );
+        check(decision.is_some(), "assert failed");
+        let audit = AutonomousAudit::new(decision.into_iter().collect(), Vec::new());
+        let decisions = SimulatedDecisionsPort::returning(audit);
+
+        let outcome = observe_and_reflect_autonomous_decisions(
+            &mut store,
+            "2026-07-11T00:00:01Z",
+            &decisions,
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_commands_reject_a_missing_aggregate() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemMissingAggregate);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("MissingCommandAggregate"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_config_commands_reject_a_missing_aggregate() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigMissingAggregate);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("MissingCommandAggregate"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_approve_propagates_a_handler_error() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemApproveEmptyAggregate);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("EmptyWorkItemId"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_accept_propagates_a_handler_error() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemAcceptEmptyAggregate);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("EmptyWorkItemId"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_move_propagates_a_handler_error() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemMoveEmptyAggregate);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("EmptyWorkItemId"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_set_workflow_scope_propagates_a_handler_error() {
+        let mut store = ScriptedFactoryCommandStore::new(
+            ScriptedStoreMode::WorkItemSetWorkflowScopeEmptyAggregate,
+        );
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("EmptyWorkItemId"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_work_item_commands_propagate_a_list_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ListCommands);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_work_item_commands(&mut store, "2026-07-10T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_config_commands_propagate_a_list_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ListCommands);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome = handle_pending_config_commands(&mut store, "2026-07-11T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_control_commands_propagate_a_work_item_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ListCommands);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_control_commands(&mut store, "2026-07-11T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn pending_control_commands_propagate_a_config_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigClaimFails);
+        let mut port = SimulatedWorkItemActionPort::default();
+
+        let outcome =
+            handle_pending_control_commands(&mut store, "2026-07-11T00:00:01Z", &mut port);
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn ingest_needs_attention_propagates_an_append_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::AppendCommand);
+        let na_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "att-1",
+            "needs a human",
+        )]);
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let outcome = ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:01Z");
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    // serve_report arms: 1483 (ingest) stays on the concrete store; the rest
+    // ride the extracted dyn-store tail so the scripted store can fail each
+    // stage — including the summary's own late reads via the call counters.
+
+    #[test]
+    fn serve_report_propagates_an_ingest_error() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let source = ErroringPullSource;
+        let sources: Vec<SourceAdapterRef<'_>> =
+            vec![("orchestrator:livespec-console-beads-fabro", &source)];
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+
+        let outcome = serve_report_with_dispatch_port(
+            &mut store,
+            "2026-06-23T00:00:03Z",
+            &sources,
+            &mut factory_port,
+            &mut dispatch_item_port,
+            &mut work_item_port,
+            &empty_decisions_port(),
+            &needs_attention,
+        );
+
+        check(format!("{outcome:?}").contains("Adapter"), "assert failed");
+    }
+
+    #[test]
+    fn serve_report_after_ingest_propagates_a_work_item_error() {
+        let mut store =
+            ScriptedFactoryCommandStore::new(ScriptedStoreMode::WorkItemMissingAggregate);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+
+        let outcome = serve_report_after_ingest(
+            &mut store,
+            "2026-07-10T00:00:01Z",
+            &mut factory_port,
+            &mut dispatch_item_port,
+            &mut work_item_port,
+            0,
+        );
+
+        check(
+            format!("{outcome:?}").contains("MissingCommandAggregate"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn serve_report_after_ingest_propagates_a_config_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::ConfigClaimFails);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+
+        let outcome = serve_report_after_ingest(
+            &mut store,
+            "2026-07-11T00:00:01Z",
+            &mut factory_port,
+            &mut dispatch_item_port,
+            &mut work_item_port,
+            0,
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn serve_report_after_ingest_propagates_a_summary_events_read_error() {
+        // The factory handler's own `list_console_events` (policy read) succeeds;
+        // the summary's later read is the second call and fails.
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::Completes)
+            .with_empty_commands()
+            .failing_list_console_events_after(1);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+
+        let outcome = serve_report_after_ingest(
+            &mut store,
+            "2026-07-11T00:00:01Z",
+            &mut factory_port,
+            &mut dispatch_item_port,
+            &mut work_item_port,
+            0,
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn serve_report_after_ingest_propagates_a_summary_commands_read_error() {
+        // The three handlers' `list_commands` reads succeed (calls 1-3); the
+        // summary's later read is the fourth call and fails.
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::Completes)
+            .with_empty_commands()
+            .failing_list_commands_after(3);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+
+        let outcome = serve_report_after_ingest(
+            &mut store,
+            "2026-07-11T00:00:01Z",
+            &mut factory_port,
+            &mut dispatch_item_port,
+            &mut work_item_port,
+            0,
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
     struct FailedFactoryDrainPort;
 
     impl FactoryDrainPort for FailedFactoryDrainPort {
@@ -12145,24 +12568,40 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptedStoreMode {
         AppendCommand,
+        AutonomousReflectionAppendFails,
+        AutonomousReflectionClaimFails,
         AutonomousReflectionClaimMiss,
         Completes,
         ConfigAppendCommand,
+        ConfigClaimFails,
         ConfigClaimMiss,
+        ConfigMissingAggregate,
+        FactoryClaimFails,
         FactoryClaimMiss,
         ListCommands,
         MissingAggregate,
         NonFactoryPending,
         RecoveryFails,
         StatusUpdateFails,
+        WorkItemAcceptEmptyAggregate,
         WorkItemAppendCommand,
+        WorkItemApproveEmptyAggregate,
+        WorkItemClaimFails,
         WorkItemClaimMiss,
+        WorkItemMissingAggregate,
+        WorkItemMoveEmptyAggregate,
+        WorkItemSetWorkflowScopeEmptyAggregate,
     }
 
     struct ScriptedFactoryCommandStore {
         command: StoredCommand,
         appended_event_count: usize,
         mode: ScriptedStoreMode,
+        empty_commands: bool,
+        list_console_events_calls: std::cell::Cell<usize>,
+        fail_list_console_events_after: Option<usize>,
+        list_commands_calls: std::cell::Cell<usize>,
+        fail_list_commands_after: Option<usize>,
     }
 
     impl ScriptedFactoryCommandStore {
@@ -12179,10 +12618,38 @@ mod tests {
                 ),
                 appended_event_count: 0,
                 mode,
+                empty_commands: false,
+                list_console_events_calls: std::cell::Cell::new(0),
+                fail_list_console_events_after: None,
+                list_commands_calls: std::cell::Cell::new(0),
+                fail_list_commands_after: None,
             }
         }
 
+        /// Return no pending commands, so the pending-command handlers do their
+        /// minimum work and the `list_*` call counts below stay predictable.
+        fn with_empty_commands(mut self) -> Self {
+            self.empty_commands = true;
+            self
+        }
+
+        /// Fail `list_console_events` once it has already succeeded `n` times,
+        /// isolating the serve summary's own late read from the handlers' reads.
+        fn failing_list_console_events_after(mut self, n: usize) -> Self {
+            self.fail_list_console_events_after = Some(n);
+            self
+        }
+
+        /// Fail `list_commands` once it has already succeeded `n` times.
+        fn failing_list_commands_after(mut self, n: usize) -> Self {
+            self.fail_list_commands_after = Some(n);
+            self
+        }
+
         fn commands(&self) -> Vec<StoredCommand> {
+            if self.empty_commands {
+                return Vec::new();
+            }
             if self.mode == ScriptedStoreMode::MissingAggregate {
                 return vec![StoredCommand::new(
                     "cmd_missing_aggregate".to_owned(),
@@ -12205,29 +12672,57 @@ mod tests {
                     "pending".to_owned(),
                 )];
             }
-            if matches!(
-                self.mode,
-                ScriptedStoreMode::WorkItemAppendCommand | ScriptedStoreMode::WorkItemClaimMiss
-            ) {
+            if let Some((command_type, aggregate)) = match self.mode {
+                ScriptedStoreMode::WorkItemAppendCommand
+                | ScriptedStoreMode::WorkItemClaimMiss
+                | ScriptedStoreMode::WorkItemClaimFails => {
+                    Some((CommandType::WorkItemApproveRequested, Some("wi-1")))
+                }
+                ScriptedStoreMode::WorkItemApproveEmptyAggregate => {
+                    Some((CommandType::WorkItemApproveRequested, Some("")))
+                }
+                ScriptedStoreMode::WorkItemMissingAggregate => {
+                    Some((CommandType::WorkItemApproveRequested, None))
+                }
+                ScriptedStoreMode::WorkItemAcceptEmptyAggregate => {
+                    Some((CommandType::WorkItemAcceptRequested, Some("")))
+                }
+                ScriptedStoreMode::WorkItemMoveEmptyAggregate => {
+                    Some((CommandType::WorkItemMoveRequested, Some("")))
+                }
+                ScriptedStoreMode::WorkItemSetWorkflowScopeEmptyAggregate => Some((
+                    CommandType::WorkItemSetWorkflowScopeOverrideRequested,
+                    Some(""),
+                )),
+                _ => None,
+            } {
                 return vec![StoredCommand::new(
-                    "cmd_approve".to_owned(),
+                    "cmd_work_item".to_owned(),
                     "work_item".to_owned(),
-                    "work_item.approve_requested".to_owned(),
-                    Some("wi-1".to_owned()),
-                    "wi-1:work_item.approve_requested".to_owned(),
+                    command_type.contract_name().to_owned(),
+                    aggregate.map(str::to_owned),
+                    "wi-1:work_item".to_owned(),
                     "operator".to_owned(),
                     "pending".to_owned(),
                 )];
             }
             if matches!(
                 self.mode,
-                ScriptedStoreMode::ConfigAppendCommand | ScriptedStoreMode::ConfigClaimMiss
+                ScriptedStoreMode::ConfigAppendCommand
+                    | ScriptedStoreMode::ConfigClaimMiss
+                    | ScriptedStoreMode::ConfigClaimFails
+                    | ScriptedStoreMode::ConfigMissingAggregate
             ) {
+                let aggregate = if self.mode == ScriptedStoreMode::ConfigMissingAggregate {
+                    None
+                } else {
+                    Some("livespec-console-beads-fabro".to_owned())
+                };
                 return vec![StoredCommand::new(
                     "cmd_setting".to_owned(),
                     "configuration".to_owned(),
                     "config.dispatcher_setting_set".to_owned(),
-                    Some("livespec-console-beads-fabro".to_owned()),
+                    aggregate,
                     "livespec-console-beads-fabro:config.dispatcher_setting_set".to_owned(),
                     "operator".to_owned(),
                     "pending".to_owned(),
@@ -12243,13 +12738,25 @@ mod tests {
 
     impl FactoryCommandStore for ScriptedFactoryCommandStore {
         fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
-            if self.mode == ScriptedStoreMode::ListCommands {
+            let calls = self.list_commands_calls.get() + 1;
+            self.list_commands_calls.set(calls);
+            if self.mode == ScriptedStoreMode::ListCommands
+                || self.fail_list_commands_after.is_some_and(|n| calls > n)
+            {
                 return Err(EventStoreError::InvalidSequence);
             }
             Ok(self.commands())
         }
 
         fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
+            let calls = self.list_console_events_calls.get() + 1;
+            self.list_console_events_calls.set(calls);
+            if self
+                .fail_list_console_events_after
+                .is_some_and(|n| calls > n)
+            {
+                return Err(EventStoreError::InvalidSequence);
+            }
             Ok(vec![ConsoleEvent::new(
                 "evt_ready_work".to_owned(),
                 1,
@@ -12281,6 +12788,7 @@ mod tests {
                 ScriptedStoreMode::AppendCommand
                     | ScriptedStoreMode::WorkItemAppendCommand
                     | ScriptedStoreMode::ConfigAppendCommand
+                    | ScriptedStoreMode::AutonomousReflectionAppendFails
             ) {
                 return Err(EventStoreError::InvalidSequence);
             }
@@ -12293,6 +12801,15 @@ mod tests {
             _command_id: &str,
             _claimed_at: &str,
         ) -> EventStoreResult<bool> {
+            if matches!(
+                self.mode,
+                ScriptedStoreMode::ConfigClaimFails
+                    | ScriptedStoreMode::FactoryClaimFails
+                    | ScriptedStoreMode::AutonomousReflectionClaimFails
+                    | ScriptedStoreMode::WorkItemClaimFails
+            ) {
+                return Err(EventStoreError::InvalidSequence);
+            }
             Ok(!matches!(
                 self.mode,
                 ScriptedStoreMode::ConfigClaimMiss
