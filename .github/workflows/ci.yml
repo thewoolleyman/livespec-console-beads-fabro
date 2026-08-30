@@ -504,7 +504,10 @@ jobs:
   export-telemetry:
     name: export-telemetry
     needs: [check, check-doctor-static, check-e2e-tmux, check-mutants, check-fuzz]
-    if: ${{ !cancelled() && github.event_name == 'push' }}
+    # PR runs now emit per-job telemetry too (fail-soft, via EXPORT_FAIL_SOFT
+    # below) so optimization work can see before/after deltas on the PR, not
+    # only after merge; push(master) keeps the closed-loop fail-loud contract.
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -519,4 +522,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           HONEYCOMB_GITHUB_CI_INGEST_KEY_LIVESPEC: ${{ secrets.HONEYCOMB_GITHUB_CI_INGEST_KEY_LIVESPEC }}
+          # push(master) stays closed-loop (empty ⇒ fail-loud); PR/merge_group
+          # runs are fail-soft so a telemetry hiccup never red-bars a PR.
+          EXPORT_FAIL_SOFT: ${{ github.event_name == 'push' && '' || '1' }}
         run: bash .github/scripts/export-ci-telemetry.sh
