@@ -204,6 +204,7 @@ check-no-workflow-edits:
 check:
     #!/usr/bin/env bash
     set -uo pipefail
+    check_start_ns=$(date +%s%N)
     # Canonical workspace test harness: nextest. It exercises the same Rust test
     # inventory as `cargo test` with better scheduling/reporting, so the local
     # aggregate does not run both harnesses serially. Coverage remains a separate
@@ -237,10 +238,16 @@ check:
             failed+=("${target}")
         fi
     done
+    check_exit=0
     if [ "${#failed[@]}" -gt 0 ]; then
         echo "FAILED targets: ${failed[*]}" >&2
-        exit 1
+        check_exit=1
     fi
+    check_end_ns=$(date +%s%N)
+    BUILD_START_NANO="$check_start_ns" BUILD_END_NANO="$check_end_ns" \
+      BUILD_SPAN_NAME="build.just-check" BUILD_PHASE="test" \
+      bash .github/scripts/emit-local-build-telemetry.sh || true
+    exit $check_exit
 
 check-format:
     cargo fmt --all --check
