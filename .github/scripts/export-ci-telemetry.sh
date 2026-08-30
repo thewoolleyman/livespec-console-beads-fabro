@@ -213,5 +213,6 @@ else
   echo "Phase span emission: 0 phase spans (companion workflow diff not yet applied — expected)."
 fi
 
-[ "$main_ok" = "1" ] && \
+if [ "$main_ok" = "1" ]; then
   echo "CI telemetry exported and confirmed received by Honeycomb ($span_count spans, trace $trace_id)."
+fi
