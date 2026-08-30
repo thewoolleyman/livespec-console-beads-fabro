@@ -486,3 +486,47 @@ bodies through REST instead:
 ```bash
 gh api -X PATCH repos/<owner>/<repo>/pulls/<n> --input body.json   # {"body": "..."}
 ```
+
+## CI queued/slow on the self-hosted pool: run the wedge scan BEFORE you explain it
+
+**Action-gate, unconditional. Before ANY claim about WHY CI jobs are queued,
+stuck, or slow to start on the self-hosted ARC k3s pool
+(`livespec-console-beads-k3s`), you MUST run the `was not found` runner-log scan
+from [`.ai/spec-check-and-ci-discipline.md`](.ai/spec-check-and-ci-discipline.md)
+§"Jobs queued with nothing starting" and quote its output. No "saturation",
+"pool is busy", or "throttled to `nominalQuota`/quota-1" claim may be stated
+without that scan's result in hand.** This is an action you take before you
+speak, not a reference you may open — it is here in the always-read file
+precisely so a plausible capacity story cannot close the question before the
+check runs.
+
+The confirming scan, on the cluster host (`poweredge-xubuntu`,
+`KUBECONFIG=/etc/rancher/k3s/k3s.yaml`), over each `Running` non-`-workflow`
+runner pod:
+
+```bash
+kubectl logs <pod> -n arc-runners --tail=40 | grep "was not found"
+```
+
+Any hit is a wedged (zombie) runner with certainty — it is `Running`/`ready` to
+Kubernetes but permanently dead to GitHub, so ARC never scales up and jobs sit
+queued with headroom to spare. Wedge and real saturation present IDENTICALLY
+(jobs queued, nothing starting) and have OPPOSITE fixes, so the scan is the only
+thing that tells them apart.
+
+Two signals are INVALID here and must not be used to reach a capacity verdict —
+using them is exactly how this gate was earned (2026-08-30, PR #891 misdiagnosed
+as quota-1 saturation when the true cause was a wedged runner; refuted by peak
+concurrency 7 and 16 runners spinning up at once):
+
+- **The GitHub REST/CLI runner list** (`gh api .../actions/runners`, "N runners
+  busy"). Ephemeral ARC rows linger `offline`/stale; it reads like an outage
+  while checks run fine. Measure the JOBS, not the runners.
+- **`SchedulingGated` pod counts as "consumed capacity".** A wedge shows zero
+  gated pods with spare capacity; gated-pod counts do not distinguish the two
+  cases and quota-floor reasoning fits a wedge's evidence just as well.
+
+The shape also discriminates: real saturation TRICKLES jobs in serially; a wedge
+creates nothing for many minutes, then a BURST once cleared (the fleet's
+5-minute auto-clearer, `livespec-s43svm.30`). The runner pool is fleet-owned —
+report what the scan shows; do not resize anything from this repo.
