@@ -90,23 +90,41 @@ data point is available immediately; a COLD local baseline additionally needs a
 `target/` wipe first. Lower priority — the charter's local story is eviction, not
 speedup (`research/001`, `research/004`).
 
-## Factory — GAP (no emission exists yet; blocked on 2er6nc)
+## Factory — GAP (emitter shipped; waits on a routine image rollout)
 
-Query `build.env = factory`, 14d: **0 rows**. No factory-sandbox build telemetry
-exists yet — that is `livespec-console-beads-fabro-2er6nc` /
-`livespec-dev-tooling-bfvbsw` (plan `console-factory-build-telemetry`),
-in progress in `livespec-dev-tooling`. The factory baseline waits on it.
+Query `build.env = factory`, 14d: **0 rows** — no live factory spans YET, but the
+emitter is now IMPLEMENTED and MERGED: `livespec-console-beads-fabro-2er6nc` /
+`livespec-dev-tooling-bfvbsw` shipped as **livespec-dev-tooling PR #1658**
+(merge `e0708150`). A `cargo` shim baked onto the fabro-sandbox `python-rust`
+image PATH runs real cargo unchanged, then best-effort emits one
+`build.env=factory` span per phase (compile/test/fuzz/fetch) to the host OTel
+receiver, routed to `github-ci` by `service.name` (see
+`telemetry-attribute-scheme.md`, Factory-routing correction). Non-fatal.
+
+Remaining is a ROUTINE image rollout, NOT a code or console-edit task:
+1. The master push already published the immutable image tag
+   `python-rust-agent-sha-e070815` (image workflow green).
+2. dev-tooling release **v1.37.0** is staged (release PR #1659, open) and carries
+   the shim.
+3. When v1.37.0 releases, the shared `bump-pin` release fan-out **automatically**
+   rewrites the console's `.fabro/workflows/implement-work-item/workflow.toml`
+   `python-rust-agent-vX.Y.Z` pin in lockstep (see that file's PIN SURFACE NOTE)
+   — this is NOT a manual console edit, and a hand-written sha pin would fight the
+   fan-out's semver format.
+4. The next console fabro dispatch on the shimmed image then emits live
+   `build.env=factory` spans; capture the cold baseline with
+   `build.env=factory AND repo=<this repo>`, grouped by `build.phase` / `name`.
 
 Inference until then (`research/003`): the factory builds fully cold every run
 (2.3–6.9 GB `target/` thrown away with the container), and the on-host pre-push
-`just check` was measured at 251–273 s on 4 vCPUs (2026-07-30). Phase-1 telemetry
-turns that inference into a measured span once 2er6nc lands.
+`just check` was measured at 251–273 s on 4 vCPUs (2026-07-30).
 
 ## Status
 
 - CI cold baseline: **captured and cited** (both queries above).
 - Local baseline: blocked on a keyed local run (host).
-- Factory baseline: blocked on 2er6nc (cross-repo, in progress).
+- Factory baseline: emitter shipped (#1658); waits on the v1.37.0 image rollout
+  (auto-pin-bump) + one real dispatch.
 
 fhdzka stays open until all three legs are recorded; this note is the anchor and
 is updated in place as the local and factory legs land.

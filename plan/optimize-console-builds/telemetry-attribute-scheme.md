@@ -49,11 +49,22 @@ environments and before/after deltas need no cross-dataset joins.
 | Environment | Dataset | Ingest key variable |
 |---|---|---|
 | CI | `github-ci` | `HONEYCOMB_BUILD_INGEST_KEY` ← `HONEYCOMB_GITHUB_CI_INGEST_KEY_LIVESPEC` (existing repo secret) |
-| Factory | `github-ci` | `HONEYCOMB_BUILD_INGEST_KEY` — family env wrapper injection |
+| Factory | `github-ci` | **none in the sandbox** — the shim POSTs to the host OTel receiver, which routes by `service.name` (see below) |
 | Local | `github-ci` | `HONEYCOMB_BUILD_INGEST_KEY` — family env wrapper injection |
 
 The factory's existing `prepare.*` spans (in `fabro-sandbox`) are unchanged;
 only the new build/check phase spans route here.
+
+**Factory routing correction (verified during `2er6nc`, dev-tooling PR #1658).**
+The factory emitter is a `cargo` shim baked onto the fabro-sandbox
+`python-rust` image PATH (ahead of rustup's cargo), NOT a
+`HONEYCOMB_BUILD_INGEST_KEY` injected into the sandbox. It POSTs each phase span
+to the **host OTel receiver at `172.17.0.1:4318`**, which routes to the
+`github-ci` dataset **by `service.name=github-ci`** using the host-held fleet
+key. So NO ingest key enters the sandbox, and the factory row's key mechanism is
+"receiver routes by `service.name`", not "family env wrapper injection". The
+same live decision is recorded in the dev-tooling plan charter
+(`console-factory-build-telemetry`, `research/001-charter-factory-sandbox-telemetry.md`).
 
 The `github-ci` choice over a dedicated `build-times` dataset: the existing
 dataset already receives `repo` and `git.commit.sha` from the CI `ci.run` spans,
@@ -66,7 +77,14 @@ avoids divergent retention policies.
 - **CI** — fail-hard: `emit-build-telemetry.sh` exits non-zero on ingest
   failure, reddening the job. Matches the closed-loop property of
   `export-ci-telemetry.sh`.
-- **Factory** — fail-hard: emission failures surface immediately in the run log.
+- **Factory** — best-effort NON-FATAL (corrected from the original "fail-hard"
+  during `2er6nc`). The factory emitter is a `cargo` shim: it runs the real
+  `cargo` unchanged, always propagates cargo's own exit code, and hands the
+  timing to the baked `livespec-cargo-phase-timer` only best-effort (`|| true`).
+  A telemetry hiccup MUST NOT break a factory dispatch, so fail-hard is
+  incompatible with this wrap point — the shim never affects the build result.
+  Loss of a factory span is visible instead as a gap in the `build.env=factory`
+  data, not as a red run.
 - **Local** — fail-soft: set `BUILD_EMIT_FAIL_SOFT=1` so network absence or
   ingest errors do not abort `just check`. This is the OPPOSITE of the CI
   property, and deliberately so (local builds must never block on telemetry).
