@@ -177,6 +177,14 @@ while IFS=$'\t' read -r phj_id phj_name; do
     *) continue ;;
   esac
 
+  # SKIPPED steps are excluded in the jq below. The Phase steps live in the
+  # `check` matrix and are `if: matrix.target == ...`-guarded, so each critical
+  # job's step list ALSO carries the OTHER targets' Phase steps as `skipped`
+  # entries — and GitHub reports a skipped step with equal start/end timestamps
+  # (non-null, zero-duration), which would sail past the null-guards below and
+  # emit bogus zero-duration phase spans mis-attributed to the sibling job
+  # (e.g. check-coverage emitting a compile/test span from check-nextest's
+  # skipped steps). Filtering on conclusion != "skipped" is the precise fix.
   while IFS=$'\t' read -r step_name step_start_iso step_end_iso; do
     [ -n "$step_start_iso" ] && [ "$step_start_iso" != "null" ] || continue
     [ -n "$step_end_iso" ] && [ "$step_end_iso" != "null" ] || continue
@@ -203,7 +211,9 @@ while IFS=$'\t' read -r phj_id phj_name; do
 
     phase_span_count=$((phase_span_count + 1))
   done < <(jq -r --argjson jid "$phj_id" \
-    '.jobs[] | select(.databaseId == $jid) | (.steps // [])[] | [.name, (.startedAt // ""), (.completedAt // "")] | @tsv' \
+    '.jobs[] | select(.databaseId == $jid) | (.steps // [])[]
+       | select((.conclusion // "") != "skipped")
+       | [.name, (.startedAt // ""), (.completedAt // "")] | @tsv' \
     <<<"$run_json")
 done < <(jq -r '.jobs[] | [.databaseId, .name] | @tsv' <<<"$run_json")
 
