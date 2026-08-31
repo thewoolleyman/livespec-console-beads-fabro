@@ -235,7 +235,32 @@ jobs:
         with:
           tool: cargo-nextest,cargo-llvm-cov,cargo-deny,cargo-machete
 
+      # ---- Phase-span split (livespec-console-beads-fabro-icmvza) ----------
+      # export-ci-telemetry.sh emits one build.phase span per step named
+      # "Phase: compile" / "Phase: test" in the critical-path jobs, deriving the
+      # duration from that step's own start/end times. To feed it WITHOUT paying
+      # a second compile, check-nextest gets a warm `--no-run` compile step
+      # (build.phase=compile) followed by the real recipe running test-only (the
+      # warm test binaries are reused — same `--workspace --all-features` flags,
+      # so no recompile); check-clippy is compile-only, so its single recipe step
+      # simply carries the "Phase: compile" name. check-coverage is INTENTIONALLY
+      # not split: `cargo llvm-cov` cleans and re-instruments by default, so a
+      # prepended warm build would DOUBLE-COMPILE the 100% coverage gate — a
+      # regression against this plan's own build-time goal; deferred on the item.
+      - name: "Phase: compile"
+        if: matrix.target == 'check-nextest'
+        run: cargo nextest run --workspace --all-features --no-run
+
+      - name: "Phase: test"
+        if: matrix.target == 'check-nextest'
+        run: just check-nextest
+
+      - name: "Phase: compile"
+        if: matrix.target == 'check-clippy'
+        run: just check-clippy
+
       - name: just ${{ matrix.target }}
+        if: matrix.target != 'check-nextest' && matrix.target != 'check-clippy'
         run: just ${{ matrix.target }}
 
   # livespec core's doctor STATIC phase (reference-discipline + out-of-band
@@ -459,7 +484,21 @@ jobs:
             apt-get install -y --no-install-recommends g++
           fi
 
-      - name: just check-fuzz
+      # ---- Phase-span split (livespec-console-beads-fabro-icmvza) ----------
+      # Warm ASAN build of ALL fuzz targets as a "Phase: compile" step so
+      # export-ci-telemetry.sh emits a build.phase=compile span separating the
+      # ASAN BUILD (a real optimization target) from the ratified 180s fuzz-run
+      # floor (3x60s, not reducible — charter scope note). `cargo fuzz build`
+      # with no target builds every fuzz target, so this needs no target list to
+      # drift against the recipe. `just check-fuzz` below then rebuilds warm
+      # (no-op reuse) and runs, under the "Phase: fuzz" name. Depends on the
+      # fuzz-tooling + C++ compiler steps above.
+      - name: "Phase: compile"
+        run: |
+          just ensure-fuzz-tooling
+          cargo +nightly fuzz build
+
+      - name: "Phase: fuzz"
         run: just check-fuzz
 
       # A crash is only actionable with the input that produced it. Without this
