@@ -370,3 +370,34 @@ valve policy extended to attention items; `accounts` (caam moved in); typed
   adapters; Claude Code docs (headless, Agent SDK streaming input and
   permissions, Remote Control); `codex app-server generate-json-schema`;
   fabro source at `8de6611` and `upstream/main`.
+
+## 11. Post-capture verification (2026-08-31, while landing this note)
+
+Landing this note required re-pinning the console's own `.fabro` fork
+(PR #901): the host's installed orchestrator build (`93c061eb0a89`) had moved
+past the fork's pins. The reviewed movement is evidence for D3 and closes two
+caveats raised above:
+
+- Upstream's `implement-work-item` bundle already carries the **v092 typed
+  integration-contract inputs** as a 13-key `[run.inputs]` table —
+  `sandbox_check_suite`, `default_branch`, **`merge_mode`**,
+  **`sandbox_exempt_marker`** (default `livespec.sandboxExempt`), the
+  `prepare_toolchain_*` / `conformance_*` set, and the `implement_adapter`
+  split — with fail-loud or explicit-no-op defaults, every prepare step
+  rewritten as a `set --` projection of one input, and a `check-seam-equivalence`
+  gate asserting the tokens, the declarations and the Dispatcher's rendered
+  inputs are identical in both directions. So merge mode and the sandbox-exempt
+  marker are **already typed contract fields upstream**; the "candidate fields
+  needing propose-change" caveats in §4/§7 reduce to *consume them*.
+- Upstream's graph now ends non-green at a **`needs_human` terminal** (v093,
+  Scenario 103: "a factory run never awaits a human"): the run preserves its
+  tree on `refs/heads/needs-human/<run>`, emits `LIVESPEC_NEEDS_HUMAN`, and the
+  decision lives in the ledger as a valve — the in-loop `escalate` interview
+  gate and its [R]/[I]/[A] answers are gone. This is the same direction as D3's
+  "consent as interview questions", but one step further: the question is a
+  ledger valve, not a parked run. The console's escalation surface, which today
+  answers the parked-run interview, must follow this (a console propose-change).
+- The console fork declares none of those inputs and still runs `escalate`, so
+  no single file was portable; it was re-pinned only, with the adoption recorded
+  as one reviewed re-fork owned by this plan. That is the fork-drift class of
+  §1 reproduced on the console itself, on the day this plan opened.
