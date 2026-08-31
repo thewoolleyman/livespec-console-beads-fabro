@@ -526,3 +526,29 @@ failed push were indistinguishable.
   Prefer it to `just bootstrap`: bootstrap reconciles the claude-plugins row
   and **advances the local plugin install**, which is what turns
   `check-fork-drift` red on clean master (see that gate's own note).
+- **A `fix(`/`feat(` subject forces a test-only commit into Red mode, and a
+  passing test then bounces.** The `red-green-replay` commit-msg hook
+  classifies STAGED CONTENT, not just product Rust. When a changeset stages
+  an integration test (`crates/**/tests/*.rs`) and NO product-impl Rust, the
+  decision is SUBJECT-driven: `declares_red_intent` matches only the
+  `feat:` / `fix:` / `feat(` / `fix(` prefixes, and such a subject is read as
+  a TDD **Red** commit that REQUIRES the staged test to FAIL first. A test
+  that PASSES is rejected with `red-green-replay-test-passed-at-red: Red mode
+  requires the staged Rust test to fail first` — and the commit is aborted, so
+  `git status` (not `git log`) is what tells you the change is still staged.
+  This bites the common case the checker's Red/Green model does not cover: a
+  **flake-hardening or robustness change to an existing, passing test**. Give
+  it a NON-red-intent subject — `test(...)`, `chore(...)`, `docs(...)` — so the
+  checker routes to the **SuiteGreen** path instead: it runs the (ignored-aware)
+  suite for that test binary and writes the `TDD-Suite-Green-*` trailers
+  itself. Product-impl Rust in the changeset takes a different path
+  (Green / SuiteGreen keyed off HEAD's red-awaiting state), so this trap is
+  specific to test-ONLY commits; it is a classification quirk, NOT a licence to
+  relabel a genuine Red→Green feature away from `feat`/`fix`. Measured
+  2026-08-30 on livespec-console-beads-fabro-7yq7dk: a `fix(test): …` commit
+  hardening the PASSING `tmux_tui_e2e` walkthrough was rejected
+  `red-green-replay-test-passed-at-red`; retitling verbatim to `test(e2e): …`
+  passed via SuiteGreen and wrote the suite-green trailers. The general rule:
+  content picks the ritual, but for a test-only changeset the SUBJECT PREFIX
+  still picks Red-vs-SuiteGreen — so match the prefix to whether the test is
+  meant to be failing (`fix`/`feat`) or already green (`test`/`chore`/`docs`).
