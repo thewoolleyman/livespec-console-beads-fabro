@@ -208,6 +208,29 @@
       },
       "default_factory": "hp",
 
+      // Per-node ACP turn ceilings (orchestrator contracts.md "ACP node
+      // timeouts"). The Dispatcher RENDERS these into the dispatch payload's
+      // graph, overwriting every `timeout="..."` literal the fork declares in
+      // .fabro/workflows/implement-work-item/workflow.fabro -- so the fork's
+      // implement=14400s / janitor=3600s / fix=3600s / review_fix=3600s are dead
+      // text, and with this table absent every node ran at the 1800s default.
+      //
+      // MEASURED 2026-09-01 on hp run 01M1EAFXBG0Z6H3K091NG6WCZ2 (work-item
+      // livespec-console-beads-fabro-1d5f, a medium console-Rust bug): the
+      // implement stage hit `agent.acp.timed_out` at 1800036 ms on BOTH
+      // attempts with a 118-line diff already in the tree, then the checkpoint
+      // commit died on pre-commit `cargo fmt --check` because the agent never
+      // reached its format/test pass; the item was stranded with no PR. A
+      // console implement turn cannot fit a cold cargo build + test cycle
+      // inside 30 minutes; the values below restore what the fork already
+      // declares and what the fleet's other dispatch targets set.
+      "node_timeouts": {
+        "implement": 14400,
+        "janitor": 3600,
+        "fix": 3600,
+        "review_fix": 3600
+      },
+
       // TEMPORARY: park the `pr` node on the Claude adapter, off Codex.
       //
       // WHY. `dispatcher.codex_models` expands UNCONDITIONALLY -- its `pr`
