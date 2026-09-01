@@ -396,6 +396,14 @@
       {
         "gap_id": "gap-ay7wmdyj",
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-xaomffui",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-y5fhrqid",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       }
     ]
   },
