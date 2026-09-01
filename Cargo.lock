@@ -193,6 +193,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "console-nightly-soak"
+version = "0.4.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "console-red-green-replay-check"
 version = "0.4.0"
 dependencies = [

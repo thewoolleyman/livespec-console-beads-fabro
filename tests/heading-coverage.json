@@ -342,8 +342,8 @@
   {
     "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid quality-gate acceptance test should assert the local check aggregate, merge-only fuzz/mutation split, and nightly chore-opening behavior. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "test": "crates/console-nightly-soak/src/lib.rs::tests::fuzz_finding_with_no_open_chore_files_exactly_one_chore",
+    "reason": "Top-of-pyramid coverage for the nightly soak idempotent chore filing: the unit test suite in crates/console-nightly-soak/src/lib.rs exercises scenario (b) -- no open chore files exactly one chore -- and scenario (c) -- existing open chore files nothing -- through the BeadsDouble ledger seam, proving the ratified nightly clause behavior.",
     "clauses": [
       {
         "gap_id": "gap-mupmnlf6",
@@ -827,7 +827,7 @@
     "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
     "scenario_file": "scenarios.md",
     "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_key_missing_from_the_settings_surface",
-    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md §\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
+    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md \u00a7\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
     "clauses": [
       {
         "gap_id": "gap-u5dlygw2",
@@ -991,7 +991,7 @@
     "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_panes_operational_content_only_scenario_21",
-    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The §\"TUI Contract\" panes-operational-content-only clause binds here.",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The \u00a7\"TUI Contract\" panes-operational-content-only clause binds here.",
     "clauses": [
       {
         "gap_id": "gap-xiziukv6",
