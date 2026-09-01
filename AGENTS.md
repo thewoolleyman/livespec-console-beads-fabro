@@ -105,6 +105,20 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   `plan/archive/<topic>/`; legacy prompt handoffs live in `archive/prompts/`.
   Do not print a handoff body in the chat, and do not proliferate new handoff
   files.
+- **NO SHADOW LEDGER — never duplicate in git what the ledger already holds.**
+  Status, progress, "X merged", "Y filed / reparented", next actions and
+  who-owns-what live in the beads ledger (epic timelines, children, item
+  comments and metadata) and are READ from it with one cached
+  `bd list --status all --json -n 0`. A git change to a plan file is justified
+  only by NEW REASONING — a decision record, a measured finding, an analysis —
+  never by "something happened". `plan/<slug>/research/` notes and any
+  "program board" hold structure and reasoning, not status; the
+  `associated_work_item_id` anchor changes only when the anchor changes.
+  Measured 2026-09-01: a plan session opened a worktree to append "v046
+  ratified / child filed / anchor owed" to a research note minutes after
+  writing the same facts into the epic's handoff; the maintainer stopped it
+  before push. The test before opening any worktree for a plan file: "could a
+  fresh session derive this from the ledger?" If yes, write nothing.
 - **Charter-detector changes require three-way control.** Before changing a
   charter to satisfy a known-defect detector, verify the suspect form, the same
   thing written differently, and a known-real defect. If the suspect form and
