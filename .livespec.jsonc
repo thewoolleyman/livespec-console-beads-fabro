@@ -236,6 +236,22 @@
       "janitor": {
         "check_suite": ["mise", "exec", "--", "just", "check-no-workflow-edits", "check"]
       },
+      // Post-merge janitor bootstrap recipe (contract key
+      // `dispatcher.janitor_bootstrap.recipe`). DECLARED because the fleet
+      // default — `mise exec -- just install-commit-refuse-hooks` — installs
+      // the commit-refuse hooks but NOT the worktree-discipline pack, and
+      // this repo's `check-baseline` (dev-tooling >= v1.37.1) refuses a
+      // checkout whose `dev-tooling/` lacks the pack
+      // (`worktree_pack_absent`). Measured 2026-09-01 22:14Z: the post-merge
+      // janitor for livespec-console-beads-fabro-h7jp went red at
+      // check-baseline in its fresh checkout for exactly this reason, which
+      // blocked the ai-only acceptance pass of an already-merged item.
+      // Deliberately NOT `just bootstrap`: bootstrap's local_reconcile
+      // advances the HOST-WIDE plugin install from inside a janitor checkout
+      // (the thing that turns check-fork-drift red on clean master).
+      "janitor_bootstrap": {
+        "recipe": ["mise", "exec", "--", "just", "install-commit-refuse-hooks", "install-worktree-pack"]
+      },
       "node_timeouts": {
         "implement": 14400,
         "janitor": 3600,
