@@ -153,6 +153,16 @@ pub enum EventType {
     /// synthesized gate the Fabro adapter clause forbids. The run's ACTUAL
     /// status kind rides in the payload.
     FabroRunObserved,
+    /// The orchestrator's `reconcile-runs --dry-run --json` projection was
+    /// observed, carrying every factory run it reports as orphaned.
+    ///
+    /// One event per observed PROJECTION, not per run: the reconciler reports a
+    /// SET, and a run that has stopped being orphaned leaves that set silently.
+    /// Emitting per-run events would need a matching resolved event to retract
+    /// each one, and a missed retraction renders an orphan the orchestrator no
+    /// longer claims. The whole set rides one payload so the latest observation
+    /// replaces the previous one outright.
+    FactoryRunOrphansObserved,
     /// Factory drain completed successfully.
     FactoryDrainCompleted,
     /// Factory drain failed.
@@ -233,6 +243,7 @@ impl EventType {
             Self::DispatcherJournalProgressObserved => "dispatch.journal_progress_observed",
             Self::DispatcherRefusalObserved => "dispatch.refusal_observed",
             Self::FabroRunObserved => "fabro.run_observed",
+            Self::FactoryRunOrphansObserved => "factory.run_orphans_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
             Self::FactoryDrainFailed => "factory.drain.failed",
             Self::FactoryDrainAwaitingHuman => "factory.drain.awaiting_human",
@@ -281,6 +292,7 @@ impl EventType {
             // make every already-persisted Fabro observation unparseable, which
             // reads as a source that never emitted rather than as a rename.
             "fabro.run_observed" | "fabro.human_gate_observed" => Some(Self::FabroRunObserved),
+            "factory.run_orphans_observed" => Some(Self::FactoryRunOrphansObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
             "factory.drain.awaiting_human" => Some(Self::FactoryDrainAwaitingHuman),
@@ -729,6 +741,7 @@ mod tests {
             EventType::DispatcherJournalProgressObserved,
             EventType::DispatcherRefusalObserved,
             EventType::FabroRunObserved,
+            EventType::FactoryRunOrphansObserved,
             EventType::FactoryDrainCompleted,
             EventType::FactoryDrainFailed,
             EventType::FactoryDrainAwaitingHuman,

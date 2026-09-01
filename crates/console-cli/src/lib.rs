@@ -51,7 +51,8 @@ use console_application::{
         diff_needs_attention, dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
         materialize_attention_items, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_orchestrator_observation, run_adapter_poll,
+        parse_livespec_observation, parse_orchestrator_observation,
+        parse_reconcile_runs_observation, reconcile_runs_snapshot_payload_json, run_adapter_poll,
         work_item_snapshot_payload_json,
     },
 };
@@ -1161,7 +1162,7 @@ pub fn live_source_adapters_with_programs<'a>(
         SourceAdapterKind,
         SourceObservationPlan,
         NormalizeObservation,
-    ); 5] = [
+    ); 6] = [
         (
             "orchestrator",
             SourceAdapterKind::Orchestrator,
@@ -1194,6 +1195,23 @@ pub fn live_source_adapters_with_programs<'a>(
                 &["pr", "list", "--json", "number,state", "--limit", "1"],
             ),
             parse_github_observation,
+        ),
+        // The orphaned-factory-runs lane's production feed. It rides the SAME
+        // poll cadence as every other source (one `run_adapter_poll` per
+        // refresh) and the SAME program the Dispatcher itself is resolved to --
+        // `dispatcher.py` -- because the reconciler is a subcommand of that one
+        // surface. `--dry-run` is not optional: the console's contract names the
+        // READ-ONLY projection so that observing a factory is never an act, and
+        // the parser refuses a payload from a wired pass rather than rendering
+        // completed terminations as proposals.
+        (
+            "reconcile-runs",
+            SourceAdapterKind::Reconciler,
+            SourceObservationPlan::command(
+                programs.dispatcher(),
+                &["reconcile-runs", "--dry-run", "--json"],
+            ),
+            parse_reconcile_runs_observation,
         ),
     ];
     specs
@@ -2803,6 +2821,9 @@ fn normalized_payload_json(payload: &SourcePayload) -> String {
         SourcePayload::NotObservedFinding(finding) => not_observed_finding_payload_json(finding),
         SourcePayload::FabroRunSnapshot(snapshot) => fabro_run_snapshot_payload_json(snapshot),
         SourcePayload::DispatcherJournalEntry(entry) => dispatcher_journal_payload_json(entry),
+        SourcePayload::ReconcileRunsSnapshot(snapshot) => {
+            reconcile_runs_snapshot_payload_json(snapshot)
+        }
         SourcePayload::CompletenessFinding(_)
         | SourcePayload::GithubPullRequestSnapshot(_)
         | SourcePayload::LivespecNextSnapshot(_)
@@ -3058,7 +3079,8 @@ mod tests {
         FactoryDrainRequest, LaneColumn, LaneFocus, OrchestratorActionOutcome,
         OrchestratorActionPort, OrchestratorActionRequest, OverrideInt, PendingValve, RejectMode,
         TuiInteraction, TuiInteractionState, TuiOverlay, TuiView, build_tui_model,
-        handle_factory_drain_command, project_attention, project_lane_board,
+        build_tui_model_for_state, handle_factory_drain_command, project_attention,
+        project_lane_board,
         source_adapters::{
             AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll,
             AdapterPollRequest, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
@@ -3081,7 +3103,7 @@ mod tests {
     };
 
     use super::{
-        BackingCliResolution, BackingCliResolutionError, CommandAppendStore,
+        BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandAppendStore,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
         InitialSourceSeed, LANE_FAILURE_MARKER, LaneStartupStage, NeedsAttentionIngest,
@@ -3099,7 +3121,8 @@ mod tests {
         ingest_and_reflect, ingest_needs_attention, initial_source_seed,
         is_failed_once_only_valve_retry, lane_diagnostics_path, lane_failures_in,
         lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
-        live_source_adapters_from_resolution, load_tui_events_from_store, normalized_payload_json,
+        live_source_adapters_from_resolution, live_source_adapters_with_programs,
+        load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
         refresh_sources, render_tui_preview, resolve_console_repo, run,
@@ -9426,6 +9449,7 @@ mod tests {
                     "fabro:console",
                     "livespec:console",
                     "github:console",
+                    "reconcile-runs:console",
                 ]),
             "assert_eq failed",
         );
@@ -9442,9 +9466,9 @@ mod tests {
         let summaries =
             backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &refs).ok_test();
 
-        check((summaries.len()) == (5), "assert_eq failed");
+        check((summaries.len()) == (6), "assert_eq failed");
         check(
-            (store.list_console_events().ok_test().len()) == (5),
+            (store.list_console_events().ok_test().len()) == (6),
             "assert_eq failed",
         );
         for event in store.list_console_events().ok_test() {
@@ -9453,6 +9477,129 @@ mod tests {
                 "assert_eq failed",
             );
         }
+    }
+
+    /// The reconciler dry-run projection this repo's orchestrator emits, cut to
+    /// two orphaned runs. Field names are the projection's own, so this fixture
+    /// can be read beside real `dispatcher.py reconcile-runs --dry-run --json`
+    /// output.
+    const RECONCILE_RUNS_DRY_RUN_STDOUT: &str = r#"{
+        "dry_run": true,
+        "errors": [],
+        "held": [],
+        "factories_surveyed": 2,
+        "factory_names": ["hp", "local"],
+        "reconciled": [
+            {
+                "run_id": "01M1ES066RHS8Y39B9WJW8WC8Q",
+                "factory_name": "hp",
+                "status_kind": "running",
+                "work_item_id": "livespec-console-beads-fabro-h7jp",
+                "work_item_status": "blocked",
+                "orphan_reason": "item-not-active",
+                "termination_route": "none"
+            },
+            {
+                "run_id": "01M1F34G6NY83A6Y24DJQCGDHQ",
+                "factory_name": "local",
+                "work_item_id": "livespec-console-beads-fabro-gone",
+                "work_item_status": null,
+                "orphan_reason": "item-missing",
+                "termination_route": "none"
+            }
+        ]
+    }"#;
+
+    /// Answers ONE command line and reports every other source unavailable, so
+    /// a test can assert which argv the console actually ran.
+    struct OneCommandProbe {
+        program: String,
+        args: Vec<String>,
+        stdout: String,
+    }
+
+    impl SourceProbe for OneCommandProbe {
+        fn run_command(&self, program: &str, args: &[&str]) -> SourceProbeOutcome {
+            if program == self.program && args == self.args.as_slice() {
+                return SourceProbeOutcome::observed(&self.stdout, true);
+            }
+            SourceProbeOutcome::unavailable("test probe: unexpected command")
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable("test probe: no file sources")
+        }
+    }
+
+    /// The orphaned-factory-runs lane, END TO END along the PRODUCTION path:
+    /// the argv `live_source_adapters_with_programs` actually builds, run
+    /// through `run_adapter_poll` and the real event-store append, replayed out
+    /// of the store, projected by `build_tui_model_for_state`, and rendered by
+    /// the TUI.
+    ///
+    /// Deliberately not a parser test. Every seam between the reconciler's
+    /// stdout and the operator's screen -- the argv, the persisted
+    /// `payload_json`, the projection, the lane rows -- can break
+    /// independently, and each one breaks the same silent way: the lane simply
+    /// renders empty, which is indistinguishable from a clean factory.
+    #[test]
+    fn reconcile_runs_adapter_feeds_the_orphaned_runs_lane_end_to_end() {
+        let programs = BackingCliPrograms::default();
+        let probe = OneCommandProbe {
+            program: programs.dispatcher().to_owned(),
+            // The dry-run flag is load-bearing: reading must never be an act.
+            // A probe that answered any argv would let a wired invocation pass.
+            args: ["reconcile-runs", "--dry-run", "--json"]
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect(),
+            stdout: RECONCILE_RUNS_DRY_RUN_STDOUT.to_owned(),
+        };
+        let adapters = live_source_adapters_with_programs(
+            &probe,
+            "console",
+            &programs,
+            "/nonexistent/journal",
+        )
+        .ok_test();
+        let refs: Vec<SourceAdapterRef<'_>> = adapters
+            .iter()
+            .map(|(adapter_id, adapter)| (adapter_id.as_str(), adapter as &dyn PullSourcePort))
+            .collect();
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+
+        let _summaries =
+            backfill_source_adapters(&mut store, "2026-09-01T00:00:00Z", &refs).ok_test();
+        let events = load_tui_events_from_store(&store).ok_test();
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+        let rendered = render_tui_preview(&model, 200, 40);
+
+        // The projection survived the round trip through the event store.
+        check(
+            (model.orphaned_factory_runs().len()) == (2),
+            "assert_eq failed",
+        );
+        check(
+            rendered.contains("orphaned factory runs (2)"),
+            "the lane header must state the orphan count",
+        );
+        check(
+            rendered.contains(
+                "- 01M1ES066RHS8Y39B9WJW8WC8Q on hp [running]  \
+                 livespec-console-beads-fabro-h7jp [blocked]  (item-not-active)  remedy none",
+            ),
+            "the lane must carry every field of the projection's first row",
+        );
+        // No status kind reported and no ledger status to show: the row still
+        // renders, neutrally, rather than being dropped or dressed as a gate.
+        check(
+            rendered.contains(
+                "- 01M1F34G6NY83A6Y24DJQCGDHQ on local [unknown]  \
+                 livespec-console-beads-fabro-gone  (item-missing)  remedy none",
+            ),
+            "an unreported status kind must render as the neutral unknown",
+        );
     }
 
     #[test]

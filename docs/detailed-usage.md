@@ -207,6 +207,23 @@ three preview items:
     - <id> [<status>]  <title>(<reason>)
 ```
 
+Below the seven lanes the overview carries the **orphaned factory runs** lane —
+factory runs the orchestrator's `reconcile-runs --dry-run --json` projection
+reports as holding a scheduler slot for work the ledger says nothing is waiting
+on:
+
+```
+  orphaned factory runs (1)
+    - <run id> on <factory> [<status kind>]  <work-item id> [<status>]  (<orphan reason>)  remedy <termination route>
+```
+
+Every field comes from that projection and none of it is decided by the
+console, including the remedy — `remedy none` is what a dry run reports,
+because it terminated nothing. Every row is listed rather than previewed, the
+header states the count even at zero, and a run whose work-item has left the
+ledger carries no `[<status>]`, because it has none. A factory whose status
+kind is unreported reads `[unknown]`.
+
 `Enter` on a lane drills into it, giving one row per work-item:
 
 ```

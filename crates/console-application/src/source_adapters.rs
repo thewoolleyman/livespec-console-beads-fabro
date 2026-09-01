@@ -17,6 +17,12 @@ pub enum SourceAdapterKind {
     LiveSpec,
     /// Needs attention variant.
     NeedsAttention,
+    /// The orchestrator's run reconciler, read through its `reconcile-runs
+    /// --dry-run --json` projection. A source of its own rather than another
+    /// read of the `Orchestrator` source: it runs a different program surface,
+    /// and folding it in would make one degraded surface brand the other
+    /// unavailable in the header's per-source availability tally.
+    Reconciler,
 }
 
 impl SourceAdapterKind {
@@ -30,6 +36,7 @@ impl SourceAdapterKind {
             Self::GitHub => "github",
             Self::LiveSpec => "livespec",
             Self::NeedsAttention => "needs-attention",
+            Self::Reconciler => "reconcile-runs",
         }
     }
 }
@@ -1435,6 +1442,8 @@ pub enum SourcePayload {
     AttentionItemChanged(AttentionItemSnapshot),
     /// Attention item resolved variant.
     AttentionItemResolved(String),
+    /// The reconciler's whole dry-run orphan projection, as observed.
+    ReconcileRunsSnapshot(ReconcileRunsSnapshot),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2757,6 +2766,13 @@ pub struct OrphanedFactoryRun {
     // this struct beside `dispatcher.py reconcile-runs --dry-run --json` output
     // and see the same words.
     factory_name: String,
+    // Defaulted rather than required. A record whose run id, work-item, orphan
+    // reason and termination route are all present is exactly the row the
+    // operator needs; refusing it because the factory reported no status kind
+    // would hide the orphan entirely over a field that classifies nothing.
+    // `run_state` resolves an absent or blank kind to the neutral
+    // [`UNKNOWN_STATUS_KIND`] -- never to a synthesized gate.
+    #[serde(default)]
     status_kind: String,
     work_item_id: String,
     // `null` for the `item-missing` orphan reason: the run's work-item is not in
@@ -2810,6 +2826,18 @@ impl OrphanedFactoryRun {
     }
 
     #[must_use]
+    /// The run's status kind as a NEUTRAL run state.
+    ///
+    /// An unrecognized kind is carried through verbatim and an absent or blank
+    /// one resolves to [`UNKNOWN_STATUS_KIND`]. Neither is classified: the
+    /// console never turns "this run reported no kind" into a human gate, which
+    /// is the synthesized gate `SPECIFICATION/contracts.md` forbids and doubly
+    /// wrong for a run the reconciler has already called orphaned.
+    pub fn run_state(&self) -> FabroRunState {
+        FabroRunState::from_status_kind(&self.status_kind)
+    }
+
+    #[must_use]
     /// The work-item the run was launched for.
     pub fn work_item_id(&self) -> &str {
         &self.work_item_id
@@ -2838,7 +2866,7 @@ impl OrphanedFactoryRun {
 }
 
 /// One read of the reconciler's dry-run projection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct ReconcileRunsSnapshot {
     orphaned_runs: Vec<OrphanedFactoryRun>,
     skipped: Vec<String>,
@@ -2939,6 +2967,109 @@ pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<ReconcileRunsSnapsh
         }
     }
     Ok(ReconcileRunsSnapshot::new(orphaned_runs, skipped))
+}
+
+/// The event stream one repo's reconciler projection is written to.
+fn reconcile_runs_stream(repo: &str) -> String {
+    format!("reconcile_runs:{repo}")
+}
+
+/// Serialize a reconciler projection into its canonical persisted
+/// `payload_json`.
+///
+/// The exact shape [`reconcile_runs_snapshot_from_payload_json`] reads back,
+/// built as a [`serde_json::Value`] so the round-trip is total and carries no
+/// unreachable failure arm.
+///
+/// The SKIP reasons are persisted alongside the runs. A record the parse could
+/// not read is a slot the reconciler saw and the console could not show, and
+/// dropping that at the store boundary would make a replayed lane read as
+/// complete when it is short a row nobody can account for.
+#[must_use]
+pub fn reconcile_runs_snapshot_payload_json(snapshot: &ReconcileRunsSnapshot) -> String {
+    let orphaned_runs = snapshot
+        .orphaned_runs
+        .iter()
+        .map(orphaned_factory_run_value)
+        .collect();
+    let skipped = snapshot
+        .skipped
+        .iter()
+        .map(|reason| serde_json::Value::String(reason.clone()))
+        .collect();
+    let mut object = serde_json::Map::new();
+    let _ = object.insert(
+        "orphaned_runs".to_owned(),
+        serde_json::Value::Array(orphaned_runs),
+    );
+    let _ = object.insert("skipped".to_owned(), serde_json::Value::Array(skipped));
+    serde_json::Value::Object(object).to_string()
+}
+
+fn orphaned_factory_run_value(run: &OrphanedFactoryRun) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    let _ = object.insert("run_id".to_owned(), run.run_id.clone().into());
+    let _ = object.insert("factory_name".to_owned(), run.factory_name.clone().into());
+    let _ = object.insert("status_kind".to_owned(), run.status_kind.clone().into());
+    let _ = object.insert("work_item_id".to_owned(), run.work_item_id.clone().into());
+    let _ = object.insert(
+        "work_item_status".to_owned(),
+        optional_json_string(run.work_item_status.as_deref()),
+    );
+    let _ = object.insert("orphan_reason".to_owned(), run.orphan_reason.clone().into());
+    let _ = object.insert(
+        "termination_route".to_owned(),
+        run.termination_route.clone().into(),
+    );
+    serde_json::Value::Object(object)
+}
+
+/// Read a reconciler projection back out of a persisted `payload_json`.
+///
+/// `None` for a payload that is not this shape, so a row written by some other
+/// event type can never be replayed as an orphan set.
+#[must_use]
+pub fn reconcile_runs_snapshot_from_payload_json(
+    payload_json: &str,
+) -> Option<ReconcileRunsSnapshot> {
+    serde_json::from_str(payload_json).ok()
+}
+
+/// Normalize real `dispatcher.py reconcile-runs --dry-run --json` output into
+/// the canonical orphaned-factory-runs event.
+///
+/// ONE event carrying the WHOLE projection, versioned by its content: the
+/// reconciler reports a set, and the latest observation of that set replaces
+/// the previous one rather than accumulating with it. A projection that has
+/// not changed since the last poll hashes to the same version and the same
+/// `source_event_id`, so the store's idempotency dedupes it away instead of
+/// growing one row per cadence tick.
+///
+/// # Errors
+/// Returns a reason string when the output is not the reconciler's dry-run
+/// envelope; the adapter records that as an honest not-observed finding rather
+/// than an empty orphan set, which would read as "every factory is clean".
+pub fn parse_reconcile_runs_observation(
+    observed: &ObservedSource,
+) -> Result<ParsedObservation, String> {
+    let snapshot = parse_reconcile_runs_snapshot(observed.stdout())?;
+    let payload_json = reconcile_runs_snapshot_payload_json(&snapshot);
+    let version = source_stream_seq(&[observed.repo(), &payload_json]);
+    let source_event_id = format!("reconcile-runs:{}:{version}", observed.repo());
+    let event = NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!("evt:{source_event_id}"),
+            1,
+            observed.repo().to_owned(),
+            EventType::FactoryRunOrphansObserved,
+            SourceAdapterKind::Reconciler.source_name().to_owned(),
+            reconcile_runs_stream(observed.repo()),
+            version,
+        ),
+        source_event_id,
+        SourcePayload::ReconcileRunsSnapshot(snapshot),
+    );
+    Ok(ParsedObservation::new(&version.to_string(), vec![event]))
 }
 
 /// Normalize real `livespec next` output into a `LivespecNextSnapshot`.
@@ -3536,8 +3667,9 @@ mod tests {
         normalize_work_item_snapshot, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
         parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        parse_reconcile_runs_snapshot, run_adapter_poll, work_item_snapshot_from_payload_json,
-        work_item_snapshot_payload_json,
+        parse_reconcile_runs_observation, parse_reconcile_runs_snapshot,
+        reconcile_runs_snapshot_from_payload_json, reconcile_runs_snapshot_payload_json,
+        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -6804,6 +6936,159 @@ mod tests {
         assert_eq!(snapshot.orphaned_runs().len(), 1);
         assert_eq!(snapshot.skipped().len(), 1);
         assert!(snapshot.skipped()[0].contains("skipped reconciled record 1"));
+    }
+
+    /// The reconciler is its OWN source, not another read of the orchestrator:
+    /// a degraded `reconcile-runs` must not brand `list-work-items` unavailable
+    /// in the header's per-source availability tally, and the two are told apart
+    /// only by this name.
+    #[test]
+    fn reconciler_is_a_source_of_its_own() {
+        assert_eq!(
+            SourceAdapterKind::Reconciler.source_name(),
+            "reconcile-runs"
+        );
+    }
+
+    /// The production adapter path: raw `reconcile-runs --dry-run --json`
+    /// stdout to ONE canonical event carrying the whole projection, and back
+    /// out of the persisted payload unchanged.
+    #[test]
+    fn parse_reconcile_runs_observation_emits_one_event_carrying_the_projection() {
+        let observed = ObservedSource::new(
+            SourceAdapterKind::Reconciler,
+            "console",
+            RECONCILE_RUNS_DRY_RUN_JSON,
+        );
+
+        let parsed = ok_parsed_observation(parse_reconcile_runs_observation(&observed));
+
+        // ONE event for the whole SET. A run that stops being orphaned leaves
+        // the next projection; per-run events would need a retraction each, and
+        // a missed one renders an orphan the orchestrator no longer claims.
+        assert_eq!(parsed.events.len(), 1);
+        let event = parsed.events[0].event();
+        assert_eq!(
+            event.event_type().contract_name(),
+            "factory.run_orphans_observed"
+        );
+        assert_eq!(event.source(), "reconcile-runs");
+        assert_eq!(event.stream_id(), "reconcile_runs:console");
+        assert_eq!(parsed.checkpoint, event.stream_seq().to_string());
+
+        // The WHOLE parsed projection rides the payload, unabridged.
+        let snapshot =
+            ok_reconcile_snapshot(parse_reconcile_runs_snapshot(RECONCILE_RUNS_DRY_RUN_JSON));
+        assert_eq!(
+            parsed.events[0].payload(),
+            &SourcePayload::ReconcileRunsSnapshot(snapshot.clone())
+        );
+        // And survives the persisted `payload_json` unchanged, so a replay out
+        // of the store renders the same lane the poll observed.
+        assert_eq!(
+            reconcile_runs_snapshot_from_payload_json(&reconcile_runs_snapshot_payload_json(
+                &snapshot
+            )),
+            Some(snapshot)
+        );
+    }
+
+    /// An unchanged projection hashes to the same version, so a poll cadence
+    /// that re-reads a steady factory dedupes against the store rather than
+    /// appending one row per tick; a CHANGED one does not.
+    #[test]
+    fn reconcile_runs_observation_versions_by_projection_content() {
+        let steady = ObservedSource::new(
+            SourceAdapterKind::Reconciler,
+            "console",
+            RECONCILE_RUNS_DRY_RUN_JSON,
+        );
+        let cleared = ObservedSource::new(
+            SourceAdapterKind::Reconciler,
+            "console",
+            r#"{"dry_run": true, "factories_surveyed": 2, "reconciled": []}"#,
+        );
+
+        let first = ok_parsed_observation(parse_reconcile_runs_observation(&steady));
+        let again = ok_parsed_observation(parse_reconcile_runs_observation(&steady));
+        let after_clear = ok_parsed_observation(parse_reconcile_runs_observation(&cleared));
+
+        assert_eq!(
+            first.events[0].source_event_id(),
+            again.events[0].source_event_id()
+        );
+        check(
+            first.events[0].source_event_id() != after_clear.events[0].source_event_id(),
+            "a cleared projection must not dedupe against the orphaned one",
+        );
+    }
+
+    /// A misleading envelope is a REFUSAL at the adapter boundary too, so the
+    /// adapter records an honest not-observed finding instead of an empty lane
+    /// that reads as "every factory is clean".
+    #[test]
+    fn parse_reconcile_runs_observation_refuses_a_wired_pass() {
+        let wired = RECONCILE_RUNS_DRY_RUN_JSON.replace("\"dry_run\": true", "\"dry_run\": false");
+        let observed = ObservedSource::new(SourceAdapterKind::Reconciler, "console", &wired);
+
+        check(
+            parse_reconcile_runs_observation(&observed)
+                .is_err_and(|reason| reason.contains("is not a --dry-run projection")),
+            "a wired pass must be refused at the adapter boundary",
+        );
+    }
+
+    /// The persisted payload carries the SKIP reasons too. A record the parse
+    /// could not read is a slot the reconciler saw and the console could not
+    /// show; losing it at the store boundary would make a replayed lane read
+    /// as complete while it is short a row nobody can account for.
+    #[test]
+    fn the_persisted_projection_keeps_the_records_the_parse_could_not_read() {
+        let mixed = RECONCILE_RUNS_DRY_RUN_JSON
+            .replace("\"status_kind\": \"queued\"", "\"status_kind\": 7");
+        let snapshot = ok_reconcile_snapshot(parse_reconcile_runs_snapshot(&mixed));
+        assert_eq!(snapshot.skipped().len(), 1);
+
+        let replayed = reconcile_runs_snapshot_from_payload_json(
+            &reconcile_runs_snapshot_payload_json(&snapshot),
+        );
+
+        assert_eq!(replayed, Some(snapshot.clone()));
+        assert_eq!(
+            replayed.map(|read_back| read_back.skipped().to_vec()),
+            Some(snapshot.skipped().to_vec())
+        );
+    }
+
+    /// A payload written by some OTHER event type must not replay as an orphan
+    /// set; the lane would then render rows nothing ever reported.
+    #[test]
+    fn reconcile_runs_payload_reader_rejects_a_foreign_payload() {
+        assert_eq!(reconcile_runs_snapshot_from_payload_json("{}"), None);
+        assert_eq!(reconcile_runs_snapshot_from_payload_json("not json"), None);
+    }
+
+    /// An unreported status kind keeps the ROW and resolves to the neutral
+    /// unknown state. Dropping the record would hide an orphan over a field
+    /// that classifies nothing, and naming any real kind -- above all a human
+    /// gate -- would assert a state the console never observed.
+    #[test]
+    fn an_unreported_status_kind_is_neutral_rather_than_a_dropped_row_or_a_gate() {
+        let kindless = RECONCILE_RUNS_DRY_RUN_JSON.replace("\"status_kind\": \"queued\",", "");
+        let snapshot = ok_reconcile_snapshot(parse_reconcile_runs_snapshot(&kindless));
+
+        assert_eq!(snapshot.orphaned_runs().len(), 2);
+        assert!(snapshot.skipped().is_empty());
+        let neutral = &snapshot.orphaned_runs()[1];
+        assert_eq!(neutral.status_kind(), "");
+        assert_eq!(neutral.run_state().label(), UNKNOWN_STATUS_KIND);
+        assert!(!neutral.run_state().is_running());
+        // A kind the console has never seen is carried through verbatim rather
+        // than folded into the vocabulary it happens to know.
+        assert_eq!(
+            snapshot.orphaned_runs()[0].run_state().label(),
+            snapshot.orphaned_runs()[0].status_kind()
+        );
     }
 
     #[test]

@@ -1277,8 +1277,13 @@
   {
     "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance test should drive a work-item resting at blocked / needs-human through the console: the attention projection's resolve-blocked valve and rework route render, no attach command is offered, the run id and factory come from dispatch_fabro_run_id / dispatch_factory metadata, the orphaned-factory-runs lane is fed by the orchestrator's reconcile-runs dry-run projection, the Fabro adapter reads status kinds instead of hardcoding a human-gate state, and the bundled workflow fork carries no in-loop escalate gate. Registered pending at ratification time (v046); the implementation item is livespec-console-beads-fabro-h7jp (the orchestrator's cross-tenant ASK) plus the reviewed re-fork of .fabro owned by plan retire-overseer-and-redesign-control-plane-around-console.",
+    "tests": [
+      "crates/console-cli/src/lib.rs::tests::reconcile_runs_adapter_feeds_the_orphaned_runs_lane_end_to_end",
+      "crates/console-application/src/lib.rs::tests::build_tui_model_feeds_the_orphaned_runs_lane_from_the_latest_projection",
+      "crates/console-tui/src/lib.rs::tests::render_to_text_draws_the_orphaned_factory_runs_lane",
+      "crates/console-application/src/source_adapters.rs::tests::parse_fabro_emits_the_runs_own_terminal_status_kind"
+    ],
+    "reason": "The orphaned-factory-runs lane clause is covered end to end: reconcile_runs_adapter_feeds_the_orphaned_runs_lane_end_to_end drives the production path (the argv live_source_adapters_with_programs builds for dispatcher.py reconcile-runs --dry-run --json, through run_adapter_poll and the event store, out to the rendered lane); build_tui_model_feeds_the_orphaned_runs_lane_from_the_latest_projection covers the model slot the adapter feeds, replacing the hardcoded empty vector; render_to_text_draws_the_orphaned_factory_runs_lane covers the rendered row carrying run id, factory, status kind, work-item id, work-item status, orphan reason, and termination route. parse_fabro_emits_the_runs_own_terminal_status_kind covers the sibling clause that the Fabro adapter reads a run's status kind instead of synthesizing a human gate. The bundled-workflow-fork clause is enforced mechanically rather than by a Rust test: check-fork-drift over .fabro/workflows/implement-work-item/workflow.toml.",
     "clauses": [
       {
         "gap_id": "gap-d6pnkxbs",

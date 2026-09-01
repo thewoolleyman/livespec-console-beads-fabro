@@ -17,7 +17,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use console_application::source_adapters::Lane;
+use console_application::source_adapters::{Lane, OrphanedFactoryRun};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
     HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus, LaneWorkItem,
@@ -1488,6 +1488,7 @@ fn render_lane_overview(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer)
             items.push(ListItem::new(Line::from(lane_item_summary(item))));
         }
     }
+    items.extend(orphaned_factory_runs_lane_rows(model));
     let count = items.len();
     let title = focus_title("Lanes", content_focused(model));
     let list = List::new(items).block(Block::new().borders(Borders::ALL).title(title));
@@ -1550,6 +1551,64 @@ fn lane_item_line(item: &LaneWorkItem, selected: bool) -> ListItem<'static> {
     } else {
         Style::new()
     })
+}
+
+/// The orphaned-factory-runs lane's header label.
+const ORPHANED_RUNS_LANE_LABEL: &str = "orphaned factory runs";
+
+/// The orphaned-factory-runs lane, rendered below the seven lifecycle lanes on
+/// the lane-overview home.
+///
+/// It sits with the lanes rather than in a view of its own because it answers
+/// the same operator question they do -- what is holding a slot -- and every
+/// row is EXPANDED rather than previewed: unlike a lifecycle lane, whose top
+/// items are a sample of a list the operator can drill into, an orphaned run
+/// the console renders three of and silently drops the rest is a slot nobody
+/// is watching. The count header renders even at zero, so "no orphans" is a
+/// stated fact rather than a missing section.
+fn orphaned_factory_runs_lane_rows(model: &TuiScreenModel) -> Vec<ListItem<'static>> {
+    let runs = model.orphaned_factory_runs();
+    let mut rows = vec![ListItem::new(Line::from(format!(
+        "  {ORPHANED_RUNS_LANE_LABEL} ({})",
+        runs.len()
+    )))];
+    rows.extend(
+        runs.iter()
+            .map(|run| ListItem::new(Line::from(orphaned_run_summary(run)))),
+    );
+    rows
+}
+
+/// One orphaned-run row, carrying every field the reconciler's projection
+/// reports and nothing the console decided: run id, factory, status kind,
+/// work-item id and status, orphan reason, and the remedy the orchestrator
+/// prescribes under its own name.
+fn orphaned_run_summary(run: &OrphanedFactoryRun) -> String {
+    format!(
+        "    - {} on {} [{}]  {}{}  ({})  remedy {}",
+        run.run_id(),
+        run.factory_name(),
+        // `run_state` resolves an unreported kind to the neutral `unknown`
+        // rather than to any real kind -- and never to a gate.
+        run.run_state().label(),
+        run.work_item_id(),
+        orphaned_run_work_item_status_suffix(run),
+        run.orphan_reason(),
+        run.termination_route()
+    )
+}
+
+/// The ` [status]` suffix for an orphaned run's work-item, or empty when the
+/// ledger holds no such item.
+///
+/// Absent stays absent. The `item-missing` orphan reason means the work-item is
+/// not in the ledger at all, so it HAS no status; rendering a placeholder in the
+/// status position would show the operator a status the ledger never held, and
+/// the reason field beside it already says why the slot is empty.
+fn orphaned_run_work_item_status_suffix(run: &OrphanedFactoryRun) -> String {
+    run.work_item_status()
+        .map(|status| format!(" [{status}]"))
+        .unwrap_or_default()
 }
 
 /// A compact overview-line for one work-item: id, status, title, and (when
@@ -3063,7 +3122,8 @@ mod tests {
     use console_application::source_adapters::{
         AcceptancePolicy, AdapterResult, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane,
-        attention_item_payload_json, dispatcher_journal_payload_json,
+        OrphanedFactoryRun, ReconcileRunsSnapshot, attention_item_payload_json,
+        dispatcher_journal_payload_json, reconcile_runs_snapshot_payload_json,
     };
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
@@ -3081,16 +3141,17 @@ mod tests {
     use ratatui::text::Line;
 
     use super::{
-        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
-        TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
-        TuiTerminalInput, action_available_for_model, action_outcome_effect, attention_item_line,
-        buffer_to_text, command_explainer_confirm_step, command_explainer_lines,
-        command_explanation_for_action, detail_lines, effect_triggers_source_poll,
-        full_width_explainer_rect, global_help_lines, help_lines_for_view, help_outcome,
-        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
-        registry_staging_explanation, render_command_explainer, render_command_modal,
-        render_detail, render_menu_overlay, render_model, render_summary_detail, render_to_text,
-        render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
+        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, LANE_OVERVIEW_PREVIEW, TuiLiveSession,
+        TuiRenderError, TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink,
+        TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_available_for_model,
+        action_outcome_effect, attention_item_line, buffer_to_text, command_explainer_confirm_step,
+        command_explainer_lines, command_explanation_for_action, detail_lines,
+        effect_triggers_source_poll, full_width_explainer_rect, global_help_lines,
+        help_lines_for_view, help_outcome, key_event_to_terminal_input, menu_confirm_step,
+        registry_action_input, registry_staging_explanation, render_command_explainer,
+        render_command_modal, render_detail, render_menu_overlay, render_model,
+        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
+        staged_action_step, step_tui_runtime,
     };
 
     macro_rules! assert {
@@ -4835,6 +4896,150 @@ mod tests {
             output.as_ref().map(|r| {
                 r.contains("console-ready-b  rank a1  [ready]  Wire the status valve")
             }),
+            Ok(true)
+        );
+    }
+
+    /// One `factory.run_orphans_observed` event, exactly as the reconciler
+    /// source adapter writes it, carrying two orphaned runs: one whose
+    /// work-item is merely inactive, and one whose work-item has left the
+    /// ledger entirely and whose factory reported no status kind.
+    fn orphan_projection_event() -> ConsoleEvent {
+        let snapshot = ReconcileRunsSnapshot::new(
+            vec![
+                OrphanedFactoryRun::new(
+                    "01M1ES066RHS8Y39B9WJW8WC8Q",
+                    "hp",
+                    "running",
+                    "livespec-console-beads-fabro-h7jp",
+                    Some("blocked"),
+                    "item-not-active",
+                    "none",
+                ),
+                OrphanedFactoryRun::new(
+                    "01M1F34G6NY83A6Y24DJQCGDHQ",
+                    "local",
+                    "",
+                    "livespec-console-beads-fabro-gone",
+                    None,
+                    "item-missing",
+                    "export-then-terminate",
+                ),
+            ],
+            Vec::new(),
+        );
+        ConsoleEvent::new(
+            "evt_orphans".to_owned(),
+            1,
+            "console".to_owned(),
+            EventType::FactoryRunOrphansObserved,
+            "reconcile-runs".to_owned(),
+            "reconcile_runs:console".to_owned(),
+            1,
+        )
+        .with_payload_json(reconcile_runs_snapshot_payload_json(&snapshot))
+    }
+
+    /// Every field of the reconciler's projection reaches the operator: run id,
+    /// factory, status kind, work-item id and status, orphan reason, and the
+    /// remedy the orchestrator prescribes.
+    #[test]
+    fn render_to_text_draws_the_orphaned_factory_runs_lane() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&[orphan_projection_event()], &state);
+
+        let output = render_to_text(&model, 200, 32);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("orphaned factory runs (2)")),
+            Ok(true)
+        );
+        assert_eq!(
+            output.as_ref().map(|r| r.contains(
+                "- 01M1ES066RHS8Y39B9WJW8WC8Q on hp [running]  \
+                 livespec-console-beads-fabro-h7jp [blocked]  (item-not-active)  remedy none"
+            )),
+            Ok(true)
+        );
+        // The work-item left the ledger, so it HAS no status: absent stays
+        // absent rather than being collapsed to a placeholder the ledger never
+        // held. The factory reported no status kind, which resolves to the
+        // NEUTRAL `unknown` -- never to a synthesized human gate.
+        assert_eq!(
+            output.as_ref().map(|r| r.contains(
+                "- 01M1F34G6NY83A6Y24DJQCGDHQ on local [unknown]  \
+                 livespec-console-beads-fabro-gone  (item-missing)  remedy export-then-terminate"
+            )),
+            Ok(true)
+        );
+    }
+
+    /// Every row is rendered, not a preview: unlike a lifecycle lane, whose top
+    /// items sample a list the operator can drill into, an orphan silently
+    /// dropped past the preview cap is a slot nobody is watching.
+    #[test]
+    fn the_orphaned_runs_lane_renders_every_row_rather_than_a_preview() {
+        let runs = (0..LANE_OVERVIEW_PREVIEW + 2)
+            .map(|index| {
+                OrphanedFactoryRun::new(
+                    &format!("01M1RUN{index}"),
+                    "hp",
+                    "running",
+                    &format!("console-orphan-{index}"),
+                    Some("blocked"),
+                    "superseded-run",
+                    "none",
+                )
+            })
+            .collect();
+        let event = ConsoleEvent::new(
+            "evt_orphans".to_owned(),
+            1,
+            "console".to_owned(),
+            EventType::FactoryRunOrphansObserved,
+            "reconcile-runs".to_owned(),
+            "reconcile_runs:console".to_owned(),
+            1,
+        )
+        .with_payload_json(reconcile_runs_snapshot_payload_json(
+            &ReconcileRunsSnapshot::new(runs, Vec::new()),
+        ));
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&[event], &state);
+
+        let output = render_to_text(&model, 200, 40);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("orphaned factory runs (5)")),
+            Ok(true)
+        );
+        for index in 0..LANE_OVERVIEW_PREVIEW + 2 {
+            assert_eq!(
+                output
+                    .as_ref()
+                    .map(|r| r.contains(&format!("- 01M1RUN{index} on hp"))),
+                Ok(true)
+            );
+        }
+    }
+
+    /// A clean board still STATES that it is clean. A section that vanished at
+    /// zero would be indistinguishable from one the console forgot to render.
+    #[test]
+    fn the_orphaned_runs_lane_states_an_empty_projection() {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+
+        let output = render_to_text(&model, 200, 32);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("orphaned factory runs (0)")),
             Ok(true)
         );
     }
