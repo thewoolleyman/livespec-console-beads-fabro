@@ -59,7 +59,8 @@
     "livespec-orchestrator-beads-fabro": [
       "SPECIFICATION/contracts.md §\"Dispatcher loop invocation surface\"",
       "SPECIFICATION/contracts.md §\"Fail-closed cost gate (keyed on `--item` presence)\"",
-      "SPECIFICATION/contracts.md §\"The skill surface\""
+      "SPECIFICATION/contracts.md §\"The skill surface\"",
+      "SPECIFICATION/contracts.md §\"A factory run never awaits a human\""
     ]
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
