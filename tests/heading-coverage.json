@@ -1277,8 +1277,8 @@
   {
     "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance test should drive a work-item resting at blocked / needs-human through the console: the attention projection's resolve-blocked valve and rework route render, no attach command is offered, the run id and factory come from dispatch_fabro_run_id / dispatch_factory metadata, the orphaned-factory-runs lane is fed by the orchestrator's reconcile-runs dry-run projection, the Fabro adapter reads status kinds instead of hardcoding a human-gate state, and the bundled workflow fork carries no in-loop escalate gate. Registered pending at ratification time (v046); the implementation item is livespec-console-beads-fabro-h7jp (the orchestrator's cross-tenant ASK) plus the reviewed re-fork of .fabro owned by plan retire-overseer-and-redesign-control-plane-around-console.",
+    "test": "crates/console-cli/tests/scenario_30_needs_human_ledger_valve.rs",
+    "reason": "Six of seven gap IDs covered by livespec-console-beads-fabro-h7jp (gap-d6pnkxbs, gap-3u467mzw, gap-yhqrzmia, gap-7omomfch, gap-5w5tehmy, gap-jzwqyqk6): no attach command for needs-human items; run id from dispatch_fabro_run_id metadata; Fabro adapter reads actual status_kind; orphaned-factory-runs lane from reconcile-runs projection; gate events do not populate orphaned-runs list; dispatch_factory survives event payload round-trip. gap-l6iyo4ws (bundled workflow fork carries no in-loop escalate gate) remains pending — owned by the .fabro re-fork under plan retire-overseer-and-redesign-control-plane-around-console.",
     "clauses": [
       {
         "gap_id": "gap-d6pnkxbs",
