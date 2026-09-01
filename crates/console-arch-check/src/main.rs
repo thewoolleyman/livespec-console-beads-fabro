@@ -56,6 +56,10 @@ const SOURCE_RULE_EXCLUDED_CRATES: &[CrateSourceRuleExclusion] = &[
         reason: "repository guardrail tooling, not console product code",
     },
     CrateSourceRuleExclusion {
+        name: "console-nightly-soak",
+        reason: "nightly quality-gate tooling (fuzz soak + mutation sweep + chore filing), not console product code",
+    },
+    CrateSourceRuleExclusion {
         name: "console-red-green-replay-check",
         reason: "commit discipline checker tooling, not console product code",
     },
@@ -2587,6 +2591,7 @@ mod tests {
             "console-domain",
             "console-eventstore",
             "console-fork-drift-check",
+            "console-nightly-soak",
             "console-red-green-replay-check",
             "console-spec-check",
             "console-tui",
@@ -2608,6 +2613,7 @@ mod tests {
             "console-domain",
             "console-eventstore",
             "console-fork-drift-check",
+            "console-nightly-soak",
             "console-red-green-replay-check",
             "console-spec-check",
             "console-tui",

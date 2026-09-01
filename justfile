@@ -621,3 +621,83 @@ ensure-fuzz-tooling:
 
 ensure-mutants-tooling:
     ./dev-tooling/ensure-rust-quality-tools.sh mutants
+
+# Nightly soak (livespec-console-beads-fabro-547r5w). Runs the FULL fuzz soak
+# (longer per-target budget than the 60s merge-gate floor) plus a FULL
+# cargo-mutants sweep over the logic crates. For each finding a stable
+# signature is computed; a top-of-rank chore is filed through the orchestrator
+# capture surface ONLY when no non-closed chore carrying that signature already
+# exists. A nightly finding NEVER fails master — this recipe always exits 0.
+#
+# Run under the 1Password environment wrapper so BEADS_DOLT_PASSWORD is
+# injected; see AGENTS.md §"Beads runtime prerequisites". The binary reads a
+# JSON findings file produced here and processes each finding idempotently.
+#
+# DELIBERATELY ABSENT from the `just check` aggregate: fuzz and mutation runs
+# are too slow for the inner loop. The GitHub Actions workflow
+# .github/workflows/nightly-soak.yml (maintainer-side file) schedules this
+# recipe on the canonical branch nightly.
+#
+# errexit is deliberately omitted; fuzz and mutant steps are guarded directly
+# so ALL findings are collected before filing, and a tooling hiccup in one
+# target does not abort the sweep of the others.
+nightly-soak:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    just ensure-fuzz-tooling || exit $?
+    just ensure-mutants-tooling || exit $?
+    fuzz_json="$(mktemp --suffix=.json)"
+    mutants_json="$(mktemp --suffix=.json)"
+    findings_file="$(mktemp --suffix=.json)"
+    trap 'rm -f "$fuzz_json" "$mutants_json" "$findings_file"' EXIT
+    echo "[]" > "$fuzz_json"
+    echo "[]" > "$mutants_json"
+
+    # --- Full fuzz soak (budget longer than the 60s merge-gate floor) ---
+    echo "=== nightly-soak: fuzz soak (300s per target) ==="
+    for target in event_envelope adapter_normalization source_payload; do
+      mkdir -p "fuzz/corpus/${target}"
+      echo "=== nightly-soak: fuzz ${target} ==="
+      if ! cargo +nightly fuzz run "${target}" \
+          "fuzz/corpus/${target}" "fuzz/regressions/${target}" \
+          -- -max_total_time=300 2>/dev/null; then
+        echo "nightly-soak: crash in fuzz target ${target}"
+        for artifact in fuzz/artifacts/"${target}"/crash-* \
+                        fuzz/artifacts/"${target}"/oom-* \
+                        fuzz/artifacts/"${target}"/timeout-*; do
+          [ -f "$artifact" ] || continue
+          tgt_json="$(printf '%s' "${target}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+          art_json="$(printf '%s' "${artifact}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+          entry="{\"type\":\"fuzz_crash\",\"target\":${tgt_json},\"artifact_path\":${art_json}}"
+          python3 -c 'import json,sys; d=json.loads(open(sys.argv[1]).read()); d.append(json.loads(sys.argv[2])); open(sys.argv[1],"w").write(json.dumps(d))' "$fuzz_json" "$entry"
+        done
+      fi
+    done
+
+    # --- Full cargo mutants sweep over logic crates ---
+    echo "=== nightly-soak: full cargo mutants sweep ==="
+    while IFS= read -r mutant_line; do
+      if [[ "$mutant_line" =~ ^MISSED[[:space:]]+([^:]+):([0-9]+):[0-9]+:[[:space:]]+(.*) ]]; then
+        src_file="${BASH_REMATCH[1]}"
+        src_line="${BASH_REMATCH[2]}"
+        mutation_op="${BASH_REMATCH[3]}"
+        sf_json="$(printf '%s' "${src_file}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+        op_json="$(printf '%s' "${mutation_op}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+        entry="{\"type\":\"surviving_mutant\",\"source_file\":${sf_json},\"line\":${src_line},\"mutation_operator\":${op_json}}"
+        python3 -c 'import json,sys; d=json.loads(open(sys.argv[1]).read()); d.append(json.loads(sys.argv[2])); open(sys.argv[1],"w").write(json.dumps(d))' "$mutants_json" "$entry"
+      fi
+    done < <(cargo mutants --package console-domain --package console-application \
+        --test-tool nextest 2>/dev/null || true)
+
+    # --- Merge findings and process idempotently ---
+    python3 -c 'import json,sys; a=json.loads(open(sys.argv[1]).read()); b=json.loads(open(sys.argv[2]).read()); open(sys.argv[3],"w").write(json.dumps(a+b))' "$fuzz_json" "$mutants_json" "$findings_file"
+    finding_count="$(python3 -c 'import json,sys; print(len(json.loads(open(sys.argv[1]).read())))' "$findings_file")"
+    echo "=== nightly-soak: ${finding_count} finding(s) to process ==="
+
+    if [ "$finding_count" -gt 0 ]; then
+      cargo build --release --package console-nightly-soak || exit $?
+      /data/projects/1password-env-wrapper/with-livespec-env.sh -- \
+        ./target/release/console-nightly-soak "$findings_file" || true
+    fi
+
+    echo "=== nightly-soak: complete (exit 0 regardless of findings) ==="
