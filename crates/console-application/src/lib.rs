@@ -35,7 +35,8 @@ use source_adapters::{
     OrphanedFactoryRun, SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail,
     WorkItemSnapshot, attention_item_snapshot_from_payload_json,
     dispatcher_journal_from_payload_json, fabro_run_snapshot_from_payload_json,
-    materialize_attention_items, work_item_snapshot_from_payload_json,
+    materialize_attention_items, reconcile_runs_snapshot_from_payload_json,
+    work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1696,15 +1697,10 @@ impl TuiScreenModel {
     /// dry-run projection reports as holding a scheduler slot for work the
     /// ledger says nothing is waiting on.
     ///
-    /// EMPTY in production today, and empty deliberately rather than by
-    /// oversight: this slot and its parser
-    /// ([`parse_reconcile_runs_snapshot`]) are the data layer, and the source
-    /// adapter that runs `reconcile-runs --dry-run --json` plus the lane's
-    /// rendering are `livespec-console-beads-fabro-suleji`. Until that lands,
-    /// `tests/heading-coverage.json` keeps Scenario 30's lane clause registered
-    /// as pending — the lane is NOT claimed as delivered by this slot existing.
-    ///
-    /// [`parse_reconcile_runs_snapshot`]: source_adapters::parse_reconcile_runs_snapshot
+    /// Fed from the LATEST observed projection
+    /// ([`project_orphaned_factory_runs`]), never re-derived here: the console
+    /// consumes the reconciler's orphan rule as data so the lane cannot
+    /// disagree with the remedy command it prints beside each row.
     pub fn orphaned_factory_runs(&self) -> &[OrphanedFactoryRun] {
         &self.orphaned_factory_runs
     }
@@ -3684,12 +3680,32 @@ pub fn build_tui_model_for_state(
         unavailable_sources,
         factory_activity,
         transient_status: state.transient_status.clone(),
-        // The lane's production feed is livespec-console-beads-fabro-suleji: no
-        // `SourceAdapterKind` runs `reconcile-runs --dry-run --json` yet, so the
-        // honest projection here is EMPTY rather than a synthesized set. See
-        // `TuiScreenModel::orphaned_factory_runs`.
-        orphaned_factory_runs: Vec::new(),
+        orphaned_factory_runs: project_orphaned_factory_runs(events),
     }
+}
+
+#[must_use]
+/// Project the orphaned-factory-runs lane from the console's own event stream.
+///
+/// The LATEST `factory.run_orphans_observed` event wins outright and earlier
+/// ones are discarded: each carries a whole reconciler projection, and a run
+/// that has stopped being orphaned simply leaves the newer set. Folding the
+/// events together instead would keep rendering an orphan the orchestrator no
+/// longer claims — the lane would accumulate rather than track.
+///
+/// No event at all yields an EMPTY lane. That is honest here rather than a
+/// clean-factory claim: the adapter records an unreadable or unreachable
+/// reconciler as a `source.not_observed_finding_observed`, which the header's
+/// source-availability tally surfaces, so "no orphans" and "not observed" stay
+/// distinguishable to the operator.
+pub fn project_orphaned_factory_runs(events: &[ConsoleEvent]) -> Vec<OrphanedFactoryRun> {
+    events
+        .iter()
+        .filter(|event| *event.event_type() == EventType::FactoryRunOrphansObserved)
+        .filter_map(|event| reconcile_runs_snapshot_from_payload_json(event.payload_json()))
+        .next_back()
+        .map(|snapshot| snapshot.orphaned_runs().to_vec())
+        .unwrap_or_default()
 }
 
 fn selected_lane_item_for_state(
@@ -5113,6 +5129,7 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::DispatcherJournalProgressObserved
         | EventType::DispatcherRefusalObserved
         | EventType::FabroRunObserved
+        | EventType::FactoryRunOrphansObserved
         | EventType::GithubPullRequestSnapshotObserved
         | EventType::LivespecNextSnapshotObserved
         | EventType::LivespecReviseRequired
@@ -7804,6 +7821,7 @@ impl AttentionEvent for EventType {
             Self::AttentionItemAppeared => "Attention item appeared",
             Self::AttentionItemChanged => "Attention item changed",
             Self::AttentionItemResolved => "Attention item resolved",
+            Self::FactoryRunOrphansObserved => "Factory run orphans observed",
             Self::ConfigDispatcherSettingChanged => "Dispatcher setting changed",
             Self::ConfigDispatcherSettingNotWired => "Dispatcher setting not wired",
         }
@@ -7850,10 +7868,11 @@ mod tests {
         handle_work_item_set_workflow_scope_override_command, header_help_section,
         help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
         per_item_verb_is_state_valid, plan_page_url, project_action_failures, project_attention,
-        project_lane_board, project_plan_page, reduce_tui_interaction, render_plan_page_html,
-        resolve_command_palette_action, resolve_dispatcher_setting_edit, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
-        validate_operator_action, work_item_failure_event, work_item_override_outcome,
+        project_lane_board, project_orphaned_factory_runs, project_plan_page,
+        reduce_tui_interaction, render_plan_page_html, resolve_command_palette_action,
+        resolve_dispatcher_setting_edit, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
+        work_item_failure_event, work_item_override_outcome,
     };
 
     #[track_caller]
@@ -8567,10 +8586,9 @@ mod tests {
         assert_eq!(model.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
         assert_eq!(registry_attention_actions_for_model(&model), []);
-        // The orphaned-factory-runs lane is EMPTY until its production feed
-        // lands (livespec-console-beads-fabro-suleji): no source adapter runs
-        // `reconcile-runs --dry-run --json` yet, and an empty lane is the honest
-        // projection of a source nothing has read.
+        // This fixture carries no reconciler observation, so the
+        // orphaned-factory-runs lane is EMPTY -- the honest projection of a
+        // source nothing has read this session.
         assert_eq!(model.orphaned_factory_runs(), []);
         assert_eq!(
             model.header(),
@@ -9900,9 +9918,9 @@ mod tests {
         // Kills the mutant `replace TuiScreenModel::orphaned_factory_runs ->
         // &[OrphanedFactoryRun] with Vec::leak(Vec::new())` (cargo-mutants,
         // PR #923 check-mutants): every other test asserts the slot EMPTY,
-        // which an always-empty getter also satisfies. The populated slot is
-        // what livespec-console-beads-fabro-suleji's production feed will rely
-        // on, so the getter must return what was stored, not a constant.
+        // which an always-empty getter also satisfies. The production feed
+        // relies on the populated slot, so the getter must return what was
+        // stored, not a constant.
         let run = super::source_adapters::OrphanedFactoryRun::new(
             "01M1RUN",
             "hp",
@@ -9941,6 +9959,102 @@ mod tests {
         };
 
         assert_eq!(model.orphaned_factory_runs(), [run]);
+    }
+
+    /// Build one `factory.run_orphans_observed` event carrying `runs`, exactly
+    /// as the reconciler source adapter writes it.
+    fn orphan_projection_event(
+        event_id: &str,
+        stream_seq: u64,
+        runs: Vec<super::source_adapters::OrphanedFactoryRun>,
+    ) -> ConsoleEvent {
+        ConsoleEvent::new(
+            event_id.to_owned(),
+            1,
+            "console".to_owned(),
+            EventType::FactoryRunOrphansObserved,
+            "reconcile-runs".to_owned(),
+            "reconcile_runs:console".to_owned(),
+            stream_seq,
+        )
+        .with_payload_json(
+            super::source_adapters::reconcile_runs_snapshot_payload_json(
+                &super::source_adapters::ReconcileRunsSnapshot::new(runs, Vec::new()),
+            ),
+        )
+    }
+
+    fn orphan_run_fixture(run_id: &str) -> super::source_adapters::OrphanedFactoryRun {
+        super::source_adapters::OrphanedFactoryRun::new(
+            run_id,
+            "hp",
+            "running",
+            "livespec-console-beads-fabro-h7jp",
+            Some("blocked"),
+            "item-not-active",
+            "none",
+        )
+    }
+
+    /// The model's lane is FED from the event stream rather than hardcoded
+    /// empty, and the LATEST projection wins outright.
+    #[test]
+    fn build_tui_model_feeds_the_orphaned_runs_lane_from_the_latest_projection() {
+        let stale =
+            orphan_projection_event("evt-orphans-1", 1, vec![orphan_run_fixture("01M1OLD")]);
+        let fresh =
+            orphan_projection_event("evt-orphans-2", 2, vec![orphan_run_fixture("01M1NEW")]);
+        let interaction = TuiInteractionState::new(0, TuiOverlay::None);
+
+        let model = build_tui_model_for_state(&[stale, fresh], &interaction);
+
+        assert_eq!(
+            model.orphaned_factory_runs(),
+            [orphan_run_fixture("01M1NEW")]
+        );
+    }
+
+    /// A projection that reports NO orphan replaces the previous one rather
+    /// than folding into it. Accumulating instead would keep rendering an
+    /// orphan the orchestrator no longer claims, and the operator would run a
+    /// remedy that finds nothing.
+    #[test]
+    fn a_cleared_projection_empties_the_orphaned_runs_lane() {
+        let orphaned =
+            orphan_projection_event("evt-orphans-1", 1, vec![orphan_run_fixture("01M1OLD")]);
+        let cleared = orphan_projection_event("evt-orphans-2", 2, Vec::new());
+
+        assert_eq!(project_orphaned_factory_runs(&[orphaned, cleared]), []);
+    }
+
+    /// Events of every other type are invisible to this projection, and a
+    /// corrupt payload on the right event type is skipped rather than replayed
+    /// as an empty lane.
+    #[test]
+    fn the_orphaned_runs_projection_reads_only_readable_reconciler_events() {
+        let unrelated = ConsoleEvent::fixture("evt-other", EventType::FabroRunObserved, "fabro");
+        let corrupt = ConsoleEvent::new(
+            "evt-orphans-corrupt".to_owned(),
+            1,
+            "console".to_owned(),
+            EventType::FactoryRunOrphansObserved,
+            "reconcile-runs".to_owned(),
+            "reconcile_runs:console".to_owned(),
+            9,
+        )
+        .with_payload_json("{}".to_owned());
+        let readable =
+            orphan_projection_event("evt-orphans-1", 1, vec![orphan_run_fixture("01M1RUN")]);
+
+        assert_eq!(project_orphaned_factory_runs(&[]), []);
+        assert_eq!(
+            project_orphaned_factory_runs(std::slice::from_ref(&unrelated)),
+            []
+        );
+        assert_eq!(
+            project_orphaned_factory_runs(&[readable, corrupt, unrelated]),
+            [orphan_run_fixture("01M1RUN")]
+        );
     }
 
     #[test]
@@ -12970,6 +13084,17 @@ mod tests {
         assert_eq!(
             EventType::ConfigDispatcherSettingNotWired.label(),
             "Dispatcher setting not wired"
+        );
+    }
+
+    /// The Events timeline renders event LABELS, so a reconciler observation
+    /// the operator can see in the lane must also be nameable in the timeline
+    /// that records where it came from.
+    #[test]
+    fn the_reconciler_projection_event_carries_a_timeline_label() {
+        assert_eq!(
+            EventType::FactoryRunOrphansObserved.label(),
+            "Factory run orphans observed"
         );
     }
 
