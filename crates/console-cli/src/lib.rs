@@ -46,8 +46,9 @@ use console_application::{
         AdapterError, AdapterIngestionSummary, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
         NormalizeObservation, NormalizedSourceEvent, ObservedSourceAdapter, PullSourcePort,
-        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
-        SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
+        ReconcileRunsReadOutcome, ReconcileRunsSnapshotPort, SourceAdapterKind,
+        SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan, SourcePayload,
+        SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
         diff_needs_attention, dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
         materialize_attention_items, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
@@ -1294,6 +1295,68 @@ pub fn ingest_needs_attention(
         }
     }
     Ok(inserted)
+}
+
+/// Wrapper for the reconcile-runs snapshot port and repo, passed through the
+/// ingest sequence.
+pub struct ReconcileRunsIngest<'a> {
+    port: &'a dyn ReconcileRunsSnapshotPort,
+    repo: String,
+}
+
+impl<'a> ReconcileRunsIngest<'a> {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub fn new(port: &'a dyn ReconcileRunsSnapshotPort, repo: &str) -> Self {
+        Self {
+            port,
+            repo: repo.to_owned(),
+        }
+    }
+}
+
+/// Ingest the orchestrator's reconcile-runs snapshot by calling the port and
+/// appending a `ReconcileRunsSnapshotObserved` event carrying the raw JSON.
+///
+/// The model reads the latest such event each frame to populate the
+/// orphaned-factory-runs lane. An unavailable port appends nothing — a failed
+/// read must NOT clear the existing lane.
+pub fn ingest_reconcile_runs(
+    store: &mut dyn FactoryCommandStore,
+    reconcile_runs: &ReconcileRunsIngest<'_>,
+    observed_at: &str,
+) -> ConsoleRuntimeResult<usize> {
+    let json = match reconcile_runs.port.read_snapshot() {
+        ReconcileRunsReadOutcome::Observed(json) => json,
+        ReconcileRunsReadOutcome::Unavailable(_reason) => return Ok(0),
+    };
+    let event_id = format!("reconcile-runs:{}:{}", reconcile_runs.repo, observed_at);
+    let stream_id = format!("reconcile-runs:{}", reconcile_runs.repo);
+    let event = ConsoleEvent::new(
+        event_id.clone(),
+        1,
+        "factory".to_owned(),
+        EventType::ReconcileRunsSnapshotObserved,
+        "orchestrator".to_owned(),
+        stream_id.clone(),
+        1,
+    );
+    let append = EventAppend::new(
+        event,
+        stream_id,
+        observed_at.to_owned(),
+        observed_at.to_owned(),
+        None,
+        format!("corr_{event_id}"),
+        None,
+        json,
+        "{}".to_owned(),
+    );
+    if store.append_event(&append)?.status() == AppendStatus::Inserted {
+        Ok(1)
+    } else {
+        Ok(0)
+    }
 }
 
 #[cfg(test)]
@@ -3066,9 +3129,10 @@ mod tests {
             AdapterPollRequest, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
             AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
             NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
-            NotObservedFinding, ObservedSourceAdapter, PullSourcePort, SourceAdapterKind,
-            SourceEventAppendPort, SourcePayload, SourceProbe, SourceProbeOutcome,
-            WorkItemSnapshot, diff_needs_attention, normalize_work_item_snapshot,
+            NotObservedFinding, ObservedSourceAdapter, PullSourcePort, ReconcileRunsReadOutcome,
+            ReconcileRunsSnapshotPort, SourceAdapterKind, SourceEventAppendPort, SourcePayload,
+            SourceProbe, SourceProbeOutcome, WorkItemSnapshot, diff_needs_attention,
+            normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -3087,8 +3151,8 @@ mod tests {
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
         InitialSourceSeed, LANE_FAILURE_MARKER, LaneStartupStage, NeedsAttentionIngest,
-        PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
-        STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
+        PendingCommandOutcome, PendingCommandRequester, PluginResolution, ReconcileRunsIngest,
+        ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
         SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
         TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
         append_factory_drain_requested_events, append_lane_diagnostic, backfill_demo_report,
@@ -3098,7 +3162,7 @@ mod tests {
         factory_command_from_stored, final_tui_events_result, handle_pending_config_commands,
         handle_pending_control_commands, handle_pending_factory_commands,
         handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
-        ingest_and_reflect, ingest_needs_attention, initial_source_seed,
+        ingest_and_reflect, ingest_needs_attention, ingest_reconcile_runs, initial_source_seed,
         is_failed_once_only_valve_retry, lane_diagnostics_path, lane_failures_in,
         lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
         live_source_adapters_from_resolution, load_tui_events_from_store, normalized_payload_json,
@@ -3185,6 +3249,30 @@ mod tests {
     /// factory commands but not the needs-attention stream.
     fn empty_needs_attention_port() -> ScriptedNeedsAttentionPort {
         ScriptedNeedsAttentionPort::observing(Vec::new())
+    }
+
+    struct ScriptedReconcileRunsPort {
+        outcome: ReconcileRunsReadOutcome,
+    }
+
+    impl ScriptedReconcileRunsPort {
+        fn observing(json: &str) -> Self {
+            Self {
+                outcome: ReconcileRunsReadOutcome::Observed(json.to_owned()),
+            }
+        }
+
+        fn unavailable(reason: &str) -> Self {
+            Self {
+                outcome: ReconcileRunsReadOutcome::Unavailable(reason.to_owned()),
+            }
+        }
+    }
+
+    impl ReconcileRunsSnapshotPort for ScriptedReconcileRunsPort {
+        fn read_snapshot(&self) -> ReconcileRunsReadOutcome {
+            self.outcome.clone()
+        }
     }
 
     fn duplicate_collision_append(
@@ -8541,6 +8629,10 @@ mod tests {
             "/custom/needs".to_owned(),
         );
         env.insert(
+            "LIVESPEC_CONSOLE_RECONCILE_RUNS_PROGRAM".to_owned(),
+            "/custom/reconcile-runs".to_owned(),
+        );
+        env.insert(
             "LIVESPEC_CONSOLE_GH_PROGRAM".to_owned(),
             "/custom/gh".to_owned(),
         );
@@ -8573,6 +8665,10 @@ mod tests {
         );
         check(
             (resolution.programs().needs_attention()) == ("/custom/needs"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().reconcile_runs()) == ("/custom/reconcile-runs"),
             "assert_eq failed",
         );
         check(
@@ -8631,6 +8727,11 @@ mod tests {
         check(
             (resolution.programs().needs_attention())
                 == (bin.join("needs_attention.py").display().to_string()),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().reconcile_runs())
+                == (bin.join("reconcile_runs.py").display().to_string()),
             "assert_eq failed",
         );
     }
@@ -11998,6 +12099,48 @@ mod tests {
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
         let outcome = ingest_needs_attention(&mut store, &needs_attention, "2026-07-11T00:00:01Z");
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn ingest_reconcile_runs_inserts_snapshot_event_when_observed() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let port = ScriptedReconcileRunsPort::observing("[]");
+        let ingest = ReconcileRunsIngest::new(&port, "livespec-console-beads-fabro");
+
+        check(
+            (ingest_reconcile_runs(&mut store, &ingest, "2026-09-01T00:00:00Z").ok_test()) == (1),
+            "assert_eq failed",
+        );
+        check(
+            (ingest_reconcile_runs(&mut store, &ingest, "2026-09-01T00:00:00Z").ok_test()) == (0),
+            "assert_eq failed (duplicate returns 0)",
+        );
+    }
+
+    #[test]
+    fn ingest_reconcile_runs_returns_zero_when_unavailable() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let port = ScriptedReconcileRunsPort::unavailable("reconcile-runs not installed");
+        let ingest = ReconcileRunsIngest::new(&port, "livespec-console-beads-fabro");
+
+        check(
+            (ingest_reconcile_runs(&mut store, &ingest, "2026-09-01T00:00:00Z").ok_test()) == (0),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn ingest_reconcile_runs_propagates_an_append_error() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::AppendCommand);
+        let port = ScriptedReconcileRunsPort::observing("[]");
+        let ingest = ReconcileRunsIngest::new(&port, "livespec-console-beads-fabro");
+
+        let outcome = ingest_reconcile_runs(&mut store, &ingest, "2026-09-01T00:00:00Z");
 
         check(
             format!("{outcome:?}").contains("InvalidSequence"),

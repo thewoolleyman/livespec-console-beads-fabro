@@ -24,7 +24,8 @@ use std::time::Duration;
 
 #[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
-    ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
+    ObservedSourceAdapter, ProbeNeedsAttentionPort, ProbeReconcileRunsPort, PullSourcePort,
+    SourceProbe, SourceProbeOutcome,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_application::{
@@ -40,9 +41,9 @@ use console_eventstore::{
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
     BackingCliResolution, ConsoleLane, ConsoleRuntimeError, LaneStartupStage, NeedsAttentionIngest,
-    PendingCommandRequester, SourceAdapterRef, SourcePollRequester, TuiSessionRunner,
-    append_lane_diagnostic, lane_diagnostics_path, lane_open_failure_line,
-    lane_startup_failure_line, resolve_console_invoker,
+    PendingCommandRequester, ReconcileRunsIngest, SourceAdapterRef, SourcePollRequester,
+    TuiSessionRunner, append_lane_diagnostic, ingest_reconcile_runs, lane_diagnostics_path,
+    lane_open_failure_line, lane_startup_failure_line, resolve_console_invoker,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -145,6 +146,13 @@ fn run_store_backed_command(
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    let reconcile_runs_port = ProbeReconcileRunsPort::new(
+        &probe,
+        resolution.programs().reconcile_runs(),
+        &["--dry-run", "--json"],
+    );
+    let reconcile_runs = ReconcileRunsIngest::new(&reconcile_runs_port, &repo);
+    let _ = ingest_reconcile_runs(&mut store, &reconcile_runs, &observed_at);
     let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
@@ -290,6 +298,13 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    let reconcile_runs_port = ProbeReconcileRunsPort::new(
+        &probe,
+        resolution.programs().reconcile_runs(),
+        &["--dry-run", "--json"],
+    );
+    let reconcile_runs_ingest = ReconcileRunsIngest::new(&reconcile_runs_port, &repo);
+    let _ = ingest_reconcile_runs(&mut store, &reconcile_runs_ingest, &observed_at);
     let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
@@ -449,6 +464,12 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    let reconcile_runs_port = ProbeReconcileRunsPort::new(
+        &probe,
+        resolution.programs().reconcile_runs(),
+        &["--dry-run", "--json"],
+    );
+    let reconcile_runs = ReconcileRunsIngest::new(&reconcile_runs_port, &repo);
     loop {
         // A source poll failure (transient CLI/store hiccup) must NEVER crash the
         // poller — ignore it and try again next cycle.
@@ -459,6 +480,7 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
                 &sources,
                 &needs_attention,
             );
+            let _ = ingest_reconcile_runs(&mut store, &reconcile_runs, &observed_at);
         }
         match poll_rx.recv_timeout(POLLER_CADENCE) {
             Ok(PollMessage::PollNow) | Err(RecvTimeoutError::Timeout) => {}

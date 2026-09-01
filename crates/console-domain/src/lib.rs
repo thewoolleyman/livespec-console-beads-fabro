@@ -212,6 +212,8 @@ pub enum EventType {
     /// orchestrator command surface is wired, so no setting was changed. The
     /// honest not-wired outcome, never a fabricated success.
     ConfigDispatcherSettingNotWired,
+    /// Reconcile-runs snapshot observed from the orchestrator's dispatcher.
+    ReconcileRunsSnapshotObserved,
 }
 
 impl EventType {
@@ -252,6 +254,7 @@ impl EventType {
             Self::AttentionItemResolved => "attention_item.resolved",
             Self::ConfigDispatcherSettingChanged => "config.dispatcher_setting.changed",
             Self::ConfigDispatcherSettingNotWired => "config.dispatcher_setting.not_wired",
+            Self::ReconcileRunsSnapshotObserved => "reconcile_runs.snapshot_observed",
         }
     }
 
@@ -294,6 +297,7 @@ impl EventType {
             "attention_item.resolved" => Some(Self::AttentionItemResolved),
             "config.dispatcher_setting.changed" => Some(Self::ConfigDispatcherSettingChanged),
             "config.dispatcher_setting.not_wired" => Some(Self::ConfigDispatcherSettingNotWired),
+            "reconcile_runs.snapshot_observed" => Some(Self::ReconcileRunsSnapshotObserved),
             _unknown => None,
         }
     }
@@ -742,6 +746,7 @@ mod tests {
             EventType::AttentionItemResolved,
             EventType::ConfigDispatcherSettingChanged,
             EventType::ConfigDispatcherSettingNotWired,
+            EventType::ReconcileRunsSnapshotObserved,
         ] {
             assert_eq!(
                 EventType::from_contract_name(event_type.contract_name()),

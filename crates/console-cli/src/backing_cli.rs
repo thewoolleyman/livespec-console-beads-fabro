@@ -12,6 +12,7 @@ const FABRO_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_FABRO_PROGRAM";
 const DRAIN_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRAIN_PROGRAM";
 const DRIVE_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRIVE_PROGRAM";
 const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
+const RECONCILE_RUNS_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_RECONCILE_RUNS_PROGRAM";
 const GH_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_GH_PROGRAM";
 const INVOKER_ENV: &str = "LIVESPEC_INVOKER";
 
@@ -35,6 +36,7 @@ pub struct BackingCliPrograms {
     dispatcher: String,
     drive: String,
     needs_attention: String,
+    reconcile_runs: String,
     github: String,
 }
 
@@ -47,6 +49,7 @@ impl Default for BackingCliPrograms {
             dispatcher: "livespec-dispatcher-drain".to_owned(),
             drive: "livespec-orchestrator-drive".to_owned(),
             needs_attention: "needs-attention".to_owned(),
+            reconcile_runs: "reconcile-runs".to_owned(),
             github: "gh".to_owned(),
         }
     }
@@ -87,6 +90,12 @@ impl BackingCliPrograms {
     /// Return the needs-attention program path.
     pub fn needs_attention(&self) -> &str {
         &self.needs_attention
+    }
+
+    #[must_use]
+    /// Return the reconcile-runs program path.
+    pub fn reconcile_runs(&self) -> &str {
+        &self.reconcile_runs
     }
 
     #[must_use]
@@ -554,6 +563,7 @@ fn programs_from_plugin_bin(bin: &Path) -> BackingCliPrograms {
         dispatcher: bin.join("dispatcher.py").display().to_string(),
         drive: bin.join("drive.py").display().to_string(),
         needs_attention: bin.join("needs_attention.py").display().to_string(),
+        reconcile_runs: bin.join("reconcile_runs.py").display().to_string(),
         github: "gh".to_owned(),
     }
 }
@@ -628,6 +638,9 @@ fn apply_program_overrides(env: &BTreeMap<String, String>, programs: &mut Backin
     }
     if let Some(value) = env.get(NEEDS_ATTENTION_PROGRAM_ENV) {
         programs.needs_attention.clone_from(value);
+    }
+    if let Some(value) = env.get(RECONCILE_RUNS_PROGRAM_ENV) {
+        programs.reconcile_runs.clone_from(value);
     }
     if let Some(value) = env.get(GH_PROGRAM_ENV) {
         programs.github.clone_from(value);

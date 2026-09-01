@@ -1628,6 +1628,17 @@ fn project_action_failures(events: &[ConsoleEvent]) -> BTreeMap<String, ActionFa
     failures
 }
 
+fn project_orphaned_factory_runs(
+    events: &[ConsoleEvent],
+) -> Vec<source_adapters::OrphanedFactoryRun> {
+    events
+        .iter()
+        .rev()
+        .find(|e| *e.event_type() == EventType::ReconcileRunsSnapshotObserved)
+        .and_then(|e| source_adapters::parse_reconcile_runs_snapshot(e.payload_json()).ok())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents tui screen model data used by the console.
 pub struct TuiScreenModel {
@@ -3682,7 +3693,7 @@ pub fn build_tui_model_for_state(
         dispatcher_settings: state.dispatcher_settings().clone(),
         plugin_resolution: state.plugin_resolution().clone(),
         action_failures: project_action_failures(events),
-        orphaned_factory_runs: Vec::new(),
+        orphaned_factory_runs: project_orphaned_factory_runs(events),
         // The canonical, untruncated header. `header_line` keeps this display
         // order for wide terminals and sheds narrow-terminal fields by declared
         // information-value priority, not by this string's field positions.
@@ -5159,7 +5170,8 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::SourceObservedFindingObserved
         | EventType::AttentionItemAppeared
         | EventType::AttentionItemChanged
-        | EventType::AttentionItemResolved => "source",
+        | EventType::AttentionItemResolved
+        | EventType::ReconcileRunsSnapshotObserved => "source",
     }
 }
 
@@ -7815,6 +7827,7 @@ impl AttentionEvent for EventType {
             Self::AttentionItemResolved => "Attention item resolved",
             Self::ConfigDispatcherSettingChanged => "Dispatcher setting changed",
             Self::ConfigDispatcherSettingNotWired => "Dispatcher setting not wired",
+            Self::ReconcileRunsSnapshotObserved => "Reconcile-runs snapshot",
         }
     }
 }
@@ -10722,6 +10735,28 @@ mod tests {
     }
 
     #[test]
+    fn build_tui_model_projects_orphaned_runs_from_reconcile_runs_event() {
+        let snapshot_json = r#"[{"run_id":"run-abc","factory":"factory-x","status_kind":"ok","work_item_id":"wi-1","work_item_status":"blocked","orphan_reason":"detached","termination_route":"cancel"}]"#;
+        let event = ConsoleEvent::fixture(
+            "reconcile-evt-1",
+            EventType::ReconcileRunsSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(snapshot_json.to_owned());
+
+        let model = build_tui_model(&[event], 0);
+
+        check(
+            (model.orphaned_factory_runs().len()) == (1),
+            "assert_eq failed",
+        );
+        check(
+            (model.orphaned_factory_runs()[0].run_id()) == ("run-abc"),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
     fn factory_drain_policy_composes_lane_and_attention_ready_counts() {
         // Kills the +/-/* mutants on the composed sum: with one genuinely
         // Ready lane item AND one live `impl:` attention row the count must be
@@ -13058,6 +13093,14 @@ mod tests {
         assert_eq!(
             EventType::ConfigDispatcherSettingNotWired.label(),
             "Dispatcher setting not wired"
+        );
+    }
+
+    #[test]
+    fn reconcile_runs_snapshot_observed_label_is_present() {
+        assert_eq!(
+            EventType::ReconcileRunsSnapshotObserved.label(),
+            "Reconcile-runs snapshot"
         );
     }
 

@@ -1981,6 +1981,8 @@ const ALLOWED_BACKING_CLI_DEFAULT_TOKENS: &[&str] = &[
     "needs-attention",
     "needs_attention.py",
     "next",
+    "reconcile-runs",
+    "reconcile_runs.py",
 ];
 
 fn check_zero_beads_knowledge(root: &Path) -> Vec<String> {
@@ -2773,6 +2775,7 @@ mod tests {
                     dispatcher: String,
                     drive: String,
                     needs_attention: String,
+                    reconcile_runs: String,
                     github: String,
                 }
                 struct CommandShape;
@@ -2788,6 +2791,7 @@ mod tests {
                             dispatcher: "livespec-dispatcher-drain".to_owned(),
                             drive: "livespec-orchestrator-drive".to_owned(),
                             needs_attention: "needs-attention".to_owned(),
+                            reconcile_runs: "reconcile-runs".to_owned(),
                             github: "gh".to_owned(),
                         }
                     }
@@ -2800,6 +2804,7 @@ mod tests {
                         dispatcher: bin.join("dispatcher.py").display().to_string(),
                         drive: bin.join("drive.py").display().to_string(),
                         needs_attention: bin.join("needs_attention.py").display().to_string(),
+                        reconcile_runs: bin.join("reconcile_runs.py").display().to_string(),
                         github: "gh".to_owned(),
                     }
                 }

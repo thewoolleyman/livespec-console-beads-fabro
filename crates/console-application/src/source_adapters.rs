@@ -3007,6 +3007,76 @@ impl NeedsAttentionSnapshotPort for ProbeNeedsAttentionPort<'_> {
     }
 }
 
+/// The dedicated snapshot-source port for the orchestrator's reconcile-runs surface.
+///
+/// Reads the current reconcile-runs snapshot as raw JSON, or an honest reason it
+/// could not be observed. The `reconcile-runs --dry-run --json` surface is owned
+/// by the orchestrator; the console reads it ONLY through this port.
+pub trait ReconcileRunsSnapshotPort {
+    /// Read the current reconcile-runs snapshot as raw JSON.
+    fn read_snapshot(&self) -> ReconcileRunsReadOutcome;
+}
+
+/// Outcome of reading the reconcile-runs snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconcileRunsReadOutcome {
+    /// Observed variant carrying the raw JSON string from the command.
+    Observed(String),
+    /// Unavailable variant.
+    Unavailable(String),
+}
+
+/// Snapshot-source port backed by a [`SourceProbe`].
+///
+/// Runs the orchestrator's `dispatcher.py reconcile-runs --dry-run --json` and
+/// returns the raw JSON stdout. Validates that the output parses as a JSON array;
+/// an unparseable payload degrades to `Unavailable`.
+pub struct ProbeReconcileRunsPort<'a> {
+    probe: &'a dyn SourceProbe,
+    program: String,
+    args: Vec<String>,
+}
+
+impl<'a> ProbeReconcileRunsPort<'a> {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub fn new(probe: &'a dyn SourceProbe, program: &str, args: &[&str]) -> Self {
+        Self {
+            probe,
+            program: program.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+}
+
+impl ReconcileRunsSnapshotPort for ProbeReconcileRunsPort<'_> {
+    fn read_snapshot(&self) -> ReconcileRunsReadOutcome {
+        let arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        match self.probe.run_command(&self.program, &arg_refs) {
+            SourceProbeOutcome::Observed {
+                stdout,
+                success: true,
+            } => {
+                if parse_reconcile_runs_snapshot(&stdout).is_ok() {
+                    ReconcileRunsReadOutcome::Observed(stdout)
+                } else {
+                    ReconcileRunsReadOutcome::Unavailable(
+                        "reconcile-runs output is not a valid JSON array".to_owned(),
+                    )
+                }
+            }
+            SourceProbeOutcome::Observed { success: false, .. } => {
+                ReconcileRunsReadOutcome::Unavailable(
+                    "reconcile-runs command exited non-zero".to_owned(),
+                )
+            }
+            SourceProbeOutcome::Unavailable { reason } => {
+                ReconcileRunsReadOutcome::Unavailable(reason)
+            }
+        }
+    }
+}
+
 /// Parse the product `needs-attention --json` output into one
 /// [`AttentionItemSnapshot`] per item.
 ///
@@ -3330,9 +3400,10 @@ mod tests {
         FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane,
         LaneReason, LivespecNextAction, LivespecNextSnapshot, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, ObservedSource,
-        ObservedSourceAdapter, ParsedObservation, ProbeNeedsAttentionPort, PullSourcePort,
-        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
-        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
+        ObservedSourceAdapter, ParsedObservation, ProbeNeedsAttentionPort, ProbeReconcileRunsPort,
+        PullSourcePort, ReconcileRunsReadOutcome, ReconcileRunsSnapshotPort, SourceAdapterKind,
+        SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan, SourcePayload,
+        SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
         attention_item_snapshot_from_payload_json, diff_needs_attention,
         dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
         fabro_run_snapshot_payload_json, materialize_attention_items,
@@ -6450,6 +6521,46 @@ mod tests {
         assert_eq!(
             missing_port.read_snapshot(),
             NeedsAttentionReadOutcome::Unavailable("needs-attention: missing".to_owned())
+        );
+    }
+
+    #[test]
+    fn probe_reconcile_runs_port_observes_and_degrades() {
+        let ok_probe = StubProbe::command(SourceProbeOutcome::observed("[]", true));
+        let port =
+            ProbeReconcileRunsPort::new(&ok_probe, "reconcile-runs", &["--dry-run", "--json"]);
+        assert_eq!(
+            port.read_snapshot(),
+            ReconcileRunsReadOutcome::Observed("[]".to_owned())
+        );
+
+        let bad_probe = StubProbe::command(SourceProbeOutcome::observed("not json", true));
+        let bad_port =
+            ProbeReconcileRunsPort::new(&bad_probe, "reconcile-runs", &["--dry-run", "--json"]);
+        assert_eq!(
+            bad_port.read_snapshot(),
+            ReconcileRunsReadOutcome::Unavailable(
+                "reconcile-runs output is not a valid JSON array".to_owned()
+            )
+        );
+
+        let failing_probe = StubProbe::command(SourceProbeOutcome::observed("", false));
+        let failing_port =
+            ProbeReconcileRunsPort::new(&failing_probe, "reconcile-runs", &["--dry-run", "--json"]);
+        assert_eq!(
+            failing_port.read_snapshot(),
+            ReconcileRunsReadOutcome::Unavailable(
+                "reconcile-runs command exited non-zero".to_owned()
+            )
+        );
+
+        let missing_probe =
+            StubProbe::command(SourceProbeOutcome::unavailable("reconcile-runs: missing"));
+        let missing_port =
+            ProbeReconcileRunsPort::new(&missing_probe, "reconcile-runs", &["--dry-run", "--json"]);
+        assert_eq!(
+            missing_port.read_snapshot(),
+            ReconcileRunsReadOutcome::Unavailable("reconcile-runs: missing".to_owned())
         );
     }
 
