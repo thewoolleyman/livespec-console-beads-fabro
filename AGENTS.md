@@ -526,7 +526,12 @@ Any hit is a wedged (zombie) runner with certainty — it is `Running`/`ready` t
 Kubernetes but permanently dead to GitHub, so ARC never scales up and jobs sit
 queued with headroom to spare. Wedge and real saturation present IDENTICALLY
 (jobs queued, nothing starting) and have OPPOSITE fixes, so the scan is the only
-thing that tells them apart.
+thing that tells them apart. A THIRD presentation — runner pods created but never
+coming up (PVCs `Pending`, `FailedScheduling ... VolumeBinding`, containerd
+`failed to create inotify fd`) — is neither, has a third fix, and is diagnosed
+by the two counts in the same note's third-case section; and none of it applies
+while `CI_RUNNER_LABELS` is absent from the repo (jobs are then on GitHub-hosted
+runners), so read the variable first.
 
 Two signals are INVALID here and must not be used to reach a capacity verdict —
 using them is exactly how this gate was earned (2026-08-30, PR #891 misdiagnosed
