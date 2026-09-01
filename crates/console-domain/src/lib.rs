@@ -418,8 +418,8 @@ pub enum CommandType {
     /// setting; there is no arming command that flips several at once.
     ConfigDispatcherSettingSet,
     /// The command the console records to reflect one auto-resolution the
-    /// orchestrator plane's engine made under full autonomous mode, observed
-    /// from that plane's published per-decision audit. Its outcome resolves the
+    /// orchestrator plane's engine made, observed from that plane's published
+    /// per-decision audit. Its outcome resolves the
     /// reflected work-item's needs-attention item so it leaves the inbox; the
     /// payload carries `{ work_item_id, gate, decision }`.
     FactoryAutonomousDecisionReflected,
