@@ -125,6 +125,74 @@ catch this class of unknown-unknown; it belongs to the CI observability
 work (`livespec-s43svm.20`), which carries the 42-minute gap as a seed
 measurement.
 
+## Jobs queued with nothing starting, THIRD case: runner-pod LIFECYCLE stall
+
+**Check the routing before any of this.** Every diagnosis in this family
+applies only while `vars.CI_RUNNER_LABELS` is set on the repo
+(`gh variable get CI_RUNNER_LABELS -R thewoolleyman/livespec-console-beads-fabro`).
+When the variable is absent every gating job runs on GitHub-hosted
+`ubuntu-latest` and a queued job is GitHub's queue, not the pool's. The
+variable was deleted 2026-09-01 as the ratified availability fallback, with
+its restore condition recorded on the plan epic — so do not assume the pool
+is in the path; read the variable.
+
+The wedge scan above answers "is a runner pod dead to GitHub?" and the
+capacity signals answer "is the pool full?". On 2026-09-01 both said no —
+0 wedge hits over 7-8 `Running` runner pods, 700m CPU requested of 72 cores,
+8 of 64 churn slots allocated, Kueue 16 admitted / 0 pending — while PRs
+#915-#917 sat with every job queued for 17-60 minutes. The pool was failing
+to BRING PODS UP, which neither earlier case describes:
+
+- runner pods were created, but each one's `local-path` work PVC took up to
+  ~11 minutes to provision, so the scheduler's volume-bind deadline (600 s)
+  expired (`FailedScheduling: ... PreBind plugin "VolumeBinding": binding
+  volumes: context deadline exceeded`, 94 times in 20 minutes) and the pod
+  went back to the queue, adding stale claims to the provisioner's backlog;
+- underneath, containerd sandbox calls were timing out (`KillPodSandbox ...
+  DeadlineExceeded`) because `fs.inotify.max_user_instances` was at the
+  kernel default 128 and ~100 concurrent containers had exhausted it
+  (`failed to create inotify fd: too many open files` in containerd's log);
+- a second variant the same afternoon: the k3s SQLite datastore on the
+  CI-churn disk stalled, single-replica Kueue lost its leader lease and
+  exited by design, and its fail-closed pod webhook (`mpod.kb.io`) took
+  every pod creation in the fleet down with it for the restart window.
+
+**The two discriminating commands** (cluster host, as for the wedge scan):
+
+```bash
+kubectl get pvc -n arc-runners --no-headers | awk '$2=="Pending"' | wc -l
+sudo grep -c 'failed to create inotify fd' /var/lib/rancher/k3s/agent/containerd/containerd.log
+```
+
+A Pending-PVC count that grows while runner pods cycle `Pending` →
+`FailedScheduling` is the lifecycle stall whatever the second command says;
+a non-zero second count names the 2026-09-01 root cause specifically (the
+cap is now 8192, persisted on the host). For the Kueue variant,
+`kubectl -n kueue-system get pods` shows a fresh restart and job logs carry
+`failed calling webhook "mpod.kb.io"`.
+
+**What THIS repo's job log shows** — a signature distinct from both earlier
+cases: the job is claimed, then fails at `Initialize containers` with the
+ARC hook's `Executing the custom container implementation failed. Please
+contact your self hosted runner administrator.` (PR #916 `check-e2e-tmux`,
+14:23-14:31Z). That line means the `-workflow` pod could not be created on
+the host. The remedy is a re-run of the failed job on the same commit once
+the host condition has cleared — not a change to the test. The other
+console-visible effect of the same host load was a slow pod rather than a
+failed one: `check-e2e-tmux`'s 20 s wall-clock waits and the event store's
+SQLite open (`database is locked`) both timed out on the saturated disk,
+which is `livespec-console-beads-fabro-l7unt3`'s subject.
+
+Neither prior remedy applies. Deleting pods (the wedge fix) adds churn to
+the provisioner's queue, and raising capacity (the saturation fix) adds
+containers to an exhausted kernel budget — the 2026-08-30 raise from C = 16
+to 64 is what pushed the container count into the cap. The pool is
+fleet-owned; the measured chain, the host fixes (inotify 128 → 8192,
+provisioner worker/QPS tuning, kubelet `max-pods` 110 → 200) and the open
+legs live in livespec plan `ci-runner-pod-lifecycle-reliability` (epic
+`livespec-ifwnqj`, research 001-004). Report the two counts; do not resize
+anything from here.
+
 ## A local test run is only evidence if it's the SAME commit CI tested
 
 `cargo test` passing locally proves nothing unless the working tree is
