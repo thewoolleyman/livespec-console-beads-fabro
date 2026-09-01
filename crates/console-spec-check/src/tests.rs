@@ -198,10 +198,16 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // (the nightly MUST derive+persist a stable finding signature; it MUST NOT
     // file a chore when an open chore already carries that signature):
     // 232 normative clauses, 18/133/22/59.
+    // The v046 console-control-plane-boundary revision retired the two v040
+    // overseer-orthogonality clauses in spec.md's Scope Boundary and added six
+    // (four Control-plane-surface clauses, two run-question clauses in
+    // Terminology) plus seven in contracts.md (one on the Fabro adapter's status
+    // kind, six in the new Needs-human-as-a-ledger-valve section):
+    // 243 normative clauses, 22/140/22/59.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
-        ("spec.md", 18_usize),
-        ("contracts.md", 133),
+        ("spec.md", 22_usize),
+        ("contracts.md", 140),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 59),
     ];
@@ -213,7 +219,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 232,
+        total, 243,
         "total normative clauses across the console spec"
     );
     Ok(())
