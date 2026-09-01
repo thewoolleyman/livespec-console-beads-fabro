@@ -193,12 +193,17 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // principal-resolution subsection, and the de-enumerated settings clauses
     // (contracts.md), plus the spec.md settings de-enumeration forced by
     // ratification review: 230 normative clauses, 18/133/22/57.
+    // The v045 nightly-soak-idempotent-chore-filing revision added two
+    // non-functional-requirements.md clauses to the Nightly quality-gate clause
+    // (the nightly MUST derive+persist a stable finding signature; it MUST NOT
+    // file a chore when an open chore already carries that signature):
+    // 232 normative clauses, 18/133/22/59.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 18_usize),
         ("contracts.md", 133),
         ("constraints.md", 22),
-        ("non-functional-requirements.md", 57),
+        ("non-functional-requirements.md", 59),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -208,7 +213,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 230,
+        total, 232,
         "total normative clauses across the console spec"
     );
     Ok(())
