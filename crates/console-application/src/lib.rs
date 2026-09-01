@@ -7555,7 +7555,7 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
 
 fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) -> AttentionDetail {
     let event = &entry.event;
-    let fabro_run = fabro_run_id_for_attention(entry, events);
+    let fabro_run = fabro_run_id_for_attention(entry);
     let actions = attention_detail_actions(entry);
     AttentionDetail::new(
         entry.snapshot.repo().to_owned(),
@@ -7747,10 +7747,7 @@ fn fabro_run_id(event: &ConsoleEvent) -> Option<String> {
         .map(|snapshot| snapshot.run_id().to_owned())
 }
 
-fn fabro_run_id_for_attention(
-    entry: &AttentionSnapshot,
-    _events: &[ConsoleEvent],
-) -> Option<String> {
+fn fabro_run_id_for_attention(entry: &AttentionSnapshot) -> Option<String> {
     entry.snapshot.detail().dispatch_fabro_run_id.clone()
 }
 
@@ -10705,7 +10702,7 @@ mod tests {
         let entries = super::attention_snapshots(&[lane]);
         check(entries.len() == 1, "attention fixture should build");
 
-        let run_id = super::fabro_run_id_for_attention(&entries[0], &[]);
+        let run_id = super::fabro_run_id_for_attention(&entries[0]);
 
         check(run_id.is_none(), "no dispatch metadata means no run id");
     }
