@@ -7561,11 +7561,8 @@ fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
     action_registry::ACTION_REGISTRY
         .iter()
         .filter(|spec| {
-            matches!(
-                spec.staging,
-                action_registry::ActionStaging::Valve(_)
-                    | action_registry::ActionStaging::DriverHandoff
-            ) && (spec.availability)(&ctx)
+            matches!(spec.staging, action_registry::ActionStaging::Valve(_))
+                && (spec.availability)(&ctx)
         })
         .map(|spec| OperatorAction::Registered(spec.id))
         .collect()
