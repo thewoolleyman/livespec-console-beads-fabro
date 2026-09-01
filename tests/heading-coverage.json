@@ -827,7 +827,7 @@
     "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
     "scenario_file": "scenarios.md",
     "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_key_missing_from_the_settings_surface",
-    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md \u00a7\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
+    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md §\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
     "clauses": [
       {
         "gap_id": "gap-u5dlygw2",
@@ -991,7 +991,7 @@
     "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_panes_operational_content_only_scenario_21",
-    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The \u00a7\"TUI Contract\" panes-operational-content-only clause binds here.",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The §\"TUI Contract\" panes-operational-content-only clause binds here.",
     "clauses": [
       {
         "gap_id": "gap-xiziukv6",
@@ -1176,16 +1176,7 @@
     "scenario_file": "scenarios.md",
     "test": "TODO",
     "reason": "Test tier: a top-of-pyramid acceptance test would need to prove a UI absence -- that the console's Settings surface never gains a `livespec-overseer` foreman/overseer configuration lever (for example `foreman_valve_disposition`) and that no console code path invokes the overseer/foreman layer. This v040 Scope Boundary clause is bound here because Scenario 11 is the console's other orthogonal-system boundary case (the orchestrator's ratified action surface, which the console maps commands onto and never bypasses); the overseer/foreman clause is the same shape of boundary against a second, independent system. Coverage today is structural rather than behavioral: console-arch-check enforces that the Settings surface stays limited to the orchestrator-declared `dispatcher.*` levers (Scenario 14), and no `livespec-overseer` client exists in this crate tree for a test to invoke. Registered now, pending, per the console-spec-check requirement that every live clause bind to a scenario.",
-    "clauses": [
-      {
-        "gap_id": "gap-bhrwmgth",
-        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-      },
-      {
-        "gap_id": "gap-vwuzqptl",
-        "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface"
-      }
-    ]
+    "clauses": []
   },
   {
     "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item",
@@ -1248,6 +1239,74 @@
       {
         "gap_id": "gap-v6ekcmys",
         "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid acceptance test should prove the control-plane boundary ratified in v046: the roster / attention / valve surfaces render from orchestrator-published projections only, every disposition the console issues is a recorded operator command, no console component issues a valve / selects a next action / answers a run question on its own initiative, no session is driven or observed through a terminal multiplexer or screen-scraping transport, and no local realization exists for a capability the orchestrator has not published (including run questions, whose wire form the orchestrator has not ratified). Registered pending at ratification time because the console-spec-check requires every live scenario to carry a non-empty test registration; the implementing work is the console phase-1 children of plan retire-overseer-and-redesign-control-plane-around-console (epic livespec-console-beads-fabro-pzbdbo), and the structural half is already enforced by console-arch-check (Scenario 14 keeps the Settings surface on orchestrator-declared levers).",
+    "clauses": [
+      {
+        "gap_id": "gap-h2s3rdaa",
+        "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent"
+      },
+      {
+        "gap_id": "gap-in5labrt",
+        "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent"
+      },
+      {
+        "gap_id": "gap-vao4g74l",
+        "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent"
+      },
+      {
+        "gap_id": "gap-eynsc7es",
+        "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent"
+      },
+      {
+        "gap_id": "gap-rauzfirh",
+        "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent"
+      },
+      {
+        "gap_id": "gap-du6ehtqc",
+        "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: a top-of-pyramid acceptance test should drive a work-item resting at blocked / needs-human through the console: the attention projection's resolve-blocked valve and rework route render, no attach command is offered, the run id and factory come from dispatch_fabro_run_id / dispatch_factory metadata, the orphaned-factory-runs lane is fed by the orchestrator's reconcile-runs dry-run projection, the Fabro adapter reads status kinds instead of hardcoding a human-gate state, and the bundled workflow fork carries no in-loop escalate gate. Registered pending at ratification time (v046); the implementation item is livespec-console-beads-fabro-h7jp (the orchestrator's cross-tenant ASK) plus the reviewed re-fork of .fabro owned by plan retire-overseer-and-redesign-control-plane-around-console.",
+    "clauses": [
+      {
+        "gap_id": "gap-d6pnkxbs",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      },
+      {
+        "gap_id": "gap-3u467mzw",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      },
+      {
+        "gap_id": "gap-7omomfch",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      },
+      {
+        "gap_id": "gap-yhqrzmia",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      },
+      {
+        "gap_id": "gap-5w5tehmy",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      },
+      {
+        "gap_id": "gap-jzwqyqk6",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      },
+      {
+        "gap_id": "gap-l6iyo4ws",
+        "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
       }
     ]
   }
