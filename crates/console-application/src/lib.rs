@@ -1719,6 +1719,7 @@ impl TuiScreenModel {
             transient_status: None,
             header: String::new(),
             action_failures: BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         }
     }
 
