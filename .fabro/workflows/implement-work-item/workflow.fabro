@@ -5,16 +5,17 @@
 // architecture"). One run consumes ONE ready work-item and produces one
 // merged-or-failed implementation attempt:
 //
-//   implement (Red-Green-Replay) -> janitor hard gate (`mise exec --
-//   just check`, bounded fix loop) -> Claude review gate (bounded fix
-//   rounds, then ship-on-cap ONLY IF the operator's
-//   `merge_on_review_cap` dial is on, else park at the human gate;
-//   work-items bd-ib-egms32, livespec-console-beads-fabro-7zq3lg)
-//   -> PR + rebase auto-merge
-//   arming, with an in-loop `escalate` human gate (work-item
-//   livespec-impl-beads-4zl) for outcomes the loop cannot
-//   auto-resolve: the run parks in Fabro's native `blocked` status and
-//   the human's answer routes BACK into the loop (`fabro attach`).
+//   implement (Red-Green-Replay) -> janitor hard gate (the repository's
+//   declared check suite, rendered from `inputs.sandbox_check_suite`;
+//   bounded fix loop) -> Claude review gate (blocking by default,
+//   merge-on-cap only via explicit escape hatch; work-item bd-ib-egms32) -> PR + rebase auto-merge
+//   arming, with a `needs_human` TERMINAL node (plan
+//   ledger-is-the-only-gate, epic bd-ib-n77djm; contracts.md "A factory
+//   run never awaits a human", v093) for outcomes the loop cannot
+//   auto-resolve: the run preserves its tree on a run-scoped ref, emits
+//   the LIVESPEC_NEEDS_HUMAN sentinel and terminates non-green. The
+//   human's decision lives in the LEDGER (the item rests at
+//   blocked / needs-human; the answer is a valve), never in a parked run.
 //
 // The run executes in an ISOLATED Fabro-owned docker sandbox clone
 // (Architecture C, workflow.toml): Fabro clones the repo fresh inside
@@ -43,10 +44,26 @@ digraph ImplementWorkItem {
     // `deterministic` failures fail immediately WITHOUT consuming the
     // retry budget and route via the `outcome=failed` edges to the
     // human gate exactly as before. So: transient -> ONE auto-retry;
-    // categorical -> park at needs-human. `stall_timeout` stays 7200s:
+    // categorical -> park at needs-human. `stall_timeout` is 7200s:
     // it is the zero-EVENT watchdog (cancels the run on 2h of event
     // silence), not the per-turn ceiling — an active agent turn streams
     // events continuously, so a longer implement turn does not trip it.
+    //
+    // EVERY DURATION BELOW IS A DEFAULT THE DISPATCHER REWRITES. The
+    // dispatch target's `dispatcher.node_timeouts` table and its
+    // `dispatcher.stall_timeout_seconds` key resolve each value, and the
+    // Dispatcher writes the resolved numbers into the per-dispatch
+    // payload's copy of this graph as literal durations before `fabro run`
+    // sees it (commands/_dispatcher_graph_render.py; contracts.md §"ACP
+    // node timeouts"). The values here are the same 1800s/7200s defaults
+    // that resolution applies, so a DIRECT `fabro run` on the committed
+    // file behaves identically to an unconfigured dispatch.
+    //
+    // DO NOT TEMPLATE A `timeout` FROM A WORKFLOW INPUT the way
+    // `acp.command` is. The pinned Fabro build types a quoted duration at
+    // parse time and its template expansion never re-types a rendered
+    // string, so a templated timeout leaves the node with NO timeout at
+    // all — and reports nothing.
     graph [
         goal="Implement one ready work-item per the livespec family discipline"
         default_max_retries=0
@@ -56,81 +73,78 @@ digraph ImplementWorkItem {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="Exit"]
 
-    // timeout=14400s (was 7200s): two heavy multi-RGR items (dev-tooling
-    // p60, git-jsonl tenpup, both 2026-06-12) died at "ACP turn timed
-    // out" at ~120m — the node timeout is the per-turn ceiling for the
-    // ACP backend (the run PARKED at the human gate afterwards, i.e. the
+    // The implement timeout is the per-turn ceiling for the ACP backend:
+    // two heavy multi-RGR items (dev-tooling p60, git-jsonl tenpup, both
+    // 2026-06-12) died at "ACP turn timed out" at ~120m against the then
+    // 7200s value (the run PARKED at the human gate afterwards, i.e. the
     // node failed; the stall watchdog by contrast CANCELS the whole run,
-    // so it was not the stall_timeout). 4h gives multi-part items one
-    // unattended turn of headroom; the Dispatcher's own fabro-run
-    // subprocess budget covers the worst case (see _dispatcher_engine
-    // _FABRO_TIMEOUT_SECONDS).
+    // so it was not the stall_timeout). It was raised to 14400s for that
+    // headroom and is now the 1800s default of §"ACP node timeouts" — a
+    // DELIBERATE reduction ruled by the maintainer, on a factory whose
+    // implementer no longer dies on Codex compaction. A repository whose
+    // items need the old headroom sets `dispatcher.node_timeouts.implement`
+    // rather than editing this literal; the Dispatcher's own fabro-run
+    // subprocess budget is derived from whatever resolves.
     //
     // retry_target: fires ONLY at exit-node goal-gate enforcement (the
-    // `outcome=failed` edge to the human gate takes precedence at node
-    // failure — docs.fabro.sh/execution/failures §"When failures become
-    // fatal"). With the `abandon` terminal node below, the only path
-    // that reaches exit with this gate unsatisfied is a human [R]
-    // answer after an implement failure; the jump back here re-attempts
-    // the implement instead of failing a run whose fix path went green.
+    // `outcome=failed` edge to the needs_human terminal takes precedence
+    // at node failure — docs.fabro.sh/execution/failures §"When failures
+    // become fatal"). With needs_human a dead end, no path reaches exit
+    // with this gate unsatisfied; the attribute stays to satisfy fabro's
+    // goal_gate_has_retry lint alongside the real node-retry budget.
     implement [
         label="Implement (Red-Green-Replay)"
         backend="acp"
-        acp.command="{{ inputs.acp_adapter }}"
-        timeout="14400s"
+        acp.command="{{ inputs.implement_adapter }}"
+        timeout="1800s"
         max_retries=1
         goal_gate=true
         retry_target="implement"
         prompt="@prompts/implement.md"
     ]
 
-    // Dead-implementer circuit breaker (C5 / bd-ib-vdpb, ported from
-    // upstream 2026-08-25): after the implementer node is done with its
-    // own retry budget, require a byte change relative to the dispatch
-    // base BEFORE spending janitor, review, or review-fix turns. A real
-    // but wrong implementation has a diff and proceeds normally; a
-    // protocol-dead implementer that left the tree byte-identical emits
-    // the sentinel the Dispatcher journals from the failed `fabro-run`
-    // stage detail. The script line is byte-identical to upstream's
-    // (its sentinel text is the Dispatcher-facing contract, disposition
-    // mention included); only this comment differs — our graph has no
-    // disposition stage.
+    // Dead-implementer circuit breaker (C5 / bd-ib-vdpb): after the
+    // implementer node is done with its own retry budget, require a byte
+    // change relative to the dispatch base BEFORE spending janitor,
+    // review, disposition, or review-fix turns. A real but wrong
+    // implementation has a diff and proceeds normally; a protocol-dead
+    // implementer that left the tree byte-identical emits the sentinel
+    // the Dispatcher journals from the failed `fabro-run` stage detail.
+    // The dispatch base is the governed repository's DEFAULT BRANCH,
+    // rendered from `inputs.default_branch` (the integration contract's
+    // resolved field), never a spelled branch name: an adopter whose
+    // default branch is not this fleet's gets the same breaker.
     implementation_diff [
         label="Check implementer changed tree"
         shape=parallelogram
-        timeout="60s"
-        script="git diff --quiet origin/master...HEAD; status=$?; if test \"$status\" -eq 0; then echo 'LIVESPEC_DEAD_IMPLEMENTER: implementer terminated without changing the worktree relative to dispatch base origin/master...HEAD; stop before janitor/review/disposition' >&2; exit 1; fi; if test \"$status\" -eq 1; then exit 0; fi; echo 'LIVESPEC_DEAD_IMPLEMENTER_CHECK_FAILED: git diff against origin/master...HEAD failed; fail closed before review' >&2; exit \"$status\""
+        timeout="1800s"
+        script="git diff --quiet origin/{{ inputs.default_branch }}...HEAD; status=$?; if test \"$status\" -eq 0; then echo 'LIVESPEC_DEAD_IMPLEMENTER: implementer terminated without changing the worktree relative to dispatch base origin/{{ inputs.default_branch }}...HEAD; stop before janitor/review/disposition' >&2; exit 1; fi; if test \"$status\" -eq 1; then exit 0; fi; echo 'LIVESPEC_DEAD_IMPLEMENTER_CHECK_FAILED: git diff against origin/{{ inputs.default_branch }}...HEAD failed; fail closed before review' >&2; exit \"$status\""
     ]
 
-    // Janitor hard gate: a non-zero `just check` MUST prevent the PR
-    // stage (livespec non-functional-requirements.md §"Orchestrator-
-    // internal Dispatcher guidance"). Script outcome routes the edges:
-    // exit 0 -> succeeded -> pr; non-zero -> failed -> fix loop.
-    //
-    // `check-no-workflow-edits` runs FIRST, ported from upstream 2026-08-22
-    // (livespec-console-beads-fabro-t1g7): workflow-file drift is refused
-    // BEFORE the expensive `just check`. It is additive here rather than
-    // redundant. This repo already refuses a workflow-editing item at
-    // DISPATCH time and already runs the recipe in the POST-MERGE janitor
-    // (the orchestrator's `_DEFAULT_JANITOR`), but the in-workflow janitor
-    // ran bare `just check` -- so a branch that acquired a
-    // `.github/workflows/` edit DURING the run reached the pr node, where
-    // the fleet App's contents-only push token turns it into a GitHub push
-    // rejection instead of a routed janitor failure. The recipe needs an
-    // `origin/master` merge-base, which the `git fetch --unshallow` prepare
-    // step in workflow.toml already establishes for `just check` itself.
+    // Janitor hard gate: the governed repository's IN-SANDBOX check
+    // suite, rendered from `inputs.sandbox_check_suite` — the resolved
+    // `dispatcher.janitor.check_suite` field at its in-sandbox-gate venue
+    // (SPECIFICATION/contracts.md §"Repository integration contract").
+    // This fleet's default suite refuses workflow-file drift before the
+    // rest of its checks, and a non-zero suite MUST prevent the PR stage
+    // (livespec non-functional-requirements.md §"Orchestrator-internal
+    // Dispatcher guidance"). Script outcome routes the edges: exit 0 ->
+    // succeeded -> pr; non-zero -> failed -> fix loop. A node `script`
+    // is a rendered position for the pinned build (maintainer-confirmed
+    // 2026-08-31; dev-tooling/checks/_seam_equivalence_scan.py records
+    // the evidence), unlike the typed `timeout` above.
     janitor [
-        label="Janitor: just check"
+        label="Janitor: declared check suite"
         shape=parallelogram
-        timeout="3600s"
-        script="mise exec -- just check-no-workflow-edits check"
+        timeout="1800s"
+        script="{{ inputs.sandbox_check_suite }}"
     ]
 
     fix [
         label="Fix janitor failures"
         backend="acp"
-        acp.command="{{ inputs.acp_adapter }}"
-        timeout="3600s"
+        acp.command="{{ inputs.fix_adapter }}"
+        timeout="1800s"
         max_visits=3
         prompt="@prompts/fix.md"
     ]
@@ -142,14 +156,12 @@ digraph ImplementWorkItem {
     // when pr did NOT fail — it exists to satisfy fabro's
     // goal_gate_has_retry lint alongside the real node-retry budget.
     //
-    // Runs on `pr_adapter`, NOT the shared implementer `acp_adapter`: this node
-    // executes a fixed `git`/`gh` publish recipe (@prompts/pr.md, which this
-    // fork keeps byte-identical to upstream) with no design judgement in it, so
-    // it takes the cheap Codex tier while implement / fix / review_fix stay on
-    // the implementer tier. Ported from upstream 2026-08-22
-    // (livespec-console-beads-fabro-t1g7). Both adapters are rendered by the
-    // Dispatcher from the dispatch target's `dispatcher.codex_models` config
-    // (commands/_config.py `resolve_codex_model_tiers`); the model rides the
+    // Runs on `pr_adapter`, NOT an implementer adapter: this node
+    // executes a fixed `git`/`gh` publish recipe (@prompts/pr.md) with no design
+    // judgement in it, so it takes the cheap Codex tier while implement / fix /
+    // review_fix stay on the implementer tier. Both adapters are rendered by the
+    // Dispatcher from the dispatch target's `dispatcher.acp_nodes` /
+    // `dispatcher.codex_models` config (commands/_acp_node_layers.py); the model rides the
     // adapter's own `-c model=` override because fabro REJECTS `model` /
     // `reasoning_effort` as acp node attrs, exactly as the review node's
     // ANTHROPIC_MODEL prefix does on the Claude side.
@@ -176,7 +188,8 @@ digraph ImplementWorkItem {
     // Deliberately NO max_visits: the review<->review_fix loop is bounded
     // GRACEFULLY by the edge guard below (on review's own visit count); a
     // max_visits here would hard-abort (VisitLimitExceeded) on the very
-    // visit that should ship.
+    // visit that must route to either PR (escape hatch) or needs-human
+    // escalation.
     review [
         label="Review (Claude Opus 4.8): correctness + senior-engineer design lens"
         backend="acp"
@@ -186,70 +199,88 @@ digraph ImplementWorkItem {
         prompt="@prompts/review.md"
     ]
 
-    // Review-fix (Slice A / bd-ib-egms32): the implementer addresses the
-    // reviewer's BLOCKING findings (or rejects each with a one-line
-    // rationale), then re-validates through the janitor. A SEPARATE node
+    // Disposition (S2 / bd-ib-fe574e): read-only implementation-side
+    // triage of the reviewer's BLOCKING findings before any fix work. It
+    // accepts in-scope correct findings and rejects out-of-scope,
+    // not-applicable, factually wrong, or scope-expanding findings with a
+    // one-line rationale. It has its own adapter input so the maintainer can
+    // pin adjudication independently from both review and implementation.
+    //
+    // max_visits=10 is the ungraceful runaway-loop backstop. It MUST exceed
+    // the largest supported review_fix_visit_cap override; the graceful
+    // bound remains the review edge guard below.
+    disposition [
+        label="Disposition review findings"
+        backend="acp"
+        acp.command="{{ inputs.disposition_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        max_visits=10
+        prompt="@prompts/disposition.md"
+    ]
+
+    // Review-fix (Slice A / bd-ib-egms32, S2 / bd-ib-fe574e): the
+    // implementer addresses ONLY findings the disposition record marks
+    // ACCEPTED, then re-validates through the janitor. A SEPARATE node
     // from `fix` ON PURPOSE: it keeps the working janitor<->fix hard-gate
     // loop and its visit budget completely untouched, and decouples the
     // two fix budgets. Mirrors `fix` (implementer adapter, re-enters
-    // janitor); its own max_visits=3 is the ungraceful backstop — the
-    // graceful bound is review's edge guard, which caps review_fix entries
-    // at two.
+    // janitor).
+    //
+    // max_visits=10 is the ungraceful runaway-loop backstop. It MUST exceed
+    // the largest supported review_fix_visit_cap override; the graceful
+    // bound remains the review edge guard below.
     review_fix [
-        label="Address review findings (or reject with rationale)"
+        label="Implement accepted review findings"
         backend="acp"
-        acp.command="{{ inputs.acp_adapter }}"
-        timeout="3600s"
-        max_visits=3
+        acp.command="{{ inputs.review_fix_adapter }}"
+        timeout="1800s"
+        max_visits=10
         prompt="@prompts/review-fix.md"
     ]
 
-    // Terminal dead-implementer node (C5 / bd-ib-vdpb, ported from
-    // upstream 2026-08-25): a deliberate dead end for unchanged
-    // implement output. It terminates non-green before janitor/review
-    // rounds and carries the governing condition in stderr, which the
-    // Dispatcher persists with the work-item id in the fabro-run
-    // journal record. Script line byte-identical to upstream's.
+    // Terminal dead-implementer node (C5 / bd-ib-vdpb): a deliberate
+    // dead end for unchanged implement output. It terminates non-green
+    // before janitor/review/disposition and carries the governing
+    // condition in stderr, which the Dispatcher persists with the
+    // work-item id in the fabro-run journal record.
     dead_implementer [
         label="Dead implementer: unchanged tree; stop before review"
         shape=parallelogram
-        timeout="60s"
+        timeout="1800s"
         script="echo 'LIVESPEC_DEAD_IMPLEMENTER: unchanged tree after implementer; no janitor/review/disposition rounds will run against dispatch base' >&2; exit 1"
     ]
 
-    // In-loop human escalation (livespec-impl-beads-4zl): outcomes the
-    // loop cannot auto-resolve park the run at this gate — Fabro's
-    // native `blocked` status — instead of going quiet. A foreground
-    // `fabro run` RETURNS at the gate (the Dispatcher's slot frees)
-    // while a server-side engine stays alive holding the run; `fabro
-    // attach <run-id>` is the answer path (resume is only for a dead
-    // engine). The answer routes BACK into the loop via the labeled
-    // edges below. [A] Abandon routes to the `abandon` terminal command
-    // node, which fails the run WITHOUT reaching exit, so the work-item
-    // stays open for triage.
-    escalate [
-        shape=hexagon
-        label="Needs human: the loop cannot auto-resolve this work-item"
-    ]
-
-    // Terminal abandon node (bn4): a deliberate dead end (no outgoing
-    // edges — fabro validate accepts a dead-end node but rejects a
-    // conditional-only edge set). Pre-bn4, [A] Abandon routed straight
-    // to exit and relied on "goal gate unsatisfied at exit WITH NO
-    // RETRY TARGET" to fail the run — but wiring retry_target on the
-    // goal-gated nodes (above) would have turned that exact path into
-    // a jump BACK into the loop, making Abandon un-answerable. This
-    // node restores hard termination: the script always exits 1 (a
-    // deterministic, never-retried failure), there is no outgoing edge
-    // to follow and no retry target on the node or graph, so the run
-    // terminates non-green BEFORE the exit node's goal-gate enforcement
-    // can bounce it (docs.fabro.sh/execution/failures §"When failures
-    // become fatal", step 7).
-    abandon [
-        label="Abandon: terminate non-green (work-item stays open)"
+    // Needs-human TERMINAL node (plan ledger-is-the-only-gate, epic
+    // bd-ib-n77djm; contracts.md "A factory run never awaits a human",
+    // ratified v093, Scenario 103). It REPLACES the former `escalate`
+    // hexagon + `abandon` pair. A hexagon parked the run in Fabro's native
+    // `blocked` status until a human ran `fabro attach`; nothing in the
+    // orchestrator ever looked at a blocked run again, so every park whose
+    // question was overtaken (re-dispatch, hand landing, hand close) held a
+    // scheduler slot until a human happened to notice — measured 17 parks
+    // in nine days in this repo, 16 of them moot by the time anyone looked.
+    //
+    // This node is the same dead-end command shape as `non_converged` and
+    // `dead_implementer`: it (1) pushes the CURRENT tree, best-effort, to a
+    // run-scoped ref `refs/heads/needs-human/<run id>` so the work survives
+    // the sandbox (never the `feat/<work-item-id>` publish branch, which the
+    // pr stage owns), (2) writes the LIVESPEC_NEEDS_HUMAN sentinel to
+    // stderr, and (3) exits 1 with NO outgoing edge, so the run terminates
+    // non-green and the foreground `fabro run` returns. The Dispatcher reads
+    // the sentinel and rests the work-item at `blocked / needs-human`
+    // (the SAME blocked outcome and exit code 4 the gate produced); the
+    // former [R] Retry / [I] Re-implement / [A] Abandon answers are now the
+    // ledger's own valves: `resolve-blocked:<id>:ready` (with rework seeded
+    // from the preserved ref, or from scratch), or leaving the item blocked.
+    // The sentinel string is shared with the Dispatcher consumer
+    // (commands/_dispatcher_plan.NEEDS_HUMAN_MARKER) — keep the two in
+    // lockstep, exactly as LIVESPEC_NON_CONVERGED is.
+    needs_human [
+        label="Needs human: terminate, preserve the tree, route the decision to the ledger"
         shape=parallelogram
-        timeout="60s"
-        script="echo 'operator abandoned the run; work-item left open for triage' >&2; exit 1"
+        timeout="600s"
+        script="ref=\"refs/heads/needs-human/${FABRO_RUN_ID:-unknown-run}\"; git add -A >/dev/null 2>&1 || true; git -c user.name=fabro -c user.email=fabro@livespec.invalid commit -q -m 'needs-human: preserve tree before terminating' >/dev/null 2>&1 || true; if git push origin \"HEAD:$ref\" >/dev/null 2>&1; then echo \"LIVESPEC_NEEDS_HUMAN_PRESERVED: $ref\" >&2; else echo 'LIVESPEC_NEEDS_HUMAN_PUSH_FAILED: tree not pushed; rely on the preserve-by-reference dump pointer' >&2; fi; echo 'LIVESPEC_NEEDS_HUMAN: loop cannot auto-resolve this work-item; run terminated, work preserved by reference, decision routed to the ledger (blocked / needs-human)' >&2; exit 1"
     ]
 
     // Terminal non-converged node (work-item livespec-impl-beads-rw75ym,
@@ -274,17 +305,18 @@ digraph ImplementWorkItem {
     non_converged [
         label="Non-converged: fix-loop cap hit; route back to Dispatcher (needs-regroom)"
         shape=parallelogram
-        timeout="60s"
+        timeout="1800s"
         script="echo 'LIVESPEC_NON_CONVERGED: janitor fix-loop cap hit without converging; routing back to the Dispatcher for needs-regroom' >&2; exit 1"
     ]
 
     start -> implement
 
     // A failed implement (structured needs-human ending, see
-    // prompts/implement.md) routes to the human gate — conditional
-    // edges take priority over the unconditional fallback; everything
-    // else proceeds to the diff breaker before any downstream spend.
-    implement -> escalate [label="Blocked", condition="outcome=failed"]
+    // prompts/implement.md) routes to the needs_human terminal —
+    // conditional edges take priority over the unconditional fallback;
+    // everything else proceeds to the diff breaker before any downstream
+    // spend.
+    implement -> needs_human [label="Blocked", condition="outcome=failed"]
     implement -> implementation_diff
 
     // Changed-tree routing: exit 0 means `git diff --quiet` found a
@@ -321,62 +353,47 @@ digraph ImplementWorkItem {
     janitor -> non_converged [label="Exhausted (fix-loop cap)"]
     fix -> janitor
 
-    // Review gate routing (Slice A / bd-ib-egms32). The review node emits a
-    // routing verdict (prompts/review.md) -> {"preferred_next_label":
-    // "approve"|"fix"} on its last line. fabro's select_edge
-    // (fabro-workflow graph/routing.rs) resolves in strict precedence:
-    // (1) satisfied conditions first, then (2) preferred_label among
-    // CONDITIONLESS edges, then (4) the unconditional fallthrough. So:
-    //   - approve            -> `preferred_label=approve` matches the
-    //                           conditioned `review -> pr` edge.
-    //   - fix & under cap    -> the label-aware count guard below is TRUE
-    //                           -> review_fix (Phase 1, by condition).
-    //   - fix & cap reached  -> the merge-on-review-cap gate decides. See
-    //                           SHIP-ON-CAP IS NOW GATED below.
-    //   - node failure       -> `outcome=failed`; weight=100 wins the
-    //                           failed-vs-fix tiebreak deterministically.
-    //   - anything else      -> the conditionless `unmatched review
-    //                           outcome` edge escalates. This graph FAILS
-    //                           CLOSED: the fallthrough is `escalate`, not
-    //                           `pr`.
-    // The guard reads `preferred_label` (a bare outcome key; `=`, not `==`)
-    // AND review's OWN node_visit_count (the source node, inclusive of the
-    // current visit), so review<->review_fix is bounded gracefully on
-    // review's visits (two fix rounds) while the janitor<->fix loop above is
-    // left entirely untouched.
+    // Review gate routing (Slice A / bd-ib-egms32, blocking-by-default
+    // revision bd-ib-6ytmik). The review node emits a routing verdict
+    // (prompts/review.md) -> {"preferred_next_label": "approve"|"fix"}
+    // on its last line. fabro renders the `inputs.*` tokens below at
+    // run-create time; the Dispatcher passes the effective per-item policy
+    // values, and workflow.toml supplies the safe defaults for direct runs.
     //
-    // SHIP-ON-CAP IS NOW GATED (2026-08-26,
-    // livespec-console-beads-fabro-7zq3lg). This fork previously shipped on
-    // cap UNCONDITIONALLY: the `approve` edge was conditionless, so a
-    // non-converging `fix` verdict fell through to `pr` and merged. The
-    // recorded rationale was that the janitor is green and the reviewer is
-    // advisory. That rationale is no longer tenable, because the ORCHESTRATOR
-    // declares `dispatcher.merge_on_review_cap` API-configurable and THIS
-    // repo's console surfaces it as a Settings row, default false. An
-    // operator was therefore shown a false-by-default safety dial governing
-    // exactly this behaviour, while the graph behaved as though it were
-    // permanently true — a control whose displayed state was the inverse of
-    // what ran. The Dispatcher already renders the operator's choice into
-    // every run as `merge_on_review_cap_outcome`; this graph now reads it.
-    // Default is the sentinel `__merge_on_review_cap_disabled__`, which no
-    // real outcome can equal, so the gate is CLOSED unless the operator opens
-    // it. A non-converging review now parks at the human gate by default.
-    review -> escalate   [label="Blocked", condition="outcome=failed", weight=100]
-    review -> review_fix [label="fix", condition="preferred_label=fix && context.internal.node_visit_count < 3"]
+    // `review_fix_visit_cap` is intentionally one larger than the configured
+    // `dispatcher.review_fix_cap`: the setting counts FIX ROUNDS, while
+    // `context.internal.node_visit_count` counts review VISITS including the
+    // first review. The default cap=3 therefore renders as visit guard `< 4`,
+    // allowing exactly three disposition/review_fix rounds before a fourth
+    // blocking review reaches the cap disposition. disposition.max_visits and
+    // review_fix.max_visits are hard abort backstops for the same budget and
+    // MUST exceed the largest supported review_fix_visit_cap override.
+    //
+    // Routing:
+    //   - approve                 -> pr, by explicit condition only.
+    //   - fix & under cap         -> disposition, then accepted findings route
+    //                                to review_fix and all-rejected rounds
+    //                                route directly back to review.
+    //   - fix & cap + escape hatch -> pr, only when merge_on_review_cap is
+    //                                rendered to outcome=succeeded.
+    //   - fix & cap + default      -> needs_human; the reviewer said fix
+    //                                this, so the run must not ship.
+    //   - node failure             -> needs_human; weight=100 keeps that
+    //                                deterministic against other conditions.
+    review -> needs_human [label="Blocked", condition="outcome=failed", weight=100]
+    review -> disposition [label="fix", condition="preferred_label=fix && context.internal.node_visit_count < {{ inputs.review_fix_visit_cap }}"]
     review -> pr         [label="approve", condition="preferred_label=approve"]
-    review -> pr         [label="ship on review cap", condition="preferred_label=fix && context.internal.node_visit_count >= 3 && outcome={{ inputs.merge_on_review_cap_outcome }}"]
-    review -> escalate   [label="needs-human", condition="preferred_label=fix && context.internal.node_visit_count >= 3 && outcome!={{ inputs.merge_on_review_cap_outcome }}"]
-    review -> escalate   [label="unmatched review outcome"]
+    review -> pr         [label="ship on review cap", condition="preferred_label=fix && context.internal.node_visit_count >= {{ inputs.review_fix_visit_cap }} && outcome={{ inputs.merge_on_review_cap_outcome }}"]
+    review -> needs_human [label="needs-human", condition="preferred_label=fix && context.internal.node_visit_count >= {{ inputs.review_fix_visit_cap }} && outcome!={{ inputs.merge_on_review_cap_outcome }}"]
+    review -> needs_human [label="unmatched review outcome"]
+    disposition -> needs_human [label="Blocked", condition="outcome=failed", weight=100]
+    disposition -> review_fix [label="fix accepted", condition="preferred_label=fix"]
+    disposition -> review     [label="all rejected", condition="preferred_label=all_rejected"]
+    disposition -> needs_human [label="unmatched disposition outcome"]
     review_fix -> janitor
 
     // A failed pr stage (hook rejection, gh failure — structured
-    // needs-human ending per prompts/pr.md) parks at the gate too.
-    pr -> escalate [label="Blocked", condition="outcome=failed"]
+    // needs-human ending per prompts/pr.md) terminates at needs_human too.
+    pr -> needs_human [label="Blocked", condition="outcome=failed"]
     pr -> exit
-
-    // The human's answer = one of these labels; it routes the run back
-    // INTO the loop (or to the abandon terminal node, for triage).
-    escalate -> fix       [label="[R] Retry the fix"]
-    escalate -> implement [label="[I] Re-implement from scratch"]
-    escalate -> abandon   [label="[A] Abandon (leave open for triage)"]
 }

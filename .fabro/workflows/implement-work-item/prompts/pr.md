@@ -1,4 +1,4 @@
-# PR stage — publish the work and arm rebase auto-merge
+# PR stage — publish the work and arm auto-merge
 
 The janitor gate is green. Publish this sandbox clone's committed work
 as a PR per the family merge discipline. You are on a Fabro-managed run
@@ -10,11 +10,13 @@ rides a feature branch named after the work-item instead.
 You are in the SAME isolated Fabro sandbox clone the implement/janitor
 stages produced the committed work in — your CURRENT WORKING DIRECTORY
 is that clone. Run every `git` and `gh` command here, in the current
-directory. The assignment below may mention a `Repo:` path: that is the
+directory. Plain `git` is correct here: the sandbox's prepare chain
+installed the repository's hooks and they fire on every git write —
+never pass `--no-verify`. The assignment below may mention a `Repo:` path: that is the
 dispatcher's host-side checkout, it does NOT exist in this sandbox, and
 you must NEVER `cd` to it or treat the absence of any such path as
 "no committed work". The committed work is reachable as
-`git log --oneline origin/master..HEAD` from where you already are.
+`git log --oneline origin/{{ inputs.default_branch }}..HEAD` from where you already are.
 
 ## Your assignment (for the PR description)
 
@@ -23,21 +25,21 @@ you must NEVER `cd` to it or treat the absence of any such path as
 ## What to do, in order
 
 1. Confirm there is committed work: `git log --oneline
-   origin/master..HEAD`. If there are zero commits, STOP — reply
+   origin/{{ inputs.default_branch }}..HEAD`. If there are zero commits, STOP — reply
    explaining that nothing was produced, and end your reply with
    `{"preferred_next_label": "done"}`.
 2. Refresh the base IMMEDIATELY before publishing: run
-   `mise exec -- git fetch origin master --quiet`, then run
-   `mise exec -- git rebase origin/master`. If the rebase reports
+   `git fetch origin {{ inputs.default_branch }} --quiet`, then run
+   `git rebase origin/{{ inputs.default_branch }}`. If the rebase reports
    conflicts you cannot legitimately resolve, report the rebase output
    verbatim and end with the needs-human protocol below. After a
    successful rebase, re-check committed work with
-   `git log --oneline origin/master..HEAD`; if there are zero commits,
+   `git log --oneline origin/{{ inputs.default_branch }}..HEAD`; if there are zero commits,
    STOP as in step 1.
 3. Publish under the feature branch named in your assignment (the
    "Publish branch" line — `feat/<work-item-id>`), NEVER under the
    current run branch's own name:
-   `mise exec -- git push -u origin HEAD:refs/heads/feat/<work-item-id>`.
+   `git push -u origin HEAD:refs/heads/feat/<work-item-id>`.
    NEVER `--no-verify`; if the pre-push hook fails and you cannot
    legitimately fix the cause, report its output verbatim and end with
    the needs-human protocol below.
@@ -46,9 +48,9 @@ you must NEVER `cd` to it or treat the absence of any such path as
      (the workflow path is named here only as the quoted rejection
      signature; this stage must not edit files under `.github/workflows/`),
      retry EXACTLY ONCE: run
-     `mise exec -- git fetch origin master --quiet`, then
-     `mise exec -- git rebase origin/master`, then repeat the same
-     `mise exec -- git push -u origin HEAD:refs/heads/feat/<work-item-id>`
+     `git fetch origin {{ inputs.default_branch }} --quiet`, then
+     `git rebase origin/{{ inputs.default_branch }}`, then repeat the same
+     `git push -u origin HEAD:refs/heads/feat/<work-item-id>`
      command. If that retry gets the same rejection, or if any other
      push failure occurs during this workflow-permission retry, report
      the output verbatim and end with the needs-human protocol below.
@@ -65,7 +67,7 @@ you must NEVER `cd` to it or treat the absence of any such path as
    - When the non-fast-forward branch is proven to be this run's own
      prior publication, retry EXACTLY ONCE with an explicit lease against
      the observed assignment feature-branch tip:
-     `mise exec -- git push --force-with-lease=refs/heads/feat/<work-item-id>:<observed-remote-tip> origin HEAD:refs/heads/feat/<work-item-id>`.
+     `git push --force-with-lease=refs/heads/feat/<work-item-id>:<observed-remote-tip> origin HEAD:refs/heads/feat/<work-item-id>`.
      The retry targets only `refs/heads/feat/<work-item-id>`, never the
      current run branch. The lease is what makes this overwrite safe: if
      anyone updated the remote branch after your inspection, the lease
@@ -73,7 +75,7 @@ you must NEVER `cd` to it or treat the absence of any such path as
      `--force` push remains forbidden. If the leased retry fails with a
      lease mismatch, or if any other push failure occurs, report the
      output verbatim and end with the needs-human protocol below.
-4. Open the PR against master with
+4. Open the PR against `{{ inputs.default_branch }}` with
    `gh pr create --head feat/<work-item-id>` — title from the
    work-item, body drafted from the work-item acceptance criteria in
    the assignment above, and including the work-item id.
@@ -81,7 +83,8 @@ you must NEVER `cd` to it or treat the absence of any such path as
 
    🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-5. Arm auto-merge: `gh pr merge --rebase --auto --delete-branch <pr-url-or-number>`.
+5. Arm auto-merge with the repository's declared merge mode:
+   `gh pr merge --{{ inputs.merge_mode }} --auto --delete-branch <pr-url-or-number>`.
 6. VERIFY it armed: `gh pr view --json number,autoMergeRequest,mergeStateStatus`.
    - If `autoMergeRequest` is null, retry the arming once and re-verify.
    - If `mergeStateStatus` is `BEHIND`, the repo automation updates the
@@ -104,5 +107,6 @@ a STRUCTURED reason, as a JSON object on the last line:
 
     {"outcome": "failed", "failure_reason": "<what is blocked; what you tried; what decision is needed>"}
 
-The graph routes a failed outcome to an in-loop human gate where an
-operator answers and routes the run back into the loop.
+The graph routes a failed outcome to a terminal `needs_human` node: the
+run preserves the tree on a run-scoped ref and ends, and the work-item
+rests in the ledger at `blocked / needs-human` until a human decides.
