@@ -9896,6 +9896,54 @@ mod tests {
     }
 
     #[test]
+    fn orphaned_factory_runs_round_trips_populated_slot() {
+        // Kills the mutant `replace TuiScreenModel::orphaned_factory_runs ->
+        // &[OrphanedFactoryRun] with Vec::leak(Vec::new())` (cargo-mutants,
+        // PR #923 check-mutants): every other test asserts the slot EMPTY,
+        // which an always-empty getter also satisfies. The populated slot is
+        // what livespec-console-beads-fabro-suleji's production feed will rely
+        // on, so the getter must return what was stored, not a constant.
+        let run = super::source_adapters::OrphanedFactoryRun::new(
+            "01M1RUN",
+            "hp",
+            "failed",
+            "livespec-console-beads-fabro-h7jp",
+            Some("ready"),
+            "superseded-run",
+            "none",
+        );
+        let model = super::TuiScreenModel {
+            active_view: TuiView::Attention,
+            navigation: vec![TuiView::Attention],
+            attention_items: Vec::new(),
+            selected_attention_index: None,
+            detail: None,
+            view_items: Vec::new(),
+            lane_board: project_lane_board(&[]),
+            lane_focus: super::LaneFocus::Overview,
+            selected_lane_index: None,
+            selected_lane_item_index: None,
+            missing_selected_lane_item_id: None,
+            focus: FocusPane::Nav,
+            detail_scroll: 0,
+            header_scroll: 0,
+            overlay: TuiOverlay::None,
+            selected_repo: String::new(),
+            selected_setting_index: None,
+            dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            plugin_resolution: PluginResolution::unresolved(),
+            unavailable_sources: Vec::new(),
+            factory_activity: None,
+            transient_status: None,
+            header: "LiveSpec Console".to_owned(),
+            action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: vec![run.clone()],
+        };
+
+        assert_eq!(model.orphaned_factory_runs(), [run]);
+    }
+
+    #[test]
     fn factory_drain_handler_accepts_starts_and_completes_command() {
         let command = factory_drain_test_command();
         let mut port = CompletingDrainPort::default();
