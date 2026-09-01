@@ -75,12 +75,10 @@ and, in the middle pane:
 The **Detail** pane on the right names the item — `Repo:`, `Work item:`,
 `Fabro run:`, and a `Timeline:` of the events that produced it.
 
-> At this stage `Fabro run:` reads `-` and there is **no** `Attach:` line.
-> This row is the work-item projection — the `valve:approve:<id>` row the
-> needs-attention program also reports is merged into it — and that projection
-> shows `Attach:` only once a Fabro run is attached, which a
-> `pending-approval` item has not reached. Its absence here is expected, not a
-> missing observation. Rows with no work-item behind them behave differently;
+> At this stage `Fabro run:` reads `-`, because the ledger has stamped no
+> dispatch run on this item yet, and there is no `Factory:` line either. There
+> is never an `Attach:` line: the console offers ledger valves, not a handoff
+> into a factory run. Rows with no work-item behind them behave differently;
 > see [Detailed usage](detailed-usage.md#attention-pane).
 
 > If `attention: 0` and the list is empty, the factory does not need you. That

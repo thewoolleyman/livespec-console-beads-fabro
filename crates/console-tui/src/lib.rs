@@ -25,7 +25,7 @@ use console_application::{
     TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
     ViewSummaryItem, action_registry, build_tui_model_for_state, dispatcher_setting_rows,
     header_help_section, reduce_tui_interaction, resolve_command_palette_action,
-    resolve_dispatcher_setting_edit, resolve_selected_operator_action, resolve_valve_action,
+    resolve_dispatcher_setting_edit, resolve_valve_action, validate_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -314,10 +314,6 @@ pub enum TuiRuntimeEffect {
         /// The command's `{ ... }` payload JSON.
         payload_json: String,
     },
-    /// Open attach command variant.
-    OpenAttachCommand(String),
-    /// Copy attach command variant.
-    CopyAttachCommand(String),
     /// Copy driver handoff command variant. This is render/copy only: it never
     /// becomes a persisted console command and never triggers a source poll.
     CopyDriverHandoff(String),
@@ -658,7 +654,14 @@ fn confirm_operator_action(
         | TuiOverlay::WorkItemDetail { .. }
         // The menu confirm returned above; this arm is unreachable for it.
         | TuiOverlay::Menu { .. }
-        | TuiOverlay::Help { .. } => resolve_selected_operator_action(&model, requested_by),
+        // Nothing to confirm on any of these: each is read-only or has already
+        // returned above. They used to fall through to a resolver whose only
+        // resolvable actions were the two Fabro-attach ones, and those are gone
+        // with the handoff they served, so the arm now refuses directly --
+        // still validating the requester first, so a blank one is reported as
+        // the bad request it is rather than absorbed into the refusal.
+        | TuiOverlay::Help { .. } => validate_operator_action(requested_by)
+            .and(Err(ApplicationError::UnavailableOperatorAction)),
     };
     let effect = match outcome {
         Ok(outcome) => action_outcome_effect(outcome),
@@ -680,12 +683,6 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
             command,
             payload_json,
         },
-        OperatorActionOutcome::OpenAttachCommand(command) => {
-            TuiRuntimeEffect::OpenAttachCommand(command)
-        }
-        OperatorActionOutcome::CopyAttachCommand(command) => {
-            TuiRuntimeEffect::CopyAttachCommand(command)
-        }
         OperatorActionOutcome::CopyDriverHandoff(command) => {
             TuiRuntimeEffect::CopyDriverHandoff(command)
         }
@@ -710,31 +707,12 @@ fn command_explainer_confirm_step(
         );
     };
     match action {
-        OperatorAction::OpenFabroAttach | OperatorAction::CopyFabroAttach => {
-            attach_command_explainer_step(
-                state,
-                events,
-                resolve_selected_operator_action(model, requested_by),
-            )
-        }
         OperatorAction::Registered(id) => {
             let staged = action_registry::action_for_id(id)
                 .and_then(|spec| staged_without_selection(model, spec));
             staged_action_step(state, events, staged, requested_by)
         }
     }
-}
-
-fn attach_command_explainer_step(
-    state: &TuiInteractionState,
-    events: &[ConsoleEvent],
-    outcome: Result<OperatorActionOutcome, ApplicationError>,
-) -> TuiRuntimeStep {
-    let effect = outcome.map_or_else(TuiRuntimeEffect::ApplicationError, action_outcome_effect);
-    TuiRuntimeStep::new(
-        reduce_tui_interaction(state, events, TuiInteraction::CloseOverlay),
-        effect,
-    )
 }
 
 fn staged_action_step(
@@ -2588,7 +2566,7 @@ fn render_command_explainer(
         return;
     };
     Clear.render(area, buffer);
-    Paragraph::new(command_explainer_lines(detail, action))
+    Paragraph::new(command_explainer_lines(action))
         .block(
             Block::new()
                 .borders(Borders::ALL)
@@ -2597,13 +2575,10 @@ fn render_command_explainer(
         .render(area, buffer);
 }
 
-fn command_explainer_lines(
-    detail: Option<&AttentionDetail>,
-    action: OperatorAction,
-) -> Vec<Line<'static>> {
+fn command_explainer_lines(action: OperatorAction) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(action.label().to_owned()),
-        Line::from(command_line_for_action(detail, action)),
+        Line::from(command_line_for_action(action)),
         Line::from(""),
     ];
     lines.extend(command_explanation_for_action(action));
@@ -2614,26 +2589,14 @@ fn command_explainer_lines(
     lines
 }
 
-fn command_line_for_action(detail: Option<&AttentionDetail>, action: OperatorAction) -> String {
+fn command_line_for_action(action: OperatorAction) -> String {
     match action {
-        OperatorAction::OpenFabroAttach | OperatorAction::CopyFabroAttach => detail
-            .and_then(AttentionDetail::attach_command)
-            .unwrap_or("(no attach command available)")
-            .to_owned(),
         OperatorAction::Registered(id) => format!("registry action: {id}"),
     }
 }
 
 fn command_explanation_for_action(action: OperatorAction) -> Vec<Line<'static>> {
     match action {
-        OperatorAction::OpenFabroAttach => vec![
-            Line::from("Uses the attach command already present on this detail record."),
-            Line::from("Continuing sends that exact command to the terminal effect sink."),
-        ],
-        OperatorAction::CopyFabroAttach => vec![
-            Line::from("Uses the attach command already present on this detail record."),
-            Line::from("Continuing copies that exact command through the terminal effect sink."),
-        ],
         OperatorAction::Registered(id) => action_registry::action_for_id(id).map_or_else(
             || {
                 vec![Line::from(
@@ -3041,8 +3004,19 @@ fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
         Line::from(format!("Work item: {}", detail.work_item())),
         Line::from(format!("Fabro run: {}", detail.fabro_run())),
     ];
-    if let Some(command) = detail.attach_command() {
-        lines.push(Line::from(format!("Attach: {command}")));
+    // The factory is a SEPARATE line rather than a suffix on the run: it names
+    // the server the run lives on, and a triager reading a bare run id against
+    // a multi-factory fleet has no way to tell which host holds it.
+    if let Some(factory) = detail.fabro_factory() {
+        lines.push(Line::from(format!("Factory: {factory}")));
+    }
+    // The pressable commands the orchestrator's attention projection
+    // advertises. This line used to read `Attach: fabro attach <run>`, composed
+    // by the console; for a needs-human item it now carries that item's
+    // `resolve-blocked` valve, because the run it would have attached to no
+    // longer exists (scenarios.md Scenario 30).
+    for command in detail.valve_commands() {
+        lines.push(Line::from(format!("Valve: {command}")));
     }
     if !detail.actions().is_empty() {
         lines.push(Line::from(format!(
@@ -3109,15 +3083,14 @@ mod tests {
     use super::{
         DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, TuiLiveSession, TuiRenderError,
         TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
-        TuiTerminalInput, action_available_for_model, action_outcome_effect,
-        attach_command_explainer_step, attention_item_line, buffer_to_text,
-        command_explainer_confirm_step, command_explainer_lines, command_explanation_for_action,
-        detail_lines, effect_triggers_source_poll, full_width_explainer_rect, global_help_lines,
-        help_lines_for_view, help_outcome, key_event_to_terminal_input, menu_confirm_step,
-        registry_action_input, registry_staging_explanation, render_command_explainer,
-        render_command_modal, render_detail, render_menu_overlay, render_model,
-        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        staged_action_step, step_tui_runtime,
+        TuiTerminalInput, action_available_for_model, action_outcome_effect, attention_item_line,
+        buffer_to_text, command_explainer_confirm_step, command_explainer_lines,
+        command_explanation_for_action, detail_lines, effect_triggers_source_poll,
+        full_width_explainer_rect, global_help_lines, help_lines_for_view, help_outcome,
+        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
+        registry_staging_explanation, render_command_explainer, render_command_modal,
+        render_detail, render_menu_overlay, render_model, render_summary_detail, render_to_text,
+        render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
     };
 
     macro_rules! assert {
@@ -3887,7 +3860,8 @@ mod tests {
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            Some("fabro attach run".to_owned()),
+            Some("hp".to_owned()),
+            vec!["drive resolve-blocked:work-item:ready".to_owned()],
             timeline,
             vec![],
         );
@@ -3938,7 +3912,8 @@ mod tests {
             "livespec-orchestrator-beads-fabro".to_owned(),
             "bd-ib-ss7rkr".to_owned(),
             "fabro-run-5137117035853731187".to_owned(),
-            Some("fabro attach fabro-run-5137117035853731187".to_owned()),
+            Some("hp".to_owned()),
+            vec!["drive resolve-blocked:bd-ib-ss7rkr:ready".to_owned()],
             timeline,
             vec![],
         );
@@ -4473,13 +4448,37 @@ mod tests {
             "operator",
         );
 
+        // Confirm with no overlay open has nothing to act on. It used to fall
+        // through to a resolver whose only resolvable actions were the two
+        // Fabro-attach ones (hence the "no selected action" wording); with the
+        // attach handoff retired the arm refuses directly, and the refusal says
+        // so.
         assert_eq!(
             step.effect(),
             &TuiRuntimeEffect::ApplicationError(
-                console_application::ApplicationError::NoSelectedOperatorAction
+                console_application::ApplicationError::UnavailableOperatorAction
             )
         );
         assert_eq!(persisted_command(step.effect()), None);
+    }
+
+    /// A blank requester is still reported as the bad request it is.
+    ///
+    /// The refusal above must not swallow it: an empty `requested_by` is a
+    /// caller defect, and collapsing the two would hide it behind "nothing to
+    /// do here".
+    #[test]
+    fn runtime_step_rejects_a_blank_requester_before_refusing() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+
+        let step = step_tui_runtime(&state, &demo_events(), TuiTerminalInput::Confirm, "  ");
+
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::EmptyOperatorAction
+            )
+        );
     }
 
     #[test]
@@ -5053,16 +5052,17 @@ mod tests {
     }
 
     #[test]
-    fn render_command_modal_draws_available_attach_actions() {
+    fn render_command_modal_draws_available_actions() {
         let detail = AttentionDetail::new(
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            Some("fabro attach run".to_owned()),
+            None,
+            vec![],
             vec![],
             vec![
-                OperatorAction::OpenFabroAttach,
-                OperatorAction::CopyFabroAttach,
+                OperatorAction::Registered("approve"),
+                OperatorAction::Registered("accept"),
             ],
         );
         let area = Rect::new(0, 0, 40, 6);
@@ -5071,8 +5071,8 @@ mod tests {
         render_command_modal(Some(&detail), 1, area, &mut buffer);
         let output = buffer_to_text(&buffer, area);
 
-        assert!(output.contains("Open Fabro attach"));
-        assert!(output.contains("> Copy Fabro attach"));
+        assert!(output.contains("Approve work-item"));
+        assert!(output.contains("> Accept work-item"));
     }
 
     #[test]
@@ -5119,9 +5119,10 @@ mod tests {
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            Some("fabro attach run --copy-safe".to_owned()),
+            None,
             vec![],
-            vec![OperatorAction::CopyFabroAttach],
+            vec![],
+            vec![OperatorAction::Registered("set-acceptance-rework-cap")],
         );
         let area = Rect::new(0, 0, 80, 24);
         let overlay = full_width_explainer_rect(area);
@@ -5131,13 +5132,13 @@ mod tests {
         let output = buffer_to_text(&buffer, area);
         let command_row = output
             .lines()
-            .find(|line| line.contains("fabro attach run --copy-safe"))
+            .find(|line| line.contains("registry action: set-acceptance-rework-cap"))
             .unwrap_or_default();
 
         assert_eq!(overlay.x, area.x);
         assert_eq!(overlay.width, area.width);
-        assert!(command_row.contains("fabro attach run --copy-safe"));
-        assert!(!command_row.contains("Uses the attach command"));
+        assert!(command_row.contains("registry action: set-acceptance-rework-cap"));
+        assert!(!command_row.contains("Registry id:"));
     }
 
     #[test]
@@ -5147,6 +5148,7 @@ mod tests {
             "work-item".to_owned(),
             "run".to_owned(),
             None,
+            vec![],
             vec![],
             vec![OperatorAction::Registered("approve")],
         );
@@ -5194,21 +5196,8 @@ mod tests {
     }
 
     #[test]
-    fn command_explainer_lines_cover_attach_and_unknown_registry_actions() {
-        let detail = AttentionDetail::new(
-            "repo".to_owned(),
-            "work-item".to_owned(),
-            "run".to_owned(),
-            Some("fabro attach run".to_owned()),
-            vec![],
-            vec![],
-        );
-        let open = command_explainer_lines(Some(&detail), OperatorAction::OpenFabroAttach)
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let copy = command_explanation_for_action(OperatorAction::CopyFabroAttach)
+    fn command_explainer_lines_cover_known_and_unknown_registry_actions() {
+        let known = command_explainer_lines(OperatorAction::Registered("approve"))
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -5219,8 +5208,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(open.contains("Continuing sends that exact command"));
-        assert!(copy.contains("Continuing copies that exact command"));
+        assert!(known.contains("registry action: approve"));
+        assert!(known.contains("Registry id: approve"));
         assert!(unknown.contains("registry entry for this action is not available"));
     }
 
@@ -5246,71 +5235,6 @@ mod tests {
         assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
     }
 
-    #[cfg(coverage)]
-    #[test]
-    fn command_explainer_confirm_covers_attach_detail_actions() {
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::CommandExplainer {
-                selected_action_index: 0,
-            },
-        );
-        let detail = AttentionDetail::new(
-            "repo".to_owned(),
-            "work-item".to_owned(),
-            "run".to_owned(),
-            Some("fabro attach run".to_owned()),
-            vec![],
-            vec![OperatorAction::OpenFabroAttach],
-        );
-        let model = TuiScreenModel::coverage_fixture_with_detail(detail, state.overlay().clone());
-
-        let step = command_explainer_confirm_step(&state, &pending_events(), &model, 0, "op");
-
-        assert_eq!(step.state().overlay(), &TuiOverlay::None);
-        assert_eq!(
-            step.effect(),
-            &TuiRuntimeEffect::OpenAttachCommand("fabro attach run".to_owned())
-        );
-    }
-
-    #[test]
-    fn attach_command_explainer_step_closes_and_maps_the_resolved_outcome() {
-        let state = TuiInteractionState::new(
-            0,
-            TuiOverlay::CommandExplainer {
-                selected_action_index: 0,
-            },
-        );
-        let events = pending_events();
-
-        let opened = attach_command_explainer_step(
-            &state,
-            &events,
-            Ok(OperatorActionOutcome::OpenAttachCommand(
-                "fabro attach run".to_owned(),
-            )),
-        );
-        assert_eq!(opened.state().overlay(), &TuiOverlay::None);
-        assert_eq!(
-            opened.effect(),
-            &TuiRuntimeEffect::OpenAttachCommand("fabro attach run".to_owned())
-        );
-
-        let failed = attach_command_explainer_step(
-            &state,
-            &events,
-            Err(console_application::ApplicationError::NoSelectedOperatorAction),
-        );
-        assert_eq!(failed.state().overlay(), &TuiOverlay::None);
-        assert_eq!(
-            failed.effect(),
-            &TuiRuntimeEffect::ApplicationError(
-                console_application::ApplicationError::NoSelectedOperatorAction
-            )
-        );
-    }
-
     #[test]
     fn command_explainer_render_is_inert_without_a_selected_action() {
         let detail = AttentionDetail::new(
@@ -5318,6 +5242,7 @@ mod tests {
             "work-item".to_owned(),
             "run".to_owned(),
             None,
+            vec![],
             vec![],
             vec![],
         );
@@ -5441,12 +5366,13 @@ mod tests {
     }
 
     #[test]
-    fn detail_lines_omit_attach_when_absent() {
+    fn detail_lines_state_an_undispatched_item_without_inventing_a_valve() {
         let detail = AttentionDetail::new(
             "repo".to_owned(),
             "work-item".to_owned(),
             "-".to_owned(),
             None,
+            vec![],
             vec![],
             vec![],
         );
@@ -5458,35 +5384,44 @@ mod tests {
             .join("\n");
 
         assert!(rendered.contains("Fabro run: -"));
-        assert!(!rendered.contains("Attach:"));
+        assert!(!rendered.contains("Factory:"));
+        assert!(!rendered.contains("Valve:"));
+        // The retired handoff must not come back under any spelling.
+        assert!(!rendered.contains("Attach"));
     }
 
+    /// Scenario 30 at the RENDER: the valve the projection advertises reaches
+    /// the screen, beside the run's own factory, and no attach line does.
     #[test]
-    fn detail_lines_include_attach_actions_when_present() {
+    fn detail_lines_render_the_advertised_valve_and_factory() {
         let detail = AttentionDetail::new(
             "repo".to_owned(),
             "work-item".to_owned(),
-            "run".to_owned(),
-            Some("fabro attach run".to_owned()),
+            "01RUN".to_owned(),
+            Some("hp".to_owned()),
+            vec!["drive resolve-blocked:work-item:ready".to_owned()],
             vec![],
             vec![
-                OperatorAction::OpenFabroAttach,
-                OperatorAction::CopyFabroAttach,
+                OperatorAction::Registered("approve"),
+                OperatorAction::Registered("accept"),
             ],
         );
 
         let lines = detail_lines(&detail);
-        // The detail lines carry the optional actions line between the fixed
-        // fields and the `Timeline:` header (the four fields + actions + header =
-        // six logical lines here, before any wrapping).
-        assert_eq!(lines.len(), 6);
+        // Three fixed fields + factory + one valve + the actions line + the
+        // `Timeline:` header = seven logical lines, before any wrapping.
+        assert_eq!(lines.len(), 7);
         let rendered = lines
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("Actions: Open Fabro attach, Copy Fabro attach"));
+        assert!(rendered.contains("Fabro run: 01RUN"));
+        assert!(rendered.contains("Factory: hp"));
+        assert!(rendered.contains("Valve: drive resolve-blocked:work-item:ready"));
+        assert!(rendered.contains("Actions: Approve work-item, Accept work-item"));
+        assert!(!rendered.contains("Attach"));
     }
 
     #[test]
@@ -5498,27 +5433,21 @@ mod tests {
             "Needs review".to_owned(),
             "source".to_owned(),
             "repo".to_owned(),
-            Some(OperatorAction::OpenFabroAttach),
+            Some(OperatorAction::Registered("approve")),
         );
 
         let rendered = format!("{:?}", attention_item_line(&model, 0, &item));
 
-        assert!(rendered.contains("> Needs review [Open Fabro attach]"));
+        assert!(rendered.contains("> Needs review [Approve work-item]"));
     }
 
     #[test]
-    fn action_outcome_effect_maps_attach_outcomes() {
+    fn action_outcome_effect_maps_the_terminal_copy_outcome() {
         assert_eq!(
-            action_outcome_effect(OperatorActionOutcome::OpenAttachCommand(
-                "fabro attach run".to_owned()
+            action_outcome_effect(OperatorActionOutcome::CopyDriverHandoff(
+                "claude groom wi".to_owned()
             )),
-            TuiRuntimeEffect::OpenAttachCommand("fabro attach run".to_owned())
-        );
-        assert_eq!(
-            action_outcome_effect(OperatorActionOutcome::CopyAttachCommand(
-                "fabro attach run".to_owned()
-            )),
-            TuiRuntimeEffect::CopyAttachCommand("fabro attach run".to_owned())
+            TuiRuntimeEffect::CopyDriverHandoff("claude groom wi".to_owned())
         );
     }
 
@@ -5604,8 +5533,6 @@ mod tests {
             TuiRuntimeEffect::PersistCommand(command)
             | TuiRuntimeEffect::PersistCommandWithPayload { command, .. } => Some(command),
             TuiRuntimeEffect::Render
-            | TuiRuntimeEffect::OpenAttachCommand(_)
-            | TuiRuntimeEffect::CopyAttachCommand(_)
             | TuiRuntimeEffect::CopyDriverHandoff(_)
             | TuiRuntimeEffect::Quit
             | TuiRuntimeEffect::ApplicationError(_) => None,
@@ -5618,8 +5545,6 @@ mod tests {
             TuiRuntimeEffect::PersistCommandWithPayload { payload_json, .. } => Some(payload_json),
             TuiRuntimeEffect::PersistCommand(_)
             | TuiRuntimeEffect::Render
-            | TuiRuntimeEffect::OpenAttachCommand(_)
-            | TuiRuntimeEffect::CopyAttachCommand(_)
             | TuiRuntimeEffect::CopyDriverHandoff(_)
             | TuiRuntimeEffect::Quit
             | TuiRuntimeEffect::ApplicationError(_) => None,

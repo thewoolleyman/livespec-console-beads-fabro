@@ -17,7 +17,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let event_type = match selector % 4 {
         0 => EventType::DispatcherBacklogBounceObserved,
-        1 => EventType::FabroHumanGateObserved,
+        1 => EventType::FabroRunObserved,
         2 => EventType::FactoryDrainRequested,
         _ => EventType::LivespecReviseRequired,
     };

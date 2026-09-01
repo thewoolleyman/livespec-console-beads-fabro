@@ -62,7 +62,7 @@ These pin the **structure** of claims (a hint, key binding, asset name, release
 version, or detail line moving out from under the prose):
 `docs_status_hint_lockstep`, `docs_enter_key_lockstep`,
 `docs_release_asset_lockstep`, `docs_release_version_lockstep`, and two tmux
-scenes pinning the Detail-pane `Attach:` split. **They do NOT verify that prose
+scenes pinning the Detail-pane `Valve:` split. **They do NOT verify that prose
 describing a named behavior is correct**, and there are recorded cases of every
 gate staying green while the description rotted.
 
