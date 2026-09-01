@@ -341,6 +341,21 @@ enabled = false
 # --- Prepare steps: provision the clone as the secondary-worktree
 # --- equivalent (Architecture C "RGR steeling", minus primaryPath).
 #
+# CONSOLE DIVERGENCE #2 (2026-09-01, run 01M1FA83AHM3N3WW143ATNPSBH):
+# upstream writes every toolchain/conformance step as a `set -- {{
+# inputs.<name> }}` PROJECTION, but `[[run.prepare.steps]]` is NOT a
+# rendered position on the pinned fabro build (v0.254.0/8de6611, client
+# and hp server): the sandbox executed the literal `{{` and died exit 127
+# before any agent work, and the Dispatcher side's
+# `contract_prepare_parameters` projection has no consumer in plugin
+# d709f27ac3c1, so nothing pre-renders them either. Until the engine or
+# the Dispatcher renders prepare steps, this fork spells the six
+# commands LITERALLY (the same commands the resolver returns for this
+# fleet member; the anonymous-mise rationale lives in the orchestrator's
+# .livespec.jsonc comment, work-item bd-ib-bic7hb). The graph and the
+# prompts KEEP their `inputs.*` tokens: node scripts and prompts are
+# rendered positions. Defect filed to the orchestrator tenant.
+#
 # EVERY TOOLCHAIN AND CONFORMANCE PREMISE BELOW IS A PROJECTION, NOT A
 # LITERAL. The command each step runs arrives as an `inputs.<name>` value the
 # Dispatcher rendered from the governed repository's resolved integration
@@ -370,7 +385,7 @@ script = "git fetch --unshallow --quiet"
 # `.livespec.jsonc`, where the rationale for its anonymous, credential-scrubbed
 # form lives beside the command (work-item bd-ib-bic7hb); an adopter without a
 # version manager declares nothing and the step is the ratified no-op.
-script = "set -- {{ inputs.prepare_toolchain_mise }}; test $# -eq 0 || \"$@\""
+script = "sh -c 'mise trust && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_API_TOKEN mise install --quiet'"
 
 [[run.prepare.steps]]
 script = "uv sync --all-groups"
@@ -378,7 +393,7 @@ script = "uv sync --all-groups"
 [[run.prepare.steps]]
 # Toolchain premise #2 — the hook-manager install (the hook-manager arm of
 # `dispatcher.prepare_toolchain`); no-op for an adopter without one.
-script = "set -- {{ inputs.prepare_toolchain_lefthook }}; test $# -eq 0 || \"$@\""
+script = "uv run lefthook install"
 
 [[run.prepare.steps]]
 # Dispatch-time baseline conformance gate — the MECHANISM (Conformance
@@ -392,7 +407,7 @@ script = "set -- {{ inputs.prepare_toolchain_lefthook }}; test $# -eq 0 || \"$@\
 # installer, and `no_op` skips the step. The structural body's hook-manager
 # delegation fires the Red-Green-Replay gates on every in-sandbox commit (the
 # refuse branch is skipped by the exemption marker set in the next step).
-script = "set -- {{ inputs.conformance_hook_install }}; test $# -eq 0 || \"$@\""
+script = "uv run python -m livespec_dev_tooling.install_commit_refuse_hooks"
 
 [[run.prepare.steps]]
 # Declare the sandbox EXEMPT from the commit-refuse refuse branch
@@ -418,7 +433,7 @@ script = "set -- {{ inputs.conformance_hook_install }}; test $# -eq 0 || \"$@\""
 # refuse such a hook loudly is the pending propose-change recorded as plan
 # bd-ib-vblnq2 deferral D5. Local config only — never leaves the ephemeral
 # sandbox (pushes carry refs, not config).
-script = "git config {{ inputs.sandbox_exempt_marker }} true"
+script = "git config livespec.sandboxExempt true"
 
 [[run.prepare.steps]]
 # Dispatch-time baseline conformance gate — Verifier #1 (Conformance
@@ -431,7 +446,7 @@ script = "git config {{ inputs.sandbox_exempt_marker }} true"
 # run). A non-zero exit aborts the run before any work is driven — the gate
 # makes every dispatched sandbox conformant by construction. Codified in
 # SPECIFICATION/contracts.md §"Dispatch-time baseline conformance gate".
-script = "set -- {{ inputs.conformance_verify_commit_refuse_hook }}; test $# -eq 0 || \"$@\""
+script = "uv run python -m livespec_dev_tooling.checks.primary_checkout_commit_refuse_hook_installed"
 
 [[run.prepare.steps]]
 # Dispatch-time baseline conformance gate — Verifier #2 (Conformance
@@ -441,4 +456,4 @@ script = "set -- {{ inputs.conformance_verify_commit_refuse_hook }}; test $# -eq
 # the dispatched repo's optional .livespec.jsonc `harnesses` declaration and
 # fail-closes on a malformed one. A non-zero exit aborts the run.
 # Enforcement-in-depth: one Verifier layered across the tiers.
-script = "set -- {{ inputs.conformance_verify_plugin_resolution }}; test $# -eq 0 || \"$@\""
+script = "uv run python -m livespec_dev_tooling.checks.plugin_resolution"

@@ -224,6 +224,18 @@
       // console implement turn cannot fit a cold cargo build + test cycle
       // inside 30 minutes; the values below restore what the fork already
       // declares and what the fleet's other dispatch targets set.
+      // In-sandbox janitor check suite (contract field
+      // `dispatcher.janitor.check_suite`, rendered into the workflow's
+      // `inputs.sandbox_check_suite` and run by the janitor node). DECLARED
+      // rather than left to the fleet default ("mise exec -- just check")
+      // because this repo's plain `just check` does NOT include
+      // `check-no-workflow-edits` — the recipe that refuses workflow-file
+      // drift acquired DURING a run, before the fleet App's contents-only
+      // push token turns it into an opaque push rejection at the pr stage.
+      // The old fork hardcoded exactly this command in its janitor node.
+      "janitor": {
+        "check_suite": ["mise", "exec", "--", "just", "check-no-workflow-edits", "check"]
+      },
       "node_timeouts": {
         "implement": 14400,
         "janitor": 3600,
