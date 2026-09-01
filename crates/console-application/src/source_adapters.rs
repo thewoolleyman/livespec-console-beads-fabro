@@ -501,6 +501,12 @@ pub struct WorkItemDetail {
     /// Ledger comments carried with a work-item when the observed surface
     /// includes them, oldest first.
     pub comments: Vec<WorkItemComment>,
+    /// The Fabro run id that dispatched this item, when the orchestrator has
+    /// emitted it as `dispatch_fabro_run_id` metadata.
+    pub dispatch_fabro_run_id: Option<String>,
+    /// The factory that dispatched this item, when the orchestrator has
+    /// emitted it as `dispatch_factory` metadata.
+    pub dispatch_factory: Option<String>,
 }
 
 impl WorkItemDetail {
@@ -531,7 +537,7 @@ impl WorkItemDetail {
             .iter()
             .map(WorkItemComment::digest)
             .collect::<String>();
-        let fields: [Option<&str>; 20] = [
+        let fields: [Option<&str>; 22] = [
             self.title.as_deref(),
             self.description.as_deref(),
             self.item_type.as_deref(),
@@ -552,6 +558,8 @@ impl WorkItemDetail {
             self.admission_policy.as_deref(),
             self.acceptance_policy.as_deref(),
             Some(&comments),
+            self.dispatch_fabro_run_id.as_deref(),
+            self.dispatch_factory.as_deref(),
         ];
         let mut encoded = String::new();
         for field in fields {
@@ -1106,6 +1114,10 @@ pub fn dispatcher_journal_from_payload_json(payload_json: &str) -> Option<Dispat
 pub enum FabroRunState {
     /// Human gate variant.
     HumanGate,
+    /// Needs human variant — a run that terminated at the `needs_human` node.
+    NeedsHuman,
+    /// Active variant — a run still executing.
+    Active,
 }
 
 impl FabroRunState {
@@ -1114,6 +1126,8 @@ impl FabroRunState {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::HumanGate => "human-gate",
+            Self::NeedsHuman => "needs-human",
+            Self::Active => "active",
         }
     }
 }
@@ -1869,6 +1883,12 @@ impl ParsedObservation {
             events,
         }
     }
+
+    #[must_use]
+    /// Return the normalized source events produced by the observation.
+    pub fn events(&self) -> &[NormalizedSourceEvent] {
+        &self.events
+    }
 }
 
 /// Source-specific normalizer.
@@ -2378,6 +2398,8 @@ pub fn parse_orchestrator_observation(
             admission_policy: record_text(&raw, "admission_policy"),
             acceptance_policy: record_text(&raw, "acceptance_policy"),
             comments: record_comments(&raw),
+            dispatch_fabro_run_id: record_text(&raw, "dispatch_fabro_run_id"),
+            dispatch_factory: record_text(&raw, "dispatch_factory"),
         };
         // Policy, rank, and status join lane/lane_reason in the identity hash
         // so a policy edit, re-rank, or status transition appends a fresh
@@ -2588,20 +2610,141 @@ pub fn parse_fabro_observation(observed: &ObservedSource) -> Result<ParsedObserv
         .ok_or_else(|| "no fabro run observed".to_owned())?;
     let work_item_id =
         first_json_string(observed.stdout(), "work_item_id").unwrap_or_else(|| run_id.clone());
+    let state = match first_json_string(observed.stdout(), "status_kind")
+        .as_deref()
+        .unwrap_or("")
+    {
+        "needs-human" => FabroRunState::NeedsHuman,
+        "active" => FabroRunState::Active,
+        _ => FabroRunState::HumanGate,
+    };
     let version = source_stream_seq(&[&run_id, &work_item_id]);
-    let snapshot = FabroRunSnapshot::new(
-        observed.repo(),
-        &work_item_id,
-        &run_id,
-        FabroRunState::HumanGate,
-        version,
-    )
-    .map_err(|_error| "invalid fabro run".to_owned())?;
+    let snapshot = FabroRunSnapshot::new(observed.repo(), &work_item_id, &run_id, state, version)
+        .map_err(|_error| "invalid fabro run".to_owned())?;
     let poll = normalize_fabro_run_snapshot(snapshot);
     Ok(ParsedObservation::new(
         &version.to_string(),
         poll.events().to_vec(),
     ))
+}
+
+/// One orphaned factory run reported by the orchestrator's `reconcile-runs --dry-run --json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanedFactoryRun {
+    run_id: String,
+    factory: String,
+    status_kind: String,
+    work_item_id: String,
+    work_item_status: String,
+    orphan_reason: String,
+    remedy_command: String,
+}
+
+impl OrphanedFactoryRun {
+    #[must_use]
+    /// Return the run id value.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    #[must_use]
+    /// Return the factory value.
+    pub fn factory(&self) -> &str {
+        &self.factory
+    }
+
+    #[must_use]
+    /// Return the status kind value.
+    pub fn status_kind(&self) -> &str {
+        &self.status_kind
+    }
+
+    #[must_use]
+    /// Return the work item id value.
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    /// Return the work item status value.
+    pub fn work_item_status(&self) -> &str {
+        &self.work_item_status
+    }
+
+    #[must_use]
+    /// Return the orphan reason value.
+    pub fn orphan_reason(&self) -> &str {
+        &self.orphan_reason
+    }
+
+    #[must_use]
+    /// Return the remedy command value.
+    pub fn remedy_command(&self) -> &str {
+        &self.remedy_command
+    }
+}
+
+/// Parse the orchestrator's `reconcile-runs --dry-run --json` output into
+/// orphaned factory run records.
+///
+/// Returns an empty vec when the output contains no orphaned runs.
+/// Returns `Err` only when the output is not valid JSON.
+pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<Vec<OrphanedFactoryRun>, String> {
+    let values: Vec<serde_json::Value> = serde_json::from_str(stdout)
+        .map_err(|_| "reconcile-runs output is not a JSON array".to_owned())?;
+    let mut runs = Vec::new();
+    for value in values {
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
+        let Some(run_id) = obj
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let factory = obj
+            .get("factory")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let status_kind = obj
+            .get("status_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let work_item_id = obj
+            .get("work_item_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let work_item_status = obj
+            .get("work_item_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let orphan_reason = obj
+            .get("orphan_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let remedy_command = obj
+            .get("remedy_command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        runs.push(OrphanedFactoryRun {
+            run_id,
+            factory,
+            status_kind,
+            work_item_id,
+            work_item_status,
+            orphan_reason,
+            remedy_command,
+        });
+    }
+    Ok(runs)
 }
 
 /// Normalize real `livespec next` output into a `LivespecNextSnapshot`.

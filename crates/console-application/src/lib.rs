@@ -1655,6 +1655,7 @@ pub struct TuiScreenModel {
     transient_status: Option<String>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
+    orphaned_factory_runs: Vec<source_adapters::OrphanedFactoryRun>,
 }
 
 impl TuiScreenModel {
@@ -1937,6 +1938,22 @@ impl TuiScreenModel {
     /// Return the header value.
     pub fn header(&self) -> &str {
         &self.header
+    }
+
+    #[must_use]
+    /// Return the orphaned factory runs value.
+    pub fn orphaned_factory_runs(&self) -> &[source_adapters::OrphanedFactoryRun] {
+        &self.orphaned_factory_runs
+    }
+
+    #[must_use]
+    /// Builder: replace the orphaned factory runs with the given list.
+    pub fn with_orphaned_factory_runs(
+        mut self,
+        runs: Vec<source_adapters::OrphanedFactoryRun>,
+    ) -> Self {
+        self.orphaned_factory_runs = runs;
+        self
     }
 
     #[must_use]
@@ -3664,6 +3681,7 @@ pub fn build_tui_model_for_state(
         dispatcher_settings: state.dispatcher_settings().clone(),
         plugin_resolution: state.plugin_resolution().clone(),
         action_failures: project_action_failures(events),
+        orphaned_factory_runs: Vec::new(),
         // The canonical, untruncated header. `header_line` keeps this display
         // order for wide terminals and sheds narrow-terminal fields by declared
         // information-value priority, not by this string's field positions.
@@ -7537,15 +7555,12 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
 fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) -> AttentionDetail {
     let event = &entry.event;
     let fabro_run = fabro_run_id_for_attention(entry, events);
-    let attach_command = fabro_run
-        .as_deref()
-        .map(|run_id| format!("fabro attach {run_id}"));
     let actions = attention_detail_actions(entry);
     AttentionDetail::new(
         entry.snapshot.repo().to_owned(),
         entry.snapshot.work_item_id().to_owned(),
         fabro_run.unwrap_or_else(|| "-".to_owned()),
-        attach_command,
+        None,
         latest_timeline(events, event.stream_id(), 3),
         actions,
     )
@@ -7725,6 +7740,7 @@ fn attention_stream_repo(stream_id: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[cfg(test)]
 fn fabro_run_id(event: &ConsoleEvent) -> Option<String> {
     fabro_run_snapshot_from_payload_json(event.payload_json())
         .map(|snapshot| snapshot.run_id().to_owned())
@@ -7732,21 +7748,9 @@ fn fabro_run_id(event: &ConsoleEvent) -> Option<String> {
 
 fn fabro_run_id_for_attention(
     entry: &AttentionSnapshot,
-    events: &[ConsoleEvent],
+    _events: &[ConsoleEvent],
 ) -> Option<String> {
-    events.iter().rev().find_map(|event| {
-        if *event.event_type() != EventType::FabroHumanGateObserved {
-            return None;
-        }
-        let snapshot = fabro_run_snapshot_from_payload_json(event.payload_json())?;
-        if snapshot.repo() == entry.snapshot.repo()
-            && snapshot.work_item_id() == entry.snapshot.work_item_id()
-        {
-            fabro_run_id(event)
-        } else {
-            None
-        }
-    })
+    entry.snapshot.detail().dispatch_fabro_run_id.clone()
 }
 
 fn latest_timeline(
@@ -9892,6 +9896,7 @@ mod tests {
             transient_status: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         assert_eq!(model.selected_operator_action(), None);
@@ -9937,6 +9942,7 @@ mod tests {
             transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         let open = resolve_selected_operator_action(&model, "operator");
@@ -10536,6 +10542,7 @@ mod tests {
             transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         let open = resolve_selected_operator_action(&model, "operator");
@@ -10650,7 +10657,11 @@ mod tests {
     }
 
     #[test]
-    fn attention_detail_renders_attach_for_matching_fabro_payload() {
+    fn attention_detail_no_attach_and_dash_run_when_gate_event_but_no_dispatch_metadata() {
+        // A `FabroHumanGateObserved` event is present but the work-item snapshot
+        // carries no `dispatch_fabro_run_id` metadata. The run id comes from
+        // dispatch metadata only, so `fabro_run` falls back to "-" and there is
+        // no attach command.
         let events = [
             lane_event(
                 "evt_blocked",
@@ -10667,18 +10678,21 @@ mod tests {
 
         assert_eq!(
             model.detail().map(super::AttentionDetail::fabro_run),
-            Some("run_17")
+            Some("-")
         );
         assert_eq!(
             model
                 .detail()
                 .and_then(super::AttentionDetail::attach_command),
-            Some("fabro attach run_17")
+            None
         );
     }
 
     #[test]
-    fn attention_detail_ignores_malformed_fabro_gate_payloads() {
+    fn attention_detail_no_run_id_when_dispatch_metadata_absent() {
+        // `fabro_run_id_for_attention` reads only from `dispatch_fabro_run_id`
+        // metadata; events are not consulted. A work-item snapshot with no
+        // dispatch metadata yields `None` regardless of which events are present.
         let lane = lane_event(
             "evt_blocked",
             "console-blocked",
@@ -10689,16 +10703,10 @@ mod tests {
         );
         let entries = super::attention_snapshots(&[lane]);
         check(entries.len() == 1, "attention fixture should build");
-        let bad_fabro =
-            ConsoleEvent::fixture("evt_bad_fabro", EventType::FabroHumanGateObserved, "fabro")
-                .with_payload_json("{}".to_owned());
 
-        let run_id = super::fabro_run_id_for_attention(&entries[0], &[bad_fabro]);
+        let run_id = super::fabro_run_id_for_attention(&entries[0], &[]);
 
-        check(
-            run_id.is_none(),
-            "malformed fabro gate payload should not produce an attach command",
-        );
+        check(run_id.is_none(), "no dispatch metadata means no run id");
     }
 
     #[test]
@@ -16592,6 +16600,7 @@ mod tests {
             transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         assert_eq!(
@@ -16815,6 +16824,7 @@ mod tests {
             transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         let overlay = super::open_command_modal(&model);
