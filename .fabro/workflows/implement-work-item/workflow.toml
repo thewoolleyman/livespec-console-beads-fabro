@@ -13,7 +13,7 @@
 # The sandbox clone is the secondary-worktree EQUIVALENT under the
 # family discipline: the prepare steps below provision it exactly like
 # `just bootstrap` EXCEPT that the commit-refuse wrapper's refuse branch
-# is DECLARED EXEMPT here so the Red-Green-Replay lefthook gates run on
+# is DECLARED EXEMPT here so the Red-Green-Replay hook-manager gates run on
 # every in-sandbox commit. The sandbox is a fresh FULL clone, so under
 # the structural commit-refuse mechanism (livespec-zs22.7.3: refuse when
 # git-dir == git-common-dir) it reads structurally as a primary checkout
@@ -91,40 +91,61 @@ goal = "Implement one ready work-item per the livespec family discipline"
 # per-exec re-mint the CREDENTIAL CHANNEL note above already ASSUMES but which
 # was never actually requested. (git push is refreshed separately via origin-URL
 # rotation at each ACP node entry — fabro-workflow acp.rs turn-entry re-mint.)
-#
-# PORTED FROM THE ORCHESTRATOR 2026-07-30. Its absence here is the diagnosed
-# cause of this thread's § 0d failure: slice C's `pr` node pushed successfully
-# and then `gh pr create` returned HTTP 401 after a 1h51m run, and the handoff
-# recorded that contradiction as UNEXPLAINED. Upstream's rationale above
-# explains both halves — push rotates, gh does not.
 [run.integrations.github.permissions]
 contents = "write"
 pull_requests = "write"
 
 [run.inputs]
-# ACP coding-agent adapter for the implement/fix/review_fix nodes (the
-# IMPLEMENTER nodes). Defaults to the Claude adapter; the Dispatcher
-# overrides it per provider via `fabro run --input acp_adapter=...` to route
-# the implementer work to a Codex worker (Slice B / bd-ib-g7e34u wires the
-# Codex credential projection that makes that switch live).
+# ONE ADAPTER INPUT PER ACP NODE. Every node below declares its own input so
+# each node's adapter, model and reasoning effort is INDEPENDENTLY
+# configurable — `dispatcher.acp_nodes.fix` can move the fix node alone
+# without touching the implementer. The three implementer nodes previously
+# shared a single `acp_adapter`, which made per-node configuration of `fix`
+# or `review_fix` inexpressible no matter what the configuration said; the
+# defaults below are deliberately IDENTICAL for the three, so splitting the
+# input changed the surface and not the behaviour.
 #
-# The `pr` node is NO LONGER on this adapter -- see `pr_adapter` below.
-acp_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
+# A node's value is a complete adapter command line: leading `KEY=value`
+# environment assignments (fabro parses them into the child's env), then the
+# command, then its arguments. Model and reasoning effort are NOT separate
+# fields — they ride the env for adapters that read them there
+# (`ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` on the Claude adapter,
+# `CODEX_CONFIG` on the Codex adapter) and MAY ride the arguments for an
+# adapter whose own interface takes them on the command line. No adapter
+# this repository pins uses the argument route for model or effort today.
+# That is what makes ANY provider expressible with no code change: an
+# Anthropic-Messages endpoint is `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`
+# + `ANTHROPIC_MODEL` in the env, and an OpenAI-compatible one is
+# `-c model_provider=<name>` plus its provider definition in the arguments.
+# See `SPECIFICATION/contracts.md` §"ACP node adapter configuration".
+#
+# These are the WORKFLOW-DEFAULTS layer — the least specific of the three.
+# The dispatch target's `dispatcher.acp_nodes` overrides them per node and
+# per field, and a `--acp-node <node>=<adapter>` argument overrides both.
+#
+# IMPLEMENTER NODES: Claude Opus 5 + high thinking. The Dispatcher emits
+# these same adapters unless the dispatch target explicitly names
+# `dispatcher.codex_models.implementer`, in which case it routes the
+# implementer work to a Codex worker.
+#
+# LIVE ACCEPTANCE CHECK, still owed: the review adapter caveat below records
+# that some old claude-agent-acp predecessors ignored ANTHROPIC_MODEL and
+# defaulted to Haiku. The first dispatch after this default switch lands must
+# verify the resolved model in the run transcript; an adapter string assertion
+# does not prove runtime behavior.
+implement_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
+fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
+review_fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
-# ACP adapter for the PR node. PORTED FROM UPSTREAM 2026-08-22
-# (livespec-console-beads-fabro-t1g7). Defaults to the same un-pinned Claude
-# adapter as `acp_adapter` so a bare `fabro run` of this config still works;
-# the Dispatcher always overrides it via `fabro run --input pr_adapter=...`
-# with the Codex adapter rendered from this repo's own
-# `dispatcher.codex_models.pr` tier (built-in default `gpt-5.4-mini` at
-# `high`) -- `_dispatcher_engine.py::dispatch_fabro_run_inputs` emits the pair
-# unconditionally, so the supply side was already live before this port.
+# ACP adapter for the PR node. Defaults to an un-pinned Claude adapter so a bare
+# `fabro run` of this config still works; the Dispatcher always overrides it
+# via `fabro run --input pr_adapter=...` with the Codex adapter rendered from
+# the target repo's `dispatcher.codex_models.pr` tier (built-in default
+# `gpt-5.4-mini` at `high`).
 #
-# It exists as a SEPARATE input from `acp_adapter` so the publish node's model
-# moves independently of the implementer's. The pr prompt is a fixed `git`/`gh`
-# recipe (and this fork keeps prompts/pr.md byte-identical to upstream), so it
-# does not need the implementer tier; implement / fix / review_fix continue to
-# share `acp_adapter`.
+# It exists as a SEPARATE input from the implementer adapters so the publish
+# node's model moves independently of theirs. The pr prompt is a fixed
+# `git`/`gh` recipe, so it does not need the implementer tier.
 pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 
 # ACP adapter for the REVIEW node (Slice A / bd-ib-egms32) — the Claude
@@ -136,7 +157,7 @@ pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 # CLAUDE_CODE_EFFORT_LEVEL onto the command (fabro parses leading KEY=val
 # assignments into the child's env).
 #
-# SAME PACKAGE AS `acp_adapter` ABOVE, AND VERSION-LESS FOR THE SAME REASON.
+# SAME PACKAGE AS THE IMPLEMENTER ADAPTERS ABOVE, AND VERSION-LESS FOR THE SAME REASON.
 # This used to read `npx -y @zed-industries/claude-code-acp@latest`. That name
 # is the DEPRECATED FORMER NAME of @agentclientprotocol/claude-agent-acp — npm
 # says so outright ("This package has been renamed to
@@ -150,10 +171,7 @@ pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 # one adapter, ~28 minor versions apart, and the review node could never receive
 # an upstream fix. Dropping the name and the `@latest` resolves the global baked
 # into the sandbox image (livespec-dev-tooling
-# docker/fabro-sandbox/agent/Dockerfile), exactly as `acp_adapter` already does.
-#
-# The `@latest` was never a deliberate pin: it entered with the original fork
-# commit 3fa2d5c (2026-07-06) and no later commit ever touched the line.
+# docker/fabro-sandbox/agent/Dockerfile), exactly as the implementer adapters do.
 #
 # LIVE ACCEPTANCE CHECK, still owed: a former caveat here recorded that some
 # claude-code-acp versions ignored ANTHROPIC_MODEL and defaulted to haiku. That
@@ -163,31 +181,62 @@ pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 # run does not substitute; CI never runs the review node.
 review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
-# Gates the `review -> pr` ship-on-review-cap edge. PORTED FROM UPSTREAM
-# 2026-08-26 (livespec-console-beads-fabro-7zq3lg), and it is a BEHAVIOUR
-# CHANGE for this fork, not a cosmetic sync.
-#
-# The Dispatcher renders this to `succeeded` only when the effective
-# `merge_on_review_cap` escape hatch is true for the item, and otherwise
-# leaves the sentinel below. No real node outcome can equal the sentinel, so
-# the gate is CLOSED by default and a non-converging review parks at the
-# human gate.
-#
-# WHY THIS FORK NEEDED IT. The Dispatcher has been emitting this input on
-# every run while this fork's graph ignored it, because our `review -> pr`
-# edge was conditionless and shipped on cap unconditionally. Meanwhile the
-# orchestrator declares `dispatcher.merge_on_review_cap` API-configurable and
-# THIS repo's console surfaces it as a Settings row with default false. So an
-# operator was shown a false-by-default safety dial governing exactly this
-# behaviour, the Dispatcher faithfully carried their choice into the run, and
-# the graph behaved as though the dial were permanently true. The dial's
-# displayed state was the inverse of what ran.
-#
-# NOT ported alongside it: upstream's `review_fix_visit_cap` input. This fork
-# deliberately keeps its own hardcoded edge guard (two fix rounds) rather than
-# adopting upstream's four-visit default; changing the round count is a
-# separate decision from making the safety dial real, and is not bundled here.
+# ACP adapter for the DISPOSITION node. Defaults to the same un-pinned,
+# implementer-class Claude adapter as `implement_adapter`; maintainers can pin the
+# disposition model independently by prefixing adapter-owned env assignments
+# here, using the same ANTHROPIC_MODEL / CLAUDE_CODE_EFFORT_LEVEL mechanism as
+# `review_adapter`.
+disposition_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
+
+# Review fix rounds count implementer repair rounds, not review visits. The
+# workflow guard reads review node visits, so the default three fix rounds render
+# as a visit guard of four: initial review visit plus three fix rounds.
+review_fix_visit_cap = 4
+
+# Disabled by default. The Dispatcher renders this to `succeeded` only when the
+# effective merge_on_review_cap escape hatch is true for the item.
 merge_on_review_cap_outcome = "__merge_on_review_cap_disabled__"
+
+# INTEGRATION-CONTRACT INPUTS — the typed workflow inputs of
+# SPECIFICATION/contracts.md §"Repository integration contract" (the
+# typed-workflow-inputs clause). Each is ONE field of the governed repository's
+# `RepoIntegrationContract`, resolved exactly once by the Dispatcher at
+# plan-build time on the host and rendered here as `fabro run --input
+# <name>=<value>`; this run config, the graph, and the node prompts all read
+# the SAME `inputs.<name>` token, which is what makes them projections of one
+# resolved object rather than three restatements of it. The set below is the
+# projection's closed `CONTRACT_INPUT_NAMES`, and the `check-seam-equivalence`
+# gate asserts — statically, in both directions — that these declarations, the
+# tokens the payload references, and the Dispatcher's rendered inputs are
+# identical and that every token sits where the pinned engine renders it.
+#
+# THE DEFAULTS CARRY NO FLEET-TOOLCHAIN PREMISE — none of the tokens the
+# `check-no-fleet-toolchain-literals` gate bans appears here, because that
+# gate scans this file. Three kinds of default follow from that. The
+# toolchain and conformance inputs default to the ratified explicit NO-OP
+# (the empty string: the prepare step it templates runs nothing).
+# `sandbox_check_suite`, the one input a run cannot do without, defaults to a
+# command that FAILS LOUDLY naming the input, so a bare `fabro run` of this
+# file can never pass its janitor gate vacuously. The three non-toolchain
+# inputs — `sandbox_exempt_marker`, `default_branch`, `merge_mode` — default
+# to the same values the plugin's fleet-defaults module resolves, because
+# those values are not fleet tooling. A default is only ever SEEN by a bare
+# `fabro run` of this file without the Dispatcher: a DISPATCHED run receives
+# every value below from the resolved contract, because the Dispatcher
+# renders every input this table declares.
+#
+# Command-shaped values arrive as ONE shell word-list (`shlex.join` of the
+# contract's argv), which is why every prepare step that reads one re-tokenizes
+# it with `set --` rather than quoting it.
+sandbox_check_suite = "sh -c 'echo LIVESPEC_INPUT_NOT_RENDERED: sandbox_check_suite was not supplied by the Dispatcher >&2; exit 1'"
+prepare_toolchain_mise = ""
+prepare_toolchain_lefthook = ""
+conformance_hook_install = ""
+conformance_verify_commit_refuse_hook = ""
+conformance_verify_plugin_resolution = ""
+sandbox_exempt_marker = "livespec.sandboxExempt"
+default_branch = "master"
+merge_mode = "rebase"
 
 [run.environment]
 id = "livespec-ci"
@@ -196,39 +245,39 @@ id = "livespec-ci"
 provider = "docker"
 
 [environments.livespec-ci.image]
-# GHCR-published family sandbox image (Dockerfile in livespec-dev-tooling).
-# Since the agent-layer split this consumer pulls the `python-rust-agent`
-# layer (base tools + uv + CPython + the Rust toolchain baked once — at the
-# channel rust-toolchain.toml pins, plus clippy and rustfmt — plus the agent
-# payload: bubblewrap and both ACP adapters), so no per-run `rustup` install
-# and no per-run adapter fetch are needed. Tag format:
-#   python-rust-agent-sha-<short>  — per master-build (mutable; tracks HEAD)
-#   python-rust-agent-v<X.Y.Z>     — per release tag (immutable)
+# GHCR-published family sandbox image (the fleet toolchain — version
+# manager, uv, recipe runner, hook manager — plus node/ACP adapter + gh;
+# Dockerfile in livespec-dev-tooling). Published
+# by dev-tooling PR #111 (2026-06-12) to
+# ghcr.io/thewoolleyman/livespec-fabro-sandbox. Since the layered-image
+# split this consumer pulls the `python-agent` layer (base tools + uv +
+# CPython, plus the agent payload: bubblewrap and both ACP adapters; no
+# Rust). Tag format:
+#   python-agent-sha-<short>  — per master-build (mutable; tracks HEAD)
+#   python-agent-v<X.Y.Z>     — per release tag (immutable)
 #
-# WHY `python-rust-agent` AND NOT `python-rust`: as of livespec-dev-tooling
-# v0.50.4 the agent payload (bubblewrap + both ACP adapters) was moved OUT of
-# the base layer into an `agent` layer stacked on top, because CI never uses it
-# and it was 316.6 MB of every CI job's image pull (livespec-dev-tooling-a46).
-# The bare `python-rust-` tag is now the SLIM, CI-facing image and carries NO
-# ACP adapters — which is exactly right for the ci.yml pins above, and wrong
-# here. A Fabro sandbox left on the slim tag does NOT fail loudly: a
-# version-less `npx -y` adapter command simply re-downloads the adapter at
-# runtime, silently reintroducing the per-run tax the baked image exists to
-# eliminate (Codex fails loudly instead, on missing bubblewrap). So this pin
-# MUST keep the `python-rust-agent-` prefix.
+# WHY `python-agent` AND NOT `python`: the agent payload (bubblewrap +
+# both ACP adapters) was moved OUT of the base layer into an `agent`
+# layer stacked on top of `python`, because CI never uses it and it is
+# 316.6 MB of every CI job's image pull (livespec-dev-tooling-a46). The
+# bare `python-` tag is now the SLIM, CI-facing image and carries NO ACP
+# adapters. A Fabro sandbox pinned to it does NOT fail loudly: the
+# version-less `npx -y` adapter command below simply re-downloads the
+# adapter at runtime, silently reintroducing the per-run tax the baked
+# image exists to eliminate (Codex fails loudly instead, on missing
+# bubblewrap). So this pin MUST keep the `python-agent-` prefix.
 #
-# PIN SURFACE NOTE: this docker image tag is covered by the shared `bump-pin`
-# autodiscovery — livespec-dev-tooling (>= v0.40.0) ships a
+# PIN SURFACE NOTE: this docker image tag is now covered by the shared
+# `bump-pin` autodiscovery — livespec-dev-tooling (>= v0.40.0) ships a
 # `fabro_sandbox_docker_image` pin format, so the release fan-out rewrites the
-# `docker = "...:python-rust-agent-vX.Y.Z"` tag below in lockstep with the
-# livespec-dev-tooling pin — preserving the `python-rust-agent-` layer prefix and
-# rewriting only the `vX.Y.Z` version (livespec-dev-tooling #358). That
-# prefix-preservation keeps this pin on the agent layer from now on, but it is
-# ALSO why the one-time migration off the bare `python-rust-` prefix had to be
-# made by hand: the fan-out preserves whatever prefix it finds, so left alone it
-# would have held this pin on the slim CI image forever.
-# No repo-local consistency check is needed; the producer-side lockstep gate
-# (livespec_dev_tooling.fabro_image_pin_lockstep) guards the Dockerfile ARG pins
+# `docker = "...:python-agent-vX.Y.Z"` tag below in lockstep with the
+# livespec-dev-tooling pin in pyproject.toml, exactly like every other cross-repo
+# pin — preserving the `python-agent-` layer prefix and rewriting only the
+# `vX.Y.Z` version. That prefix-preservation is what keeps this pin on the agent
+# layer once set, but it is ALSO why the one-time migration off the bare
+# `python-` prefix had to be made by hand: the fan-out preserves whatever prefix
+# it finds, so it would have kept this pin on the slim CI image forever. The producer-side lockstep gate
+# (the shared dev-tooling package's `fabro_image_pin_lockstep` check) guards the Dockerfile ARG pins
 # in livespec-dev-tooling and does not run in consumer repos.
 #
 # HOST-LOCAL STEP: if ~/.fabro/environments/livespec-ci.toml exists on
@@ -246,7 +295,7 @@ memory = "8GB"
 
 # NOTE: deliberately NO [environments.livespec-ci.env] table here. The
 # Dispatcher's per-dispatch overlay APPENDS that table carrying the
-# real CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN values plus the non-secret
+# real CLAUDE_CODE_OAUTH_TOKEN and GITHUB_TOKEN values plus the non-secret
 # LIVESPEC_SIBLING_CLONES_ROOT key at dispatch time (TOML forbids
 # duplicate table declarations, so this committed file must not declare
 # it — which is also why the non-secret key lives in the appended
@@ -277,19 +326,9 @@ push = false
 # red-green-replay gate (livespec-dev-tooling v0.11.0, bumped
 # family-wide) passes machine/empty checkpoint commits naturally, so
 # the interim skip_git_hooks=true escape from the probe is retired.
-#
-# PORTED VERBATIM FROM UPSTREAM 2026-07-30 (plugin 1fc573da09c5, their
-# `fix(factory): raise Fabro checkpoint commit timeout`). Upstream's own
-# rationale: "Gate-heavy repositories can legitimately spend minutes in
-# those hooks. Fabro's stock 30-second checkpoint budget destroyed
-# completed work when `git add` or `git commit` crossed that ceiling
-# (ledger bd-ib-6ka)."
-# This repo is exactly that case, and the pairing with `skip_git_hooks =
-# false` directly above is what makes it load-bearing here rather than
-# theoretical: because hooks RUN on checkpoint commits, a checkpoint pays
-# our full gate cost. Measured on this host 2026-07-30 — pre-commit
-# 91.76s, pre-push check 251-273s — i.e. multiples of the 30s stock
-# budget that upstream says destroyed work.
+# Gate-heavy repositories can legitimately spend minutes in those hooks.
+# Fabro's stock 30-second checkpoint budget destroyed completed work when
+# `git add` or `git commit` crossed that ceiling (ledger bd-ib-6ka).
 commit_timeout = "10m"
 skip_git_hooks = false
 exclude_globs = ["**/.venv/**", "**/node_modules/**", "**/.cache/**"]
@@ -301,57 +340,59 @@ enabled = false
 
 # --- Prepare steps: provision the clone as the secondary-worktree
 # --- equivalent (Architecture C "RGR steeling", minus primaryPath).
+#
+# EVERY TOOLCHAIN AND CONFORMANCE PREMISE BELOW IS A PROJECTION, NOT A
+# LITERAL. The command each step runs arrives as an `inputs.<name>` value the
+# Dispatcher rendered from the governed repository's resolved integration
+# contract (SPECIFICATION/contracts.md §"Repository integration contract"; the
+# fleet-member values live in this repo's `.livespec.jsonc` and the plugin's
+# fleet-defaults module, never here). A premise the repository does not carry
+# resolves to the ratified explicit NO-OP — the empty word-list — and the step
+# then runs nothing, by construction rather than by a silent skip
+# (contracts.md §"Factory-sandbox toolchain disposition").
+#
+# THE `set --` IDIOM. A command-shaped input crosses the sandbox boundary as
+# one shell word-list (`shlex.join` of the contract's argv). `set -- <list>`
+# has the shell re-tokenize it back into the exact argv, `test $# -eq 0`
+# makes the empty no-op a clean exit rather than a syntax error, and `"$@"`
+# runs the argv with its quoting intact. No step quotes the token itself,
+# because the value may legitimately carry quotes of its own.
 
 [[run.prepare.steps]]
 # Fabro's sandbox clone is hardcoded shallow (GIT_CLONE_DEPTH=10, no
-# config knob in v0.254.0); the RGR range checks and `just check` diff
-# origin/master..HEAD, which needs the master merge-base present.
+# config knob in v0.254.0); the RGR range checks and the check suite diff
+# the default branch..HEAD, which needs the default-branch merge-base present.
 script = "git fetch --unshallow --quiet"
 
 [[run.prepare.steps]]
-# PORTED FROM THE ORCHESTRATOR 2026-07-30 (the credential scrub only; the
-# `livespec-step-timer` wrapper upstream also carries is deliberately NOT
-# ported here — it introduces a binary dependency on the sandbox image that
-# this fork has not verified, and a missing wrapper would fail every prepare
-# step. Tracked as a follow-up.)
-#
-# Upstream's rationale: a CREDENTIALED api.github.com request from the sandbox
-# lands in the authenticated rate-limit bucket for the App installation, which
-# the whole fleet shares; when exhausted the fetch 403s, the prepare step exits
-# 1, and the run dies before ANY agent work while the admitted work-item is
-# left stranded in `active`. Measured upstream: two dispatches died this way
-# (2026-07-26 20:02:42Z and 20:05:17Z), and the cause was reproduced at
-# 20:27:16Z — in the same sandbox, in the same second, the ANONYMOUS request
-# for the same URL returned 200 while the credentialed one returned 403.
-#
-# Anonymous is the right posture, not a workaround: this fetch reads public
-# release metadata only, so it needs no credential at all. GH_TOKEN and
-# GITHUB_API_TOKEN are scrubbed alongside GITHUB_TOKEN because mise accepts any
-# of the three. The scrub is scoped to this single command — every later step,
-# and every agent node, still sees the full credential environment.
-script = "sh -c 'mise trust && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_API_TOKEN mise install --quiet'"
+# Toolchain premise #1 — the version-manager install (the version-manager
+# arm of `dispatcher.prepare_toolchain`). This repository declares it in
+# `.livespec.jsonc`, where the rationale for its anonymous, credential-scrubbed
+# form lives beside the command (work-item bd-ib-bic7hb); an adopter without a
+# version manager declares nothing and the step is the ratified no-op.
+script = "set -- {{ inputs.prepare_toolchain_mise }}; test $# -eq 0 || \"$@\""
 
 [[run.prepare.steps]]
 script = "uv sync --all-groups"
 
 [[run.prepare.steps]]
-script = "uv run lefthook install"
+# Toolchain premise #2 — the hook-manager install (the hook-manager arm of
+# `dispatcher.prepare_toolchain`); no-op for an adopter without one.
+script = "set -- {{ inputs.prepare_toolchain_lefthook }}; test $# -eq 0 || \"$@\""
 
 [[run.prepare.steps]]
-# Install the canonical STRUCTURAL commit-refuse hook at pre-commit,
-# pre-push AND commit-msg via the livespec-dev-tooling installer module.
-# FAMILY-UNIFORM: the canonical body ships in the wheel as
-# `livespec_dev_tooling.install_commit_refuse_hooks.CANONICAL_HOOK_BODY`
-# (no per-repo vendored `.sh` to derive or glob for), so every dispatched
-# sandbox installs the identical body the same way — this replaces the
-# old data-driven `cp dev-tooling/<hook>.sh` derivation. The prior
-# `uv sync --all-groups` step has already installed `livespec_dev_tooling`
-# into the sandbox venv, so `uv run` resolves the module. The installer
-# satisfies the content-based primary_checkout_commit_refuse_hook_installed
-# check, and the structural body's lefthook delegation fires the
-# Red-Green-Replay gates on every in-sandbox commit (the refuse branch is
-# skipped by the sandboxExempt marker set in the next step).
-script = "uv run python -m livespec_dev_tooling.install_commit_refuse_hooks"
+# Dispatch-time baseline conformance gate — the MECHANISM (Conformance
+# Pattern concern #1 Worktree-discipline): install the canonical STRUCTURAL
+# commit-refuse hook at pre-commit, pre-push AND commit-msg. Field
+# `dispatcher.conformance.hook_install`: `internal_livespec_dev_tooling`
+# renders the shared dev-tooling installer module (whose FAMILY-UNIFORM
+# canonical body ships in that wheel, so every dispatched sandbox installs
+# the identical body the same way; the prior `uv sync --all-groups` step put
+# the package in the sandbox venv), `shell_argv` runs the adopter's own
+# installer, and `no_op` skips the step. The structural body's hook-manager
+# delegation fires the Red-Green-Replay gates on every in-sandbox commit (the
+# refuse branch is skipped by the exemption marker set in the next step).
+script = "set -- {{ inputs.conformance_hook_install }}; test $# -eq 0 || \"$@\""
 
 [[run.prepare.steps]]
 # Declare the sandbox EXEMPT from the commit-refuse refuse branch
@@ -359,34 +400,45 @@ script = "uv run python -m livespec_dev_tooling.install_commit_refuse_hooks"
 # Exemption slot). The sandbox is a fresh FULL clone — structurally a
 # primary checkout — so the structural commit-refuse hook would refuse
 # its in-sandbox Red-Green-Replay commits. This explicit, declared marker
-# (read by the hook body via `git config --get livespec.sandboxExempt`)
-# skips the refuse branch so commits proceed; the lefthook delegation in
-# the hook body still fires the RGR gates. Set UNCONDITIONALLY and
-# backward-compatible: the legacy livespec.primaryPath-based body never
-# reads this key, so it is a harmless no-op until each repo migrates to
-# the structural body. Local config only — never leaves the ephemeral
+# (read by the hook body via `git config --get <marker>`) skips the refuse
+# branch so commits proceed; the hook-manager delegation in the hook body
+# still fires the RGR gates. The marker NAME is the resolved
+# `dispatcher.sandbox_exempt_marker` field (contracts.md §"Dispatch-time
+# baseline conformance gate"), projected here rather than spelled. Set
+# UNCONDITIONALLY. It is NOT a harmless no-op for every hook shape: a body
+# that never reads the marker (the legacy livespec.primaryPath-based body)
+# ignores it, but an adopter-authored WRITE-time structural hook without the
+# exemption slot fails CLOSED — it denies the sandbox's in-clone writes even
+# with the marker set (proven live on homelab runs 01M107EF8QMRF66RGH9T393CQV
+# and 01M186Y59CEBP2CNZ9ESSR3DHA, 2026-08-30; agents then improvised worktrees
+# and fabro's --allow-empty checkpoints minted empty commits). Honoring the
+# marker is therefore a ratified adopter-hook obligation (v094; contracts.md
+# §"Dispatch-time baseline conformance gate"), exercised by the C6 honor and
+# non-honoring fixture tests; a prepare-time writability probe that would
+# refuse such a hook loudly is the pending propose-change recorded as plan
+# bd-ib-vblnq2 deferral D5. Local config only — never leaves the ephemeral
 # sandbox (pushes carry refs, not config).
-script = "git config livespec.sandboxExempt true"
+script = "git config {{ inputs.sandbox_exempt_marker }} true"
 
 [[run.prepare.steps]]
 # Dispatch-time baseline conformance gate — Verifier #1 (Conformance
-# Pattern concern #1 Worktree-discipline). After the canonical
-# commit-refuse hook is installed and the sandbox is declared exempt
-# above, assert the hook is ACTUALLY present at the primary's shared
-# .git/hooks via the SHARED livespec-dev-tooling Verifier (reused, not
-# re-implemented; the earlier `uv sync --all-groups` step installed
-# `livespec_dev_tooling` into the sandbox venv). A non-zero exit aborts
-# the run before any work is driven — the gate makes every dispatched
-# sandbox conformant by construction. Codified in SPECIFICATION/
-# contracts.md §"Dispatch-time baseline conformance gate".
-script = "uv run python -m livespec_dev_tooling.checks.primary_checkout_commit_refuse_hook_installed"
+# Pattern concern #1 Worktree-discipline). After the Mechanism is installed
+# and the sandbox is declared exempt above, assert the hook is ACTUALLY
+# present at the primary's shared .git/hooks. Field
+# `dispatcher.conformance.verify_commit_refuse_hook`: the internal mode
+# renders the SHARED livespec-dev-tooling Verifier (reused, not
+# re-implemented — the same Verifier the commit-time and fleet-time tiers
+# run). A non-zero exit aborts the run before any work is driven — the gate
+# makes every dispatched sandbox conformant by construction. Codified in
+# SPECIFICATION/contracts.md §"Dispatch-time baseline conformance gate".
+script = "set -- {{ inputs.conformance_verify_commit_refuse_hook }}; test $# -eq 0 || \"$@\""
 
 [[run.prepare.steps]]
 # Dispatch-time baseline conformance gate — Verifier #2 (Conformance
-# Pattern concern #2 cross-harness plugin-resolution). Declaration-
-# integrity (mock) mode: reads the dispatched repo's optional
-# .livespec.jsonc `harnesses` declaration and fail-closes on a malformed
-# one. A non-zero exit aborts the run. Same SHARED Verifier the
-# commit-time and fleet-time tiers run — enforcement-in-depth, one
-# Verifier layered across the tiers.
-script = "uv run python -m livespec_dev_tooling.checks.plugin_resolution"
+# Pattern concern #2 cross-harness plugin-resolution), field
+# `dispatcher.conformance.verify_plugin_resolution`. In the internal mode
+# this is the shared Verifier's declaration-integrity (mock) mode: it reads
+# the dispatched repo's optional .livespec.jsonc `harnesses` declaration and
+# fail-closes on a malformed one. A non-zero exit aborts the run.
+# Enforcement-in-depth: one Verifier layered across the tiers.
+script = "set -- {{ inputs.conformance_verify_plugin_resolution }}; test $# -eq 0 || \"$@\""
