@@ -7,7 +7,7 @@
 //! findings never fail master.
 //!
 //! Run under the 1Password environment wrapper so `BEADS_DOLT_PASSWORD` is
-//! injected; see `AGENTS.md` §"Beads runtime prerequisites".
+//! injected; see `AGENTS.md` for the Beads runtime prerequisites.
 
 #![forbid(unsafe_code)]
 

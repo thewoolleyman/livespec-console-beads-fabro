@@ -637,10 +637,7 @@ ensure-mutants-tooling:
 # are too slow for the inner loop. The GitHub Actions workflow
 # .github/workflows/nightly-soak.yml (maintainer-side file) schedules this
 # recipe on the canonical branch nightly.
-#
-# errexit is deliberately omitted; fuzz and mutant steps are guarded directly
-# so ALL findings are collected before filing, and a tooling hiccup in one
-# target does not abort the sweep of the others.
+# errexit is deliberately omitted; each fuzz and mutant step is guarded directly.
 nightly-soak:
     #!/usr/bin/env bash
     set -uo pipefail
