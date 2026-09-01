@@ -1366,19 +1366,25 @@ fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<(
 
     // --- the Detail pane, needs-attention half of the documented split ------
     // `docs/detailed-usage.md` splits the Detail pane by ROW KIND, and this is
-    // the kind that keeps `Attach:`. Paired with
-    // `tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run`,
+    // the kind that always carries a `Valve:`. Paired with
+    // `tmux_tui_e2e_work_item_row_detail_offers_no_valve_without_one_advertised`,
     // which asserts the OTHER half; the two together are what make the doc's
     // case-split executable. Asserting only one half is what let the claim
     // ship wrong twice — see that test's comment.
     assert!(
         screen.contains("Fabro run: -"),
-        "a needs-attention row always reads `Fabro run: -`:\n{screen}"
+        "a row whose item the ledger never stamped reads `Fabro run: -`:\n{screen}"
     );
     assert!(
-        screen.contains("Attach:"),
-        "a needs-attention row always carries `Attach:` (its handoff command), \
+        screen.contains("Valve:"),
+        "a needs-attention row always carries `Valve:` (its handoff command), \
          even with no Fabro run:\n{screen}"
+    );
+    // The retired attach handoff must not come back under any spelling: a
+    // needs-human outcome terminates its run, so there is nothing to attach to.
+    assert!(
+        !screen.contains("Attach"),
+        "no row may offer an attach handoff:\n{screen}"
     );
     Ok(())
 }
@@ -1388,26 +1394,29 @@ fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<(
 ///
 /// # Why this test exists at all
 ///
-/// The `Attach:` claim shipped WRONG TWICE. First it was documented as
-/// unconditional; then, after a plan-thread row was rendered and seen to carry
-/// `Attach:`, it was "corrected" to say every needs-attention row has one — and
-/// that correction overwrote a walkthrough note which had been right, because a
-/// `valve:approve:<id>` row on a `manual` `pending-approval` item does NOT
-/// behave like a plan-thread row.
+/// The equivalent claim about the retired `Attach:` line shipped WRONG TWICE.
+/// First it was documented as unconditional; then, after a plan-thread row was
+/// rendered and seen to carry the line, it was "corrected" to say every
+/// needs-attention row has one — and that correction overwrote a walkthrough
+/// note which had been right, because a `valve:approve:<id>` row on a `manual`
+/// `pending-approval` item did NOT behave like a plan-thread row.
 ///
 /// The reason is `unified_attention_entries`: the inbox merges work-item rows
 /// with needs-attention rows and DE-DUPLICATES, dropping a needs-attention row
 /// whose work-item a work-item row already claims. So the row kind is not
 /// decided by which source emitted it, and no single screen reveals the split.
 /// Rendering one case and generalizing is what failed — twice — so both cases
-/// are now pinned.
+/// are still pinned.
 ///
-/// This half asserts the ABSENCE of `Attach:`, which is only meaningful
-/// alongside proof that the row rendered at all; an empty inbox would satisfy
-/// the absence trivially.
+/// What this half now proves is the OTHER side of that dedupe, and it is the
+/// behaviour Scenario 30 turns on: the surviving work-item row still carries the
+/// command the dropped needs-attention row advertised. Under the retired
+/// `Attach:` shape it did not — the dedupe swallowed the advertised command and
+/// the row rendered a locally-composed `fabro attach <run>` instead, which for a
+/// needs-human item pointed at a run its terminal had already ended.
 #[test]
 #[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
-fn tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run() -> HarnessResult<()> {
+fn tmux_tui_e2e_deduped_work_item_row_still_carries_the_advertised_valve() -> HarnessResult<()> {
     let fixture = LifecycleFixture::new("detail-split", "pending-approval")?;
     let repo = RepoFixture::new(
         "e2e-detail-split",
@@ -1422,27 +1431,35 @@ fn tmux_tui_e2e_work_item_row_detail_has_no_attach_without_a_fabro_run() -> Harn
 
     let screen = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
 
-    // --- the row is really there (see the doc comment) ----------------------
+    // --- exactly ONE row: the needs-attention row was deduped into it -------
     assert!(
         screen.contains("attention: 1"),
-        "the pending-approval work-item must reach the inbox -- without it the \
-         `Attach:` absence below proves nothing:\n{screen}"
+        "the pending-approval work-item must reach the inbox as the single \
+         deduped row -- without it nothing below proves anything:\n{screen}"
     );
     assert!(
         screen.contains(&format!("Work item: {ITEM_ID}")),
         "the Detail pane must name the work-item behind the row:\n{screen}"
     );
 
-    // --- and it is the WORK-ITEM projection, not the needs-attention row ----
+    // --- it is the WORK-ITEM projection: the ledger stamped no run on it ----
     assert!(
         screen.contains("Fabro run: -"),
-        "no Fabro run is observed for this item, so the line reads `-`:\n{screen}"
+        "the ledger stamped no dispatch run on this item, so the line reads \
+         `-`:\n{screen}"
+    );
+
+    // --- and the dropped row's advertised command survived the dedupe -------
+    assert!(
+        screen.contains("Valve:"),
+        "the surviving work-item row must still offer the command the deduped \
+         needs-attention row advertised; losing it is what left a needs-human \
+         item with nothing pressable:\n{screen}"
     );
     assert!(
-        !screen.contains("Attach:"),
-        "the work-item projection shows `Attach:` only for a real Fabro attach, \
-         so a pending-approval item with no run must have NO such line -- this \
-         is the assertion whose absence let the docs ship wrong twice:\n{screen}"
+        !screen.contains("Attach"),
+        "no row may offer an attach handoff -- a needs-human outcome terminates \
+         its run, so there is nothing to attach to:\n{screen}"
     );
     Ok(())
 }

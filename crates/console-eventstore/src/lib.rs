@@ -1290,7 +1290,7 @@ mod tests {
         check(events[0].global_seq() == 1, "eventstore test assertion");
         check(events[0].event_id() == "evt_1", "eventstore test assertion");
         check(
-            events[0].event_type() == "fabro.human_gate_observed",
+            events[0].event_type() == "fabro.run_observed",
             "eventstore test assertion",
         );
         check(events[0].source() == "fabro", "eventstore test assertion");
@@ -1339,7 +1339,7 @@ mod tests {
         check(events.len() == 2, "eventstore test assertion");
         check(events[0].event_id() == "evt_1", "eventstore test assertion");
         check(
-            events[0].event_type() == &EventType::FabroHumanGateObserved,
+            events[0].event_type() == &EventType::FabroRunObserved,
             "eventstore test assertion",
         );
         check(events[0].source() == "fabro", "eventstore test assertion");
@@ -3297,7 +3297,7 @@ mod tests {
 
     fn event_append(event_id: &str, source_event_id: Option<&str>) -> EventAppend {
         EventAppend::new(
-            ConsoleEvent::fixture(event_id, EventType::FabroHumanGateObserved, "fabro"),
+            ConsoleEvent::fixture(event_id, EventType::FabroRunObserved, "fabro"),
             "repo:livespec".to_owned(),
             "2026-06-23T00:00:00Z".to_owned(),
             "2026-06-23T00:00:01Z".to_owned(),

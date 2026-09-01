@@ -498,6 +498,28 @@ pub struct WorkItemDetail {
     pub admission_policy: Option<String>,
     /// The acceptance policy AS EMITTED. See [`Self::admission_policy`].
     pub acceptance_policy: Option<String>,
+    /// The Fabro run the Dispatcher last launched for this item, as the LEDGER
+    /// names it (`dispatch_fabro_run_id`).
+    ///
+    /// This is the console's ONLY source for a dispatched item's run id. The
+    /// projection used to recover one by scanning the console's own event log
+    /// backwards for a Fabro observation matching the repo and item, which
+    /// answered with whatever run had last been SEEN rather than the run the
+    /// ledger says was dispatched -- indistinguishable answers while an item
+    /// has one run, silently wrong across a re-dispatch, and the input to a
+    /// `fabro attach` handoff that no longer had anything to attach to
+    /// (`SPECIFICATION/contracts.md`).
+    ///
+    /// Read from the record's `metadata` object, where the Dispatcher stamps
+    /// it, with a top-level fallback for a projection that flattens it (which
+    /// is what the orchestrator does for [`Self::dispatch_factory`]). `None`
+    /// when the observed surface carries neither, and absence is rendered as
+    /// absence -- the console does not reconstruct a run id it was not given.
+    pub dispatch_fabro_run_id: Option<String>,
+    /// The factory the item is pinned to (`dispatch_factory`), which is what
+    /// names the server a run of it lives on. Emitted at the top level of the
+    /// orchestrator's `list-work-items --json` record.
+    pub dispatch_factory: Option<String>,
     /// Ledger comments carried with a work-item when the observed surface
     /// includes them, oldest first.
     pub comments: Vec<WorkItemComment>,
@@ -531,7 +553,7 @@ impl WorkItemDetail {
             .iter()
             .map(WorkItemComment::digest)
             .collect::<String>();
-        let fields: [Option<&str>; 20] = [
+        let fields: [Option<&str>; 22] = [
             self.title.as_deref(),
             self.description.as_deref(),
             self.item_type.as_deref(),
@@ -551,6 +573,10 @@ impl WorkItemDetail {
             self.factory_safety.as_deref(),
             self.admission_policy.as_deref(),
             self.acceptance_policy.as_deref(),
+            // A re-dispatch changes the run id and nothing else on the record,
+            // so without these the console would show the PREVIOUS run forever.
+            self.dispatch_fabro_run_id.as_deref(),
+            self.dispatch_factory.as_deref(),
             Some(&comments),
         ];
         let mut encoded = String::new();
@@ -1100,21 +1126,62 @@ pub fn dispatcher_journal_from_payload_json(payload_json: &str) -> Option<Dispat
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-/// Variants for fabro run state state or outcome values.
-pub enum FabroRunState {
-    /// Human gate variant.
-    HumanGate,
+/// A Fabro run's status kind, carried VERBATIM as the source reported it.
+///
+/// Deliberately not a closed enum of kinds the console guessed at. The
+/// vocabulary belongs to Fabro, and the Fabro-adapter clause in
+/// `SPECIFICATION/contracts.md` requires the adapter to READ each observed
+/// run's status kind, not to classify it: a closed enum would have to fold
+/// every kind it did not
+/// anticipate into some other kind, and folding one into a human gate is
+/// precisely the synthesized-gate defect this type replaces -- the old shape
+/// had the single variant `HumanGate` and every observed run got it.
+///
+/// [`UNKNOWN_STATUS_KIND`] is the neutral fallback for a run whose status kind
+/// the source did not report. Neutral on purpose: it makes no claim about the
+/// run at all, where naming any real kind would assert one the console never
+/// observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FabroRunState {
+    status_kind: String,
 }
+
+/// What the console records when an observed run reports no status kind.
+pub const UNKNOWN_STATUS_KIND: &str = "unknown";
+
+/// The status kind `fabro ps --json` reports for a run that is executing.
+const RUNNING_STATUS_KIND: &str = "running";
 
 impl FabroRunState {
     #[must_use]
-    /// Return the stable display label for this value.
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::HumanGate => "human-gate",
+    /// The run's status kind, or [`UNKNOWN_STATUS_KIND`] when absent or blank.
+    pub fn from_status_kind(status_kind: &str) -> Self {
+        let trimmed = status_kind.trim();
+        Self {
+            status_kind: if trimmed.is_empty() {
+                UNKNOWN_STATUS_KIND.to_owned()
+            } else {
+                trimmed.to_owned()
+            },
         }
+    }
+
+    #[must_use]
+    /// Return the stable display label for this value: the status kind itself.
+    pub fn label(&self) -> &str {
+        &self.status_kind
+    }
+
+    #[must_use]
+    /// Whether the source reported this run as executing.
+    ///
+    /// The ONE classification the console draws from a status kind, and it is
+    /// drawn positively: a run is executing only when the source says
+    /// `running`. Every other kind -- terminal, unknown, or a kind Fabro adds
+    /// later -- yields `false`, so nothing downstream can claim execution for a
+    /// run the console has not seen reported as running.
+    pub fn is_running(&self) -> bool {
+        self.status_kind == RUNNING_STATUS_KIND
     }
 }
 
@@ -1133,7 +1200,11 @@ struct FabroRunSnapshotPayload {
     repo: String,
     work_item_id: String,
     run_id: String,
-    state: FabroRunState,
+    // A STRING, then folded through `FabroRunState::from_status_kind`, so the
+    // payload cannot fail to deserialize on a status kind this build does not
+    // know -- including `human-gate`, the kind every row written before the
+    // rename carries. A typed enum here would drop those events silently.
+    state: String,
     source_version: u64,
 }
 
@@ -1178,8 +1249,8 @@ impl FabroRunSnapshot {
 
     #[must_use]
     /// Return the stored value.
-    pub const fn state(&self) -> FabroRunState {
-        self.state
+    pub const fn state(&self) -> &FabroRunState {
+        &self.state
     }
 
     #[must_use]
@@ -1199,7 +1270,7 @@ pub fn fabro_run_snapshot_payload_json(snapshot: &FabroRunSnapshot) -> String {
         snapshot.work_item_id.clone().into(),
     );
     object.insert("run_id".to_owned(), snapshot.run_id.clone().into());
-    object.insert("state".to_owned(), snapshot.state.label().into());
+    object.insert("state".to_owned(), snapshot.state.label().to_owned().into());
     object.insert("source_version".to_owned(), snapshot.source_version.into());
     serde_json::Value::Object(object).to_string()
 }
@@ -1212,7 +1283,7 @@ pub fn fabro_run_snapshot_from_payload_json(payload_json: &str) -> Option<FabroR
         &payload.repo,
         &payload.work_item_id,
         &payload.run_id,
-        payload.state,
+        FabroRunState::from_status_kind(&payload.state),
         payload.source_version,
     )
     .ok()
@@ -1588,7 +1659,7 @@ fn fabro_run_event(snapshot: FabroRunSnapshot) -> NormalizedSourceEvent {
         ),
         1,
         "factory".to_owned(),
-        EventType::FabroHumanGateObserved,
+        EventType::FabroRunObserved,
         SourceAdapterKind::Fabro.source_name().to_owned(),
         repo_stream(snapshot.repo()),
         snapshot.source_version(),
@@ -2175,6 +2246,19 @@ fn first_json_string(text: &str, key: &str) -> Option<String> {
     Some(body[..end].to_owned())
 }
 
+/// Extract the first `"inner": "value"` string that appears AFTER the first
+/// `"outer"` key, for a nested one-level object.
+///
+/// `fabro ps --json` reports a run's status as an object rather than a string
+/// (`"status": {"kind": "running"}`), and a scan for a bare `"kind"` across the
+/// whole document would happily match some other record's `kind`. Anchoring on
+/// the outer key first keeps the read pinned to the object it belongs to.
+fn nested_json_string(text: &str, outer: &str, inner: &str) -> Option<String> {
+    let needle = format!("\"{outer}\"");
+    let start = text.find(&needle)? + needle.len();
+    first_json_string(&text[start..], inner)
+}
+
 /// Extract the first `"key": <number>` unsigned value from flat JSON-ish text.
 fn first_json_u64(text: &str, key: &str) -> Option<u64> {
     let needle = format!("\"{key}\"");
@@ -2219,6 +2303,34 @@ fn record_text(record: &serde_json::Map<String, serde_json::Value>, key: &str) -
         Some(serde_json::Value::String(text)) => Some(text.clone()),
         Some(other) => Some(other.to_string()),
     }
+}
+
+/// Read a dispatch-stamp field the Dispatcher writes to a work-item's
+/// `metadata`, from the record's `metadata` object OR from the record's top
+/// level.
+///
+/// Both are live shapes for the same stamp. `dispatch_factory` is projected
+/// onto the TOP LEVEL of the orchestrator's `list-work-items --json` record,
+/// while `dispatch_fabro_run_id` is written into the ledger record's
+/// `metadata` map; reading only one place would silently blank whichever stamp
+/// the surface happens to carry the other way, and blank here means "this item
+/// was never dispatched" -- a wrong answer that looks exactly like a right one.
+/// `metadata` wins when both carry the key: it is where the Dispatcher writes,
+/// so it is the stamp rather than a projection of it.
+///
+/// A blank value reads as absent. An empty stamp is what a cleared or
+/// half-written record leaves behind, and rendering `""` as a run id would put
+/// an empty identifier in front of the operator as though it were one.
+fn record_metadata_text(
+    record: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    record
+        .get("metadata")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|metadata| record_text(metadata, key))
+        .or_else(|| record_text(record, key))
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// Read a boolean record field, treating absent / null / non-boolean as
@@ -2377,6 +2489,8 @@ pub fn parse_orchestrator_observation(
             awaits_scope_override: record_flag(&raw, "awaits_scope_override"),
             admission_policy: record_text(&raw, "admission_policy"),
             acceptance_policy: record_text(&raw, "acceptance_policy"),
+            dispatch_fabro_run_id: record_metadata_text(&raw, "dispatch_fabro_run_id"),
+            dispatch_factory: record_metadata_text(&raw, "dispatch_factory"),
             comments: record_comments(&raw),
         };
         // Policy, rank, and status join lane/lane_reason in the identity hash
@@ -2582,18 +2696,30 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
 }
 
 /// Normalize real `fabro ps`/run output into a Fabro run snapshot.
+///
+/// The run's STATUS KIND is read from the observation. `fabro ps --json`
+/// reports `status` as an OBJECT (`{"kind": "running"}`), never a bare string,
+/// so the kind is read from inside that object; a run that reports no kind
+/// records [`UNKNOWN_STATUS_KIND`]. Nothing here classifies the run: this
+/// adapter used to stamp `FabroRunState::HumanGate` on EVERY observed run,
+/// which announced a human gate for a run that had merely been seen -- the
+/// synthesized gate `SPECIFICATION/contracts.md` forbids, and doubly wrong now
+/// that a needs-human outcome terminates the run instead of parking it.
 pub fn parse_fabro_observation(observed: &ObservedSource) -> Result<ParsedObservation, String> {
     let run_id = first_json_string(observed.stdout(), "run_id")
         .or_else(|| first_json_string(observed.stdout(), "id"))
         .ok_or_else(|| "no fabro run observed".to_owned())?;
     let work_item_id =
         first_json_string(observed.stdout(), "work_item_id").unwrap_or_else(|| run_id.clone());
-    let version = source_stream_seq(&[&run_id, &work_item_id]);
+    let status_kind = nested_json_string(observed.stdout(), "status", "kind")
+        .or_else(|| first_json_string(observed.stdout(), "status_kind"))
+        .unwrap_or_else(|| UNKNOWN_STATUS_KIND.to_owned());
+    let version = source_stream_seq(&[&run_id, &work_item_id, &status_kind]);
     let snapshot = FabroRunSnapshot::new(
         observed.repo(),
         &work_item_id,
         &run_id,
-        FabroRunState::HumanGate,
+        FabroRunState::from_status_kind(&status_kind),
         version,
     )
     .map_err(|_error| "invalid fabro run".to_owned())?;
@@ -2602,6 +2728,217 @@ pub fn parse_fabro_observation(observed: &ObservedSource) -> Result<ParsedObserv
         &version.to_string(),
         poll.events().to_vec(),
     ))
+}
+
+// --- the orphaned-factory-runs projection ---
+//
+// The orchestrator's `dispatcher.py reconcile-runs --dry-run --json` is a
+// READ-ONLY projection over each declared factory's non-terminal run inventory,
+// joined against the ledger. The console consumes it as data and re-derives
+// nothing: a lane with its own orphan rule would be free to disagree with the
+// command it prints as the remedy, and the disagreement would surface as an
+// operator running a remedy that finds nothing. Contract:
+// `SPECIFICATION/contracts.md` ("MUST render an orphaned-factory-runs lane fed
+// by ... reconcile-runs --dry-run --json"); `SPECIFICATION/scenarios.md`
+// Scenario 30.
+
+/// One orphaned factory run as the reconciler's dry-run projection reports it.
+///
+/// Every field is carried verbatim from the projection's `reconciled[]` record.
+/// The console classifies nothing here -- not the orphan reason, not the status
+/// kind, not the route -- so a vocabulary the orchestrator grows later reaches
+/// the operator unchanged rather than being folded into whatever the console
+/// happened to anticipate.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct OrphanedFactoryRun {
+    run_id: String,
+    // The projection's own key names are `factory_name` and `work_item_status`;
+    // they are read under those names rather than renamed, so a reader can put
+    // this struct beside `dispatcher.py reconcile-runs --dry-run --json` output
+    // and see the same words.
+    factory_name: String,
+    status_kind: String,
+    work_item_id: String,
+    // `null` for the `item-missing` orphan reason: the run's work-item is not in
+    // the ledger at all, so it HAS no status. Absent stays absent -- collapsing
+    // it to a placeholder would render a status the ledger never held.
+    #[serde(default)]
+    work_item_status: Option<String>,
+    orphan_reason: String,
+    termination_route: String,
+}
+
+impl OrphanedFactoryRun {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub fn new(
+        run_id: &str,
+        factory_name: &str,
+        status_kind: &str,
+        work_item_id: &str,
+        work_item_status: Option<&str>,
+        orphan_reason: &str,
+        termination_route: &str,
+    ) -> Self {
+        Self {
+            run_id: run_id.to_owned(),
+            factory_name: factory_name.to_owned(),
+            status_kind: status_kind.to_owned(),
+            work_item_id: work_item_id.to_owned(),
+            work_item_status: work_item_status.map(ToOwned::to_owned),
+            orphan_reason: orphan_reason.to_owned(),
+            termination_route: termination_route.to_owned(),
+        }
+    }
+
+    #[must_use]
+    /// The orphaned run's id.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    #[must_use]
+    /// The factory the run lives on.
+    pub fn factory_name(&self) -> &str {
+        &self.factory_name
+    }
+
+    #[must_use]
+    /// The run's status kind, as the factory reports it.
+    pub fn status_kind(&self) -> &str {
+        &self.status_kind
+    }
+
+    #[must_use]
+    /// The work-item the run was launched for.
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    /// The work-item's ledger status, or `None` when it is absent entirely.
+    pub fn work_item_status(&self) -> Option<&str> {
+        self.work_item_status.as_deref()
+    }
+
+    #[must_use]
+    /// Why the reconciler calls this run orphaned (`item-not-active`,
+    /// `superseded-run`, `item-missing`, `blocked-past-grace`, ...).
+    pub fn orphan_reason(&self) -> &str {
+        &self.orphan_reason
+    }
+
+    #[must_use]
+    /// The remedy the orchestrator prescribes, under its own name. A DRY run
+    /// reports `none`: nothing was terminated, and naming a route it did not
+    /// take would read as a record of an act that never happened.
+    pub fn termination_route(&self) -> &str {
+        &self.termination_route
+    }
+}
+
+/// One read of the reconciler's dry-run projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileRunsSnapshot {
+    orphaned_runs: Vec<OrphanedFactoryRun>,
+    skipped: Vec<String>,
+}
+
+impl ReconcileRunsSnapshot {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub const fn new(orphaned_runs: Vec<OrphanedFactoryRun>, skipped: Vec<String>) -> Self {
+        Self {
+            orphaned_runs,
+            skipped,
+        }
+    }
+
+    #[must_use]
+    /// The orphaned runs the projection reported, in projection order.
+    pub fn orphaned_runs(&self) -> &[OrphanedFactoryRun] {
+        &self.orphaned_runs
+    }
+
+    #[must_use]
+    /// A human-readable reason per record the parse could NOT read.
+    ///
+    /// Surfaced rather than dropped, for the same reason the needs-attention
+    /// adapter surfaces its skips: a silently-shrunken lane is indistinguishable
+    /// from a clean one, and this lane's whole job is to make an invisible held
+    /// slot visible.
+    pub fn skipped(&self) -> &[String] {
+        &self.skipped
+    }
+}
+
+/// Parse `dispatcher.py reconcile-runs --dry-run --json` into the
+/// orphaned-factory-runs projection.
+///
+/// Two envelope facts are checked before any record is read, and both are
+/// refusals rather than empty results:
+///
+/// - **`dry_run` must be true.** The console's contract names the DRY-RUN
+///   projection because reading must not be an act. A payload from a wired pass
+///   carries the results of terminations that already happened, and rendering
+///   those as "runs you may want to terminate" would report an act as a
+///   proposal.
+/// - **`factories_surveyed` must be non-zero.** "Nothing to reconcile" and
+///   "nothing was looked at" are the same empty `reconciled[]` with opposite
+///   meanings — the orchestrator's own command treats a zero-survey pass as a
+///   failure for exactly this reason, and an empty lane rendered from one would
+///   tell the operator every factory is clean when none was reached.
+///
+/// Past those, tolerance is PER RECORD: an unreadable entry is skipped with a
+/// reason and the rest of the envelope is still consumed.
+///
+/// # Errors
+/// Returns a reason string when the output is not the reconciler's dry-run
+/// envelope, when it reports a wired (non-dry) pass, or when it surveyed no
+/// factory.
+pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<ReconcileRunsSnapshot, String> {
+    let envelope: serde_json::Value = serde_json::from_str(stdout)
+        .map_err(|_error| "reconcile-runs output is not a JSON object".to_owned())?;
+    let Some(object) = envelope.as_object() else {
+        return Err("reconcile-runs output is not a JSON object".to_owned());
+    };
+    if object.get("dry_run").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err(
+            "reconcile-runs output is not a --dry-run projection; the console reads the \
+             read-only projection so that observing a factory is never an act"
+                .to_owned(),
+        );
+    }
+    if object
+        .get("factories_surveyed")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default()
+        == 0
+    {
+        return Err(
+            "reconcile-runs surveyed no factory, so it observed nothing; an empty orphan set \
+             here would report every factory clean rather than unreached"
+                .to_owned(),
+        );
+    }
+    let Some(reconciled) = object
+        .get("reconciled")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Err("reconcile-runs output carries no reconciled array".to_owned());
+    };
+
+    let mut orphaned_runs = Vec::new();
+    let mut skipped = Vec::new();
+    for (index, value) in reconciled.iter().enumerate() {
+        match serde_json::from_value::<OrphanedFactoryRun>(value.clone()) {
+            Ok(run) => orphaned_runs.push(run),
+            Err(error) => skipped.push(format!(
+                "skipped reconciled record {index}: malformed record: {error}"
+            )),
+        }
+    }
+    Ok(ReconcileRunsSnapshot::new(orphaned_runs, skipped))
 }
 
 /// Normalize real `livespec next` output into a `LivespecNextSnapshot`.
@@ -3187,9 +3524,10 @@ mod tests {
         FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane,
         LaneReason, LivespecNextAction, LivespecNextSnapshot, NeedsAttentionReadOutcome,
         NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, ObservedSource,
-        ObservedSourceAdapter, ParsedObservation, ProbeNeedsAttentionPort, PullSourcePort,
-        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
-        SourcePayload, SourceProbe, SourceProbeOutcome, WorkItemDetail, WorkItemSnapshot,
+        ObservedSourceAdapter, OrphanedFactoryRun, ParsedObservation, ProbeNeedsAttentionPort,
+        PullSourcePort, ReconcileRunsSnapshot, SourceAdapterKind, SourceCheckpointPort,
+        SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
+        SourceProbeOutcome, UNKNOWN_STATUS_KIND, WorkItemDetail, WorkItemSnapshot,
         attention_item_snapshot_from_payload_json, diff_needs_attention,
         dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
         fabro_run_snapshot_payload_json, materialize_attention_items,
@@ -3198,7 +3536,8 @@ mod tests {
         normalize_work_item_snapshot, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
         parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        parse_reconcile_runs_snapshot, run_adapter_poll, work_item_snapshot_from_payload_json,
+        work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -3248,6 +3587,16 @@ mod tests {
     ) -> Vec<AttentionItemSnapshot> {
         match result {
             Ok(items) => items,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_reconcile_snapshot(
+        result: Result<ReconcileRunsSnapshot, String>,
+    ) -> ReconcileRunsSnapshot {
+        match result {
+            Ok(snapshot) => snapshot,
             Err(error) => panic!("{error}"),
         }
     }
@@ -3303,6 +3652,12 @@ mod tests {
     #[should_panic(expected = "parse failed")]
     fn ok_attention_items_panics() {
         ok_attention_items(Err("parse failed".to_owned()));
+    }
+
+    #[test]
+    #[should_panic(expected = "parse failed")]
+    fn ok_reconcile_snapshot_panics() {
+        let _ = ok_reconcile_snapshot(Err("parse failed".to_owned()));
     }
 
     #[test]
@@ -4035,7 +4390,10 @@ mod tests {
         assert!(DispatcherJournalKind::DispatcherStalenessRefused.is_refusal());
         assert!(DispatcherJournalKind::InvalidSourceState.is_refusal());
         assert!(DispatcherJournalKind::HostOnlyRefused.is_refusal());
-        assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
+        assert_eq!(
+            FabroRunState::from_status_kind("running").label(),
+            "running"
+        );
         assert_eq!(GithubPullRequestState::Open.label(), "open");
         assert_eq!(
             GithubPullRequestState::ChecksPassing.label(),
@@ -4243,8 +4601,8 @@ mod tests {
 
     #[test]
     fn fabro_snapshot_validates_source_identity() {
-        let snapshot =
-            FabroRunSnapshot::new(" repo ", " item ", " run ", FabroRunState::HumanGate, 11);
+        let running = FabroRunState::from_status_kind("running");
+        let snapshot = FabroRunSnapshot::new(" repo ", " item ", " run ", running.clone(), 11);
 
         assert_eq!(snapshot.as_ref().map(FabroRunSnapshot::repo), Ok("repo"));
         assert_eq!(
@@ -4252,29 +4610,55 @@ mod tests {
             Ok("item")
         );
         assert_eq!(snapshot.as_ref().map(FabroRunSnapshot::run_id), Ok("run"));
-        assert_eq!(
-            snapshot.as_ref().map(FabroRunSnapshot::state),
-            Ok(FabroRunState::HumanGate)
-        );
+        assert_eq!(snapshot.as_ref().map(FabroRunSnapshot::state), Ok(&running));
         assert_eq!(
             snapshot.as_ref().map(FabroRunSnapshot::source_version),
             Ok(11)
         );
         assert_eq!(
-            FabroRunSnapshot::new(" ", "item", "run", FabroRunState::HumanGate, 1),
+            FabroRunSnapshot::new(" ", "item", "run", running.clone(), 1),
             Err(AdapterError::EmptyRepo)
         );
         assert_eq!(
-            FabroRunSnapshot::new("repo", " ", "run", FabroRunState::HumanGate, 1),
+            FabroRunSnapshot::new("repo", " ", "run", running.clone(), 1),
             Err(AdapterError::EmptyWorkItemId)
         );
         assert_eq!(
-            FabroRunSnapshot::new("repo", "item", " ", FabroRunState::HumanGate, 1),
+            FabroRunSnapshot::new("repo", "item", " ", running.clone(), 1),
             Err(AdapterError::EmptyRunId)
         );
         assert_eq!(
-            FabroRunSnapshot::new("repo", "item", "run", FabroRunState::HumanGate, 0),
+            FabroRunSnapshot::new("repo", "item", "run", running, 0),
             Err(AdapterError::InvalidSourceVersion)
+        );
+    }
+
+    /// The status kind is READ, never classified — and blank reads as neutral.
+    ///
+    /// The pin that matters is the LAST assertion: an unrecognized kind must
+    /// stay itself. The shape this replaced folded every run into
+    /// `HumanGate`, so a `running` run and a `failed` one both announced a
+    /// human gate.
+    #[test]
+    fn fabro_run_state_carries_the_status_kind_verbatim() {
+        assert_eq!(
+            FabroRunState::from_status_kind(" running ").label(),
+            "running"
+        );
+        assert!(FabroRunState::from_status_kind("running").is_running());
+        assert_eq!(
+            FabroRunState::from_status_kind("   ").label(),
+            UNKNOWN_STATUS_KIND
+        );
+        assert!(!FabroRunState::from_status_kind("   ").is_running());
+        assert_eq!(
+            FabroRunState::from_status_kind("needs-human").label(),
+            "needs-human"
+        );
+        assert!(!FabroRunState::from_status_kind("needs-human").is_running());
+        assert_eq!(
+            FabroRunState::from_status_kind("a-kind-fabro-added-later").label(),
+            "a-kind-fabro-added-later"
         );
     }
 
@@ -4600,7 +4984,7 @@ mod tests {
             repo: "livespec-console-beads-fabro".to_owned(),
             work_item_id: "livespec-console-beads-fabro-y45jhj".to_owned(),
             run_id: "run_1".to_owned(),
-            state: FabroRunState::HumanGate,
+            state: FabroRunState::from_status_kind("running"),
             source_version: 10,
         }
     }
@@ -4612,7 +4996,7 @@ mod tests {
                     .to_owned(),
                 1,
                 "factory".to_owned(),
-                EventType::FabroHumanGateObserved,
+                EventType::FabroRunObserved,
                 "fabro".to_owned(),
                 "repo:livespec-console-beads-fabro".to_owned(),
                 10,
@@ -4945,6 +5329,8 @@ mod tests {
         "blocked_reason": "waiting on review",
         "factory_safety": "needs-host-secrets",
         "awaits_scope_override": true,
+        "dispatch_factory": "hp",
+        "metadata": {"dispatch_fabro_run_id": "01M1ES066RHS8Y39B9WJW8WC8Q"},
         "comments": [
             {"id": "comment-1", "author": "operator", "created_at": "2026-08-16T08:00:00Z", "text": "first handoff"},
             {"id": 2, "text": "second handoff"},
@@ -5010,6 +5396,14 @@ mod tests {
         assert_eq!(detail.blocked_reason.as_deref(), Some("waiting on review"));
         assert_eq!(detail.factory_safety.as_deref(), Some("needs-host-secrets"));
         assert!(detail.awaits_scope_override);
+        // The dispatch stamps, in the two shapes the surface really carries
+        // them: `dispatch_factory` projected onto the top level and
+        // `dispatch_fabro_run_id` inside the ledger record's `metadata`.
+        assert_eq!(
+            detail.dispatch_fabro_run_id.as_deref(),
+            Some("01M1ES066RHS8Y39B9WJW8WC8Q")
+        );
+        assert_eq!(detail.dispatch_factory.as_deref(), Some("hp"));
         assert_eq!(detail.comments.len(), 2);
         assert_eq!(detail.comments[0].id.as_deref(), Some("comment-1"));
         assert_eq!(detail.comments[0].author.as_deref(), Some("operator"));
@@ -5102,6 +5496,50 @@ mod tests {
             only_snapshot(&original).source_version(),
             only_snapshot(&again).source_version()
         );
+    }
+
+    /// Both dispatch stamps read from either shape, and a blank one is absent.
+    ///
+    /// The flattened leg matters because that is how the orchestrator already
+    /// projects `dispatch_factory`; the blank leg matters because an empty
+    /// stamp must not render as an empty run id in front of the operator.
+    #[test]
+    fn dispatch_stamps_read_from_metadata_or_the_top_level() {
+        let flattened =
+            record_detail(r#""dispatch_fabro_run_id": "01FLAT", "dispatch_factory": "hp""#);
+        assert_eq!(flattened.dispatch_fabro_run_id.as_deref(), Some("01FLAT"));
+        assert_eq!(flattened.dispatch_factory.as_deref(), Some("hp"));
+
+        // `metadata` is where the Dispatcher writes, so it wins over a stale
+        // projection of the same key at the top level.
+        let both = record_detail(
+            r#""dispatch_fabro_run_id": "01STALE",
+               "metadata": {"dispatch_fabro_run_id": "01STAMPED"}"#,
+        );
+        assert_eq!(both.dispatch_fabro_run_id.as_deref(), Some("01STAMPED"));
+
+        let blank =
+            record_detail(r#""dispatch_factory": "  ", "metadata": {"dispatch_fabro_run_id": ""}"#);
+        assert_eq!(blank.dispatch_fabro_run_id, None);
+        assert_eq!(blank.dispatch_factory, None);
+
+        let undispatched = record_detail(r#""title": "never dispatched""#);
+        assert_eq!(undispatched.dispatch_fabro_run_id, None);
+        assert_eq!(undispatched.dispatch_factory, None);
+    }
+
+    /// The descriptive record parsed from one `list-work-items --json` item
+    /// carrying `extra_fields` beside the required lifecycle half.
+    fn record_detail(extra_fields: &str) -> WorkItemDetail {
+        let stdout = format!(
+            r#"[{{"id": "console-1", "lane": "ready", "rank": "a1", "status": "ready", {extra_fields}}}]"#
+        );
+        let parsed = ok_parsed_observation(parse_orchestrator_observation(&observed_for(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            &stdout,
+        )));
+        only_snapshot(&parsed).detail().clone()
     }
 
     #[test]
@@ -5948,39 +6386,107 @@ mod tests {
 
     #[test]
     fn parse_fabro_reads_run_and_falls_back_to_id() {
+        // The real `fabro ps --json` shape: `status` is an OBJECT carrying the
+        // kind, never a bare string.
         let with_run = ok_parsed_observation(parse_fabro_observation(&observed_for(
             SourceAdapterKind::Fabro,
             "console",
-            "{\"run_id\": \"run_7\", \"work_item_id\": \"console-1\"}",
+            "{\"run_id\": \"run_7\", \"work_item_id\": \"console-1\", \
+             \"status\": {\"kind\": \"running\"}}",
         )));
-        let version = super::source_stream_seq(&["run_7", "console-1"]);
+        let version = super::source_stream_seq(&["run_7", "console-1", "running"]);
         assert_eq!(
             first_payload(&with_run),
             &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
                 repo: "console".to_owned(),
                 work_item_id: "console-1".to_owned(),
                 run_id: "run_7".to_owned(),
-                state: FabroRunState::HumanGate,
+                state: FabroRunState::from_status_kind("running"),
                 source_version: version,
             })
         );
 
         // No run_id: fall back to id, and default work_item_id to the run id.
+        // No status either, so the kind is the neutral unknown -- NOT a gate.
         let fallback = ok_parsed_observation(parse_fabro_observation(&observed_for(
             SourceAdapterKind::Fabro,
             "console",
             "{\"id\": \"run_8\"}",
         )));
-        let fallback_version = super::source_stream_seq(&["run_8", "run_8"]);
+        let fallback_version = super::source_stream_seq(&["run_8", "run_8", UNKNOWN_STATUS_KIND]);
         assert_eq!(
             first_payload(&fallback),
             &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
                 repo: "console".to_owned(),
                 work_item_id: "run_8".to_owned(),
                 run_id: "run_8".to_owned(),
-                state: FabroRunState::HumanGate,
+                state: FabroRunState::from_status_kind(UNKNOWN_STATUS_KIND),
                 source_version: fallback_version,
             })
+        );
+    }
+
+    /// A terminal run is emitted as terminal, and a flat `status_kind` is read
+    /// too.
+    ///
+    /// The first half is the clause: an observed run that is NOT at a
+    /// needs-human terminal must carry its own status kind. The second is the
+    /// flat-shape fallback, kept because the observation is normalized from
+    /// stdout that a wrapper may flatten.
+    #[test]
+    fn parse_fabro_emits_the_runs_own_terminal_status_kind() {
+        let terminal = ok_parsed_observation(parse_fabro_observation(&observed_for(
+            SourceAdapterKind::Fabro,
+            "console",
+            "{\"run_id\": \"run_9\", \"status\": {\"kind\": \"failed\"}}",
+        )));
+        assert_eq!(
+            first_payload(&terminal),
+            &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
+                repo: "console".to_owned(),
+                work_item_id: "run_9".to_owned(),
+                run_id: "run_9".to_owned(),
+                state: FabroRunState::from_status_kind("failed"),
+                source_version: super::source_stream_seq(&["run_9", "run_9", "failed"]),
+            })
+        );
+
+        let flat = ok_parsed_observation(parse_fabro_observation(&observed_for(
+            SourceAdapterKind::Fabro,
+            "console",
+            "{\"run_id\": \"run_10\", \"status_kind\": \"needs-human\"}",
+        )));
+        assert_eq!(
+            first_payload(&flat),
+            &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
+                repo: "console".to_owned(),
+                work_item_id: "run_10".to_owned(),
+                run_id: "run_10".to_owned(),
+                state: FabroRunState::from_status_kind("needs-human"),
+                source_version: super::source_stream_seq(&["run_10", "run_10", "needs-human"]),
+            })
+        );
+    }
+
+    /// The nested read is anchored on its outer key, and reports absence.
+    #[test]
+    fn nested_json_string_anchors_on_the_outer_key() {
+        assert_eq!(
+            super::nested_json_string("{\"status\": {\"kind\": \"running\"}}", "status", "kind"),
+            Some("running".to_owned())
+        );
+        // A `kind` BEFORE the outer key belongs to something else.
+        assert_eq!(
+            super::nested_json_string(
+                "{\"kind\": \"other\", \"status\": {\"kind\": \"failed\"}}",
+                "status",
+                "kind"
+            ),
+            Some("failed".to_owned())
+        );
+        assert_eq!(
+            super::nested_json_string("{\"run_id\": \"run_1\"}", "status", "kind"),
+            None
         );
     }
 
@@ -6163,6 +6669,141 @@ mod tests {
         assert_eq!(malformed_items.len(), 1);
         assert_eq!(malformed_items[0].id(), "needs-attention-malformed:wi-bad");
         assert!(malformed_items[0].summary().contains("malformed item"));
+    }
+
+    /// The reconciler's real `--dry-run --json` envelope, with one orphan whose
+    /// item is in the ledger and one whose item is absent from it entirely.
+    ///
+    /// Keys, order, and values are the shapes
+    /// `dispatcher.py reconcile-runs --dry-run --json` actually emits (its
+    /// `ReconciledRun` dataclass, serialized with `asdict`), including the
+    /// `termination_route: "none"` a dry run reports because it terminated
+    /// nothing.
+    const RECONCILE_RUNS_DRY_RUN_JSON: &str = r#"{
+        "dry_run": true,
+        "errors": [],
+        "held": [],
+        "factories_surveyed": 2,
+        "factory_names": ["hp", "local"],
+        "reconciled": [
+            {
+                "run_id": "01M1ES066RHS8Y39B9WJW8WC8Q",
+                "factory_name": "hp",
+                "factory_server_url": "https://hp.example:32276",
+                "status_kind": "running",
+                "work_item_id": "livespec-console-beads-fabro-h7jp",
+                "work_item_status": "blocked",
+                "orphan_reason": "item-not-active",
+                "termination_route": "none",
+                "termination_succeeded": false,
+                "termination_detail": "dry run: nothing was exported or terminated",
+                "export_comment_id": null,
+                "parked_seconds": null,
+                "grace_seconds": null
+            },
+            {
+                "run_id": "01M1F34G6NY83A6Y24DJQCGDHQ",
+                "factory_name": "local",
+                "factory_server_url": "https://local.example:32276",
+                "status_kind": "queued",
+                "work_item_id": "livespec-console-beads-fabro-gone",
+                "work_item_status": null,
+                "orphan_reason": "item-missing",
+                "termination_route": "none",
+                "termination_succeeded": false,
+                "termination_detail": "dry run: nothing was exported or terminated",
+                "export_comment_id": null,
+                "parked_seconds": null,
+                "grace_seconds": null
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn parse_reconcile_runs_reads_the_dry_run_orphan_projection() {
+        let snapshot =
+            ok_reconcile_snapshot(parse_reconcile_runs_snapshot(RECONCILE_RUNS_DRY_RUN_JSON));
+
+        assert_eq!(snapshot.orphaned_runs().len(), 2);
+        assert!(snapshot.skipped().is_empty());
+        // Field-for-field against a hand-built record: this is the mapping from
+        // the projection's key names onto the console's, and getting one wrong
+        // (a factory rendered as a status, say) is silent.
+        assert_eq!(
+            snapshot.orphaned_runs()[0],
+            OrphanedFactoryRun::new(
+                "01M1ES066RHS8Y39B9WJW8WC8Q",
+                "hp",
+                "running",
+                "livespec-console-beads-fabro-h7jp",
+                Some("blocked"),
+                "item-not-active",
+                "none",
+            )
+        );
+        let first = &snapshot.orphaned_runs()[0];
+        assert_eq!(first.run_id(), "01M1ES066RHS8Y39B9WJW8WC8Q");
+        assert_eq!(first.factory_name(), "hp");
+        assert_eq!(first.status_kind(), "running");
+        assert_eq!(first.work_item_id(), "livespec-console-beads-fabro-h7jp");
+        assert_eq!(first.work_item_status(), Some("blocked"));
+        assert_eq!(first.orphan_reason(), "item-not-active");
+        assert_eq!(first.termination_route(), "none");
+        // `item-missing` carries a NULL work-item status: the item is not in the
+        // ledger, so it has none. Absent stays absent.
+        assert_eq!(snapshot.orphaned_runs()[1].work_item_status(), None);
+        assert_eq!(snapshot.orphaned_runs()[1].orphan_reason(), "item-missing");
+    }
+
+    #[test]
+    fn parse_reconcile_runs_refuses_envelopes_that_would_mislead() {
+        assert_eq!(
+            parse_reconcile_runs_snapshot("not json"),
+            Err("reconcile-runs output is not a JSON object".to_owned())
+        );
+        assert_eq!(
+            parse_reconcile_runs_snapshot("[]"),
+            Err("reconcile-runs output is not a JSON object".to_owned())
+        );
+        // A WIRED pass already terminated what it reports. Rendering that as a
+        // set of proposals would report an act as a proposal.
+        let wired = RECONCILE_RUNS_DRY_RUN_JSON.replace("\"dry_run\": true", "\"dry_run\": false");
+        check(
+            parse_reconcile_runs_snapshot(&wired)
+                .is_err_and(|reason| reason.contains("is not a --dry-run projection")),
+            "a wired pass must be refused",
+        );
+        // Surveying no factory and finding no orphan are the same empty
+        // `reconciled[]` with opposite meanings.
+        let unsurveyed = RECONCILE_RUNS_DRY_RUN_JSON
+            .replace("\"factories_surveyed\": 2", "\"factories_surveyed\": 0");
+        check(
+            parse_reconcile_runs_snapshot(&unsurveyed)
+                .is_err_and(|reason| reason.contains("surveyed no factory")),
+            "a zero-survey pass must be refused",
+        );
+        assert_eq!(
+            parse_reconcile_runs_snapshot(r#"{"dry_run": true, "factories_surveyed": 1}"#),
+            Err("reconcile-runs output carries no reconciled array".to_owned())
+        );
+    }
+
+    /// A clean envelope with no orphans is an EMPTY lane, not a refusal, and one
+    /// unreadable record is skipped with a reason rather than sinking the rest.
+    #[test]
+    fn parse_reconcile_runs_tolerates_a_bad_record_and_an_empty_set() {
+        let empty = ok_reconcile_snapshot(parse_reconcile_runs_snapshot(
+            r#"{"dry_run": true, "factories_surveyed": 1, "reconciled": []}"#,
+        ));
+        assert!(empty.orphaned_runs().is_empty());
+        assert!(empty.skipped().is_empty());
+
+        let mixed = RECONCILE_RUNS_DRY_RUN_JSON
+            .replace("\"status_kind\": \"queued\"", "\"status_kind\": 7");
+        let snapshot = ok_reconcile_snapshot(parse_reconcile_runs_snapshot(&mixed));
+        assert_eq!(snapshot.orphaned_runs().len(), 1);
+        assert_eq!(snapshot.skipped().len(), 1);
+        assert!(snapshot.skipped()[0].contains("skipped reconciled record 1"));
     }
 
     #[test]

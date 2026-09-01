@@ -32,10 +32,10 @@ pub mod source_adapters;
 
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
-    SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail, WorkItemSnapshot,
-    attention_item_snapshot_from_payload_json, dispatcher_journal_from_payload_json,
-    fabro_run_snapshot_from_payload_json, materialize_attention_items,
-    work_item_snapshot_from_payload_json,
+    OrphanedFactoryRun, SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail,
+    WorkItemSnapshot, attention_item_snapshot_from_payload_json,
+    dispatcher_journal_from_payload_json, fabro_run_snapshot_from_payload_json,
+    materialize_attention_items, work_item_snapshot_from_payload_json,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,12 +278,17 @@ pub enum HelpFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Variants for operator action state or outcome values.
+/// One action the operator can select on the attention detail.
+///
+/// Every action is a REGISTRY action. The enum used to carry two more variants,
+/// `OpenFabroAttach` and `CopyFabroAttach`, which opened or copied a
+/// `fabro attach <run>` command; the needs-human redesign retired the handoff
+/// they served (`SPECIFICATION/contracts.md`: the console MUST NOT render,
+/// copy, or execute an attach handoff to a factory run), and no
+/// production path ever put them in a detail's action list, so they were
+/// removed rather than left as a selectable route to a command that finds
+/// nothing.
 pub enum OperatorAction {
-    /// Open fabro attach variant.
-    OpenFabroAttach,
-    /// Copy fabro attach variant.
-    CopyFabroAttach,
     /// A registered operator action, referenced by its stable registry id.
     Registered(&'static str),
 }
@@ -293,8 +298,6 @@ impl OperatorAction {
     /// Return the stable display label for this value.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::OpenFabroAttach => "Open Fabro attach",
-            Self::CopyFabroAttach => "Copy Fabro attach",
             Self::Registered(id) => {
                 action_registry::action_for_id(id).map_or(id, |spec| spec.label)
             }
@@ -1463,7 +1466,8 @@ pub struct AttentionDetail {
     repo: String,
     work_item: String,
     fabro_run: String,
-    attach_command: Option<String>,
+    fabro_factory: Option<String>,
+    valve_commands: Vec<String>,
     timeline: Vec<TimelineEntry>,
     actions: Vec<OperatorAction>,
 }
@@ -1475,7 +1479,8 @@ impl AttentionDetail {
         repo: String,
         work_item: String,
         fabro_run: String,
-        attach_command: Option<String>,
+        fabro_factory: Option<String>,
+        valve_commands: Vec<String>,
         timeline: Vec<TimelineEntry>,
         actions: Vec<OperatorAction>,
     ) -> Self {
@@ -1483,7 +1488,8 @@ impl AttentionDetail {
             repo,
             work_item,
             fabro_run,
-            attach_command,
+            fabro_factory,
+            valve_commands,
             timeline,
             actions,
         }
@@ -1508,9 +1514,29 @@ impl AttentionDetail {
     }
 
     #[must_use]
-    /// Return the attach command value.
-    pub fn attach_command(&self) -> Option<&str> {
-        self.attach_command.as_deref()
+    /// The factory the run lives on, when the ledger stamped one.
+    pub fn fabro_factory(&self) -> Option<&str> {
+        self.fabro_factory.as_deref()
+    }
+
+    #[must_use]
+    /// The operator commands the orchestrator's attention projection
+    /// ADVERTISES for this entry, in projection order.
+    ///
+    /// Read from the projection's own handoffs, never composed here. This slot
+    /// used to hold a locally-formatted `fabro attach <run>`, which the
+    /// needs-human redesign turned into a command that finds nothing: a
+    /// needs-human outcome now terminates the run and rests the item at
+    /// `blocked / needs-human`, so there is no run to attach to and the
+    /// decision is a ledger valve (`SPECIFICATION/contracts.md`, and
+    /// `SPECIFICATION/scenarios.md` Scenario 30). What the operator is
+    /// handed is therefore whatever the projection says is pressable for this
+    /// item — for a needs-human item, the `resolve-blocked:<id>:ready` valve,
+    /// whose summary carries the rework-or-from-scratch re-dispatch route.
+    /// Empty when the projection advertises nothing, which is an honest
+    /// "nothing to press" rather than a fabricated command.
+    pub fn valve_commands(&self) -> &[String] {
+        &self.valve_commands
     }
 
     #[must_use]
@@ -1655,6 +1681,7 @@ pub struct TuiScreenModel {
     transient_status: Option<String>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
+    orphaned_factory_runs: Vec<OrphanedFactoryRun>,
 }
 
 impl TuiScreenModel {
@@ -1662,6 +1689,24 @@ impl TuiScreenModel {
     /// Return the stored value.
     pub const fn active_view(&self) -> TuiView {
         self.active_view
+    }
+
+    #[must_use]
+    /// The orphaned-factory-runs lane: runs the orchestrator's `reconcile-runs`
+    /// dry-run projection reports as holding a scheduler slot for work the
+    /// ledger says nothing is waiting on.
+    ///
+    /// EMPTY in production today, and empty deliberately rather than by
+    /// oversight: this slot and its parser
+    /// ([`parse_reconcile_runs_snapshot`]) are the data layer, and the source
+    /// adapter that runs `reconcile-runs --dry-run --json` plus the lane's
+    /// rendering are `livespec-console-beads-fabro-suleji`. Until that lands,
+    /// `tests/heading-coverage.json` keeps Scenario 30's lane clause registered
+    /// as pending — the lane is NOT claimed as delivered by this slot existing.
+    ///
+    /// [`parse_reconcile_runs_snapshot`]: source_adapters::parse_reconcile_runs_snapshot
+    pub fn orphaned_factory_runs(&self) -> &[OrphanedFactoryRun] {
+        &self.orphaned_factory_runs
     }
 
     #[must_use]
@@ -1686,39 +1731,6 @@ impl TuiScreenModel {
     /// Return the stored value.
     pub const fn detail(&self) -> Option<&AttentionDetail> {
         self.detail.as_ref()
-    }
-
-    /// Build a focused fixture model for coverage-only cross-crate tests that
-    /// need to exercise private detail shapes through the public runtime API.
-    #[cfg(coverage)]
-    #[must_use]
-    pub fn coverage_fixture_with_detail(detail: AttentionDetail, overlay: TuiOverlay) -> Self {
-        Self {
-            active_view: TuiView::Attention,
-            navigation: vec![TuiView::Attention],
-            attention_items: vec![],
-            selected_attention_index: None,
-            detail: Some(detail),
-            view_items: vec![],
-            lane_board: project_lane_board(&[]),
-            lane_focus: LaneFocus::Overview,
-            selected_lane_index: None,
-            selected_lane_item_index: None,
-            missing_selected_lane_item_id: None,
-            focus: FocusPane::Content,
-            detail_scroll: 0,
-            header_scroll: 0,
-            overlay,
-            selected_repo: String::new(),
-            selected_setting_index: None,
-            dispatcher_settings: DispatcherSettingsRead::NotObserved,
-            plugin_resolution: PluginResolution::unresolved(),
-            unavailable_sources: vec![],
-            factory_activity: None,
-            transient_status: None,
-            header: String::new(),
-            action_failures: BTreeMap::new(),
-        }
     }
 
     #[must_use]
@@ -2276,10 +2288,6 @@ pub enum OperatorActionOutcome {
         /// The command's `{ ... }` payload JSON.
         payload_json: String,
     },
-    /// Open attach command variant.
-    OpenAttachCommand(String),
-    /// Copy attach command variant.
-    CopyAttachCommand(String),
     /// Copy driver handoff command variant. This is a terminal-copy effect only,
     /// never a persisted command.
     CopyDriverHandoff(String),
@@ -2293,20 +2301,7 @@ impl OperatorActionOutcome {
             Self::PersistCommand(command) | Self::PersistCommandWithPayload { command, .. } => {
                 Some(command)
             }
-            Self::OpenAttachCommand(_)
-            | Self::CopyAttachCommand(_)
-            | Self::CopyDriverHandoff(_) => None,
-        }
-    }
-
-    #[must_use]
-    /// Return the attach command value.
-    pub fn attach_command(&self) -> Option<&str> {
-        match self {
-            Self::OpenAttachCommand(command) | Self::CopyAttachCommand(command) => Some(command),
-            Self::PersistCommand(_)
-            | Self::PersistCommandWithPayload { .. }
-            | Self::CopyDriverHandoff(_) => None,
+            Self::CopyDriverHandoff(_) => None,
         }
     }
 }
@@ -3563,8 +3558,18 @@ fn observed_execution_states(
                     );
                 }
             }
-            EventType::FabroHumanGateObserved => {
-                if let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json()) {
+            // Only a run the SOURCE reported as running claims execution. The
+            // observation alone says nothing: a run at a terminal status kind
+            // has stopped, and marking the item executing off the mere fact
+            // that a run was seen is the infer-state-from-an-observation
+            // failure `SPECIFICATION/contracts.md` forbids. A non-running run
+            // leaves the map untouched
+            // rather than asserting some other state the console did not
+            // observe -- the dispatcher journal is what owns finished-ness.
+            EventType::FabroRunObserved => {
+                if let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json())
+                    && snapshot.state().is_running()
+                {
                     execution_states.insert(
                         (
                             snapshot.repo().to_owned(),
@@ -3679,6 +3684,11 @@ pub fn build_tui_model_for_state(
         unavailable_sources,
         factory_activity,
         transient_status: state.transient_status.clone(),
+        // The lane's production feed is livespec-console-beads-fabro-suleji: no
+        // `SourceAdapterKind` runs `reconcile-runs --dry-run --json` yet, so the
+        // honest projection here is EMPTY rather than a synthesized set. See
+        // `TuiScreenModel::orphaned_factory_runs`.
+        orphaned_factory_runs: Vec::new(),
     }
 }
 
@@ -3752,7 +3762,7 @@ fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
             | EventType::DispatcherBacklogBounceObserved
             | EventType::DispatcherJournalProgressObserved
             | EventType::DispatcherRefusalObserved
-            | EventType::FabroHumanGateObserved
+            | EventType::FabroRunObserved
             | EventType::GithubPullRequestSnapshotObserved
             | EventType::LivespecNextSnapshotObserved
             | EventType::LivespecReviseRequired => {
@@ -4555,35 +4565,6 @@ pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
     Ok(trimmed)
 }
 
-/// Resolve selected operator action.
-pub fn resolve_selected_operator_action(
-    model: &TuiScreenModel,
-    requested_by: &str,
-) -> ApplicationResult<OperatorActionOutcome> {
-    validate_operator_action(requested_by)?;
-    let detail = model
-        .detail()
-        .ok_or(ApplicationError::NoSelectedAttentionItem)?;
-    let action = model
-        .selected_operator_action()
-        .ok_or(ApplicationError::NoSelectedOperatorAction)?;
-    Ok(match action {
-        OperatorAction::OpenFabroAttach => {
-            let command = detail
-                .attach_command()
-                .ok_or(ApplicationError::NoSelectedOperatorAction)?;
-            OperatorActionOutcome::OpenAttachCommand(command.to_owned())
-        }
-        OperatorAction::CopyFabroAttach => {
-            let command = detail
-                .attach_command()
-                .ok_or(ApplicationError::NoSelectedOperatorAction)?;
-            OperatorActionOutcome::CopyAttachCommand(command.to_owned())
-        }
-        OperatorAction::Registered(_id) => return Err(ApplicationError::UnavailableOperatorAction),
-    })
-}
-
 /// Resolve the edit of the selected `Settings` row into a single per-setting
 /// write.
 ///
@@ -5131,7 +5112,7 @@ const fn command_event_context(event_type: EventType) -> &'static str {
         | EventType::DispatcherBacklogBounceObserved
         | EventType::DispatcherJournalProgressObserved
         | EventType::DispatcherRefusalObserved
-        | EventType::FabroHumanGateObserved
+        | EventType::FabroRunObserved
         | EventType::GithubPullRequestSnapshotObserved
         | EventType::LivespecNextSnapshotObserved
         | EventType::LivespecReviseRequired
@@ -7043,13 +7024,18 @@ fn build_needs_attention_detail(
     events: &[ConsoleEvent],
 ) -> AttentionDetail {
     let source_ref = item.source_ref();
-    let handoff_command = Some(item.handoff().command().to_owned());
+    let handoff_command = vec![item.handoff().command().to_owned()];
     if let Some(work_item_id) = source_ref.work_item() {
         if let Some(entry) = latest_work_item_snapshot(events, work_item_id) {
+            let detail = entry.snapshot.detail();
             return AttentionDetail::new(
                 source_ref.repo().to_owned(),
                 work_item_id.to_owned(),
-                "-".to_owned(),
+                detail
+                    .dispatch_fabro_run_id
+                    .clone()
+                    .unwrap_or_else(|| "-".to_owned()),
+                detail.dispatch_factory.clone(),
                 handoff_command,
                 latest_timeline(events, entry.event.stream_id(), 3),
                 attention_detail_actions(&entry),
@@ -7059,6 +7045,7 @@ fn build_needs_attention_detail(
             source_ref.repo().to_owned(),
             format!("{work_item_id} (record not ingested)"),
             "-".to_owned(),
+            None,
             handoff_command,
             Vec::new(),
             Vec::new(),
@@ -7069,6 +7056,7 @@ fn build_needs_attention_detail(
         source_ref.repo().to_owned(),
         subject.to_owned(),
         "-".to_owned(),
+        None,
         handoff_command,
         Vec::new(),
         Vec::new(),
@@ -7535,21 +7523,49 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
         .unwrap_or_default()
 }
 
+/// The detail pane for a work-item entry.
+///
+/// Two sources, each consumed rather than re-derived. The run id and factory
+/// come from the item's OWN dispatch stamps (`dispatch_fabro_run_id` /
+/// `dispatch_factory`), and the pressable commands come from the orchestrator's
+/// attention projection. Neither is reconstructed from the console's event log
+/// any more: the run id used to be recovered by scanning backwards for a Fabro
+/// observation and then formatted into a `fabro attach` handoff, which the
+/// needs-human redesign left pointing at a run that no longer exists
+/// (`SPECIFICATION/contracts.md`).
 fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) -> AttentionDetail {
     let event = &entry.event;
-    let fabro_run = fabro_run_id_for_attention(entry, events);
-    let attach_command = fabro_run
-        .as_deref()
-        .map(|run_id| format!("fabro attach {run_id}"));
+    let detail = entry.snapshot.detail();
     let actions = attention_detail_actions(entry);
     AttentionDetail::new(
         entry.snapshot.repo().to_owned(),
         entry.snapshot.work_item_id().to_owned(),
-        fabro_run.unwrap_or_else(|| "-".to_owned()),
-        attach_command,
+        detail
+            .dispatch_fabro_run_id
+            .clone()
+            .unwrap_or_else(|| "-".to_owned()),
+        detail.dispatch_factory.clone(),
+        advertised_valve_commands(events, entry.snapshot.work_item_id()),
         latest_timeline(events, event.stream_id(), 3),
         actions,
     )
+}
+
+/// Every command the ingested needs-attention projection advertises for
+/// `work_item_id`, in projection order.
+///
+/// The unified attention list DEDUPES a needs-attention row into the richer
+/// work-item entry it points at, so for a `blocked / needs-human` item the row
+/// carrying the `resolve-blocked:<id>:ready` valve is exactly the one that does
+/// not get its own list entry. Reading the projection back here is what keeps
+/// that valve reachable: without it the dedupe silently swallowed the only
+/// pressable thing the orchestrator advertised for the item.
+fn advertised_valve_commands(events: &[ConsoleEvent], work_item_id: &str) -> Vec<String> {
+    materialize_attention_items(events)
+        .into_iter()
+        .filter(|item| item.source_ref().work_item() == Some(work_item_id))
+        .map(|item| item.handoff().command().to_owned())
+        .collect()
 }
 
 fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
@@ -7726,30 +7742,6 @@ fn attention_stream_repo(stream_id: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn fabro_run_id(event: &ConsoleEvent) -> Option<String> {
-    fabro_run_snapshot_from_payload_json(event.payload_json())
-        .map(|snapshot| snapshot.run_id().to_owned())
-}
-
-fn fabro_run_id_for_attention(
-    entry: &AttentionSnapshot,
-    events: &[ConsoleEvent],
-) -> Option<String> {
-    events.iter().rev().find_map(|event| {
-        if *event.event_type() != EventType::FabroHumanGateObserved {
-            return None;
-        }
-        let snapshot = fabro_run_snapshot_from_payload_json(event.payload_json())?;
-        if snapshot.repo() == entry.snapshot.repo()
-            && snapshot.work_item_id() == entry.snapshot.work_item_id()
-        {
-            fabro_run_id(event)
-        } else {
-            None
-        }
-    })
-}
-
 fn latest_timeline(
     events: &[ConsoleEvent],
     selected_stream_id: &str,
@@ -7784,7 +7776,7 @@ impl AttentionEvent for EventType {
             Self::WorkItemSnapshotObserved => "Work-item snapshot",
             Self::CommandAccepted => "Command accepted",
             Self::CommandRejected => "Command rejected",
-            Self::FabroHumanGateObserved => "Fabro human gate",
+            Self::FabroRunObserved => "Fabro human gate",
             Self::FactoryDrainCompleted => "Factory drain completed",
             Self::FactoryDrainFailed => "Factory drain failed",
             Self::FactoryDrainAwaitingHuman => "Factory drain awaiting human",
@@ -7859,10 +7851,9 @@ mod tests {
         help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
         per_item_verb_is_state_valid, plan_page_url, project_action_failures, project_attention,
         project_lane_board, project_plan_page, reduce_tui_interaction, render_plan_page_html,
-        resolve_command_palette_action, resolve_dispatcher_setting_edit,
-        resolve_selected_operator_action, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
-        work_item_failure_event, work_item_override_outcome,
+        resolve_command_palette_action, resolve_dispatcher_setting_edit, resolve_valve_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
+        validate_operator_action, work_item_failure_event, work_item_override_outcome,
     };
 
     #[track_caller]
@@ -8536,7 +8527,7 @@ mod tests {
     fn lane_board_skips_non_snapshot_and_unparseable_payloads() {
         let events = [
             // A different event type is not a lane source.
-            ConsoleEvent::fixture("evt_gate", EventType::FabroHumanGateObserved, "fabro"),
+            ConsoleEvent::fixture("evt_gate", EventType::FabroRunObserved, "fabro"),
             // A snapshot event whose payload is the empty object does not rebuild.
             ConsoleEvent::fixture(
                 "evt_empty",
@@ -8576,6 +8567,11 @@ mod tests {
         assert_eq!(model.overlay(), &TuiOverlay::None);
         assert_eq!(model.selected_operator_action(), None);
         assert_eq!(registry_attention_actions_for_model(&model), []);
+        // The orphaned-factory-runs lane is EMPTY until its production feed
+        // lands (livespec-console-beads-fabro-suleji): no source adapter runs
+        // `reconcile-runs --dry-run --json` yet, and an empty lane is the honest
+        // projection of a source nothing has read.
+        assert_eq!(model.orphaned_factory_runs(), []);
         assert_eq!(
             model.header(),
             "fleet: livespec | mode: tui | repo: - | view: Attention | attention: 0"
@@ -8771,7 +8767,7 @@ mod tests {
         assert_eq!(detail.repo(), orchestrator);
         assert_eq!(detail.work_item(), "bd-ib-ss7rkr (record not ingested)");
         assert_eq!(detail.fabro_run(), "-");
-        assert_eq!(detail.attach_command(), Some("drive-cmd"));
+        assert_eq!(detail.valve_commands(), ["drive-cmd".to_owned()]);
         assert!(detail.timeline().is_empty());
         assert!(detail.actions().is_empty());
 
@@ -9893,67 +9889,10 @@ mod tests {
             transient_status: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         assert_eq!(model.selected_operator_action(), None);
-    }
-
-    #[test]
-    fn selected_attach_actions_require_an_attach_command() {
-        let detail = AttentionDetail::new(
-            "repo".to_owned(),
-            "work-item".to_owned(),
-            "-".to_owned(),
-            None,
-            vec![],
-            vec![
-                OperatorAction::OpenFabroAttach,
-                OperatorAction::CopyFabroAttach,
-            ],
-        );
-        let mut model = TuiScreenModel {
-            active_view: TuiView::Attention,
-            navigation: vec![TuiView::Attention],
-            attention_items: Vec::new(),
-            selected_attention_index: None,
-            detail: Some(detail),
-            view_items: Vec::new(),
-            lane_board: project_lane_board(&[]),
-            lane_focus: LaneFocus::Overview,
-            selected_lane_index: None,
-            selected_lane_item_index: None,
-            missing_selected_lane_item_id: None,
-            focus: FocusPane::Content,
-            detail_scroll: 0,
-            header_scroll: 0,
-            overlay: TuiOverlay::CommandModal {
-                selected_action_index: 0,
-            },
-            selected_repo: String::new(),
-            selected_setting_index: None,
-            dispatcher_settings: DispatcherSettingsRead::NotObserved,
-            plugin_resolution: PluginResolution::unresolved(),
-            unavailable_sources: Vec::new(),
-            factory_activity: None,
-            transient_status: None,
-            header: String::new(),
-            action_failures: std::collections::BTreeMap::new(),
-        };
-
-        let open = resolve_selected_operator_action(&model, "operator");
-        model.overlay = TuiOverlay::CommandModal {
-            selected_action_index: 1,
-        };
-        let copy = resolve_selected_operator_action(&model, "operator");
-
-        check(
-            open == Err(ApplicationError::NoSelectedOperatorAction),
-            "open attach should require a concrete command",
-        );
-        check(
-            copy == Err(ApplicationError::NoSelectedOperatorAction),
-            "copy attach should require a concrete command",
-        );
     }
 
     #[test]
@@ -10480,120 +10419,6 @@ mod tests {
     }
 
     #[test]
-    fn operator_action_resolution_requires_selection_action_and_requester() {
-        let empty_model = build_tui_model(&[], 0);
-        let base_model = build_tui_model(&fabro_gate_events(), 0);
-
-        assert_eq!(
-            resolve_selected_operator_action(&empty_model, "operator"),
-            Err(ApplicationError::NoSelectedAttentionItem)
-        );
-        assert_eq!(
-            resolve_selected_operator_action(&base_model, "operator"),
-            Err(ApplicationError::NoSelectedOperatorAction)
-        );
-        assert_eq!(
-            resolve_selected_operator_action(&base_model, "  "),
-            Err(ApplicationError::EmptyOperatorAction)
-        );
-    }
-
-    #[test]
-    fn operator_action_resolution_keeps_attach_actions_local() {
-        let model = TuiScreenModel {
-            active_view: TuiView::Attention,
-            navigation: TuiView::all().to_vec(),
-            attention_items: vec![],
-            selected_attention_index: Some(0),
-            detail: Some(AttentionDetail::new(
-                "repo".to_owned(),
-                "work-item".to_owned(),
-                "run".to_owned(),
-                Some("fabro attach run".to_owned()),
-                vec![],
-                vec![
-                    OperatorAction::OpenFabroAttach,
-                    OperatorAction::CopyFabroAttach,
-                ],
-            )),
-            view_items: vec![],
-            lane_board: project_lane_board(&[]),
-            lane_focus: LaneFocus::Overview,
-            selected_lane_index: Some(0),
-            selected_lane_item_index: None,
-            missing_selected_lane_item_id: None,
-            focus: FocusPane::Nav,
-            detail_scroll: 0,
-            header_scroll: 0,
-            overlay: TuiOverlay::CommandModal {
-                selected_action_index: 0,
-            },
-            selected_repo: String::new(),
-            selected_setting_index: None,
-            dispatcher_settings: DispatcherSettingsRead::NotObserved,
-            plugin_resolution: PluginResolution::unresolved(),
-            unavailable_sources: Vec::new(),
-            factory_activity: None,
-            transient_status: None,
-            header: String::new(),
-            action_failures: std::collections::BTreeMap::new(),
-        };
-
-        let open = resolve_selected_operator_action(&model, "operator");
-        let copy = resolve_selected_operator_action(
-            &TuiScreenModel {
-                overlay: TuiOverlay::CommandModal {
-                    selected_action_index: 1,
-                },
-                ..model.clone()
-            },
-            "operator",
-        );
-        let registered = resolve_selected_operator_action(
-            &TuiScreenModel {
-                detail: Some(AttentionDetail::new(
-                    "repo".to_owned(),
-                    "work-item".to_owned(),
-                    "run".to_owned(),
-                    None,
-                    vec![],
-                    vec![OperatorAction::Registered("approve")],
-                )),
-                ..model
-            },
-            "operator",
-        );
-
-        assert_eq!(
-            open,
-            Ok(OperatorActionOutcome::OpenAttachCommand(
-                "fabro attach run".to_owned()
-            ))
-        );
-        assert_eq!(
-            copy,
-            Ok(OperatorActionOutcome::CopyAttachCommand(
-                "fabro attach run".to_owned()
-            ))
-        );
-        assert_eq!(
-            open.as_ref().ok().and_then(OperatorActionOutcome::command),
-            None
-        );
-        assert_eq!(
-            copy.as_ref()
-                .ok()
-                .and_then(OperatorActionOutcome::attach_command),
-            Some("fabro attach run")
-        );
-        assert_eq!(registered, Err(ApplicationError::UnavailableOperatorAction));
-        assert_eq!(
-            OperatorActionOutcome::PersistCommand(factory_drain_test_command()).attach_command(),
-            None
-        );
-    }
-
-    #[test]
     fn tui_interaction_closes_overlay_and_ignores_text_outside_queries() {
         let events = fabro_gate_events();
         let state = TuiInteractionState::new(0, TuiOverlay::None);
@@ -10622,83 +10447,142 @@ mod tests {
         assert_eq!(state.overlay(), &TuiOverlay::None);
     }
 
+    /// Scenario 30: a `blocked / needs-human` item renders the orchestrator's
+    /// `resolve-blocked` valve and NO attach command.
+    ///
+    /// The dedupe in the unified list folds the human-valve attention row into
+    /// this richer work-item entry, so the valve reaching the operator at all
+    /// is the whole point: before this, the entry rendered
+    /// `fabro attach <run-scanned-from-events>` — a command that finds nothing,
+    /// because the needs-human terminal ended the run.
     #[test]
-    fn attention_detail_omits_attach_for_orchestrator_only_snapshot() {
-        let events = [
-            lane_event(
-                "evt_blocked",
-                "console-blocked",
-                Lane::Blocked,
-                Some(LaneReason::NeedsHuman),
-                "a0",
-                "blocked",
+    fn needs_human_item_renders_the_resolve_blocked_valve_and_no_attach() {
+        let valve = AttentionItemSnapshot::new(
+            "valve:resolve-blocked:console-blocked",
+            "human-valve",
+            "high",
+            "Resolve human-needed block for work-item console-blocked",
+            AttentionSourceRef::new("console", Some("console-blocked"), None),
+            AttentionHandoff::new(
+                "drive",
+                Some("resolve-blocked:console-blocked:ready"),
+                "drive resolve-blocked:console-blocked:ready",
             ),
-            fabro_run_event("evt_other_gate", "console", "other-work", "run_other", 2),
+        );
+        let events = [
+            needs_human_lane_event("evt_blocked", "console-blocked", Some(("01RUN", "hp"))),
+            attention_appeared("evt_valve", &valve),
+            // A run observation for the SAME item is present and must not
+            // resurrect an attach handoff from it.
+            fabro_run_event("evt_run", "console", "console-blocked", "run_17", 2),
         ];
 
         let model = build_tui_model(&events, 0);
+        let detail = model.detail();
 
         assert_eq!(
-            model.detail().map(super::AttentionDetail::fabro_run),
-            Some("-")
+            detail.map(super::AttentionDetail::valve_commands),
+            Some(["drive resolve-blocked:console-blocked:ready".to_owned()].as_slice())
         );
+        // The run id and factory are the item's OWN dispatch stamps, NOT the
+        // `run_17` the console happens to have observed.
+        assert_eq!(detail.map(super::AttentionDetail::fabro_run), Some("01RUN"));
         assert_eq!(
-            model
-                .detail()
-                .and_then(super::AttentionDetail::attach_command),
-            None
+            detail.and_then(super::AttentionDetail::fabro_factory),
+            Some("hp")
         );
     }
 
+    /// An item the ledger never stamped renders its run as absent.
+    ///
+    /// Absence is STATED, not reconstructed: the projection used to answer with
+    /// whatever run the console had last seen for the repo and item, which is a
+    /// different question and silently wrong across a re-dispatch.
     #[test]
-    fn attention_detail_renders_attach_for_matching_fabro_payload() {
+    fn undispatched_item_renders_no_run_and_no_valve() {
         let events = [
-            lane_event(
-                "evt_blocked",
-                "console-blocked",
-                Lane::Blocked,
-                Some(LaneReason::NeedsHuman),
-                "a0",
-                "blocked",
-            ),
-            fabro_run_event("evt_gate", "console", "console-blocked", "run_17", 2),
+            needs_human_lane_event("evt_blocked", "console-blocked", None),
+            fabro_run_event("evt_run", "console", "console-blocked", "run_17", 2),
         ];
 
         let model = build_tui_model(&events, 0);
+        let detail = model.detail();
 
+        assert_eq!(detail.map(super::AttentionDetail::fabro_run), Some("-"));
+        assert_eq!(detail.and_then(super::AttentionDetail::fabro_factory), None);
         assert_eq!(
-            model.detail().map(super::AttentionDetail::fabro_run),
-            Some("run_17")
-        );
-        assert_eq!(
-            model
-                .detail()
-                .and_then(super::AttentionDetail::attach_command),
-            Some("fabro attach run_17")
+            detail.map(super::AttentionDetail::valve_commands),
+            Some([].as_slice())
         );
     }
 
-    #[test]
-    fn attention_detail_ignores_malformed_fabro_gate_payloads() {
-        let lane = lane_event(
-            "evt_blocked",
-            "console-blocked",
-            Lane::Blocked,
-            Some(LaneReason::NeedsHuman),
-            "a0",
-            "blocked",
+    /// A `blocked / needs-human` lane observation, optionally carrying the
+    /// Dispatcher's `(run id, factory)` stamps.
+    fn needs_human_lane_event(
+        event_id: &str,
+        work_item_id: &str,
+        dispatch: Option<(&str, &str)>,
+    ) -> ConsoleEvent {
+        let stamps = dispatch.map_or_else(String::new, |(run_id, factory)| {
+            format!(r#","dispatch_fabro_run_id":"{run_id}","dispatch_factory":"{factory}""#)
+        });
+        let payload = format!(
+            concat!(
+                r#"{{"repo":"console","work_item_id":"{}","lane":"blocked","#,
+                r#""lane_reason":"needs-human","rank":"a0","status":"blocked","#,
+                r#""source_version":1,"detail":{{"title":"Needs-human fixture"{}}}}}"#,
+            ),
+            work_item_id, stamps,
         );
-        let entries = super::attention_snapshots(&[lane]);
-        check(entries.len() == 1, "attention fixture should build");
-        let bad_fabro =
-            ConsoleEvent::fixture("evt_bad_fabro", EventType::FabroHumanGateObserved, "fabro")
-                .with_payload_json("{}".to_owned());
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::WorkItemSnapshotObserved,
+            "orchestrator",
+        )
+        .with_payload_json(payload)
+    }
 
-        let run_id = super::fabro_run_id_for_attention(&entries[0], &[bad_fabro]);
+    /// An advertised valve for a DIFFERENT item never leaks onto this one.
+    ///
+    /// The projection read is by work-item id, and getting that filter wrong
+    /// would hand the operator a command that acts on somebody else's item.
+    #[test]
+    fn advertised_valves_are_scoped_to_their_own_work_item() {
+        let other = AttentionItemSnapshot::new(
+            "valve:resolve-blocked:console-other",
+            "human-valve",
+            "high",
+            "Resolve human-needed block for work-item console-other",
+            AttentionSourceRef::new("console", Some("console-other"), None),
+            AttentionHandoff::new(
+                "drive",
+                Some("resolve-blocked:console-other:ready"),
+                "drive resolve-blocked:console-other:ready",
+            ),
+        );
+        // A row pointing at no work-item at all (a spec/plan/hygiene row) must
+        // not attach itself to whichever item happens to be selected either.
+        let pathless = AttentionItemSnapshot::new(
+            "spec:adapt:SPECIFICATION",
+            "spec",
+            "medium",
+            "Adapt the specification",
+            AttentionSourceRef::new("console", None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "livespec adapt"),
+        );
+        let events = [
+            needs_human_lane_event("evt_blocked", "console-blocked", None),
+            attention_appeared("evt_other", &other),
+            attention_appeared("evt_pathless", &pathless),
+        ];
 
-        check(
-            run_id.is_none(),
-            "malformed fabro gate payload should not produce an attach command",
+        assert_eq!(
+            super::advertised_valve_commands(&events, "console-blocked"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            super::advertised_valve_commands(&events, "console-other"),
+            vec!["drive resolve-blocked:console-other:ready".to_owned()]
         );
     }
 
@@ -10795,7 +10679,7 @@ mod tests {
             event_id.to_owned(),
             1,
             "factory".to_owned(),
-            EventType::FabroHumanGateObserved,
+            EventType::FabroRunObserved,
             "fabro".to_owned(),
             format!("repo:{repo}"),
             source_version,
@@ -10809,7 +10693,7 @@ mod tests {
                 "evt_gate".to_owned(),
                 1,
                 "factory".to_owned(),
-                EventType::FabroHumanGateObserved,
+                EventType::FabroRunObserved,
                 "fabro:run_17".to_owned(),
                 "factory:livespec-console-beads-fabro".to_owned(),
                 1,
@@ -10894,10 +10778,8 @@ mod tests {
             Some("-")
         );
         assert_eq!(
-            model
-                .detail()
-                .and_then(super::AttentionDetail::attach_command),
-            None
+            model.detail().map(super::AttentionDetail::valve_commands),
+            Some([].as_slice())
         );
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
@@ -10965,7 +10847,7 @@ mod tests {
     }
 
     #[test]
-    fn source_reference_helpers_derive_repo_and_fabro_run_from_payload() {
+    fn source_reference_helpers_derive_repo_from_the_stream_key() {
         let gate = fabro_run_event(
             "evt_gate",
             "livespec-console-beads-fabro",
@@ -10973,8 +10855,6 @@ mod tests {
             "run_17",
             2,
         );
-        let fallback =
-            ConsoleEvent::fixture("evt_no_run", EventType::LivespecReviseRequired, "livespec");
         let plain_stream = ConsoleEvent::new(
             "evt_plain".to_owned(),
             1,
@@ -10995,8 +10875,6 @@ mod tests {
         // fallback returned a work-item id as a repository — a test that could
         // not fail on the shape production actually produces.
         assert_eq!(super::repo_id(&plain_stream), None);
-        assert_eq!(super::fabro_run_id(&gate), Some("run_17".to_owned()));
-        assert_eq!(super::fabro_run_id(&fallback), None);
     }
 
     #[test]
@@ -11260,8 +11138,16 @@ mod tests {
         assert_eq!(TuiView::Lanes.label(), "Lanes");
         assert_eq!(TuiView::Events.label(), "Events");
         assert_eq!(TuiView::Repos.label(), "Repos");
-        assert_eq!(OperatorAction::OpenFabroAttach.label(), "Open Fabro attach");
-        assert_eq!(OperatorAction::CopyFabroAttach.label(), "Copy Fabro attach");
+        assert_eq!(
+            OperatorAction::Registered("approve").label(),
+            "Approve work-item"
+        );
+        // An id with no registry entry falls back to the id itself rather than
+        // rendering a blank row.
+        assert_eq!(
+            OperatorAction::Registered("not-registered").label(),
+            "not-registered"
+        );
     }
 
     #[test]
@@ -11296,10 +11182,7 @@ mod tests {
             EventType::DispatcherRefusalObserved.label(),
             "Dispatcher refusal"
         );
-        assert_eq!(
-            EventType::FabroHumanGateObserved.label(),
-            "Fabro human gate"
-        );
+        assert_eq!(EventType::FabroRunObserved.label(), "Fabro human gate");
         assert_eq!(EventType::CommandAccepted.label(), "Command accepted");
         assert_eq!(EventType::CommandRejected.label(), "Command rejected");
         assert_eq!(
@@ -15630,14 +15513,10 @@ mod tests {
             payload_json: "{}".to_owned(),
         };
         assert!(outcome.command().is_some());
-        assert_eq!(outcome.attach_command(), None);
 
-        let open_attach = OperatorActionOutcome::OpenAttachCommand("fabro attach run".to_owned());
-        assert_eq!(open_attach.attach_command(), Some("fabro attach run"));
-
+        // A terminal-copy outcome carries no persisted command.
         let handoff = OperatorActionOutcome::CopyDriverHandoff("claude groom wi".to_owned());
         assert_eq!(handoff.command(), None);
-        assert_eq!(handoff.attach_command(), None);
     }
 
     // -----------------------------------------------------------------------
@@ -16533,11 +16412,12 @@ mod tests {
             "repo".to_owned(),
             "work-item".to_owned(),
             "run".to_owned(),
-            Some("fabro attach run".to_owned()),
+            None,
+            vec![],
             vec![],
             vec![
-                OperatorAction::OpenFabroAttach,
-                OperatorAction::CopyFabroAttach,
+                OperatorAction::Registered("approve"),
+                OperatorAction::Registered("accept"),
             ],
         );
         let at_first = TuiOverlay::CommandModal {
@@ -16563,6 +16443,7 @@ mod tests {
             "work-item".to_owned(),
             "run".to_owned(),
             None,
+            vec![],
             vec![],
             vec![OperatorAction::Registered("approve")],
         );
@@ -16593,6 +16474,7 @@ mod tests {
             transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         assert_eq!(
@@ -16790,11 +16672,12 @@ mod tests {
                 "repo".to_owned(),
                 "work-item".to_owned(),
                 "run".to_owned(),
-                Some("fabro attach run".to_owned()),
+                None,
+                vec![],
                 vec![],
                 vec![
-                    OperatorAction::OpenFabroAttach,
-                    OperatorAction::CopyFabroAttach,
+                    OperatorAction::Registered("approve"),
+                    OperatorAction::Registered("accept"),
                 ],
             )),
             view_items: vec![],
@@ -16816,6 +16699,7 @@ mod tests {
             transient_status: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
+            orphaned_factory_runs: Vec::new(),
         };
 
         let overlay = super::open_command_modal(&model);
@@ -16829,7 +16713,7 @@ mod tests {
         let opened_model = TuiScreenModel { overlay, ..model };
         assert_eq!(
             opened_model.selected_operator_action(),
-            Some(OperatorAction::OpenFabroAttach)
+            Some(OperatorAction::Registered("approve"))
         );
         assert_eq!(
             opened_model.footer(),

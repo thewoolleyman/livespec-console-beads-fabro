@@ -144,8 +144,15 @@ pub enum EventType {
     DispatcherJournalProgressObserved,
     /// Dispatcher refusal observed from its journal.
     DispatcherRefusalObserved,
-    /// Fabro run reached a human gate.
-    FabroHumanGateObserved,
+    /// A Fabro run was observed, carrying the status kind the source reported.
+    ///
+    /// Deliberately NOT named for a human gate. The orchestrator's implement
+    /// workflow carries no in-loop gate any more (the needs-human-as-a-ledger-
+    /// valve contract in `SPECIFICATION/contracts.md`), and an event type that
+    /// spelled one would announce a gate for every observed run — the
+    /// synthesized gate the Fabro adapter clause forbids. The run's ACTUAL
+    /// status kind rides in the payload.
+    FabroRunObserved,
     /// Factory drain completed successfully.
     FactoryDrainCompleted,
     /// Factory drain failed.
@@ -225,7 +232,7 @@ impl EventType {
             Self::DispatcherBacklogBounceObserved => "dispatch.backlog_bounce_observed",
             Self::DispatcherJournalProgressObserved => "dispatch.journal_progress_observed",
             Self::DispatcherRefusalObserved => "dispatch.refusal_observed",
-            Self::FabroHumanGateObserved => "fabro.human_gate_observed",
+            Self::FabroRunObserved => "fabro.run_observed",
             Self::FactoryDrainCompleted => "factory.drain.completed",
             Self::FactoryDrainFailed => "factory.drain.failed",
             Self::FactoryDrainAwaitingHuman => "factory.drain.awaiting_human",
@@ -267,7 +274,13 @@ impl EventType {
             "dispatch.backlog_bounce_observed" => Some(Self::DispatcherBacklogBounceObserved),
             "dispatch.journal_progress_observed" => Some(Self::DispatcherJournalProgressObserved),
             "dispatch.refusal_observed" => Some(Self::DispatcherRefusalObserved),
-            "fabro.human_gate_observed" => Some(Self::FabroHumanGateObserved),
+            // Both spellings resolve to the same variant. `fabro.run_observed`
+            // is what the adapter writes now; `fabro.human_gate_observed` is
+            // what it wrote before the needs-human gate became a ledger valve,
+            // and stores hold those rows. Dropping the legacy spelling would
+            // make every already-persisted Fabro observation unparseable, which
+            // reads as a source that never emitted rather than as a rename.
+            "fabro.run_observed" | "fabro.human_gate_observed" => Some(Self::FabroRunObserved),
             "factory.drain.completed" => Some(Self::FactoryDrainCompleted),
             "factory.drain.failed" => Some(Self::FactoryDrainFailed),
             "factory.drain.awaiting_human" => Some(Self::FactoryDrainAwaitingHuman),
@@ -581,8 +594,8 @@ mod tests {
             "dispatch.refusal_observed"
         );
         assert_eq!(
-            EventType::FabroHumanGateObserved.contract_name(),
-            "fabro.human_gate_observed"
+            EventType::FabroRunObserved.contract_name(),
+            "fabro.run_observed"
         );
         assert_eq!(
             EventType::FactoryDrainCompleted.contract_name(),
@@ -715,7 +728,7 @@ mod tests {
             EventType::DispatcherBacklogBounceObserved,
             EventType::DispatcherJournalProgressObserved,
             EventType::DispatcherRefusalObserved,
-            EventType::FabroHumanGateObserved,
+            EventType::FabroRunObserved,
             EventType::FactoryDrainCompleted,
             EventType::FactoryDrainFailed,
             EventType::FactoryDrainAwaitingHuman,
@@ -749,6 +762,20 @@ mod tests {
             );
         }
         assert_eq!(EventType::from_contract_name("unknown.event"), None);
+    }
+
+    /// A store written before the Fabro event was renamed still reads back.
+    ///
+    /// The round-trip above only proves the CURRENT spelling parses, which is
+    /// exactly the coverage a rename slips through: every already-persisted
+    /// `fabro.human_gate_observed` row would fall to `None` and read as a
+    /// source that never emitted.
+    #[test]
+    fn legacy_fabro_contract_name_still_parses() {
+        assert_eq!(
+            EventType::from_contract_name("fabro.human_gate_observed"),
+            Some(EventType::FabroRunObserved)
+        );
     }
 
     #[test]

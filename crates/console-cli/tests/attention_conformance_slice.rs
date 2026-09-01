@@ -144,8 +144,8 @@ fn needs_attention_detail_joins_genuinely_ingested_work_item_by_id()
             "detail must join the genuinely-ingested work item's timeline by id"
         );
         assert_eq!(
-            detail.attach_command(),
-            Some("drive --action impl:wi-joined"),
+            detail.valve_commands(),
+            ["drive --action impl:wi-joined".to_owned()],
             "the handoff command stays the operator action"
         );
     }

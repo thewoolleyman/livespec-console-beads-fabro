@@ -103,25 +103,37 @@ needs-attention one is dropped in favour of the richer work-item row.
 
 - **Work-item rows** — a work-item resting on a human step: `pending-approval`
   under `manual` admission, `blocked`/`needs-human`, or `acceptance` whose
-  policy carries a human leg. `Fabro run:` names the run when one is observed
-  and reads `-` otherwise, and `Attach:` appears **only when a Fabro run is
-  attached** — when a human-gate observation matches the row's repo and
-  work-item. An item that has not reached Fabro has neither, so a
-  `pending-approval` row normally shows `Fabro run: -` and **no** `Attach:`
-  line. A `Timeline:` of the events that produced it follows.
+  policy carries a human leg. `Fabro run:` names the run the ledger stamped on
+  the item when it was dispatched (its `dispatch_fabro_run_id`) and reads `-`
+  otherwise, with `Factory:` naming that run's factory when the ledger stamped
+  one (`dispatch_factory`). A `Valve:` line appears **for each command the
+  orchestrator's needs-attention projection advertises for that item** — so a
+  `blocked`/`needs-human` item shows its `resolve-blocked:<id>:ready` valve,
+  whose summary carries the rework-or-from-scratch re-dispatch route. An item
+  the ledger never dispatched shows `Fabro run: -`, no `Factory:`, and no
+  `Valve:` line at all. A `Timeline:` of the events that produced it follows.
 - **Needs-attention rows** — everything the needs-attention program reports that
   no work-item row already claims: plan threads, hygiene findings, spec-revise
   items, and any `valve:<verb>:<id>` row whose work-item is not itself flagged.
-  `Fabro run:` is **always** `-`, and `Attach:` is **always** present, carrying
+  `Fabro run:` is `-` unless the row names a work-item the console has ingested
+  and the ledger stamped a run on, and `Valve:` is **always** present, carrying
   that row's handoff command (for example `open:plan/<topic>`). `Work item:`
   shows the row's work-item if its source reference names one, otherwise the
   path, otherwise the row id — so a plan-thread row displays a *path* there.
 
-The practical consequence runs both ways. `Attach:` present is **not** evidence
-a Fabro run exists — on a needs-attention row it is just the handoff command,
-with `Fabro run: -` directly above it. And `Attach:` absent on a valve row is
-**not** a missing observation — it means that row is the richer work-item
-projection, which shows the line only for a real Fabro attach.
+**There is no `Attach:` line, on either kind of row, ever.** The console once
+composed `fabro attach <run>` for a work-item row. A needs-human outcome no
+longer parks a run for a human to attach to — it terminates the run at the
+`needs_human` node, preserves its tree on a run-scoped ref, and rests the item
+at `blocked`/`needs-human` in the ledger — so that command found nothing. The
+decision now lives in the ledger, and what the Detail pane offers is the valve
+that answers it.
+
+The practical consequence runs both ways. `Valve:` present is **not** evidence
+a Fabro run exists — it is the operator command the projection advertises, and
+it may sit directly under `Fabro run: -`. And `Valve:` absent is **not** a
+missing observation — it means the orchestrator advertises nothing pressable
+for that item right now.
 
 `Enter` on a row opens **the source work-item's full record**, the same modal a
 drilled-in lane row opens. `Esc` closes it. A row that names no work-item —

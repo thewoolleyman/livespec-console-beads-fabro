@@ -1322,7 +1322,7 @@ fn source_polls_from_seed(
         seed.repo,
         seed.work_item_id,
         seed.run_id,
-        FabroRunState::HumanGate,
+        FabroRunState::from_status_kind("running"),
         3,
     )?;
     let livespec_snapshot = LivespecNextSnapshot::new(
@@ -2380,8 +2380,6 @@ fn command_append_from_tui_effect(
             ))
         }
         TuiRuntimeEffect::Render
-        | TuiRuntimeEffect::OpenAttachCommand(_)
-        | TuiRuntimeEffect::CopyAttachCommand(_)
         | TuiRuntimeEffect::CopyDriverHandoff(_)
         | TuiRuntimeEffect::Quit
         | TuiRuntimeEffect::ApplicationError(_) => None,
@@ -3197,7 +3195,7 @@ mod tests {
                 format!("evt:collision:{}", normalized.source_event_id()),
                 1,
                 event.context().to_owned(),
-                EventType::FabroHumanGateObserved,
+                EventType::FabroRunObserved,
                 event.source().to_owned(),
                 event.stream_id().to_owned(),
                 event.stream_seq(),
@@ -4123,7 +4121,7 @@ mod tests {
     fn tui_persistence_stores_command_effects() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [
-            TuiRuntimeEffect::OpenAttachCommand("fabro attach run_1".to_owned()),
+            TuiRuntimeEffect::CopyDriverHandoff("claude groom wi".to_owned()),
             TuiRuntimeEffect::PersistCommand(CommandEnvelope::new(
                 "cmd_factory_drain_requested_budget_1_parallel_1".to_owned(),
                 CommandType::FactoryDrainRequested,
@@ -4131,7 +4129,7 @@ mod tests {
                 "fleet:livespec:factory.drain_requested:budget=1:parallel=1".to_owned(),
                 "operator".to_owned(),
             )),
-            TuiRuntimeEffect::CopyAttachCommand("fabro attach run_1".to_owned()),
+            TuiRuntimeEffect::Render,
         ];
 
         let outcomes =
@@ -4215,8 +4213,7 @@ mod tests {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         let effects = [
             TuiRuntimeEffect::Render,
-            TuiRuntimeEffect::OpenAttachCommand("fabro attach run_1".to_owned()),
-            TuiRuntimeEffect::CopyAttachCommand("fabro attach run_1".to_owned()),
+            TuiRuntimeEffect::CopyDriverHandoff("claude groom wi".to_owned()),
             TuiRuntimeEffect::ApplicationError(ApplicationError::NoSelectedOperatorAction),
             TuiRuntimeEffect::Quit,
         ];
