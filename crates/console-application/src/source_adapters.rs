@@ -3341,7 +3341,8 @@ mod tests {
         normalize_work_item_snapshot, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
         parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        parse_reconcile_runs_snapshot, run_adapter_poll, work_item_snapshot_from_payload_json,
+        work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -4179,6 +4180,8 @@ mod tests {
         assert!(DispatcherJournalKind::InvalidSourceState.is_refusal());
         assert!(DispatcherJournalKind::HostOnlyRefused.is_refusal());
         assert_eq!(FabroRunState::HumanGate.label(), "human-gate");
+        assert_eq!(FabroRunState::NeedsHuman.label(), "needs-human");
+        assert_eq!(FabroRunState::Active.label(), "active");
         assert_eq!(GithubPullRequestState::Open.label(), "open");
         assert_eq!(
             GithubPullRequestState::ChecksPassing.label(),
@@ -6144,6 +6147,103 @@ mod tests {
                 "{\"run_id\": \"run_7\"}"
             )),
             Err("invalid fabro run".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_fabro_reads_status_kind_and_events_method() {
+        let active = ok_parsed_observation(parse_fabro_observation(&observed_for(
+            SourceAdapterKind::Fabro,
+            "console",
+            "{\"run_id\": \"r1\", \"work_item_id\": \"wi-1\", \"status_kind\": \"active\"}",
+        )));
+        let nh = ok_parsed_observation(parse_fabro_observation(&observed_for(
+            SourceAdapterKind::Fabro,
+            "console",
+            "{\"run_id\": \"r2\", \"work_item_id\": \"wi-2\", \"status_kind\": \"needs-human\"}",
+        )));
+        // events() getter exercised explicitly.
+        check(
+            active.events().len() == 1,
+            "active observation must produce one event",
+        );
+        check(
+            nh.events().len() == 1,
+            "needs-human observation must produce one event",
+        );
+        assert_eq!(
+            first_payload(&active),
+            &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
+                repo: "console".to_owned(),
+                work_item_id: "wi-1".to_owned(),
+                run_id: "r1".to_owned(),
+                state: FabroRunState::Active,
+                source_version: super::source_stream_seq(&["r1", "wi-1"]),
+            })
+        );
+        assert_eq!(
+            first_payload(&nh),
+            &SourcePayload::FabroRunSnapshot(FabroRunSnapshot {
+                repo: "console".to_owned(),
+                work_item_id: "wi-2".to_owned(),
+                run_id: "r2".to_owned(),
+                state: FabroRunState::NeedsHuman,
+                source_version: super::source_stream_seq(&["r2", "wi-2"]),
+            })
+        );
+    }
+
+    fn ok_reconcile(json: &str) -> Vec<super::OrphanedFactoryRun> {
+        match parse_reconcile_runs_snapshot(json) {
+            Ok(r) => r,
+            Err(e) => panic!("parse_reconcile_runs_snapshot failed: {e}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "parse_reconcile_runs_snapshot failed")]
+    fn ok_reconcile_panics() {
+        ok_reconcile("not json");
+    }
+
+    #[test]
+    fn parse_reconcile_runs_snapshot_parses_records_and_exposes_getters() {
+        let json = serde_json::json!([
+            {
+                "run_id": "run-1",
+                "factory": "factory-a",
+                "status_kind": "done",
+                "work_item_id": "wi-1",
+                "work_item_status": "blocked",
+                "orphan_reason": "run finished but work-item still blocked",
+                "remedy_command": "bd resolve wi-1"
+            }
+        ])
+        .to_string();
+        let runs = ok_reconcile(&json);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id(), "run-1");
+        assert_eq!(runs[0].factory(), "factory-a");
+        assert_eq!(runs[0].status_kind(), "done");
+        assert_eq!(runs[0].work_item_id(), "wi-1");
+        assert_eq!(runs[0].work_item_status(), "blocked");
+        assert_eq!(
+            runs[0].orphan_reason(),
+            "run finished but work-item still blocked"
+        );
+        assert_eq!(runs[0].remedy_command(), "bd resolve wi-1");
+        // Empty array and skipped entries.
+        check(
+            ok_reconcile("[]").is_empty(),
+            "empty array produces no runs",
+        );
+        check(
+            ok_reconcile("[42, \"str\"]").is_empty(),
+            "non-object elements are skipped",
+        );
+        check(
+            ok_reconcile("[{\"factory\": \"f\"}]").is_empty(),
+            "objects without run_id are skipped",
         );
     }
 

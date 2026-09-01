@@ -10711,6 +10711,20 @@ mod tests {
     }
 
     #[test]
+    fn orphaned_factory_runs_getter_and_builder() {
+        let empty = build_tui_model(&[], 0);
+        check(
+            empty.orphaned_factory_runs().is_empty(),
+            "default model has no orphaned runs",
+        );
+        let with_runs = empty.with_orphaned_factory_runs(vec![]);
+        check(
+            with_runs.orphaned_factory_runs().is_empty(),
+            "builder replaces the list",
+        );
+    }
+
+    #[test]
     fn factory_drain_policy_composes_lane_and_attention_ready_counts() {
         // Kills the +/-/* mutants on the composed sum: with one genuinely
         // Ready lane item AND one live `impl:` attention row the count must be
