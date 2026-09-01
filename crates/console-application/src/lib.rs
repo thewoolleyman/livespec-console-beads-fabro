@@ -6448,12 +6448,13 @@ impl ConfigCommandOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Full autonomous mode — observing the orchestrator plane's auto-dispositions.
+// Auto-disposition observation — reading the orchestrator plane's per-decision
+// auto-disposition audit records.
 // ---------------------------------------------------------------------------
 
 /// The journal `stage` marker the orchestrator plane writes for one per-decision
 /// auto-disposition audit record; the console reads only records carrying it and
-/// ignores every other journal stage (arming, calibration, dispatch).
+/// ignores every other journal stage (calibration, dispatch).
 const AUTO_DISPOSITION_STAGE: &str = "auto-disposition";
 
 /// The current auto-disposition vocabulary published by the orchestrator.
@@ -13716,8 +13717,8 @@ mod tests {
         );
     }
     // -----------------------------------------------------------------------
-    // TUI autonomous-mode surface (C3 slice 2): toggle, type-to-confirm modal,
-    // dangerous label, and header indicator for the selected repo.
+    // Retired autonomous-mode surface: tests assert the toggle, modal, dangerous
+    // label, and header indicator are absent from the current TUI.
     // -----------------------------------------------------------------------
 
     const CONFIRM_REPO: &str = "livespec-console-beads-fabro";
