@@ -462,6 +462,17 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
 #[test]
 #[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
 fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
+    // The two legs drive their consoles in SEPARATE functions so each handle is
+    // dropped — and the process-wide console slot released — before the next
+    // leg launches. The harness now runs exactly one console at a time (see
+    // `support::ConsoleSlot`), so holding both open across the seam, as this
+    // scene used to, would be a same-thread claim on an occupied slot.
+    drive_narrow_header_scroll()?;
+    drive_wide_header_needs_no_scroll()
+}
+
+/// Cases 1-3 at a NARROW pinned width: focus, scroll right, scroll left, blur.
+fn drive_narrow_header_scroll() -> HarnessResult<()> {
     let repo = RepoFixture::new("e2e-top-pane", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     // A NARROW pane so the header content is clipped and must be scrolled: at 56
     // columns the fit header drops `fleet: livespec` (a low-value left field) and
@@ -544,12 +555,16 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     // Quit cleanly.
     console.send_keys(&["q"])?;
     console.wait_for("TUI_EXIT=0", render_timeout())?;
+    Ok(())
+}
 
-    // --- case 4: a wide-enough viewport needs no horizontal scroll ---
-    // At the default wide width the whole header fits, so the scroll clamp is
-    // zero: focusing the pane shows every field at once (both the left `fleet`
-    // and the right `attention:`), and a Right press cannot pan past a header
-    // that is already fully visible.
+/// Case 4: a wide-enough viewport needs no horizontal scroll.
+///
+/// At the default wide width the whole header fits, so the scroll clamp is
+/// zero: focusing the pane shows every field at once (both the left `fleet` and
+/// the right `attention:`), and a Right press cannot pan past a header that is
+/// already fully visible.
+fn drive_wide_header_needs_no_scroll() -> HarnessResult<()> {
     let wide_repo = RepoFixture::new("e2e-top-wide", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     let wide = TmuxConsole::launch_sized(&wide_repo, support::DEFAULT_COLS, support::DEFAULT_ROWS)?;
     wide.wait_for_settled(&format!("repo: {}", wide_repo.tenant()), render_timeout())?;
@@ -668,6 +683,122 @@ fn assert_no_baked_doc_prose(frame: &str, view: &str) {
             "the {view} pane body must carry no baked-in documentation prose (found {fragment:?}):\n{frame}"
         );
     }
+}
+
+/// The real-TUI half of `pis7qu`: a store open held past the PRODUCT busy
+/// timeout no longer kills the session before it paints.
+///
+/// # The failure this reproduces
+///
+/// Measured 2026-09-02 on the self-hosted pool (PR #933 run 33596120346, PR
+/// #927 run 33599420432): `tui error: EventStore(Sqlite(SqliteFailure(...`.
+/// A saturated disk kept a peer's write lock past the five-second product
+/// default; `open_console_store` exhausted its three attempts, `serve` returned
+/// an error, and the pane never painted a frame.
+///
+/// # How it is reproduced deterministically
+///
+/// A peer connection takes the database's write lock and holds it for LONGER
+/// THAN THE WHOLE PRODUCT RETRY BUDGET (`DEFAULT_BUSY_TIMEOUT` x
+/// `STORE_OPEN_ATTEMPTS`), so the run can only survive because the harness
+/// RAISED the timeout through `support::store_busy_timeout`. Nothing here waits
+/// on the wall clock hoping the host is slow: the lock is genuinely held for a
+/// bounded, known interval, and released explicitly.
+///
+/// # Why `launch` returning is itself the assertion
+///
+/// `run_interactive_store_tui` opens the store BEFORE it paints anything, so
+/// the harness's first-frame readiness gate cannot be satisfied until the open
+/// succeeds. `TmuxConsole::launch_with_env` returning at all is therefore proof
+/// the contended open was waited out — and the elapsed check proves it was
+/// waited out rather than raced in ahead of the peer.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_first_frame_survives_a_store_open_held_past_the_busy_timeout() -> HarnessResult<()>
+{
+    let scratch = std::env::temp_dir().join(format!("lc-e2e-held-store-{}", std::process::id()));
+    let _ignored = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch)
+        .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
+    let store_path = scratch.join("held-store.sqlite");
+
+    // Longer than the product's ENTIRE bounded retry, not merely longer than one
+    // busy timeout: an open that only outlasted a single attempt would have been
+    // rescued by `open_tolerating_contention` on its own and would prove nothing
+    // about the raised budget.
+    let hold = console_eventstore::DEFAULT_BUSY_TIMEOUT * console_eventstore::STORE_OPEN_ATTEMPTS
+        + Duration::from_secs(2);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let peer_path = store_path.clone();
+    let peer = std::thread::spawn(move || hold_store_write_lock(&peer_path, &ready_tx, hold));
+    ready_rx
+        .recv()
+        .map_err(|error| format!("the peer never took the store's write lock: {error}"))?;
+
+    let repo = RepoFixture::new("e2e-held-store", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let store_env = store_path.display().to_string();
+    let started = Instant::now();
+    let console =
+        TmuxConsole::launch_with_env(&repo, &[("LIVESPEC_CONSOLE_STORE_PATH", &store_env)])?;
+    let elapsed = started.elapsed();
+
+    let screen = console.wait_for_settled(&format!("repo: {}", repo.tenant()), render_timeout())?;
+    assert!(
+        elapsed >= hold,
+        "the console must have WAITED OUT the peer's write lock, not raced in \
+         ahead of it: painted after {elapsed:?}, peer held for {hold:?}"
+    );
+    assert!(
+        !screen.contains("tui error") && !screen.contains("store busy"),
+        "a contended store open must not surface as a session failure:\n{screen}"
+    );
+
+    // Quit cleanly, then prove the session actually USED the contended store —
+    // a painted frame alone would not distinguish "opened it" from "gave up and
+    // painted something anyway".
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
+    drop(console);
+    let store = SqliteEventStore::open(&store_path)
+        .map_err(|error| format!("open the held store failed: {error:?}"))?;
+    let events = store
+        .list_console_events()
+        .map_err(|error| format!("read the held store's events failed: {error:?}"))?;
+    assert!(
+        !events.is_empty(),
+        "the session must have persisted into the store it waited for, at {}",
+        store_path.display()
+    );
+
+    peer.join()
+        .map_err(|_| "the peer thread panicked".to_owned())?;
+    let _ignored = std::fs::remove_dir_all(&scratch);
+    Ok(())
+}
+
+/// Take the store database's write lock, announce it on `ready`, hold it for
+/// `hold`, then let it go.
+///
+/// A real `create table` (not a bare `begin exclusive`) is what makes the lock
+/// unambiguously held: the transaction has written, so the console's schema
+/// batch must wait it out or time out. WAL is set first so the console meets a
+/// database whose journal mode is already settled — the same shape a live
+/// console meets — and blocks on the schema write rather than on a mode change.
+fn hold_store_write_lock(path: &Path, ready: &std::sync::mpsc::Sender<()>, hold: Duration) {
+    let Ok(connection) = rusqlite::Connection::open(path) else {
+        return;
+    };
+    if connection
+        .execute_batch("PRAGMA journal_mode=WAL; BEGIN EXCLUSIVE; CREATE TABLE peer_write(x);")
+        .is_err()
+    {
+        return;
+    }
+    if ready.send(()).is_err() {
+        return;
+    }
+    std::thread::sleep(hold);
+    let _ignored = connection.execute_batch("ROLLBACK;");
 }
 
 /// The pinned pane width for the narrow top/header-pane scroll scenes: small
@@ -960,8 +1091,19 @@ fn tmux_tui_e2e_lifecycle_walkthrough_two_repos() -> HarnessResult<()> {
 #[test]
 #[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
 fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<()> {
-    // Done is terminal: no per-item verb hint is offered, and all per-item verb
-    // keys stay inert instead of opening a stale valve modal.
+    // The three lane states are driven in SEPARATE functions so each console is
+    // dropped — and the process-wide console slot released — before the next is
+    // launched. The harness now runs exactly one console at a time (see
+    // `support::ConsoleSlot`), so holding all three open at once, as this scene
+    // used to, would be a same-thread claim on an occupied slot.
+    drive_done_item_is_terminal()?;
+    drive_backlog_item_moves_without_valves()?;
+    drive_acceptance_item_offers_both_exits()
+}
+
+/// Done is terminal: no per-item verb hint is offered, and all per-item verb
+/// keys stay inert instead of opening a stale valve modal.
+fn drive_done_item_is_terminal() -> HarnessResult<()> {
     let done = launch_lifecycle_on_lanes_item("state-vocab-done", "done")?;
     let done_screen = done.wait_for_settled("Lane: done", render_timeout())?;
     assert!(
@@ -995,7 +1137,11 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
         );
     }
 
-    // Backlog admits grooming/dispatch movement, but not the human valve verbs.
+    Ok(())
+}
+
+/// Backlog admits grooming/dispatch movement, but not the human valve verbs.
+fn drive_backlog_item_moves_without_valves() -> HarnessResult<()> {
     let backlog = launch_lifecycle_on_lanes_item("state-vocab-backlog", "backlog")?;
     let backlog_screen = backlog.wait_for_settled("Lane: backlog", render_timeout())?;
     assert!(
@@ -1016,7 +1162,11 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
         "backlog item must suppress human-valve hints:\n{backlog_screen}"
     );
 
-    // Acceptance is a human valve lane with two exits: accept and reject.
+    Ok(())
+}
+
+/// Acceptance is a human valve lane with two exits: accept and reject.
+fn drive_acceptance_item_offers_both_exits() -> HarnessResult<()> {
     let acceptance = launch_lifecycle_on_lanes_item("state-vocab-acceptance", "acceptance")?;
     let acceptance_screen = acceptance.wait_for_settled("Lane: acceptance", render_timeout())?;
     assert!(
