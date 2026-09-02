@@ -25,3 +25,12 @@ uv       = "0.9.26"
 just     = "1.36.0"
 lefthook = "1.13.6"
 shellcheck = "0.11.0"
+# jq is the language `.github/scripts/export-ci-telemetry.sh` is written in, and
+# the fixture-driven test that pins its runner attributes
+# (crates/console-ci-parity-check/tests/ci_telemetry_runner_attributes.rs) runs
+# that script for real rather than restating its logic in Rust. GitHub's
+# ubuntu-latest image — where the exporter itself runs — ships jq, but the
+# livespec-fabro-sandbox image the `check` matrix runs in does NOT, so without
+# this pin the test would only be runnable on a hosted runner and would fail
+# everywhere `just check` is actually executed.
+jq = "1.7.1"

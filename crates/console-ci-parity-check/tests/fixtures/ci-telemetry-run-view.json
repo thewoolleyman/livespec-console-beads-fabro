@@ -1,0 +1,34 @@
+{
+  "conclusion": "success",
+  "createdAt": "2026-09-02T09:59:30Z",
+  "databaseId": 4242424242,
+  "displayTitle": "chore(ci): runner identity on ci.job spans",
+  "event": "push",
+  "headBranch": "master",
+  "headSha": "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+  "jobs": [
+    {
+      "completedAt": "2026-09-02T10:04:00Z",
+      "conclusion": "success",
+      "databaseId": 1001,
+      "name": "check-format",
+      "startedAt": "2026-09-02T10:00:00Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/thewoolleyman/livespec-console-beads-fabro/actions/runs/4242424242/job/1001"
+    },
+    {
+      "completedAt": "2026-09-02T10:11:00Z",
+      "conclusion": "success",
+      "databaseId": 1002,
+      "name": "check-deps",
+      "startedAt": "2026-09-02T10:00:00Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/thewoolleyman/livespec-console-beads-fabro/actions/runs/4242424242/job/1002"
+    }
+  ],
+  "startedAt": "2026-09-02T10:00:00Z",
+  "status": "completed",
+  "updatedAt": "2026-09-02T10:12:00Z"
+}
