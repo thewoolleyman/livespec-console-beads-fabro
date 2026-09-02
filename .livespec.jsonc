@@ -199,6 +199,11 @@
     // that surface round-trips the file through json.dumps and silently strips
     // every comment here while reporting green — tracked as bd-ib-lmi5.
     "dispatcher": {
+      // Detection-coverage anchor (contracts.md "Detection coverage records
+      // and staleness facts"): the standing ledger item every capture-impl-gaps
+      // / capture-spec-drift run appends its attempt and coverage records to.
+      // Provisioned 2026-09-02 via capture-work-item; the item never closes.
+      "detection_coverage_anchor": "livespec-console-beads-fabro-us67nl",
       "auto_approve_ready": true,
       "acceptance_mode": "ai-only",
       "wip_cap": 10,
