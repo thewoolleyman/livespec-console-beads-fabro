@@ -91,6 +91,11 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       marketplace upgrade`, "latest" = the `vX.Y.Z` tag, and the beads
       self-heal landing in orchestrator ≥ 0.4.0 (and how that qualifies the
       "Access denied ⇒ outside the wrapper" rule below).
+    - [`.ai/linkable-references.md`](.ai/linkable-references.md)
+      — every maintainer-facing reference must be web-linkable (GitHub
+      URL for git-side content; a beads id must carry title + substance
+      until the dolt-server `plan/beads-web-ui/` UI lands); the
+      maintainer refuses unlinkable handoffs.
     - [`.ai/coverage-region-testability-discipline.md`](.ai/coverage-region-testability-discipline.md)
       — "genuinely unreachable" is not a disposition: an uncovered region is
       always resolved into deleted / tested / refactored-then-tested, never
