@@ -189,6 +189,33 @@ cap is now 8192, persisted on the host). For the Kueue variant,
 `kubectl -n kueue-system get pods` shows a fresh restart and job logs carry
 `failed calling webhook "mpod.kb.io"`.
 
+**The second gate, beside the wedge scan — read it before running those by
+hand.** A fleet detector now runs the whole family every five minutes on the
+host: `scan-runner-pod-lifecycle.service` (livespec-dev-tooling
+`ci-runner/k3s/phase2/runner-pod-lifecycle/`, item `livespec-nhjpai`). It
+reports six named classes read from node-side observables that persist —
+`pvc-pending`, `bind-deadline`, `inotify-emfile`, `containerd-deadline`
+(StartError containers, create-path deadline events, `FailedKillPod` bursts),
+`hook-failure` (the ARC hook string in a runner log, or a `-workflow` pod
+Pending past 8 min), `stale-listener` (a listener not Running, or an
+`AutoscalingListener` referencing a vanished `EphemeralRunnerSet`) — with
+counts, report-only, exit 1 when any is present. So the discrimination is
+one read, not a diagnosis:
+
+```bash
+sudo systemctl is-failed scan-runner-pod-lifecycle.service     # "failed" = a class is present
+sudo journalctl -u scan-runner-pod-lifecycle.service -n 40 --no-pager   # which class, which PVC/pod/event
+```
+
+The wedge scan answers "is a runner dead to GitHub?", the capacity signals
+answer "is the pool full?", and this one answers "is the host failing to
+bring pods up?" — the three cases have three different remedies, and this
+scan's output names where each class is worked. It was proven on
+2026-09-02 while a stall was actually in progress (`pvc-pending=1`,
+`containerd-deadline=27` under two running jobs, the earlier release waves'
+teardown backlog), and it never reports a clean node it could not read (it
+exits 2 instead).
+
 **What THIS repo's job log shows** — a signature distinct from both earlier
 cases: the job is claimed, then fails at `Initialize containers` with the
 ARC hook's `Executing the custom container implementation failed. Please
