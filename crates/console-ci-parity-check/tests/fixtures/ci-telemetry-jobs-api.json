@@ -1,0 +1,37 @@
+{
+  "total_count": 2,
+  "jobs": [
+    {
+      "id": 1001,
+      "run_id": 4242424242,
+      "workflow_name": "CI",
+      "name": "check-format",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-02T10:00:00Z",
+      "completed_at": "2026-09-02T10:04:00Z",
+      "runner_id": 7,
+      "runner_name": "GitHub Actions 3",
+      "runner_group_id": 2,
+      "runner_group_name": "GitHub Actions",
+      "labels": ["ubuntu-latest"],
+      "steps": []
+    },
+    {
+      "id": 1002,
+      "run_id": 4242424242,
+      "workflow_name": "CI",
+      "name": "check-deps",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-02T10:00:00Z",
+      "completed_at": "2026-09-02T10:11:00Z",
+      "runner_id": 41,
+      "runner_name": "livespec-console-beads-k3s-nx8fj-runner-9wqcv",
+      "runner_group_id": 1,
+      "runner_group_name": "Default",
+      "labels": ["livespec-console-beads-k3s"],
+      "steps": []
+    }
+  ]
+}

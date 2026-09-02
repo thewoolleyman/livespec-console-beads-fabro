@@ -15,6 +15,18 @@
 # + one `ci.job.<name>` child per completed job. Span/trace ids are derived
 # from the GitHub run/job integer ids (deterministic, unique, valid hex).
 #
+# Every `ci.job.*` span also carries the RUNNER identity of the job:
+#   ci.runner.name   - the runner that executed the job, from the jobs API's
+#                      `runner_name` (e.g. "GitHub Actions 3", or an ARC pod).
+#   ci.runner.labels - that job's `labels` array, comma-joined (e.g.
+#                      "ubuntu-latest", "livespec-console-beads-k3s").
+#   ci.runner.kind   - DERIVED: `hosted` when the labels contain
+#                      `ubuntu-latest`, `self-hosted` otherwise.
+# Without these, a self-hosted (poweredge ARC) window and a GitHub-hosted window
+# are separable only by guessing the CI_RUNNER_LABELS switch date out of a
+# duration regime change, which makes every before/after comparison (e.g.
+# pre/post-RAID10) a date guess rather than a filter.
+#
 # After emitting the job-level spans, the script scans each critical-path job's
 # steps for steps named "Phase: compile", "Phase: test", or "Phase: fuzz" and
 # emits build-telemetry spans conforming to the shared attribute scheme
@@ -53,6 +65,19 @@ hex16() { printf '%016x' "$1"; }            # 8-byte span id
 run_json="$(gh run view "$RUN_ID" --repo "$REPO" \
   --json databaseId,headSha,headBranch,event,displayTitle,conclusion,createdAt,startedAt,updatedAt,jobs)"
 
+# Runner identity needs a SECOND call: `gh run view --json jobs` projects gh's
+# own Job struct (databaseId/name/conclusion/steps/timestamps) and has no field
+# for `runner_name` or `labels` — those exist only on the raw GitHub jobs API
+# payload, so no widening of the `--json` list above can reach them.
+#
+# The projection lands in a FILE and is read back with `--slurpfile`, not passed
+# as an `--argjson` value: like the run payload it grows without bound with the
+# job count, and this way only the PATH reaches argv, so it can never join the
+# E2BIG class documented below.
+runners_file="$(mktemp)"
+gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+  --jq '.jobs[] | {id, runner_name, labels}' >"$runners_file"
+
 trace_id="$(hex32 "$RUN_ID")"
 run_span_id="$(hex16 "$RUN_ID")"
 run_start="$(iso_to_nanos "$(jq -r '.startedAt // .createdAt' <<<"$run_json")")"
@@ -90,29 +115,47 @@ run_span="$(jq -c \
    status:{code:$code}}' <<<"$run_json")"
 
 job_spans="[]"
-while IFS=$'\t' read -r jid jname jconcl jstart_iso jend_iso; do
+while IFS=$'\t' read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
   [ -n "$jstart_iso" ] && [ "$jstart_iso" != "null" ] || continue
   [ -n "$jend_iso" ] && [ "$jend_iso" != "null" ] || continue
   jspan_id="$(hex16 "$jid")"
   jstart="$(iso_to_nanos "$jstart_iso")"
   jend="$(iso_to_nanos "$jend_iso")"
   jcode=2; [ "$jconcl" = "success" ] && jcode=1
+  # Matched against the comma-joined label list with the separators restored on
+  # both ends, so the test is on a whole label and not on a substring: a
+  # hypothetical `ubuntu-latest-arm64` self-hosted label must not read as hosted.
+  case ",$jlabels," in
+    *,ubuntu-latest,*) jkind="hosted" ;;
+    *) jkind="self-hosted" ;;
+  esac
   span="$(jq -nc \
     --arg trace "$trace_id" --arg span "$jspan_id" --arg parent "$run_span_id" \
     --arg name "ci.job.$jname" --arg start "$jstart" --arg end "$jend" \
     --arg repo "$REPO" --argjson run_id "$RUN_ID" \
-    --arg jname "$jname" --arg jconcl "$jconcl" --argjson code "$jcode" '
+    --arg jname "$jname" --arg jconcl "$jconcl" --argjson code "$jcode" \
+    --arg jrunner "$jrunner" --arg jlabels "$jlabels" --arg jkind "$jkind" '
     {traceId:$trace, spanId:$span, parentSpanId:$parent, name:$name, kind:1,
      startTimeUnixNano:$start, endTimeUnixNano:$end,
      attributes:[
        {key:"repo",value:{stringValue:$repo}},
        {key:"ci.run_id",value:{intValue:($run_id|tostring)}},
        {key:"ci.job.name",value:{stringValue:$jname}},
-       {key:"ci.job.conclusion",value:{stringValue:$jconcl}}
+       {key:"ci.job.conclusion",value:{stringValue:$jconcl}},
+       {key:"ci.runner.name",value:{stringValue:$jrunner}},
+       {key:"ci.runner.labels",value:{stringValue:$jlabels}},
+       {key:"ci.runner.kind",value:{stringValue:$jkind}}
      ],
      status:{code:$code}}')"
   job_spans="$(jq -c ". + [$span]" <<<"$job_spans")"
-done < <(jq -r '.jobs[] | [.databaseId, .name, (.conclusion // ""), (.startedAt // ""), (.completedAt // "")] | @tsv' <<<"$run_json")
+done < <(jq -r --slurpfile runners "$runners_file" '
+  ($runners | map({key:(.id|tostring), value:.}) | from_entries) as $by_id
+  | .jobs[]
+  | . as $job
+  | ($by_id[($job.databaseId|tostring)] // {}) as $runner
+  | [.databaseId, .name, (.conclusion // ""), (.startedAt // ""), (.completedAt // ""),
+     ($runner.runner_name // ""), (($runner.labels // []) | join(","))]
+  | @tsv' <<<"$run_json")
 
 # Same argv-limit class as the run span above: `$job_spans` grows with the job
 # count, so it goes on stdin. `$run_span` stays a `--argjson` value because it
