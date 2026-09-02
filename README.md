@@ -119,6 +119,36 @@ rustup default and whose `rustc` has not run for N days. Sizes are printed
 before and after so every pass is measurable. Run it about once a week, or
 whenever `df` on the root filesystem starts to matter; `cargo-sweep` is
 installed on first use. The script is `scripts/local-cache-evict.sh`.
+### Local build parallelism
+
+The committed `.cargo/config.toml` caps every cargo invocation at
+`build.jobs = 4` so the 16-job CI matrix fits its shared host. That cap also
+throttles local builds on a many-core developer machine. Measured on the
+18-core `vps` host (2026-09-02, fresh worktree, under a concurrent
+`just check` load of 24 to 38), plan `optimize-console-builds`:
+
+| Build | jobs = 4 | jobs = 16 |
+|---|---|---|
+| Cold `cargo build --workspace` | 68.5 s | 34.7 s (−49 %) |
+| Warm incremental, `console-domain` touched | 3.3 s | 3.2 s |
+| Warm incremental, `console-cli` touched | 1.7 s | 1.2 s |
+| Warm no-op | 0.7 s | — |
+
+The cap costs about half of every cold build and nothing measurable on warm
+incremental loops, so raise it locally and leave the committed file alone. A
+user-level `~/.cargo/config.toml` cannot do it (the project file outranks it);
+an environment variable can, because env beats every config file in cargo's
+precedence. The repo-local, gitignored mise override is the recommended home:
+
+```toml
+# .mise.local.toml — per-developer, never committed
+[env]
+CARGO_BUILD_JOBS = "16"
+```
+
+`mise exec -- cargo build` and every `just` recipe then see 16 jobs; CI, the
+factory sandbox, and other clones are untouched. Pick a value no larger than
+the machine's core count.
 
 Remaining quality and feature work is tracked in the Beads ledger, with
 authoritative requirements in [SPECIFICATION/](SPECIFICATION/). Known
