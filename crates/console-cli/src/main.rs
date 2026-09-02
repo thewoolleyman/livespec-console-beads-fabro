@@ -365,7 +365,16 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         // Do not join an in-flight mutating command: a factory drain may be
         // running for hours, and graceful cockpit quit must not wait on it.
     }
-    session_result.map_err(|error| format!("{error:?}"))?;
+    let outcome = session_result.map_err(|error| format!("{error:?}"))?;
+    // A shutdown-time lock convoy DEGRADES rather than killing the process
+    // (livespec-console-beads-fabro-aidncj): the session and the operator's
+    // actions already completed, so the epilogue reports and the process still
+    // exits 0. stderr is the right surface by now — `run_tui` has left the
+    // alternate screen and restored the terminal, so this cannot scribble on a
+    // live TUI the way an in-session `eprintln!` would.
+    if let Some(warning) = outcome.store_warning() {
+        eprintln!("tui warning: {warning}");
+    }
     Ok(())
 }
 
