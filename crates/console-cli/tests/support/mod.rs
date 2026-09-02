@@ -42,6 +42,118 @@ pub const DEFAULT_ROWS: u16 = 28;
 /// How often [`TmuxConsole::wait_for`] re-captures while polling for content.
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
+/// Generous default ceiling for a content frame to settle, once the TUI is
+/// known to be live. The render itself is sub-second; this slack absorbs poll
+/// granularity plus a busy host. Overridable at runtime via
+/// `LIVESPEC_CONSOLE_E2E_RENDER_TIMEOUT_SECS` so a saturated CI pool can widen
+/// it without a recompile — the wall clock is not the thing under test.
+const DEFAULT_RENDER_TIMEOUT_SECS: u64 = 45;
+
+/// Generous default ceiling for the TUI's FIRST painted frame after launch,
+/// overridable via `LIVESPEC_CONSOLE_E2E_READY_TIMEOUT_SECS`. This is a SEPARATE
+/// budget from the render/settle one because startup on a saturated host (disk
+/// at ~100% util, load far above core count) can starve the process for many
+/// seconds before it paints anything at all. A blank capture in that window is
+/// "not started yet", not "rendered wrong", so it earns its own generous slack
+/// instead of eating a content-settle budget measured from launch.
+const DEFAULT_READY_TIMEOUT_SECS: u64 = 45;
+
+/// Resolve a `Duration` from a `u64`-seconds env override, falling back to
+/// `default_secs`. A malformed or empty value falls back rather than failing —
+/// the override exists to WIDEN a budget on a slow host, never to break the gate.
+fn env_timeout(var: &str, default_secs: u64) -> Duration {
+    let secs = std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(default_secs);
+    Duration::from_secs(secs)
+}
+
+/// The content-settle ceiling used across the E2E scenarios: a generous default,
+/// widenable via `LIVESPEC_CONSOLE_E2E_RENDER_TIMEOUT_SECS`. Prefer this over a
+/// hard-coded literal so the budget is load-tunable in one place.
+#[must_use]
+pub fn render_timeout() -> Duration {
+    env_timeout(
+        "LIVESPEC_CONSOLE_E2E_RENDER_TIMEOUT_SECS",
+        DEFAULT_RENDER_TIMEOUT_SECS,
+    )
+}
+
+/// The first-frame readiness ceiling, widenable via
+/// `LIVESPEC_CONSOLE_E2E_READY_TIMEOUT_SECS`.
+#[must_use]
+pub fn ready_timeout() -> Duration {
+    env_timeout(
+        "LIVESPEC_CONSOLE_E2E_READY_TIMEOUT_SECS",
+        DEFAULT_READY_TIMEOUT_SECS,
+    )
+}
+
+/// Poll `capture` until it yields a NON-BLANK frame, then return it.
+///
+/// This is the readiness gate: it distinguishes "the process has not painted
+/// yet" (a blank capture — startup starvation on a loaded host) from any
+/// content assertion. Running it once before content-settle budgets begin means
+/// a slow first paint no longer silently consumes a settle budget measured from
+/// launch, which is the `l7unt3` blank-capture flake. `context` is appended to
+/// the timeout message (e.g. the tmux session) and may be empty.
+pub fn poll_ready<F>(mut capture: F, timeout: Duration, context: &str) -> HarnessResult<String>
+where
+    F: FnMut() -> HarnessResult<String>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        let frame = capture()?;
+        if !frame.trim().is_empty() {
+            return Ok(frame);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out after {timeout:?} waiting for the console to paint its first \
+                 frame{context} (blank capture — the process was starved at startup, not \
+                 wrong; widen LIVESPEC_CONSOLE_E2E_READY_TIMEOUT_SECS on a loaded host)"
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Poll `capture` until a SETTLED frame containing `needle` appears.
+///
+/// A frame is settled when a capture both contains `needle` AND is byte-identical
+/// to the immediately preceding capture, so a partially painted frame is never
+/// returned for multi-token assertions. `context` is appended to the timeout
+/// message and may be empty. Extracted from [`TmuxConsole::wait_for_settled`] so
+/// the polling logic is unit-testable against a scripted capture source without a
+/// real tmux pane.
+pub fn poll_settled<F>(
+    mut capture: F,
+    needle: &str,
+    timeout: Duration,
+    context: &str,
+) -> HarnessResult<String>
+where
+    F: FnMut() -> HarnessResult<String>,
+{
+    let deadline = Instant::now() + timeout;
+    let mut previous: Option<String> = None;
+    loop {
+        let frame = capture()?;
+        if frame.contains(needle) && previous.as_deref() == Some(frame.as_str()) {
+            return Ok(frame);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out after {timeout:?} waiting for a settled frame containing \
+                 {needle:?}{context}.\n---- last capture ----\n{frame}\n---- end capture ----"
+            ));
+        }
+        previous = Some(frame);
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
 /// Monotonic suffix so concurrently-running harness instances never collide on
 /// a `tmux` session name or temp dir.
 static NONCE: AtomicU32 = AtomicU32::new(0);
@@ -171,13 +283,21 @@ impl TmuxConsole {
             return Err(format!("tmux new-session exited unsuccessfully: {status}"));
         }
 
-        Ok(Self {
+        let console = Self {
             tmux,
             session,
             socket,
             scratch,
             store_path,
-        })
+        };
+        // Readiness gate: block until the TUI has painted its FIRST frame before
+        // handing the handle back, so every subsequent content-settle budget is
+        // spent on rendering, not on absorbing startup latency on a loaded host.
+        // This is what makes the harness robust to the `l7unt3` blank-capture
+        // starvation (settle clocks that used to start at launch).
+        let ready_context = format!(" in tmux session {}", console.session);
+        poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
+        Ok(console)
     }
 
     /// Return the current rendered pane contents.
@@ -246,24 +366,16 @@ impl TmuxConsole {
     /// against one screen; use [`Self::wait_for`] for a single token. Returns an
     /// error with the last capture attached if no settled frame appears in time.
     pub fn wait_for_settled(&self, needle: &str, timeout: Duration) -> HarnessResult<String> {
-        let deadline = Instant::now() + timeout;
-        let mut previous: Option<String> = None;
-        loop {
-            let capture = self.capture()?;
-            if capture.contains(needle) && previous.as_deref() == Some(capture.as_str()) {
-                return Ok(capture);
-            }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out after {timeout:?} waiting for a settled frame containing \
-                     {needle:?} in tmux session {session}.\n---- last capture ----\n{capture}\n\
-                     ---- end capture ----",
-                    session = self.session
-                ));
-            }
-            previous = Some(capture);
-            std::thread::sleep(POLL_INTERVAL);
-        }
+        let context = format!(" in tmux session {}", self.session);
+        poll_settled(|| self.capture(), needle, timeout, &context)
+    }
+
+    /// Block until the TUI paints its first non-blank frame, or fail with a
+    /// starvation-aware message. Called by `launch`; exposed for scenarios that
+    /// re-assert readiness after a disruptive action.
+    pub fn wait_until_ready(&self, timeout: Duration) -> HarnessResult<String> {
+        let context = format!(" in tmux session {}", self.session);
+        poll_ready(|| self.capture(), timeout, &context)
     }
 
     /// The isolated event-store path this run wrote, for side-effect assertions.
@@ -473,13 +585,21 @@ impl TmuxConsole {
             return Err(format!("tmux new-session exited unsuccessfully: {status}"));
         }
 
-        Ok(Self {
+        let console = Self {
             tmux,
             session,
             socket,
             scratch,
             store_path,
-        })
+        };
+        // Readiness gate: block until the TUI has painted its FIRST frame before
+        // handing the handle back, so every subsequent content-settle budget is
+        // spent on rendering, not on absorbing startup latency on a loaded host.
+        // This is what makes the harness robust to the `l7unt3` blank-capture
+        // starvation (settle clocks that used to start at launch).
+        let ready_context = format!(" in tmux session {}", console.session);
+        poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
+        Ok(console)
     }
 }
 
