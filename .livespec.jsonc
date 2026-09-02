@@ -249,8 +249,19 @@
       // Deliberately NOT `just bootstrap`: bootstrap's local_reconcile
       // advances the HOST-WIDE plugin install from inside a janitor checkout
       // (the thing that turns check-fork-drift red on clean master).
+      // CORRECTION (2026-09-01 23:33Z, run 01M1FJJDQXJMD7G0B17X88SBDS): the
+      // first form of this declaration appended install-worktree-pack, but
+      // the bootstrap step executes with cwd = plan.repo (the PRIMARY — by
+      // design, for the shared .git/hooks install;
+      // _dispatcher_janitor_venue.py), so the pack landed in the primary and
+      // the janitor CHECKOUT still failed check-baseline. The checkout
+      // exists by bootstrap time (step order: checkout-add -> trust ->
+      // bootstrap), so this form installs the pack into every janitor-*
+      // checkout present. The principled fix — a per-checkout provisioning
+      // seam in the janitor venue — is the orchestrator's; filed from this
+      // repo 2026-09-01.
       "janitor_bootstrap": {
-        "recipe": ["mise", "exec", "--", "just", "install-commit-refuse-hooks", "install-worktree-pack"]
+        "recipe": ["sh", "-c", "mise exec -- just install-commit-refuse-hooks && for d in \"$HOME\"/.worktrees/livespec-console-beads-fabro/janitor-*; do if [ -d \"$d/.git\" ] || [ -f \"$d/.git\" ]; then (cd \"$d\" && mise exec -- just install-worktree-pack); fi; done"]
       },
       "node_timeouts": {
         "implement": 14400,
