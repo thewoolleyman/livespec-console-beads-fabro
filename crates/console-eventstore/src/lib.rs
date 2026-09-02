@@ -112,14 +112,48 @@ impl EventStoreError {
     }
 }
 
+/// The `SQLite` busy timeout armed on every store connection by default.
+///
+/// With WAL a reader never blocks a writer, but the several writer connections
+/// the live TUI runs still serialize, so a peer's brief write is waited out
+/// rather than failed as `SQLITE_BUSY`. Five seconds is the budget for a
+/// HEALTHY host.
+pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+
+/// Environment variable that RAISES the busy timeout above
+/// [`DEFAULT_BUSY_TIMEOUT`], expressed in milliseconds.
+///
+/// The default assumes a healthy host. On a saturated one — a shared CI runner
+/// whose disk is at ~100% utilisation — the same brief write outlasts it and
+/// the console dies at startup with an `EventStore(Sqlite(...))` that says
+/// nothing about the product. This knob is how an operator, or the real-TUI
+/// e2e harness, says "this host is slow, wait longer" without a recompile.
+pub const BUSY_TIMEOUT_ENV: &str = "LIVESPEC_CONSOLE_SQLITE_BUSY_TIMEOUT_MS";
+
+/// Resolve the busy timeout from a raw [`BUSY_TIMEOUT_ENV`] value.
+///
+/// The override only ever WIDENS. A missing, malformed, or SMALLER value falls
+/// back to [`DEFAULT_BUSY_TIMEOUT`]: a knob that could narrow the product's
+/// contention tolerance would let a stray environment make the store give up
+/// FASTER than it does today, which is the opposite of what it exists for — and
+/// a malformed value must never be able to weaken a gate by accident.
+#[must_use]
+pub fn busy_timeout_from_env_value(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|timeout| *timeout > DEFAULT_BUSY_TIMEOUT)
+        .unwrap_or(DEFAULT_BUSY_TIMEOUT)
+}
+
 /// How many times a store OPEN is attempted before the failure is reported.
 ///
-/// Each failed attempt has ALREADY waited out `SQLite`'s 5 s busy timeout
-/// (rusqlite arms `sqlite3_busy_timeout(db, 5000)` inside `Connection::open`,
-/// before any user pragma runs), so the bound is deliberately small: three
-/// attempts is at most ~15 s, which stays inside the e2e harness's 20 s
-/// first-frame budget and therefore still lets an exhausted open print its
-/// cause where the harness captures it.
+/// Each failed attempt has ALREADY waited out the connection's busy timeout —
+/// [`DEFAULT_BUSY_TIMEOUT`], or whatever [`BUSY_TIMEOUT_ENV`] raised it to — so
+/// the bound is deliberately small: three attempts is at most three times that
+/// budget. The e2e harness sizes the raised timeout against its OWN first-frame
+/// budget divided by this constant, so the whole bounded retry still fits
+/// inside the window where an exhausted open can print its cause on a captured
+/// frame.
 pub const STORE_OPEN_ATTEMPTS: u32 = 3;
 
 /// The pause before the next open attempt.
@@ -613,9 +647,28 @@ pub struct SqliteEventStore {
 
 impl SqliteEventStore {
     /// Return the open value.
+    ///
+    /// The busy timeout is [`DEFAULT_BUSY_TIMEOUT`] unless [`BUSY_TIMEOUT_ENV`]
+    /// raises it. Resolving the override HERE, at the store's own composition
+    /// root, is what lets every opener inherit it — including the off-thread
+    /// command lanes, which open their own connections and are not reached by
+    /// anything the caller passes to the first open.
     pub fn open(path: &Path) -> EventStoreResult<Self> {
+        Self::open_with_busy_timeout(path, busy_timeout_from_env())
+    }
+
+    /// Open the store with an EXPLICIT `SQLite` busy timeout.
+    ///
+    /// [`Self::open`] resolves the timeout from [`BUSY_TIMEOUT_ENV`]; this is
+    /// the injected form, so the contention behaviour can be driven against a
+    /// real peer lock in a test. Rust 2024 makes `std::env::set_var` `unsafe`
+    /// and this workspace forbids unsafe code, so a test can never reach the
+    /// behaviour through the environment variable itself — the env value is
+    /// parsed by [`busy_timeout_from_env_value`] and the resolved `Duration` is
+    /// what is verified here.
+    pub fn open_with_busy_timeout(path: &Path, busy_timeout: Duration) -> EventStoreResult<Self> {
         let connection = Connection::open(path)?;
-        initialize_connection(&connection)?;
+        initialize_connection(&connection, busy_timeout)?;
         Ok(Self { connection })
     }
 
@@ -963,7 +1016,7 @@ impl SqliteEventStore {
     }
 }
 
-fn initialize_connection(connection: &Connection) -> EventStoreResult<()> {
+fn initialize_connection(connection: &Connection, busy_timeout: Duration) -> EventStoreResult<()> {
     // One batched pragma statement instead of three separate `pragma_update`
     // calls: the three settings then share a SINGLE fallible call site, so the
     // failure arm is reachable by one test — a read-only connection rejects the
@@ -974,13 +1027,36 @@ fn initialize_connection(connection: &Connection) -> EventStoreResult<()> {
     // With WAL a reader never blocks a writer, but the two writers the live TUI
     // runs — the UI thread's effect appends and the off-thread source poller —
     // still serialize; wait out a peer's brief write rather than failing SQLITE_BUSY.
-    connection.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA foreign_keys=ON;
-         PRAGMA busy_timeout=5000;",
-    )?;
+    //
+    // busy_timeout is armed FIRST, ahead of the other pragmas and the schema
+    // DDL that follows. rusqlite arms its own five-second default inside
+    // `Connection::open`, so a batch that set it LAST would leave every
+    // preceding statement — including the `create table` batch that a contended
+    // open actually blocks on — waiting the default rather than the requested
+    // budget, and the injected value would silently do nothing.
+    //
+    // Interpolated rather than bound: `PRAGMA` values cannot be parameters in
+    // SQLite. The interpolated value is a `Duration`'s millisecond count, so it
+    // is numeric by construction and carries no injection surface.
+    connection.execute_batch(&format!(
+        "PRAGMA busy_timeout={};
+         PRAGMA journal_mode=WAL;
+         PRAGMA foreign_keys=ON;",
+        busy_timeout.as_millis()
+    ))?;
     connection.execute_batch(SCHEMA)?;
     Ok(())
+}
+
+/// Resolve [`BUSY_TIMEOUT_ENV`] from the process environment.
+///
+/// The ONE place this crate reads a hidden global. Everything downstream takes
+/// the resolved `Duration` as an argument, so the policy
+/// ([`busy_timeout_from_env_value`]) and the effect
+/// ([`SqliteEventStore::open_with_busy_timeout`]) are both testable without
+/// mutating the environment.
+fn busy_timeout_from_env() -> Duration {
+    busy_timeout_from_env_value(std::env::var(BUSY_TIMEOUT_ENV).ok().as_deref())
 }
 
 fn find_existing_sequence(
@@ -1046,6 +1122,9 @@ fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
+
+    use std::path::Path;
+    use std::time::Duration;
 
     use super::{
         AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
@@ -2487,10 +2566,87 @@ mod tests {
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         ));
 
-        let error = err_eventstore_unit(super::initialize_connection(&connection));
+        let error = err_eventstore_unit(super::initialize_connection(
+            &connection,
+            super::DEFAULT_BUSY_TIMEOUT,
+        ));
 
         check_sqlite_error(error);
         let _ignored = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_raised_busy_timeout_env_value_widens_the_default() {
+        // The knob's whole purpose: a slow host asks the store to wait longer.
+        check(
+            super::busy_timeout_from_env_value(Some("30000")) == Duration::from_millis(30_000),
+            "eventstore test assertion",
+        );
+        // Surrounding whitespace is what a shell export or a CI variable
+        // routinely carries, and must not silently disarm the override.
+        check(
+            super::busy_timeout_from_env_value(Some("  30000  ")) == Duration::from_millis(30_000),
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn a_busy_timeout_env_value_that_would_narrow_the_default_is_refused() {
+        // Absent, malformed, negative, smaller, and EXACTLY the default all
+        // resolve to the default: the override widens or it does nothing. The
+        // boundary case is asserted explicitly because "> default" and
+        // ">= default" are indistinguishable without it, and only one of them
+        // keeps the product's contention tolerance from being narrowable.
+        for raw in [None, Some(""), Some("later"), Some("-1"), Some("250")] {
+            check(
+                super::busy_timeout_from_env_value(raw) == super::DEFAULT_BUSY_TIMEOUT,
+                "eventstore test assertion",
+            );
+        }
+        check(
+            super::busy_timeout_from_env_value(Some("5000")) == super::DEFAULT_BUSY_TIMEOUT,
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn an_opened_store_arms_the_busy_timeout_it_was_handed() {
+        // Read the pragma BACK from SQLite rather than trusting the argument: a
+        // pragma that silently failed to apply would otherwise stay invisible
+        // until a contended open gave up early on a loaded host, which is the
+        // failure this knob exists to prevent. Read through the store's own
+        // connection, exactly as the WAL journal-mode assertion above does.
+        let store = ok_store(SqliteEventStore::open_with_busy_timeout(
+            Path::new(":memory:"),
+            Duration::from_millis(30_000),
+        ));
+
+        let armed = ok_i64(
+            store
+                .connection
+                .query_row("pragma busy_timeout", [], |row| row.get(0)),
+        );
+
+        check(armed == 30_000, "eventstore test assertion");
+    }
+
+    #[test]
+    fn a_store_opened_without_an_override_arms_the_product_default() {
+        // `open` resolves the env knob at the store's composition root. The
+        // suite runs with it unset, so this pins the fallback: no environment,
+        // no surprise — the documented default is what SQLite ends up holding.
+        let store = ok_store(SqliteEventStore::open_in_memory());
+
+        let armed = ok_i64(
+            store
+                .connection
+                .query_row("pragma busy_timeout", [], |row| row.get(0)),
+        );
+
+        check(
+            Duration::from_millis(armed.unsigned_abs()) == super::DEFAULT_BUSY_TIMEOUT,
+            "eventstore test assertion",
+        );
     }
 
     #[test]
@@ -2547,6 +2703,12 @@ mod tests {
     #[should_panic(expected = "ok_store failed")]
     fn ok_store_panics() {
         ok_store(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_i64 failed")]
+    fn ok_i64_panics() {
+        let _value = ok_i64(Err(rusqlite::Error::InvalidQuery));
     }
 
     #[test]
@@ -2822,6 +2984,14 @@ mod tests {
         match result {
             Ok(value) => value,
             Err(error) => panic!("ok_store failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_i64(result: Result<i64, rusqlite::Error>) -> i64 {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_i64 failed: {error:?}"),
         }
     }
 
