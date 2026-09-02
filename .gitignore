@@ -33,3 +33,7 @@
 # Playwright MCP browser-tool scratch (page snapshots, console logs) —
 # per-session, never durable state.
 .playwright-mcp/
+
+# Per-developer mise overrides (README "Local build parallelism"); never committed.
+.mise.local.toml
+mise.local.toml
