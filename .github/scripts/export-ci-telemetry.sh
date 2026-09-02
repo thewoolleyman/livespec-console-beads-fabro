@@ -115,7 +115,18 @@ run_span="$(jq -c \
    status:{code:$code}}' <<<"$run_json")"
 
 job_spans="[]"
+# EVERY field below is emitted non-empty (empty values carry the sentinel "-")
+# because tab is an IFS *whitespace* character: bash `read` collapses a run of
+# tabs into ONE delimiter, so an empty middle field (a skipped job has no
+# startedAt/completedAt) shifted every later field left. Measured 2026-09-02 on
+# master 8a5997b: the hosted runner name "GitHub Actions 1000997787" landed in
+# jstart_iso and `date` failed the whole export. The sentinel keeps the columns
+# aligned; it is mapped back to "" here.
 while IFS=$'\t' read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
+  [ "$jstart_iso" = "-" ] && jstart_iso=""
+  [ "$jend_iso" = "-" ] && jend_iso=""
+  [ "$jrunner" = "-" ] && jrunner=""
+  [ "$jlabels" = "-" ] && jlabels=""
   [ -n "$jstart_iso" ] && [ "$jstart_iso" != "null" ] || continue
   [ -n "$jend_iso" ] && [ "$jend_iso" != "null" ] || continue
   jspan_id="$(hex16 "$jid")"
@@ -153,8 +164,11 @@ done < <(jq -r --slurpfile runners "$runners_file" '
   | .jobs[]
   | . as $job
   | ($by_id[($job.databaseId|tostring)] // {}) as $runner
-  | [.databaseId, .name, (.conclusion // ""), (.startedAt // ""), (.completedAt // ""),
-     ($runner.runner_name // ""), (($runner.labels // []) | join(","))]
+  | [.databaseId, .name, (.conclusion // "-"),
+     (if (.startedAt // "") == "" then "-" else .startedAt end),
+     (if (.completedAt // "") == "" then "-" else .completedAt end),
+     (if ($runner.runner_name // "") == "" then "-" else $runner.runner_name end),
+     (if (($runner.labels // []) | length) == 0 then "-" else ($runner.labels | join(",")) end)]
   | @tsv' <<<"$run_json")
 
 # Same argv-limit class as the run span above: `$job_spans` grows with the job
