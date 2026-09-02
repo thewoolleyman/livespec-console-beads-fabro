@@ -91,6 +91,35 @@ mutation-score enforcement is tracked for the later milestone gate once
 the domain model has enough behavior to make surviving getter mutants a
 useful failure signal.
 
+### Local cache eviction
+
+The developer host accumulates build state that nothing else reclaims: the
+primary `target/` (measured 12 G), one `target/` per worktree (~4 G each,
+kept forever by orphaned worktrees), `~/.cargo/registry` (1.3 G, grows
+monotonically), and `~/.rustup` (4.9 G, old toolchains survive every pin
+bump). Two recipes bound that growth by **age and staleness only** — never a
+size cap, so a cache that is still in use is never the one evicted (plan
+`optimize-console-builds`, charter requirement 2):
+
+```bash
+just local-cache-evict-plan            # dry run: report what would go (default 14 days)
+just local-cache-evict                 # apply it
+just local-cache-evict --days 30       # a longer horizon; --days is the only knob
+```
+
+One pass, in order: reap worktrees whose branch is merged or gone (their
+`target/` goes with them; unmerged worktrees are never touched); `cargo sweep
+--time N` over the primary and every live worktree `target/`, then `cargo sweep
+--installed` for artifacts of toolchains no longer installed (both key on
+cargo's own fingerprints, so a warm build after the pass stays warm); remove
+registry crate archives not read for N days together with their extracted
+`src/` twins (cargo re-downloads on demand); uninstall rustup toolchains that
+are neither the `rust-toolchain.toml` pin, the fuzz `nightly` channel, nor the
+rustup default and whose `rustc` has not run for N days. Sizes are printed
+before and after so every pass is measurable. Run it about once a week, or
+whenever `df` on the root filesystem starts to matter; `cargo-sweep` is
+installed on first use. The script is `scripts/local-cache-evict.sh`.
+
 Remaining quality and feature work is tracked in the Beads ledger, with
 authoritative requirements in [SPECIFICATION/](SPECIFICATION/). Known
 follow-ups include growing the fuzz corpus with real event-store inputs
