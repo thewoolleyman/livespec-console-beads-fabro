@@ -131,6 +131,39 @@ GitHub jobs API `runner_name` / `labels` (and a derived `ci.runner.kind` =
 self-hosted|hosted) so before/after windows are filterable, not date-guessed.
 Filed as a follow-up (see the plan epic timeline).
 
+## Factory host hp-xubuntu — SSD disk baseline (companion; NOT a RAID change)
+
+Captured 2026-09-02 at maintainer request, same `fio` methodology as Layer 1.
+Unlike poweredge, **hp-xubuntu has no RAID and is already all-SSD**, so this is a
+factory-host baseline for Phase-2 comparison, not a pre-RAID capture — hp is not
+part of the RAID-10 upgrade.
+
+| Property | Value |
+|---|---|
+| Host | `hp-xubuntu` — `100.68.193.50`, 16 cores, the fabro dispatch/factory host |
+| Storage | `sda` = Crucial **CT2000BX500SSD1** (2 TB SATA SSD, `ROTA=0`); no RAID controller, no mdraid |
+| Benchmarked filesystem | `/dev/sda3` (1.4 TB ext4, mounted `/data`) — the same fs `/var/lib/docker` lives on, i.e. where the fabro sandbox containers build |
+
+Method: `fio` 3.41 (installed for this capture), file-based, O_DIRECT, 4 GiB,
+30 s/test, against `/data/.fio-hpbaseline/fiotest`, then removed. Host idle
+(load ~0.6).
+
+| Test | IOPS | Bandwidth | p99 clat |
+|---|---|---|---|
+| seq write 1M, qd16 | 484 | 485 MiB/s (508 MB/s) | 42 ms |
+| seq read 1M, qd16 | 527 | 528 MiB/s (553 MB/s) | 45 ms |
+| **rand write** 4k, qd32×4 | **5,584** | 21.8 MiB/s (22.9 MB/s) | 81 ms |
+| rand read 4k, qd32×4 | **30,544** | 119 MiB/s (125 MB/s) | 8.3 ms |
+
+**Reading vs poweredge (RAID5 spinning):** hp's SSD roughly doubles random read
+(30.5k vs 15.5k IOPS) and beats random write (5.6k vs 3.4k IOPS) and seq write,
+while poweredge's striped RAID5 wins seq read (691 vs 528 MiB/s). hp's random
+write (5.6k IOPS / 22 MiB/s) is still modest for an SSD — the BX500 is a budget
+DRAM-less SATA drive — so the factory's cold cargo build (random-write-heavy on
+`target/`) is somewhat disk-bound here too, though less than poweredge. The
+factory's larger cold-build tax is CPU (16 cores) + full re-fetch/recompile of a
+thrown-away sandbox, not disk; disk is a secondary lever for the factory tier.
+
 ## Snapshot summary (the frozen "before")
 
 - **Array:** PERC H730P, RAID5, spinning, WriteBack — random-write floor **3,389
