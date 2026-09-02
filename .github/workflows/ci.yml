@@ -247,8 +247,21 @@ jobs:
       # not split: `cargo llvm-cov` cleans and re-instruments by default, so a
       # prepended warm build would DOUBLE-COMPILE the 100% coverage gate — a
       # regression against this plan's own build-time goal; deferred on the item.
+      # ---- Job-scoped compile parallelism (livespec-console-beads-fabro-zzfntv) --
+      # .cargo/config.toml caps EVERY cargo invocation at build.jobs = 4 so the
+      # 16-job matrix (~64 threads) fits the 72-core self-hosted host. The two
+      # longest compile phases — this one and check-fuzz's ASAN build — pay that
+      # cap hardest (research/007: 66 s and 78 s P50, the cold-cache tax), so
+      # ONLY those two steps raise it via the env override (env beats the config
+      # file in cargo's precedence). Matrix-wide worst case: 14×4 + 2×12 = 80
+      # threads on 72 cores (~1.1×). A blanket raise (16×12 = 192) is NOT safe
+      # and is deliberately not done; RUST_TEST_THREADS stays at 4 everywhere.
+      # No cache tier is added, so no eviction policy is owed. Measured
+      # before→after on the plan item.
       - name: "Phase: compile"
         if: matrix.target == 'check-nextest'
+        env:
+          CARGO_BUILD_JOBS: "12"
         run: cargo nextest run --workspace --all-features --no-run
 
       - name: "Phase: test"
@@ -493,7 +506,14 @@ jobs:
       # drift against the recipe. `just check-fuzz` below then rebuilds warm
       # (no-op reuse) and runs, under the "Phase: fuzz" name. Depends on the
       # fuzz-tooling + C++ compiler steps above.
+      # CARGO_BUILD_JOBS raised for this compile step only — see the check-nextest
+      # "Phase: compile" comment (livespec-console-beads-fabro-zzfntv) for the
+      # matrix-wide safety arithmetic. The "Phase: fuzz" step below stays at the
+      # config-file cap of 4 (its rebuild is a warm no-op; -j never enters cargo
+      # fingerprints, so the raised build is reused as-is).
       - name: "Phase: compile"
+        env:
+          CARGO_BUILD_JOBS: "12"
         run: |
           just ensure-fuzz-tooling
           cargo +nightly fuzz build
