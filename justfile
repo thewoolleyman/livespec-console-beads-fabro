@@ -171,6 +171,25 @@ install-commit-refuse-hooks:
 install-worktree-pack:
     uv run python -m livespec_dev_tooling.install_worktree_pack
 
+# ---------------------------------------------------------------------------
+# Local build-cache eviction (plan optimize-console-builds, Phase 2 local —
+# livespec-console-beads-fabro-uybgug). AGE/STALENESS-based only, never a size
+# cap (charter research/001 req 2): orphaned-worktree reap, `cargo sweep
+# --time N` over the primary + live worktree target/ dirs, registry archives
+# unread for N days, and rustup toolchains (other than the repo pin, `nightly`,
+# and the default) unused for N days. See README.md "Local cache eviction".
+# ---------------------------------------------------------------------------
+
+# Report what the age-based local cache eviction WOULD remove (dry run; --days N).
+[positional-arguments]
+local-cache-evict-plan *args:
+    bash scripts/local-cache-evict.sh "$@"
+
+# Run the age-based local cache eviction (--days N, default 14; deletes).
+[positional-arguments]
+local-cache-evict *args:
+    bash scripts/local-cache-evict.sh --execute "$@"
+
 # Factory-boundary helper: fail if the current branch changes GitHub workflow
 # files. Deliberately OUTSIDE the canonical `check` aggregate — the factory
 # janitor lane invokes it explicitly, ahead of `check`, so an implementation
