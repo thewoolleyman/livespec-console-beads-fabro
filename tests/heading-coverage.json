@@ -1182,7 +1182,7 @@
     "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item",
     "scenario_file": "scenarios.md",
     "test": "crates/console-application/src/lib.rs::dispatcher_dispatch_item_port_uses_governed_bounded_loop_surface",
-    "reason": "Application-layer coverage asserts the per-item dispatch port is wired and invokes the governed bounded-loop argv (`loop --repo <path> --budget 1 --parallel 1 --item <id>`) without binding to the ungoverned `dispatch` subcommand. The sibling application test `dispatcher_dispatch_item_port_surfaces_zero_dispatch_and_unavailable_honestly` covers the no-dispatch and unavailable surfacing clauses; the current registry schema permits one test id string per scenario entry.",
+    "reason": "Application-layer coverage asserts the per-item dispatch port is wired and invokes the governed bounded-loop argv (`loop --repo <path> --budget 1 --parallel 1 --item <id>`) without binding to the ungoverned `dispatch` subcommand. The sibling application test `dispatcher_dispatch_item_port_surfaces_zero_dispatch_and_unavailable_honestly` covers the no-dispatch and unavailable surfacing clauses; the current registry schema permits one test id string per scenario entry. The v047 single-key accelerator clause (gap-uqotpmdo) and its 'reachable by one key' sub-scenario are covered at the top of the pyramid once the derived implementation child lands; until then the registration below stays honest about the pending key binding.",
     "clauses": [
       {
         "gap_id": "gap-3b5nbxmf",
@@ -1238,6 +1238,10 @@
       },
       {
         "gap_id": "gap-v6ekcmys",
+        "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
+      },
+      {
+        "gap_id": "gap-uqotpmdo",
         "scenario": "Scenario 28 -- Per-item dispatch narrows the ranked selection to one named item"
       }
     ]
@@ -1312,6 +1316,18 @@
       {
         "gap_id": "gap-l6iyo4ws",
         "scenario": "Scenario 30 -- A needs-human terminal reaches the operator as a ledger valve"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 31 -- Per-item verbs are offered wherever the operator sees the work-item",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: top-of-pyramid acceptance coverage is owed by the implementation child derived by capture-impl-gaps from the v047 dispatch-on-the-attention-surface revision (plan retire-overseer-and-redesign-control-plane-around-console, epic livespec-console-beads-fabro-pzbdbo): an integration test asserting the offered per-item verb set is identical on the needs-attention row and the drilled-in lane for the same work-item, plus the inbox per-item dispatch persisting factory.dispatch_item_requested. Registered as TODO at ratification time because the registry's drill-only surface split this scenario retires is still in place; ratified ahead of the implementation by maintainer ruling (2026-09-02).",
+    "clauses": [
+      {
+        "gap_id": "gap-3a3bzkps",
+        "scenario": "Scenario 31 -- Per-item verbs are offered wherever the operator sees the work-item"
       }
     ]
   }
