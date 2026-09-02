@@ -35,11 +35,13 @@ use console_eventstore::SqliteEventStore;
 use livespec_console_beads_fabro::{lane_diagnostics_path, lane_failures_in};
 use support::attention_rows::{PathBackedAttentionFixture, ROW_SUMMARY};
 use support::lifecycle::{ITEM_ID, LifecycleFixture};
-use support::{HarnessResult, RepoFixture, TmuxConsole};
+use support::{HarnessResult, RepoFixture, TmuxConsole, render_timeout};
 
-/// Generous ceiling for a single render/keypress to settle. The render itself is
-/// sub-second; the slack absorbs a cold binary and a busy CI host.
-const RENDER_TIMEOUT: Duration = Duration::from_secs(20);
+// The render/settle ceiling now lives in the harness as `support::render_timeout()`
+// — a generous default widenable via `LIVESPEC_CONSOLE_E2E_RENDER_TIMEOUT_SECS`,
+// so a saturated CI host tunes it without a recompile (see l7unt3). The harness
+// also gates `launch` on the first painted frame, so these budgets are measured
+// against a live TUI, not against process startup.
 
 #[test]
 #[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
@@ -60,7 +62,7 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
     // Wait for a SETTLED frame (two identical consecutive captures) so the
     // several substring assertions below never race a partially painted frame.
     let header_needle = format!("repo: {}", repo.tenant());
-    let screen = console.wait_for_settled(&header_needle, RENDER_TIMEOUT)?;
+    let screen = console.wait_for_settled(&header_needle, render_timeout())?;
     assert!(
         screen.contains("LiveSpec Console"),
         "header title missing for tenant {}:\n{screen}",
@@ -90,7 +92,7 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
     console.send_keys(&["Down"])?;
     console.send_keys(&["Down"])?;
     console.send_keys(&["Enter"])?;
-    let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    let lanes = console.wait_for_settled("view: Lanes", render_timeout())?;
     assert!(
         lanes.contains(&header_needle),
         "tenant must persist after navigation for {}:\n{lanes}",
@@ -106,7 +108,7 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
 
     // Quit cleanly; the launcher prints the exit code once the TUI tears down.
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
 
     // Side effect + hermeticity: the session wrote real events into its isolated
     // store, and NONE of them is a live GitHub observation.
@@ -211,11 +213,11 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     let console = TmuxConsole::launch(&repo)?;
 
     // The shell renders on the default needs-attention view.
-    console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    console.wait_for_settled("view: Attention", render_timeout())?;
 
     // --- `?` opens auto-focused to the focused pane's section (Attention) ---
     console.send_keys(&["?"])?;
-    let help = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    let help = console.wait_for_settled("esc to exit", render_timeout())?;
     assert!(
         help.contains("Global actions"),
         "menu must carry a Global actions section:\n{help}"
@@ -237,13 +239,13 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     // --- modal, Esc-only close: a non-Esc key keeps it open and the underlying
     //     view neither switches nor scrolls (`?` no longer toggles it shut) ---
     console.send_keys(&["?"])?;
-    let still_open = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    let still_open = console.wait_for_settled("esc to exit", render_timeout())?;
     assert!(
         still_open.contains("view: Attention"),
         "the underlying view must not switch while help is open:\n{still_open}"
     );
     console.send_keys(&["x"])?;
-    let still_open = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    let still_open = console.wait_for_settled("esc to exit", render_timeout())?;
     assert!(
         still_open.contains("> Attention"),
         "a plain letter must not dismiss or disturb the modal:\n{still_open}"
@@ -251,7 +253,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 
     // --- Esc closes and returns focus to the pane the operator was on ---
     console.send_keys(&["Escape"])?;
-    let closed = wait_until_absent(&console, "esc to exit", RENDER_TIMEOUT)?;
+    let closed = wait_until_absent(&console, "esc to exit", render_timeout())?;
     assert!(
         closed.contains("view: Attention"),
         "Esc must close the modal and return to the Attention pane:\n{closed}"
@@ -259,9 +261,9 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 
     // --- `?` from the Lanes pane opens auto-focused to the Lanes section ---
     console.send_keys(&["Down", "Down"])?; // Attention -> Spec -> Lanes
-    console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    console.wait_for_settled("view: Lanes", render_timeout())?;
     console.send_keys(&["?"])?;
-    let lanes = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    let lanes = console.wait_for_settled("esc to exit", render_timeout())?;
     assert!(
         lanes.contains("> Lanes") && lanes.contains("lane board"),
         "help from Lanes must auto-focus the Lanes section:\n{lanes}"
@@ -273,7 +275,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 
     // --- navigating the left menu switches the right pane's content (down) ---
     console.send_keys(&["Down"])?; // section Lanes -> Events
-    let events = console.wait_for_settled("event timeline", RENDER_TIMEOUT)?;
+    let events = console.wait_for_settled("event timeline", render_timeout())?;
     assert!(
         events.contains("> Events"),
         "Down must move the menu selection to Events:\n{events}"
@@ -286,7 +288,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     // --- right focuses the text pane; down scrolls it without changing section ---
     console.send_keys(&["Right"])?;
     console.send_keys(&["Down"])?;
-    let after_right = console.wait_for_settled("> Events", RENDER_TIMEOUT)?;
+    let after_right = console.wait_for_settled("> Events", render_timeout())?;
     assert!(
         after_right.contains("event timeline") && !after_right.contains("lane board"),
         "Down with Help text focused must not change the selected section:\n{after_right}"
@@ -295,7 +297,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     // --- left focuses the menu again; up moves the menu selection back ---
     console.send_keys(&["Left"])?;
     console.send_keys(&["Up"])?; // section Events -> Lanes
-    let back = console.wait_for_settled("> Lanes", RENDER_TIMEOUT)?;
+    let back = console.wait_for_settled("> Lanes", render_timeout())?;
     assert!(
         back.contains("lane board"),
         "Up must move the menu selection back to Lanes:\n{back}"
@@ -303,7 +305,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 
     // Esc returns to the Lanes pane.
     console.send_keys(&["Escape"])?;
-    let closed = wait_until_absent(&console, "esc to exit", RENDER_TIMEOUT)?;
+    let closed = wait_until_absent(&console, "esc to exit", render_timeout())?;
     assert!(
         closed.contains("view: Lanes"),
         "Esc must return focus to the Lanes pane:\n{closed}"
@@ -311,19 +313,19 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 
     // --- `?` from the Settings pane opens auto-focused to the Settings section ---
     console.send_keys(&["Down", "Down", "Down"])?; // Lanes -> Events -> Repos -> Settings
-    console.wait_for_settled("view: Settings", RENDER_TIMEOUT)?;
+    console.wait_for_settled("view: Settings", render_timeout())?;
     console.send_keys(&["?"])?;
-    let settings = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    let settings = console.wait_for_settled("esc to exit", render_timeout())?;
     assert!(
         settings.contains("> Settings") && settings.contains("auto_approve_ready"),
         "help from Settings must auto-focus the Settings section:\n{settings}"
     );
     console.send_keys(&["Escape"])?;
-    wait_until_absent(&console, "esc to exit", RENDER_TIMEOUT)?;
+    wait_until_absent(&console, "esc to exit", render_timeout())?;
 
     // Quit cleanly.
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
     Ok(())
 }
 
@@ -350,7 +352,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     let console = TmuxConsole::launch(&repo)?;
 
     // --- case 1: the default focused pane (Attention) shows non-empty hints ---
-    let attention = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    let attention = console.wait_for_settled("view: Attention", render_timeout())?;
     assert!(
         attention.contains("Status"),
         "the Status line box must be present:\n{attention}"
@@ -384,7 +386,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     // Down x2 moves the nav selection Attention -> Spec -> Lanes (no Enter needed;
     // moving the selection switches the active view).
     console.send_keys(&["Down", "Down"])?;
-    let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    let lanes = console.wait_for_settled("view: Lanes", render_timeout())?;
     // `enter drill` rather than `move-status`: this screen is the lane
     // OVERVIEW, which selects a LANE and not a work-item, so every per-item key
     // (move-status, the valves, the policy dials) is inert here and the hint
@@ -400,7 +402,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
 
     // --- case 3: opening the `?` Help overlay swaps the hints to the overlay's ---
     console.send_keys(&["?"])?;
-    let help = console.wait_for_settled("esc to exit", RENDER_TIMEOUT)?;
+    let help = console.wait_for_settled("esc to exit", render_timeout())?;
     assert!(
         help.contains("close help"),
         "an open overlay must replace the pane hints with the overlay's hints:\n{help}"
@@ -412,7 +414,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
 
     // --- case 3 (cont.): closing the overlay (Esc) restores the pane's hints ---
     console.send_keys(&["Escape"])?;
-    let restored = wait_until_absent(&console, "esc to exit", RENDER_TIMEOUT)?;
+    let restored = wait_until_absent(&console, "esc to exit", render_timeout())?;
     assert!(
         restored.contains("enter drill") && !restored.contains("close help"),
         "closing the overlay must restore the Lanes pane's hints:\n{restored}"
@@ -421,7 +423,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     // --- case 2 (part B): switch to the Settings pane; hints DIFFER from Lanes ---
     // Down x3 moves the nav selection Lanes -> Events -> Repos -> Settings.
     console.send_keys(&["Down", "Down", "Down"])?;
-    let settings = console.wait_for_settled("view: Settings", RENDER_TIMEOUT)?;
+    let settings = console.wait_for_settled("view: Settings", render_timeout())?;
     assert!(
         settings.contains("edit row"),
         "the Settings pane must render its own edit-key hints:\n{settings}"
@@ -433,7 +435,7 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
 
     // Quit cleanly.
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
     Ok(())
 }
 
@@ -470,7 +472,7 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     // the low-value `fleet: livespec` field to fit the narrow width, and its
     // block title carries NO focus marker.
     let header_needle = format!("repo: {}", repo.tenant());
-    let start = console.wait_for_settled(&header_needle, RENDER_TIMEOUT)?;
+    let start = console.wait_for_settled(&header_needle, render_timeout())?;
     assert!(
         !start.contains("LiveSpec Console [focus]"),
         "the top/header pane must not be focused by default:\n{start}"
@@ -487,7 +489,7 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     // FULL header line at offset 0: `fleet: livespec` is visible at the left,
     // while the right-hand `attention:` field is clipped off the right edge.
     console.send_keys(&["Tab", "Tab", "Tab"])?;
-    let focused = console.wait_for_settled("LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    let focused = console.wait_for_settled("LiveSpec Console [focus]", render_timeout())?;
     assert!(
         focused.contains("fleet: livespec"),
         "the focused header shows the full, un-degraded line (fleet at the left):\n{focused}"
@@ -505,7 +507,7 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     console.send_keys(&[
         "Right", "Right", "Right", "Right", "Right", "Right", "Right", "Right",
     ])?;
-    let scrolled = console.wait_for_settled("attention:", RENDER_TIMEOUT)?;
+    let scrolled = console.wait_for_settled("attention:", render_timeout())?;
     assert!(
         scrolled.contains("LiveSpec Console [focus]"),
         "the top/header pane stays focused while scrolling:\n{scrolled}"
@@ -519,7 +521,7 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     console.send_keys(&[
         "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left",
     ])?;
-    let back_left = console.wait_for_settled("fleet: livespec", RENDER_TIMEOUT)?;
+    let back_left = console.wait_for_settled("fleet: livespec", render_timeout())?;
     assert!(
         back_left.contains("fleet: livespec") && !back_left.contains("attention:"),
         "scrolling left returns to the left edge (fleet visible, attention clipped):\n{back_left}"
@@ -529,7 +531,7 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     // Tab moves focus off the header (Header -> Nav); the pane snaps back to the
     // shrink-to-fit default (fleet dropped again) and loses its `[focus]` marker.
     console.send_keys(&["Tab"])?;
-    let blurred = wait_until_absent(&console, "LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    let blurred = wait_until_absent(&console, "LiveSpec Console [focus]", render_timeout())?;
     assert!(
         !blurred.contains("fleet: livespec"),
         "on blur the pane returns to its shrink-to-fit default (fleet dropped):\n{blurred}"
@@ -541,7 +543,7 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
 
     // Quit cleanly.
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
 
     // --- case 4: a wide-enough viewport needs no horizontal scroll ---
     // At the default wide width the whole header fits, so the scroll clamp is
@@ -550,21 +552,21 @@ fn tmux_tui_e2e_top_pane_focus_hscroll() -> HarnessResult<()> {
     // that is already fully visible.
     let wide_repo = RepoFixture::new("e2e-top-wide", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     let wide = TmuxConsole::launch_sized(&wide_repo, support::DEFAULT_COLS, support::DEFAULT_ROWS)?;
-    wide.wait_for_settled(&format!("repo: {}", wide_repo.tenant()), RENDER_TIMEOUT)?;
+    wide.wait_for_settled(&format!("repo: {}", wide_repo.tenant()), render_timeout())?;
     wide.send_keys(&["Tab", "Tab", "Tab"])?;
-    let wide_focused = wide.wait_for_settled("LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    let wide_focused = wide.wait_for_settled("LiveSpec Console [focus]", render_timeout())?;
     assert!(
         wide_focused.contains("fleet: livespec") && wide_focused.contains("attention:"),
         "a wide viewport shows the whole header at once, no scrolling needed:\n{wide_focused}"
     );
     wide.send_keys(&["Right"])?;
-    let wide_still = wide.wait_for_settled("LiveSpec Console [focus]", RENDER_TIMEOUT)?;
+    let wide_still = wide.wait_for_settled("LiveSpec Console [focus]", render_timeout())?;
     assert!(
         wide_still.contains("fleet: livespec") && wide_still.contains("attention:"),
         "Right cannot pan a header that already fits (scroll clamp is zero):\n{wide_still}"
     );
     wide.send_keys(&["q"])?;
-    wide.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    wide.wait_for("TUI_EXIT=0", render_timeout())?;
 
     Ok(())
 }
@@ -597,14 +599,14 @@ fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()
 
     // The default Attention view: swept, and its own operational projection (the
     // ranked attention list) confirmed present via its header field.
-    let attention = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    let attention = console.wait_for_settled("view: Attention", render_timeout())?;
     assert_no_baked_doc_prose(&attention, "Attention");
 
     // --- case 1: the Spec pane renders its operational counts, no doc prose ---
     // From the default Attention view, one Down moves the nav selection to Spec
     // and switches the active view to it (no Enter needed).
     console.send_keys(&["Down"])?;
-    let spec = console.wait_for_settled("view: Spec", RENDER_TIMEOUT)?;
+    let spec = console.wait_for_settled("view: Spec", render_timeout())?;
     assert!(
         spec.contains("LiveSpec next snapshots:") && spec.contains("Revise required:"),
         "the Spec pane must render its operational counts:\n{spec}"
@@ -614,13 +616,13 @@ fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()
     // --- sweep: the Lanes pane (its own lane-board projection), no doc prose ---
     // One Down moves the nav selection Spec -> Lanes.
     console.send_keys(&["Down"])?;
-    let lanes = console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    let lanes = console.wait_for_settled("view: Lanes", render_timeout())?;
     assert_no_baked_doc_prose(&lanes, "Lanes");
 
     // --- case 2: the Events pane renders its operational count, no doc prose ---
     // One Down moves the nav selection Lanes -> Events.
     console.send_keys(&["Down"])?;
-    let events = console.wait_for_settled("view: Events", RENDER_TIMEOUT)?;
+    let events = console.wait_for_settled("view: Events", render_timeout())?;
     assert!(
         events.contains("Stored events:"),
         "the Events pane must render its operational stored-event count:\n{events}"
@@ -630,7 +632,7 @@ fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()
     // --- case 3: the Repos pane renders its operational roster, no doc prose ---
     // One Down moves the nav selection Events -> Repos.
     console.send_keys(&["Down"])?;
-    let repos = console.wait_for_settled("view: Repos", RENDER_TIMEOUT)?;
+    let repos = console.wait_for_settled("view: Repos", render_timeout())?;
     assert!(
         repos.contains("Repos observed:"),
         "the Repos pane must render its operational repo roster:\n{repos}"
@@ -640,12 +642,12 @@ fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()
     // --- sweep: the Settings pane (its own dispatcher-settings rows), no prose ---
     // One Down moves the nav selection Repos -> Settings.
     console.send_keys(&["Down"])?;
-    let settings = console.wait_for_settled("view: Settings", RENDER_TIMEOUT)?;
+    let settings = console.wait_for_settled("view: Settings", render_timeout())?;
     assert_no_baked_doc_prose(&settings, "Settings");
 
     // Quit cleanly.
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
     Ok(())
 }
 
@@ -794,7 +796,7 @@ fn tmux_tui_e2e_all_reachable_sources_are_idle_not_unavailable() -> HarnessResul
     let console = TmuxConsole::launch(&repo)?;
 
     let header_needle = format!("repo: {}", repo.tenant());
-    let screen = console.wait_for_settled(&header_needle, RENDER_TIMEOUT)?;
+    let screen = console.wait_for_settled(&header_needle, render_timeout())?;
     assert!(
         screen.contains("mode: tui"),
         "an all-idle header must keep `mode: tui` (no phantom unavailability \
@@ -806,7 +808,7 @@ fn tmux_tui_e2e_all_reachable_sources_are_idle_not_unavailable() -> HarnessResul
     );
 
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
 
     // The idle sources persisted observed-and-idle markers, and NO source
     // degraded to a not-observed finding.
@@ -846,14 +848,14 @@ fn tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned() -> HarnessRes
         )],
     )?;
 
-    let screen = console.wait_for("sources: 1 unavailable", RENDER_TIMEOUT)?;
+    let screen = console.wait_for("sources: 1 unavailable", render_timeout())?;
     assert!(
         screen.contains("fabro"),
         "the header must NAME the one unavailable source (fabro):\n{screen}"
     );
 
     console.send_keys(&["q"])?;
-    console.wait_for("TUI_EXIT=0", RENDER_TIMEOUT)?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
 
     // Exactly one source (fabro) degraded to a not-observed finding, and its
     // reason is durably persisted with the finding (not dropped to `{}`).
@@ -961,7 +963,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
     // Done is terminal: no per-item verb hint is offered, and all per-item verb
     // keys stay inert instead of opening a stale valve modal.
     let done = launch_lifecycle_on_lanes_item("state-vocab-done", "done")?;
-    let done_screen = done.wait_for_settled("Lane: done", RENDER_TIMEOUT)?;
+    let done_screen = done.wait_for_settled("Lane: done", render_timeout())?;
     assert!(
         done_screen.contains("enter item") && done_screen.contains("esc lane list"),
         "done item must still expose non-verb lane-item navigation:\n{done_screen}"
@@ -981,7 +983,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
     }
     for key in ["p", "c", "r", "m", "n", "s"] {
         done.send_keys(&[key])?;
-        let after = done.wait_for_settled("Lane: done", RENDER_TIMEOUT)?;
+        let after = done.wait_for_settled("Lane: done", render_timeout())?;
         assert!(
             !after.contains("Approve work-item")
                 && !after.contains("Accept work-item")
@@ -995,13 +997,13 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
 
     // Backlog admits grooming/dispatch movement, but not the human valve verbs.
     let backlog = launch_lifecycle_on_lanes_item("state-vocab-backlog", "backlog")?;
-    let backlog_screen = backlog.wait_for_settled("Lane: backlog", RENDER_TIMEOUT)?;
+    let backlog_screen = backlog.wait_for_settled("Lane: backlog", render_timeout())?;
     assert!(
         backlog_screen.contains("move-status"),
         "backlog item must keep the operator-drivable move hint:\n{backlog_screen}"
     );
     backlog.send_keys(&["s"])?;
-    let backlog_move = backlog.wait_for_settled("Move status", RENDER_TIMEOUT)?;
+    let backlog_move = backlog.wait_for_settled("Move status", render_timeout())?;
     assert!(
         backlog_move.contains("ready")
             && backlog_move.contains(VALVE_CONFIRM_LINE)
@@ -1016,7 +1018,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
 
     // Acceptance is a human valve lane with two exits: accept and reject.
     let acceptance = launch_lifecycle_on_lanes_item("state-vocab-acceptance", "acceptance")?;
-    let acceptance_screen = acceptance.wait_for_settled("Lane: acceptance", RENDER_TIMEOUT)?;
+    let acceptance_screen = acceptance.wait_for_settled("Lane: acceptance", render_timeout())?;
     assert!(
         acceptance_screen.contains("c accept") && acceptance_screen.contains("r reject"),
         "acceptance item must keep both accept and reject hints:\n{acceptance_screen}"
@@ -1026,7 +1028,7 @@ fn tmux_tui_e2e_per_item_verb_hints_follow_state_vocabulary() -> HarnessResult<(
         "acceptance item must not offer the pending-approval-only approve hint:\n{acceptance_screen}"
     );
     acceptance.send_keys(&["s"])?;
-    let acceptance_move = acceptance.wait_for_settled("Move status", RENDER_TIMEOUT)?;
+    let acceptance_move = acceptance.wait_for_settled("Move status", render_timeout())?;
     assert!(
         acceptance_move.contains("backlog")
             && !acceptance_move.contains("done")
@@ -1047,9 +1049,9 @@ fn launch_lifecycle_on_lanes_item(label: &str, initial_lane: &str) -> HarnessRes
         .map(|(key, value)| (*key, value.as_str()))
         .collect();
     let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
-    console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    console.wait_for_settled("view: Attention", render_timeout())?;
     console.send_keys(&["Down", "Down"])?;
-    console.wait_for_settled("view: Lanes", RENDER_TIMEOUT)?;
+    console.wait_for_settled("view: Lanes", render_timeout())?;
     // Focus the board (Enter), select the target lane row (Down until the
     // `> <lane> (` cursor marker), then drill into it (Enter) — the sequence
     // the walkthrough documents; the prior loop pressed Down in the Views
@@ -1057,13 +1059,13 @@ fn launch_lifecycle_on_lanes_item(label: &str, initial_lane: &str) -> HarnessRes
     console.send_keys(&["Enter"])?;
     let marker = format!("> {initial_lane} (");
     while !console
-        .wait_for_settled("[focus]", RENDER_TIMEOUT)?
+        .wait_for_settled("[focus]", render_timeout())?
         .contains(&marker)
     {
         console.send_keys(&["Down"])?;
     }
     console.send_keys(&["Enter"])?;
-    console.wait_for_settled(ITEM_ID, RENDER_TIMEOUT)?;
+    console.wait_for_settled(ITEM_ID, render_timeout())?;
     std::mem::forget(fixture);
     Ok(console)
 }
@@ -1074,13 +1076,13 @@ fn set_human_acceptance_leg(
     tenant: &str,
 ) -> HarnessResult<()> {
     console.send_keys(&["n"])?;
-    let set_acceptance = console.wait_for_settled("Set acceptance", RENDER_TIMEOUT)?;
+    let set_acceptance = console.wait_for_settled("Set acceptance", render_timeout())?;
     assert!(
         set_acceptance.contains("ai-then-human") && set_acceptance.contains(VALVE_CONFIRM_LINE),
         "step 3: the set-acceptance modal must default to ai-then-human for {tenant}:\n{set_acceptance}"
     );
     console.send_keys(&["Enter"])?;
-    let accepted_policy = console.wait_for_settled("Pending approval", RENDER_TIMEOUT)?;
+    let accepted_policy = console.wait_for_settled("Pending approval", render_timeout())?;
     assert!(
         accepted_policy.contains("attention: 1"),
         "step 3: setting acceptance policy must keep the item in the inbox for {tenant}:\n{accepted_policy}"
@@ -1092,7 +1094,7 @@ fn set_human_acceptance_leg(
     fixture
         .wait_for_action(
             &format!("set-acceptance:{ITEM_ID}:ai-then-human"),
-            RENDER_TIMEOUT,
+            render_timeout(),
         )
         .map_err(|error| {
             format!(
@@ -1106,7 +1108,7 @@ fn set_human_acceptance_leg(
 // Confirm an OPEN human-valve modal (`verb` is "approve" / "accept"), then settle
 // on its DRIVE ACTION landing before the caller waits on the rendered
 // "attention: 0" frame. Do NOT budget the whole async approve/accept ->
-// "attention: 0" chain against a single RENDER_TIMEOUT: the console does not run
+// "attention: 0" chain against a single render_timeout(): the console does not run
 // drive actions on its render thread. Confirming the valve only sends main.rs's
 // command_worker a HandleNow, whose lane opens its OWN store connection (bounded
 // to 3 attempts, each waiting out SQLite's 5s busy_timeout) before the stub flips
@@ -1130,7 +1132,7 @@ fn confirm_valve_and_settle_drive(
     console.send_keys(&["Enter"])?;
     let action = format!("{verb}:{ITEM_ID}");
     fixture
-        .wait_for_action(&action, RENDER_TIMEOUT)
+        .wait_for_action(&action, render_timeout())
         .map_err(|error| format!("{step}: confirming must drive {action} for {tenant}: {error}"))?;
     Ok(())
 }
@@ -1151,8 +1153,8 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     let console = TmuxConsole::launch_with_env(repo, &borrowed)?;
 
     // --- Step 1: the item is waiting, and the header counts it ---------------
-    console.wait_for("LiveSpec Console", RENDER_TIMEOUT)?;
-    let inbox = console.wait_for_settled("Pending approval", RENDER_TIMEOUT)?;
+    console.wait_for("LiveSpec Console", render_timeout())?;
+    let inbox = console.wait_for_settled("Pending approval", render_timeout())?;
     assert!(
         inbox.contains("attention: 1"),
         "step 1: the header must count the waiting item for {tenant}:\n{inbox}"
@@ -1164,7 +1166,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
 
     // --- Step 2: Enter moves focus from the Views menu into the list ---------
     console.send_keys(&["Enter"])?;
-    let focused = console.wait_for_settled("Attention [focus]", RENDER_TIMEOUT)?;
+    let focused = console.wait_for_settled("Attention [focus]", render_timeout())?;
     assert!(
         focused.contains("p approve | r reject | m set-admission"),
         "step 2: the Status line must offer the pending-approval verb keys for {tenant}:\n{focused}"
@@ -1175,7 +1177,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
 
     // --- Steps 4-5: `p` opens the approve valve, Enter confirms it -----------
     console.send_keys(&["p"])?;
-    let modal = console.wait_for_settled(APPROVE_MODAL_TITLE, RENDER_TIMEOUT)?;
+    let modal = console.wait_for_settled(APPROVE_MODAL_TITLE, render_timeout())?;
     assert!(
         modal.contains(VALVE_CONFIRM_LINE),
         "step 4: the approve modal must show its confirm affordance for {tenant}:\n{modal}"
@@ -1186,7 +1188,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     );
 
     confirm_valve_and_settle_drive(&console, &fixture, "approve", "step 5", tenant)?;
-    let approved = console.wait_for_settled("attention: 0", RENDER_TIMEOUT)?;
+    let approved = console.wait_for_settled("attention: 0", render_timeout())?;
     assert!(
         approved.contains("No attention item selected"),
         "step 5: approving must empty the inbox for {tenant}:\n{approved}"
@@ -1201,7 +1203,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     // `move` refuses `acceptance` (the ship-guard), so this transition is not
     // an operator keystroke and the doc must not pretend otherwise.
     fixture.factory_move("acceptance")?;
-    let review = console.wait_for_settled("Acceptance review", RENDER_TIMEOUT)?;
+    let review = console.wait_for_settled("Acceptance review", render_timeout())?;
     assert!(
         review.contains("attention: 1"),
         "step 6: the finished item must re-enter the inbox for {tenant}:\n{review}"
@@ -1209,14 +1211,14 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
 
     // --- Steps 7-8: `c` opens the accept valve, Enter ships the item ---------
     console.send_keys(&["c"])?;
-    let accept = console.wait_for_settled(ACCEPT_MODAL_TITLE, RENDER_TIMEOUT)?;
+    let accept = console.wait_for_settled(ACCEPT_MODAL_TITLE, render_timeout())?;
     assert!(
         accept.contains(VALVE_CONFIRM_LINE),
         "step 7: the accept modal must show its confirm affordance for {tenant}:\n{accept}"
     );
 
     confirm_valve_and_settle_drive(&console, &fixture, "accept", "step 8", tenant)?;
-    let shipped = console.wait_for_settled("attention: 0", RENDER_TIMEOUT)?;
+    let shipped = console.wait_for_settled("attention: 0", render_timeout())?;
     assert!(
         shipped.contains("No attention item selected"),
         "step 8: accepting must empty the inbox for {tenant}:\n{shipped}"
@@ -1229,7 +1231,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
 
     // --- Step 9: the board shows the item in `done` --------------------------
     console.send_keys(&["Escape"])?;
-    console.wait_for_settled("Views [focus]", RENDER_TIMEOUT)?;
+    console.wait_for_settled("Views [focus]", render_timeout())?;
     console.send_keys(&["Down", "Down"])?;
     // WAIT ON THE ASSERTED DATA, NOT ON THE VIEW LABEL. `view: Lanes` is CHROME:
     // it appears the instant the view switches, before the board's projection
@@ -1250,7 +1252,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     //
     // It does NOT weaken the gate: an item that never ships still fails, now on a
     // bounded timeout with the capture attached instead of on a stale frame.
-    let board = console.wait_for_settled("done (1)", RENDER_TIMEOUT)?;
+    let board = console.wait_for_settled("done (1)", render_timeout())?;
     assert!(
         board.contains("done (1)"),
         "step 9: the board must show the shipped item in `done` for {tenant}:\n{board}"
@@ -1269,7 +1271,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
     // one poll and removes the assumption that the screen change and the log
     // append are ordered.
     let actions = fixture
-        .wait_for_action(&format!("accept:{ITEM_ID}"), RENDER_TIMEOUT)
+        .wait_for_action(&format!("accept:{ITEM_ID}"), render_timeout())
         .map_err(|error| format!("the walk must issue accept for {tenant}: {error}"))?;
     assert_eq!(
         actions,
@@ -1329,7 +1331,7 @@ fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<(
         .collect();
     let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
 
-    let screen = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    let screen = console.wait_for_settled("view: Attention", render_timeout())?;
 
     // --- the inbox is genuinely POPULATED (see the doc comment) --------------
     assert!(
@@ -1429,7 +1431,7 @@ fn tmux_tui_e2e_deduped_work_item_row_still_carries_the_advertised_valve() -> Ha
         .collect();
     let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
 
-    let screen = console.wait_for_settled("view: Attention", RENDER_TIMEOUT)?;
+    let screen = console.wait_for_settled("view: Attention", render_timeout())?;
 
     // --- exactly ONE row: the needs-attention row was deduped into it -------
     assert!(
