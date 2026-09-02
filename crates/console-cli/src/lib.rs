@@ -3656,7 +3656,14 @@ mod tests {
             "assert failed",
         );
         check(!output.message().contains("Attach:"), "assert failed");
-        check(!output.message().contains("Actions:"), "assert failed");
+        // The selected `blocked` row's state-admitted verb, offered on the inbox
+        // surface exactly as it is in the drilled-in lane (Scenario 31). This
+        // check used to read `!contains("Actions:")`, which pinned the
+        // registry's retired drill-only surface split.
+        check(
+            output.message().contains("Actions: Move status"),
+            "assert failed",
+        );
     }
 
     #[test]
