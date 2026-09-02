@@ -22,10 +22,19 @@ use crate::{
 
 /// The per-item surface a selection lives on.
 ///
-/// The two surfaces offer slightly different action sets: the move-status and
-/// driver-handoff verbs act only on the individually-selected item of a
-/// drilled-in lane, never on an Attention row (whose selection resolves a
-/// work-item by id but is not a lane cursor).
+/// NOT an availability input. Both surfaces resolve the SAME standardized
+/// work-item record, so both offer exactly the per-item verbs that record's
+/// lifecycle state admits — the same predicates, the same confirmation dialogs,
+/// the same persisted command envelopes (`contracts.md`, "Per-item verb surface
+/// parity"; Scenario 31). The surface survives only to pick the NAVIGATION
+/// prefix of the Status-line hint, where `esc lane list` genuinely applies to a
+/// lane cursor and not to an inbox row (see [`selected_item_hint`]).
+///
+/// It used to gate move-status, driver-handoff, and per-item dispatch to the
+/// drilled-in lane. Measured 2026-08-31: the item that needed the operator
+/// appeared in the inbox with every verb presented unavailable there, and the
+/// operator had to leave the inbox, re-find the same item under Lanes, and
+/// drill in before any verb lit up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionSurface {
     /// The needs-attention inbox with a work-item-backed row selected.
@@ -77,6 +86,9 @@ pub struct ActionContext {
     /// handler's [`crate::FactoryDrainPolicy`] enforces at execution time.
     pub ready_work_item_count: usize,
     /// Which per-item surface the selection lives on.
+    ///
+    /// Carried for the Status-line hint's navigation prefix only. NO
+    /// availability predicate may read it — see [`ActionSurface`].
     pub surface: ActionSurface,
 }
 
@@ -243,10 +255,8 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[KeyChord::plain('h')],
         menu_path: &["Work item", "Hand off"],
         parameter: None,
-        availability_summary: "Available for drilled-in backlog groom handoffs and factory-unsafe ready implementation handoffs.",
-        availability: |ctx| {
-            ctx.has_driver_handoff && matches!(ctx.surface, ActionSurface::LaneDrill)
-        },
+        availability_summary: "Available for backlog groom handoffs and factory-unsafe ready implementation handoffs, on either per-item surface.",
+        availability: |ctx| ctx.has_driver_handoff,
         staging: ActionStaging::DriverHandoff,
     },
     ActionSpec {
@@ -259,18 +269,17 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
             name: "target status",
             choices: &["backlog", "ready", "blocked"],
         }),
-        availability_summary: "Available in a drilled-in lane when the selected item's lane has a legal backlog, ready, or blocked move target.",
+        availability_summary: "Available on either per-item surface when the selected item's lane has a legal backlog, ready, or blocked move target.",
         availability: |ctx| {
-            matches!(ctx.surface, ActionSurface::LaneDrill)
-                && status_move_targets(ctx.lane).first().is_some_and(|to| {
-                    per_item_verb_is_state_valid(
-                        ctx.lane,
-                        PendingValve::MoveStatus {
-                            from: ctx.lane,
-                            to: *to,
-                        },
-                    )
-                })
+            status_move_targets(ctx.lane).first().is_some_and(|to| {
+                per_item_verb_is_state_valid(
+                    ctx.lane,
+                    PendingValve::MoveStatus {
+                        from: ctx.lane,
+                        to: *to,
+                    },
+                )
+            })
         },
         staging: ActionStaging::Valve(|ctx| {
             status_move_targets(ctx.lane)
@@ -485,10 +494,8 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         hotkeys: &[],
         menu_path: &["Factory", "Dispatch"],
         parameter: None,
-        availability_summary: "Available for a selected ready work-item in a drilled-in lane.",
-        availability: |ctx| {
-            ctx.lane == Lane::Ready && matches!(ctx.surface, ActionSurface::LaneDrill)
-        },
+        availability_summary: "Available for a selected ready work-item, on either per-item surface.",
+        availability: |ctx| ctx.lane == Lane::Ready,
         staging: ActionStaging::FactoryDispatchItem,
     },
     // THE GLOBAL ACTIONS. Registered 2026-08-19 on the maintainer's chord
@@ -802,6 +809,13 @@ pub fn stage_action(spec: &ActionSpec, ctx: &ActionContext) -> Option<StagedActi
 /// Reference surfaces (the Help modal, menu generation) use this to list the
 /// actions a surface can offer without fixing a selection; the per-selection
 /// answer stays [`ActionSpec::availability`]'s alone.
+///
+/// Since the surface is no longer an availability input, the answer is the SAME
+/// for both per-item surfaces — which is the parity property itself, pinned by
+/// `surface_offering_is_identical_on_both_per_item_surfaces`. The parameter
+/// stays so the surface-keyed reference callers keep reading the derivation
+/// rather than a constant they would have to re-audit if a future dimension
+/// genuinely did differ.
 #[must_use]
 pub fn action_offered_on_surface(spec: &ActionSpec, surface: ActionSurface) -> bool {
     Lane::all().iter().any(|lane| {
@@ -1291,19 +1305,63 @@ mod tests {
     }
 
     #[test]
-    fn surface_offering_matches_the_documented_surface_split() {
-        // Move-status, driver-handoff, and selected-item dispatch are
-        // drilled-lane-only; every other action is offered on both per-item
-        // surfaces.
+    fn surface_offering_is_identical_on_both_per_item_surfaces() {
+        // The parity property, quantified over the WHOLE registry and over
+        // every selection state each surface can present: the hosting view is
+        // never an availability input, so an action offered on one per-item
+        // surface is offered on the other.
+        //
+        // This REPLACES `surface_offering_matches_the_documented_surface_split`,
+        // which pinned the inverse — move / driver-handoff /
+        // dispatch-selected-item as drilled-lane-only — and was the encoding of
+        // the defect Scenario 31 retires.
         for spec in ACTION_REGISTRY {
             let lane_drill = action_offered_on_surface(spec, ActionSurface::LaneDrill);
             let attention = action_offered_on_surface(spec, ActionSurface::Attention);
             assert!(lane_drill, "{}", spec.id);
-            let drill_only = matches!(
-                spec.id,
-                "move" | "driver-handoff" | "dispatch-selected-item"
-            );
-            check(attention != drill_only, spec.id);
+            check(attention == lane_drill, spec.id);
+        }
+    }
+
+    #[test]
+    fn per_item_availability_never_reads_the_hosting_surface() {
+        // The point-wise half of the parity property: for EVERY selection state
+        // the two contexts differ only in `surface`, so every predicate must
+        // answer identically. The quantified test above proves "offered
+        // somewhere on both"; this one proves "offered on exactly the same
+        // states", which is what the operator actually experiences.
+        for spec in ACTION_REGISTRY {
+            for lane in Lane::all() {
+                for admission in [AdmissionPolicy::Manual, AdmissionPolicy::Auto] {
+                    for acceptance in [
+                        AcceptancePolicy::AiOnly,
+                        AcceptancePolicy::AiThenHuman,
+                        AcceptancePolicy::HumanOnly,
+                    ] {
+                        for handoff in [false, true] {
+                            for awaiting in [false, true] {
+                                let drilled = ActionContext {
+                                    lane: *lane,
+                                    admission_policy: admission,
+                                    acceptance_policy: acceptance,
+                                    has_driver_handoff: handoff,
+                                    awaits_scope_override: awaiting,
+                                    ready_work_item_count: 1,
+                                    surface: ActionSurface::LaneDrill,
+                                };
+                                let inbox = ActionContext {
+                                    surface: ActionSurface::Attention,
+                                    ..drilled
+                                };
+                                check(
+                                    (spec.availability)(&inbox) == (spec.availability)(&drilled),
+                                    spec.id,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

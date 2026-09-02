@@ -7585,6 +7585,15 @@ fn advertised_valve_commands(events: &[ConsoleEvent], work_item_id: &str) -> Vec
         .collect()
 }
 
+/// The pressable per-item roster the needs-attention detail pane offers for
+/// `entry`, derived from the registry.
+///
+/// EVERY per-item staging kind, not just the valves: the driver handoff and the
+/// per-item factory dispatch are per-item verbs too, and withholding them here
+/// while the drilled-in lane offers them is precisely the surface split
+/// `contracts.md` "Per-item verb surface parity" forbids. What is excluded is
+/// what is not per-item at all — the selection-less globals and the board-wide
+/// ready drain, neither of which acts on this row's work-item.
 fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
     let item = LaneWorkItem::from_snapshot(&entry.snapshot, LaneExecutionState::NotActive);
     let ctx = action_registry::ActionContext::for_item(
@@ -7595,8 +7604,11 @@ fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
     action_registry::ACTION_REGISTRY
         .iter()
         .filter(|spec| {
-            matches!(spec.staging, action_registry::ActionStaging::Valve(_))
-                && (spec.availability)(&ctx)
+            !matches!(
+                spec.staging,
+                action_registry::ActionStaging::Global(_)
+                    | action_registry::ActionStaging::FactoryDrain
+            ) && (spec.availability)(&ctx)
         })
         .map(|spec| OperatorAction::Registered(spec.id))
         .collect()
@@ -9777,9 +9789,22 @@ mod tests {
 
     #[test]
     fn tui_command_modal_stays_closed_without_attention_actions() {
-        let events = fabro_gate_events();
+        // A row that names NO work-item is the selection with nothing honest to
+        // run: it resolves no record, so it offers no per-item verb on any
+        // surface. (A `blocked` work-item row used to stand in for it here, and
+        // stopped once the inbox row started offering the state-admitted
+        // move-status picker -- Scenario 31.)
+        let pathless = AttentionItemSnapshot::new(
+            "spec:adapt:SPECIFICATION",
+            "spec",
+            "medium",
+            "Adapt the specification",
+            AttentionSourceRef::new("console", None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "livespec adapt"),
+        );
+        let events = [attention_appeared("evt_pathless", &pathless)];
         let state = reduce_tui_interaction(
-            &TuiInteractionState::new(2, TuiOverlay::None),
+            &TuiInteractionState::new(0, TuiOverlay::None),
             &events,
             TuiInteraction::OpenCommandModal,
         );
@@ -11287,9 +11312,12 @@ mod tests {
             model.detail().map(super::AttentionDetail::fabro_run),
             Some("-")
         );
+        // The clamped selection lands on the `blocked` row, whose lifecycle
+        // state admits the move-status picker on this surface exactly as it
+        // does in the drilled-in lane (Scenario 31).
         assert_eq!(
             model.detail().map(super::AttentionDetail::actions),
-            Some([].as_slice())
+            Some([OperatorAction::Registered("move")].as_slice())
         );
     }
 
@@ -14442,7 +14470,9 @@ mod tests {
 
     /// The availability context the per-item hint tests drive: a
     /// manual-admission, ai-then-human item, with the driver-handoff verb
-    /// exactly where production claims it (a drilled-in backlog item).
+    /// exactly where production claims it (a backlog item, on EITHER per-item
+    /// surface -- the claim is a property of the record, not of the view
+    /// hosting it).
     fn test_item_ctx(
         surface: action_registry::ActionSurface,
         lane: Lane,
@@ -14451,8 +14481,7 @@ mod tests {
             lane,
             admission_policy: AdmissionPolicy::Manual,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
-            has_driver_handoff: matches!(surface, action_registry::ActionSurface::LaneDrill)
-                && matches!(lane, Lane::Backlog),
+            has_driver_handoff: matches!(lane, Lane::Backlog),
             // The default test selection is not awaiting an override, which is
             // what a real item reads today — the signal is unpublished.
             awaits_scope_override: false,
@@ -14635,7 +14664,9 @@ mod tests {
                     },
                 )
             });
-            assert!(!attention.contains(move_status));
+            // Move-status is state-derived on BOTH per-item surfaces: the
+            // hosting view is not an availability input (Scenario 31).
+            assert_eq!(attention.contains(move_status), move_status_valid);
             assert_eq!(drilled.contains(move_status), move_status_valid);
         }
     }
@@ -14889,8 +14920,12 @@ mod tests {
 
     #[test]
     fn attention_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
-        // A selection admitting no action keeps the navigation-only hints.
-        let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Blocked);
+        // A selection admitting no action keeps the navigation-only hints. The
+        // lane that admits nothing is `done`: a shipped item offers no onward
+        // move and no valve, on either per-item surface. (`blocked` used to
+        // stand in for it here, and stopped once the inbox row started offering
+        // the state-admitted move-status picker -- Scenario 31.)
+        let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Done);
         assert_eq!(hint, "up/down move | enter open | ? help | q quit");
     }
 
@@ -14918,18 +14953,22 @@ mod tests {
         };
         assert!(ready(true).contains("h handoff") && ready(true).contains("g merge cap"));
         assert!(!ready(false).contains("h handoff"));
-        // The handoff verb renders only on the drilled-in lane surface, where
-        // the key acts; an Attention selection neither hints nor stages it.
-        let attention_backlog = selected_item_hint(&ActionContext {
-            lane: Lane::Backlog,
-            admission_policy: AdmissionPolicy::Manual,
-            acceptance_policy: AcceptancePolicy::AiThenHuman,
-            has_driver_handoff: true,
-            awaits_scope_override: false,
-            ready_work_item_count: 1,
-            surface: ActionSurface::Attention,
-        });
-        assert!(!attention_backlog.contains("h handoff"));
+        // The CLAIM is what gates the verb, not the hosting view: an Attention
+        // row on an item that claims the handoff hints it exactly as the
+        // drilled-in lane does, and the key acts there (Scenario 31).
+        let backlog = |surface| {
+            selected_item_hint(&ActionContext {
+                lane: Lane::Backlog,
+                admission_policy: AdmissionPolicy::Manual,
+                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                has_driver_handoff: true,
+                awaits_scope_override: false,
+                ready_work_item_count: 1,
+                surface,
+            })
+        };
+        assert!(backlog(ActionSurface::Attention).contains("h handoff"));
+        assert!(backlog(ActionSurface::LaneDrill).contains("h handoff"));
     }
 
     #[test]
@@ -14941,23 +14980,27 @@ mod tests {
         // derivation, so a drifted row fails there and a drifted derivation
         // fails here.
         for (surface, lane, handoff, expected) in [
+            // The Attention rows carry the SAME per-item tokens as their
+            // drilled-in counterparts below -- only the navigation prefix
+            // differs, because `esc lane list` genuinely applies to a lane
+            // cursor and not to an inbox row (Scenario 31).
             (
                 Attention,
                 Lane::Backlog,
-                false,
-                "up/down move | enter open | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                true,
+                "up/down move | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::PendingApproval,
                 false,
-                "up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Ready,
                 false,
-                "up/down move | enter open | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
             ),
             (
                 Attention,
@@ -14969,13 +15012,13 @@ mod tests {
                 Attention,
                 Lane::Acceptance,
                 false,
-                "up/down move | enter open | c accept | r reject | ? help | q quit",
+                "up/down move | enter open | s move-status | c accept | r reject | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Blocked,
                 false,
-                "up/down move | enter open | ? help | q quit",
+                "up/down move | enter open | s move-status | ? help | q quit",
             ),
             (
                 Attention,
@@ -15067,7 +15110,7 @@ mod tests {
         let hint = selected_item_hint(&auto);
         assert_eq!(
             hint,
-            "up/down move | enter open | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         );
         let approve = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &auto));
         assert_eq!(approve, Some(None));

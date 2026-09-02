@@ -4489,7 +4489,7 @@ mod tests {
         );
         let step = step_tui_runtime(
             &state,
-            &demo_events(),
+            &verb_free_attention_events(),
             TuiTerminalInput::Confirm,
             "operator",
         );
@@ -4594,10 +4594,14 @@ mod tests {
                 .map(|rendered| rendered.contains("Repo: console")),
             Ok(true)
         );
+        // The selected `blocked` row's state-admitted verb, offered on the inbox
+        // surface exactly as it is in the drilled-in lane (Scenario 31). This
+        // assertion used to read `!contains("Actions:")`, which pinned the
+        // drill-only surface split rather than any region of the layout.
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| !rendered.contains("Actions:")),
+                .map(|rendered| rendered.contains("Actions: Move status")),
             Ok(true)
         );
         assert_eq!(
@@ -5301,13 +5305,18 @@ mod tests {
 
     #[test]
     fn command_explainer_enter_continues_through_existing_action_path() {
+        let events = pending_events();
+        let selected_action_index = detail_action_index(
+            &build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None)),
+            "approve",
+        );
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::CommandExplainer {
-                selected_action_index: 0,
+                selected_action_index,
             },
         );
-        let step = step_tui_runtime(&state, &pending_events(), TuiTerminalInput::Confirm, "op");
+        let step = step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "op");
 
         assert_eq!(
             step.state().overlay(),
@@ -5388,10 +5397,14 @@ mod tests {
 
     #[test]
     fn command_explainer_overlay_renders_through_the_model_overlay_path() {
+        let selected_action_index = detail_action_index(
+            &attention_model_for_lane(Lane::PendingApproval, TuiOverlay::None),
+            "approve",
+        );
         let model = attention_model_for_lane(
             Lane::PendingApproval,
             TuiOverlay::CommandExplainer {
-                selected_action_index: 0,
+                selected_action_index,
             },
         );
         let output = render_to_text(&model, 100, 30).unwrap_or_default();
@@ -5420,16 +5433,21 @@ mod tests {
 
     #[test]
     fn command_explainer_confirm_stages_the_selected_detail_action() {
+        let events = pending_events();
+        let selected_action_index = detail_action_index(
+            &build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None)),
+            "approve",
+        );
         let state = TuiInteractionState::new(
             0,
             TuiOverlay::CommandExplainer {
-                selected_action_index: 0,
+                selected_action_index,
             },
         );
-        let events = pending_events();
         let model = build_tui_model_for_state(&events, &state);
 
-        let step = command_explainer_confirm_step(&state, &events, &model, 0, "op");
+        let step =
+            command_explainer_confirm_step(&state, &events, &model, selected_action_index, "op");
 
         assert_eq!(
             step.state().overlay(),
@@ -5664,7 +5682,7 @@ mod tests {
                 selected_action_index: 2,
             },
         );
-        let model = build_tui_model_for_state(&demo_events(), &state);
+        let model = build_tui_model_for_state(&verb_free_attention_events(), &state);
 
         let output = render_to_text(&model, 96, 24);
 
@@ -5696,7 +5714,7 @@ mod tests {
                 selected_action_index: 0,
             },
         );
-        let model = build_tui_model_for_state(&lane_render_events(), &state);
+        let model = build_tui_model_for_state(&verb_free_attention_events(), &state);
         assert_eq!(
             model.detail().map(AttentionDetail::actions),
             Some([].as_slice())
@@ -7029,6 +7047,22 @@ mod tests {
         build_tui_model_for_state(&demo_events(), &TuiInteractionState::new(0, overlay))
     }
 
+    /// The position of `action_id` in the selected row's detail roster.
+    ///
+    /// The explainer tests pin the ACTION they name, not a position: the roster
+    /// is registry-derived and grows whenever a verb becomes available on the
+    /// surface (Scenario 31 added the move-status picker to the inbox row, which
+    /// shifted every hardcoded index by one).
+    fn detail_action_index(model: &TuiScreenModel, action_id: &str) -> usize {
+        model
+            .detail()
+            .map(AttentionDetail::actions)
+            .unwrap_or_default()
+            .iter()
+            .position(|action| matches!(action, OperatorAction::Registered(id) if *id == action_id))
+            .unwrap_or_default()
+    }
+
     fn attention_model_for_lane(lane: Lane, overlay: TuiOverlay) -> TuiScreenModel {
         let event = lane_event(
             "evt_attention_lane",
@@ -7068,6 +7102,30 @@ mod tests {
     }
 
     /// A small board fixture: two ready items and one blocked (needs-human).
+    /// A single needs-attention row that names a PATH and no work-item.
+    ///
+    /// The action-free selection: it resolves no standardized record, so it
+    /// offers no per-item verb and the command modal has nothing honest to open.
+    /// A `blocked` work-item row used to stand in for this, and stopped once the
+    /// inbox row began offering its state-admitted verbs (Scenario 31) --
+    /// "backed by no work-item id" is the condition the contract actually names.
+    fn verb_free_attention_events() -> [ConsoleEvent; 1] {
+        let item = AttentionItemSnapshot::new(
+            "spec:revise:SPECIFICATION",
+            "spec-revise",
+            "medium",
+            "Spec revision owed",
+            AttentionSourceRef::new("console", None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "livespec revise"),
+        );
+        [ConsoleEvent::fixture(
+            "evt_verb_free",
+            EventType::AttentionItemAppeared,
+            "needs-attention",
+        )
+        .with_payload_json(attention_item_payload_json(&item))]
+    }
+
     fn lane_render_events() -> [ConsoleEvent; 3] {
         [
             lane_event(

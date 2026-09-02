@@ -292,11 +292,11 @@ close, so it always describes the current context rather than a fixed summary.
 | Context | Hint |
 |---|---|
 | Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
-| Attention, backlog work-item selected | `up/down move \| enter open \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Attention, pending-approval work-item selected | `up/down move \| enter open \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Attention, acceptance work-item selected | `up/down move \| enter open \| c accept \| r reject \| ? help \| q quit` |
-| Attention, blocked work-item selected | `up/down move \| enter open \| ? help \| q quit` |
+| Attention, backlog work-item selected | `up/down move \| enter open \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Attention, pending-approval work-item selected | `up/down move \| enter open \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Attention, acceptance work-item selected | `up/down move \| enter open \| s move-status \| c accept \| r reject \| ? help \| q quit` |
+| Attention, blocked work-item selected | `up/down move \| enter open \| s move-status \| ? help \| q quit` |
 | Attention, no work-item selected | `? help \| q quit` |
 | Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
 | Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
@@ -333,10 +333,18 @@ alone. `p approve` renders only while the item's **effective admission policy
 is `manual`** — a dispatcher-admitted (`auto`) item omits it, because the
 approve valve cannot fire there (`m set-admission` is the operator's route to
 reclaim the door). `h handoff` renders only where the driver-handoff verb
-applies: a drilled-in **backlog** item (groom), or a drilled-in **ready** item
-that carries a factory-safety marking (implement). Any marking counts — the
-factory refuses a marked item whatever the marking says, so an attended host
-session is the route forward.
+applies: a **backlog** item (groom), or a **ready** item that carries a
+factory-safety marking (implement). Any marking counts — the factory refuses a
+marked item whatever the marking says, so an attended host session is the route
+forward.
+
+**Availability never depends on which view you are looking at.** The
+needs-attention row and the drilled-in lane selection are the two per-item
+surfaces, and a row backed by a known work-item id offers exactly what the
+drilled-in selection offers for that same item — the same keys, the same
+confirmation dialogs, the same commands. Only the *navigation* fragment differs
+(`enter open` in the inbox, `enter item | esc lane list` inside a lane), because
+`Esc` genuinely has a lane to step back out of and the inbox does not.
 
 An open overlay's hint wins over the focused pane's. The pane hints key on the
 active **view** plus what is selected in it — not on which of the body panes
@@ -411,7 +419,7 @@ nothing.
 | `g` | override `merge_on_review_cap` |
 | `f` | override `review_fix_cap` |
 | `k` | override `acceptance_rework_cap` |
-| `s` | move to a status — **drilled-in lane only** |
+| `s` | move to a status |
 
 Each opens a confirmation modal showing the valve, the target work-item, and
 where the valve takes a value, the current option with `↑`/`↓` to change it.
@@ -433,10 +441,11 @@ The statuses `s` offers depend on the lane the item is in:
 ### Driver handoff
 
 `h` opens the full-width **Driver Handoff** overlay only where the
-driver-handoff verb applies: a drilled-in `backlog` item renders the groom
-invocation, and a drilled-in `ready` item with a non-null `factory_safety`
-marking renders the driver-implement invocation. The verb is suppressed
-everywhere else.
+driver-handoff verb applies: a `backlog` item renders the groom invocation, and
+a `ready` item with a non-null `factory_safety` marking renders the
+driver-implement invocation. The verb is suppressed everywhere else. Which
+per-item surface the item is selected on — the needs-attention row or a
+drilled-in lane — is not an input.
 
 The rendered command carries only the selected work-item id. It does not write
 a prompt file, execute the driver, spawn a process, monitor a driver session,

@@ -300,11 +300,15 @@ fn documented_context_hints(doc: &str) -> Vec<(String, String)> {
 /// grep arm guards.
 fn context_binding(label: &str) -> Option<ActionContext> {
     let (surface, lane, admission, handoff) = match label {
+        // A backlog item ALWAYS claims the driver-handoff (groom) verb, and the
+        // claim is a property of the RECORD, not of the view hosting it
+        // (Scenario 31), so the inbox row carries `h handoff` exactly as the
+        // drilled-in row below does.
         "Attention, backlog work-item selected" => (
             ActionSurface::Attention,
             Lane::Backlog,
             AdmissionPolicy::Manual,
-            false,
+            true,
         ),
         "Attention, pending-approval work-item selected" => (
             ActionSurface::Attention,
@@ -330,8 +334,6 @@ fn context_binding(label: &str) -> Option<ActionContext> {
             AdmissionPolicy::Manual,
             false,
         ),
-        // A drilled-in backlog item ALWAYS claims the driver-handoff (groom)
-        // verb, so its documented row carries `h handoff`.
         "Lanes, drilled into a backlog item" => (
             ActionSurface::LaneDrill,
             Lane::Backlog,
@@ -445,8 +447,10 @@ fn driver_handoff_behavior_is_documented() -> std::io::Result<()> {
     for required in [
         "### Driver handoff",
         "`h` opens the full-width **Driver Handoff** overlay",
-        "drilled-in `backlog` item renders the groom invocation",
-        "drilled-in `ready` item with a non-null `factory_safety` marking",
+        // The verb is claimed by the RECORD, not by the surface hosting it
+        // (Scenario 31), so the documented phrases no longer say "drilled-in".
+        "`backlog` item renders the groom invocation",
+        "`ready` item with a non-null `factory_safety` marking",
         "renders the driver-implement invocation",
         "suppressed everywhere else",
         "carries only the selected work-item id",

@@ -1322,8 +1322,15 @@
   {
     "scenario": "Scenario 31 -- Per-item verbs are offered wherever the operator sees the work-item",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: top-of-pyramid acceptance coverage is owed by the implementation child derived by capture-impl-gaps from the v047 dispatch-on-the-attention-surface revision (plan retire-overseer-and-redesign-control-plane-around-console, epic livespec-console-beads-fabro-pzbdbo): an integration test asserting the offered per-item verb set is identical on the needs-attention row and the drilled-in lane for the same work-item, plus the inbox per-item dispatch persisting factory.dispatch_item_requested. Registered as TODO at ratification time because the registry's drill-only surface split this scenario retires is still in place; ratified ahead of the implementation by maintainer ruling (2026-09-02).",
+    "tests": [
+      "crates/console-cli/tests/per_item_verb_surface_parity.rs::a_ready_item_offers_the_same_per_item_verbs_on_the_inbox_row_and_in_the_drilled_lane",
+      "crates/console-cli/tests/per_item_verb_surface_parity.rs::confirming_per_item_dispatch_from_the_inbox_row_persists_the_item_dispatch_command",
+      "crates/console-cli/tests/per_item_verb_surface_parity.rs::a_backlog_inbox_row_offers_move_and_the_driver_handoff_but_neither_approve_nor_accept",
+      "crates/console-cli/tests/per_item_verb_surface_parity.rs::an_inbox_row_with_no_work_item_id_offers_no_per_item_verb_and_hints_no_per_item_key",
+      "crates/console-application/src/action_registry.rs::tests::surface_offering_is_identical_on_both_per_item_surfaces",
+      "crates/console-application/src/action_registry.rs::tests::per_item_availability_never_reads_the_hosting_surface"
+    ],
+    "reason": "Covered end to end. The four integration tests in per_item_verb_surface_parity.rs drive the model and the TUI runtime over the two per-item surfaces: a_ready_item_offers_the_same_per_item_verbs_on_the_inbox_row_and_in_the_drilled_lane asserts the offered verb set AND the Status-line per-item key tokens are identical for one `ready` record selected on the needs-attention row and in the drilled-in lane; confirming_per_item_dispatch_from_the_inbox_row_persists_the_item_dispatch_command drives Enter on the generated Factory > Dispatch menu row from the inbox and asserts the staged FactoryDispatchItemConfirm dialog and the persisted `<id>:factory.dispatch_item_requested` envelope are the same ones the drilled-in lane produces; a_backlog_inbox_row_offers_move_and_the_driver_handoff_but_neither_approve_nor_accept covers the per-state vocabulary at `backlog`, including the detail-pane roster; an_inbox_row_with_no_work_item_id_offers_no_per_item_verb_and_hints_no_per_item_key covers the pathless row offering nothing and hinting no per-item key. The two registry unit tests carry the property itself: surface_offering_is_identical_on_both_per_item_surfaces (which REPLACES surface_offering_matches_the_documented_surface_split, the encoding of the drill-only split this scenario retires) quantifies over the whole registry, and per_item_availability_never_reads_the_hosting_surface quantifies point-wise over every lane / admission / acceptance / handoff / scope-override combination.",
     "clauses": [
       {
         "gap_id": "gap-3a3bzkps",
