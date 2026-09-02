@@ -115,20 +115,26 @@ run_span="$(jq -c \
    status:{code:$code}}' <<<"$run_json")"
 
 job_spans="[]"
-# EVERY field below is emitted non-empty (empty values carry the sentinel "-")
-# because tab is an IFS *whitespace* character: bash `read` collapses a run of
-# tabs into ONE delimiter, so an empty middle field (a skipped job has no
-# startedAt/completedAt) shifted every later field left. Measured 2026-09-02 on
-# master 8a5997b: the hosted runner name "GitHub Actions 1000997787" landed in
-# jstart_iso and `date` failed the whole export. The sentinel keeps the columns
-# aligned; it is mapped back to "" here.
-while IFS=$'\t' read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
-  [ "$jstart_iso" = "-" ] && jstart_iso=""
-  [ "$jend_iso" = "-" ] && jend_iso=""
-  [ "$jrunner" = "-" ] && jrunner=""
-  [ "$jlabels" = "-" ] && jlabels=""
-  [ -n "$jstart_iso" ] && [ "$jstart_iso" != "null" ] || continue
-  [ -n "$jend_iso" ] && [ "$jend_iso" != "null" ] || continue
+# Row fields are joined with the ASCII unit separator (0x1f), NOT with tab.
+# Tab is an IFS *whitespace* character, so bash `read` collapses a run of tabs
+# into ONE delimiter and any EMPTY middle field shifts every later field left;
+# a non-whitespace IFS character never collapses, so an empty field reads back
+# as exactly "". This bit twice on 2026-09-02. First on master 8a5997b, which
+# 55556f7 answered with a "-" sentinel for null fields. Then on 55556f7 itself:
+# the run being exported contains the exporter's OWN still-running job, and
+# `gh run view --json jobs` reports an in-progress job with conclusion "" (an
+# empty STRING, which jq's `//` does not replace) and completedAt at Go's zero
+# time "0001-01-01T00:00:00Z" (non-empty, so no sentinel either). The empty
+# conclusion collapsed, the zero time filled jstart_iso, and the hosted runner
+# name "GitHub Actions 1000997919" landed in jend_iso: `date: invalid date`,
+# exit 1, master red on the fix commit. Both halves below are needed: the
+# delimiter keeps the columns honest whatever is empty, and the zero-time
+# guard keeps a job that has not finished from emitting a span ending in year 1.
+us=$'\x1f'
+zero_time="0001-01-01T00:00:00Z"
+while IFS="$us" read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
+  [ -n "$jstart_iso" ] && [ "$jstart_iso" != "null" ] && [ "$jstart_iso" != "$zero_time" ] || continue
+  [ -n "$jend_iso" ] && [ "$jend_iso" != "null" ] && [ "$jend_iso" != "$zero_time" ] || continue
   jspan_id="$(hex16 "$jid")"
   jstart="$(iso_to_nanos "$jstart_iso")"
   jend="$(iso_to_nanos "$jend_iso")"
@@ -164,12 +170,9 @@ done < <(jq -r --slurpfile runners "$runners_file" '
   | .jobs[]
   | . as $job
   | ($by_id[($job.databaseId|tostring)] // {}) as $runner
-  | [.databaseId, .name, (.conclusion // "-"),
-     (if (.startedAt // "") == "" then "-" else .startedAt end),
-     (if (.completedAt // "") == "" then "-" else .completedAt end),
-     (if ($runner.runner_name // "") == "" then "-" else $runner.runner_name end),
-     (if (($runner.labels // []) | length) == 0 then "-" else ($runner.labels | join(",")) end)]
-  | @tsv' <<<"$run_json")
+  | [.databaseId, .name, (.conclusion // ""), (.startedAt // ""), (.completedAt // ""),
+     ($runner.runner_name // ""), (($runner.labels // []) | join(","))]
+  | map(tostring) | join("\u001f")' <<<"$run_json")
 
 # Same argv-limit class as the run span above: `$job_spans` grows with the job
 # count, so it goes on stdin. `$run_span` stays a `--argjson` value because it
@@ -228,7 +231,7 @@ toolchain_ver="$(grep '^channel' rust-toolchain.toml 2>/dev/null \
   | sed 's/channel *= *"\(.*\)"/\1/' || echo unknown)"
 phase_span_count=0
 
-while IFS=$'\t' read -r phj_id phj_name; do
+while IFS="$us" read -r phj_id phj_name; do
   case "$phj_name" in
     check-nextest|check-coverage|check-clippy|check-fuzz) ;;
     *) continue ;;
@@ -242,9 +245,11 @@ while IFS=$'\t' read -r phj_id phj_name; do
   # emit bogus zero-duration phase spans mis-attributed to the sibling job
   # (e.g. check-coverage emitting a compile/test span from check-nextest's
   # skipped steps). Filtering on conclusion != "skipped" is the precise fix.
-  while IFS=$'\t' read -r step_name step_start_iso step_end_iso; do
-    [ -n "$step_start_iso" ] && [ "$step_start_iso" != "null" ] || continue
-    [ -n "$step_end_iso" ] && [ "$step_end_iso" != "null" ] || continue
+  # Same unit-separator rows and zero-time guard as the job loop above: a step
+  # still running reports the same "" / zero-time shape as a job still running.
+  while IFS="$us" read -r step_name step_start_iso step_end_iso; do
+    [ -n "$step_start_iso" ] && [ "$step_start_iso" != "null" ] && [ "$step_start_iso" != "$zero_time" ] || continue
+    [ -n "$step_end_iso" ] && [ "$step_end_iso" != "null" ] && [ "$step_end_iso" != "$zero_time" ] || continue
 
     build_phase=""
     case "$step_name" in
@@ -270,9 +275,9 @@ while IFS=$'\t' read -r phj_id phj_name; do
   done < <(jq -r --argjson jid "$phj_id" \
     '.jobs[] | select(.databaseId == $jid) | (.steps // [])[]
        | select((.conclusion // "") != "skipped")
-       | [.name, (.startedAt // ""), (.completedAt // "")] | @tsv' \
+       | [.name, (.startedAt // ""), (.completedAt // "")] | map(tostring) | join("\u001f")' \
     <<<"$run_json")
-done < <(jq -r '.jobs[] | [.databaseId, .name] | @tsv' <<<"$run_json")
+done < <(jq -r '.jobs[] | [.databaseId, .name] | map(tostring) | join("\u001f")' <<<"$run_json")
 
 if [ "$phase_span_count" -gt 0 ]; then
   echo "Phase span emission: $phase_span_count build-telemetry phase spans emitted."
