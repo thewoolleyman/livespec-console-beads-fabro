@@ -56,6 +56,12 @@
 #
 # ci-green stays ubuntu-latest so the branch-protection context is reportable
 # host-down.
+#
+# RUN SUPERSESSION (2026-09-02 fan-out incident, livespec-console-beads-fabro-
+# s3kwxt): the `concurrency:` block below `on:` cancels a PR branch's
+# superseded run on every new push and keeps every master post-merge run.
+# Added because five re-pushed PRs kept their stale runs alive alongside the
+# new ones and put ~85 pods on the pool at once; see that block's comment.
 
 name: CI
 
@@ -97,6 +103,34 @@ on:
   pull_request:
   push:
     branches: [master]
+
+# RUN SUPERSESSION (livespec-console-beads-fabro-s3kwxt, 2026-09-02 fan-out
+# incident). This workflow fans out ~17 jobs per run. Before this block there
+# was no concurrency group at all, so every push to an open PR branch started a
+# fresh full run WITHOUT cancelling the run it superseded: on 2026-09-02 five
+# PRs from one thread (#927 #928 #931 #932 #933), each re-pushed after a
+# rebase, kept their stale runs alive beside the new ones, put ~85 pods on the
+# self-hosted pool at once, and every e2e job flaked at the array's measured
+# ~1,000 write/s ceiling. The stale runs were pure waste — nothing reads a
+# superseded PR run's verdict.
+#
+# Two regimes, deliberately asymmetric:
+#
+#   pull_request  — group keyed on the PR ref (refs/pull/N/merge), cancel-in-
+#                   progress ON. A new push to the same PR cancels that PR's
+#                   in-flight run and nothing else.
+#   push (master) — group keyed on the COMMIT SHA, cancel-in-progress OFF.
+#                   Post-merge master runs are the post-merge janitor's
+#                   evidence and MUST NOT cancel each other. Keying master on
+#                   github.ref would be wrong even with cancel-in-progress
+#                   off: GitHub holds at most ONE pending run per group and
+#                   replaces it, so three fast merges would silently drop the
+#                   middle commit's run. A per-SHA group makes each master run
+#                   its own group, so none can queue behind or displace
+#                   another.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
