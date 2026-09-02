@@ -448,6 +448,74 @@ fn store_busy_status(error: &EventStoreError) -> String {
     format!("store busy - action NOT applied, press the key again to retry ({error:?})")
 }
 
+/// The operator-facing line for a POST-LOOP flush the store cut short.
+///
+/// Says what is and is NOT at stake, because the two are easy to confuse: the
+/// interactive session already ended and every action the operator took was
+/// already applied by the live sink, so this is NOT "your last action was lost".
+/// What was skipped is the epilogue — draining whatever command rows were still
+/// pending (they stay `pending` and the next session handles them) and reading
+/// the log for the summary. The cause rides along verbatim, as every other
+/// contention report on this path does (livespec-console-beads-fabro-4vsy7u).
+fn store_busy_shutdown_status(error: &ConsoleRuntimeError) -> String {
+    format!(
+        "store busy at session shutdown - the session and its actions completed; the closing \
+         pending-command flush and summary were skipped and the next session picks them up \
+         ({error:?})"
+    )
+}
+
+/// Decide what a FAILED POST-LOOP (shutdown) step means for the session.
+///
+/// This is the THIRD contention site a console session has, and the last one to
+/// get a decision — the recurrence livespec-console-beads-fabro-aidncj measured.
+/// The other two made OPPOSITE calls, both correctly:
+///
+/// - `bss4rq` RETRIES before the first frame: an open/ingest is idempotent, and
+///   with no frame yet the choice is retry or die.
+/// - `ddfbcx.1` refuses to retry inside the RUNNING loop: there is a live frame
+///   to report `NOT APPLIED` onto and an operator keystroke to inherit as the
+///   retry, and a hidden second attempt would freeze the UI for another 5 s.
+///
+/// The tail after the loop is NEITHER. The operator has already quit, the
+/// terminal is already restored, and their work has already landed. What remains
+/// is bookkeeping. So the tail neither retries nor dies:
+///
+/// - It does not RETRY, because retrying buys a number and not correctness,
+///   while each attempt costs another 5 s of `SQLite` busy timeout on a host
+///   that is already starved — and because these steps CLAIM and hand off
+///   command rows, so a retry after a partial failure is not free the way
+///   re-running an idempotent open is.
+/// - It does not DIE, because dying is the defect: on the saturated CI pool a
+///   session that rendered six views and quit cleanly still exited 1 with
+///   `EventStore(Sqlite(SqliteFailure(.. DatabaseBusy ..)))`. The ~15 s of
+///   tolerance the other two sites carry never applied here — this path had
+///   NONE, a bare `?` on four consecutive store calls.
+///
+/// So TRANSIENT contention DEGRADES: the step is skipped, the reason is carried
+/// out to the composition root, which prints it and exits ZERO. A real fault is
+/// still an `Err` carrying its cause, so this is not a blanket swallow —
+/// corruption still ends the process nonzero with the reason printed.
+///
+/// The FIRST contention is the one kept: the later steps are losing the same
+/// lock convoy, and the first one names where the flush actually stopped.
+fn tolerate_shutdown_contention<T>(
+    warning: &mut Option<String>,
+    step: ConsoleRuntimeResult<T>,
+) -> ConsoleRuntimeResult<Option<T>> {
+    let error = match step {
+        Ok(value) => return Ok(Some(value)),
+        Err(error) => error,
+    };
+    if !error.is_transient_contention() {
+        return Err(error);
+    }
+    if warning.is_none() {
+        *warning = Some(store_busy_shutdown_status(&error));
+    }
+    Ok(None)
+}
+
 impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
     fn new(
         store: &'a mut SqliteEventStore,
@@ -651,6 +719,11 @@ pub struct TuiSessionOutcome {
     handled_commands: usize,
     final_events: usize,
     attention_items: usize,
+    // The operator-facing warning for a POST-LOOP flush the store cut short, or
+    // `None` when the flush completed. Absent by construction from
+    // `TuiSessionOutcome::new`, so a session that never met contention is
+    // indistinguishable from one built before this field existed.
+    store_warning: Option<String>,
 }
 
 impl TuiSessionOutcome {
@@ -671,7 +744,29 @@ impl TuiSessionOutcome {
             handled_commands: handled_command_count,
             final_events: final_event_count,
             attention_items: attention_count,
+            store_warning: None,
         }
+    }
+
+    /// Attach the warning for a POST-LOOP flush the store cut short.
+    ///
+    /// Kept off [`Self::new`] deliberately: the warning is not a count and does
+    /// not belong in the summary's positional argument list, and every existing
+    /// caller that compares a whole outcome keeps comparing the same six numbers.
+    #[must_use]
+    pub fn with_store_warning(mut self, warning: Option<String>) -> Self {
+        self.store_warning = warning;
+        self
+    }
+
+    /// The warning for a flush the store cut short, if there was one.
+    ///
+    /// The composition root prints this and still exits ZERO — see
+    /// [`tolerate_shutdown_contention`] for why a contended epilogue is not a
+    /// failed session.
+    #[must_use]
+    pub fn store_warning(&self) -> Option<&str> {
+        self.store_warning.as_deref()
     }
 
     #[must_use]
@@ -769,16 +864,91 @@ pub fn run_store_backed_tui_session(
             effect_sink.handled_command_count(),
         )
     };
-    let persisted = persist_tui_runtime_effects(store, &effects, observed_at)?;
-    let handled = handle_pending_factory_commands(store, observed_at, factory_port)?;
-    let _work_item_handled = handle_pending_work_item_commands(store, observed_at, work_item_port)?;
-    let _config_handled = handle_pending_config_commands(store, observed_at, work_item_port)?;
+    // EVERY store call below runs AFTER the operator quit, and each one used a
+    // bare `?` that turned a completed session into a nonzero exit on a
+    // momentary lock (livespec-console-beads-fabro-aidncj). They now degrade;
+    // see `tolerate_shutdown_contention` for why the tail neither retries nor
+    // dies, and `flush_session_tail` for why the rest of it moved behind a trait.
+    let mut store_warning: Option<String> = None;
+    let persisted = tolerate_shutdown_contention(
+        &mut store_warning,
+        persist_tui_runtime_effects(store, &effects, observed_at)
+            .map_err(ConsoleRuntimeError::EventStore),
+    )?;
+    let outcome = flush_session_tail(
+        store,
+        observed_at,
+        factory_port,
+        work_item_port,
+        &mut store_warning,
+        SessionTailCounts {
+            ingestion: &ingestion,
+            presented_event_count: presented_events.len(),
+            persisted_command_count: live_persisted_count
+                + persisted.map_or(0, |commands| commands.len()),
+            live_handled_count,
+        },
+    )?;
+    Ok(outcome.with_store_warning(store_warning))
+}
+
+/// The counts a session already accumulated before its POST-LOOP flush.
+///
+/// Bundled so [`flush_session_tail`] takes the store, the ports and the tallies
+/// as three ideas rather than nine positional arguments.
+#[derive(Clone, Copy)]
+struct SessionTailCounts<'a> {
+    ingestion: &'a [AdapterIngestionSummary],
+    presented_event_count: usize,
+    persisted_command_count: usize,
+    live_handled_count: usize,
+}
+
+/// The POST-LOOP flush: handle whatever pending commands the live session left
+/// behind, then read the final event log for the session summary.
+///
+/// Split from [`run_store_backed_tui_session`] over `&mut dyn
+/// FactoryCommandStore` — exactly as [`serve_report_after_ingest`] is, and for
+/// the same reason — so every store failure on this path is exercised through
+/// the scripted store double instead of by racing a real `SQLite` lock. That
+/// includes the LATE `list_console_events` read, which fails only on a call
+/// after the handlers' own reads succeeded and is otherwise unreachable in a
+/// test.
+///
+/// A skipped final read reports ZERO final events and zero attention items.
+/// That is deliberate: the read never happened, and an obviously-absent count
+/// beside the warning is honest where a fabricated one — reusing the presented
+/// count, say — would read as an observation nobody made.
+fn flush_session_tail(
+    store: &mut dyn FactoryCommandStore,
+    observed_at: &str,
+    factory_port: &mut dyn FactoryDrainPort,
+    work_item_port: &mut dyn OrchestratorActionPort,
+    store_warning: &mut Option<String>,
+    counts: SessionTailCounts<'_>,
+) -> ConsoleRuntimeResult<TuiSessionOutcome> {
+    let handled = tolerate_shutdown_contention(
+        store_warning,
+        handle_pending_factory_commands(store, observed_at, factory_port),
+    )?;
+    let _work_item_handled = tolerate_shutdown_contention(
+        store_warning,
+        handle_pending_work_item_commands(store, observed_at, work_item_port),
+    )?;
+    let _config_handled = tolerate_shutdown_contention(
+        store_warning,
+        handle_pending_config_commands(store, observed_at, work_item_port),
+    )?;
+    let final_events = tolerate_shutdown_contention(
+        store_warning,
+        final_tui_events_result(store.list_console_events()),
+    )?;
     tui_session_outcome_from_final_events(
-        &ingestion,
-        presented_events.len(),
-        live_persisted_count + persisted.len(),
-        live_handled_count + handled.len(),
-        store.list_console_events(),
+        counts.ingestion,
+        counts.presented_event_count,
+        counts.persisted_command_count,
+        counts.live_handled_count + handled.map_or(0, |outcomes| outcomes.len()),
+        Ok(final_events.unwrap_or_default()),
     )
 }
 
@@ -3108,14 +3278,15 @@ mod tests {
         ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
         InitialSourceSeed, LANE_FAILURE_MARKER, LaneStartupStage, NeedsAttentionIngest,
         PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
-        STARTUP_STORE_ATTEMPTS, ScriptedSource, SharedSqliteStore, SourceAdapterRef,
-        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
-        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
-        append_factory_drain_requested_events, append_lane_diagnostic, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, command_status_update_runtime_result,
-        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
-        event_append_from_command_event, event_append_from_console_event, events_tail_report,
-        factory_command_from_stored, final_tui_events_result, handle_pending_config_commands,
+        STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts, SharedSqliteStore,
+        SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog, StartupReadout,
+        StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
+        append_demo_events_to_store, append_factory_drain_requested_events, append_lane_diagnostic,
+        backfill_demo_report, backfill_source_adapters, backfill_source_report,
+        command_status_update_runtime_result, config_command_from_stored, demo_events,
+        distinguish_repeatable_command, doctor_report, event_append_from_command_event,
+        event_append_from_console_event, events_tail_report, factory_command_from_stored,
+        final_tui_events_result, flush_session_tail, handle_pending_config_commands,
         handle_pending_control_commands, handle_pending_factory_commands,
         handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
         ingest_and_reflect, ingest_needs_attention, initial_source_seed,
@@ -3128,8 +3299,8 @@ mod tests {
         refresh_sources, render_tui_preview, resolve_console_repo, run,
         run_store_backed_tui_session, run_with_store, serve_report, serve_report_after_ingest,
         serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
-        tolerate_startup_contention, tui_session_outcome_from_final_events,
-        work_item_command_from_stored,
+        tolerate_shutdown_contention, tolerate_startup_contention,
+        tui_session_outcome_from_final_events, work_item_command_from_stored,
     };
 
     #[test]
@@ -12276,6 +12447,171 @@ mod tests {
         );
     }
 
+    /// The tallies a real session would hand its tail, held still so the cases
+    /// below differ only in what the store does.
+    fn walked_session_counts() -> SessionTailCounts<'static> {
+        SessionTailCounts {
+            ingestion: &[],
+            presented_event_count: 6,
+            persisted_command_count: 2,
+            live_handled_count: 1,
+        }
+    }
+
+    #[test]
+    fn a_store_busy_shutdown_read_degrades_the_session_instead_of_ending_it() {
+        // livespec-console-beads-fabro-aidncj, reproduced deterministically. CI
+        // run 33594747311 walked six views, quit, and STILL exited 1 with
+        // `EventStore(Sqlite(SqliteFailure(.. DatabaseBusy ..)))`: the tail after
+        // the loop had no contention tolerance at all, so the epilogue's lock
+        // wait destroyed a session that had already succeeded.
+        //
+        // The contention here OUTLASTS every bound the product carries — the
+        // scripted read never recovers, where `STARTUP_STORE_ATTEMPTS` and the
+        // refresh tolerance both give up after ~15 s — and the session still
+        // survives it.
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::Completes)
+            .with_empty_commands()
+            .with_contention()
+            .failing_list_console_events_after(1);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut warning = None;
+
+        let outcome = flush_session_tail(
+            &mut store,
+            "2026-09-02T06:06:00Z",
+            &mut factory_port,
+            &mut work_item_port,
+            &mut warning,
+            walked_session_counts(),
+        );
+
+        let outcome = outcome.ok_test();
+        check(
+            (outcome.presented_event_count()) == (6),
+            "the session keeps the counts it earned before the store went busy",
+        );
+        check(
+            (outcome.final_event_count()) == (0),
+            "the skipped final read reports zero rather than a fabricated count",
+        );
+        let surfaced = outcome.with_store_warning(warning);
+        let line = surfaced.store_warning().unwrap_or_default();
+        check(
+            line.contains("store busy at session shutdown"),
+            "the degraded session names the stage it degraded at",
+        );
+        check(
+            line.contains("DatabaseBusy"),
+            "the warning carries the cause verbatim, as every other report here does",
+        );
+    }
+
+    #[test]
+    fn a_sustained_shutdown_convoy_is_reported_once_by_its_first_step() {
+        // Every tail step loses the SAME lock convoy. The session still returns
+        // an outcome, and the report names where the flush actually stopped
+        // rather than being overwritten by each later step losing the same lock.
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::Completes)
+            .with_empty_commands()
+            .with_contention()
+            .failing_list_commands_after(0)
+            .failing_list_console_events_after(0);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut warning = None;
+
+        let outcome = flush_session_tail(
+            &mut store,
+            "2026-09-02T06:06:00Z",
+            &mut factory_port,
+            &mut work_item_port,
+            &mut warning,
+            walked_session_counts(),
+        );
+
+        check(
+            (outcome.ok_test().handled_command_count()) == (1),
+            "a skipped handler adds nothing to the count the live sink already earned",
+        );
+        let line = warning.unwrap_or_default();
+        check(
+            line.contains("at list_console_events"),
+            "the report names the read the flush stopped at - the factory handler's \
+             policy read, which is the tail's FIRST store call",
+        );
+        check(
+            !line.contains("at list_commands"),
+            "a later step losing the same convoy does not overwrite the first report",
+        );
+    }
+
+    #[test]
+    fn a_real_store_fault_at_shutdown_still_ends_the_session_with_its_cause() {
+        // The NEGATIVE control that keeps the degrade from being a blanket
+        // swallow: the identical scripted failure, non-transient, on the same
+        // call. Without this, "the session survives contention" and "the session
+        // survives anything" are indistinguishable.
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::Completes)
+            .with_empty_commands()
+            .failing_list_console_events_after(1);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let mut warning = None;
+
+        let outcome = flush_session_tail(
+            &mut store,
+            "2026-09-02T06:06:00Z",
+            &mut factory_port,
+            &mut work_item_port,
+            &mut warning,
+            walked_session_counts(),
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "a real fault still ends the session, carrying its cause",
+        );
+        check(
+            warning.is_none(),
+            "a real fault is never reported as a survivable lock convoy",
+        );
+    }
+
+    #[test]
+    fn only_transient_contention_degrades_the_shutdown_flush() {
+        // The predicate's own controls, at the decision rather than through a
+        // store: a successful step is passed through untouched, and a
+        // non-transient failure is returned as-is.
+        let mut warning = None;
+        let passed =
+            tolerate_shutdown_contention(&mut warning, Ok::<usize, ConsoleRuntimeError>(3))
+                .ok()
+                .flatten();
+
+        check(
+            (passed) == (Some(3)),
+            "a step that succeeded hands its value straight back",
+        );
+        check(
+            warning.is_none(),
+            "a session that never met contention carries no warning",
+        );
+
+        let fault = tolerate_shutdown_contention(
+            &mut warning,
+            Err::<usize, ConsoleRuntimeError>(ConsoleRuntimeError::BackingCliResolution(
+                "no cli".to_owned(),
+            )),
+        );
+
+        check(
+            format!("{fault:?}").contains("BackingCliResolution"),
+            "a non-store fault is not contention and still propagates",
+        );
+    }
+
     struct FailedFactoryDrainPort;
 
     impl FactoryDrainPort for FailedFactoryDrainPort {
@@ -12746,6 +13082,7 @@ mod tests {
         fail_list_console_events_after: Option<usize>,
         list_commands_calls: std::cell::Cell<usize>,
         fail_list_commands_after: Option<usize>,
+        contended: bool,
     }
 
     impl ScriptedFactoryCommandStore {
@@ -12767,6 +13104,7 @@ mod tests {
                 fail_list_console_events_after: None,
                 list_commands_calls: std::cell::Cell::new(0),
                 fail_list_commands_after: None,
+                contended: false,
             }
         }
 
@@ -12788,6 +13126,29 @@ mod tests {
         fn failing_list_commands_after(mut self, n: usize) -> Self {
             self.fail_list_commands_after = Some(n);
             self
+        }
+
+        /// Fail the scripted reads with TRANSIENT contention (`SQLITE_BUSY`)
+        /// rather than a fault, so the degrade branch is driven by the SAME
+        /// error the saturated CI pool produced rather than a stand-in.
+        fn with_contention(mut self) -> Self {
+            self.contended = true;
+            self
+        }
+
+        /// The error a scripted read fails with: a lock convoy when contended,
+        /// otherwise a real (non-transient) fault. Having ONE source for both
+        /// keeps the transient and fault cases byte-identical apart from the
+        /// thing under test. `source` names the read, so a caller can tell WHICH
+        /// step of a multi-step convoy produced the message it is holding.
+        fn injected_failure(&self, source: &str) -> EventStoreError {
+            if self.contended {
+                return EventStoreError::Sqlite(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(5),
+                    Some(format!("database is locked at {source}")),
+                ));
+            }
+            EventStoreError::InvalidSequence
         }
 
         fn commands(&self) -> Vec<StoredCommand> {
@@ -12887,7 +13248,7 @@ mod tests {
             if self.mode == ScriptedStoreMode::ListCommands
                 || self.fail_list_commands_after.is_some_and(|n| calls > n)
             {
-                return Err(EventStoreError::InvalidSequence);
+                return Err(self.injected_failure("list_commands"));
             }
             Ok(self.commands())
         }
@@ -12899,7 +13260,7 @@ mod tests {
                 .fail_list_console_events_after
                 .is_some_and(|n| calls > n)
             {
-                return Err(EventStoreError::InvalidSequence);
+                return Err(self.injected_failure("list_console_events"));
             }
             Ok(vec![ConsoleEvent::new(
                 "evt_ready_work".to_owned(),
