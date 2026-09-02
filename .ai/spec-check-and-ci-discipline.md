@@ -45,6 +45,24 @@ inference — read the failing job's log first.
 - `gh run view <run> --json jobs --jq '.jobs[] | select(.name|test("<job>")) | .steps[] | "[\(.conclusion)] \(.name)"'`
   shows WHICH step failed (setup vs. the actual test step).
 
+## A CANCELLED PR run after a re-push is supersession, not red CI
+
+Since `livespec-console-beads-fabro-s3kwxt` (2026-09-02), `ci.yml` carries a
+`concurrency:` group: a new push to an open PR branch CANCELS that branch's
+still-running CI run, so the superseded tip's checks land as `CANCELLED` and
+its `ci-green` as `FAILURE`. That is the designed outcome, not a failure to
+diagnose — nothing reads a superseded run's verdict. Before reading a
+`CANCELLED` rollup as red CI, compare the run's `headSha` with the PR's
+current tip (`gh pr view <n> --json headRefOid`): a cancelled run on an OLD
+sha is supersession and the newer run is the one to watch; a cancelled run
+on the CURRENT tip has no successor and needs a re-run (`gh run rerun <id>`).
+
+The group is asymmetric on purpose. Master post-merge runs are keyed on the
+commit SHA with cancellation OFF — they are the post-merge janitor's
+evidence — so consecutive merges never cancel or queue behind each other.
+A master run that shows `CANCELLED` was cancelled by a person, not by the
+group; do not "fix" it by loosening the PR side.
+
 ## Jobs queued with nothing starting: WEDGED RUNNER vs. real saturation
 
 CI here runs on the self-hosted ARC k3s scale set
