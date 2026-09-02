@@ -204,10 +204,14 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // Terminology) plus seven in contracts.md (one on the Fabro adapter's status
     // kind, six in the new Needs-human-as-a-ledger-valve section):
     // 243 normative clauses, 22/140/22/59.
+    // The v047 dispatch-on-the-attention-surface revision added two
+    // contracts.md clauses: per-item verb surface parity on the needs-attention
+    // row, and the single-key accelerator on per-item dispatch:
+    // 245 normative clauses, 22/142/22/59.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
-        ("contracts.md", 140),
+        ("contracts.md", 142),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 59),
     ];
@@ -219,7 +223,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 243,
+        total, 245,
         "total normative clauses across the console spec"
     );
     Ok(())
