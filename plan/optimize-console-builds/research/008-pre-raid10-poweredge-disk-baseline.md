@@ -1,5 +1,15 @@
 # 008 — Pre-RAID-10 poweredge disk + CI baseline (future-reference snapshot)
 
+> **ANNOTATION 2026-09-04 — the RAID-10 rebuild this note anticipates was
+> DROPPED (maintainer-decided 2026-09-02).** The array stays RAID-5 (rebuilt
+> clean across 5 drives) and the write-hot CI churn moves to a dedicated
+> two-drive NVMe JBOD tier instead; the kine datastore moves to tmpfs. See the
+> livespec repo's `plan/poweredge-raid-array-maintenance/research/
+> nvme-add-tmpfs-tiering-and-clean-raid5-rebuild-plan.md` (epic
+> `livespec-g52yrb`). **This baseline stays fully valid** — read "pre-RAID-10"
+> as "pre-rebuild/pre-NVMe": it remains the frozen BEFORE for the same
+> before→after delta, whatever the AFTER's storage shape is.
+
 Captured **2026-09-02T02:56Z**, at maintainer request, immediately BEFORE the
 `poweredge-xubuntu` CI host's disk array is rebuilt from **RAID5 → RAID10** with
 new drives. This note is the frozen "before" the post-RAID-10 rebuild is measured
