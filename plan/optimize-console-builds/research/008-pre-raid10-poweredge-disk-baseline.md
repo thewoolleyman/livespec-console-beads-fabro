@@ -1,14 +1,35 @@
 # 008 — Pre-RAID-10 poweredge disk + CI baseline (future-reference snapshot)
 
-> **ANNOTATION 2026-09-04 — the RAID-10 rebuild this note anticipates was
-> DROPPED (maintainer-decided 2026-09-02).** The array stays RAID-5 (rebuilt
-> clean across 5 drives) and the write-hot CI churn moves to a dedicated
-> two-drive NVMe JBOD tier instead; the kine datastore moves to tmpfs. See the
-> livespec repo's `plan/poweredge-raid-array-maintenance/research/
-> nvme-add-tmpfs-tiering-and-clean-raid5-rebuild-plan.md` (epic
-> `livespec-g52yrb`). **This baseline stays fully valid** — read "pre-RAID-10"
-> as "pre-rebuild/pre-NVMe": it remains the frozen BEFORE for the same
-> before→after delta, whatever the AFTER's storage shape is.
+> **ANNOTATION 2026-09-04 (v2) — the measurement is now a THREE-PART
+> comparison (maintainer-directed 2026-09-04), and the RAID-10 rebuild this note
+> originally anticipated was DROPPED (maintainer-decided 2026-09-02).** The disk
+> substrate changes in two hardware steps, not one, so the single before→after
+> delta this note first assumed is replaced by three measured states. Each state
+> captures BOTH layers below (Layer 1 `fio` + Layer 2 CI build-time) so each
+> hardware step's contribution is separable and a build-optimization delta is
+> never confounded with a disk delta:
+>
+> 1. **BEFORE — the original array.** Frozen; captured in this note (Layer 1
+>    `fio` numbers + the Layer 2 self-hosted CI window). Nothing to re-run.
+> 2. **RAID-5 larger 7-drive array — CURRENT state.** The array rebuilt/enlarged
+>    to 7 drives, still RAID-5, no NVMe yet. Capture when the array is stable and
+>    CI is idle or switched back to self-hosted.
+> 3. **+ NVMe — FUTURE state.** The same array plus the dedicated NVMe tier for
+>    the write-hot CI churn (kine datastore → tmpfs). Capture after the NVMe tier
+>    lands and CI is on self-hosted.
+>
+> Report the state1→2 delta (larger RAID-5 alone) and the state2→3 delta (the
+> NVMe tier's marginal contribution) separately; that is the whole point of the
+> three parts.
+>
+> Authoritative hardware sequencing lives in the livespec repo's
+> `plan/poweredge-raid-array-maintenance/research/nvme-add-tmpfs-tiering-and-clean-raid5-rebuild-plan.md`
+> (epic `livespec-g52yrb`); the switch back to self-hosted is part of the
+> ci-runner-pod-lifecycle-reliability track. **RECONCILE drive geometry at
+> capture time:** this three-part instruction states a **7-drive RAID-5** current
+> array, while the 2026-09-04 rebuild note described a 5-drive RAID-5 + 2-drive
+> NVMe JBOD split — `livespec-g52yrb` is authoritative. This baseline stays fully
+> valid as state 1 whatever the later geometry turns out to be.
 
 Captured **2026-09-02T02:56Z**, at maintainer request, immediately BEFORE the
 `poweredge-xubuntu` CI host's disk array is rebuilt from **RAID5 → RAID10** with
@@ -61,11 +82,16 @@ likely to gate cold-build wall time, and the one RAID 10 (mirror+stripe, no
 parity) should improve most. Random read is already healthy (15.5k IOPS), helped
 by the controller ReadAhead cache.
 
-### Reproduce this exact benchmark AFTER the RAID-10 rebuild
+### Reproduce this exact benchmark at each later disk state
+
+Run this once for state 2 (7-drive RAID-5) and again for state 3 (+ NVMe),
+against the filesystem CI actually builds on in that state (the NVMe tier once
+it carries the write-hot churn). Keep every fio flag identical to Layer 1 so the
+rows compare.
 
 ```bash
 ssh poweredge-xubuntu
-WORK=/var/lib/rancher/k3s/storage/.fio-postraid10; sudo mkdir -p "$WORK"
+WORK=/var/lib/rancher/k3s/storage/.fio-diskstate; sudo mkdir -p "$WORK"
 for spec in "seqwrite_1M --rw=write --bs=1M --iodepth=16 --numjobs=1" \
             "seqread_1M --rw=read --bs=1M --iodepth=16 --numjobs=1" \
             "randwrite_4k --rw=randwrite --bs=4k --iodepth=32 --numjobs=4" \
@@ -78,9 +104,11 @@ done
 sudo rm -rf "$WORK"
 ```
 
-Compare IOPS + bandwidth + p99 clat per row. Confirm `perccli64 /c0/vall show`
-reports `RAID10` before trusting the "after" numbers, and run it while CI is
-idle (or on hosted runners) so contention does not confound the delta.
+Compare IOPS + bandwidth + p99 clat per row. Confirm the array geometry matches
+the state being captured (`perccli64 /c0/vall show` for the 7-drive RAID-5; the
+NVMe device/tier for state 3) per `livespec-g52yrb` before trusting the numbers,
+and run it while CI is idle (or on hosted runners) so contention does not
+confound the delta.
 
 ## Layer 2 — Downstream CI build-time baseline (self-hosted era)
 
@@ -180,5 +208,9 @@ thrown-away sandbox, not disk; disk is a secondary lever for the factory tier.
   IOPS / 13.3 MiB/s**; seq **216 write / 691 read MiB/s**.
 - **CI wall time (self-hosted):** critical jobs 184–398 s P50; `check-nextest`
   256 s wall vs ~79 s compute.
-- **After RAID-10 + volume bump + switch-back:** rerun Layer-1 `fio` and Layer-2
-  Honeycomb queries; cite both deltas here.
+- **Three-state capture (per the 2026-09-04 v2 top annotation):** state (1)
+  BEFORE is the frozen capture above. Rerun Layer-1 `fio` and Layer-2 Honeycomb
+  queries at (2) the 7-drive RAID-5 current state and (3) the +NVMe future
+  state, once each is stable and CI is on self-hosted; cite the state1→2 and
+  state2→3 deltas here so the larger-RAID-5 gain and the NVMe gain are
+  attributed separately.
