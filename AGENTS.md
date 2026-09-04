@@ -2,6 +2,43 @@
 
 > ⛔ NEVER WORK AROUND AN UPSTREAM ORCHESTRATOR DEPENDENCY — never again in this plan. (Maintainer ruling 2026-09-02, binding on every item owned by epic livespec-console-beads-fabro-pzbdbo.) The console CONSUMES orchestrator primitives (charter D2); it never rebuilds, substitutes, hand-bridges, or writes a literal in place of one. When work hits a missing or broken orchestrator primitive: STOP. File the orchestrator item. Create the console proxy item (BLOCKED-ON livespec-orchestrator-beads-fabro/<id>) and make this item depends_on it so the dispatcher refuses to run it. Hand the maintainer the path as a comment on the epic — an ASK left in a backlog is NOT a handoff. A recorded deviation with no linked proxy is a defect. Console feature work is HELD until orchestrator b1–b3 land. Full postmortem and the mechanical rules: https://github.com/thewoolleyman/livespec-console-beads-fabro/blob/master/plan/retire-overseer-and-redesign-control-plane-around-console/research/never-work-around-upstream-dependencies.md
 
+## Upstream-dependency proxies — the mechanical contract
+
+The guard above is the reminder layer. These are the layers that REFUSE, and
+the convention every work item in this tenant follows so they can:
+
+- **A proxy item** stands in for one upstream orchestrator dependency. Label
+  `upstream-dep:livespec-orchestrator-beads-fabro`; title
+  `BLOCKED-ON orchestrator <bd-ib-id>: <what it is>`; metadata
+  `upstream_work_item_id` (the `bd-ib-*` id) and `plan_ref:
+  livespec-orchestrator-beads-fabro/<slug>`; status `blocked`. It closes ONLY
+  when the upstream item closes — never by hand, never by `resolve-blocked`.
+- **A held console item `depends_on` its proxy** (`bd dep add <item> <proxy>`).
+  The dispatcher then refuses to admit it (`not in the ready set`) — the hold
+  is a refusal, not a memory. Proven 2026-09-04 on `-npr2gw`.
+- **A recorded deviation links a proxy.** An admitted item whose description
+  carries a `deviations:` line other than `deviations: none`, or a workaround
+  phrase (hand-bridge, because pinned, workaround, in place of a projection,
+  literal prepare/value) beside an upstream reference, MUST depend on a proxy.
+  A filing at `backlog`/`open` is not yet a shipped deviation.
+- **The gate:** `crates/console-upstream-dep-check` (pure over the
+  `bd list --status all --json -n 0` array; general — any item, epic or not)
+  run by `just gate-upstream-deps` from the pre-push hook on the host. It
+  FAILS CLOSED when the ledger is unreachable. It is deliberately outside the
+  `check:` aggregate and not `check-`-prefixed: CI has no tenant secret and
+  the reconciler adopts every `check-*` slug. A sandbox checkout
+  (`livespec.sandboxExempt`) has no ledger by design; there the dispatcher's
+  pre-dispatch refusal is the gate. Failure modes:
+  `upstream-dep-proxy-not-blocked`, `upstream-dep-proxy-title`,
+  `upstream-dep-proxy-metadata-missing`, `upstream-dep-deviation-without-proxy`,
+  `upstream-dep-held-item-dispatchable`.
+- **Visibility:** proxies surface in the console's `blocked` lane
+  (`list-work-items`, label `upstream-dep:*`). Surfacing them as a
+  needs-attention inbox row needs an orchestrator gather fact — upstream work,
+  referenced from the console epic, never built here.
+- **ASK ≠ handoff.** Filing the orchestrator item is one step of four: file
+  it, create the proxy, wire the edge, name the path on the epic.
+
 # Agent instructions
 
 This repo is a LiveSpec-family peer for the Beads/Fabro operator console.
