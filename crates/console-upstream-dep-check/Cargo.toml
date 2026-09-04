@@ -1,0 +1,16 @@
+[package]
+name = "console-upstream-dep-check"
+description = "General upstream-dependency gate over the beads ledger: proxies stay blocked, deviations link a proxy, held items are never dispatchable"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+# Internal check crate — never published.
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -67,6 +67,10 @@ const SOURCE_RULE_EXCLUDED_CRATES: &[CrateSourceRuleExclusion] = &[
         name: "console-spec-check",
         reason: "live-spec conformance checker tooling, not console product code",
     },
+    CrateSourceRuleExclusion {
+        name: "console-upstream-dep-check",
+        reason: "upstream-dependency ledger gate tooling, not console product code",
+    },
 ];
 
 struct CrateSourceRuleExclusion {
@@ -2595,6 +2599,7 @@ mod tests {
             "console-red-green-replay-check",
             "console-spec-check",
             "console-tui",
+            "console-upstream-dep-check",
         ]);
 
         let findings = check_source_rule_crate_coverage_for_names(&workspace_crates);
@@ -2617,6 +2622,7 @@ mod tests {
             "console-red-green-replay-check",
             "console-spec-check",
             "console-tui",
+            "console-upstream-dep-check",
             "console-new-product",
         ]);
 
