@@ -46,8 +46,68 @@ dev = [
 ]
 
 [tool.uv.sources]
-livespec-dev-tooling = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git", tag = "v1.40.1" }
+livespec-dev-tooling = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git", tag = "v1.43.1" }
 livespec-runtime = { git = "https://github.com/thewoolleyman/livespec-runtime.git", tag = "v0.21.3" }
 
 [tool.livespec_dev_tooling]
 plan_lifecycle_anchor = true
+
+# ---------------------------------------------------------------------------
+# Role-key declarations (fleet row `required-role-keys-declared`, sibling row
+# `role-key-spellings`; livespec-console-beads-fabro-jzi3).
+#
+# WHY THIS BLOCK EXISTS: the justfile wires layout-dependent dev-tooling checks
+# (the ones whose modules import `load_config`: plan-anchor, plugin-resolution,
+# shell-quality, ...), which makes this repo a "layout-dependent check consumer"
+# in the fleet contract's sense, so EVERY entry of REQUIRED_ROLE_KEYS must be
+# declared explicitly. Undeclared, the fleet release fan-out EXCLUDES this repo
+# from the dispatch matrix ("failing conformance rows: required-role-keys-
+# declared"), which is why no bump-pin PR has reached it since 2026-08-21 and
+# its sandbox image pin sat at python-rust-v1.40.1 while v1.43.1 shipped.
+#
+# WHAT IS TRUE HERE: this is a PURE-RUST workspace (Cargo.toml / crates/). The
+# only first-party `.py` files are two dev-tooling scripts
+# (dev-tooling/coverage-gate.py, dev-tooling/check-spec-governance-default-
+# block.py); there is no Python product source, no io/commands/pure layer, no
+# schemas/dataclasses layer, and no Python hook body. The spellings follow the
+# fleet's no-Python-product-surface precedent (livespec-driver-pi):
+#
+#  - The five PREDICATE keys keep the strict empty spelling `[]`: their
+#    consuming checks derive the universe from `resolve_check_universe()` and
+#    read the key only to widen an exemption, so empty makes them STRICTER.
+#  - The five UNION keys carry ONE blessed declared-absent spelling each, with
+#    the reason in the parsed value (a bare `[]` / "" there is the retired
+#    ambiguous spelling the `role-key-spellings` row rejects).
+#
+# Should the console ever acquire Python product source, replace the
+# not_applicable values with real paths in the same change.
+# ---------------------------------------------------------------------------
+# No Python product source: the product is the Rust workspace under crates/.
+source_trees = []
+# No separate Python io tree.
+io_trees = []
+# No Python command modules.
+commands_trees = []
+# No Python supervisor entry points (the binaries are Rust).
+supervisor_entry_files = []
+# No first-party Python bodies to hold at the coverage floor beyond the
+# git-derived universe (the two dev-tooling scripts), which needs no extra tree.
+covered_trees = []
+# NOT APPLICABLE: no pure parse/validate Python layer for the mutation /
+# property-based-testing / API-result gates to scan; the Rust workspace carries
+# its own mutation (cargo-mutants) and fuzz gates in the justfile.
+pure_trees = { not_applicable = "pure-Rust workspace: no pure parse/validate Python layer; Rust mutation and fuzz gates live in the justfile" }
+# SUPERSEDED, not not-applicable: Python coverage of the two dev-tooling
+# scripts is owned by the git-derived first-party universe, not a declared
+# target-dir list.
+target_dirs = { superseded_by = "git-derived first-party universe owns this repo's Python coverage" }
+# NOT APPLICABLE: the Python co-staging gate (commit_pairs_source_and_test) has
+# no Python product source to scope; the equivalent discipline for the Rust
+# surface is the console-red-green-replay-check crate wired in lefthook.yml.
+source_tree_prefixes = { not_applicable = "pure-Rust workspace: no Python product source to scope; Rust co-staging discipline is the console-red-green-replay-check crate" }
+# NOT APPLICABLE: no Python schemas/dataclasses layer (the domain types are Rust).
+dataclasses_tree = { not_applicable = "pure-Rust workspace: no Python schemas/dataclasses layer" }
+# NOT APPLICABLE: this repo ships no Python hook body to hold identical to the
+# single-sourced neutral hook; the commit-refuse hook is the REUSED
+# livespec-dev-tooling installer (see the header of this file).
+neutral_hook_body_path = { not_applicable = "no Python hook body is shipped here; the commit-refuse hook is the reused livespec-dev-tooling installer" }
