@@ -536,7 +536,7 @@ mod tests {
     fn deviation_rule_applies_only_to_admitted_items() {
         for status in ["backlog", "open"] {
             let filing = item("f", status, "deviations: x (bd-ib-y)", &[]);
-            assert!(check(&[filing]).findings.is_empty(), "{status}");
+            assert!(check(&[filing]).findings.is_empty());
         }
         for status in [
             "ready",
@@ -592,7 +592,7 @@ mod tests {
         }
         for status in ["blocked", "pending-approval", "backlog"] {
             let held = item("h", status, "", &["p1"]);
-            assert!(check(&[p1.clone(), held]).findings.is_empty(), "{status}");
+            assert!(check(&[p1.clone(), held]).findings.is_empty());
         }
     }
 
