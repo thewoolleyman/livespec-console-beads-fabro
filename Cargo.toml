@@ -12,6 +12,7 @@ members = [
   "crates/console-eventstore",
   "crates/console-spec-check",
   "crates/console-tui",
+  "crates/console-upstream-dep-check",
 ]
 exclude = [
   "fuzz",
