@@ -1,35 +1,30 @@
 # 008 — Pre-RAID-10 poweredge disk + CI baseline (future-reference snapshot)
 
-> **ANNOTATION 2026-09-04 (v2) — the measurement is now a THREE-PART
-> comparison (maintainer-directed 2026-09-04), and the RAID-10 rebuild this note
-> originally anticipated was DROPPED (maintainer-decided 2026-09-02).** The disk
-> substrate changes in two hardware steps, not one, so the single before→after
-> delta this note first assumed is replaced by three measured states. Each state
-> captures BOTH layers below (Layer 1 `fio` + Layer 2 CI build-time) so each
-> hardware step's contribution is separable and a build-optimization delta is
-> never confounded with a disk delta:
+> **ANNOTATION 2026-09-04 (v3) — NVMe VALIDATED; the comparison is TWO-PART
+> (BEFORE → +NVMe). The RAID-5-only intermediate is SKIPPED, and the RAID-10
+> rebuild this note originally anticipated was DROPPED (2026-09-02).** One
+> WD_BLACK SN8100 4 TB NVMe is installed and the CI work-volume filesystem
+> (`/dev/mapper/nvmea-ci--workvols` → `/var/lib/rancher/k3s/storage`) already
+> lives on it. The +NVMe `fio` capture below is decisive — random write **3,389
+> → 546k IOPS (~161×)** — so per maintainer direction (2026-09-04, "if it works
+> we skip the raid-only testing") the larger-RAID-5-only state is NOT measured: a
+> bigger RAID-5 cannot matter once the write-hot churn sits on NVMe. The measured
+> delta is therefore two states, not three:
 >
-> 1. **BEFORE — the original array.** Frozen; captured in this note (Layer 1
->    `fio` numbers + the Layer 2 self-hosted CI window). Nothing to re-run.
-> 2. **RAID-5 larger 7-drive array — CURRENT state.** The array rebuilt/enlarged
->    to 7 drives, still RAID-5, no NVMe yet. Capture when the array is stable and
->    CI is idle or switched back to self-hosted.
-> 3. **+ NVMe — FUTURE state.** The same array plus the dedicated NVMe tier for
->    the write-hot CI churn (kine datastore → tmpfs). Capture after the NVMe tier
->    lands and CI is on self-hosted.
+> 1. **BEFORE — the original RAID-5 spinning array.** Frozen (Layer 1 `fio` +
+>    Layer 2 self-hosted CI window). Nothing to re-run.
+> 2. **+ NVMe — current state.** Layer 1 captured 2026-09-04 (see "The AFTER"
+>    below). **SINGLE card**; a second NVMe is coming, so this is the one-card
+>    number and a two-card capture may refine it. The Layer-2 CI build-time AFTER
+>    still accrues as self-hosted runs land on the NVMe-backed pool.
 >
-> Report the state1→2 delta (larger RAID-5 alone) and the state2→3 delta (the
-> NVMe tier's marginal contribution) separately; that is the whole point of the
-> three parts.
->
-> Authoritative hardware sequencing lives in the livespec repo's
+> Hardware sequencing is authoritative in the livespec repo's
 > `plan/poweredge-raid-array-maintenance/research/nvme-add-tmpfs-tiering-and-clean-raid5-rebuild-plan.md`
-> (epic `livespec-g52yrb`); the switch back to self-hosted is part of the
-> ci-runner-pod-lifecycle-reliability track. **RECONCILE drive geometry at
-> capture time:** this three-part instruction states a **7-drive RAID-5** current
-> array, while the 2026-09-04 rebuild note described a 5-drive RAID-5 + 2-drive
-> NVMe JBOD split — `livespec-g52yrb` is authoritative. This baseline stays fully
-> valid as state 1 whatever the later geometry turns out to be.
+> (epic `livespec-g52yrb`); the self-hosted switch-back rode the
+> ci-runner-pod-lifecycle-reliability track and is DONE (`CI_RUNNER_LABELS =
+> ["livespec-console-beads-k3s"]`). Drive geometry — this note earlier flagged a
+> 7-drive-RAID-5 vs 5-drive-RAID-5 + 2-drive-NVMe-JBOD discrepancy — is reconciled
+> in `livespec-g52yrb`, not here; it does not affect the two-part delta.
 
 Captured **2026-09-02T02:56Z**, at maintainer request, immediately BEFORE the
 `poweredge-xubuntu` CI host's disk array is rebuilt from **RAID5 → RAID10** with
@@ -109,6 +104,36 @@ the state being captured (`perccli64 /c0/vall show` for the 7-drive RAID-5; the
 NVMe device/tier for state 3) per `livespec-g52yrb` before trusting the numbers,
 and run it while CI is idle (or on hosted runners) so contention does not
 confound the delta.
+
+## The AFTER — +NVMe capture (current state, single card), 2026-09-04
+
+Captured **2026-09-04T17:36–17:39Z** from the optimize-console-builds plan
+session at maintainer signal, same `fio` 3.41 methodology as Layer 1, against the
+NVMe-backed CI work-volume fs (`/dev/mapper/nvmea-ci--workvols`, ext4, on
+`nvme0n1` = **WD_BLACK SN8100 4 TB**, `ROTA=0`). Host was NOT idle (loadavg
+~7→14, vs the BEFORE's ~0.6); the NVMe has so much headroom the concurrent CI
+load did not cap it, so the delta is if anything conservative.
+
+| Test | BEFORE (RAID-5 HDD) | +NVMe (1 card) | Gain |
+|---|---|---|---|
+| seq write 1M, qd16 | 215 IOPS / 216 MiB/s | 3,019 IOPS / 3,020 MiB/s | ~14× |
+| seq read 1M, qd16 | 690 IOPS / 691 MiB/s | 3,218 IOPS / 3,219 MiB/s | ~4.7× |
+| **rand write** 4k, qd32×4 | 3,389 IOPS / 13.3 MiB/s | **546k IOPS / 2,133 MiB/s** | **~161×** |
+| rand read 4k, qd32×4 | 15,494 IOPS / 60.4 MiB/s | 442k IOPS / 1,728 MiB/s | ~28× |
+
+p99 completion latency collapsed with it: **random write 127 ms → ~0.49 ms**,
+random read 135 ms → ~2.1 ms. The random-write floor Layer 1 named as the likely
+cold-build gate (RAID-5's read-modify-write parity penalty) is gone — a cold
+`cargo` build's thousands of small `target/` writes are no longer disk-bound on
+this host.
+
+Caveats: (1) **single** NVMe card; a second is coming — re-capture for the
+two-card number if the fs geometry changes. (2) seq numbers are single-job
+(`numjobs=1`, to match BEFORE) so they understate the drive's ceiling; the random
+figures are the build-relevant ones. (3) This is the Layer-1 (raw-device) AFTER;
+the Layer-2 CI build-time AFTER — wall-time deltas on real jobs — is a separate
+capture that accrues over a window of self-hosted runs on the NVMe pool. Compose
+both into the Phase-3 report (`uocos3`).
 
 ## Layer 2 — Downstream CI build-time baseline (self-hosted era)
 
@@ -208,9 +233,9 @@ thrown-away sandbox, not disk; disk is a secondary lever for the factory tier.
   IOPS / 13.3 MiB/s**; seq **216 write / 691 read MiB/s**.
 - **CI wall time (self-hosted):** critical jobs 184–398 s P50; `check-nextest`
   256 s wall vs ~79 s compute.
-- **Three-state capture (per the 2026-09-04 v2 top annotation):** state (1)
-  BEFORE is the frozen capture above. Rerun Layer-1 `fio` and Layer-2 Honeycomb
-  queries at (2) the 7-drive RAID-5 current state and (3) the +NVMe future
-  state, once each is stable and CI is on self-hosted; cite the state1→2 and
-  state2→3 deltas here so the larger-RAID-5 gain and the NVMe gain are
-  attributed separately.
+- **Two-state delta (per the 2026-09-04 v3 top annotation):** state (1) BEFORE
+  is the frozen capture above; state (2) +NVMe Layer-1 `fio` is captured in "The
+  AFTER" (random write 3,389 → 546k IOPS, ~161×; single card). The RAID-5-only
+  intermediate was skipped — NVMe validated directly. Still owed: the Layer-2 CI
+  build-time AFTER (a Honeycomb window of self-hosted runs on the NVMe pool) and,
+  if the second card changes the fs geometry, a two-card Layer-1 re-capture.
