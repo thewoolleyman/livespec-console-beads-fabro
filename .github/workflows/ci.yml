@@ -98,6 +98,22 @@ env:
   # as the runs-on fallbacks below and MUST stay in lockstep with them.
   UV_CONCURRENT_DOWNLOADS: ${{ contains(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]', 'ubuntu') && '50' || '4' }}
   UV_HTTP_TIMEOUT: ${{ contains(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]', 'ubuntu') && '30' || '60' }}
+  # In-sandbox cargo-phase build telemetry (livespec-dev-tooling
+  # otel_cargo_phase.py / otel_step_timer.py) POSTs each measured cargo phase to
+  # $LIVESPEC_SANDBOX_OTEL_ENDPOINT/v1/traces. Its default
+  # (http://172.17.0.1:4318 — a docker-bridge address of the FACTORY host) is
+  # unreachable from a k3s workflow pod, so on the self-hosted pool the CI lane
+  # emitted NO build.env=ci cargo spans (livespec-console-beads-fabro-2dnpq3; the
+  # emitter now SKIPS a non-factory lane with no endpoint rather than paying the
+  # timeout, so the spans are simply absent). Point the pool lane at the node
+  # collector's pod-reachable, KEYLESS otlp/pods receiver bound to the cni0 bridge
+  # (10.42.0.1:4319 — reachable from the pod CIDR + host only; verified live HTTP
+  # 200 on /v1/traces 2026-09-05; provisioned by the dev-tooling
+  # ci-runner-cache-tiers work) so the CI lane emits. On GitHub-hosted runners
+  # there is no such collector, so keep it EMPTY — the emitter then skips cleanly
+  # (returns 0, no timeout, no error) for a non-factory lane with no endpoint.
+  # Stays in lockstep with the CI_RUNNER_LABELS default above.
+  LIVESPEC_SANDBOX_OTEL_ENDPOINT: ${{ contains(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]', 'ubuntu') && '' || 'http://10.42.0.1:4319' }}
 
 on:
   pull_request:
