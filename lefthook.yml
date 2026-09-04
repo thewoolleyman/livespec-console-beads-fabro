@@ -9,6 +9,15 @@ pre-push:
   commands:
     check:
       run: just check-pre-push
+    # Upstream-dependency gate (livespec-console-beads-fabro-pzbdbo.1). Runs
+    # HERE, on the host, because it needs the ledger through the credential
+    # wrapper — which CI on GitHub-hosted runners does not have — and it FAILS
+    # CLOSED when the ledger is unreachable. Not in the `check:` aggregate and
+    # not `check-`-prefixed on purpose (see the recipe). A sandbox checkout
+    # declares livespec.sandboxExempt and passes; the dispatcher's own
+    # pre-dispatch refusal is the gate there.
+    upstream-deps:
+      run: just gate-upstream-deps
 
 # Red-Green-Replay stage 3 (livespec-console-beads-fabro-mvu22t.3). The checker
 # takes the commit-message path as argv[1] and decides Red / Green / SuiteGreen

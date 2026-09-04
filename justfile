@@ -492,6 +492,44 @@ check-fork-drift:
 check-red-green-replay:
     cargo run --quiet --package console-red-green-replay-check
 
+# UPSTREAM-DEPENDENCY GATE (livespec-console-beads-fabro-pzbdbo.1; maintainer
+# ruling 2026-09-02 — see AGENTS.md "Upstream-dependency proxies" and
+# plan/retire-overseer-and-redesign-control-plane-around-console/research/
+# never-work-around-upstream-dependencies.md). General, not epic-bound: every
+# work item in this tenant. The rules and their named refusals live in
+# crates/console-upstream-dep-check, which is PURE over the ledger array; THIS
+# recipe supplies the ledger under the credential wrapper and FAILS CLOSED when
+# it cannot — an unreachable ledger refuses the push rather than passing blind.
+#
+# Deliberately NOT `check-`-prefixed and NOT in the `check:` aggregate: the
+# aggregate runs in CI on GitHub-hosted runners with no tenant secret, and the
+# dev-tooling reconciler adopts every `check-*` slug into `check:`. This
+# gate's venue is the pre-push hook on the HOST (lefthook.yml), where the
+# wrapper is. A sandbox checkout declares `livespec.sandboxExempt` and has no
+# ledger by design; there the dispatcher's pre-dispatch refusal is the gate,
+# so the recipe names the venue and passes. That is a declared venue split
+# recorded here, not a "skip in CI".
+# Every step below is guarded directly so each refusal names its own cause.
+# errexit is deliberately omitted; each command's failure is handled by name.
+gate-upstream-deps:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if [ "$(git config --get livespec.sandboxExempt 2>/dev/null)" = "true" ]; then
+        echo "gate-upstream-deps: sandbox venue (livespec.sandboxExempt) — no ledger here by design; the dispatcher's pre-dispatch refusal is the gate"
+        exit 0
+    fi
+    ledger="$(mktemp)"
+    trap 'rm -f "${ledger}"' EXIT
+    if ! /usr/local/bin/with-livespec-env.sh -- bd list --status all --json -n 0 > "${ledger}"; then
+        echo "gate-upstream-deps: FAIL CLOSED — could not read the ledger through the credential wrapper; refusing rather than passing blind" >&2
+        exit 1
+    fi
+    if [ ! -s "${ledger}" ]; then
+        echo "gate-upstream-deps: FAIL CLOSED — the ledger read returned nothing; refusing rather than passing blind" >&2
+        exit 1
+    fi
+    cargo run --quiet --package console-upstream-dep-check -- "${ledger}"
+
 # Re-capture upstream digests for the fork after a conscious review of what
 # upstream changed. Needs the orchestrator plugin installed; preserves each
 # pin's `reason`.
