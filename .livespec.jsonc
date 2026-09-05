@@ -233,10 +233,13 @@
       // `dispatcher.janitor.check_suite`, rendered into the workflow's
       // `inputs.sandbox_check_suite` and run by the janitor node). DECLARED
       // rather than left to the fleet default ("mise exec -- just check")
-      // because this repo's plain `just check` does NOT include
-      // `check-no-workflow-edits` — the recipe that refuses workflow-file
+      // so `check-no-workflow-edits` — the recipe that refuses workflow-file
       // drift acquired DURING a run, before the fleet App's contents-only
-      // push token turns it into an opaque push rejection at the pr stage.
+      // push token turns it into an opaque push rejection at the pr stage —
+      // runs FIRST and alone, reporting a violation before the long aggregate
+      // starts. Since livespec-dev-tooling-fy02 the recipe delegates to the
+      // worktree-pack's shared body and is ALSO a member of `just check`, so
+      // the leading invocation is an early report, not the only run.
       // The old fork hardcoded exactly this command in its janitor node.
       "janitor": {
         "check_suite": ["mise", "exec", "--", "just", "check-no-workflow-edits", "check"]
