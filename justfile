@@ -190,34 +190,30 @@ local-cache-evict-plan *args:
 local-cache-evict *args:
     bash scripts/local-cache-evict.sh --execute "$@"
 
-# Factory-boundary helper: fail if the current branch changes GitHub workflow
-# files. Deliberately OUTSIDE the canonical `check` aggregate — the factory
-# janitor lane invokes it explicitly, ahead of `check`, so an implementation
-# branch never reaches PR publication carrying `.github/workflows/` edits. The
-# fleet App's push token is contents-only, so such a branch would otherwise be
-# discovered by GitHub's own push rejection instead of being reported here and
-# routed to maintainer-side landing.
+# Factory-boundary guard: fail if the current branch changes GitHub workflow
+# files. Delegates to the worktree-discipline pack's SINGLE canonical body,
+# `dev-tooling/check-no-workflow-edits.sh` (livespec-dev-tooling-fy02) —
+# installed by `just install-worktree-pack` and byte-verified fleet-wide, so
+# this repo carries no guard copy and no escape of its own. The recipe is a
+# member of the canonical `check` aggregate below (so it runs at pre-push via
+# lefthook), AND the factory janitor lane still invokes it explicitly, ahead of
+# `check` (`.livespec.jsonc` `dispatcher.janitor.check_suite`), so an
+# implementation branch never reaches PR publication carrying
+# `.github/workflows/` edits. The fleet App's push token is contents-only, so
+# such a branch would otherwise be discovered by GitHub's own push rejection
+# instead of being reported here and routed to maintainer-side landing. In CI
+# (`GITHUB_ACTIONS` set) the body is a deliberate no-op: it is an authorship
+# control at the agent boundary, not a master-safety gate.
 #
 # ADOPTED 2026-07-28 because the orchestrator plugin's `_DEFAULT_JANITOR` is
 # `just check-no-workflow-edits install-worktree-pack check`, and this repo
 # defined the latter two but not this one — so every post-merge janitor died
 # with "Justfile does not contain recipe `check-no-workflow-edits`" and stranded
 # the work-item at `active` after its PR had already merged (observed on
-# livespec-console-beads-fabro-dm5f7q, PR #466 merged as 77ed854). Body mirrors
-# the peer at livespec-dev-tooling `justfile` rather than the orchestrator's
-# `workflow_guard.py` form, which resolves a `.claude-plugin/` script this
-# consumer repo does not carry.
-# errexit is deliberately omitted to report workflow-file violations explicitly.
+# livespec-console-beads-fabro-dm5f7q, PR #466 merged as 77ed854). The inline
+# bash body that adoption carried was retired for the pack body under fy02.
 check-no-workflow-edits:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    base=$(git merge-base HEAD origin/master 2>/dev/null || git merge-base HEAD master) || exit $?
-    if git diff --quiet --name-only "$base"...HEAD -- .github/workflows; then
-        exit 0
-    fi
-    echo "ERROR: factory branches must not modify .github/workflows/ files" >&2
-    git diff --name-only "$base"...HEAD -- .github/workflows >&2
-    exit 1
+    bash dev-tooling/check-no-workflow-edits.sh
 
 # errexit is deliberately omitted so all checks run before failure reporting.
 check:
@@ -241,6 +237,7 @@ check:
         check-charters
         check-baseline
         check-shell-quality
+        check-no-workflow-edits
         check-plan-no-tombstone
         check-plan-anchor-declared
         check-plugin-resolution
