@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.4.0...v0.5.0) (2026-09-05)
+
+
+### Features
+
+* **console-nightly-soak:** nightly soak driver and idempotent chore filing ([2dcd2fa](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/2dcd2fa488f86c96004b70873e853b08b837448a))
+* **console:** feed and render the orphaned-factory-runs lane ([40d10c6](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/40d10c67f4f0e5718c993a0f18b501fce23af28a))
+* **console:** render needs-human as a ledger valve, not a fabro attach handoff ([d738be2](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/d738be2e5b72066b6a442fa00eeccbecd1a013df))
+* **dev:** age-based local build-cache eviction recipes (uybgug) ([d8c0db9](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/d8c0db99f09657915851a57df96470e3c6537c67))
+* **factory:** re-fork implement-work-item onto the orchestrator's typed-input bundle with the needs_human terminal ([b5ed60a](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/b5ed60ad9f6b79bb5e4fbbec5f618d5f9d250ce4))
+* **quality-gate:** enforce the coverage-region-gate via the merged reachable-region view ([44888a1](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/44888a1a678e64ef228327644ef4289a2d00e817))
+* **upstream-dep-check:** the general upstream-dependency gate — rules A/B/C, Red→Green (pzbdbo.1) ([a98d373](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/a98d373500f7baa6e696b3988b394f83b0dd4c82))
+
+
+### Bug Fixes
+
+* add injectivity tests for stable_version across wire-arbitrary part boundaries ([9042269](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/904226978508396670077f479e37714078692902))
+* **ci-telemetry:** keep the job TSV columns aligned when a job has no timestamps (export-telemetry red since 8a5997b) ([55556f7](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/55556f78a14ca35f0f2ac2582b6e035fe376a312))
+* **ci-telemetry:** parse job rows with a non-collapsing delimiter and skip unfinished jobs (export-telemetry still red on 55556f7) ([e93e7f2](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/e93e7f29b19854c267d5e442e482f39de5ce04ac))
+* **ci:** point the self-hosted pool's in-sandbox cargo emitter at the pod-reachable collector (2dnpq3) ([e9fef78](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/e9fef7855c36a2877dcc52ee37066d32c7e1af11))
+* **cli:** persist the caller's requested_at, not wall-clock time ([9376bc0](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/9376bc07de5b0350cfddf0c3cfdea30f6f11098f))
+* **console-application:** remove dead DriverHandoff arm from attention_detail_actions staging filter ([1834cbf](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/1834cbf111a863eea0e9ff67d0d8d825cd7ee037))
+* **dispatcher:** install the worktree pack INTO each janitor checkout, not the primary ([6d1b837](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/6d1b837e354820313ad0b4676d579478527cf640))
+* **dispatcher:** janitor bootstrap recipe must install the worktree pack ([2d0147e](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/2d0147e7cc41e4de0d1e119639e53ff22513e68b))
+* **dispatcher:** set dispatcher.node_timeouts so console implement turns get the fork's 4h ceiling, not the 30-minute default ([08500c0](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/08500c09cface3040ee3dd909ccad6e910ecee22))
+* **eventstore:** let the SQLite busy timeout be injected and raised (pis7qu) ([f909f41](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/f909f414d42fbbc53c60be25b6b7cb5b8469b1b2))
+* **factory:** spell prepare steps literally — [[run.prepare.steps]] is unrendered on pinned fabro ([c0d857b](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/c0d857b69ebafd3d4c9e630aee7840e00cd90b38))
+* **source-adapters:** length-prefix stable_version parts to eliminate 0x1f boundary collisions ([fded418](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/fded418e719ff334bcd4431b8f3ecc31e198aa7a))
+* **telemetry:** avoid exit-1 in fail-soft mode when Honeycomb ingest fails ([d1b0a7c](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/d1b0a7c07274281985c9fd01505bd48345b1ecb7))
+* **tui:** offer per-item verbs on the needs-attention row with parity to the lane drill ([321b1fa](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/321b1faec61f5b7269c03538f5f11be73f3b22eb))
+
 ## [0.4.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.3.0...v0.4.0) (2026-08-29)
 
 
