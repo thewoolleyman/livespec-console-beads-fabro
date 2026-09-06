@@ -162,7 +162,7 @@ jobs:
     # self-hosted host's label to route to it instead.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.49.1
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.50.0
     env:
       # The image installs the pinned tools under /root (build-time HOME), but
       # container-hooks run steps with a DIFFERENT HOME — so mise's default data
@@ -346,7 +346,7 @@ jobs:
     # PUBLIC clone INSIDE the container (no host mount — containment preserved).
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.49.1
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.50.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -430,7 +430,7 @@ jobs:
     name: check-e2e-tmux
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.49.1
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.50.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -468,7 +468,7 @@ jobs:
     name: check-mutants
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.49.1
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.50.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -514,7 +514,7 @@ jobs:
       # wall, measured 2026-09-06; livespec-console-beads-fabro-gqmtwa.1). Bumped in
       # lockstep with the python-rust pins above by the fleet pin rewrite (the
       # layer prefix is preserved; only the version moves).
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-fuzz-v1.49.1
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-fuzz-v1.50.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
