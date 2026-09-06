@@ -1,2 +1,2 @@
-work_item=livespec-console-beads-fabro-o36w
-reason=Fix the LIVESPEC_SANDBOX_OTEL_ENDPOINT ternary in ci.yml so GitHub-hosted runners get an empty value: the falsy '' true-branch made every hosted Rust job POST to the unreachable pod collector and log an emission-unreachable line per cargo phase (measured on master run 34003270210). Workflow-only change to one env expression; self-hosted behaviour unchanged.
+work_item=livespec-console-beads-fabro-pzbdbo.11
+reason=Base-branch-side required check that refuses a PR whose head lacks the upstream-dependency gate wiring; closes the old-worktree bypass found in the 2026-09-06 verification pass under the retire-overseer plan. Reads one file via the contents API; never executes head code.
