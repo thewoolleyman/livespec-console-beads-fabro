@@ -131,9 +131,65 @@ Caveats: (1) **single** NVMe card; a second is coming — re-capture for the
 two-card number if the fs geometry changes. (2) seq numbers are single-job
 (`numjobs=1`, to match BEFORE) so they understate the drive's ceiling; the random
 figures are the build-relevant ones. (3) This is the Layer-1 (raw-device) AFTER;
-the Layer-2 CI build-time AFTER — wall-time deltas on real jobs — is a separate
-capture that accrues over a window of self-hosted runs on the NVMe pool. Compose
-both into the Phase-3 report (`uocos3`).
+the Layer-2 CI build-time AFTER is captured directly below.
+
+### Layer 2 AFTER — CI build-time on the NVMe self-hosted pool, 2026-09-06
+
+Honeycomb `github-ci`, `repo = thewoolleyman/livespec-console-beads-fabro`,
+`ci.runner.kind = self-hosted` (the runner-kind attribute `bzs6` added, so this
+is a real filter, not a date guess), window **2026-09-03T23:25Z → 2026-09-06T00:19Z**
+= the self-hosted era since the switch-back onto NVMe. **n = 20 runs per job.**
+Per-job wall time P50, against the Layer-2 BEFORE table below (RAID-5, P50):
+https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/94dxd82kfDd
+
+| Job | BEFORE P50 s | AFTER P50 s | Δ |
+|---|---|---|---|
+| check-fuzz | 398 | 316 | −21 % |
+| check-e2e-tmux | 258 | 125 | −52 % |
+| check-nextest | 256 | 64 | **−75 %** |
+| check-coverage | 243 | 87 | −64 % |
+| check-deps | 188 | 37 | **−80 %** |
+| check-clippy | 184 | 52 | −72 % |
+| check-arch | 151 | 52 | −66 % |
+| check-behavior-coverage | 149 | 35 | −77 % |
+| check-completeness | 147 | 44 | −70 % |
+| check-baseline | 143 | 34 | −76 % |
+| check-shell-quality | 136 | 32 | −76 % |
+| check-plan-no-tombstone | 134 | 31 | −77 % |
+| check-mutants | 124 | 67 | −46 % |
+| check-format | 123 | 28 | −77 % |
+| check-plugin-resolution | 121 | 29 | −76 % |
+| check-doctor-static | 98 | 46 | −53 % |
+
+Compile/test **phase split** (the `Phase:` step spans, n = 21), P50 s, vs
+`research/007`: https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/jBLMJTSTsMp
+
+| Phase span | BEFORE | AFTER | Δ |
+|---|---|---|---|
+| build.check-nextest.compile | 66 | 20 | −70 % |
+| build.check-clippy.compile | 42 | 26 | −38 % |
+| build.check-fuzz.compile | 78 | 75 | −4 % |
+| build.check-nextest.test | 13 | 14 | flat |
+| build.check-fuzz.fuzz | ~180 (ratified floor) | 191 | out of scope |
+
+**Reading.** Most jobs lost 70–80 % of their wall time. The diagnostic this note
+was written to test is confirmed: the ~177 s **IO-contention gap** on
+`check-nextest` (256 s wall vs ~79 s compute) collapsed to **~30 s** (64 s wall vs
+~34 s compute) — the shared-array contention was the gap, and NVMe removed it,
+exactly as `research/009` predicted.
+
+**Attribution.** This window also carries the `zzfntv` `CARGO_BUILD_JOBS=12` raise
+(#935) on the `check-nextest` / `check-fuzz` compile phases, so those two compile
+deltas are jobs-raise + NVMe combined. The cleaner **pure-NVMe signal is every job
+that got no jobs raise**: `check-clippy` compile 42 → 26 s and wall 184 → 52 s,
+`check-deps` 188 → 37 s, `check-format` 123 → 28 s — all disk, no parallelism
+change. The telling contrast inside the raised pair: `check-fuzz` compile moved
+only −4 % while `check-nextest` compile moved −70 %; the ASAN-instrumented fuzz
+compile is neither IO- nor parallelism-bound (ASAN instrumentation-bound), so
+neither lever reaches it. `check-fuzz` wall (−21 %) is dominated by the ratified
+~180 s fuzz-run floor.
+
+Both layers now compose into the Phase-3 report (`uocos3`).
 
 ## Layer 2 — Downstream CI build-time baseline (self-hosted era)
 
@@ -173,17 +229,23 @@ single-host self-hosted lane (many job slots, one disk array) — precisely what
 "more pods/volumes + RAID 10" targets. RAID 10's random-write gain should show up
 here as reduced cold-compile wall time once CI is switched back to self-hosted.
 
-## Layer 3 — Context: CI is currently on GitHub-hosted runners
+## Layer 3 — Context: the hosted-runner window and the switch-back
 
-At capture time `CI_RUNNER_LABELS` is **absent** from the repo, so `ci.yml`'s
-`runs-on` falls back to `["ubuntu-latest"]` — CI runs on GitHub-hosted runners,
-NOT poweredge. A previous worker made this switch; the maintainer will switch
-back to self-hosted after the RAID-10 rebuild + a pods/volumes increase, so
-future numbers reflect the real array under real concurrency. **Hosted-runner CI
-times are irrelevant to the RAID-10 comparison** — the poweredge disk is not in
-their path. The self-hosted → hosted transition is visible as a `check-nextest`
-regime change around 2026-09-01
-(https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/cVFmpuTGFhQ).
+At the Layer-1 BEFORE capture (2026-09-02) `CI_RUNNER_LABELS` was **absent**, so
+`ci.yml` fell back to `["ubuntu-latest"]` and CI ran on GitHub-hosted runners —
+the poweredge disk was not in their path, so **hosted-runner CI times are
+irrelevant to the disk comparison**. That hosted window ran 2026-09-02T08:02Z →
+2026-09-03T13:23Z (the hold). The **switch-back is done**: `CI_RUNNER_LABELS =
+["livespec-console-beads-k3s"]`, first self-hosted master run
+2026-09-03T23:25Z (run 33817563429), on the NVMe pool — which is the AFTER window
+"Layer 2 AFTER" measures. Both transitions are visible as `check-nextest` regime
+changes
+(https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/cVFmpuTGFhQ),
+and since `bzs6` every `ci.job.*` span carries `ci.runner.kind`, so the windows
+are filterable rather than date-guessed. The three self-hosted master runs
+immediately before the hold (2026-09-02 05:xx) all **failed** `check-e2e-tmux` on
+RAID-5; the self-hosted runs since the switch-back are green on NVMe — the same
+lane, disk changed.
 
 ## Telemetry gap found while capturing this
 
