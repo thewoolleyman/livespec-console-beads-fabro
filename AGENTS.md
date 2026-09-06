@@ -428,46 +428,51 @@ check-baseline` is the fail-closed verifier wired into `just check`.
    primary checkout's `master` and do all edits there. Every worktree lives under
    the per-user root `~/.worktrees/livespec-console-beads-fabro/<branch>` — NEVER
    as a peer of the clones under `/data/projects`. **Create it with the recipe,
-   NOT with `git worktree add`:**
+   preferably, rather than raw `git worktree add`:**
 
    ```bash
    mise exec -- just worktree-create <branch> master
    ```
 
    `worktree-create` provisions the worktree-discipline pack into `dev-tooling/`
-   and hydrates. Raw `git worktree add` does neither, and **a worktree without
-   that pack can neither commit a `.py` change nor push at all** —
-   `check-primary-checkout-commit-refuse-hook-installed` fails with
-   `worktree_pack_absent` in both the pre-commit and pre-push aggregates. **A
-   docs-only branch is NOT exempt**; do not assume a prose change takes a fast
-   path around it.
+   and hydrates. Raw `git worktree add` does neither at creation time, but a
+   raw worktree CAN still commit and push: `lefthook.yml` runs
+   `just install-worktree-pack` as the FIRST command of both `pre-commit` and
+   `pre-push`, before any gate reads the pack, so the pack is installed (or a
+   pin-bump-stale copy re-installed) by the hook itself and no `just bootstrap`
+   is needed. The installer is idempotent, writes only gitignored files, and
+   installs from the package this checkout resolves; the byte-identity
+   verifier (`check-baseline`) then asserts the result in the aggregate. The
+   remaining reason to prefer the recipe is hydration — raw `git worktree add`
+   skips `cargo fetch` / `uv sync`, which the pack does not perform. Ratified:
+   livespec `SPECIFICATION/contracts.md` §"Pre-commit step ordering" (v219).
 
-   Two properties make this expensive to learn by hitting it:
+   One property of hook-gated commits is still expensive to learn by hitting
+   it: a hook-rejected `git commit` leaves the change **STAGED**, so a
+   following `git log` shows some other track's commit at HEAD and reads as
+   success. **After a hook-gated commit, `git status` is the check that tells
+   the truth, not `git log`.**
 
-   - The check is only reachable through a full `just check`, so it fires at
-     COMMIT or PUSH time — after the work is done — not at worktree-creation
-     time.
-   - A hook-rejected `git commit` leaves the change **STAGED**, so a following
-     `git log` shows some other track's commit at HEAD and reads as success.
-     **After a hook-gated commit, `git status` is the check that tells the
-     truth, not `git log`.**
-
-   `just install-worktree-pack` rescues a worktree that already exists without
-   the pack, and it must also be re-run in any worktree created across a
-   `livespec-dev-tooling` pin bump, because `worktree-create` provisions by
-   copying from the primary checkout. Measured 2026-09-06: after a pin bump the
+   `just install-worktree-pack` can also be run by hand in a worktree that
+   exists without the pack, or in one created across a `livespec-dev-tooling`
+   pin bump — `worktree-create` provisions by copying from the primary
+   checkout, so such a worktree is born stale until its first hook run
+   re-installs the pack. Measured 2026-09-06, before the hook ran the
+   installer first: after a pin bump the
    PRIMARY's pack was itself stale, so every `worktree-create` copied that
    staleness forward, and two unrelated branches (a docs note, a Dockerfile)
    both failed their pre-push `just check` on `check-baseline` +
    `check-no-workflow-edits` (`worktree_pack_file_missing`,
    `worktree_pack_body_mismatch`) — six minutes in, with lefthook's summary
-   swallowing the reason. Two rules follow. After any `livespec-dev-tooling` pin
-   bump, run `just install-worktree-pack` at the PRIMARY as well, so new
-   worktrees are not born stale (verified: a worktree created after the refresh
-   passes `check-baseline` at once). And in a fresh worktree run
-   `just check-baseline` BEFORE committing — a stale pack fails it in seconds,
-   not six minutes into the push. Prefer either over `just bootstrap`, which
-   reconciles the claude-plugins row and **advances the local plugin install** —
+   swallowing the reason. The hook ordering above closes that trap — a stale
+   pack is re-installed before the aggregate runs — but two habits still
+   help. After any `livespec-dev-tooling` pin bump, run
+   `just install-worktree-pack` at the PRIMARY as well, so new worktrees are
+   not born stale (verified: a worktree created after the refresh passes
+   `check-baseline` at once). And in a fresh worktree, `just check-baseline`
+   BEFORE committing confirms the pack in seconds. Prefer either over `just
+   bootstrap`, which reconciles the claude-plugins row and **advances the local
+   plugin install** —
    the thing that turns `check-fork-drift` red on clean `master`. The rest of the
    lifecycle has recipes too: `just worktree-hydrate`,
    `just worktree-land [base_ref]`, and `just worktree-reap [--execute]` for
