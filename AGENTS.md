@@ -387,8 +387,28 @@ them what they were allowed to decide.
 - **Prescribed destructive ops are pre-authorized.** When a destructive git
   operation is the codified mechanism of an adopted workflow — the
   `git commit --amend` of the Red→Green step, for instance — the adoption is
-  the authorization. Keep per-instance gating for ad-hoc `--amend`,
-  force-push, `reset --hard`, or `branch -D` on unmerged branches.
+  the authorization.
+  **Ordinary work on a branch you own is NOT "destructive" for this purpose,
+  and asking about it is over-asking.** Rebasing your own unmerged feature
+  branch onto its base and force-pushing it (`--force-with-lease`), squashing
+  or dropping your own `wip` commits, amending your own commit, and deleting
+  your own branch in post-merge cleanup are NORMAL FLOW in this repo's
+  worktree → rebase → PR → cleanup discipline. Do them and report them; never
+  raise a picker for them. A rebase whose whole point is to land cleanly
+  implies the force-push that publishes it — treating the two as separately
+  gated decisions stalls the branch for no gain, since nothing is lost:
+  the pre-rebase commit is the same content and the branch is unmerged.
+  Keep per-instance gating only where the act can destroy work that is not
+  yours to discard: a force-push over a branch someone else has pushed to, or
+  that an open review is anchored on; `reset --hard` discarding uncommitted
+  work you did not create; `branch -D` on an unmerged branch you did not
+  author; and any history rewrite of `master`.
+  Recorded 2026-09-06 after a session rebased its own unmerged spec branch
+  onto `origin/master` and then stopped to ask permission to force-push it,
+  reading the old flat "keep per-instance gating for ... force-push" as
+  covering the routine case. The maintainer's ruling: "It's a fucking branch
+  that you own. There's no reason you should have to ask to force push to it.
+  Rebase is a normal flow."
 - **An unratified filter inside a check is conformance, not ratification.**
   Narrowing, excluding, or filtering inside an enforcement check to match what
   the ratified spec already says is a conformance fix — implement it and report
