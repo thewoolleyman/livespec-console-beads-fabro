@@ -1,0 +1,2 @@
+work_item=livespec-console-beads-fabro-o36w
+reason=Fix the LIVESPEC_SANDBOX_OTEL_ENDPOINT ternary in ci.yml so GitHub-hosted runners get an empty value: the falsy '' true-branch made every hosted Rust job POST to the unreachable pod collector and log an emission-unreachable line per cargo phase (measured on master run 34003270210). Workflow-only change to one env expression; self-hosted behaviour unchanged.
