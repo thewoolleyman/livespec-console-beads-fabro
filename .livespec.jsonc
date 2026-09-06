@@ -268,8 +268,15 @@
       // checkout present. The principled fix — a per-checkout provisioning
       // seam in the janitor venue — is the orchestrator's; filed from this
       // repo 2026-09-01.
+      // RETIRED 2026-09-06 (console consume leg for bd-ib-6pzg): the sh -c
+      // form above looped over janitor-* checkouts to install the worktree
+      // pack because the venue bootstrapped with cwd = primary. Upstream
+      // bd-ib-ttmeb2 (orchestrator PR #2161, released 0.129.1) makes the
+      // janitor venue provision each checkout's per-worktree state — the
+      // pack — itself, so the declared recipe is the hook-install command
+      // only, exactly the contract's fleet default, declared explicitly.
       "janitor_bootstrap": {
-        "recipe": ["sh", "-c", "mise exec -- just install-commit-refuse-hooks && for d in \"$HOME\"/.worktrees/livespec-console-beads-fabro/janitor-*; do if [ -d \"$d/.git\" ] || [ -f \"$d/.git\" ]; then (cd \"$d\" && mise exec -- just install-worktree-pack); fi; done"]
+        "recipe": ["mise", "exec", "--", "just", "install-commit-refuse-hooks"]
       },
       "node_timeouts": {
         "implement": 14400,
