@@ -50,6 +50,11 @@ create unique index if not exists events_source_event_unique
 on events(source, source_event_id)
 where source_event_id is not null;
 
+-- The unique index over (stream_id, stream_seq) is NOT declared here. A
+-- database written before the store owned `stream_seq` carries repeats, so the
+-- index cannot be created over it until those rows are renumbered;
+-- `ensure_stream_positions` does both, in that order, once per database.
+
 create table if not exists commands (
   command_id text primary key,
   context text not null,
@@ -73,6 +78,16 @@ create table if not exists checkpoints (
   advanced_at text not null
 );
 ";
+
+/// The unique index that makes `(stream_id, stream_seq)` a real stream
+/// POSITION rather than a field whose name merely promises one.
+///
+/// Its whole job is to fail closed: if a future writer ever puts two events on
+/// the same position again — the defect this store carried until
+/// `livespec-console-beads-fabro-1d5f` — the write is refused instead of stored
+/// silently, so the regression surfaces at the append rather than years later
+/// in a reader that assumed the field could be ordered by.
+const STREAM_POSITION_INDEX: &str = "events_stream_position_unique";
 
 #[derive(Debug)]
 /// Variants for event store error state or outcome values.
@@ -684,8 +699,14 @@ impl SqliteEventStore {
     }
 
     /// Append event to the backing store.
+    ///
+    /// The stored `stream_seq` is the STORE's, not the caller's: it is resolved
+    /// by [`next_stream_position`] from the stream's own length inside this
+    /// transaction, and the value on the passed envelope is ignored. See that
+    /// function for why the caller cannot be the authority.
     pub fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
         let transaction = self.connection.transaction()?;
+        let stream_seq = next_stream_position(&transaction, append.event.stream_id())?;
         let inserted = transaction.execute(
             r"
             insert or ignore into events (
@@ -711,7 +732,7 @@ impl SqliteEventStore {
                 append.event.context(),
                 append.aggregate_id,
                 append.event.stream_id(),
-                append.event.stream_seq(),
+                stream_seq,
                 append.event.event_type().contract_name(),
                 append.event.schema_version(),
                 append.occurred_at,
@@ -1045,7 +1066,81 @@ fn initialize_connection(connection: &Connection, busy_timeout: Duration) -> Eve
         busy_timeout.as_millis()
     ))?;
     connection.execute_batch(SCHEMA)?;
+    ensure_stream_positions(connection)?;
     Ok(())
+}
+
+/// Make `events.stream_seq` a per-stream POSITION, once per database.
+///
+/// A database written before the store owned the field carries repeats — every
+/// command handler passed a literal ordinal that restarted per COMMAND, so a
+/// stream that received two commands holds 1, 2, 3 twice — and a unique index
+/// cannot be created over those rows. So the rows are renumbered FIRST, by
+/// `global_seq`, which is the store's own record of the order the events were
+/// appended in and therefore the only defensible reconstruction of each
+/// stream's position. Only then is the index created.
+///
+/// Guarded on the index's ABSENCE rather than run unconditionally: the
+/// renumbering is idempotent, but it rewrites every row of the table, and a
+/// store that already carries the index has nothing to repair. The two
+/// statements share ONE fallible call so the failure arm is reachable by a
+/// single test rather than two. They are deliberately NOT wrapped in a
+/// transaction: if the process dies between them the next open simply repeats
+/// the renumbering — the count-based numbering is a function of the rows, not
+/// of how many times it has run — whereas a half-applied transaction would need
+/// a recovery path of its own.
+///
+/// The index name is interpolated because `SQLite` cannot bind an identifier as
+/// a parameter; it is a crate constant, so it carries no injection surface.
+fn ensure_stream_positions(connection: &Connection) -> EventStoreResult<()> {
+    let already_indexed = connection
+        .query_row(
+            "select 1 from sqlite_master where type = 'index' and name = ?1",
+            params![STREAM_POSITION_INDEX],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if already_indexed.is_some() {
+        return Ok(());
+    }
+    connection.execute_batch(&format!(
+        "update events set stream_seq = (
+           select count(*) from events as preceding
+           where preceding.stream_id = events.stream_id
+             and preceding.global_seq <= events.global_seq
+         );
+         create unique index {STREAM_POSITION_INDEX} on events(stream_id, stream_seq);"
+    ))?;
+    Ok(())
+}
+
+/// The next POSITION on `stream_id`: one past the highest the stream holds.
+///
+/// The STORE is the authority for `stream_seq`, never the caller. Command
+/// handlers build their event sets one command at a time and can only count
+/// within the command they are handling, so every caller-supplied ordinal is
+/// scoped to a command and restarts for the next one. Measured on the live
+/// store 2026-08-20, stream `livespec-console-beads-fabro-erb2ud` held
+/// positions 1, 2, 3 from a set-acceptance command and then 0, 1, 2 again from
+/// a dispatch-item command four minutes later, and stream `fleet:livespec` held
+/// position 1 thirteen times. Only the store can see the whole stream, so only
+/// the store can number it.
+///
+/// Resolved inside the caller's transaction, so the read and the insert that
+/// consumes it cannot be interleaved by a peer writer — `SQLite` serializes
+/// writers, and [`STREAM_POSITION_INDEX`] refuses the result if that ever
+/// stops being true.
+fn next_stream_position(transaction: &Transaction<'_>, stream_id: &str) -> EventStoreResult<u64> {
+    let highest = transaction.query_row(
+        "select coalesce(max(stream_seq), 0) from events where stream_id = ?1",
+        params![stream_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    // `max` over an empty stream coalesces to 0, so a stream's first event is
+    // position 1 and `stream_seq` is never the zero the defective handlers
+    // wrote. Saturating because the conversion below, not an overflow panic, is
+    // where an out-of-range column value is reported.
+    sequence_from_rowid(highest.saturating_add(1))
 }
 
 /// Resolve [`BUSY_TIMEOUT_ENV`] from the process environment.
@@ -1128,15 +1223,16 @@ mod tests {
 
     use super::{
         AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
-        EventStoreError, EventStoreResult, STORE_OPEN_ATTEMPTS, SqliteEventStore, StoredCommand,
-        open_retry_backoff, open_tolerating_contention, render_open_failure, sequence_from_rowid,
+        EventStoreError, EventStoreResult, STORE_OPEN_ATTEMPTS, STREAM_POSITION_INDEX,
+        SqliteEventStore, StoredCommand, open_retry_backoff, open_tolerating_contention,
+        render_open_failure, sequence_from_rowid,
     };
     use console_application::{
         build_tui_model,
         source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane, LaneReason},
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
-    use rusqlite::{Connection, OpenFlags, Rows, Statement, Transaction};
+    use rusqlite::{Connection, OpenFlags, Rows, Statement, Transaction, params};
 
     #[test]
     fn transient_contention_is_keyed_on_the_sqlite_code_not_the_message() {
@@ -1432,7 +1528,13 @@ mod tests {
             events[1].context() == "dispatch",
             "eventstore test assertion",
         );
-        check(events[1].stream_seq() == 2, "eventstore test assertion");
+        // The two events are on DIFFERENT streams (`evt_1` on the fixture's
+        // `factory:` stream, `evt_2` on `repo:livespec-console-beads-fabro`), so
+        // each is the FIRST event of its own stream and both are at position 1.
+        // Before the store owned `stream_seq` this read back the 2 the caller
+        // had handed in — a per-command ordinal on a stream that had never seen
+        // an event.
+        check(events[1].stream_seq() == 1, "eventstore test assertion");
         check(
             events[1].payload_json() == "{}",
             "eventstore test assertion",
@@ -2181,11 +2283,176 @@ mod tests {
     #[test]
     fn append_event_reports_insert_sqlite_failure() {
         let mut store = ok_store(SqliteEventStore::open_in_memory());
-        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+        // Replace the table with one that still answers the stream-position
+        // lookup — it carries `stream_id` and `stream_seq` — but rejects the
+        // insert, so the arm under test is the INSERT's and not the lookup's
+        // (which `append_event_reports_stream_position_lookup_failure` owns).
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq integer primary key, \
+             stream_id text not null, stream_seq integer not null);",
+        ));
 
         let error = err_append_outcome(store.append_event(&event_append("evt_insert", None)));
 
         check_sqlite_error(error);
+    }
+
+    #[test]
+    fn append_event_reports_stream_position_lookup_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+
+        let error = err_append_outcome(store.append_event(&event_append("evt_position", None)));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn appending_to_one_stream_numbers_it_by_its_own_length() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+
+        for index in 0..3_u8 {
+            let _outcome =
+                ok_append_outcome(store.append_event(&event_append(&format!("evt_{index}"), None)));
+        }
+
+        // Every `event_append` fixture shares one stream, and each carries the
+        // fixture's literal `stream_seq` of 1. The store numbers them anyway.
+        check(
+            stream_positions(&store) == vec![1, 2, 3],
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn a_duplicate_append_neither_stores_a_row_nor_consumes_a_position() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let first = event_append("evt_dup", Some("source-dup"));
+
+        let inserted = ok_append_outcome(store.append_event(&first));
+        let duplicate = ok_append_outcome(store.append_event(&first));
+        let _outcome = ok_append_outcome(store.append_event(&event_append("evt_next", None)));
+
+        check(
+            inserted.status() == AppendStatus::Inserted,
+            "eventstore test assertion",
+        );
+        check(
+            duplicate.status() == AppendStatus::Duplicate,
+            "eventstore test assertion",
+        );
+        // The rejected re-append must not leave a hole: the next real event
+        // takes position 2, not 3.
+        check(
+            stream_positions(&store) == vec![1, 2],
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn a_legacy_store_is_renumbered_and_indexed_on_open() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        for index in 0..6_u8 {
+            let _outcome =
+                ok_append_outcome(store.append_event(&event_append(&format!("evt_{index}"), None)));
+        }
+        // Put the database back the way the defective store left it: no unique
+        // index, and one stream holding two commands' worth of events each
+        // numbered from its own command's ordinal, so 1, 2, 3 appears twice.
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop index {STREAM_POSITION_INDEX};
+             update events set stream_seq = ((global_seq - 1) % 3) + 1;"
+        )));
+        check(
+            stream_positions(&store) == vec![1, 2, 3, 1, 2, 3],
+            "eventstore test assertion",
+        );
+
+        ok_eventstore_unit(super::ensure_stream_positions(&store.connection));
+
+        check(
+            stream_positions(&store) == vec![1, 2, 3, 4, 5, 6],
+            "eventstore test assertion",
+        );
+        check(
+            stream_position_index_count(&store.connection) == 1,
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn an_already_indexed_store_is_left_alone() {
+        // The renumbering rewrites every row of the table, so it must run ONCE.
+        // A store that already carries the index is passed over: the position
+        // planted below survives, which it would not if the migration re-ran.
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let _outcome = ok_append_outcome(store.append_event(&event_append("evt_1", None)));
+        ok_sqlite_unit(
+            store
+                .connection
+                .execute_batch("update events set stream_seq = 41;"),
+        );
+
+        ok_eventstore_unit(super::ensure_stream_positions(&store.connection));
+
+        check(
+            stream_positions(&store) == vec![41],
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn ensure_stream_positions_reports_sqlite_failure() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // Dropping the table drops its index too, so the guard sees an
+        // unindexed database and the renumbering statement is what fails.
+        ok_sqlite_unit(store.connection.execute_batch("drop table events"));
+
+        let error = err_eventstore_unit(super::ensure_stream_positions(&store.connection));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn ensure_stream_positions_reports_a_contended_schema_read() {
+        // Even the question "is this database already indexed?" is a read of
+        // the file, and a peer holding it exclusively refuses it. The migration
+        // must report that rather than assume an unindexed database and start
+        // rewriting rows.
+        let path = scratch_file("contended-position-guard");
+        let peer = ok_connection(Connection::open(&path));
+        ok_sqlite_unit(peer.execute_batch(
+            "PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE; CREATE TABLE peer_write(x);",
+        ));
+        let connection = ok_connection(Connection::open(&path));
+        ok_sqlite_unit(connection.busy_timeout(Duration::from_millis(0)));
+
+        let error = err_eventstore_unit(super::ensure_stream_positions(&connection));
+
+        check_sqlite_error(error);
+        ok_sqlite_unit(peer.execute_batch("ROLLBACK;"));
+        let _ignored = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opening_a_store_that_cannot_be_renumbered_reports_the_failure() {
+        // An `events` table that SATISFIES the schema batch — it carries the
+        // columns the source-event index needs, so `create table if not exists`
+        // no-ops and the index is created — but has no `stream_id`, so the
+        // stream-position migration is what fails and `open` must surface it.
+        let path = scratch_file("unrenumberable-events");
+        let connection = ok_connection(Connection::open(&path));
+        ok_sqlite_unit(connection.execute_batch(
+            "create table events (global_seq integer primary key, source text not null, \
+             source_event_id text null, stream_seq integer not null);",
+        ));
+        drop(connection);
+
+        let error = err_store(SqliteEventStore::open(&path));
+
+        check_sqlite_error(error);
+        let _ignored = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -3463,6 +3730,36 @@ mod tests {
             event.payload_json().to_owned(),
             "{}".to_owned(),
         )
+    }
+
+    /// A private, per-process database path for a file-backed scene.
+    fn scratch_file(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "livespec-console-eventstore-{name}-{}.sqlite",
+            std::process::id()
+        ));
+        let _ignored = std::fs::remove_file(&path);
+        path
+    }
+
+    /// Every stored position, in append order.
+    #[track_caller]
+    fn stream_positions(store: &SqliteEventStore) -> Vec<u64> {
+        ok_console_events(store.list_console_events())
+            .iter()
+            .map(ConsoleEvent::stream_seq)
+            .collect()
+    }
+
+    /// How many indexes named [`STREAM_POSITION_INDEX`] the database carries —
+    /// 0 or 1, since the name is unique in `sqlite_master`.
+    #[track_caller]
+    fn stream_position_index_count(connection: &Connection) -> i64 {
+        ok_i64(connection.query_row(
+            "select count(*) from sqlite_master where type = 'index' and name = ?1",
+            params![STREAM_POSITION_INDEX],
+            |row| row.get(0),
+        ))
     }
 
     fn event_append(event_id: &str, source_event_id: Option<&str>) -> EventAppend {
