@@ -1,6 +1,6 @@
 {
   "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
-  "upstream_plugin_version": "6edebb0b0c50",
+  "upstream_plugin_version": "c462516c456e",
   "files": [
     {
       "path": "prompts/disposition.md",
@@ -40,15 +40,15 @@
     },
     {
       "path": "workflow.fabro",
-      "upstream_sha256": "3041a4f37f16b86ed1459acf94df73df45c9adffdbc508976eab6a9e3c2f68fd",
+      "upstream_sha256": "387cdecbfb2e003a9ddec4d2bdd212c59031623c680ecb28ce94e839c9d2295b",
       "present_in_fork": true,
-      "reason": "RE-FORKED 2026-09-01 onto the upstream bundle at plugin d709f27ac3c1 (work-item livespec-console-beads-fabro-npr2gw, gap-l6iyo4ws; plan retire-overseer-and-redesign-control-plane-around-console, epic livespec-console-beads-fabro-pzbdbo): the whole graph adopted upstream's v092 typed integration-contract inputs and the v093 needs_human terminal ('a factory run never awaits a human'), retiring the in-loop escalate/abandon gate the fork carried. SYNCED VERBATIM \u2014 ZERO byte divergence. Everything the old entry itemised is now upstream's own: the merge_on_review_cap_outcome-conditioned review->pr ship-on-cap edge (parameterized by inputs.review_fix_visit_cap), the dead-implementer breaker against origin/{{ inputs.default_branch }}, the janitor as {{ inputs.sandbox_check_suite }}, per-node implement/fix/review_fix/disposition adapters, the disposition stage, and the needs_human terminal replacing escalate+abandon (tree preserved on refs/heads/needs-human/<run>, LIVESPEC_NEEDS_HUMAN sentinel, decision as a ledger valve). Node timeout literals are 1800s defaults the Dispatcher REWRITES from this repo's .livespec.jsonc dispatcher.node_timeouts (implement 14400 / janitor 3600 / fix 3600 / review_fix 3600); do not edit literals here. Treat any future upstream movement as a design review, and any local edit as a divergence that must earn its own entry."
+      "reason": "RE-FORKED 2026-09-01 onto the upstream bundle at plugin d709f27ac3c1 (work-item livespec-console-beads-fabro-npr2gw, gap-l6iyo4ws; plan retire-overseer-and-redesign-control-plane-around-console, epic livespec-console-beads-fabro-pzbdbo): the whole graph adopted upstream's v092 typed integration-contract inputs and the v093 needs_human terminal ('a factory run never awaits a human'), retiring the in-loop escalate/abandon gate the fork carried. SYNCED VERBATIM — ZERO byte divergence. Everything the old entry itemised is now upstream's own: the merge_on_review_cap_outcome-conditioned review->pr ship-on-cap edge (parameterized by inputs.review_fix_visit_cap), the dead-implementer breaker against origin/{{ inputs.default_branch }}, the janitor as {{ inputs.sandbox_check_suite }}, per-node implement/fix/review_fix/disposition adapters, the disposition stage, and the needs_human terminal replacing escalate+abandon (tree preserved on refs/heads/needs-human/<run>, LIVESPEC_NEEDS_HUMAN sentinel, decision as a ledger valve). Node timeout literals are 1800s defaults the Dispatcher REWRITES from this repo's .livespec.jsonc dispatcher.node_timeouts (implement 14400 / janitor 3600 / fix 3600 / review_fix 3600); do not edit literals here. Treat any future upstream movement as a design review, and any local edit as a divergence that must earn its own entry."
     },
     {
       "path": "workflow.toml",
       "upstream_sha256_ignoring_docker_pin": "cca65a99d04e17421df17a100177ad1c3373cd478e82c87c19d5f40f0945e35e",
       "present_in_fork": true,
-      "reason": "Divergence: the Rust-capable sandbox image (python-rust-agent) in environments.livespec-ci.image \u2014 the console builds Rust. Everything else, including every [[run.prepare.steps]] script, is upstream verbatim: the 2026-09-01 literal prepare steps were an interim for bd-ib-ott6 (duplicate of bd-ib-8atx) and reverted to projections on 2026-09-06 once the Dispatcher rendered prepare-step input tokens host-side (v0.124.3+; installed 0.129.1)."
+      "reason": "Divergence: the Rust-capable sandbox image (python-rust-agent) in environments.livespec-ci.image — the console builds Rust. Everything else, including every [[run.prepare.steps]] script, is upstream verbatim: the 2026-09-01 literal prepare steps were an interim for bd-ib-ott6 (duplicate of bd-ib-8atx) and reverted to projections on 2026-09-06 once the Dispatcher rendered prepare-step input tokens host-side (v0.124.3+; installed 0.129.1)."
     }
   ]
 }
