@@ -239,6 +239,7 @@ check:
         check-shell-quality
         check-no-workflow-edits
         check-plan-no-tombstone
+        check-plan-record-conformance
         check-plan-anchor-declared
         check-plugin-resolution
         check-doctor-static
@@ -448,6 +449,15 @@ check-baseline:
 # 2026-08-18 (livespec-dev-tooling-y23f).
 check-plan-no-tombstone:
     uv run python -m livespec_dev_tooling.checks.plan_no_tombstone
+
+# Plan-record conformance (D6: plan_slug per epic, associated_work_item_id at
+# every plan-dir root, typed next_action on open epics). Ships in
+# livespec-dev-tooling >= v1.52; SELF-SKIPS unless
+# LIVESPEC_RUN_PLAN_RECORD_CONFORMANCE is set, so wiring it is safe before the
+# tenant is reconciled. Arm it only after an armed hand run is clean
+# (orchestrator bd-ib-xpszyi leg 3; console livespec-console-beads-fabro-pzbdbo.16).
+check-plan-record-conformance:
+    uv run python -m livespec_dev_tooling.checks.plan_record_conformance
 
 check-plan-anchor-declared:
     uv run python -m livespec_dev_tooling.checks.plan_anchor_declared
