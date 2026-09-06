@@ -208,12 +208,38 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // contracts.md clauses: per-item verb surface parity on the needs-attention
     // row, and the single-key accelerator on per-item dispatch:
     // 245 normative clauses, 22/142/22/59.
+    // The v048 nightly-soak-ssh-ingress-filing revision nets +8 in
+    // non-functional-requirements.md, but the shape is 11 clause LINES added and
+    // 3 removed -- rules are extracted per line, so a reworded MUST retires one
+    // gap-id and mints another rather than counting as new, and a MUST that
+    // wraps across two lines counts twice. Removed: the old "file a chore
+    // work-item at the [top of the rank order]" line, the old "It MUST NOT file
+    // a chore when an open (non-closed) chore" line, and the old "CI MUST obtain
+    // BEADS_DOLT_PASSWORD" line. Added, under Quality Gate (8): the reworded
+    // primary filing sentence, the two wrapped lines of the narrowed filing
+    // guarantee (durably recorded, labelled, fingerprinted, recoverable by
+    // label; and never filed into `ready`), the fingerprint rendering rule, the
+    // reworded dedup line, the CI-holds-no-database-credential MUST NOT, and the
+    // two wrapped lines of the self-hosted on-tailnet fail-closed rule. Added,
+    // under Beads/Fabro Family Secret Convention (3): the two wrapped lines
+    // scoping the convention to THIS repository's own processes, and the line
+    // refusing to assert how the ingress host credentials its own `bd`.
+    // Two deliberate reductions in normative force are recorded here rather than
+    // disguised. First, the "top of the rank order" obligation is REMOVED, not
+    // relocated: an ingress-filed item lands at beads `open`, outside the
+    // orchestrator's lifecycle states, so no actor performs the transition it
+    // would have bound to. Second, the convention no longer claims the ingress
+    // host obtains the family secret -- that host is dolt-server, whose ratified
+    // constraints.md seals a `ci-writer` credential and forbids that profile
+    // from loading any family credential, so the claim was substrate-false and
+    // contradicted the owning repo:
+    // 253 normative clauses, 22/142/22/67.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
         ("contracts.md", 142),
         ("constraints.md", 22),
-        ("non-functional-requirements.md", 59),
+        ("non-functional-requirements.md", 67),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -223,7 +249,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 245,
+        total, 253,
         "total normative clauses across the console spec"
     );
     Ok(())

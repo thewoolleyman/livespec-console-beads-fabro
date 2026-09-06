@@ -394,7 +394,15 @@
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       },
       {
-        "gap_id": "gap-ay7wmdyj",
+        "gap_id": "gap-2d7nzl5g",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-2aror4ao",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-fvg2ftfx",
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       },
       {
@@ -402,7 +410,23 @@
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       },
       {
-        "gap_id": "gap-y5fhrqid",
+        "gap_id": "gap-f6vpp4se",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-tzvxyiqs",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-ujeasnu6",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-drgh5gi2",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-csny57jm",
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       }
     ]
@@ -458,7 +482,15 @@
         "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
       },
       {
-        "gap_id": "gap-mmtvkkpz",
+        "gap_id": "gap-fgbuqndx",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      },
+      {
+        "gap_id": "gap-iy7bsh7a",
+        "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
+      },
+      {
+        "gap_id": "gap-lhvsqy4p",
         "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention"
       }
     ]
