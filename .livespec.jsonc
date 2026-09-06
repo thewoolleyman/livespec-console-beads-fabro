@@ -278,6 +278,41 @@
       "janitor_bootstrap": {
         "recipe": ["mise", "exec", "--", "just", "install-commit-refuse-hooks"]
       },
+      // The two TOOLCHAIN premises and the three DISPATCH-TIME CONFORMANCE
+      // premises the sandbox prepare chain establishes (orchestrator contract
+      // keys `dispatcher.prepare_toolchain.{mise,lefthook}` and
+      // `dispatcher.conformance.{hook_install,verify_commit_refuse_hook,
+      // verify_plugin_resolution}`). The Dispatcher resolves each ONCE and
+      // renders it into the bundled workflow's `[[run.prepare.steps]]` as
+      // `inputs.prepare_toolchain_*` / `inputs.conformance_*`; the committed
+      // payload spells no fleet tool of its own. An undeclared key resolves to
+      // the ratified EXPLICIT NO-OP — the adopter-without-the-tool posture —
+      // not to a fleet default.
+      //
+      // MEASURED 2026-09-06, hp run 01M1TG3CXVK1SXSMR4W85T27P5 (work-item
+      // livespec-console-beads-fabro-pzbdbo.10, the first factory run after
+      // PR #968 reverted this fork's six literal prepare steps to upstream's
+      // projections): with these keys absent the mise step rendered empty,
+      // so nothing ran `mise trust`, and the very next literal step
+      // (`uv sync --all-groups`) died at 41 s with "Config files in
+      // .mise.toml are not trusted" before any agent work. The retired
+      // literals were exactly the values below (the version-manager install
+      // is ANONYMOUS for the reason recorded on orchestrator work-item
+      // bd-ib-bic7hb: mise's aqua backend would otherwise spend the factory's
+      // App-installation rate-limit bucket on public release metadata).
+      // This repo is a fleet member carrying livespec-dev-tooling, so the
+      // conformance premises declare the internal mode, whose rendered argvs
+      // are the same three `uv run python -m livespec_dev_tooling...`
+      // commands the literals spelled.
+      "prepare_toolchain": {
+        "mise": ["sh", "-c", "mise trust && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_API_TOKEN mise install --quiet"],
+        "lefthook": ["uv", "run", "lefthook", "install"]
+      },
+      "conformance": {
+        "hook_install": { "mode": "internal_livespec_dev_tooling" },
+        "verify_commit_refuse_hook": { "mode": "internal_livespec_dev_tooling" },
+        "verify_plugin_resolution": { "mode": "internal_livespec_dev_tooling" }
+      },
       "node_timeouts": {
         "implement": 14400,
         "janitor": 3600,
