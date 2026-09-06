@@ -57,7 +57,15 @@ case "${mode}" in
         ;;
     fuzz)
         install_if_missing cargo-fuzz cargo-fuzz
-        rustup toolchain install nightly --profile minimal
+        # A bare `rustup toolchain install nightly` on an ALREADY-installed
+        # channel still syncs the channel manifest and downloads today's
+        # nightly (measured 26-32 s per CI run, 2026-09-06). The
+        # python-rust-fuzz sandbox layer bakes a nightly, so only install when
+        # no nightly toolchain is present; the baked one is pinned by the
+        # image tag, not by the day the job happens to run.
+        if ! rustup toolchain list | grep -q '^nightly'; then
+            rustup toolchain install nightly --profile minimal
+        fi
         ;;
     mutants)
         # cargo-mutants runs the workspace's configured test tool (nextest)
