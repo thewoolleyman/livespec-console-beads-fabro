@@ -498,6 +498,19 @@ check-red-green-replay:
 # recipe supplies the ledger under the credential wrapper and FAILS CLOSED when
 # it cannot — an unreachable ledger refuses the push rather than passing blind.
 #
+# TWO LEDGERS, ONE WRAPPER INVOCATION (pzbdbo.10). The cross-tenant lifecycle
+# rules (D upstream closed => proxy must close, E proxy closed while upstream
+# open, U upstream id unknown, and the never-refusing stale-upstream warning)
+# need the ORCHESTRATOR tenant's ledger too. `bd` resolves its tenant from the
+# CURRENT DIRECTORY's .beads/config.yaml, so the two reads are one wrapper
+# invocation that reads this repo first and then cd's to the orchestrator
+# clone. One invocation, not two, because each one is an `op run` against a
+# 1Password daily quota shared ACCOUNT-WIDE across every tenant on this host:
+# doubling the gate's spend would block `git push` and every ledger write
+# fleet-wide. Either read failing, or coming back empty or as an empty array,
+# is a refusal — a gate that cannot see the upstream lifecycle must not pass
+# it. `--now` is supplied here so the crate stays pure and clock-free.
+#
 # Deliberately NOT `check-`-prefixed and NOT in the `check:` aggregate: the
 # aggregate runs in CI on GitHub-hosted runners with no tenant secret, and the
 # dev-tooling reconciler adopts every `check-*` slug into `check:`. This
@@ -516,16 +529,27 @@ gate-upstream-deps:
         exit 0
     fi
     ledger="$(mktemp)"
-    trap 'rm -f "${ledger}"' EXIT
-    if ! /usr/local/bin/with-livespec-env.sh -- bd list --status all --json -n 0 > "${ledger}"; then
-        echo "gate-upstream-deps: FAIL CLOSED — could not read the ledger through the credential wrapper; refusing rather than passing blind" >&2
+    upstream="$(mktemp)"
+    trap 'rm -f "${ledger}" "${upstream}"' EXIT
+    if ! /usr/local/bin/with-livespec-env.sh -- bash -c '
+        set -uo pipefail
+        bd list --status all --json -n 0 > "$1" || exit 1
+        cd /data/projects/livespec-orchestrator-beads-fabro || exit 1
+        bd list --status all --json -n 0 > "$2" || exit 1
+    ' gate-upstream-deps "${ledger}" "${upstream}"; then
+        echo "gate-upstream-deps: FAIL CLOSED — could not read both the console and orchestrator ledgers through the credential wrapper; refusing rather than passing blind" >&2
         exit 1
     fi
-    if [ ! -s "${ledger}" ]; then
-        echo "gate-upstream-deps: FAIL CLOSED — the ledger read returned nothing; refusing rather than passing blind" >&2
-        exit 1
-    fi
-    cargo run --quiet --package console-upstream-dep-check -- "${ledger}"
+    for probe in "console:${ledger}" "orchestrator:${upstream}"; do
+        tenant="${probe%%:*}"
+        path="${probe#*:}"
+        if [ ! -s "${path}" ] || [ "$(tr -d '[:space:]' < "${path}")" = "[]" ]; then
+            echo "gate-upstream-deps: FAIL CLOSED — the ${tenant} ledger read returned nothing; refusing rather than passing blind" >&2
+            exit 1
+        fi
+    done
+    cargo run --quiet --package console-upstream-dep-check -- \
+        "${ledger}" --upstream "${upstream}" --now "$(date -u +%Y-%m-%d)"
 
 # Re-capture upstream digests for the fork after a conscious review of what
 # upstream changed. Needs the orchestrator plugin installed; preserves each

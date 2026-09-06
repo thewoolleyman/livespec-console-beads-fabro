@@ -21,6 +21,23 @@ the convention every work item in this tenant follows so they can:
   phrase (hand-bridge, because pinned, workaround, in place of a projection,
   literal prepare/value) beside an upstream reference, MUST depend on a proxy.
   A filing at `backlog`/`open` is not yet a shipped deviation.
+- **The lifecycle is mechanical in BOTH directions.** A proxy closes when its
+  upstream item closes, and only then. Rule **D**
+  (`upstream-dep-proxy-stale-upstream-closed`) refuses a non-closed proxy whose
+  upstream item is already `closed` — that is the 2026-09-06 failure, four
+  proxies sitting `blocked` for one to two days after their orchestrator items
+  had closed with nothing noticing. Rule **E**
+  (`upstream-dep-proxy-closed-upstream-open`) refuses the reverse, a closed
+  proxy whose upstream item is still open, UNLESS the proxy carries non-empty
+  metadata `proxy_released_reason` — a deliberate release, recorded. Rule **U**
+  (`upstream-dep-proxy-upstream-unknown`) refuses a proxy whose
+  `upstream_work_item_id` is absent from the upstream ledger, because a
+  dependency nobody tracks cannot be waited on.
+- **A stalled upstream WARNS, it never refuses.** Warning
+  `upstream-dep-upstream-stale` prints on EVERY push when a non-closed proxy's
+  upstream item has not moved in more than 7 days (measured against `--now`),
+  so an orchestrator stall is seen where the maintainer works daily. Breaking
+  the stall is the orchestrator's job, so it never blocks this repo's push.
 - **The gate:** `crates/console-upstream-dep-check` (pure over the
   `bd list --status all --json -n 0` array; general — any item, epic or not)
   run by `just gate-upstream-deps` from the pre-push hook on the host. It
@@ -31,7 +48,18 @@ the convention every work item in this tenant follows so they can:
   pre-dispatch refusal is the gate. Failure modes:
   `upstream-dep-proxy-not-blocked`, `upstream-dep-proxy-title`,
   `upstream-dep-proxy-metadata-missing`, `upstream-dep-deviation-without-proxy`,
-  `upstream-dep-held-item-dispatchable`.
+  `upstream-dep-held-item-dispatchable`,
+  `upstream-dep-proxy-stale-upstream-closed`,
+  `upstream-dep-proxy-closed-upstream-open`,
+  `upstream-dep-proxy-upstream-unknown`.
+- **The venue reads TWO ledgers under ONE wrapper invocation.** D, E, U and the
+  stale warning are cross-tenant, so the recipe reads this tenant and then
+  `/data/projects/livespec-orchestrator-beads-fabro` inside a SINGLE
+  `with-livespec-env.sh` call (`bd` resolves its tenant from the current
+  directory), and passes `--upstream <orch.json> --now <YYYY-MM-DD>` to the
+  crate, which stays pure and clock-free. One invocation because each is an
+  `op run` against an account-wide daily quota. Either read failing, or coming
+  back empty or as an empty array, is a refusal.
 - **Visibility:** proxies surface in the console's `blocked` lane
   (`list-work-items`, label `upstream-dep:*`). Surfacing them as a
   needs-attention inbox row needs an orchestrator gather fact — upstream work,
