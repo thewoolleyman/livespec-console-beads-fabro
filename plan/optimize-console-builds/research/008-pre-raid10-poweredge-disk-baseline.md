@@ -14,9 +14,10 @@
 > 1. **BEFORE — the original RAID-5 spinning array.** Frozen (Layer 1 `fio` +
 >    Layer 2 self-hosted CI window). Nothing to re-run.
 > 2. **+ NVMe — current state.** Layer 1 captured 2026-09-04 (see "The AFTER"
->    below). **SINGLE card**; a second NVMe is coming, so this is the one-card
->    number and a two-card capture may refine it. The Layer-2 CI build-time AFTER
->    still accrues as self-hosted runs land on the NVMe-backed pool.
+>    below) on the single card, and RE-CAPTURED 2026-09-06 with **both cards**
+>    installed (see "Layer 1 AFTER, dual card"): the cards split roles rather
+>    than mirror, and the work-volume tier moved to XFS with reflinks. The
+>    Layer-2 CI build-time AFTER is captured below (n = 20 runs per job).
 >
 > Hardware sequencing is authoritative in the livespec repo's
 > `plan/poweredge-raid-array-maintenance/research/nvme-add-tmpfs-tiering-and-clean-raid5-rebuild-plan.md`
@@ -127,11 +128,52 @@ cold-build gate (RAID-5's read-modify-write parity penalty) is gone — a cold
 `cargo` build's thousands of small `target/` writes are no longer disk-bound on
 this host.
 
-Caveats: (1) **single** NVMe card; a second is coming — re-capture for the
-two-card number if the fs geometry changes. (2) seq numbers are single-job
-(`numjobs=1`, to match BEFORE) so they understate the drive's ceiling; the random
-figures are the build-relevant ones. (3) This is the Layer-1 (raw-device) AFTER;
-the Layer-2 CI build-time AFTER is captured directly below.
+Caveats: (1) **single** NVMe card; the two-card re-capture is directly below.
+(2) seq numbers are single-job (`numjobs=1`, to match BEFORE) so they understate
+the drive's ceiling; the random figures are the build-relevant ones. (3) This is
+the Layer-1 (raw-device) AFTER; the Layer-2 CI build-time AFTER follows it.
+
+### Layer 1 AFTER, dual card — 2026-09-06 (both NVMe installed; XFS work tier)
+
+Captured **2026-09-06T03:00:47–03:03:01Z** at maintainer signal ("Both NVMe are
+now installed"), same `fio` 3.41 flags as every row above, against the CI
+work-volume filesystem as it exists now. The second card did NOT become a
+mirror or stripe; the tiers were **split across the two cards** and the
+work-volume tier was **re-created on XFS with reflinks** (dev-tooling's
+`migrate-tier.sh`, `livespec-dev-tooling-hmv2bo`; the warm-cache README's
+"clean alternative" for a job-owned copy-on-write seed):
+
+| Device | LV | Filesystem | Mounted at | Holds |
+|---|---|---|---|---|
+| `nvme0n1` (WD_BLACK SN8100 4 TB) | `nvmeb-ci--workvols` 1.5 TiB | **XFS**, `reflink=1`, `noatime`, `sunit=8,swidth=2048` | `/var/lib/rancher/k3s/storage` | runner work volumes (`pvc-*`), the `.warm` tier — the benchmarked fs |
+| `nvme1n1` (WD_BLACK SN8100 4 TB) | `nvmea-ci--containerd` 1.5 TiB | ext4 | `/var/lib/rancher/k3s/agent/containerd` | image layers / container rootfs |
+
+Host up 59 min (rebooted for the card), loadavg 2.7 → 4.5 during the run, no
+CI job running (every scale set at 0 runners).
+
+| Test | BEFORE (RAID-5 HDD) | +NVMe, 1 card (ext4, 09-04) | **Dual card, XFS work tier (09-06)** |
+|---|---|---|---|
+| seq write 1M, qd16 | 215 IOPS / 216 MiB/s | 3,019 / 3,020 MiB/s | **3,298 IOPS / 3,299 MiB/s** |
+| seq read 1M, qd16 | 690 IOPS / 691 MiB/s | 3,218 / 3,219 MiB/s | **3,332 IOPS / 3,333 MiB/s** |
+| rand write 4k, qd32×4 | 3,389 IOPS / 13.3 MiB/s | 546k / 2,133 MiB/s | **485k IOPS / 1,896 MiB/s** |
+| rand read 4k, qd32×4 | 15,494 IOPS / 60.4 MiB/s | 442k / 1,728 MiB/s | **777k IOPS / 3,037 MiB/s** |
+| p99 clat, rand write | 127 ms | ~0.49 ms | 0.31 ms (p99.5 6.5 ms, p99.9 19.5 ms) |
+| p99 clat, rand read | 135 ms | ~2.1 ms | 0.22 ms |
+
+**Reading.** Same drive model, so the per-device ceiling did not move; what
+changed is contention and filesystem. Random read nearly doubled (442k → 777k
+IOPS) because the work tier no longer shares its card with containerd's image
+reads and the host was quiet (loadavg ~3 vs 7–14 on 09-04). Random write is
+~11% lower with a longer tail (p99.5 6.5 ms vs sub-millisecond on ext4): XFS's
+metadata journaling on 4 KiB random overwrites, on a stripe-aligned LV. For
+builds this is neutral — either floor is two orders of magnitude above what a
+cargo build can issue (research/009), and RAID-5's 3,389-IOPS knee is what
+gated cold builds, not ext4-vs-XFS. The second card's value is **isolation**
+(image pulls and rootfs reads on one device, `target/` churn on the other) and
+**reflinks**: a `cp --reflink` of a warm generation is a copy-on-write copy the
+job owns outright, which changes the copy-safety design in research/010 (its
+pool half is measured on this exact filesystem). No further Layer-1 capture is
+owed; the disk axis of the Phase-2 comparison is closed.
 
 ### Layer 2 AFTER — CI build-time on the NVMe self-hosted pool, 2026-09-06
 
@@ -310,6 +352,8 @@ thrown-away sandbox, not disk; disk is a secondary lever for the factory tier.
 - **Two-state delta (per the 2026-09-04 v3 top annotation):** state (1) BEFORE
   is the frozen capture above; state (2) +NVMe Layer-1 `fio` is captured in "The
   AFTER" (random write 3,389 → 546k IOPS, ~161×; single card). The RAID-5-only
-  intermediate was skipped — NVMe validated directly. Still owed: the Layer-2 CI
-  build-time AFTER (a Honeycomb window of self-hosted runs on the NVMe pool) and,
-  if the second card changes the fs geometry, a two-card Layer-1 re-capture.
+  intermediate was skipped — NVMe validated directly. Both follow-ups are now
+  captured above: the Layer-2 CI build-time AFTER (n = 20 self-hosted runs per
+  job) and the two-card Layer-1 re-capture of 2026-09-06 (roles split across the
+  cards, work tier on XFS with reflinks; random read 777k IOPS, random write
+  485k). The disk axis of the Phase-2 comparison is closed.
