@@ -276,11 +276,23 @@ digraph ImplementWorkItem {
     // The sentinel string is shared with the Dispatcher consumer
     // (commands/_dispatcher_plan.NEEDS_HUMAN_MARKER) — keep the two in
     // lockstep, exactly as LIVESPEC_NON_CONVERGED is.
+    //
+    // The ref is derived ONLY from FABRO_RUN_ID; there is deliberately NO
+    // placeholder fallback. The pinned fabro exports that variable to HOOKS
+    // only, never to script nodes, so a `${FABRO_RUN_ID:-<placeholder>}`
+    // form silently collapsed every run onto ONE shared ref: the second
+    // needs-human exit clobbered or failed against the first, and the
+    // console's needs-human valve could not find the tree it was asked to
+    // rule on. With no id in the environment the step therefore pushes
+    // NOTHING and says so loudly on stderr (LIVESPEC_NEEDS_HUMAN_NO_RUN_ID),
+    // leaving the operator on the preserve-by-reference dump pointer; the
+    // run-scoped ref reappears with no change here once the fork half
+    // (bd-ib-bb41.1) exports the run id to script nodes and is re-pinned.
     needs_human [
         label="Needs human: terminate, preserve the tree, route the decision to the ledger"
         shape=parallelogram
         timeout="600s"
-        script="ref=\"refs/heads/needs-human/${FABRO_RUN_ID:-unknown-run}\"; git add -A >/dev/null 2>&1 || true; git -c user.name=fabro -c user.email=fabro@livespec.invalid commit -q -m 'needs-human: preserve tree before terminating' >/dev/null 2>&1 || true; if git push origin \"HEAD:$ref\" >/dev/null 2>&1; then echo \"LIVESPEC_NEEDS_HUMAN_PRESERVED: $ref\" >&2; else echo 'LIVESPEC_NEEDS_HUMAN_PUSH_FAILED: tree not pushed; rely on the preserve-by-reference dump pointer' >&2; fi; echo 'LIVESPEC_NEEDS_HUMAN: loop cannot auto-resolve this work-item; run terminated, work preserved by reference, decision routed to the ledger (blocked / needs-human)' >&2; exit 1"
+        script="if test -n \"${FABRO_RUN_ID:-}\"; then ref=\"refs/heads/needs-human/$FABRO_RUN_ID\"; git add -A >/dev/null 2>&1 || true; git -c user.name=fabro -c user.email=fabro@livespec.invalid commit -q -m 'needs-human: preserve tree before terminating' >/dev/null 2>&1 || true; if git push origin \"HEAD:$ref\" >/dev/null 2>&1; then echo \"LIVESPEC_NEEDS_HUMAN_PRESERVED: $ref\" >&2; else echo 'LIVESPEC_NEEDS_HUMAN_PUSH_FAILED: tree not pushed; rely on the preserve-by-reference dump pointer' >&2; fi; else echo 'LIVESPEC_NEEDS_HUMAN_NO_RUN_ID: no FABRO_RUN_ID in this script environment, so no run-scoped ref exists to push and nothing was pushed; rely on the preserve-by-reference dump pointer' >&2; fi; echo 'LIVESPEC_NEEDS_HUMAN: loop cannot auto-resolve this work-item; run terminated, work preserved by reference, decision routed to the ledger (blocked / needs-human)' >&2; exit 1"
     ]
 
     // Terminal non-converged node (work-item livespec-impl-beads-rw75ym,
