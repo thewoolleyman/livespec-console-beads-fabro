@@ -229,55 +229,35 @@
       // console implement turn cannot fit a cold cargo build + test cycle
       // inside 30 minutes; the values below restore what the fork already
       // declares and what the fleet's other dispatch targets set.
-      // In-sandbox janitor check suite (contract field
-      // `dispatcher.janitor.check_suite`, rendered into the workflow's
-      // `inputs.sandbox_check_suite` and run by the janitor node). DECLARED
-      // rather than left to the fleet default ("mise exec -- just check")
-      // so `check-no-workflow-edits` — the recipe that refuses workflow-file
-      // drift acquired DURING a run, before the fleet App's contents-only
-      // push token turns it into an opaque push rejection at the pr stage —
-      // runs FIRST and alone, reporting a violation before the long aggregate
-      // starts. Since livespec-dev-tooling-fy02 the recipe delegates to the
-      // worktree-pack's shared body and is ALSO a member of `just check`, so
-      // the leading invocation is an early report, not the only run.
-      // The old fork hardcoded exactly this command in its janitor node.
-      "janitor": {
-        "check_suite": ["mise", "exec", "--", "just", "check-no-workflow-edits", "check"]
-      },
-      // Post-merge janitor bootstrap recipe (contract key
-      // `dispatcher.janitor_bootstrap.recipe`). DECLARED because the fleet
-      // default — `mise exec -- just install-commit-refuse-hooks` — installs
-      // the commit-refuse hooks but NOT the worktree-discipline pack, and
-      // this repo's `check-baseline` (dev-tooling >= v1.37.1) refuses a
-      // checkout whose `dev-tooling/` lacks the pack
-      // (`worktree_pack_absent`). Measured 2026-09-01 22:14Z: the post-merge
-      // janitor for livespec-console-beads-fabro-h7jp went red at
-      // check-baseline in its fresh checkout for exactly this reason, which
-      // blocked the ai-only acceptance pass of an already-merged item.
-      // Deliberately NOT `just bootstrap`: bootstrap's local_reconcile
-      // advances the HOST-WIDE plugin install from inside a janitor checkout
-      // (the thing that turns check-fork-drift red on clean master).
-      // CORRECTION (2026-09-01 23:33Z, run 01M1FJJDQXJMD7G0B17X88SBDS): the
-      // first form of this declaration appended install-worktree-pack, but
-      // the bootstrap step executes with cwd = plan.repo (the PRIMARY — by
-      // design, for the shared .git/hooks install;
-      // _dispatcher_janitor_venue.py), so the pack landed in the primary and
-      // the janitor CHECKOUT still failed check-baseline. The checkout
-      // exists by bootstrap time (step order: checkout-add -> trust ->
-      // bootstrap), so this form installs the pack into every janitor-*
-      // checkout present. The principled fix — a per-checkout provisioning
-      // seam in the janitor venue — is the orchestrator's; filed from this
-      // repo 2026-09-01.
-      // RETIRED 2026-09-06 (console consume leg for bd-ib-6pzg): the sh -c
-      // form above looped over janitor-* checkouts to install the worktree
-      // pack because the venue bootstrapped with cwd = primary. Upstream
-      // bd-ib-ttmeb2 (orchestrator PR #2161, released 0.129.1) makes the
-      // janitor venue provision each checkout's per-worktree state — the
-      // pack — itself, so the declared recipe is the hook-install command
-      // only, exactly the contract's fleet default, declared explicitly.
-      "janitor_bootstrap": {
-        "recipe": ["mise", "exec", "--", "just", "install-commit-refuse-hooks"]
-      },
+      // Host-janitor venue premises — `dispatcher.janitor.check_suite` and
+      // `dispatcher.janitor_bootstrap.recipe` — are deliberately NOT declared:
+      // this repo INHERITS the fleet defaults, which resolve (orchestrator
+      // 0.129.1) to `mise exec -- just check-no-workflow-edits
+      // install-worktree-pack check` and `mise exec -- just
+      // install-commit-refuse-hooks` — the early check-no-workflow-edits report
+      // this repo used to declare is already the default's first member.
+      //
+      // MEASURED 2026-09-06 09:06Z, reconcile-merged for
+      // livespec-console-beads-fabro-pzbdbo.10 (merge ddd21fe): the post-merge
+      // janitor went red in its fresh checkout with
+      // `dev-tooling/check-no-workflow-edits.sh: No such file or directory`.
+      // The venue installs the per-checkout worktree pack (and runs `mise
+      // trust`) ONLY when at least one of those two fields resolves to the
+      // FleetDefault ARM — `fleet_toolchain_is_the_host_janitor_premise` reads
+      // the arm, never the value, so a repository that declares exactly the
+      // fleet convention is read as running its own commands and inherits no
+      // provisioning (orchestrator `_dispatcher_janitor_venue.py`). Both fields
+      // were declared here (the check-suite since 2026-09-01 to run
+      // check-no-workflow-edits first; the bootstrap recipe since PR #968 as
+      // "the fleet default, declared explicitly"), which is precisely what
+      // switched the provisioning off. Neither declaration bought anything the
+      // default lacks: check-no-workflow-edits is a member of `just check`,
+      // and the recipe value was the default. Consuming the contract as
+      // designed means inheriting, not restating.
+      //
+      // The sandbox venue (`dispatcher.janitor.check_suite` also feeds
+      // `inputs.sandbox_check_suite`) needs no pack provisioning — its prepare
+      // chain establishes the premises — so nothing is lost there either.
       // The two TOOLCHAIN premises and the three DISPATCH-TIME CONFORMANCE
       // premises the sandbox prepare chain establishes (orchestrator contract
       // keys `dispatcher.prepare_toolchain.{mise,lefthook}` and
