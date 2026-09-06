@@ -113,7 +113,14 @@ env:
   # there is no such collector, so keep it EMPTY — the emitter then skips cleanly
   # (returns 0, no timeout, no error) for a non-factory lane with no endpoint.
   # Stays in lockstep with the CI_RUNNER_LABELS default above.
-  LIVESPEC_SANDBOX_OTEL_ENDPOINT: ${{ contains(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]', 'ubuntu') && '' || 'http://10.42.0.1:4319' }}
+  #
+  # EXPRESSION SHAPE MATTERS: the non-empty value MUST sit in the `&&` branch.
+  # `cond && '' || url` is broken in GitHub expressions — the "true" result `''`
+  # is falsy, so `||` falls through to the url on hosted runners too (measured
+  # 2026-09-06 on run 34003270210: ubuntu-24.04 runner, endpoint set to the pod
+  # address, emitter logging `emission ... failed (unreachable)` per cargo phase).
+  # Negating the test puts the url in the truthy branch and yields '' on hosted.
+  LIVESPEC_SANDBOX_OTEL_ENDPOINT: ${{ !contains(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]', 'ubuntu') && 'http://10.42.0.1:4319' || '' }}
 
 on:
   pull_request:
