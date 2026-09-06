@@ -582,6 +582,28 @@ the path rule surfaced). Keep the
 specification cohesive; do not import orchestrator-only concerns except through
 explicit contracts.
 
+## A push failing with `Could not resolve host: invalid.invalid` is a shared-config guard, not DNS
+
+`git config` run without `--worktree` writes the PRIMARY checkout's shared
+`.git/config`, which every linked worktree reads. On 2026-09-06 a probe in a
+sibling repo set `remote.origin.pushurl https://invalid.invalid/refused.git`
+"in a worktree" to simulate a refused push and thereby refused every push
+from every worktree of that repo for 23 minutes, presenting everywhere else
+as a DNS error on a host nobody recognised (research note 011 under the
+retire-overseer plan). Two rules follow:
+
+- **Never mutate a shared remote for a probe.** A probe that needs a refusing
+  or fake remote uses a throwaway clone, or a per-invocation override that
+  dies with the process: `git -c remote.origin.pushurl=https://invalid.invalid/refused.git push …`
+  or `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=…`.
+  A persistent per-worktree override needs `extensions.worktreeConfig` and
+  `git config --worktree`; plain `git config` is repo-wide.
+- **On that error, read the config before anything else:**
+  `git config --show-origin --get-all remote.origin.pushurl` and
+  `git config --show-origin --get-regexp 'url\..*insteadof'`. The mechanical
+  guard is `check-remote-standard` (livespec-dev-tooling-xlb5), which names
+  the key on the next push instead.
+
 ## Post-merge janitor: Rust toolchain on the mise PATH
 
 The factory Dispatcher's post-merge janitor re-runs `mise exec -- just check` in a
