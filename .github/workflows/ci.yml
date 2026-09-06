@@ -566,11 +566,22 @@ jobs:
       # matrix-wide safety arithmetic. The "Phase: fuzz" step below stays at the
       # config-file cap of 4 (its rebuild is a warm no-op; -j never enters cargo
       # fingerprints, so the raised build is reused as-is).
+      # The warmed ASAN tree (livespec-console-beads-fabro-ydlant): on the k3s
+      # lane the provisioner seeds the pool's `asan-fuzz` target generation into
+      # this job's work volume at /__w/_warm/target/<repo>/asan-fuzz, and
+      # seed-fuzz-target.sh moves it to fuzz/target + restores source mtimes for
+      # files unchanged vs the generation's commit, so the build below starts
+      # Fresh (the dependencies always; the console's own crates unless the PR
+      # touched them). Runs INSIDE this step so the phase span carries its cost.
+      # Fail-soft and always exit 0: no seed (hosted lane, kill switch, not yet
+      # built), a toolchain-key mismatch or a failed move just means the cold
+      # build this step always did. Logs one `seed-fuzz-target: HIT|MISS` line.
       - name: "Phase: compile"
         env:
           CARGO_BUILD_JOBS: "12"
         run: |
           just ensure-fuzz-tooling
+          .github/scripts/seed-fuzz-target.sh
           cargo +nightly fuzz build
 
       - name: "Phase: fuzz"
