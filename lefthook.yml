@@ -1,13 +1,29 @@
 # lefthook.yml — livespec-console-beads-fabro git hook configuration.
+#
+# Command names carry a numeric prefix because lefthook runs a hook's commands
+# in NAME-SORTED order. `00-install-worktree-pack` is deliberately FIRST in
+# both pre-commit and pre-push: the worktree-discipline pack under
+# `dev-tooling/` is gitignored-and-installed, so a worktree created by raw
+# `git worktree add` (or one predating a livespec-dev-tooling pin bump) would
+# otherwise reach the gate with the pack absent or stale and fail
+# `worktree_pack_absent` only after the whole aggregate had run. The installer
+# is idempotent, writes only ignored files, installs from the package this
+# checkout resolves, and the byte-identity verifier in the aggregate still
+# asserts the result. Ratified: livespec `SPECIFICATION/contracts.md`
+# §"Pre-commit step ordering" (v219).
 
 pre-commit:
   commands:
-    00-check-pre-commit:
+    00-install-worktree-pack:
+      run: just install-worktree-pack
+    01-check-pre-commit:
       run: just check-pre-commit
 
 pre-push:
   commands:
-    check:
+    00-install-worktree-pack:
+      run: just install-worktree-pack
+    01-check-pre-push:
       run: just check-pre-push
     # Upstream-dependency gate (livespec-console-beads-fabro-pzbdbo.1). Runs
     # HERE, on the host, because it needs the ledger through the credential
@@ -16,7 +32,7 @@ pre-push:
     # not `check-`-prefixed on purpose (see the recipe). A sandbox checkout
     # declares livespec.sandboxExempt and passes; the dispatcher's own
     # pre-dispatch refusal is the gate there.
-    upstream-deps:
+    02-upstream-deps:
       run: just gate-upstream-deps
 
 # Red-Green-Replay stage 3 (livespec-console-beads-fabro-mvu22t.3). The checker
