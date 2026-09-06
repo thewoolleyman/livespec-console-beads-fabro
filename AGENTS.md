@@ -106,6 +106,17 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
     by naming five specific "stale pending-approval records" from a handoff;
     the ledger showed all five already `done`. The right response was fresh
     verification and a report back, not executing the literal instruction.
+- **Cross-repo handoffs to the maintainer are an ORDERED COMMAND LIST, never a
+  narrative.** (Maintainer ruling 2026-09-06, given after a "console reaction"
+  table was rejected as "unacceptably vague".) When this plan needs work driven
+  in another repo, the message and the epic comment MUST list, per repo and in
+  the order to run them: the absolute repo path, the exact command to type
+  (`/livespec-orchestrator-beads-fabro:plan <slug>`, `drive --action
+  impl:<id>`, `/livespec:revise`, ...), the item id, and ONE line naming what
+  this plan needs back (an id, a closure, a merge) and which console item
+  unblocks on it. No "reaction" prose, no per-follow-up commentary, nothing the
+  maintainer has to sift or guess from. Everything else belongs on the ledger
+  items, not in the handoff.
 - **Don't stop to ask what you should just do.** Execute the agreed plan and the
   obvious next steps yourself; reserve questions for genuinely maintainer-owned
   choices you cannot resolve from the request, the code, or sensible defaults —
