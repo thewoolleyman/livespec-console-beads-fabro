@@ -1,0 +1,40 @@
+# Base-branch-side required check (livespec-console-beads-fabro-pzbdbo.11):
+# refuse a PR whose HEAD does not wire the upstream-dependency gate.
+#
+# WHY. `just gate-upstream-deps` runs from the host pre-push hook, which
+# lefthook reads from the pushing WORKTREE's own lefthook.yml. A branch based
+# before PR #950 therefore pushes with no gate at all, and branch protection
+# does not require branches to be up to date, so nothing forces a rebase
+# before merge. This job closes that hole from the BASE branch's side: it is
+# defined here on master, so an old-based PR cannot carry an old copy of it.
+#
+# SAFETY. `pull_request_target` runs the base branch's definition with the
+# base's permissions; it NEVER checks out or executes head code — it reads
+# one file from the head commit through the contents API and greps it.
+name: gate-wiring
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  upstream-dep-gate-wired:
+    name: upstream-dep-gate-wired
+    runs-on: ubuntu-latest
+    steps:
+      - name: The PR head's lefthook.yml must wire gate-upstream-deps
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          content="$(gh api "repos/${REPO}/contents/lefthook.yml?ref=${HEAD_SHA}" --jq '.content' | base64 -d)" || {
+            echo "::error::could not read lefthook.yml at ${HEAD_SHA}; refusing rather than passing blind"; exit 1; }
+          if grep -q 'gate-upstream-deps' <<<"${content}"; then
+            echo "upstream-dep-gate-wired: lefthook.yml at ${HEAD_SHA} wires gate-upstream-deps"
+          else
+            echo "::error::lefthook.yml at ${HEAD_SHA} does not wire gate-upstream-deps — this branch predates PR #950; rebase onto master so pushes run the upstream-dependency gate"
+            exit 1
+          fi
