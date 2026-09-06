@@ -225,12 +225,12 @@ jobs:
       # pins — that agreement is asserted by console-arch-check's
       # `check_fabro_image_rust_toolchain`, which probes the image itself), so
       # `mise install` is a near-no-op that just confirms the pinned versions.
-      # A fresh container does not TRUST the repo .mise.toml, so `mise trust` is
-      # required for the shims to resolve.
-      - name: mise trust + install (baked tools — install is a near-no-op)
-        run: |
-          mise trust
-          mise install
+      # No `mise trust` step: since python-rust-v1.45.2 the sandbox image sets
+      # MISE_TRUSTED_CONFIG_PATHS=/__w:/workspace (dev-tooling tyug), so the
+      # checkout's .mise.toml is trusted by construction on both lanes
+      # (livespec-console-beads-fabro-gqmtwa.2; fleet follow-up dev-tooling yuh0).
+      - name: mise install (baked tools — a near-no-op)
+        run: mise install
 
       # The actions/cache steps (cargo registry + git + target, and the uv cache
       # for check-baseline) are DELETED — this is not a leap of faith, it was
@@ -362,10 +362,8 @@ jobs:
       - name: Trust workspace for git (hosted container root-vs-checkout uid)
         run: git config --global --add safe.directory '*'
 
-      - name: mise trust + install (baked tools — install is a near-no-op)
-        run: |
-          mise trust
-          mise install
+      - name: mise install (baked tools — a near-no-op)
+        run: mise install
 
       - name: Resolve pinned livespec core ref (.livespec.jsonc compat.pinned)
         id: corepin
@@ -448,10 +446,8 @@ jobs:
       - name: Trust workspace for git (hosted container root-vs-checkout uid)
         run: git config --global --add safe.directory '*'
 
-      - name: mise trust + install (baked tools — install is a near-no-op)
-        run: |
-          mise trust
-          mise install
+      - name: mise install (baked tools — a near-no-op)
+        run: mise install
 
       - name: Provision tmux (harness dependency, absent from the base image)
         run: |
@@ -490,10 +486,8 @@ jobs:
       - name: Trust workspace for git (hosted container root-vs-checkout uid)
         run: git config --global --add safe.directory '*'
 
-      - name: mise trust + install (baked tools — install is a near-no-op)
-        run: |
-          mise trust
-          mise install
+      - name: mise install (baked tools — a near-no-op)
+        run: mise install
 
       - name: just check-mutants
         run: just check-mutants "origin/${{ github.base_ref || github.event.repository.default_branch }}"
@@ -514,7 +508,13 @@ jobs:
     name: check-fuzz
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.47.0
+      # The fuzz-only leaf of the sandbox tree (dev-tooling python-rust-fuzz): the
+      # python-rust layer plus g++, the nightly toolchain and cargo-fuzz baked in,
+      # so this job no longer installs them on every run (40-48 s of its 323-337 s
+      # wall, measured 2026-09-06; livespec-console-beads-fabro-gqmtwa.1). Bumped in
+      # lockstep with the python-rust pins above by the fleet pin rewrite (the
+      # layer prefix is preserved; only the version moves).
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-fuzz-v1.47.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -530,10 +530,8 @@ jobs:
       - name: Trust workspace for git (hosted container root-vs-checkout uid)
         run: git config --global --add safe.directory '*'
 
-      - name: mise trust + install (baked tools — install is a near-no-op)
-        run: |
-          mise trust
-          mise install
+      - name: mise install (baked tools — a near-no-op)
+        run: mise install
 
       # libfuzzer-sys compiles libFuzzer FROM SOURCE in its build script, so it
       # needs a C++ compiler. The sandbox image ships a Rust toolchain but no

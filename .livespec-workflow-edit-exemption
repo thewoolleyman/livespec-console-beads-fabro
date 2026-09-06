@@ -1,2 +1,2 @@
-work_item=livespec-console-beads-fabro-pzbdbo.11
-reason=Base-branch-side required check that refuses a PR whose head lacks the upstream-dependency gate wiring; closes the old-worktree bypass found in the 2026-09-06 verification pass under the retire-overseer plan. Reads one file via the contents API; never executes head code.
+work_item=livespec-console-beads-fabro-gqmtwa.1
+reason=Point the check-fuzz job at the python-rust-fuzz sandbox image (g++ + nightly + cargo-fuzz baked) so every PR stops paying 40-48 s of toolchain install on its critical-path job, and drop the five per-job mise trust steps now that the pinned image trusts the checkout via MISE_TRUSTED_CONFIG_PATHS (gqmtwa.2); maintainer-approved 2026-09-06 under plan optimize-console-builds.
