@@ -508,7 +508,13 @@ Follow the checker contract in
 "Subject prefixes never exempt product Rust from the ritual." A changeset
 staging no product Rust passes regardless of subject, so docs / spec / config
 commits are exempt in practice by content; use `docs(...)`, `chore(...)`, or
-`chore(spec):` subjects as a convention, not as an exemption criterion. Keep the
+`chore(spec):` subjects as a convention, not as an exemption criterion. A separable Red
+requires the failing test to live at an integration-test PATH (`tests/`):
+the checker's `classify` buckets staged files by path, so a crate whose tests
+are an inline `#[cfg(test)] mod` in `src/` (e.g. `console-arch-check`) cannot
+stage a Red at all — its test and fix land together as one `SuiteGreen` commit
+(measured 2026-09-06: a two-step attempt there cost two refused commits before
+the path rule surfaced). Keep the
 specification cohesive; do not import orchestrator-only concerns except through
 explicit contracts.
 
