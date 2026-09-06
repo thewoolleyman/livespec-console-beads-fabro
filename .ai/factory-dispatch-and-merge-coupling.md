@@ -188,6 +188,52 @@ keeps the build it resolved at kickoff. The marketplace moved twice in one
 session on 2026-08-21. Re-invoke the dispatcher from the currently pinned build
 path, or restart the session — see `.ai/livespec-plugin-currency.md`.
 
+### The `ci-green` wall is a RACE in this repo, not a health problem
+
+    ERROR: the latest `master` run of workflow `CI` is not proven green at
+    aggregate job `ci-green`; refusing dispatch before sandbox work.
+
+The refusal is correct and its remedy is one line — "retry the dispatch when the
+run concludes". What the remedy does not say is that in THIS repo you will
+usually lose that retry by hand.
+
+Measured 2026-09-06 while dispatching `-4jb3kl.3`: `master` took three new
+commits in sixteen minutes (15:58, 16:07, 16:14 — automated
+`livespec-dev-tooling` pin bumps plus ordinary merges), while a master CI run
+takes about four to five minutes end to end. Every merge starts a NEW run, and
+the wall reads the LATEST run, so each fresh merge re-closes the window. Two
+hand-timed dispatch attempts were refused on this wall, both times because
+master had moved between the check and the call.
+
+**The green window is real but short, and a round-trip through the agent is
+long enough to lose it.** So do not poll in one step and dispatch in the next.
+Wait and dispatch in the SAME process:
+
+```bash
+for _ in $(seq 1 80); do
+  s=$(gh run list --workflow=CI --branch=master --limit 1 \
+        --json status,conclusion,headSha 2>&1)
+  printf '%s' "$s" | grep -q '^\[' || { sleep 45; continue; }   # never treat an error as "not yet"
+  [ "$(jq -r '.[0].status' <<<"$s")" = completed ] || { sleep 45; continue; }
+  [ "$(jq -r '.[0].conclusion' <<<"$s")" = success ] || exit 2  # red master is a different problem
+  exec "$WRAPPER" -- python3 "$INSTALLED_ROOT/scripts/bin/drive.py" \
+       --repo "$REPO" --action "impl:$ITEM" --invoker "plan:<thread>" --json
+done
+```
+
+Two details that are not optional. Resolve `$INSTALLED_ROOT` at dispatch time
+from `installed_plugins.json` (see the stale-plugin section above and
+`.ai/livespec-plugin-currency.md`) — a waiter that finally wins the race and
+then dispatches through a stale session root has bought nothing. And gate on
+parsed, non-empty JSON: `gh pr`/`gh run` failures and "nothing has happened
+yet" produce identical empty stdout, so a waiter that treats an error as
+"not yet" waits forever without saying why.
+
+If the latest run has CONCLUDED and is not green, stop — that is master health,
+not a race, and the recovery prose applies instead: drive a
+master-health-restoration item in-session through worktree → PR → merge, since
+PR CI is independent of the default branch.
+
 ### Credential refusal: let time discriminate before touching a secret
 
 `CLAUDE_CODE_OAUTH_TOKEN ... HTTP 429, rate_limit_error, condition "exhausted"`
