@@ -86,6 +86,66 @@ So the "pins go stale silently" section above has a second, shorter
 clock: not just *a clone can sit on a months-old pin*, but **a live
 session can go stale within hours of its own successful currency check.**
 
+### 2026-09-06: the gate stopped REFUSING and started WARNING, and the symptom now points at the wrong repo
+
+The incident above is the easy version: dispatch refused, exit code 3, and
+the message named the cause. **That is no longer what a stale root looks
+like.** The current gate surfaces staleness and lets the dispatch through:
+
+    WARNING: dispatcher plugin build 93c061eb0a89 lags latest release
+    85e277fa81aa; dispatch proceeds because ambient staleness is
+    surfaced, not enforced.
+
+The dispatch then creates a real fabro run which dies in about seven
+seconds at prepare step 1, and THIS is the only error you are likely to
+read:
+
+    Setup command failed (exit code 127):
+      set -- {{ inputs.prepare_toolchain_mise }}; test $# -eq 0 || "$@"
+    /bin/bash: line 1: {{: command not found
+
+**That symptom looks like a `.fabro` fork defect and it is not one.** The
+`{{ inputs.* }}` substitution for `[[run.prepare.steps]]` is performed
+HOST-SIDE by the dispatcher plugin (`_dispatcher_overlay.py`'s
+`_substitute_input_tokens`, landed for orchestrator `bd-ib-8atx`, released
+in v0.124.3). A build predating that fix cannot render the payload it is
+about to dispatch, so the literal token reaches bash.
+
+Measured 2026-09-06 on this same plan thread: the misdirection cost an
+investigation through `dolt-server`'s constraints, the committed `.fabro`
+fork, two closed upstream items, and the `git log` of `workflow.toml` —
+and came within one step of filing a spurious upstream defect and of
+reverting commit `7667599` (which correctly restored the projections)
+back to literal prepare steps. Reverting it would have re-applied the very
+workaround that proxy `pzbdbo.2` / upstream `bd-ib-ott6` had just retired,
+i.e. the ⛔ never-work-around rule, tripped by a misread symptom.
+
+**The one-command discriminator.** Before blaming the fork, ask whether the
+build you are RUNNING can render tokens at all:
+
+```bash
+P=/home/ubuntu/.claude/plugins/cache/livespec-orchestrator-beads-fabro/livespec-orchestrator-beads-fabro
+for b in <running-build-sha> <installed-build-sha>; do
+  printf '%-14s ' "$b"
+  grep -rq "_substitute_input_tokens" "$P/$b/scripts/" && echo "HAS fix" || echo "PREDATES fix"
+done
+```
+
+If the running build says `PREDATES fix` and the installed one says
+`HAS fix`, the fork is innocent: you are the 2026-08-21 trap wearing a
+different mask. Dispatch from the INSTALLED root (resolve it at dispatch
+time, per the section below) and the run proceeds.
+
+Two further notes from that incident. The session had been told: its own
+SessionStart hook advanced the install to a newer build while the session
+kept the root it resolved at start, exactly as described above — so the
+warning was accurate and ignorable-looking. And the recurrence happened
+about four hours AFTER orchestrator `bd-ib-h3mm` closed, having added this
+very guard; the guard fires correctly and still costs a dispatch, because
+warning is not refusing. That gap is filed upstream as `bd-ib-ebd0`,
+asking that a build which cannot render the payload refuse (or re-exec
+through the installed root) rather than proceed.
+
 What to do when you see exit code 3 with this message:
 
 1. Re-run `mise exec -- just ensure-plugins` — it updates the PROJECT
