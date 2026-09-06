@@ -32,12 +32,20 @@ disk IO:
   against the post-NVMe Layer-2 AFTER; expect a smaller win than the RAID-5
   estimate, dominated now by fetch, not extract.
 - **`z2siyn` / `ydlant` (warmed `target/` generations)** — target **recompile
-  CPU** avoidance (the dominant per-`research/007` cost: 66 s compile on
-  `check-nextest`, 78 s ASAN on `check-fuzz`) plus the IO of writing `target/`.
-  NVMe subsumes only the IO; **the compile-CPU saving is untouched by faster
-  disk**. These keep most of their value — but only if the warmed-tree hit
-  proves out (`z2siyn`'s hardlink/path-identity spike is still the gate), and
-  sized against the post-NVMe numbers.
+  CPU** avoidance plus the IO of writing `target/`. NVMe subsumes only the IO —
+  but a second lever has since gone live that this note did not know about:
+  **sccache** (dev-tooling ci-runner-cache-tiers; the populator is the one
+  writer, every Rust job reads it) is measured at a **0.45 avg / ~59 %
+  aggregate hit ratio** over the same window (`research/008`, Layer 2 AFTER),
+  and it already took `check-nextest` compile to 20 s P50. A Fresh warmed
+  dev/test tree therefore has **≤ 20 s/job of headroom** left to win — probably
+  not worth the hardlink/fingerprint hazard `z2siyn` exists to measure. The
+  **ASAN fuzz tree** (75 s compile, the phase sccache reaches least) is where a
+  warmed tree still has real room, and it is already `ydlant`'s first tree. Path
+  identity (risk #1) is solved by design: the populator builds at the in-pod
+  path `/__w/<repo>/<repo>`. Re-scope the spike's go/no-go to compare against
+  the sccache-hit compile, ASAN first — and note that raising sccache's ~45 %
+  hit rate is a cheaper dev-tooling lever than a second warmed tree.
 - **`zzfntv` (job-scoped `CARGO_BUILD_JOBS` raise, merged #935)** — targets
   compile **parallelism** (CPU), never disk. **Unaffected**; its after-
   measurement stands as-is once ≥10 self-hosted NVMe runs exist.

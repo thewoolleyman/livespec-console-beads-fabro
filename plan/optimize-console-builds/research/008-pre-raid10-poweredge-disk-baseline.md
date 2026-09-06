@@ -178,16 +178,28 @@ was written to test is confirmed: the ~177 s **IO-contention gap** on
 ~34 s compute) — the shared-array contention was the gap, and NVMe removed it,
 exactly as `research/009` predicted.
 
-**Attribution.** This window also carries the `zzfntv` `CARGO_BUILD_JOBS=12` raise
-(#935) on the `check-nextest` / `check-fuzz` compile phases, so those two compile
-deltas are jobs-raise + NVMe combined. The cleaner **pure-NVMe signal is every job
-that got no jobs raise**: `check-clippy` compile 42 → 26 s and wall 184 → 52 s,
-`check-deps` 188 → 37 s, `check-format` 123 → 28 s — all disk, no parallelism
-change. The telling contrast inside the raised pair: `check-fuzz` compile moved
-only −4 % while `check-nextest` compile moved −70 %; the ASAN-instrumented fuzz
-compile is neither IO- nor parallelism-bound (ASAN instrumentation-bound), so
-neither lever reaches it. `check-fuzz` wall (−21 %) is dominated by the ratified
-~180 s fuzz-run floor.
+**Attribution.** This window carries THREE changes at once, not one. (1) NVMe.
+(2) The `zzfntv` `CARGO_BUILD_JOBS=12` raise (#935) on the `check-nextest` /
+`check-fuzz` compile phases. (3) **sccache, live and hitting**: dev-tooling's
+ci-runner-cache-tiers populator is the one writer, and the hook-pod `postStart`
+wires `rustc-wrapper = /opt/ci-runner/bin/sccache` (+ `incremental = false`,
+`READ_ONLY` redis) into every Rust job — measured over this same window on
+`cache.job-summary`: 128 jobs enabled, **4,371 hits / 3,000 misses, avg per-job
+hit ratio 0.45 (~59 % aggregate)**, 0 errors
+(https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/8Vh2voqvSCF).
+So every Rust compile delta here — `check-nextest` compile 66 → 20 s,
+`check-clippy` compile 42 → 26 s, `check-deps`, `check-plan-no-tombstone` — is
+NVMe **plus** sccache hits (plus the jobs raise on the two raised phases). An
+earlier draft of this paragraph called the un-raised Rust jobs a "pure-NVMe
+signal"; that was wrong, because they get sccache hits too. The clean
+**pure-NVMe isolators are the jobs that compile no Rust at all**:
+`check-shell-quality` (python) 136 → 32 s (−76 %) and `check-doctor-static`
+(python) 98 → 46 s (−53 %) — disk and contention relief only, no cache, no
+parallelism change. The telling contrast inside the raised pair still holds:
+`check-fuzz` compile moved only −4 % while `check-nextest` compile moved −70 %;
+the ASAN-instrumented fuzz compile is neither IO- nor parallelism-bound and is
+also the phase sccache reaches least. `check-fuzz` wall (−21 %) is dominated by
+the ratified ~180 s fuzz-run floor.
 
 Both layers now compose into the Phase-3 report (`uocos3`).
 
