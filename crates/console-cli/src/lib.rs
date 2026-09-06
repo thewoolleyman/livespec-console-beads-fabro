@@ -3285,13 +3285,13 @@ mod tests {
         backfill_demo_report, backfill_source_adapters, backfill_source_report,
         command_status_update_runtime_result, config_command_from_stored, demo_events,
         distinguish_repeatable_command, doctor_report, event_append_from_command_event,
-        event_append_from_console_event, events_tail_report, factory_command_from_stored,
-        final_tui_events_result, flush_session_tail, handle_pending_config_commands,
-        handle_pending_control_commands, handle_pending_factory_commands,
-        handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
-        ingest_and_reflect, ingest_needs_attention, initial_source_seed,
-        is_failed_once_only_valve_retry, lane_diagnostics_path, lane_failures_in,
-        lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
+        event_append_from_console_event, event_append_from_normalized_source_event,
+        events_tail_report, factory_command_from_stored, final_tui_events_result,
+        flush_session_tail, handle_pending_config_commands, handle_pending_control_commands,
+        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
+        handle_pending_work_item_commands, ingest_and_reflect, ingest_needs_attention,
+        initial_source_seed, is_failed_once_only_valve_retry, lane_diagnostics_path,
+        lane_failures_in, lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
         live_source_adapters_from_resolution, live_source_adapters_with_programs,
         load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
@@ -3550,7 +3550,11 @@ mod tests {
         }
     }
 
-    fn dispatcher_source_event(event_id: &str, stream_seq: u64) -> NormalizedSourceEvent {
+    fn dispatcher_source_event(
+        event_id: &str,
+        source_event_id: &str,
+        stream_seq: u64,
+    ) -> NormalizedSourceEvent {
         NormalizedSourceEvent::new(
             ConsoleEvent::new(
                 event_id.to_owned(),
@@ -3561,7 +3565,7 @@ mod tests {
                 "dispatcher:console".to_owned(),
                 stream_seq,
             ),
-            event_id.to_owned(),
+            source_event_id.to_owned(),
             SourcePayload::NotObservedFinding(NotObservedFinding::new(
                 "console",
                 SourceAdapterKind::Dispatcher,
@@ -3570,15 +3574,29 @@ mod tests {
         )
     }
 
+    /// The event id the seeded row and the unappendable record below share.
+    const COLLIDING_EVENT_ID: &str = "evt:dispatcher:console:console-1:dispatch-collides:1";
+
     fn source_backfill_report_for_dispatcher_events(
         checkpoint: &str,
         observed_at: &str,
     ) -> ConsoleRuntimeResult<String> {
+        // A record the store CANNOT accept: its event id is already taken by
+        // the seeded row below under a different source-event id, so the
+        // `insert or ignore` drops it on the event-id unique index and then
+        // finds no row for the source-event id the store deduplicates by. One
+        // bad record must be skipped and named, not sink the whole polled
+        // array.
         let skipped = dispatcher_source_event(
-            "evt:dispatcher:console:console-1:dispatch-too-large:18446744073709551615",
-            u64::MAX,
+            COLLIDING_EVENT_ID,
+            "sev:dispatcher:console:console-1:dispatch-collides:1",
+            1,
         );
-        let sibling = dispatcher_source_event("evt:dispatcher:console:console-2:dispatch-ok:2", 2);
+        let sibling = dispatcher_source_event(
+            "evt:dispatcher:console:console-2:dispatch-ok:2",
+            "evt:dispatcher:console:console-2:dispatch-ok:2",
+            2,
+        );
         let Ok(poll) = console_application::source_adapters::AdapterPoll::new(
             checkpoint,
             vec![skipped, sibling],
@@ -3588,6 +3606,12 @@ mod tests {
         let source = ScriptedSource::new(poll);
         let sources: [SourceAdapterRef<'_>; 1] = [("dispatcher:console", &source)];
         let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let _seeded = store
+            .append_event(&event_append_from_normalized_source_event(
+                &dispatcher_source_event(COLLIDING_EVENT_ID, "sev:dispatcher:console:seeded", 1),
+                "2026-06-23T00:00:00Z",
+            ))
+            .ok_test();
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "console");
 
@@ -3810,7 +3834,9 @@ mod tests {
 
         check(
             (report)
-                == ("backfill source adapters: adapters 1, events 1, skipped evt:dispatcher:console:console-1:dispatch-too-large:18446744073709551615"),
+                == (format!(
+                    "backfill source adapters: adapters 1, events 1, skipped {COLLIDING_EVENT_ID}"
+                )),
             "assert_eq failed",
         );
     }
@@ -3843,6 +3869,7 @@ mod tests {
     fn sqlite_source_event_log_appends_top_bit_dispatcher_hash() {
         let high_hash = 10_161_696_490_713_690_059_u64;
         let event = dispatcher_source_event(
+            "evt:dispatcher:console:console-1:dispatch-high:10161696490713690059",
             "evt:dispatcher:console:console-1:dispatch-high:10161696490713690059",
             high_hash & 0x7fff_ffff_ffff_ffff,
         );
@@ -9912,8 +9939,32 @@ mod tests {
     /// The demo events as they are read back from the store, where the load
     /// path re-attaches the persisted (empty) `payload_json` that in-memory
     /// envelopes carry as `None`.
+    ///
+    /// Both fixtures name ONE stream and both carry the fixture envelope's
+    /// literal `stream_seq` of 1. The store numbers a stream by its own length,
+    /// so what comes back is positions 1 and 2 — the in-memory literal is not
+    /// the stored position, which is the whole point of
+    /// `livespec-console-beads-fabro-1d5f`.
     fn persisted_demo_events() -> Vec<ConsoleEvent> {
-        demo_events().into_iter().collect()
+        demo_events()
+            .into_iter()
+            .zip(1_u64..)
+            .map(|(event, position)| at_stream_position(&event, position))
+            .collect()
+    }
+
+    /// The same envelope, at the position the store assigned it.
+    fn at_stream_position(event: &ConsoleEvent, stream_seq: u64) -> ConsoleEvent {
+        ConsoleEvent::new(
+            event.event_id().to_owned(),
+            event.schema_version(),
+            event.context().to_owned(),
+            *event.event_type(),
+            event.source().to_owned(),
+            event.stream_id().to_owned(),
+            stream_seq,
+        )
+        .with_payload_json(event.payload_json().to_owned())
     }
 
     fn append_ready_work_item(store: &mut SqliteEventStore, observed_at: &str) {
@@ -10522,7 +10573,15 @@ mod tests {
         let (source_path, mut source_store) = file_store("refresh-source-checkpoint-load");
         corrupt_store(&source_path, "drop table checkpoints");
         let source = ScriptedSource::new(
-            AdapterPoll::new("1", vec![dispatcher_source_event("evt-refresh-source", 1)]).ok_test(),
+            AdapterPoll::new(
+                "1",
+                vec![dispatcher_source_event(
+                    "evt-refresh-source",
+                    "evt-refresh-source",
+                    1,
+                )],
+            )
+            .ok_test(),
         );
         let source_error = err_runtime_summaries(refresh_sources(
             &mut source_store,
