@@ -1,6 +1,6 @@
 {
-  "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs. Re-forked verbatim onto upstream 2026-09-01 (livespec-console-beads-fabro-npr2gw); the sole divergence is workflow.toml's Rust-capable sandbox image pin.",
-  "upstream_plugin_version": "d709f27ac3c1",
+  "_comment": "Upstream digests for the committed .fabro fork. Regenerate with `just refresh-fork-upstream-pins`; every entry MUST carry a reason. See crates/console-fork-drift-check/src/lib.rs.",
+  "upstream_plugin_version": "6edebb0b0c50",
   "files": [
     {
       "path": "prompts/disposition.md",
