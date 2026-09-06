@@ -455,7 +455,18 @@ check-baseline` is the fail-closed verifier wired into `just check`.
    `just install-worktree-pack` rescues a worktree that already exists without
    the pack, and it must also be re-run in any worktree created across a
    `livespec-dev-tooling` pin bump, because `worktree-create` provisions by
-   copying from the primary checkout. Prefer either over `just bootstrap`, which
+   copying from the primary checkout. Measured 2026-09-06: after a pin bump the
+   PRIMARY's pack was itself stale, so every `worktree-create` copied that
+   staleness forward, and two unrelated branches (a docs note, a Dockerfile)
+   both failed their pre-push `just check` on `check-baseline` +
+   `check-no-workflow-edits` (`worktree_pack_file_missing`,
+   `worktree_pack_body_mismatch`) — six minutes in, with lefthook's summary
+   swallowing the reason. Two rules follow. After any `livespec-dev-tooling` pin
+   bump, run `just install-worktree-pack` at the PRIMARY as well, so new
+   worktrees are not born stale (verified: a worktree created after the refresh
+   passes `check-baseline` at once). And in a fresh worktree run
+   `just check-baseline` BEFORE committing — a stale pack fails it in seconds,
+   not six minutes into the push. Prefer either over `just bootstrap`, which
    reconciles the claude-plugins row and **advances the local plugin install** —
    the thing that turns `check-fork-drift` red on clean `master`. The rest of the
    lifecycle has recipes too: `just worktree-hydrate`,
