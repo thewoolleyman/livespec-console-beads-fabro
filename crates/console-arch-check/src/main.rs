@@ -449,11 +449,32 @@ impl GhcrImageReference {
     }
 }
 
+/// The argv every registry read in the fabro-image probe fallback hands to
+/// `curl`. Kept pure so the retry discipline is a tested contract rather than a
+/// comment: a bare `--retry` covers only timeouts and 408/429/5xx, and a single
+/// TCP reset (`curl` exit 35) failed a REQUIRED check fail-closed on
+/// livespec-console-beads-fabro PR #961 (run 34004030698) — see `h1l0`.
+fn curl_argv(url: &str, extra: &[&str]) -> Vec<String> {
+    let mut argv: Vec<String> = [
+        "-fsSL",
+        "--retry",
+        "5",
+        "--retry-all-errors",
+        "--retry-connrefused",
+        "--retry-delay",
+        "2",
+    ]
+    .iter()
+    .map(|flag| (*flag).to_owned())
+    .collect();
+    argv.extend(extra.iter().map(|arg| (*arg).to_owned()));
+    argv.push(url.to_owned());
+    argv
+}
+
 fn curl(url: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new("curl")
-        .args(["-fsSL", "--retry", "3"])
-        .args(args)
-        .arg(url)
+        .args(curl_argv(url, args))
         .output()
         .map_err(|error| format!("could not execute `curl`: {error}"))?;
     if !output.status.success() {
@@ -2510,7 +2531,7 @@ mod tests {
         check_forbid_unsafe, check_layering, check_registry_bypass,
         check_source_rule_crate_coverage_for_names, check_tmux_socket_scoping,
         check_tmux_socket_scoping_source, check_type_placement, check_unwrap_expect,
-        check_workspace_rust_version_matches_toolchain, check_zero_beads_source_paths,
+        check_workspace_rust_version_matches_toolchain, check_zero_beads_source_paths, curl_argv,
         fabro_python_rust_image, observed_rust_toolchain,
         observed_rust_toolchain_from_image_config, rust_files_for_tmux_scan,
     };
@@ -2521,6 +2542,36 @@ mod tests {
             workspace_deps: workspace_deps.iter().map(|dep| (*dep).to_owned()).collect(),
             external_deps: external_deps.iter().map(|dep| (*dep).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn fabro_probe_curl_retries_every_transient_failure_including_connection_resets() {
+        // A bare `--retry` only covers timeouts and 408/429/5xx. A TCP reset
+        // (`curl` exit 35, "Recv failure: Connection reset by peer") reading the
+        // v1.45.0 image-config blob failed check-arch fail-closed on PR #961
+        // (run 34004030698) while master read the same blob minutes earlier.
+        // `--retry-all-errors` (+ `--retry-connrefused`, a delay) is the discipline
+        // export-ci-telemetry.sh already uses; the probe's registry reads need it too.
+        let argv = curl_argv(
+            "https://ghcr.io/v2/thewoolleyman/livespec-fabro-sandbox/blobs/sha256:abc",
+            &["-H", "Authorization: Bearer t"],
+        );
+        let has = |flag: &str| argv.iter().any(|arg| arg == flag);
+        assert!(has("--retry"), "{argv:?}");
+        assert!(has("--retry-all-errors"), "{argv:?}");
+        assert!(has("--retry-connrefused"), "{argv:?}");
+        assert!(has("--retry-delay"), "{argv:?}");
+        assert!(has("-fsSL"), "{argv:?}");
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "-H" && pair[1] == "Authorization: Bearer t"),
+            "caller-supplied headers must survive: {argv:?}"
+        );
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("https://ghcr.io/v2/thewoolleyman/livespec-fabro-sandbox/blobs/sha256:abc"),
+            "the url must be the final argument: {argv:?}"
+        );
     }
 
     #[test]
