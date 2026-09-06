@@ -146,6 +146,49 @@ warning is not refusing. That gap is filed upstream as `bd-ib-ebd0`,
 asking that a build which cannot render the payload refuse (or re-exec
 through the installed root) rather than proceed.
 
+#### ⛔ Do NOT record that error as a comment on the work item
+
+This is the sting in the tail, and it is the more expensive half.
+
+`goal-minijinja-preflight` scans an item's title, description, acceptance,
+notes, lessons **and every ledger comment** for a MiniJinja opening
+delimiter, and REFUSES the dispatch — before `render_goal`'s escape, which
+exists to neutralize exactly that string, ever runs. `bd` has no comment
+edit or delete (`bd comments` offers only `add`). So a comment quoting the
+delimiter makes the item **permanently undispatchable**.
+
+The failure above puts a raw opener in the error text, because the
+unexpanded token IS the error. Quoting it on the item is the correct
+diagnostic instinct and it is fatal:
+
+1. stale root dispatches → run dies at prepare step 1, error contains a raw
+   opener;
+2. the diagnostician records that error on the item, verbatim, as evidence;
+3. the item can never be dispatched again.
+
+**A transient, self-healing condition becomes a permanent one through the
+act of diagnosing it.** Measured 2026-09-06: `-4jb3kl.3` was poisoned this
+way about ninety minutes after the stale-root failure it documented, by the
+same session, with neither guard being wrong on its own terms.
+
+So when a dispatch dies on a templating symptom:
+
+- Put the forensics on the **plan epic's timeline**, which is not a dispatch
+  source, or in a file like this one. A `.md` in the repo is safe; a ledger
+  comment on a dispatchable item is not.
+- If you must reference the delimiter in ledger prose, describe it — "a
+  double-brace opener" — rather than writing it.
+- If an item is ALREADY poisoned, the only remedy is to supersede it:
+  create a successor with identical title, description and acceptance and
+  **zero** comments, close the original as superseded, and re-point any
+  `depends_on` edges. That is the precedent from
+  `livespec-dev-tooling-npsqeu` and it transferred cleanly here.
+
+Upstream: `bd-ib-it2d` (the refusal reaches an escapable string the escape
+never sees). Note it applies to ORCHESTRATOR items too — reporting this
+defect by quoting the delimiter on its own tracking item would poison that
+item.
+
 What to do when you see exit code 3 with this message:
 
 1. Re-run `mise exec -- just ensure-plugins` — it updates the PROJECT
