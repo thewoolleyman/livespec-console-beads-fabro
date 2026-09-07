@@ -993,11 +993,13 @@ pub enum ConsoleLane {
     /// source refresh for the whole session, leaving a stale view that renders
     /// normally.
     SourcePoller,
-    /// The factory command lane, spawned per invocation. A lost open here drops
-    /// one operator command silently.
+    /// The factory command lane, spawned per invocation. A failure here costs
+    /// ONE operator command — silently, until
+    /// livespec-console-beads-fabro-zbnnlv gave every step of it a durable
+    /// record AND an out-of-band line to the render thread.
     FactoryCommand,
     /// The control command lane, spawned per invocation, with the same
-    /// per-command consequence.
+    /// per-command consequence and the same two surfaces.
     ControlCommand,
 }
 
