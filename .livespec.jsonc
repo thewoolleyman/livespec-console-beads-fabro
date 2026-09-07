@@ -293,11 +293,22 @@
         "verify_commit_refuse_hook": { "mode": "internal_livespec_dev_tooling" },
         "verify_plugin_resolution": { "mode": "internal_livespec_dev_tooling" }
       },
+      // `fix` and `review_fix` are 2 h, not the 1 h default: on this repo one
+      // full `just check` cycle costs ~10 min on the 4-core sandbox quota
+      // (the tmux e2e suite alone is ~9 min), and a fix turn that has to
+      // bisect an e2e regression against master legitimately needs several
+      // cycles. Measured 2026-09-07 on run 01M1X5RDWDB5S7XJ6V4BWNN811
+      // (livespec-console-beads-fabro-zbnnlv): fix visit 1 was still
+      // bisecting a real regression when the 3600 s ceiling cut it; the
+      // janitor then re-ran and the whole loop cost a second visit. The
+      // counter-case -- a turn that finishes and then idles to the ceiling
+      // on its own background pollers -- is orchestrator bd-ib-b5dg.1, and
+      // is what bounds how far this ceiling should rise.
       "node_timeouts": {
         "implement": 14400,
         "janitor": 3600,
-        "fix": 3600,
-        "review_fix": 3600
+        "fix": 7200,
+        "review_fix": 7200
       },
 
       // TEMPORARY: park the `pr` node on the Claude adapter, off Codex.
