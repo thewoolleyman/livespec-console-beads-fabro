@@ -178,18 +178,24 @@ fn run_store_backed_command(
     )
 }
 
-/// Report a lane step that failed and cannot usefully be retried, then give up.
+/// Report a POLLER step that failed and cannot usefully be retried, then give up.
 ///
 /// The companion to `open_lane_store`, and deliberately a DIFFERENT remedy. The
-/// store open races, so it is retried; these steps read configuration, the
-/// environment and the clock, where a failure is deterministic and a retry wins
-/// nothing. What they share is the part that was missing: a lane that gives up
-/// must say so.
+/// store open races, so it is retried; these steps read configuration and the
+/// environment, where a failure is deterministic and a retry wins nothing. What
+/// they share is the part that was missing: a lane that gives up must say so.
 ///
 /// This exists because the store-open report alone made the lane log a
 /// REASSURING signal wired to one of seven failure paths. An empty log read as
 /// "the lanes are fine" while six ways of dying still wrote nothing — and a
 /// guard that manufactures confidence is worse than no guard.
+///
+/// The COMMAND lanes no longer come through here
+/// (livespec-console-beads-fabro-zbnnlv): they report through
+/// `LaneFailureReporter`, which writes this same durable log AND tells the
+/// operator. The poller keeps the log-only form because its failure is not one
+/// operator command going missing — it is source refresh stopping for the whole
+/// session, which has no single action to attribute a status to.
 #[cfg(all(not(test), not(coverage)))]
 fn report_lane_startup_failure(lane: ConsoleLane, stage: LaneStartupStage, detail: &str) {
     let path = console_store_path();
@@ -198,8 +204,13 @@ fn report_lane_startup_failure(lane: ConsoleLane, stage: LaneStartupStage, detai
     let _ = append_lane_diagnostic(&lane_diagnostics_path(&path), &report);
 }
 
-/// Open the store for an off-thread LANE, tolerating transient contention and
+/// Open the store for the off-thread POLLER, tolerating transient contention and
 /// reporting an exhausted open instead of vanishing.
+///
+/// The command lanes now open through `open_console_store` and report their
+/// exhausted open on both surfaces (livespec-console-beads-fabro-zbnnlv); the
+/// retry, its bound and its backoff are the same call in both places, so what
+/// differs is only where the giving-up is announced.
 ///
 /// livespec-console-beads-fabro-k9vt2m. All three lanes previously wrote
 /// `let Ok(mut store) = SqliteEventStore::open(&path) else { return; }` — a
