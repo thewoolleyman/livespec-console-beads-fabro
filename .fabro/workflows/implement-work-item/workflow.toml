@@ -123,6 +123,35 @@ pull_requests = "write"
 # The dispatch target's `dispatcher.acp_nodes` overrides them per node and
 # per field, and a `--acp-node <node>=<adapter>` argument overrides both.
 #
+# WHY EVERY CLAUDE ADAPTER BELOW IS VERSION-LESS, AND WHY THAT IS THE PIN.
+# `npx -y @agentclientprotocol/claude-agent-acp` carries no `@version` on
+# purpose: it RESOLVES THE COPY BAKED INTO THE SANDBOX IMAGE pinned by the
+# `docker` tag below, and never downloads one. `npx` is `npm exec`, which
+# looks for the spec's bin NAME among the bins already installed — the
+# project's `node_modules/.bin`, then the GLOBAL bin dir — and runs that copy
+# when its version satisfies the requested spec, installing into
+# `~/.npm/_npx` only on a miss. A version-less spec is satisfied by ANY
+# installed copy, and the image installs this adapter globally
+# (livespec-dev-tooling `docker/fabro-sandbox/agent/Dockerfile`:
+# `npm install -g @agentclientprotocol/claude-agent-acp@$CLAUDE_AGENT_ACP_VERSION`,
+# ARG-pinned), which links its bin `claude-agent-acp` into that global dir.
+# So the lookup hits and no install is attempted.
+#
+# THE ADAPTER VERSION IS THEREFORE PINNED — by the image, not by this string,
+# and bumping it means bumping the `docker` tag below. Do NOT "fix" these
+# lines by appending an exact `@version`: that would be a SECOND declaration
+# of a version the image already declares, and the two would have to move in
+# lockstep by hand forever. The first missed bump silently un-pins the
+# adapter, because a spec the baked copy cannot satisfy falls through to a
+# registry download of an untested build — the exact moving-comparand defect
+# the pin is meant to prevent. Measured in-sandbox on image
+# `python-agent-v1.52.12`: the version-less form and `@0.44.0` both resolved
+# the baked global offline with no npx cache created, while `@0.43.0` reached
+# for registry.npmjs.org and created one. Full measurements, including the
+# rejected `--no-install` variant and the residual hazard, in
+# `plan/pluggable-factory-workflow-configs/research/004-claude-agent-acp-baked-or-fetched-2026-09-06.md`
+# (work-item bd-ib-yqpdrt.2).
+#
 # IMPLEMENTER NODES: Claude Opus 5 + high thinking. The Dispatcher emits
 # these same adapters unless the dispatch target explicitly names
 # `dispatcher.codex_models.implementer`, in which case it routes the
@@ -137,8 +166,14 @@ implement_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high
 fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 review_fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
-# ACP adapter for the PR node. Defaults to an un-pinned Claude adapter so a bare
-# `fabro run` of this config still works; the Dispatcher always overrides it
+# ACP adapter for the PR node. Defaults to a MODEL-un-pinned Claude adapter —
+# no ANTHROPIC_MODEL prefix, unlike the implementer and review nodes — so a bare
+# `fabro run` of this config still works. Its PACKAGE version is pinned like
+# every other Claude adapter here, by the sandbox image; see the version-less
+# rationale in the adapter-defaults block above. That bare-`fabro run` property
+# is also why these defaults do NOT use `npx --no-install`: outside the family
+# sandbox image there is no baked global, and the download is the intended
+# fallback rather than a failure. The Dispatcher always overrides this input
 # via `fabro run --input pr_adapter=...` with the Codex adapter rendered from
 # the target repo's `dispatcher.codex_models.pr` tier (built-in default
 # `gpt-5.4-mini` at `high`).
@@ -181,11 +216,14 @@ pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 # run does not substitute; CI never runs the review node.
 review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
-# ACP adapter for the DISPOSITION node. Defaults to the same un-pinned,
-# implementer-class Claude adapter as `implement_adapter`; maintainers can pin the
-# disposition model independently by prefixing adapter-owned env assignments
-# here, using the same ANTHROPIC_MODEL / CLAUDE_CODE_EFFORT_LEVEL mechanism as
-# `review_adapter`.
+# ACP adapter for the DISPOSITION node. Defaults to the same MODEL-un-pinned
+# Claude adapter as `pr_adapter` — the same PACKAGE as `implement_adapter`, but
+# with no ANTHROPIC_MODEL / CLAUDE_CODE_EFFORT_LEVEL prefix, so it does not
+# inherit the implementer tier. Maintainers can pin the disposition model
+# independently by prefixing adapter-owned env assignments here, using the same
+# ANTHROPIC_MODEL / CLAUDE_CODE_EFFORT_LEVEL mechanism as `review_adapter`. The
+# package version is pinned by the sandbox image, as for every Claude adapter
+# here; see the version-less rationale in the adapter-defaults block above.
 disposition_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
 
 # Review fix rounds count implementer repair rounds, not review visits. The
@@ -196,6 +234,26 @@ review_fix_visit_cap = 4
 # Disabled by default. The Dispatcher renders this to `succeeded` only when the
 # effective merge_on_review_cap escape hatch is true for the item.
 merge_on_review_cap_outcome = "__merge_on_review_cap_disabled__"
+
+# The PER-ITEM MERGE HOLD (SPECIFICATION/contracts.md §"Dispatcher policy
+# settings" -> "The per-item merge hold"), the third member of the per-item
+# POLICY input family beside the two above. While it is true the pr node
+# publishes exactly as it does today but arms NO auto-merge and verifies that
+# none is armed, so an item can be IMPLEMENTED now and MERGED in a window the
+# maintainer chooses.
+#
+# FALSE HERE IS NOT A REPOSITORY-LEVEL DEFAULT — the hold deliberately has
+# none. It is set on ONE item, by a person, for ONE merge, through the human
+# valve `set-merge-hold:<work-item-id>:on|off`, and the Dispatcher renders that
+# item's effective hold here on every dispatch. This default is only ever seen
+# by a bare `fabro run` of this file, which then publishes and arms exactly as
+# it did before this input existed.
+#
+# TWO SEAMS READ THE ONE RENDERED VALUE AND NEITHER IS AUTHORITATIVE: the pr
+# prompt reads this input inside the sandbox, and the Dispatcher's own
+# auto-merge argv reads the same resolved hold host-side. A hold that reached
+# only one of them would silently not hold.
+merge_hold = false
 
 # INTEGRATION-CONTRACT INPUTS — the typed workflow inputs of
 # SPECIFICATION/contracts.md §"Repository integration contract" (the

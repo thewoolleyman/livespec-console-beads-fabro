@@ -83,20 +83,40 @@ you must NEVER `cd` to it or treat the absence of any such path as
 
    🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-5. Arm auto-merge with the repository's declared merge mode:
-   `gh pr merge --{{ inputs.merge_mode }} --auto --delete-branch <pr-url-or-number>`.
-6. VERIFY it armed: `gh pr view --json number,autoMergeRequest,mergeStateStatus`.
-   - If `autoMergeRequest` is null, retry the arming once and re-verify.
+5. Read the merge hold for this item: it is `{{ inputs.merge_hold }}`.
+   Everything above this step is the same either way — the branch is
+   pushed and the pull request is opened while a hold stands. What the
+   hold changes is only whether auto-merge is armed.
+   - When it is `false`, arm auto-merge with the repository's declared
+     merge mode:
+     `gh pr merge --{{ inputs.merge_mode }} --auto --delete-branch <pr-url-or-number>`.
+   - When it is `true`, the item is under a per-item MERGE HOLD: a
+     maintainer wants it implemented now and merged in a window they
+     choose. Arm NOTHING — do not run `gh pr merge` at all, in any form.
+     The hold is released later by an operator through the
+     `set-merge-hold:<work-item-id>:off` valve, which arms the merge from
+     the host; it is not yours to release and not yours to work around.
+6. VERIFY the pull request is in the state the hold implies:
+   `gh pr view --json number,autoMergeRequest,mergeStateStatus`.
+   - When the hold is `false`: if `autoMergeRequest` is null, retry the
+     arming once and re-verify.
+   - When the hold is `true`: `autoMergeRequest` MUST be null. If it is
+     NOT null, an auto-merge request exists that must not — report that
+     verbatim and end with the needs-human protocol below rather than
+     disarming it yourself.
    - If `mergeStateStatus` is `BEHIND`, the repo automation updates the
      branch; if it stays `BEHIND` for more than 10 minutes, report it —
      do NOT attempt a manual update.
-7. Do NOT wait for the merge (it lands server-side after CI), do NOT
-   clean anything up, and do NOT switch branches — the Dispatcher owns
-   merge confirmation and the post-merge janitor, and Fabro owns this
-   sandbox's lifecycle.
+7. Do NOT wait for the merge (it lands server-side after CI, or after
+   the hold is released), do NOT clean anything up, and do NOT switch
+   branches — the Dispatcher owns merge confirmation and the post-merge
+   janitor, and Fabro owns this sandbox's lifecycle.
 8. Final reply: report the PR number on its own line in exactly this
    form — `PR_NUMBER=<n>` — plus whether auto-merge is armed, and any
-   deviation verbatim.
+   deviation verbatim. When the hold is `true`, report `MERGE_HOLD=held`
+   on its own line beside that PR-number line, so a reader of the reply
+   can tell a deliberately unarmed pull request from an arming that
+   failed.
 
 ## When publishing is blocked (needs-human protocol)
 
