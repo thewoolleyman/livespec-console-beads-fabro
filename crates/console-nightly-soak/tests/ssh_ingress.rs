@@ -96,11 +96,26 @@ impl Sandbox {
     /// The soak binary, pointed at this sandbox's findings file, with the fake
     /// `ssh` first on `PATH` and the production (non-dry-run) transport wired.
     ///
-    /// Uses `std::env::var` rather than `env!` because `CARGO_BIN_EXE_*` is set
-    /// by cargo at test-run time, not at clippy check time.
+    /// Resolves `CARGO_BIN_EXE_console-nightly-soak` at COMPILE time first and
+    /// falls back to the process environment. Cargo defines the variable while
+    /// compiling this package's integration tests, so `option_env!` carries the
+    /// path under `cargo test` and `cargo clippy --all-targets` alike; cargo
+    /// does NOT export it to the running test process, whereas nextest does.
+    /// A runtime-only lookup therefore passed under nextest (CI, the sandbox
+    /// janitor) and failed under `cargo test` (the red-green-replay commit
+    /// hook), which blocked every product-Rust commit in this repository while
+    /// master's newest Red trailer named this test. Never `env!` alone: a build
+    /// that does not define the variable must fail the TEST, not the compile.
     fn soak_command(&self) -> io::Result<Command> {
-        let binary =
-            std::env::var("CARGO_BIN_EXE_console-nightly-soak").map_err(io::Error::other)?;
+        let binary = match option_env!("CARGO_BIN_EXE_console-nightly-soak") {
+            Some(path) => path.to_owned(),
+            None => std::env::var("CARGO_BIN_EXE_console-nightly-soak").map_err(|_| {
+                io::Error::other(
+                    "CARGO_BIN_EXE_console-nightly-soak is neither compiled in nor set in the \
+                     environment; run this suite through cargo test or cargo nextest",
+                )
+            })?,
+        };
         let mut command = Command::new(binary);
         command
             .arg(self.path("findings.json"))
