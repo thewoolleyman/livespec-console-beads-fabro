@@ -713,13 +713,17 @@ ensure-mutants-tooling:
 # Nightly soak (livespec-console-beads-fabro-547r5w). Runs the FULL fuzz soak
 # (longer per-target budget than the 60s merge-gate floor) plus a FULL
 # cargo-mutants sweep over the logic crates. For each finding a stable
-# signature is computed; a top-of-rank chore is filed through the orchestrator
-# capture surface ONLY when no non-closed chore carrying that signature already
-# exists. A nightly finding NEVER fails master — this recipe always exits 0.
+# signature is computed and rendered as the ratified fingerprint, then filed
+# through the on-tailnet ci-writer SSH write ingress, which suppresses the
+# filing host-side when an open chore already carries that fingerprint. A
+# nightly FINDING never fails master.
 #
-# Run under the 1Password environment wrapper so BEADS_DOLT_PASSWORD is
-# injected; see AGENTS.md §"Beads runtime prerequisites". The binary reads a
-# JSON findings file produced here and processes each finding idempotently.
+# NOT run under the 1Password environment wrapper, deliberately: per
+# SPECIFICATION/non-functional-requirements.md §Quality Gate (v048), CI MUST
+# NOT hold the work-items database credential. The job authenticates to the
+# ingress with the ci-writer SSH key alone (Actions secret
+# BEADS_CI_WRITER_SSH_KEY, known-hosts variable BEADS_CI_WRITER_KNOWN_HOSTS),
+# and BEADS_CI_WRITER_SSH_DESTINATION names the forced command's user@host.
 #
 # DELIBERATELY ABSENT from the `just check` aggregate: fuzz and mutation runs
 # are too slow for the inner loop. The GitHub Actions workflow
@@ -781,8 +785,11 @@ nightly-soak:
 
     if [ "$finding_count" -gt 0 ]; then
       cargo build --release --package console-nightly-soak || exit $?
-      /data/projects/1password-env-wrapper/with-livespec-env.sh -- \
-        ./target/release/console-nightly-soak "$findings_file" || true
+      # NO `|| true`: the write ingress is reachable only from the tailnet, so
+      # a nightly that cannot reach it MUST fail loudly rather than complete
+      # while filing nothing (v048). Swallowing this status is precisely the
+      # silent no-op the clause forbids.
+      ./target/release/console-nightly-soak "$findings_file" || exit $?
     fi
 
-    echo "=== nightly-soak: complete (exit 0 regardless of findings) ==="
+    echo "=== nightly-soak: complete (every finding filed through the write ingress) ==="

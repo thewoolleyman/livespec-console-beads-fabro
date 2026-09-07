@@ -159,6 +159,122 @@ pub trait FindingIngress {
 }
 
 // ---------------------------------------------------------------------------
+// Ingress request encoding
+// ---------------------------------------------------------------------------
+
+/// Maximum decoded byte length of a title on a `create` request.
+///
+/// The ingress request travels as one SSH remote command, so an unbounded
+/// title would push an unbounded argument at the forced command. A title is a
+/// one-line summary; anything past this is surplus, and the identity it
+/// summarises survives in full in the body.
+pub const INGRESS_TITLE_MAX_BYTES: usize = 200;
+
+/// Maximum decoded byte length of a body on a `create` request.
+///
+/// Generous enough to carry every field [`FindingKind`] renders, bounded so a
+/// hostile mutation-operator string cannot grow the request without limit.
+pub const INGRESS_BODY_MAX_BYTES: usize = 4000;
+
+/// The RFC 4648 §5 (URL and filename safe) alphabet.
+const BASE64URL_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Render the single line a `create` request sends to the write ingress.
+///
+/// The ratified request shape is
+/// `create <fingerprint> <base64url-title> [<base64url-body>]` — one line,
+/// space-separated, with the body omitted entirely when there is none. The
+/// fingerprint travels verbatim because it already matches the ratified
+/// DNS-label-like grammar; the title and body are base64url (RFC 4648 §5,
+/// padding stripped) because they are free text that would otherwise carry
+/// spaces the forced command splits on.
+///
+/// Both free-text fields are made control-character-free and length-bounded
+/// BEFORE encoding, so the values the ingress decodes are bounded and printable
+/// rather than merely wire-safe: base64 would happily smuggle a NUL or an
+/// escape sequence through to `bd create` intact.
+#[must_use]
+pub fn ingress_request_line(fingerprint: &str, title: &str, body: Option<&str>) -> String {
+    let mut line = format!(
+        "create {fingerprint} {}",
+        encode_field(title, INGRESS_TITLE_MAX_BYTES, false)
+    );
+    if let Some(body) = body {
+        line.push(' ');
+        line.push_str(&encode_field(body, INGRESS_BODY_MAX_BYTES, true));
+    }
+    line
+}
+
+/// Sanitize, bound, and base64url-encode one free-text request field.
+fn encode_field(text: &str, max_bytes: usize, keep_newlines: bool) -> String {
+    let printable = control_free(text, keep_newlines);
+    base64url_no_pad(bounded(&printable, max_bytes).as_bytes())
+}
+
+/// Replace every control character with a space.
+///
+/// A title is a single line, so it keeps none. A body keeps `\n`: the paragraph
+/// structure [`chore_fields`] renders is the whole point of the body, and a
+/// newline inside a base64url-encoded field cannot break the one-line request
+/// shape. Everything else — NUL, ESC, DEL, the C1 range — is replaced rather
+/// than dropped, so a truncation point stays a byte offset into readable text.
+fn control_free(text: &str, keep_newlines: bool) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch.is_control() && !(keep_newlines && ch == '\n') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+/// Truncate to at most `max_bytes`, backing up to the nearest character
+/// boundary so the result is still valid UTF-8 for the ingress to decode.
+fn bounded(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.get(..end).unwrap_or("")
+}
+
+/// Base64url (RFC 4648 §5) with the `=` padding stripped, as the ingress
+/// request grammar specifies.
+fn base64url_no_pad(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk.first().copied().unwrap_or(0);
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        push_symbol(&mut encoded, first >> 2);
+        push_symbol(&mut encoded, ((first & 0b0000_0011) << 4) | (second >> 4));
+        if chunk.len() > 1 {
+            push_symbol(&mut encoded, ((second & 0b0000_1111) << 2) | (third >> 6));
+        }
+        if chunk.len() > 2 {
+            push_symbol(&mut encoded, third & 0b0011_1111);
+        }
+    }
+    encoded
+}
+
+/// Append the alphabet symbol for one six-bit group.
+fn push_symbol(encoded: &mut String, six_bits: u8) {
+    let symbol = BASE64URL_ALPHABET
+        .get(usize::from(six_bits))
+        .copied()
+        .unwrap_or(b'A');
+    encoded.push(char::from(symbol));
+}
+
+// ---------------------------------------------------------------------------
 // Filing logic
 // ---------------------------------------------------------------------------
 
@@ -446,6 +562,83 @@ mod tests {
     fn short_hex_renders_sixteen_bytes_as_lowercase_hex() {
         assert_eq!(short_hex(&[0x00, 0x0f, 0xff]), "000fff");
         assert_eq!(short_hex(&[0xab_u8; 20]), "ab".repeat(16));
+    }
+
+    // --- the single-line create request the ingress receives ---
+
+    #[test]
+    fn a_request_line_carries_the_verb_the_fingerprint_and_both_encoded_fields() {
+        let line = ingress_request_line("fuzz-abc123", "hello", Some("hi"));
+
+        // base64url("hello") = aGVsbG8, base64url("hi") = aGk (padding stripped).
+        assert_eq!(line, "create fuzz-abc123 aGVsbG8 aGk");
+    }
+
+    #[test]
+    fn a_request_line_omits_the_body_field_entirely_when_there_is_none() {
+        let line = ingress_request_line("fuzz-abc123", "hello", None);
+
+        assert_eq!(line, "create fuzz-abc123 aGVsbG8");
+    }
+
+    #[test]
+    fn a_request_line_has_no_field_that_could_split_the_forced_command() {
+        let line = ingress_request_line(
+            &fuzz_finding().fingerprint().0,
+            "a title with spaces\tand a tab",
+            Some("a body\nwith a newline"),
+        );
+
+        // Verb, fingerprint, title, body — and nothing the ingress could read
+        // as a fifth argument.
+        assert_eq!(line.split(' ').count(), 4);
+        assert!(!line.contains(['\n', '\t']));
+    }
+
+    #[test]
+    fn a_control_character_never_reaches_the_decoded_title_or_body() {
+        assert_eq!(control_free("a\u{0}b\u{1b}c\td", false), "a b c d");
+        assert_eq!(control_free("a\nb", false), "a b");
+        // A body keeps its paragraph structure; everything else still goes.
+        assert_eq!(control_free("a\nb\u{7f}c", true), "a\nb c");
+    }
+
+    #[test]
+    fn an_oversized_field_is_bounded_before_it_is_encoded() {
+        let short = "under the bound";
+        assert_eq!(bounded(short, INGRESS_TITLE_MAX_BYTES), short);
+
+        let long = "x".repeat(INGRESS_TITLE_MAX_BYTES + 50);
+        assert_eq!(bounded(&long, INGRESS_TITLE_MAX_BYTES).len(), 200);
+
+        let hostile = FindingKind::SurvivingMutant {
+            source_file: "s".repeat(500),
+            line: 0,
+            mutation_operator: "o".repeat(500),
+        };
+        let (title, body) = chore_fields(&hostile);
+        let line = ingress_request_line(hostile.fingerprint().as_str(), &title, Some(&body));
+        // Both fields bounded and base64-expanded by 4/3, plus verb and
+        // fingerprint — far short of the 1000-character identity fed in.
+        assert!(line.len() < 6000);
+    }
+
+    #[test]
+    fn bounding_backs_up_to_a_character_boundary_rather_than_splitting_a_char() {
+        // "é" is two bytes, so a two-byte bound must not cut it in half.
+        assert_eq!(bounded("aé", 2), "a");
+        // Backing up past every candidate boundary yields the empty prefix.
+        assert_eq!(bounded("é", 1), "");
+    }
+
+    #[test]
+    fn base64url_encodes_every_chunk_remainder_and_uses_the_url_safe_alphabet() {
+        assert_eq!(base64url_no_pad(b""), "");
+        assert_eq!(base64url_no_pad(b"h"), "aA");
+        assert_eq!(base64url_no_pad(b"hi"), "aGk");
+        assert_eq!(base64url_no_pad(b"hello"), "aGVsbG8");
+        // The two symbols that separate base64url from standard base64.
+        assert_eq!(base64url_no_pad(&[0xfb, 0xff, 0xfe]), "-__-");
     }
 
     // --- IngressError display coverage ---

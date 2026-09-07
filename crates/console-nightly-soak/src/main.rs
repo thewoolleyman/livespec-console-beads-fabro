@@ -2,45 +2,98 @@
 //!
 //! Reads a JSON findings file (path from argv[1]) produced by the
 //! `just nightly-soak` recipe and processes each finding through
-//! [`NightlySoakFiler`]. Always exits 0: findings never fail master.
+//! [`NightlySoakFiler`], wiring the production transport: the `ci-writer` SSH
+//! forced command the shared Dolt host exposes on the tailnet.
 //!
-//! The production transport — the SSH forced command on the shared Dolt host,
-//! reachable only from the tailnet — is wired in the second slice of this
-//! change (`livespec-console-beads-fabro-4jb3kl.4`). Until it lands, the
-//! non-dry-run path is an UNWIRED ingress that refuses every request and says
-//! so, which the loop below reports per finding. That is deliberately louder
-//! than the surface it replaces: the previous composition root read the
-//! work-items ledger directly and filed through the orchestrator capture
-//! surface, which the ratified v048 ingress clause forbids CI from doing at
-//! all (`CI MUST NOT hold the work-items database credential`), and whose
-//! filings the ingress would in any case have rejected for their pre-v048
-//! fingerprints.
+//! Two exit rules, and they are not in tension. A FINDING never fails the
+//! canonical branch — that is the whole point of filing a chore instead — so a
+//! malformed findings file or an unreadable crash artifact is reported and
+//! skipped at exit 0. An unreachable INGRESS is a different failure: the write
+//! surface is reachable only from the tailnet, and the ratified v048 clause
+//! requires a nightly scheduled without a tailnet identity to "fail loudly
+//! rather than complete while filing nothing". So every ingress failure —
+//! including no configured destination at all — exits non-zero and names what
+//! could not be filed.
+//!
+//! CI holds no work-items database credential here: it authenticates with the
+//! `ci-writer` SSH key alone, and the host runs its own pinned `bd` behind the
+//! forced command. Nothing in this binary shells out to `bd`, reads the ledger,
+//! or needs the family secret wrapper.
 
 #![forbid(unsafe_code)]
 
 use std::io::Read;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use console_nightly_soak::{
     FindingIngress, FindingKind, IngressError, NightlySoakFiler, RecordingIngress,
+    ingress_request_line,
 };
 
 // ---------------------------------------------------------------------------
-// Placeholder transport until the tailnet SSH ingress lands
+// The tailnet SSH write ingress
 // ---------------------------------------------------------------------------
 
-struct UnwiredIngress;
+/// Names the `user@host` the ci-writer forced command answers on.
+///
+/// It is deliberately configuration rather than a baked-in literal: the
+/// workflow supplies it beside the `BEADS_CI_WRITER_SSH_KEY` secret and the
+/// `BEADS_CI_WRITER_KNOWN_HOSTS` variable, and an unset value is a fail-loudly
+/// condition rather than a default worth guessing.
+const SSH_DESTINATION_ENV: &str = "BEADS_CI_WRITER_SSH_DESTINATION";
 
-impl FindingIngress for UnwiredIngress {
+/// The production [`FindingIngress`]: one `ssh` invocation per finding,
+/// carrying the request line as the remote command the forced command reads.
+struct SshIngress {
+    destination: String,
+}
+
+impl SshIngress {
+    /// Resolve the ingress destination from the environment.
+    fn from_env() -> Result<Self, IngressError> {
+        std::env::var(SSH_DESTINATION_ENV).map_or_else(
+            |_| {
+                Err(IngressError(format!(
+                    "{SSH_DESTINATION_ENV} is unset: the nightly files through the on-tailnet \
+                     ci-writer SSH ingress and has no other write path"
+                )))
+            },
+            |destination| Ok(Self { destination }),
+        )
+    }
+}
+
+impl FindingIngress for SshIngress {
     fn create(
         &self,
         fingerprint: &str,
         title: &str,
-        _body: Option<&str>,
+        body: Option<&str>,
     ) -> Result<(), IngressError> {
+        let request = ingress_request_line(fingerprint, title, body);
+        // BatchMode refuses to sit at a prompt on a scheduled runner, and
+        // strict host-key checking makes an unknown host a failure rather than
+        // a trust-on-first-use: both turn "cannot reach the ingress" into an
+        // immediate non-zero exit instead of a hang or a silent misfile.
+        let output = Command::new("ssh")
+            .args(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"])
+            .arg(&self.destination)
+            .arg(&request)
+            .output()
+            .map_err(|err| {
+                IngressError(format!(
+                    "cannot run ssh for create {fingerprint} to {}: {err}",
+                    self.destination
+                ))
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
         Err(IngressError(format!(
-            "tailnet SSH write ingress not wired yet \
-             (livespec-console-beads-fabro-4jb3kl.4); dropped create {fingerprint} ({title})"
+            "ci-writer ssh ingress rejected create {fingerprint} to {} ({}): {}",
+            self.destination,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
         )))
     }
 }
@@ -189,16 +242,26 @@ fn main() -> ExitCode {
 
     if dry_run {
         let double = RecordingIngress::default();
-        process_all(&inputs, &double);
-    } else {
-        process_all(&inputs, &UnwiredIngress);
+        return process_all(&inputs, &double);
     }
-
-    ExitCode::SUCCESS
+    match SshIngress::from_env() {
+        Ok(ingress) => process_all(&inputs, &ingress),
+        Err(err) => {
+            eprintln!("nightly-soak: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-fn process_all(inputs: &[FindingInput], ingress: &dyn FindingIngress) {
+/// File every finding, returning FAILURE if the ingress refused any of them.
+///
+/// A finding the soak cannot even describe (an unreadable crash artifact) is
+/// skipped at SUCCESS — that is a soak-input problem, not a filing failure.
+/// An ingress refusal is the fail-loudly case: reporting it and exiting 0 is
+/// exactly the "complete while filing nothing" outcome the clause forbids.
+fn process_all(inputs: &[FindingInput], ingress: &dyn FindingIngress) -> ExitCode {
     let filer = NightlySoakFiler::new(ingress);
+    let mut refused = 0_usize;
     for input in inputs {
         let kind = match input_to_kind(input) {
             Ok(kind) => kind,
@@ -215,8 +278,17 @@ fn process_all(inputs: &[FindingInput], ingress: &dyn FindingIngress) {
                 println!("nightly-soak: submitted finding {}", fingerprint.as_str());
             }
             Err(err) => {
-                eprintln!("nightly-soak: ingress error (non-fatal): {err}");
+                refused += 1;
+                eprintln!("nightly-soak: {err}");
             }
         }
+    }
+    if refused == 0 {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "nightly-soak: {refused} finding(s) could not be filed through the write ingress"
+        );
+        ExitCode::FAILURE
     }
 }
