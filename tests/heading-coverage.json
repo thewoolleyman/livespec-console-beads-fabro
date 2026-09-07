@@ -868,7 +868,7 @@
     "scenario": "Scenario 14 -- Settings surface stays in lockstep with the orchestrator's declared keys",
     "scenario_file": "scenarios.md",
     "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_key_missing_from_the_settings_surface",
-    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md \u00a7\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
+    "reason": "Top-of-pyramid coverage for the consumer-side API-to-Settings-to-help-to-doc completeness check (console-completeness-check): it reads the orchestrator's PUBLISHED declared-key surface (the captured config-manifest, not a hardcoded list) and fails naming any declared key missing from the Settings rows, its inline help, or the console's settings doc -- the detailed-usage sub-document of the docs/ tree, per contracts.md §\"User Documentation Contract\". Sibling cases evaluate_names_a_key_whose_row_has_no_inline_help, the settings-doc missing-key case, and console_settings_rows_surface_every_dispatcher_row_with_help complete the pyramid.",
     "clauses": [
       {
         "gap_id": "gap-u5dlygw2",
@@ -1032,7 +1032,7 @@
     "scenario": "Scenario 21 -- Operator sees panes render operational content only, no baked-in documentation prose",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/tmux_tui_e2e.rs::tmux_tui_e2e_panes_operational_content_only_scenario_21",
-    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The \u00a7\"TUI Contract\" panes-operational-content-only clause binds here.",
+    "reason": "Top-of-pyramid real-TUI tmux E2E (`tmux_tui_e2e_panes_operational_content_only_scenario_21`) driving the shipped binary through a real tmux pane: each swept view (Attention, Spec, Lanes, Events, Repos, Settings) renders its operational content only -- the Spec pane shows its live counts (`LiveSpec next snapshots:`, `Revise required:`), the Events pane its stored-event count (`Stored events:`), the Repos pane its roster (`Repos observed:`) -- while a sweep of every pane body finds none of the removed documentation sentences ('Spec lifecycle status is projected from LiveSpec adapter observations.', 'Revise-required events stay visible in the Spec view until resolved.', 'The event log is the canonical source for projections.'), asserted via short distinctive fragments ('is projected from', 'stay visible', 'canonical source') that would render on a single line if present so detail-pane wrapping cannot hide a regression, and that render in no KEPT operational-help surface (the Status-line hints, the modal Help overlay, the Settings per-row inline help). Tier: top-of-pyramid acceptance, under crates/console-cli/tests/. The §\"TUI Contract\" panes-operational-content-only clause binds here.",
     "clauses": [
       {
         "gap_id": "gap-xiziukv6",
@@ -1376,6 +1376,50 @@
       {
         "gap_id": "gap-3a3bzkps",
         "scenario": "Scenario 31 -- Per-item verbs are offered wherever the operator sees the work-item"
+      }
+    ]
+  },
+  {
+    "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: integration tests in crates/console-cli/tests (tmux-driven TUI runtime) plus model-layer tests in crates/console-application land with the impl follow-up render-needs-human-account-and-answer-valve (console work-item under plan epic livespec-console-beads-fabro-pzbdbo, filed after this ratification). They render the projected account verbatim on the inbox row and in the detail, carry the optional answer through work_item.resolve_blocked_requested as --answer on the governed drive argv, surface a poisoned-answer refusal verbatim with the item left blocked, and render title-plus-valves when the projection carries no account. That item flips this entry from TODO to the landed test ids.",
+    "clauses": [
+      {
+        "gap_id": "gap-lijw44ol",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-py5j3745",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-auzn5k4s",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-rnchi3mj",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-addrybqf",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-qmy2qi5l",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-kpwru6qi",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-yuvnoiwj",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
+      },
+      {
+        "gap_id": "gap-dovqe6ig",
+        "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
       }
     ]
   }

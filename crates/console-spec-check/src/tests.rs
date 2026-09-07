@@ -233,11 +233,11 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // constraints.md seals a `ci-writer` credential and forbids that profile
     // from loading any family credential, so the claim was substrate-false and
     // contradicted the owning repo:
-    // 253 normative clauses, 22/142/22/67.
+    // 261 normative clauses, 22/150/22/67.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
-        ("contracts.md", 142),
+        ("contracts.md", 150),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 67),
     ];
@@ -249,7 +249,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 253,
+        total, 261,
         "total normative clauses across the console spec"
     );
     Ok(())
