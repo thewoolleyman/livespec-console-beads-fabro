@@ -11066,6 +11066,87 @@ mod tests {
         assert_eq!(TuiOverlay::None.valve_answer(), None);
     }
 
+    /// Backspace is inert on an answer-less valve even when the overlay
+    /// already carries text.
+    ///
+    /// The sibling test above exercises the same guard with an EMPTY answer,
+    /// where dropping a character and refusing to drop one are indistinguishable
+    /// -- so it cannot see the guard at all. Constructing the overlay with text
+    /// already in it makes the guard observable: an `Approve` valve accepts no
+    /// answer, so the text must survive backspace verbatim.
+    #[test]
+    fn backspace_leaves_an_answer_less_valves_text_untouched() {
+        let events: [ConsoleEvent; 0] = [];
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+                answer: "keep every character".to_owned(),
+            },
+        );
+
+        let after = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+
+        assert_eq!(after.overlay().valve_answer(), Some("keep every character"));
+    }
+
+    /// A flattened structured refusal is recognised by EITHER field alone.
+    ///
+    /// `structured_refusal` filters on `domain_error` OR `summary`, and the two
+    /// arrive independently: the drive surface emits `domain_error` for a
+    /// refusal it names and `summary` for one it only describes. A payload
+    /// carrying just one of them is still a refusal and must be reported, while
+    /// a payload carrying only bookkeeping stays silence.
+    #[test]
+    fn a_structured_refusal_is_recognised_by_either_field_alone() {
+        let domain_error_only = serde_json::json!({"action_id": "a", "domain_error": "refused"});
+        let summary_only = serde_json::json!({"action_id": "a", "summary": "refused"});
+        let bookkeeping_only = serde_json::json!({"action_id": "a", "status": "failed"});
+
+        assert_eq!(
+            super::structured_refusal(Some(&domain_error_only)),
+            Some(domain_error_only.to_string())
+        );
+        assert_eq!(
+            super::structured_refusal(Some(&summary_only)),
+            Some(summary_only.to_string())
+        );
+        assert_eq!(super::structured_refusal(Some(&bookkeeping_only)), None);
+        assert_eq!(super::structured_refusal(None), None);
+    }
+
+    /// The detail returns the answer comments it was given, verbatim and in
+    /// order -- the console READS the orchestrator's `livespec-human-answer`
+    /// comments back, so an accessor that dropped or invented one would show
+    /// the operator an answer nobody wrote.
+    #[test]
+    fn attention_detail_returns_its_answer_comments_verbatim_and_in_order() {
+        let detail = AttentionDetail::new(
+            "console".to_owned(),
+            "item-1".to_owned(),
+            "run-1".to_owned(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert!(detail.answer_comments().is_empty());
+
+        let with_comments = detail.with_answer_comments(vec![
+            "livespec-human-answer (op via console): first".to_owned(),
+            "livespec-human-answer (op via console): second".to_owned(),
+        ]);
+
+        assert_eq!(
+            with_comments.answer_comments(),
+            [
+                "livespec-human-answer (op via console): first".to_owned(),
+                "livespec-human-answer (op via console): second".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn tui_interaction_open_command_explainer_without_selection_leaves_no_overlay() {
         let events = fabro_gate_events();
