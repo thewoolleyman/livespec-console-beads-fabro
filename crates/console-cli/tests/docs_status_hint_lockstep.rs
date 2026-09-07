@@ -129,6 +129,7 @@ fn documented_model_hint(label: &str) -> Option<String> {
             0,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+                answer: String::new(),
             },
         ),
         "Work-item record open" => TuiInteractionState::new(

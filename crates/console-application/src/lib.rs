@@ -402,6 +402,27 @@ impl PendingValve {
     }
 
     #[must_use]
+    /// Whether this valve's dialog offers the optional free-text ANSWER field
+    /// beside its target-status choice.
+    ///
+    /// Only the resolve-blocked dialog does -- the `blocked -> ready | backlog`
+    /// move, which is the valve a `blocked / needs-human` item rests on. The
+    /// answer is what the orchestrator writes as the item's
+    /// `livespec-human-answer` comment before it transitions, so the next
+    /// dispatch's brief carries it (`SPECIFICATION/contracts.md`). Every other
+    /// valve is answer-less, and
+    /// typed characters stay inert on it exactly as before.
+    pub const fn accepts_answer(&self) -> bool {
+        matches!(
+            self,
+            Self::MoveStatus {
+                from: Lane::Blocked,
+                ..
+            }
+        )
+    }
+
+    #[must_use]
     /// This valve with its mode/policy/target/value rotated one step (forward or
     /// backward). The payload-free approve/accept valves are returned unchanged.
     pub fn cycled(self, forward: bool) -> Self {
@@ -763,6 +784,18 @@ pub enum TuiOverlay {
     ValveConfirm {
         /// The staged valve intent (with its dialed-in mode/policy).
         valve: PendingValve,
+        /// The optional free-text ANSWER typed beside the target-status choice,
+        /// offered only by the resolve-blocked dialog (see
+        /// [`PendingValve::accepts_answer`]). Empty until the operator types.
+        ///
+        /// It travels with the persisted `work_item.resolve_blocked_requested`
+        /// command and reaches the orchestrator as that action's `--answer`
+        /// argument; the orchestrator — never the console — writes the
+        /// `livespec-human-answer` ledger comment
+        /// (`SPECIFICATION/contracts.md`).
+        /// The operator's bytes are carried verbatim: nothing here edits,
+        /// rewords, or normalizes them.
+        answer: String,
     },
     /// Action-invoker variant: the generic roster of EVERY registered operator
     /// action for the current selection, opened from the command palette
@@ -852,7 +885,32 @@ impl TuiOverlay {
     /// `None` for any other overlay.
     pub const fn valve_confirm(&self) -> Option<PendingValve> {
         match self {
-            Self::ValveConfirm { valve } => Some(*valve),
+            Self::ValveConfirm { valve, .. } => Some(*valve),
+            Self::None
+            | Self::Search { .. }
+            | Self::CommandPalette { .. }
+            | Self::CommandModal { .. }
+            | Self::CommandExplainer { .. }
+            | Self::ActionInvoker { .. }
+            | Self::FactoryDrainConfirm { .. }
+            | Self::FactoryDispatchItemConfirm { .. }
+            | Self::DriverHandoff { .. }
+            | Self::WorkItemDetail { .. }
+            | Self::Help { .. }
+            | Self::Menu { .. } => None,
+        }
+    }
+
+    #[must_use]
+    /// The free-text answer typed into the valve-confirm modal, or `None` for
+    /// any other overlay.
+    ///
+    /// Returned VERBATIM, including surrounding whitespace: the console never
+    /// edits or rewords the operator's text. A valve that offers no answer
+    /// field simply never accumulates one, so this stays empty for it.
+    pub fn valve_answer(&self) -> Option<&str> {
+        match self {
+            Self::ValveConfirm { answer, .. } => Some(answer),
             Self::None
             | Self::Search { .. }
             | Self::CommandPalette { .. }
@@ -1471,6 +1529,8 @@ pub struct AttentionDetail {
     valve_commands: Vec<String>,
     timeline: Vec<TimelineEntry>,
     actions: Vec<OperatorAction>,
+    account: Option<String>,
+    answer_comments: Vec<String>,
 }
 
 impl AttentionDetail {
@@ -1493,7 +1553,35 @@ impl AttentionDetail {
             valve_commands,
             timeline,
             actions,
+            account: None,
+            answer_comments: Vec::new(),
         }
+    }
+
+    #[must_use]
+    /// This detail carrying the projection's ACCOUNT for the item -- the
+    /// terminated run's own story as the ORCHESTRATOR composed it, taken
+    /// verbatim from the projected valve item's `summary`.
+    ///
+    /// A builder rather than a `new` parameter because it is optional at the
+    /// source: the orchestrator's enrichment is fail-soft, so a projection that
+    /// carries only the item's title leaves this `None` and the console asserts
+    /// nothing about the run (`SPECIFICATION/contracts.md`).
+    pub fn with_account(mut self, account: Option<String>) -> Self {
+        self.account = account;
+        self
+    }
+
+    #[must_use]
+    /// This detail carrying the item's `livespec-human-answer` ledger comments
+    /// as the context surface returned them, oldest first.
+    ///
+    /// The orchestrator writes that comment when it accepts an answer through
+    /// the resolve-blocked valve; the console only READS it back, so a
+    /// successful resolve shows the answer where the operator gave it.
+    pub fn with_answer_comments(mut self, answer_comments: Vec<String>) -> Self {
+        self.answer_comments = answer_comments;
+        self
     }
 
     #[must_use]
@@ -1551,6 +1639,28 @@ impl AttentionDetail {
     pub fn actions(&self) -> &[OperatorAction] {
         &self.actions
     }
+
+    #[must_use]
+    /// The projected ACCOUNT of the item -- for a `blocked / needs-human` item,
+    /// the terminated run's story (run id, factory, why, what it reported, the
+    /// preserved ref, the available actions) exactly as the orchestrator
+    /// composed it in the valve item's `summary`.
+    ///
+    /// Rendered WHOLE in the drilled-in detail and never truncated there. The
+    /// console composes, augments, and re-derives no part of it: nothing here
+    /// inspects the factory, reads the run, or scans console events to fill a
+    /// field the projection left out. `None` when the projection carried no
+    /// account.
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
+    }
+
+    #[must_use]
+    /// The item's `livespec-human-answer` ledger comments, verbatim, oldest
+    /// first, as the context surface returned them.
+    pub fn answer_comments(&self) -> &[String] {
+        &self.answer_comments
+    }
 }
 
 /// The latest observed refusal/failure of an operator action per work-item.
@@ -1600,6 +1710,19 @@ impl ActionFailure {
     }
 }
 
+/// The failure payload itself when it carries the drive surface's structured
+/// refusal fields, or `None` when it names no diagnostic at all.
+///
+/// This is what keeps a flattened structured refusal from being reported as
+/// silence; a payload carrying only bookkeeping (`action_id`, `status`) stays
+/// `None`, so an action that genuinely emitted nothing is still reported as
+/// having emitted nothing rather than as a JSON blob.
+fn structured_refusal(payload: Option<&serde_json::Value>) -> Option<String> {
+    payload
+        .filter(|value| value.get("domain_error").is_some() || value.get("summary").is_some())
+        .map(serde_json::Value::to_string)
+}
+
 /// Fold the `work_item.action.*` outcome events into the latest failure per
 /// work-item: a failed action surfaces until a later action against the same
 /// item completes, so a stale refusal never outlives its recovery.
@@ -1622,7 +1745,17 @@ fn project_action_failures(events: &[ConsoleEvent]) -> BTreeMap<String, ActionFa
                         event.stream_id().to_owned(),
                         ActionFailure {
                             action_id,
-                            refusal: field("refusal"),
+                            // A STRUCTURED refusal (the drive surface's `--json`
+                            // shape) is flattened into this payload at append
+                            // time, so it has no `refusal` key to read; reading
+                            // only that key reported the orchestrator's most
+                            // informative refusals -- a poisoned-answer
+                            // preflight among them -- as "no diagnostic
+                            // emitted". The whole payload IS the refusal in
+                            // that case, and `display_line` renders its
+                            // `domain_error` and `summary` verbatim.
+                            refusal: field("refusal")
+                                .or_else(|| structured_refusal(payload.as_ref())),
                         },
                     );
                 }
@@ -2224,6 +2357,12 @@ pub enum ApplicationError {
     /// `work_item.resolve_blocked_requested` command carried a payload whose
     /// `target_status` was absent or not one of {ready, backlog}.
     InvalidResolveBlockedTarget,
+    /// Invalid resolve-blocked answer variant -- a
+    /// `work_item.resolve_blocked_requested` command carried an `answer` key
+    /// that was not a non-empty string. The answer is optional, so its ABSENCE
+    /// is never this error; a present-but-unusable one is refused rather than
+    /// silently dropped, because dropping it would lose the operator's text.
+    InvalidResolveBlockedAnswer,
     /// Invalid move target variant -- a `work_item.move_requested` command carried
     /// a payload whose `target_status` was absent or not one of the pre-terminal
     /// pipeline statuses {backlog, ready, blocked, active}.
@@ -2664,6 +2803,7 @@ impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort<'_> {
 pub struct OrchestratorActionRequest {
     action_id: String,
     requested_by: String,
+    answer: Option<String>,
 }
 
 impl OrchestratorActionRequest {
@@ -2673,6 +2813,7 @@ impl OrchestratorActionRequest {
         Self {
             action_id,
             requested_by: "operator".to_owned(),
+            answer: None,
         }
     }
 
@@ -2682,7 +2823,19 @@ impl OrchestratorActionRequest {
         Self {
             action_id,
             requested_by,
+            answer: None,
         }
+    }
+
+    #[must_use]
+    /// This request carrying the operator's free-text answer, which the port
+    /// appends to the invocation as `--answer <answer>`.
+    ///
+    /// `None` leaves the argv untouched, so every answer-less action invokes
+    /// exactly the argv it always did.
+    pub fn with_answer(mut self, answer: Option<&str>) -> Self {
+        self.answer = answer.map(str::to_owned);
+        self
     }
 
     #[must_use]
@@ -2695,6 +2848,12 @@ impl OrchestratorActionRequest {
     /// Return the asserted principal requesting the action.
     pub fn requested_by(&self) -> &str {
         &self.requested_by
+    }
+
+    #[must_use]
+    /// Return the operator's free-text answer when this request carries one.
+    pub fn answer(&self) -> Option<&str> {
+        self.answer.as_deref()
     }
 }
 
@@ -2871,6 +3030,14 @@ impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
         let mut args: Vec<&str> = self.base_args.iter().map(String::as_str).collect();
         args.push("--action");
         args.push(request.action_id());
+        // The operator's answer rides IMMEDIATELY behind the action it answers,
+        // verbatim and as a separate argv element, so nothing quotes, escapes,
+        // or reflows the text on its way to the orchestrator. Absent for every
+        // action that carries no answer.
+        if let Some(answer) = request.answer() {
+            args.push("--answer");
+            args.push(answer);
+        }
         args.push("--invoker");
         args.push(request.requested_by());
         Ok(match self.probe.run_command(&self.program, &args) {
@@ -3615,7 +3782,7 @@ pub fn build_tui_model_for_state(
     let attention_entries = unified_attention_entries(events, search_query);
     let attention_items = attention_entries
         .iter()
-        .map(AttentionEntry::to_attention_item)
+        .map(|entry| entry.to_attention_item(events))
         .collect::<Vec<_>>();
     let attention_count = attention_items.len();
     let selected_attention_index =
@@ -4227,9 +4394,12 @@ fn open_valve_confirm_state(
         .selected_action_context()
         .is_some_and(|ctx| action_registry::valve_is_available(valve, &ctx))
     {
-        state
-            .clone()
-            .with_overlay(TuiOverlay::ValveConfirm { valve })
+        state.clone().with_overlay(TuiOverlay::ValveConfirm {
+            valve,
+            // A freshly-staged dialog starts with an empty answer: text typed
+            // into an earlier valve never carries into the next one.
+            answer: String::new(),
+        })
     } else {
         state.clone()
     }
@@ -4455,13 +4625,17 @@ fn work_item_detail_scroll(
 
 /// Rotate the valve-confirm modal's payload valve one step (forward or
 /// backward), leaving any non-valve overlay unchanged.
+///
+/// The typed answer rides through the rotation: dialing `ready` over to
+/// `backlog` must not silently discard text the operator has already written.
 fn cycle_valve_option(overlay: &TuiOverlay, forward: bool) -> TuiOverlay {
-    overlay.valve_confirm().map_or_else(
-        || overlay.clone(),
-        |valve| TuiOverlay::ValveConfirm {
+    match overlay {
+        TuiOverlay::ValveConfirm { valve, answer } => TuiOverlay::ValveConfirm {
             valve: valve.cycled(forward),
+            answer: answer.clone(),
         },
-    )
+        _other => overlay.clone(),
+    }
 }
 
 /// Whether the `Lanes` view is showing its cross-lane overview home, where
@@ -4728,8 +4902,13 @@ pub fn resolve_valve_action(
     {
         return Err(ApplicationError::NoSelectedOperatorAction);
     }
-    valve_outcome(valve, work_item_id, requested_by)
-        .ok_or(ApplicationError::NoSelectedOperatorAction)
+    valve_outcome(
+        valve,
+        work_item_id,
+        requested_by,
+        model.overlay().valve_answer().unwrap_or_default(),
+    )
+    .ok_or(ApplicationError::NoSelectedOperatorAction)
 }
 
 /// Build the persist outcome for one staged valve against `work_item_id`, or
@@ -4740,6 +4919,7 @@ fn valve_outcome(
     valve: PendingValve,
     work_item_id: &str,
     requested_by: &str,
+    answer: &str,
 ) -> Option<OperatorActionOutcome> {
     match valve {
         PendingValve::Approve => Some(OperatorActionOutcome::PersistCommand(work_item_command(
@@ -4779,7 +4959,7 @@ fn valve_outcome(
             requested_by,
         )),
         PendingValve::MoveStatus { from, to } => {
-            move_status_outcome(from, to, work_item_id, requested_by)
+            move_status_outcome(from, to, work_item_id, requested_by, answer)
         }
         PendingValve::SetOverride(override_dial) => Some(work_item_override_outcome(
             work_item_id,
@@ -4804,23 +4984,27 @@ fn valve_outcome(
 /// pair that is not in [`status_move_targets`] -- this rejects stale or manually
 /// staged duplicate semantic-valve paths such as `pending-approval -> ready` and
 /// `acceptance -> done`.
+///
+/// A resolve-blocked move also carries the operator's optional free-text
+/// `answer` in its payload, verbatim and only when it is more than whitespace;
+/// the command handler passes it to the orchestrator as `--answer`, which is
+/// what writes the item's `livespec-human-answer` comment.
 fn move_status_outcome(
     from: Lane,
     to: Lane,
     work_item_id: &str,
     requested_by: &str,
+    answer: &str,
 ) -> Option<OperatorActionOutcome> {
     if !status_move_targets(from).contains(&to) {
         return None;
     }
     if matches!(from, Lane::Blocked) {
-        return Some(work_item_payload_outcome(
-            "resolve_blocked",
-            CommandType::WorkItemResolveBlockedRequested,
+        return Some(resolve_blocked_outcome(
             work_item_id,
-            "target_status",
             to.label(),
             requested_by,
+            answer,
         ));
     }
     Some(work_item_payload_outcome(
@@ -4871,6 +5055,50 @@ fn work_item_payload_outcome(
     );
     let mut payload = serde_json::Map::new();
     payload.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
+    OperatorActionOutcome::PersistCommandWithPayload {
+        command,
+        payload_json: serde_json::Value::Object(payload).to_string(),
+    }
+}
+
+/// The persisted-command payload key carrying the operator's free-text answer
+/// on a `work_item.resolve_blocked_requested` command.
+const RESOLVE_BLOCKED_ANSWER_KEY: &str = "answer";
+
+/// Build the persist outcome for the resolve-blocked valve: the
+/// `work_item.resolve_blocked_requested` command, its `target_status`, and the
+/// operator's optional free-text `answer`.
+///
+/// The answer is carried VERBATIM and only when it is more than whitespace --
+/// a blank field is an absent answer, not an empty comment. The console never
+/// writes the ledger comment itself: the handler passes this text to the
+/// orchestrator's action surface as `--answer`, and the orchestrator
+/// poison-preflights it, writes the `livespec-human-answer` comment, and only
+/// then transitions the item (`SPECIFICATION/contracts.md`).
+fn resolve_blocked_outcome(
+    work_item_id: &str,
+    target_status: &str,
+    requested_by: &str,
+    answer: &str,
+) -> OperatorActionOutcome {
+    let command = CommandEnvelope::new(
+        format!("cmd_work_item_resolve_blocked_requested_{work_item_id}_{target_status}"),
+        CommandType::WorkItemResolveBlockedRequested,
+        work_item_id.to_owned(),
+        format!("{work_item_id}:work_item.resolve_blocked_requested:target_status={target_status}"),
+        requested_by.to_owned(),
+    );
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "target_status".to_owned(),
+        serde_json::Value::String(target_status.to_owned()),
+    );
+    if !answer.trim().is_empty() {
+        payload.insert(
+            RESOLVE_BLOCKED_ANSWER_KEY.to_owned(),
+            serde_json::Value::String(answer.to_owned()),
+        );
+    }
     OperatorActionOutcome::PersistCommandWithPayload {
         command,
         payload_json: serde_json::Value::Object(payload).to_string(),
@@ -5446,32 +5674,43 @@ fn set_acceptance_policy_from_payload(payload_json: &str) -> ApplicationResult<A
 /// surface owns state-legality (it refuses a non-`blocked` item) -- and it never
 /// writes the ledger directly.
 ///
+/// The payload's optional `answer` rides to the orchestrator as the action's
+/// `--answer` argument, verbatim. The orchestrator poison-preflights it, writes
+/// the `livespec-human-answer` ledger comment, and only then transitions the
+/// item; a refused answer comes back as this command's refusal and the item
+/// stays blocked.
+///
 /// # Errors
-/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty and
+/// Returns [`ApplicationError::EmptyWorkItemId`] when the id is empty,
 /// [`ApplicationError::InvalidResolveBlockedTarget`] when the payload's
-/// `target_status` is absent or not one of {ready, backlog}; also surfaces a port
-/// error when the port cannot produce a trustworthy outcome.
+/// `target_status` is absent or not one of {ready, backlog}, and
+/// [`ApplicationError::InvalidResolveBlockedAnswer`] when the payload carries an
+/// `answer` that is not a non-empty string; also surfaces a port error when the
+/// port cannot produce a trustworthy outcome.
 pub fn handle_work_item_resolve_blocked_command(
     command: &CommandEnvelope,
     payload_json: &str,
     port: &mut dyn OrchestratorActionPort,
 ) -> ApplicationResult<WorkItemCommandOutcome> {
     let work_item_id = validate_work_item_id(command.aggregate_id())?;
-    let target = resolve_blocked_target_from_payload(payload_json)?;
+    // Parsed ONCE and read twice: the target and the answer are two fields of
+    // the same persisted payload, and re-parsing would give the answer reader an
+    // unreachable second parse-failure path.
+    let payload: serde_json::Value = serde_json::from_str(payload_json)
+        .map_err(|_error| ApplicationError::InvalidResolveBlockedTarget)?;
+    let target = resolve_blocked_target(&payload)?;
+    let answer = resolve_blocked_answer(&payload)?;
     let action_id = format!("resolve-blocked:{work_item_id}:{target}");
-    run_work_item_action(command, &action_id, port)
+    run_work_item_action_with_answer(command, &action_id, answer.as_deref(), port)
 }
 
-/// Extract the resolve-blocked `target_status` from a command's persisted
-/// `payload_json`.
+/// Extract the resolve-blocked `target_status` from a command's parsed payload.
 ///
 /// The payload is the JSON object `{"target_status": "ready" | "backlog"}`; any
 /// other shape is an [`ApplicationError::InvalidResolveBlockedTarget`]. These are
 /// the two targets the orchestrator's `resolve-blocked` action accepts.
-fn resolve_blocked_target_from_payload(payload_json: &str) -> ApplicationResult<&'static str> {
-    let value: serde_json::Value = serde_json::from_str(payload_json)
-        .map_err(|_error| ApplicationError::InvalidResolveBlockedTarget)?;
-    let target = value
+fn resolve_blocked_target(payload: &serde_json::Value) -> ApplicationResult<&'static str> {
+    let target = payload
         .get("target_status")
         .and_then(serde_json::Value::as_str)
         .ok_or(ApplicationError::InvalidResolveBlockedTarget)?;
@@ -5479,6 +5718,23 @@ fn resolve_blocked_target_from_payload(payload_json: &str) -> ApplicationResult<
         "ready" => Ok("ready"),
         "backlog" => Ok("backlog"),
         _other => Err(ApplicationError::InvalidResolveBlockedTarget),
+    }
+}
+
+/// Extract the resolve-blocked payload's OPTIONAL operator `answer`.
+///
+/// Absent is the ordinary case (`Ok(None)`): the answer field is optional. A
+/// present `answer` must be a non-empty string -- anything else is a corrupt
+/// payload rather than an answer, and is refused before the orchestrator is
+/// invoked, because silently dropping it would lose the operator's text. What
+/// is returned is VERBATIM; nothing here trims, edits, or rewords the bytes.
+fn resolve_blocked_answer(payload: &serde_json::Value) -> ApplicationResult<Option<String>> {
+    let Some(answer) = payload.get(RESOLVE_BLOCKED_ANSWER_KEY) else {
+        return Ok(None);
+    };
+    match answer.as_str() {
+        Some(text) if !text.trim().is_empty() => Ok(Some(text.to_owned())),
+        _other => Err(ApplicationError::InvalidResolveBlockedAnswer),
     }
 }
 
@@ -5654,10 +5910,27 @@ fn run_work_item_action(
     action_id: &str,
     port: &mut dyn OrchestratorActionPort,
 ) -> ApplicationResult<WorkItemCommandOutcome> {
+    run_work_item_action_with_answer(command, action_id, None, port)
+}
+
+/// [`run_work_item_action`] carrying the operator's optional free-text answer,
+/// which the port appends to the invocation as `--answer <answer>`.
+///
+/// Only the resolve-blocked valve supplies one today. The refusal path is the
+/// shared one: a poisoned answer the orchestrator rejects comes back as this
+/// action's refusal payload and is surfaced verbatim, with no transition and no
+/// comment observed on the item.
+fn run_work_item_action_with_answer(
+    command: &CommandEnvelope,
+    action_id: &str,
+    answer: Option<&str>,
+    port: &mut dyn OrchestratorActionPort,
+) -> ApplicationResult<WorkItemCommandOutcome> {
     let request = OrchestratorActionRequest::attributed(
         action_id.to_owned(),
         command.requested_by().to_owned(),
-    );
+    )
+    .with_answer(answer);
     let port_outcome = port.run_action(&request)?;
     let mut events = vec![work_item_command_event(
         command,
@@ -6967,12 +7240,22 @@ enum AttentionEntry {
 
 impl AttentionEntry {
     /// The list-row projection: the entry rendered as an [`AttentionItem`].
-    fn to_attention_item(&self) -> AttentionItem {
+    ///
+    /// A work-item row carries the projection's ACCOUNT for the item after its
+    /// lane title, verbatim, so the operator reads the terminated run's own
+    /// story where the decision is offered rather than a bare
+    /// `Blocked: needs-human` with nothing to decide on. The row NEVER truncates
+    /// it here -- eliding to fit belongs to the renderer, which alone knows the
+    /// pane's width, and the whole text always survives into the detail.
+    fn to_attention_item(&self, events: &[ConsoleEvent]) -> AttentionItem {
         match self {
             Self::WorkItem(entry) => AttentionItem::new(
                 entry.snapshot.work_item_id().to_owned(),
                 Some(entry.snapshot.work_item_id().to_owned()),
-                attention_title(&entry.snapshot),
+                attention_row_title(
+                    &attention_title(&entry.snapshot),
+                    advertised_account(events, entry.snapshot.work_item_id()).as_deref(),
+                ),
                 entry.event.source().to_owned(),
                 entry.snapshot.repo().to_owned(),
                 None,
@@ -7067,6 +7350,9 @@ fn build_needs_attention_detail(
 ) -> AttentionDetail {
     let source_ref = item.source_ref();
     let handoff_command = vec![item.handoff().command().to_owned()];
+    // The projection's own summary, verbatim: this row IS the projected item,
+    // so its account needs no lookup and gets no augmentation.
+    let account = Some(item.summary().to_owned());
     if let Some(work_item_id) = source_ref.work_item() {
         if let Some(entry) = latest_work_item_snapshot(events, work_item_id) {
             let detail = entry.snapshot.detail();
@@ -7081,7 +7367,9 @@ fn build_needs_attention_detail(
                 handoff_command,
                 latest_timeline(events, entry.event.stream_id(), 3),
                 attention_detail_actions(&entry),
-            );
+            )
+            .with_account(account)
+            .with_answer_comments(human_answer_comments(detail));
         }
         return AttentionDetail::new(
             source_ref.repo().to_owned(),
@@ -7091,7 +7379,8 @@ fn build_needs_attention_detail(
             handoff_command,
             Vec::new(),
             Vec::new(),
-        );
+        )
+        .with_account(account);
     }
     let subject = source_ref.path().unwrap_or_else(|| item.id());
     AttentionDetail::new(
@@ -7103,6 +7392,28 @@ fn build_needs_attention_detail(
         Vec::new(),
         Vec::new(),
     )
+    .with_account(account)
+}
+
+/// The stable opener the orchestrator gives the ledger comment it writes for an
+/// operator's answer (`livespec-human-answer (<invoker> via <source>, <at>,
+/// <action-id>): <answer>`).
+const HUMAN_ANSWER_COMMENT_MARKER: &str = "livespec-human-answer";
+
+/// The item's `livespec-human-answer` ledger comments, verbatim and in ledger
+/// order, from the context surface's own record.
+///
+/// A pure READ of what `list-work-items --json` already carried: the console
+/// never writes this comment and never reconstructs its text. Selecting it by
+/// the orchestrator's stable marker is recognition, not composition -- the
+/// bytes rendered are the bytes the surface returned.
+fn human_answer_comments(detail: &WorkItemDetail) -> Vec<String> {
+    detail
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(HUMAN_ANSWER_COMMENT_MARKER))
+        .map(|comment| comment.text.clone())
+        .collect()
 }
 
 /// The latest genuinely-ingested work-item snapshot for `work_item_id`, with
@@ -7171,6 +7482,19 @@ const fn requires_attention_from_lane(
             )
             | (Lane::Blocked, Some(LaneReason::NeedsHuman), _, _)
     )
+}
+
+/// The inbox row's label: the entry's lane title, followed by the projection's
+/// account for it when one was advertised.
+///
+/// The account is appended VERBATIM and the title is kept, so the row still
+/// names the lane it is resting in and the reader still gets the run's story.
+/// An account that merely repeats the title adds nothing, so it is not doubled.
+fn attention_row_title(title: &str, account: Option<&str>) -> String {
+    match account {
+        Some(account) if account != title => format!("{title} — {account}"),
+        _other => title.to_owned(),
+    }
 }
 
 fn attention_title(snapshot: &WorkItemSnapshot) -> String {
@@ -7409,6 +7733,15 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
             query: format!("{query}{value}"),
         },
+        // Only the answer-bearing dialog accumulates text; on every other valve
+        // a typed character stays inert, exactly as it was before the field
+        // existed.
+        TuiOverlay::ValveConfirm { valve, answer } if valve.accepts_answer() => {
+            TuiOverlay::ValveConfirm {
+                valve: *valve,
+                answer: format!("{answer}{value}"),
+            }
+        }
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
@@ -7431,6 +7764,12 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         TuiOverlay::CommandPalette { query } => TuiOverlay::CommandPalette {
             query: drop_last_char(query),
         },
+        TuiOverlay::ValveConfirm { valve, answer } if valve.accepts_answer() => {
+            TuiOverlay::ValveConfirm {
+                valve: *valve,
+                answer: drop_last_char(answer),
+            }
+        }
         TuiOverlay::None
         | TuiOverlay::CommandModal { .. }
         | TuiOverlay::CommandExplainer { .. }
@@ -7591,6 +7930,24 @@ fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) ->
         latest_timeline(events, event.stream_id(), 3),
         actions,
     )
+    .with_account(advertised_account(events, entry.snapshot.work_item_id()))
+    .with_answer_comments(human_answer_comments(detail))
+}
+
+/// The ACCOUNT the ingested needs-attention projection carries for
+/// `work_item_id` -- its valve item's `summary`, verbatim.
+///
+/// The same read as [`advertised_valve_commands`], over the same dedupe blind
+/// spot: the projected row for a `blocked / needs-human` item is exactly the
+/// one the unified list folds into its richer work-item entry, so without this
+/// the account the orchestrator composed would never reach the surface. `None`
+/// when the projection advertises no row for the item -- an honest absence, not
+/// a locally-composed stand-in.
+fn advertised_account(events: &[ConsoleEvent], work_item_id: &str) -> Option<String> {
+    materialize_attention_items(events)
+        .into_iter()
+        .find(|item| item.source_ref().work_item() == Some(work_item_id))
+        .map(|item| item.summary().to_owned())
 }
 
 /// Every command the ingested needs-attention projection advertises for
@@ -7877,8 +8234,9 @@ mod tests {
     use super::source_adapters::{
         AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
-        SourceProbe, SourceProbeOutcome, WorkItemSnapshot, attention_item_payload_json,
-        attention_resolved_payload_json, dispatcher_journal_payload_json,
+        SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail, WorkItemSnapshot,
+        attention_item_payload_json, attention_resolved_payload_json,
+        dispatcher_journal_payload_json,
     };
     use super::{
         ActionFailure, ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
@@ -10649,6 +11007,65 @@ mod tests {
         assert_eq!(state.overlay(), &TuiOverlay::None);
     }
 
+    /// The resolve-blocked dialog's free-text ANSWER field: typed characters
+    /// accumulate on it verbatim, backspace edits it, dialing the target status
+    /// keeps it, and every OTHER valve stays text-inert exactly as before.
+    #[test]
+    fn the_resolve_blocked_dialog_accumulates_the_answer_and_other_valves_stay_inert() {
+        let events: [ConsoleEvent; 0] = [];
+        let resolve = PendingValve::MoveStatus {
+            from: Lane::Blocked,
+            to: Lane::Ready,
+        };
+        // Only the resolve-blocked move offers an answer.
+        let into_blocked = PendingValve::MoveStatus {
+            from: Lane::Ready,
+            to: Lane::Blocked,
+        };
+        assert!(resolve.accepts_answer());
+        assert!(!PendingValve::Approve.accepts_answer());
+        assert!(!into_blocked.accepts_answer());
+
+        let mut state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: resolve,
+                answer: String::new(),
+            },
+        );
+        for character in "ship it!".chars() {
+            state = reduce_tui_interaction(&state, &events, TuiInteraction::TypeChar(character));
+        }
+        state = reduce_tui_interaction(&state, &events, TuiInteraction::Backspace);
+        assert_eq!(state.overlay().valve_answer(), Some("ship it"));
+
+        // Dialing the target status must not discard text already typed.
+        let dialed =
+            reduce_tui_interaction(&state, &events, TuiInteraction::CycleValveOption(true));
+        assert_eq!(dialed.overlay().valve_answer(), Some("ship it"));
+        assert_eq!(
+            dialed.overlay().valve_confirm(),
+            Some(PendingValve::MoveStatus {
+                from: Lane::Blocked,
+                to: Lane::Backlog,
+            })
+        );
+
+        // An answer-less valve ignores typing and backspace, and a non-valve
+        // overlay carries no answer at all.
+        let approve = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::Approve,
+                answer: String::new(),
+            },
+        );
+        let typed = reduce_tui_interaction(&approve, &events, TuiInteraction::TypeChar('x'));
+        let typed = reduce_tui_interaction(&typed, &events, TuiInteraction::Backspace);
+        assert_eq!(typed.overlay().valve_answer(), Some(""));
+        assert_eq!(TuiOverlay::None.valve_answer(), None);
+    }
+
     #[test]
     fn tui_interaction_open_command_explainer_without_selection_leaves_no_overlay() {
         let events = fabro_gate_events();
@@ -10703,6 +11120,116 @@ mod tests {
             detail.and_then(super::AttentionDetail::fabro_factory),
             Some("hp")
         );
+    }
+
+    /// The projected valve item's `summary` -- the terminated run's ACCOUNT as
+    /// the orchestrator composed it -- reaches the row and the detail verbatim.
+    ///
+    /// The dedupe folds the projected row into the richer work-item entry, so
+    /// without this read the account would never surface at all; and nothing
+    /// here composes it, so an account-less projection reports nothing about the
+    /// run even while the ledger's own run stamps are present.
+    #[test]
+    fn the_projected_account_reaches_the_row_and_the_detail_verbatim() {
+        const ACCOUNT: &str = "fabro run 01RUN on factory hp terminated at the needs-human node. \
+                               Why: the gate needs a ruling. Tree preserved on \
+                               refs/heads/needs-human/01RUN.";
+        let events = [
+            needs_human_lane_event("evt_blocked", "console-blocked", Some(("01RUN", "hp"))),
+            attention_appeared("evt_valve", &account_valve(ACCOUNT)),
+        ];
+
+        let model = build_tui_model(&events, 0);
+
+        // The detail carries the projected summary verbatim, and the row carries
+        // the lane title and then the account, untruncated.
+        let row_title = format!("Blocked: needs-human — {ACCOUNT}");
+        assert_eq!(
+            model.detail().and_then(super::AttentionDetail::account),
+            Some(ACCOUNT)
+        );
+        assert_eq!(
+            model.attention_items().first().map(AttentionItem::title),
+            Some(row_title.as_str())
+        );
+    }
+
+    /// The fail-soft case: no projected row for the item, so no account, and the
+    /// row falls back to the lane title alone.
+    #[test]
+    fn an_account_less_projection_leaves_the_detail_and_row_asserting_nothing() {
+        let events = [needs_human_lane_event(
+            "evt_blocked",
+            "console-blocked",
+            Some(("01RUN", "hp")),
+        )];
+
+        let model = build_tui_model(&events, 0);
+
+        assert_eq!(
+            model.detail().and_then(super::AttentionDetail::account),
+            None
+        );
+        assert_eq!(
+            model.attention_items().first().map(AttentionItem::title),
+            Some("Blocked: needs-human")
+        );
+        // An account that merely repeats the row's own title is not doubled onto
+        // it, and an absent one leaves the title alone.
+        assert_eq!(
+            super::attention_row_title("Blocked: needs-human", Some("Blocked: needs-human")),
+            "Blocked: needs-human"
+        );
+        assert_eq!(
+            super::attention_row_title("Pending approval", None),
+            "Pending approval"
+        );
+    }
+
+    /// The `livespec-human-answer` comment the orchestrator wrote is read back
+    /// from the item's own record, verbatim, and nothing else is.
+    #[test]
+    fn the_detail_carries_only_the_human_answer_comments_the_surface_returned() {
+        const ANSWER_COMMENT: &str = "livespec-human-answer (operator via console, 2026-09-07T14:00:00Z, \
+             resolve-blocked:console-blocked:ready): ship the narrow fix";
+        let detail = WorkItemDetail {
+            comments: vec![
+                WorkItemComment {
+                    text: "an ordinary operator handoff".to_owned(),
+                    ..WorkItemComment::default()
+                },
+                WorkItemComment {
+                    text: ANSWER_COMMENT.to_owned(),
+                    ..WorkItemComment::default()
+                },
+            ],
+            ..WorkItemDetail::default()
+        };
+
+        assert_eq!(
+            super::human_answer_comments(&detail),
+            [ANSWER_COMMENT.to_owned()]
+        );
+        assert_eq!(
+            super::human_answer_comments(&WorkItemDetail::default()),
+            [] as [String; 0]
+        );
+    }
+
+    /// A valve row for the item, carrying `summary` as its account.
+    fn account_valve(summary: &str) -> AttentionItemSnapshot {
+        AttentionItemSnapshot::new(
+            "valve:resolve-blocked:console-blocked",
+            "human-valve",
+            "high",
+            summary,
+            AttentionSourceRef::new("console", Some("console-blocked"), None),
+            AttentionHandoff::new(
+                "drive",
+                Some("resolve-blocked:console-blocked:ready"),
+                "drive resolve-blocked:console-blocked:ready",
+            ),
+        )
     }
 
     /// An item the ledger never stamped renders its run as absent.
@@ -12315,6 +12842,134 @@ mod tests {
         assert_eq!(port.observed_action_ids, [] as [String; 0]);
     }
 
+    /// The operator's optional answer rides the payload and the argv verbatim,
+    /// and only when it is more than whitespace.
+    #[test]
+    fn resolve_blocked_carries_the_operator_answer_into_the_payload_and_the_argv() {
+        const ANSWER: &str = "  Ship the narrow fix; the refactor is a separate item.  ";
+
+        // The valve outcome: the answer is added beside the target status, kept
+        // byte-for-byte (leading and trailing spaces included), and a blank or
+        // whitespace-only field is an ABSENT answer rather than an empty one.
+        let with_answer = super::valve_outcome(
+            PendingValve::MoveStatus {
+                from: Lane::Blocked,
+                to: Lane::Ready,
+            },
+            "wi-1",
+            "operator",
+            ANSWER,
+        );
+        assert!(matches!(
+            with_answer,
+            Some(OperatorActionOutcome::PersistCommandWithPayload { ref command, ref payload_json })
+                if command.command_type() == &CommandType::WorkItemResolveBlockedRequested
+                    && command.aggregate_id() == "wi-1"
+                    && payload_json
+                        == &serde_json::json!({"answer": ANSWER, "target_status": "ready"})
+                            .to_string()
+        ));
+        for blank in ["", "   "] {
+            let outcome = super::valve_outcome(
+                PendingValve::MoveStatus {
+                    from: Lane::Blocked,
+                    to: Lane::Backlog,
+                },
+                "wi-1",
+                "operator",
+                blank,
+            );
+            assert!(matches!(
+                outcome,
+                Some(OperatorActionOutcome::PersistCommandWithPayload { ref payload_json, .. })
+                    if payload_json == r#"{"target_status":"backlog"}"#
+            ));
+        }
+
+        // The governed drive argv: `--answer <answer>` rides immediately behind
+        // the action it answers, and an answer-less action's argv is unchanged.
+        let probe = ArgRecordingProbe {
+            outcome: SourceProbeOutcome::Observed {
+                stdout: String::new(),
+                success: true,
+            },
+            observed_args: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut port = drive_over(&probe);
+        assert_eq!(
+            handle_work_item_resolve_blocked_command(
+                &resolve_blocked_command(),
+                &serde_json::json!({"target_status": "ready", "answer": ANSWER}).to_string(),
+                &mut port,
+            )
+            .map(|outcome| outcome.command_status().to_owned()),
+            Ok("completed".to_owned())
+        );
+        assert_eq!(
+            probe.observed_args.borrow().clone(),
+            [
+                "drive.py",
+                "--repo",
+                "/orch",
+                "--json",
+                "--action",
+                "resolve-blocked:wi-1:ready",
+                "--answer",
+                ANSWER,
+                "--invoker",
+                "operator",
+            ]
+        );
+        let mut port = drive_over(&probe);
+        let _ = handle_work_item_resolve_blocked_command(
+            &resolve_blocked_command(),
+            r#"{"target_status":"ready"}"#,
+            &mut port,
+        );
+        // An answer-less action invokes the argv it always did.
+        let answer_less = probe.observed_args.borrow().clone();
+        assert!(!answer_less.contains(&"--answer".to_owned()));
+    }
+
+    /// A present-but-unusable `answer` is refused before the orchestrator is
+    /// invoked; an absent one is the ordinary case.
+    #[test]
+    fn resolve_blocked_refuses_a_present_but_unusable_answer_without_invoking_the_port() {
+        for payload in [
+            r#"{"target_status":"ready","answer":42}"#,
+            r#"{"target_status":"ready","answer":""}"#,
+            r#"{"target_status":"ready","answer":"   "}"#,
+            r#"{"target_status":"ready","answer":null}"#,
+        ] {
+            let mut port = RecordingActionPort::returning(OrchestratorActionOutcome::completed());
+            assert_eq!(
+                handle_work_item_resolve_blocked_command(
+                    &resolve_blocked_command(),
+                    payload,
+                    &mut port
+                ),
+                Err(ApplicationError::InvalidResolveBlockedAnswer)
+            );
+            assert_eq!(port.observed_action_ids, [] as [String; 0]);
+        }
+    }
+
+    /// The request's answer is carried on the request itself, so every port sees
+    /// it (and every answer-less request keeps reporting `None`).
+    #[test]
+    fn an_orchestrator_action_request_carries_its_optional_answer() {
+        let bare = OrchestratorActionRequest::new("approve:wi-1".to_owned());
+        assert_eq!(bare.answer(), None);
+        assert_eq!(bare.requested_by(), "operator");
+        let answered = OrchestratorActionRequest::attributed(
+            "resolve-blocked:wi-1:ready".to_owned(),
+            "operator".to_owned(),
+        )
+        .with_answer(Some("the answer"));
+        assert_eq!(answered.answer(), Some("the answer"));
+        assert_eq!(answered.with_answer(None).answer(), None);
+    }
+
     fn move_command() -> CommandEnvelope {
         CommandEnvelope::new(
             "cmd_move".to_owned(),
@@ -12930,7 +13585,7 @@ mod tests {
         assert!(!per_item_verb_is_state_valid(Lane::Backlog, valve));
         assert!(!per_item_verb_is_state_valid(Lane::Acceptance, valve));
 
-        let outcome = super::valve_outcome(valve, "wi-1", "operator");
+        let outcome = super::valve_outcome(valve, "wi-1", "operator", "");
         assert!(matches!(
             outcome,
             Some(OperatorActionOutcome::PersistCommandWithPayload { command, payload_json })
@@ -14762,7 +15417,8 @@ mod tests {
         assert_eq!(
             staged.overlay(),
             &TuiOverlay::ValveConfirm {
-                valve: PendingValve::Accept
+                valve: PendingValve::Accept,
+                answer: String::new(),
             }
         );
     }
@@ -14863,6 +15519,23 @@ mod tests {
         assert_eq!(
             failures.get("console-af").map(ActionFailure::action_id),
             Some("approve:console-af")
+        );
+        // The refusal reaches the operator VERBATIM. A structured refusal is
+        // FLATTENED into the failure payload, so it carries no `refusal` key;
+        // reading only that key reported the orchestrator's most informative
+        // refusals as silence.
+        assert_eq!(
+            failures.get("console-af").map(ActionFailure::display_line),
+            Some("approve:console-af refused — invalid-source-state: held".to_owned())
+        );
+        // A failure naming no diagnostic at all is still reported as silence,
+        // not as a JSON blob of its own bookkeeping.
+        let silent = work_item_failure_event(&command, "approve:console-af", None, 3);
+        assert_eq!(
+            project_action_failures(&[silent])
+                .get("console-af")
+                .map(ActionFailure::display_line),
+            Some("approve:console-af failed (no diagnostic emitted)".to_owned())
         );
         // A malformed failure payload (no action_id) projects nothing rather
         // than a phantom entry.
@@ -15470,6 +16143,7 @@ mod tests {
             },
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+                answer: String::new(),
             },
             TuiOverlay::FactoryDispatchItemConfirm {
                 work_item_id: "wi-ready".to_owned(),
@@ -15810,7 +16484,13 @@ mod tests {
     fn valve_model(valve: PendingValve) -> TuiScreenModel {
         build_tui_model_for_state(
             &fabro_gate_events(),
-            &TuiInteractionState::new(0, TuiOverlay::ValveConfirm { valve }),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve,
+                    answer: String::new(),
+                },
+            ),
         )
     }
 
@@ -16069,6 +16749,7 @@ mod tests {
         assert_eq!(
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+                answer: String::new(),
             }
             .valve_confirm(),
             Some(PendingValve::Approve)
@@ -16090,6 +16771,7 @@ mod tests {
             opened.overlay(),
             &TuiOverlay::ValveConfirm {
                 valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+                answer: String::new(),
             }
         );
 
@@ -16099,6 +16781,7 @@ mod tests {
             cycled.overlay(),
             &TuiOverlay::ValveConfirm {
                 valve: PendingValve::SetAcceptance(AcceptancePolicy::AiOnly),
+                answer: String::new(),
             }
         );
 
@@ -16133,7 +16816,13 @@ mod tests {
         ] {
             let model = build_tui_model_for_state(
                 &fabro_gate_events(),
-                &TuiInteractionState::new(index, TuiOverlay::ValveConfirm { valve }),
+                &TuiInteractionState::new(
+                    index,
+                    TuiOverlay::ValveConfirm {
+                        valve,
+                        answer: String::new(),
+                    },
+                ),
             );
             let outcome = resolve_valve_action(&model, "operator");
             let command = outcome
@@ -16232,6 +16921,7 @@ mod tests {
                 0,
                 TuiOverlay::ValveConfirm {
                     valve: PendingValve::Approve,
+                    answer: String::new(),
                 },
             ),
         );
@@ -16891,6 +17581,7 @@ mod tests {
             },
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+                answer: String::new(),
             },
             TuiOverlay::DriverHandoff {
                 command: String::new(),
@@ -17196,6 +17887,7 @@ mod tests {
                         from: Lane::Blocked,
                         to: Lane::Backlog,
                     },
+                    answer: String::new(),
                 },
             ),
         );
@@ -17228,6 +17920,7 @@ mod tests {
                     0,
                     TuiOverlay::ValveConfirm {
                         valve: PendingValve::MoveStatus { from, to },
+                        answer: String::new(),
                     },
                 ),
             );
@@ -17254,6 +17947,7 @@ mod tests {
                         from: Lane::PendingApproval,
                         to: Lane::Backlog,
                     },
+                    answer: String::new(),
                 },
             ),
         );
@@ -17291,6 +17985,7 @@ mod tests {
                     0,
                     TuiOverlay::ValveConfirm {
                         valve: PendingValve::MoveStatus { from, to },
+                        answer: String::new(),
                     },
                 ),
             );
@@ -17316,6 +18011,7 @@ mod tests {
                     valve: PendingValve::SetOverride(DispatcherOverride::MergeOnReviewCap(
                         OverrideBool::On,
                     )),
+                    answer: String::new(),
                 },
             ),
         );

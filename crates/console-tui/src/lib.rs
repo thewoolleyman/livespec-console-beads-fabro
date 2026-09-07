@@ -1242,10 +1242,15 @@ fn action_available_for_model(
 }
 
 const fn text_input(value: char, overlay: &TuiOverlay) -> Option<TuiTerminalInput> {
-    if matches!(
-        overlay,
-        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. }
-    ) {
+    // The valve-confirm modal takes typed characters ONLY where it offers the
+    // free-text answer field (the resolve-blocked dialog); on every other valve
+    // a character stays inert, as it always was.
+    let takes_text = match overlay {
+        TuiOverlay::Search { .. } | TuiOverlay::CommandPalette { .. } => true,
+        TuiOverlay::ValveConfirm { valve, .. } => valve.accepts_answer(),
+        _other => false,
+    };
+    if takes_text {
         return Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(
             value,
         )));
@@ -1784,7 +1789,7 @@ fn render_overlay(
             render_factory_drain_confirm(work_item_id, rank, overlay_rect(area), buffer);
             OverlayScrollExtents::ZERO
         }
-        TuiOverlay::ValveConfirm { valve } => {
+        TuiOverlay::ValveConfirm { valve, answer } => {
             // The modal's consent target MUST read from the SAME source `Enter`
             // dispatches on (`selected_work_item_id` — the Attention detail OR the
             // drilled-in lane selection), never from `detail()` alone: in a
@@ -1795,6 +1800,7 @@ fn render_overlay(
                 *valve,
                 model.selected_work_item_id().unwrap_or(""),
                 model.selected_work_item(),
+                answer,
                 overlay_rect(area),
                 buffer,
             );
@@ -1870,6 +1876,7 @@ fn render_valve_confirm(
     valve: PendingValve,
     work_item: &str,
     selected_item: Option<&LaneWorkItem>,
+    answer: &str,
     area: Rect,
     buffer: &mut Buffer,
 ) {
@@ -1881,6 +1888,14 @@ fn render_valve_confirm(
     if let Some(option) = valve.option_display() {
         lines.push(Line::from(format!(
             "Policy/mode: {option}  (up/down to change)"
+        )));
+    }
+    // The optional free-text answer sits BESIDE the target-status choice, on the
+    // resolve-blocked dialog alone. It is echoed verbatim as typed: the console
+    // never edits or rewords the operator's text, here or on the wire.
+    if valve.accepts_answer() {
+        lines.push(Line::from(format!(
+            "Answer (optional, type to edit): {answer}"
         )));
     }
     if valve.is_destructive() {
@@ -2819,11 +2834,12 @@ fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    let inner_width = usize::from(area.width.saturating_sub(2));
     let items = model
         .attention_items()
         .iter()
         .enumerate()
-        .map(|(index, item)| attention_item_line(model, index, item))
+        .map(|(index, item)| attention_item_line(model, index, item, inner_width))
         .collect::<Vec<_>>();
     let count = items.len();
     let title = focus_title("Attention", content_focused(model));
@@ -2875,10 +2891,16 @@ fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     );
 }
 
+/// The elision indicator a row appends when it cannot hold its whole label, so
+/// the operator can SEE that text was cut rather than read a clean-looking
+/// sentence that silently stops.
+const ROW_ELISION_INDICATOR: char = '…';
+
 fn attention_item_line(
     model: &TuiScreenModel,
     index: usize,
     item: &AttentionItem,
+    inner_width: usize,
 ) -> ListItem<'static> {
     let marker = if Some(index) == model.selected_attention_index() {
         ">"
@@ -2889,11 +2911,31 @@ fn attention_item_line(
         || format!("{marker} {}", item.title()),
         |action| format!("{marker} {} [{}]", item.title(), action.label()),
     );
+    let label = elide_to_width(&label, inner_width);
     ListItem::new(label).style(if Some(index) == model.selected_attention_index() {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     })
+}
+
+/// `text` cut to `width` display cells with [`ROW_ELISION_INDICATOR`] in the
+/// last cell when anything was cut, or `text` unchanged when it already fits.
+///
+/// The projected account a needs-human row carries is frequently longer than
+/// the pane: the spec forbids TRUNCATING it away silently and allows a row to
+/// elide it PROVIDED the elision is indicated, with the whole text held by the
+/// detail. A width of zero (a pane too narrow to hold even the indicator)
+/// renders nothing rather than an indicator with no content.
+fn elide_to_width(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let mut elided: String = text.chars().take(width.saturating_sub(1)).collect();
+    if width > 0 {
+        elided.push(ROW_ELISION_INDICATOR);
+    }
+    elided
 }
 
 fn render_summary_detail(
@@ -3128,6 +3170,20 @@ fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
                 .join(", ")
         )));
     }
+    // The projection's account of the item — for a needs-human item, the
+    // terminated run's own story as the orchestrator composed it. Rendered
+    // WHOLE and verbatim: the pane wraps and scrolls, so nothing here truncates
+    // the reason or the prompt, and nothing composes or augments a field the
+    // projection left out. Its own lines are preserved as its own rows.
+    if let Some(account) = detail.account() {
+        lines.push(Line::from("Account:"));
+        lines.extend(account.lines().map(|line| Line::from(line.to_owned())));
+    }
+    // The orchestrator's `livespec-human-answer` comments, read back from the
+    // context surface after a successful resolve and shown exactly as returned.
+    for comment in detail.answer_comments() {
+        lines.extend(comment.lines().map(|line| Line::from(line.to_owned())));
+    }
     lines.push(Line::from("Timeline:"));
     lines.extend(detail.timeline().iter().map(timeline_line));
     lines
@@ -3186,12 +3242,12 @@ mod tests {
         TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_available_for_model,
         action_outcome_effect, attention_item_line, buffer_to_text, command_explainer_confirm_step,
         command_explainer_lines, command_explanation_for_action, detail_lines,
-        effect_triggers_source_poll, full_width_explainer_rect, global_help_lines,
+        effect_triggers_source_poll, elide_to_width, full_width_explainer_rect, global_help_lines,
         help_lines_for_view, help_outcome, key_event_to_terminal_input, menu_confirm_step,
         registry_action_input, registry_staging_explanation, render_command_explainer,
         render_command_modal, render_detail, render_menu_overlay, render_model,
         render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        staged_action_step, step_tui_runtime,
+        staged_action_step, step_tui_runtime, text_input,
     };
 
     macro_rules! assert {
@@ -5434,7 +5490,8 @@ mod tests {
         assert_eq!(
             step.state().overlay(),
             &TuiOverlay::ValveConfirm {
-                valve: PendingValve::Approve
+                valve: PendingValve::Approve,
+                answer: String::new(),
             }
         );
         assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
@@ -5565,7 +5622,8 @@ mod tests {
         assert_eq!(
             step.state().overlay(),
             &TuiOverlay::ValveConfirm {
-                valve: PendingValve::Approve
+                valve: PendingValve::Approve,
+                answer: String::new(),
             }
         );
         assert_eq!(step.effect(), &TuiRuntimeEffect::Render);
@@ -5772,9 +5830,124 @@ mod tests {
             Some(OperatorAction::Registered("approve")),
         );
 
-        let rendered = format!("{:?}", attention_item_line(&model, 0, &item));
+        let rendered = format!("{:?}", attention_item_line(&model, 0, &item, 80));
 
         assert!(rendered.contains("> Needs review [Approve work-item]"));
+    }
+
+    /// Scenario 32 at the RENDER: the projected account rides the detail WHOLE
+    /// and the answer comment the orchestrator wrote rides it verbatim.
+    #[test]
+    fn detail_lines_render_the_projected_account_and_the_answer_comment() {
+        const ACCOUNT: &str = "fabro run 01RUN on factory hp terminated at the needs-human node.\n\
+                               Tree preserved on refs/heads/needs-human/01RUN.";
+        const ANSWER_COMMENT: &str = "livespec-human-answer (operator via console, 2026-09-07T14:00:00Z, \
+             resolve-blocked:work-item:ready): ship the narrow fix";
+        let detail = AttentionDetail::new(
+            "repo".to_owned(),
+            "work-item".to_owned(),
+            "01RUN".to_owned(),
+            Some("hp".to_owned()),
+            vec!["drive resolve-blocked:work-item:ready".to_owned()],
+            vec![],
+            vec![],
+        )
+        .with_account(Some(ACCOUNT.to_owned()))
+        .with_answer_comments(vec![ANSWER_COMMENT.to_owned()]);
+
+        let rendered = detail_lines(&detail)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // The account's own lines survive as their own rows, whole and in order.
+        assert!(rendered.contains(&format!("Account:\n{ACCOUNT}")));
+        assert!(rendered.contains(ANSWER_COMMENT));
+    }
+
+    /// A row that cannot hold its label elides it WITH AN INDICATOR, and one
+    /// that can is left exactly as composed.
+    #[test]
+    fn a_row_elides_only_what_it_cannot_hold_and_says_so() {
+        assert_eq!(elide_to_width("held whole", 10), "held whole");
+        assert_eq!(elide_to_width("held whole", 40), "held whole");
+        assert_eq!(elide_to_width("held whole", 6), "held …");
+        assert_eq!(elide_to_width("held whole", 1), "…");
+        // A pane with no room at all renders nothing rather than a lone
+        // indicator standing for content it never showed.
+        assert_eq!(elide_to_width("held whole", 0), "");
+
+        let model = attention_model(TuiOverlay::None);
+        let item = AttentionItem::new(
+            "work-item".to_owned(),
+            Some("work-item".to_owned()),
+            "Blocked: needs-human — fabro run 01RUN terminated at the needs-human node".to_owned(),
+            "source".to_owned(),
+            "repo".to_owned(),
+            None,
+        );
+        let rendered = format!("{:?}", attention_item_line(&model, 0, &item, 24));
+        assert!(rendered.contains('…'), "{rendered}");
+        assert!(!rendered.contains("needs-human node"), "{rendered}");
+    }
+
+    /// The resolve-blocked dialog renders its optional answer field beside the
+    /// target-status choice; no other valve does.
+    #[test]
+    fn the_resolve_blocked_dialog_renders_its_answer_field() {
+        let answered = attention_model_for_lane(
+            Lane::Blocked,
+            TuiOverlay::ValveConfirm {
+                valve: PendingValve::MoveStatus {
+                    from: Lane::Blocked,
+                    to: Lane::Ready,
+                },
+                answer: "ship the narrow fix".to_owned(),
+            },
+        );
+        let rendered = render_to_text(&answered, 96, 24).unwrap_or_default();
+        assert!(rendered.contains("Answer (optional, type to edit): ship the narrow fix"));
+
+        let approve = attention_model(TuiOverlay::ValveConfirm {
+            valve: PendingValve::Approve,
+            answer: String::new(),
+        });
+        assert!(
+            !render_to_text(&approve, 96, 24)
+                .unwrap_or_default()
+                .contains("Answer (optional"),
+            "an answer-less valve offers no answer field"
+        );
+    }
+
+    /// Typed characters reach the answer field only where the dialog offers one.
+    #[test]
+    fn typing_reaches_the_answer_field_only_on_the_resolve_blocked_dialog() {
+        assert_eq!(
+            text_input(
+                'x',
+                &TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::Blocked,
+                        to: Lane::Ready,
+                    },
+                    answer: String::new(),
+                }
+            ),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar('x')))
+        );
+        assert_eq!(
+            text_input(
+                'x',
+                &TuiOverlay::ValveConfirm {
+                    valve: PendingValve::Approve,
+                    answer: String::new(),
+                }
+            ),
+            None
+        );
+        assert_eq!(text_input('x', &TuiOverlay::None), None);
     }
 
     #[test]
@@ -5988,7 +6161,8 @@ mod tests {
         assert_eq!(
             staged.state().overlay(),
             &TuiOverlay::ValveConfirm {
-                valve: PendingValve::Approve
+                valve: PendingValve::Approve,
+                answer: String::new(),
             }
         );
 
@@ -6048,7 +6222,8 @@ mod tests {
         assert_eq!(
             staged.state().overlay(),
             &TuiOverlay::ValveConfirm {
-                valve: PendingValve::SetWorkflowScopeOverride
+                valve: PendingValve::SetWorkflowScopeOverride,
+                answer: String::new(),
             }
         );
     }
@@ -8625,6 +8800,7 @@ mod tests {
                 from: Lane::PendingApproval,
                 to: Lane::Backlog,
             },
+            answer: String::new(),
         });
         let step = step_tui_runtime(
             &state,
@@ -8658,6 +8834,7 @@ mod tests {
             0,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+                answer: String::new(),
             },
         )
         .with_lane_focus(LaneFocus::Lane(Lane::Ready))
@@ -8765,6 +8942,7 @@ mod tests {
                 valve: PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(
                     OverrideInt::Value(3),
                 )),
+                answer: String::new(),
             },
         );
         let step = step_tui_runtime(
@@ -8847,6 +9025,7 @@ mod tests {
                     valve: PendingValve::SetOverride(DispatcherOverride::ReviewFixCap(
                         OverrideInt::Value(4),
                     )),
+                    answer: String::new(),
                 },
             ),
         );
@@ -8859,6 +9038,7 @@ mod tests {
     fn keymap_valve_confirm_modal_cycles_the_option_and_confirms() {
         let model = attention_model(TuiOverlay::ValveConfirm {
             valve: PendingValve::Reject(RejectMode::Rework),
+            answer: String::new(),
         });
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Down), &model),
@@ -8886,6 +9066,7 @@ mod tests {
             0,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Approve,
+                answer: String::new(),
             },
         );
         let approve = step_tui_runtime(
@@ -8906,6 +9087,7 @@ mod tests {
             1,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::Reject(RejectMode::Regroom),
+                answer: String::new(),
             },
         );
         let reject = step_tui_runtime(
@@ -8935,6 +9117,7 @@ mod tests {
                 0,
                 TuiOverlay::ValveConfirm {
                     valve: PendingValve::Reject(RejectMode::Regroom),
+                    answer: String::new(),
                 },
             ),
         );
@@ -8963,6 +9146,7 @@ mod tests {
                 0,
                 TuiOverlay::ValveConfirm {
                     valve: PendingValve::Approve,
+                    answer: String::new(),
                 },
             ),
         );
@@ -9001,6 +9185,7 @@ mod tests {
 
         let modal_state = state.with_overlay(TuiOverlay::ValveConfirm {
             valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+            answer: String::new(),
         });
         let warning_screen = build_tui_model_for_state(&events, &modal_state);
         let output = ok_render_text(render_to_text(&warning_screen, 120, 30));
@@ -9016,6 +9201,7 @@ mod tests {
             0,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::SetAcceptance(AcceptancePolicy::AiThenHuman),
+                answer: String::new(),
             },
         );
         let modal = build_tui_model_for_state(&pending_events(), &state);
