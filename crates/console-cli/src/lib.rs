@@ -32,8 +32,8 @@ use console_application::source_adapters::{
 };
 use console_application::{
     ApplicationError, AutonomousDecision, AutonomousDecisionsPort, DispatcherSettingsPort,
-    FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort, OrchestratorActionPort,
-    autonomous_reflection_attention_id, build_tui_model,
+    FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort, MAX_TRANSIENT_STATUS_CHARS,
+    OrchestratorActionPort, autonomous_reflection_attention_id, build_tui_model,
     handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
     handle_factory_drain_command, handle_work_item_accept_command,
     handle_work_item_approve_command, handle_work_item_move_command,
@@ -1201,17 +1201,48 @@ impl CommandLaneFailure {
     /// `store_busy_status` leads with `NOT applied`: an operator who pressed
     /// approve, watched the valve confirm and the modal close must never be left
     /// to conclude the item was approved. The lane and the stage ride along so
-    /// the line is actionable rather than merely alarming, and the detail is
-    /// flattened to one line because this lands in the header's status segment.
+    /// the line is actionable rather than merely alarming.
+    ///
+    /// THE RAW CAUSE DELIBERATELY DOES NOT RIDE ALONG. It lands in
+    /// [`lane_command_failure_line`], the durable surface, where it is read at
+    /// leisure and in full. A rusqlite `DatabaseBusy` renders to well over a
+    /// hundred columns on its own, and this line lands in the header's status
+    /// segment, which is atomic: a segment too long to fit evicts every other
+    /// header field and then itself, leaving the operator a BLANK header — no
+    /// repo, no view, no attention count, and no report either. Measured
+    /// 2026-09-07 against the real tmux gate, where exactly that happened.
+    ///
+    /// So the split is: the header says WHAT did not happen and WHERE it stopped,
+    /// bounded by [`MAX_TRANSIENT_STATUS_CHARS`]; the lane log says WHY.
     #[must_use]
-    pub fn operator_status(self, lane: ConsoleLane, detail: &str) -> String {
-        let detail = detail.replace('\n', " ");
-        format!(
-            "action NOT executed - the {} lane failed at {} ({detail})",
+    pub fn operator_status(self, lane: ConsoleLane) -> String {
+        bounded_operator_status(&format!(
+            "action NOT executed - the {} lane failed at {}",
             lane.label(),
             self.stage_label()
-        )
+        ))
     }
+}
+
+/// Hold an operator-facing status line inside the header's transient-status
+/// budget, marking any line it had to cut.
+///
+/// Mechanical rather than by-convention: every command-lane line goes through
+/// here, so a future line written a few words too long degrades to a clipped
+/// report instead of silently blanking the header. The ellipsis is part of the
+/// contract — a line the operator can see was cut sends them to the lane log,
+/// where a line that merely LOOKED complete would not.
+#[must_use]
+pub fn bounded_operator_status(status: &str) -> String {
+    let status = status.replace('\n', " ");
+    if status.chars().count() <= MAX_TRANSIENT_STATUS_CHARS {
+        return status;
+    }
+    let kept = status
+        .chars()
+        .take(MAX_TRANSIENT_STATUS_CHARS - 1)
+        .collect::<String>();
+    format!("{kept}…")
 }
 
 /// Render the one-line DURABLE diagnostic for a command lane that gave up.
@@ -1366,11 +1397,14 @@ pub fn run_command_lane(
 /// load-bearing in both directions: the command row is already persisted, so the
 /// session's closing flush and the next session both still drain it. Claiming a
 /// loss here would be as dishonest as the silence this item removes.
+///
+/// It is held to the same [`MAX_TRANSIENT_STATUS_CHARS`] budget as every other
+/// line on this path — a report that blanks the header reports nothing.
 #[must_use]
 pub fn command_worker_unreachable_status() -> String {
-    "action not executed YET - the command worker is gone; the command stays \
-     pending and the next session picks it up"
-        .to_owned()
+    bounded_operator_status(
+        "action not executed YET - the command worker is gone; it stays pending",
+    )
 }
 
 /// Render both surfaces of one lane failure and hand them to the reporter.
@@ -1383,7 +1417,7 @@ fn report_command_lane_failure(
 ) {
     reporter.report_lane_failure(
         &lane_command_failure_line(lane, failure, detail, at),
-        &failure.operator_status(lane, detail),
+        &failure.operator_status(lane),
     );
 }
 
@@ -3557,12 +3591,13 @@ mod tests {
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
         InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN, LaneStartupStage,
-        NeedsAttentionIngest, PendingCommandOutcome, PendingCommandRequester, PluginResolution,
-        ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts,
-        SharedSqliteStore, SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog,
-        StartupReadout, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
-        append_demo_events_to_store, append_factory_drain_requested_events, append_lane_diagnostic,
-        backfill_demo_report, backfill_source_adapters, backfill_source_report,
+        MAX_TRANSIENT_STATUS_CHARS, NeedsAttentionIngest, PendingCommandOutcome,
+        PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
+        ScriptedSource, SessionTailCounts, SharedSqliteStore, SourceAdapterRef,
+        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
+        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
+        append_factory_drain_requested_events, append_lane_diagnostic, backfill_demo_report,
+        backfill_source_adapters, backfill_source_report, bounded_operator_status,
         command_status_update_runtime_result, command_worker_unreachable_status,
         config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
         event_append_from_command_event, event_append_from_console_event,
@@ -7178,12 +7213,21 @@ mod tests {
             status.contains("backing-cli-resolution"),
             "the operator is told WHICH step failed",
         );
+        // The CAUSE lands on the durable surface, not on the header line. The
+        // header's status segment is atomic, so a line carrying an arbitrarily
+        // long cause evicts every other field and then itself, leaving a blank
+        // header that reports nothing at all.
+        let diagnostic = only_diagnostic(&reporter);
         check(
-            status.contains("no dispatcher on PATH"),
-            "the underlying cause rides along, so the line is actionable",
+            diagnostic.contains("no dispatcher on PATH"),
+            "the underlying cause is kept, in full, where there is room for it",
         );
         check(
-            only_diagnostic(&reporter).contains(LANE_FAILURE_MARKER),
+            !status.contains("no dispatcher on PATH"),
+            "the header line does not carry an unbounded cause",
+        );
+        check(
+            diagnostic.contains(LANE_FAILURE_MARKER),
             "the durable record carries the marker a reader greps for",
         );
     }
@@ -7273,8 +7317,8 @@ mod tests {
             "the operator is told the handler itself is what failed",
         );
         check(
-            status.contains("Dispatcher(refused)"),
-            "the handler's own cause rides along verbatim",
+            only_diagnostic(&reporter).contains("Dispatcher(refused)"),
+            "the handler's own cause is kept verbatim on the durable surface",
         );
     }
 
@@ -7340,8 +7384,12 @@ mod tests {
             "exactly ONE report, so the operator reads a cause and not a cascade",
         );
         check(
-            only_operator_status(&reporter).contains("resolution failed"),
+            only_operator_status(&reporter).contains("backing-cli-resolution"),
             "the report names the FIRST step that stopped the command",
+        );
+        check(
+            only_diagnostic(&reporter).contains("resolution failed"),
+            "and the durable record carries that first step's own cause",
         );
     }
 
@@ -7394,7 +7442,7 @@ mod tests {
             CommandLaneFailure::ObservationClock,
             CommandLaneFailure::CommandExecution,
         ] {
-            let status = failure.operator_status(ConsoleLane::FactoryCommand, "cause");
+            let status = failure.operator_status(ConsoleLane::FactoryCommand);
             check(
                 status.contains("NOT executed"),
                 "every failure class says the action did NOT execute",
@@ -7408,6 +7456,67 @@ mod tests {
                 "every failure class names its stage",
             );
         }
+    }
+
+    #[test]
+    fn no_operator_line_on_this_path_can_blank_the_header() {
+        // THE REGRESSION THIS BOUND EXISTS FOR, measured 2026-09-07 against the
+        // real tmux gate. The header's status segment is ATOMIC: the fitter drops
+        // whole fields by priority, and the status is dropped LAST, so a status
+        // wider than the pinned header evicts repo, view and the attention count
+        // on its way out and then composes an EMPTY line. The operator loses
+        // their context AND their report — a report that erases the screen is not
+        // a report. So every line this path can emit is bounded at the producer.
+        let mut lines = vec![command_worker_unreachable_status()];
+        for lane in [ConsoleLane::FactoryCommand, ConsoleLane::ControlCommand] {
+            for failure in [
+                CommandLaneFailure::BackingCliResolution,
+                CommandLaneFailure::StoreOpen,
+                CommandLaneFailure::ObservationClock,
+                CommandLaneFailure::CommandExecution,
+            ] {
+                lines.push(failure.operator_status(lane));
+            }
+        }
+
+        for line in &lines {
+            check(
+                line.chars().count() <= MAX_TRANSIENT_STATUS_CHARS,
+                "every operator line on the command path fits the header's budget",
+            );
+        }
+    }
+
+    #[test]
+    fn an_over_long_operator_line_is_clipped_rather_than_dropped() {
+        // The bound is MECHANICAL, not a convention the next line to be written
+        // has to remember. A line a few words too long degrades to a clipped
+        // report — visibly clipped, so the reader knows to open the lane log —
+        // rather than silently blanking the header.
+        let clipped = bounded_operator_status(&"x".repeat(MAX_TRANSIENT_STATUS_CHARS + 40));
+
+        check(
+            clipped.chars().count() == MAX_TRANSIENT_STATUS_CHARS,
+            "an over-long line is cut to the budget",
+        );
+        check(
+            clipped.ends_with('…'),
+            "a cut line SHOWS that it was cut, so the reader goes to the log",
+        );
+
+        // MUST-NOT-FLAG CONTROL: a line already inside the budget is passed
+        // through untouched, so the bound cannot be satisfied by clipping
+        // everything.
+        let intact = "action NOT executed - the factory-command lane failed at store-open";
+        check(
+            bounded_operator_status(intact) == intact,
+            "a line within the budget is left exactly as written",
+        );
+        // And a cause that arrived across several lines is still ONE header line.
+        check(
+            !bounded_operator_status("first\nsecond").contains('\n'),
+            "the status stays one line whatever it was built from",
+        );
     }
 
     #[test]
@@ -7448,8 +7557,8 @@ mod tests {
             "first line\nsecond line",
             "2026-08-29T09:00:00Z",
         );
-        let status = CommandLaneFailure::CommandExecution
-            .operator_status(ConsoleLane::ControlCommand, "first line\nsecond line");
+        let status =
+            CommandLaneFailure::CommandExecution.operator_status(ConsoleLane::ControlCommand);
 
         check(!line.contains('\n'), "the durable record stays one line");
         check(!status.contains('\n'), "the operator status stays one line");
