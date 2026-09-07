@@ -41,8 +41,9 @@ use console_eventstore::{
 use livespec_console_beads_fabro::{
     BackingCliResolution, CommandLaneReporter, CommandLaneSteps, ConsoleLane, ConsoleRuntimeError,
     LaneStartupStage, NeedsAttentionIngest, PendingCommandRequester, SourceAdapterRef,
-    SourcePollRequester, TuiSessionRunner, append_lane_diagnostic, lane_diagnostics_path,
-    lane_open_failure_line, lane_startup_failure_line, resolve_console_invoker, run_command_lane,
+    SourcePollRequester, TuiSessionRunner, append_lane_diagnostic, bounded_operator_status,
+    lane_diagnostics_path, lane_open_failure_line, lane_startup_failure_line,
+    resolve_console_invoker, run_command_lane,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -594,9 +595,14 @@ impl LaneFailureReporter {
 impl CommandLaneReporter for LaneFailureReporter {
     fn report_lane_failure(&self, diagnostic: &str, operator_status: &str) {
         let path = lane_diagnostics_path(&console_store_path());
+        // The augmented form goes back through the same budget as the plain one:
+        // the header segment is atomic, so a line grown past it evicts the whole
+        // header and reports nothing. The marker is a bare flag rather than the
+        // IO error's text because there is no room for both, and "the log did
+        // not take it" is the part the operator can act on.
         let status = match append_lane_diagnostic(&path, diagnostic) {
             Ok(()) => operator_status.to_owned(),
-            Err(error) => format!("{operator_status} [lane log unwritable: {error}]"),
+            Err(_error) => bounded_operator_status(&format!("{operator_status} [log unwritable]")),
         };
         // Best-effort BY CONSTRUCTION, not by neglect: the only way this send
         // fails is that the render thread has already gone, i.e. the session

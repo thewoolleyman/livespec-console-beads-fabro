@@ -3878,6 +3878,31 @@ fn header_display_width(line: &str) -> usize {
     line.chars().count()
 }
 
+/// The longest a transient status may be and still leave the pinned-width header
+/// carrying its `attention:` count.
+///
+/// WHY A BOUND EXISTS AT ALL. [`fit_header_line`] keeps each field ATOMIC — kept
+/// or dropped whole, never mid-truncated — and sheds them by declared priority
+/// until the line fits. A transient status is the highest-priority field, so it
+/// is dropped LAST; an over-long one therefore evicts every other field first,
+/// and once it is finally dropped too the composed line is the EMPTY STRING. A
+/// blank header is the worst of both worlds: the operator loses their context
+/// AND is told nothing, which is the very failure the status was added to
+/// prevent (livespec-console-beads-fabro-zbnnlv).
+///
+/// The bound is on the PRODUCER rather than on the fitter because the atomic-field
+/// rule is the ratified degradation contract: a status that does not fit is a
+/// status written too long, not a header that should start truncating fields.
+///
+/// THE ARITHMETIC, for the case the gate exercises (no source-health segment):
+/// the dogfood terminal is 112 columns, 110 inside the header block's borders.
+/// Once the lower-priority fields have been shed the line is
+/// `attention: N | status: <status>`, whose fixed part is 26 columns at a
+/// four-digit count (`attention: 9999 | status: `), leaving 84. A status with an
+/// unavailable-source segment present still sheds `attention:` — the source
+/// count is the cockpit-blind tell and outranks it by design.
+pub const MAX_TRANSIENT_STATUS_CHARS: usize = 84;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// The declared information value for a header segment under width pressure.
 ///
@@ -7865,18 +7890,18 @@ mod tests {
         FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest, FactoryDrainPolicy,
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort,
-        LaneExecutionState, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome,
-        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
-        OverrideInt, PendingValve, PluginResolution, RejectMode, SettingRow, TuiInteraction,
-        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry, build_tui_model,
-        build_tui_model_for_state, command_palette_query_opens_action_invoker,
-        dispatcher_setting_rows, drilldown_item_count, factory_dispatch_item_command,
-        handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
-        handle_factory_drain_command, handle_work_item_accept_command,
-        handle_work_item_approve_command, handle_work_item_move_command,
-        handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
-        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-        handle_work_item_set_dispatcher_override_command,
+        LaneExecutionState, LaneFocus, LaneWorkItem, MAX_TRANSIENT_STATUS_CHARS, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, PluginResolution,
+        RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+        TuiView, action_registry, build_tui_model, build_tui_model_for_state,
+        command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
+        factory_dispatch_item_command, handle_config_dispatcher_setting_set_command,
+        handle_factory_dispatch_item_command, handle_factory_drain_command,
+        handle_work_item_accept_command, handle_work_item_approve_command,
+        handle_work_item_move_command, handle_work_item_reject_command,
+        handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
+        handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
         handle_work_item_set_workflow_scope_override_command, header_help_section,
         help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
         per_item_verb_is_state_valid, plan_page_url, project_action_failures, project_attention,
@@ -14188,6 +14213,44 @@ mod tests {
         let narrow = model.header_line(70);
         assert!(narrow.chars().count() <= 70);
         assert!(narrow.contains("status: Dispatch ready work unavailable"));
+    }
+
+    #[test]
+    fn a_status_within_the_budget_keeps_the_attention_count_in_the_pinned_header() {
+        // livespec-console-beads-fabro-zbnnlv. A status is the LAST field the
+        // fitter drops, so an over-long one evicts every other field on its way
+        // out. `MAX_TRANSIENT_STATUS_CHARS` is the point at which that stops
+        // happening at the pinned width, and this is what the number means.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_transient_status(Some("s".repeat(MAX_TRANSIENT_STATUS_CHARS)));
+        let line = build_tui_model_for_state(&[], &state).header_line(110);
+
+        assert!(line.chars().count() <= 110);
+        check(
+            line.contains("attention: 0"),
+            "a budgeted status must not cost the operator their attention count",
+        );
+        check(
+            line.contains("status: "),
+            "and it must still be the report it was written to be",
+        );
+    }
+
+    #[test]
+    fn an_unbounded_status_blanks_the_pinned_header_entirely() {
+        // THE MUST-FAIL CONTROL for the bound above, and the measured defect it
+        // exists to prevent: with every field shed and the status still too wide,
+        // the fitter drops the status too and composes the EMPTY STRING. The
+        // operator loses their context AND is told nothing. Pinned here so the
+        // budget can never be raised without someone reading why it exists.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_transient_status(Some("s".repeat(MAX_TRANSIENT_STATUS_CHARS * 3)));
+        let line = build_tui_model_for_state(&[], &state).header_line(110);
+
+        check(
+            line.is_empty(),
+            "the unbudgeted case is a blank header, which is why producers are bounded",
+        );
     }
 
     #[test]
