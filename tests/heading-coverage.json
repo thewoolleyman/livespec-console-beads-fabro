@@ -1382,8 +1382,25 @@
   {
     "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: integration tests in crates/console-cli/tests (tmux-driven TUI runtime) plus model-layer tests in crates/console-application land with the impl follow-up render-needs-human-account-and-answer-valve (console work-item under plan epic livespec-console-beads-fabro-pzbdbo, filed after this ratification). They render the projected account verbatim on the inbox row and in the detail, carry the optional answer through work_item.resolve_blocked_requested as --answer on the governed drive argv, surface a poisoned-answer refusal verbatim with the item left blocked, and render title-plus-valves when the projection carries no account. That item flips this entry from TODO to the landed test ids.",
+    "tests": [
+      "crates/console-cli/tests/scenario_32_needs_human_account_and_answer.rs::the_needs_human_account_is_rendered_elided_on_the_row_and_whole_in_the_detail",
+      "crates/console-cli/tests/scenario_32_needs_human_account_and_answer.rs::a_valve_item_carrying_only_the_title_renders_the_title_and_the_valves",
+      "crates/console-cli/tests/scenario_32_needs_human_account_and_answer.rs::a_confirmed_answer_rides_the_resolve_blocked_valve_as_the_answer_argument",
+      "crates/console-cli/tests/scenario_32_needs_human_account_and_answer.rs::a_poisoned_answer_surfaces_the_refusal_verbatim_and_leaves_the_item_blocked",
+      "crates/console-cli/tests/scenario_32_needs_human_account_and_answer.rs::the_detail_shows_the_livespec_human_answer_comment_after_a_successful_resolve",
+      "crates/console-application/src/lib.rs::tests::the_projected_account_reaches_the_row_and_the_detail_verbatim",
+      "crates/console-application/src/lib.rs::tests::an_account_less_projection_leaves_the_detail_and_row_asserting_nothing",
+      "crates/console-application/src/lib.rs::tests::the_detail_carries_only_the_human_answer_comments_the_surface_returned",
+      "crates/console-application/src/lib.rs::tests::the_resolve_blocked_dialog_accumulates_the_answer_and_other_valves_stay_inert",
+      "crates/console-application/src/lib.rs::tests::resolve_blocked_carries_the_operator_answer_into_the_payload_and_the_argv",
+      "crates/console-application/src/lib.rs::tests::resolve_blocked_refuses_a_present_but_unusable_answer_without_invoking_the_port",
+      "crates/console-application/src/lib.rs::tests::an_orchestrator_action_request_carries_its_optional_answer",
+      "crates/console-tui/src/lib.rs::tests::detail_lines_render_the_projected_account_and_the_answer_comment",
+      "crates/console-tui/src/lib.rs::tests::a_row_elides_only_what_it_cannot_hold_and_says_so",
+      "crates/console-tui/src/lib.rs::tests::the_resolve_blocked_dialog_renders_its_answer_field",
+      "crates/console-tui/src/lib.rs::tests::typing_reaches_the_answer_field_only_on_the_resolve_blocked_dialog"
+    ],
+    "reason": "Covered end to end, one integration test per Gherkin scenario plus the model-layer tests that carry the properties point-wise. scenario_32_needs_human_account_and_answer.rs drives the real model and renderer: the_needs_human_account_is_rendered_elided_on_the_row_and_whole_in_the_detail asserts the projected summary rides the detail byte-for-byte, that the 112x28 inbox row elides it WITH the indicator, and that a viewport whose Detail pane can hold it renders the whole account; a_valve_item_carrying_only_the_title_renders_the_title_and_the_valves covers the orchestrator's fail-soft case, asserting the title and BOTH advertised valves render while the run id, the factory server, the needs-human node and the preserved ref appear nowhere; a_confirmed_answer_rides_the_resolve_blocked_valve_as_the_answer_argument types the answer into the dialog one keystroke at a time through the real runtime, asserts the persisted work_item.resolve_blocked_requested payload carries target_status ready AND the answer verbatim, and pins the governed drive argv (--action resolve-blocked:<id>:ready --answer <answer> --invoker operator) through the real DispatcherOrchestratorActionPort over a recording probe; a_poisoned_answer_surfaces_the_refusal_verbatim_and_leaves_the_item_blocked asserts the orchestrator's refusal rides the command outcome and the operator-facing failure line verbatim, with no answer comment and the item still blocked; the_detail_shows_the_livespec_human_answer_comment_after_a_successful_resolve asserts the comment renders exactly as the context surface returned it. The console-application model tests carry the projection reads and the dialog reducer (the account read that survives the unified list's dedupe, the account-less fallback, the human-answer comment filter, the answer field's accumulate/backspace/dial-preserving behaviour and its inertness on every other valve, the payload and argv mapping including the whitespace-only-is-absent rule, the refusal of a present-but-unusable answer, and the request's optional answer); the console-tui tests carry the render (the Account and answer-comment lines, the width-aware elision including its zero-width and fits-whole edges, the dialog's answer field, and text entry reaching only the dialog that offers one).",
     "clauses": [
       {
         "gap_id": "gap-lijw44ol",

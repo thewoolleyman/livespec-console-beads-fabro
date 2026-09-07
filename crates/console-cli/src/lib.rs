@@ -5640,7 +5640,13 @@ mod tests {
     /// work-item, by driving the pure runtime's Confirm — the same key → valve →
     /// Confirm → effect path the interactive loop drives.
     fn valve_effect(events: &[ConsoleEvent], valve: PendingValve) -> TuiRuntimeEffect {
-        let state = TuiInteractionState::new(0, TuiOverlay::ValveConfirm { valve });
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::ValveConfirm {
+                valve,
+                answer: String::new(),
+            },
+        );
         console_tui::step_tui_runtime(&state, events, TuiTerminalInput::Confirm, "operator")
             .effect()
             .clone()
@@ -5655,6 +5661,7 @@ mod tests {
             0,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::MoveStatus { from, to },
+                answer: String::new(),
             },
         )
         .with_lane_focus(LaneFocus::Lane(from))
@@ -5913,6 +5920,7 @@ mod tests {
             0,
             TuiOverlay::ValveConfirm {
                 valve: PendingValve::SetWorkflowScopeOverride,
+                answer: String::new(),
             },
         )
         .with_lane_focus(LaneFocus::Lane(Lane::Ready))
@@ -6018,7 +6026,7 @@ mod tests {
             "assert_eq failed",
         );
         check(
-            (port.observed_requested_by) == ([r#"OrchestratorActionRequest { action_id: "approve:wi-identity", requested_by: "console:flag-user" }"#.to_owned()]),
+            (port.observed_requested_by) == ([r#"OrchestratorActionRequest { action_id: "approve:wi-identity", requested_by: "console:flag-user", answer: None }"#.to_owned()]),
             "assert_eq failed",
         );
     }
@@ -13701,6 +13709,7 @@ mod tests {
                 0,
                 TuiOverlay::ValveConfirm {
                     valve: PendingValve::SetAdmission(AdmissionPolicy::Auto),
+                    answer: String::new(),
                 },
             );
             let step = console_tui::step_tui_runtime(
