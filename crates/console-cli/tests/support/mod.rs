@@ -528,7 +528,7 @@ impl TmuxConsole {
         // load of its own while it waits its turn.
         let slot = ConsoleSlot::acquire()?;
         let tmux = resolve_tmux()?;
-        let binary = resolve_binary();
+        let binary = resolve_binary()?;
         if !binary.is_file() {
             return Err(format!(
                 "console binary not found at {}; run `just check-e2e-tmux` (which builds \
@@ -743,11 +743,28 @@ fn resolve_tmux() -> HarnessResult<PathBuf> {
 
 /// Resolve the console binary under test: `LIVESPEC_CONSOLE_E2E_BIN` override
 /// (set by `just check-e2e-tmux` to the RELEASE binary), else the profile-built
-/// binary of this package.
-fn resolve_binary() -> PathBuf {
-    std::env::var_os("LIVESPEC_CONSOLE_E2E_BIN").map_or_else(
-        || PathBuf::from(env!("CARGO_BIN_EXE_livespec-console-beads-fabro")),
-        PathBuf::from,
+/// binary of this package. Resolves `CARGO_BIN_EXE_livespec-console-beads-fabro`
+/// at compile time via `option_env!` first, then falls back to the process
+/// environment (set at test-run time by nextest). `cargo clippy --all-targets`
+/// does not set `CARGO_BIN_EXE_*` at check time, so `env!` alone would fail
+/// the compile; `option_env!` compiles to `None` in that context and the
+/// runtime fallback covers it.
+fn resolve_binary() -> HarnessResult<PathBuf> {
+    if let Some(path) = std::env::var_os("LIVESPEC_CONSOLE_E2E_BIN") {
+        return Ok(PathBuf::from(path));
+    }
+    option_env!("CARGO_BIN_EXE_livespec-console-beads-fabro").map_or_else(
+        || {
+            std::env::var("CARGO_BIN_EXE_livespec-console-beads-fabro")
+                .map(PathBuf::from)
+                .map_err(|_| {
+                    "CARGO_BIN_EXE_livespec-console-beads-fabro is neither compiled in \
+                         nor set in the environment; run this suite through cargo test or \
+                         cargo nextest"
+                        .to_owned()
+                })
+        },
+        |path| Ok(PathBuf::from(path)),
     )
 }
 
@@ -850,7 +867,7 @@ impl TmuxConsole {
         // load of its own while it waits its turn.
         let slot = ConsoleSlot::acquire()?;
         let tmux = resolve_tmux()?;
-        let binary = resolve_binary();
+        let binary = resolve_binary()?;
         if !binary.is_file() {
             return Err(format!(
                 "console binary not found at {}; run `just check-e2e-tmux` (which builds \
