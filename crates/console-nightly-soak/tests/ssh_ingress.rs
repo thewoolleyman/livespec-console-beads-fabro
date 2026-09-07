@@ -95,18 +95,23 @@ impl Sandbox {
 
     /// The soak binary, pointed at this sandbox's findings file, with the fake
     /// `ssh` first on `PATH` and the production (non-dry-run) transport wired.
-    fn soak_command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_console-nightly-soak"));
+    ///
+    /// Uses `std::env::var` rather than `env!` because `CARGO_BIN_EXE_*` is set
+    /// by cargo at test-run time, not at clippy check time.
+    fn soak_command(&self) -> io::Result<Command> {
+        let binary =
+            std::env::var("CARGO_BIN_EXE_console-nightly-soak").map_err(io::Error::other)?;
+        let mut command = Command::new(binary);
         command
             .arg(self.path("findings.json"))
             .env("PATH", prepended_path(&self.root))
             .env("NIGHTLY_SOAK_FAKE_SSH_LOG", self.path("ssh-argv.log"))
             .env_remove("NIGHTLY_SOAK_DRY_RUN");
-        command
+        Ok(command)
     }
 
     fn run_soak(&self) -> io::Result<Output> {
-        self.soak_command()
+        self.soak_command()?
             .env(DESTINATION_ENV, "ci-writer@dolt-server")
             .output()
     }
@@ -188,7 +193,7 @@ fn an_unconfigured_ingress_destination_fails_the_nightly_loudly() -> io::Result<
     let sandbox = Sandbox::new("unconfigured-destination", 0)?;
 
     let output = sandbox
-        .soak_command()
+        .soak_command()?
         .env_remove(DESTINATION_ENV)
         .output()?;
 
