@@ -24,7 +24,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "livespec-dev-tooling", git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v1.55.1" },
+    { name = "livespec-dev-tooling", git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v1.55.2" },
     { name = "livespec-runtime", git = "https://github.com/thewoolleyman/livespec-runtime.git?tag=v0.27.0" },
     { name = "returns", specifier = ">=0.25.0" },
     { name = "typing-extensions", specifier = "==4.15.0" },
@@ -32,8 +32,8 @@ dev = [
 
 [[package]]
 name = "livespec-dev-tooling"
-version = "1.55.1"
-source = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v1.55.1#bb5e72d9b1f7ddfaa35fb8b3b46da62b4e105d15" }
+version = "1.55.2"
+source = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v1.55.2#a0634966573ec50d973e517c0f8a0828c7208506" }
 
 [[package]]
 name = "livespec-runtime"
