@@ -10397,18 +10397,33 @@ mod tests {
         );
     }
 
+    /// `from_environment` gathers the process environment and delegates to
+    /// `resolve`; this asserts only that the call RETURNS.
+    ///
+    /// Its VERDICT depends on the host's real `~/.claude` plugin install, which
+    /// is a hidden global, and BOTH arms are correct behaviour: a bare CI runner
+    /// with no registry at all resolves to an unresolved plugin and returns Ok,
+    /// while a host whose registry names a cache directory that does not exist
+    /// returns Err — which is precisely what the resolver is supposed to do.
+    /// Asserting Ok here made the console's whole suite fail inside every Fabro
+    /// sandbox whose session-start plugin update left an unmaterialized cache,
+    /// costing four factory runs on 2026-09-07 (livespec-console-beads-fabro-pzbdbo.18,
+    /// orchestrator bd-ib-bb41.9) and provoking two agents to hand-edit the
+    /// sandbox's plugin registry to get past it.
+    ///
+    /// The resolution's MEANING is asserted hermetically by the `resolver_inputs`
+    /// tests above, which drive `resolve` with a temp-dir home and a synthetic
+    /// install, so nothing is lost by refusing to read the host here.
     #[test]
     fn backing_cli_resolution_from_process_environment_is_callable() {
-        let resolution = BackingCliResolution::from_environment().ok_test();
-
-        check(
-            !resolution.selected_repo_path().as_os_str().is_empty(),
-            "assert failed",
-        );
-        check(
-            !resolution.programs().list_work_items().is_empty(),
-            "assert failed",
-        );
+        // Deliberately BRANCHLESS, and deliberately assertion-free. Any `match`
+        // or `if let` on the result leaves one arm that a run on a healthy host
+        // can never take, which the coverage gate correctly refuses; and there
+        // is no property to assert that is true of both arms without being a
+        // tautology. What this test buys is exactly what its name says: the
+        // wrapper is callable and does not panic. What the resolution MEANS is
+        // asserted by the hermetic `resolver_inputs` tests above.
+        let _resolution = BackingCliResolution::from_environment();
     }
 
     #[test]
