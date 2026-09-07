@@ -362,6 +362,25 @@ pub trait PendingCommandRequester {
     fn handles_pending_commands_inline(&self) -> bool {
         false
     }
+
+    /// Take the next worker failure the operator has not been shown yet.
+    ///
+    /// THE RETURN PATH of this same seam, and the reason it lives here rather
+    /// than on a port of its own: this trait is already the UI thread's handle
+    /// on the off-thread command worker, so the honest answer to "did the
+    /// command you asked for actually run" belongs on it
+    /// (livespec-console-beads-fabro-zbnnlv).
+    ///
+    /// OUT OF BAND — not a store-backed event — because the failures it carries
+    /// include the store open itself, so a store-backed report would have to
+    /// travel through the exact layer that just failed.
+    ///
+    /// Defaults to `None` so a requester with no worker behind it (every
+    /// synchronous test double, and the legacy inline path) reports nothing
+    /// rather than inventing a failure.
+    fn take_worker_failure_status(&self) -> Option<String> {
+        None
+    }
 }
 
 struct StoreBackedTuiRuntimeEffectSink<'a> {
@@ -639,6 +658,13 @@ fn append_factory_drain_requested_events(
 }
 
 impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
+    fn take_worker_status(&mut self) -> Option<String> {
+        // The UI thread's end of the out-of-band worker channel. Drained on the
+        // render loop's own cadence, so a lane that dropped a command reaches
+        // the operator on the next frame rather than never.
+        self.command_requester.take_worker_failure_status()
+    }
+
     fn refresh_events(&mut self, request_poll: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
         // The CHEAP local-journal reflection runs on EVERY refresh, so an
         // auto-disposition that lands mid-session leaves the inbox live at once.
@@ -1076,10 +1102,24 @@ pub fn lane_open_failure_line(
 ) -> String {
     let cause = format!("{error:?}").replace('\n', " ");
     format!(
-        "{at} {LANE_FAILURE_MARKER} lane={} stage=store-open attempts={attempts} cause={cause}",
-        lane.label()
+        "{at} {LANE_FAILURE_MARKER} lane={} stage={} attempts={attempts} cause={cause}",
+        lane.label(),
+        STORE_OPEN_STAGE_LABEL
     )
 }
+
+/// The stage label a store-open failure reports itself by.
+///
+/// Named once because TWO renderers use it — [`lane_open_failure_line`] for the
+/// source poller's retried open, and [`lane_command_failure_line`] for a command
+/// lane's — and a reader greps one vocabulary, not two.
+const STORE_OPEN_STAGE_LABEL: &str = "store-open";
+
+/// The timestamp a lane reports when its own clock is what failed.
+///
+/// A record with no time at all would be worse than an approximate one: the
+/// reader's first question is always "which run was this".
+const LANE_TIME_UNKNOWN: &str = "unknown-time";
 
 /// The lane-open failure lines in a diagnostics log's contents.
 ///
@@ -1106,6 +1146,243 @@ pub fn append_lane_diagnostic(path: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .open(path)?;
     writeln!(file, "{line}")
+}
+
+/// Why a command lane stopped before the operator's command had executed.
+///
+/// livespec-console-beads-fabro-zbnnlv. Every variant is a path the binary's
+/// command worker ALREADY took; what it did not do was say so. Three arms were
+/// `let Ok(..) = .. else { .. }` and the rest were `let _ = <handler result>`,
+/// so a command the operator watched the valve confirm could reach nothing at
+/// all, and the console's own record of it was indistinguishable from a command
+/// that had run.
+///
+/// The variants are kept DISTINCT rather than collapsed into one "lane failed"
+/// because the remedies differ completely — a busy store is worth retrying by
+/// hand, a broken `LIVESPEC_*` environment is not — and because the reader of a
+/// lane log needs to know which one they are looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandLaneFailure {
+    /// The backing-CLI configuration could not be resolved from the environment,
+    /// so the lane never had an orchestrator to talk to.
+    BackingCliResolution,
+    /// The lane could not open its own store connection, so it could not claim
+    /// the pending command row at all.
+    StoreOpen,
+    /// The observation clock could not be read, so nothing the lane wrote could
+    /// have been honestly timestamped.
+    ObservationClock,
+    /// A pending-command handler returned an error. The command WAS claimed, and
+    /// without this report it stays `executing` until the 24 h stale sweep.
+    CommandExecution,
+}
+
+impl CommandLaneFailure {
+    /// The stable stage label this failure reports itself by.
+    ///
+    /// The two shared with [`LaneStartupStage`] are DELEGATED rather than
+    /// retyped: the poller and the command lanes fail at the same named steps,
+    /// and a reader who greps `stage=observation-clock` must find both.
+    #[must_use]
+    pub const fn stage_label(self) -> &'static str {
+        match self {
+            Self::BackingCliResolution => LaneStartupStage::BackingCliResolution.label(),
+            Self::ObservationClock => LaneStartupStage::ObservationClock.label(),
+            Self::StoreOpen => STORE_OPEN_STAGE_LABEL,
+            Self::CommandExecution => "command-execution",
+        }
+    }
+
+    /// The line the OPERATOR is shown, out of band, when this failure happens.
+    ///
+    /// It leads with `action NOT executed` for the same reason
+    /// `store_busy_status` leads with `NOT applied`: an operator who pressed
+    /// approve, watched the valve confirm and the modal close must never be left
+    /// to conclude the item was approved. The lane and the stage ride along so
+    /// the line is actionable rather than merely alarming, and the detail is
+    /// flattened to one line because this lands in the header's status segment.
+    #[must_use]
+    pub fn operator_status(self, lane: ConsoleLane, detail: &str) -> String {
+        let detail = detail.replace('\n', " ");
+        format!(
+            "action NOT executed - the {} lane failed at {} ({detail})",
+            lane.label(),
+            self.stage_label()
+        )
+    }
+}
+
+/// Render the one-line DURABLE diagnostic for a command lane that gave up.
+///
+/// Same shape, same marker and same one-line rule as the other two lane
+/// renderers, so [`lane_failures_in`] finds every shape a lane can report. It
+/// carries no attempt count: the store-open detail says for itself how many
+/// opens were spent, and the other three steps are deterministic, so an
+/// `attempts=` key on them would imply a retry that never happened.
+#[must_use]
+pub fn lane_command_failure_line(
+    lane: ConsoleLane,
+    failure: CommandLaneFailure,
+    detail: &str,
+    at: &str,
+) -> String {
+    let detail = detail.replace('\n', " ");
+    format!(
+        "{at} {LANE_FAILURE_MARKER} lane={} stage={} detail={detail}",
+        lane.label(),
+        failure.stage_label()
+    )
+}
+
+/// The four steps a command lane runs, each one a place it can stop before the
+/// operator's command has executed.
+///
+/// This is the seam the ruled design asked for: the binary's command worker was
+/// `#[cfg]`-excluded from test AND coverage builds, so none of these paths could
+/// be constructed and none of them were measured. The ORDER and the REPORTING
+/// live in [`run_command_lane`] where they are exercised against scripted
+/// failures; an implementor supplies only the effects — the environment, the
+/// store open, the clock, and the handlers.
+pub trait CommandLaneSteps {
+    /// Read the observation clock.
+    ///
+    /// # Errors
+    /// Returns the rendered clock failure when the timestamp cannot be formed.
+    fn read_observation_clock(&mut self) -> Result<String, String>;
+
+    /// Resolve the backing-CLI configuration this lane will shell out through.
+    ///
+    /// # Errors
+    /// Returns the rendered resolution failure when the environment is unusable.
+    fn resolve_backing_cli(&mut self) -> Result<(), String>;
+
+    /// Open this lane's own store connection.
+    ///
+    /// # Errors
+    /// Returns the rendered open failure when the store cannot be opened.
+    fn open_store(&mut self) -> Result<(), String>;
+
+    /// Claim and execute whatever command rows are pending for this lane.
+    ///
+    /// # Errors
+    /// Returns the rendered handler failure when a claimed command did not
+    /// execute.
+    fn execute_pending_commands(&mut self, observed_at: &str) -> Result<(), String>;
+}
+
+/// Where a command lane announces that it gave up.
+///
+/// TWO surfaces, and the split is the point. The durable line outlives the
+/// session and is what the e2e harness greps; the operator status is the
+/// out-of-band worker-to-render channel, because five of these failure paths are
+/// failures of the very store layer a store-backed failure event would have had
+/// to travel through (maintainer ruling 2026-08-20).
+pub trait CommandLaneReporter {
+    /// Announce one lane failure on both surfaces.
+    fn report_lane_failure(&self, diagnostic: &str, operator_status: &str);
+}
+
+/// Run one command lane, reporting the FIRST step that stopped it.
+///
+/// Returns whether every step succeeded, so a caller — and the must-not-flag
+/// control test — can tell a clean run from a reported one without inspecting
+/// the reporter.
+///
+/// THE CLOCK IS READ FIRST, and that is a deliberate reordering of what the
+/// binary used to do (resolve, open, then clock). Reading it first costs
+/// nothing — it is a pure `now()` with no store or environment dependency — and
+/// it means every later report is timestamped with the lane's own clock instead
+/// of a second, separately-fallible read taken after the failure. Only the
+/// clock's OWN failure now falls back to [`LANE_TIME_UNKNOWN`], and by then an
+/// approximate time is the least of the reader's problems.
+///
+/// NO RETRY, deliberately, and the ruled design says so: a retry policy is a
+/// separate question from whether a dropped command is visible at all, and
+/// shipping the two together would let a retry that happened to succeed hide
+/// whether the reporting works.
+pub fn run_command_lane(
+    lane: ConsoleLane,
+    steps: &mut dyn CommandLaneSteps,
+    reporter: &dyn CommandLaneReporter,
+) -> bool {
+    let observed_at = match steps.read_observation_clock() {
+        Ok(observed_at) => observed_at,
+        Err(detail) => {
+            report_command_lane_failure(
+                lane,
+                CommandLaneFailure::ObservationClock,
+                &detail,
+                LANE_TIME_UNKNOWN,
+                reporter,
+            );
+            return false;
+        }
+    };
+    if let Err(detail) = steps.resolve_backing_cli() {
+        report_command_lane_failure(
+            lane,
+            CommandLaneFailure::BackingCliResolution,
+            &detail,
+            &observed_at,
+            reporter,
+        );
+        return false;
+    }
+    if let Err(detail) = steps.open_store() {
+        report_command_lane_failure(
+            lane,
+            CommandLaneFailure::StoreOpen,
+            &detail,
+            &observed_at,
+            reporter,
+        );
+        return false;
+    }
+    if let Err(detail) = steps.execute_pending_commands(&observed_at) {
+        report_command_lane_failure(
+            lane,
+            CommandLaneFailure::CommandExecution,
+            &detail,
+            &observed_at,
+            reporter,
+        );
+        return false;
+    }
+    true
+}
+
+/// The operator-facing line for a command whose WORKER could not be reached.
+///
+/// A sibling of [`CommandLaneFailure::operator_status`] and deliberately NOT one
+/// of its variants, because what is true here is different. The lane failures
+/// above happen after the worker took the job; this one happens when the worker
+/// cannot be handed the job at all — the only way the wakeup send fails is that
+/// the worker thread is gone, which for the rest of the session silently
+/// discards EVERY command, not one.
+///
+/// It says `not executed YET` rather than `NOT executed`, and the distinction is
+/// load-bearing in both directions: the command row is already persisted, so the
+/// session's closing flush and the next session both still drain it. Claiming a
+/// loss here would be as dishonest as the silence this item removes.
+#[must_use]
+pub fn command_worker_unreachable_status() -> String {
+    "action not executed YET - the command worker is gone; the command stays \
+     pending and the next session picks it up"
+        .to_owned()
+}
+
+/// Render both surfaces of one lane failure and hand them to the reporter.
+fn report_command_lane_failure(
+    lane: ConsoleLane,
+    failure: CommandLaneFailure,
+    detail: &str,
+    at: &str,
+    reporter: &dyn CommandLaneReporter,
+) {
+    reporter.report_lane_failure(
+        &lane_command_failure_line(lane, failure, detail, at),
+        &failure.operator_status(lane, detail),
+    );
 }
 
 /// How many times the pre-first-frame store sequence is attempted.
@@ -3274,29 +3551,31 @@ mod tests {
 
     use super::{
         BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandAppendStore,
+        CommandLaneFailure, CommandLaneReporter, CommandLaneSteps,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
-        InitialSourceSeed, LANE_FAILURE_MARKER, LaneStartupStage, NeedsAttentionIngest,
-        PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
-        STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts, SharedSqliteStore,
-        SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog, StartupReadout,
-        StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
+        InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN, LaneStartupStage,
+        NeedsAttentionIngest, PendingCommandOutcome, PendingCommandRequester, PluginResolution,
+        ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts,
+        SharedSqliteStore, SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog,
+        StartupReadout, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, append_factory_drain_requested_events, append_lane_diagnostic,
         backfill_demo_report, backfill_source_adapters, backfill_source_report,
-        command_status_update_runtime_result, config_command_from_stored, demo_events,
-        distinguish_repeatable_command, doctor_report, event_append_from_command_event,
-        event_append_from_console_event, event_append_from_normalized_source_event,
-        events_tail_report, factory_command_from_stored, final_tui_events_result,
-        flush_session_tail, handle_pending_config_commands, handle_pending_control_commands,
-        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
-        handle_pending_work_item_commands, ingest_and_reflect, ingest_needs_attention,
-        initial_source_seed, is_failed_once_only_valve_retry, lane_diagnostics_path,
+        command_status_update_runtime_result, command_worker_unreachable_status,
+        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
+        event_append_from_command_event, event_append_from_console_event,
+        event_append_from_normalized_source_event, events_tail_report, factory_command_from_stored,
+        final_tui_events_result, flush_session_tail, handle_pending_config_commands,
+        handle_pending_control_commands, handle_pending_factory_commands,
+        handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
+        ingest_and_reflect, ingest_needs_attention, initial_source_seed,
+        is_failed_once_only_valve_retry, lane_command_failure_line, lane_diagnostics_path,
         lane_failures_in, lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
         live_source_adapters_from_resolution, live_source_adapters_with_programs,
         load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
-        refresh_sources, render_tui_preview, resolve_console_repo, run,
+        refresh_sources, render_tui_preview, resolve_console_repo, run, run_command_lane,
         run_store_backed_tui_session, run_with_store, serve_report, serve_report_after_ingest,
         serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
         tolerate_shutdown_contention, tolerate_startup_contention,
@@ -5204,6 +5483,14 @@ mod tests {
             !requester.handles_pending_commands_inline(),
             "assert failed",
         );
+        // MUST-NOT-FLAG CONTROL on the worker-status return path. A requester
+        // with no worker behind it — every synchronous double, and the legacy
+        // inline path — must report NOTHING rather than inventing a failure the
+        // operator would have to dismiss.
+        check(
+            requester.take_worker_failure_status().is_none(),
+            "a requester with no worker behind it reports no failure",
+        );
     }
 
     #[test]
@@ -6768,6 +7055,410 @@ mod tests {
         let result = append_lane_diagnostic(&path, "unwritable");
 
         check(result.is_err(), "an unopenable path surfaces as an error");
+    }
+
+    /// A command lane whose four steps are SCRIPTED, so every failure class the
+    /// binary's worker can hit is constructible.
+    ///
+    /// The real lane's steps are the environment, a store open, the clock and
+    /// the handlers — none of which a test can fail on demand, which is exactly
+    /// why these paths shipped unmeasured. Scripting them is not a stand-in for
+    /// the real ones: the ORDER and the REPORTING are the behaviour under test,
+    /// and they are the same code in both.
+    struct ScriptedCommandLane {
+        clock: Result<String, String>,
+        resolution: Result<(), String>,
+        store: Result<(), String>,
+        execution: Result<(), String>,
+        executed_at: RefCell<Option<String>>,
+    }
+
+    impl ScriptedCommandLane {
+        /// A lane on which every step succeeds — the must-not-flag baseline that
+        /// each failing case mutates exactly one field of.
+        fn clean() -> Self {
+            Self {
+                clock: Ok("2026-08-29T09:00:00Z".to_owned()),
+                resolution: Ok(()),
+                store: Ok(()),
+                execution: Ok(()),
+                executed_at: RefCell::new(None),
+            }
+        }
+    }
+
+    impl CommandLaneSteps for ScriptedCommandLane {
+        fn read_observation_clock(&mut self) -> Result<String, String> {
+            self.clock.clone()
+        }
+
+        fn resolve_backing_cli(&mut self) -> Result<(), String> {
+            self.resolution.clone()
+        }
+
+        fn open_store(&mut self) -> Result<(), String> {
+            self.store.clone()
+        }
+
+        fn execute_pending_commands(&mut self, observed_at: &str) -> Result<(), String> {
+            *self.executed_at.borrow_mut() = Some(observed_at.to_owned());
+            self.execution.clone()
+        }
+    }
+
+    /// Records what a lane announced, on BOTH surfaces.
+    #[derive(Default)]
+    struct RecordingLaneReporter {
+        diagnostics: RefCell<Vec<String>>,
+        operator_statuses: RefCell<Vec<String>>,
+    }
+
+    impl CommandLaneReporter for RecordingLaneReporter {
+        fn report_lane_failure(&self, diagnostic: &str, operator_status: &str) {
+            self.diagnostics.borrow_mut().push(diagnostic.to_owned());
+            self.operator_statuses
+                .borrow_mut()
+                .push(operator_status.to_owned());
+        }
+    }
+
+    /// Run a scripted lane and hand back the reporter it announced through.
+    fn drive_command_lane(
+        lane: ConsoleLane,
+        mut steps: ScriptedCommandLane,
+    ) -> (bool, RecordingLaneReporter) {
+        let reporter = RecordingLaneReporter::default();
+        let clean = run_command_lane(lane, &mut steps, &reporter);
+        (clean, reporter)
+    }
+
+    /// The single operator-facing line a lane announced, or the empty string.
+    fn only_operator_status(reporter: &RecordingLaneReporter) -> String {
+        reporter
+            .operator_statuses
+            .borrow()
+            .first()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The single durable line a lane announced, or the empty string.
+    fn only_diagnostic(reporter: &RecordingLaneReporter) -> String {
+        reporter
+            .diagnostics
+            .borrow()
+            .first()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_lane_that_cannot_resolve_its_backing_cli_says_the_command_did_not_run() {
+        // FAILURE CLASS 1 of 4. This was
+        // `let Ok(resolution) = BackingCliResolution::from_environment() else { ... }`:
+        // the wakeup was discarded whole, and with no orchestrator resolved the
+        // operator's command could not have reached anything.
+        let (clean, reporter) = drive_command_lane(
+            ConsoleLane::FactoryCommand,
+            ScriptedCommandLane {
+                resolution: Err("no dispatcher on PATH".to_owned()),
+                ..ScriptedCommandLane::clean()
+            },
+        );
+
+        check(!clean, "a lane that could not resolve its CLI is not clean");
+        let status = only_operator_status(&reporter);
+        check(
+            status.contains("NOT executed"),
+            "the operator is told the action did NOT execute",
+        );
+        check(
+            status.contains("backing-cli-resolution"),
+            "the operator is told WHICH step failed",
+        );
+        check(
+            status.contains("no dispatcher on PATH"),
+            "the underlying cause rides along, so the line is actionable",
+        );
+        check(
+            only_diagnostic(&reporter).contains(LANE_FAILURE_MARKER),
+            "the durable record carries the marker a reader greps for",
+        );
+    }
+
+    #[test]
+    fn a_lane_that_cannot_open_its_store_says_the_command_did_not_run() {
+        // FAILURE CLASS 2 of 4. This was
+        // `let Some(mut store) = open_lane_store(..) else { return; }`. The lane
+        // never claimed the pending row, so the command sat pending until some
+        // unrelated later command happened to wake the worker again.
+        let (clean, reporter) = drive_command_lane(
+            ConsoleLane::ControlCommand,
+            ScriptedCommandLane {
+                store: Err("store busy: 3 open attempts".to_owned()),
+                ..ScriptedCommandLane::clean()
+            },
+        );
+
+        check(!clean, "a lane that could not open its store is not clean");
+        let status = only_operator_status(&reporter);
+        check(
+            status.contains("NOT executed"),
+            "the operator is told the action did NOT execute",
+        );
+        check(
+            status.contains("store-open"),
+            "the operator is told the store open is what failed",
+        );
+        check(
+            status.contains("control-command"),
+            "the operator is told WHICH lane dropped the command",
+        );
+    }
+
+    #[test]
+    fn a_lane_that_cannot_read_the_clock_says_the_command_did_not_run() {
+        // FAILURE CLASS 3 of 4. This was
+        // `let Ok(observed_at) = current_requested_at() else { ... }`. It is
+        // also the ONE failure whose own report cannot be honestly timestamped,
+        // so the record says so rather than inventing a time.
+        let (clean, reporter) = drive_command_lane(
+            ConsoleLane::FactoryCommand,
+            ScriptedCommandLane {
+                clock: Err("clock unavailable".to_owned()),
+                ..ScriptedCommandLane::clean()
+            },
+        );
+
+        check(!clean, "a lane that could not read its clock is not clean");
+        check(
+            only_operator_status(&reporter).contains("NOT executed"),
+            "the operator is told the action did NOT execute",
+        );
+        let diagnostic = only_diagnostic(&reporter);
+        check(
+            diagnostic.contains("stage=observation-clock"),
+            "the durable record names the clock as the step that failed",
+        );
+        check(
+            diagnostic.contains(LANE_TIME_UNKNOWN),
+            "a record whose own clock failed says so rather than inventing a time",
+        );
+    }
+
+    #[test]
+    fn a_handler_error_says_the_command_did_not_run() {
+        // FAILURE CLASS 4 of 4, and the worst of them: this was
+        // `let _ = handle_pending_*_commands(..)`. The command WAS claimed, so a
+        // swallowed error left it `executing` until the 24 h stale sweep while
+        // the operator saw the valve confirm.
+        let (clean, reporter) = drive_command_lane(
+            ConsoleLane::FactoryCommand,
+            ScriptedCommandLane {
+                execution: Err("factory: Dispatcher(refused)".to_owned()),
+                ..ScriptedCommandLane::clean()
+            },
+        );
+
+        check(!clean, "a lane whose handler failed is not clean");
+        let status = only_operator_status(&reporter);
+        check(
+            status.contains("NOT executed"),
+            "the operator is told the action did NOT execute",
+        );
+        check(
+            status.contains("command-execution"),
+            "the operator is told the handler itself is what failed",
+        );
+        check(
+            status.contains("Dispatcher(refused)"),
+            "the handler's own cause rides along verbatim",
+        );
+    }
+
+    #[test]
+    fn a_lane_that_runs_cleanly_announces_nothing() {
+        // MUST-NOT-FLAG CONTROL. Without this, the four tests above are
+        // satisfied by a lane that reports failure unconditionally — which would
+        // be a different, equally dishonest console.
+        let (clean, reporter) =
+            drive_command_lane(ConsoleLane::ControlCommand, ScriptedCommandLane::clean());
+
+        check(clean, "a lane whose every step succeeded reports success");
+        check(
+            reporter.operator_statuses.borrow().is_empty(),
+            "a clean lane must never tell the operator their action failed",
+        );
+        check(
+            reporter.diagnostics.borrow().is_empty(),
+            "a clean lane must leave the lane log EMPTY, so an empty log stays \
+             readable as health",
+        );
+    }
+
+    #[test]
+    fn a_lane_hands_its_handlers_the_clock_it_reported_with() {
+        // The clock is read FIRST so every later report is timestamped by the
+        // lane's own read rather than a second, separately-fallible one. That is
+        // only safe if the SAME value still reaches the handlers — otherwise the
+        // reordering would have quietly changed what gets written to the store.
+        let mut steps = ScriptedCommandLane::clean();
+        steps.clock = Ok("2026-08-29T11:22:33Z".to_owned());
+        let reporter = RecordingLaneReporter::default();
+
+        let clean = run_command_lane(ConsoleLane::FactoryCommand, &mut steps, &reporter);
+        let executed_at = steps.executed_at.borrow().clone().unwrap_or_default();
+
+        check(clean, "the scripted lane runs clean");
+        check(
+            executed_at == "2026-08-29T11:22:33Z",
+            "the handlers observe the same timestamp the reports would carry",
+        );
+    }
+
+    #[test]
+    fn a_lane_stops_at_its_first_failure_and_reports_it_once() {
+        // A lane that reported every step would bury the cause under three
+        // consequences. The first failure is the one that names where the
+        // command actually stopped — the same call the shutdown-contention
+        // tolerance makes.
+        let (clean, reporter) = drive_command_lane(
+            ConsoleLane::FactoryCommand,
+            ScriptedCommandLane {
+                resolution: Err("resolution failed".to_owned()),
+                store: Err("store failed".to_owned()),
+                execution: Err("handler failed".to_owned()),
+                ..ScriptedCommandLane::clean()
+            },
+        );
+
+        check(!clean, "the lane is not clean");
+        check(
+            reporter.operator_statuses.borrow().len() == 1,
+            "exactly ONE report, so the operator reads a cause and not a cascade",
+        );
+        check(
+            only_operator_status(&reporter).contains("resolution failed"),
+            "the report names the FIRST step that stopped the command",
+        );
+    }
+
+    #[test]
+    fn every_command_lane_failure_renders_a_distinct_stage_label() {
+        // A shared label would tell the reader that SOMETHING dropped their
+        // command without saying which remedy applies — and the four remedies
+        // are completely different.
+        let labels = [
+            CommandLaneFailure::BackingCliResolution.stage_label(),
+            CommandLaneFailure::StoreOpen.stage_label(),
+            CommandLaneFailure::ObservationClock.stage_label(),
+            CommandLaneFailure::CommandExecution.stage_label(),
+        ];
+        let mut sorted = labels;
+        sorted.sort_unstable();
+        let mut deduped = sorted.to_vec();
+        deduped.dedup();
+
+        check(
+            deduped.len() == labels.len(),
+            "no two failures share a label",
+        );
+        check(
+            labels.iter().all(|label| !label.is_empty()),
+            "every failure has a non-empty label",
+        );
+        // ONE VOCABULARY: a reader who greps a stage the poller also reports
+        // must find the command lane's occurrences of it too.
+        check(
+            CommandLaneFailure::ObservationClock.stage_label()
+                == LaneStartupStage::ObservationClock.label(),
+            "the shared stages are the SAME token in both renderers",
+        );
+        check(
+            CommandLaneFailure::BackingCliResolution.stage_label()
+                == LaneStartupStage::BackingCliResolution.label(),
+            "the shared stages are the SAME token in both renderers",
+        );
+    }
+
+    #[test]
+    fn no_command_lane_failure_can_read_as_success() {
+        // THE INVARIANT, asserted over every variant at once rather than one
+        // test per line. A variant added later without an honest status is
+        // caught here instead of in production.
+        for failure in [
+            CommandLaneFailure::BackingCliResolution,
+            CommandLaneFailure::StoreOpen,
+            CommandLaneFailure::ObservationClock,
+            CommandLaneFailure::CommandExecution,
+        ] {
+            let status = failure.operator_status(ConsoleLane::FactoryCommand, "cause");
+            check(
+                status.contains("NOT executed"),
+                "every failure class says the action did NOT execute",
+            );
+            check(
+                status.contains("factory-command"),
+                "every failure class names its lane",
+            );
+            check(
+                status.contains(failure.stage_label()),
+                "every failure class names its stage",
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreachable_worker_is_reported_as_pending_rather_than_lost() {
+        // The level ABOVE the lanes: if the wakeup cannot reach the worker at
+        // all, every command is discarded for the rest of the session, and that
+        // send was a `let _ =` too. Its honest report is NOT a lane failure —
+        // the command row is persisted, so the closing flush and the next
+        // session still drain it — and saying "failed" would be dishonest in the
+        // other direction.
+        let status = command_worker_unreachable_status();
+
+        check(
+            status.contains("not executed YET"),
+            "the operator is told their action has not run",
+        );
+        check(
+            status.contains("pending"),
+            "the operator is told the command is still queued, not lost",
+        );
+        check(
+            !status.contains("NOT executed"),
+            "a still-pending command must not be reported with the lane \
+             failures' lost-command wording",
+        );
+        check(!status.contains('\n'), "the status stays one line");
+    }
+
+    #[test]
+    fn a_command_lane_report_survives_a_multi_line_cause() {
+        // Both surfaces are ONE line: the durable log is appended from several
+        // threads, and the operator status lands in a single header segment. A
+        // handler error carrying a multi-line `Debug` would corrupt one and
+        // overflow the other.
+        let line = lane_command_failure_line(
+            ConsoleLane::ControlCommand,
+            CommandLaneFailure::CommandExecution,
+            "first line\nsecond line",
+            "2026-08-29T09:00:00Z",
+        );
+        let status = CommandLaneFailure::CommandExecution
+            .operator_status(ConsoleLane::ControlCommand, "first line\nsecond line");
+
+        check(!line.contains('\n'), "the durable record stays one line");
+        check(!status.contains('\n'), "the operator status stays one line");
+        check(
+            line.contains("first line second line"),
+            "the cause survives flattening rather than being truncated",
+        );
+        check(
+            lane_failures_in(&line).len() == 1,
+            "the command-lane shape is found by the same scan as the other two",
+        );
     }
 
     #[test]
@@ -10857,14 +11548,25 @@ mod tests {
     struct RecordingPendingCommandRequester {
         requests: std::cell::Cell<usize>,
         inline: bool,
+        /// What this requester's worker has queued for the render thread, if
+        /// anything. `None` is the ordinary case — a double with no worker
+        /// behind it reports no failure.
+        worker_status: RefCell<Option<String>>,
     }
 
     impl RecordingPendingCommandRequester {
-        const fn new(inline: bool) -> Self {
+        fn new(inline: bool) -> Self {
             Self {
                 requests: std::cell::Cell::new(0),
                 inline,
+                worker_status: RefCell::new(None),
             }
+        }
+
+        /// The same double with ONE worker failure waiting to be delivered.
+        fn with_worker_status(self, status: &str) -> Self {
+            *self.worker_status.borrow_mut() = Some(status.to_owned());
+            self
         }
 
         fn request_count(&self) -> usize {
@@ -10880,6 +11582,80 @@ mod tests {
         fn handles_pending_commands_inline(&self) -> bool {
             self.inline
         }
+
+        fn take_worker_failure_status(&self) -> Option<String> {
+            self.worker_status.borrow_mut().take()
+        }
+    }
+
+    #[test]
+    fn the_live_session_carries_a_worker_failure_out_to_the_render_thread() {
+        // THE WIRE, end to end on the UI-thread side. The lane sequencer proves
+        // the failure is announced; this proves the announcement actually
+        // reaches the session the render loop folds into its frame — the two
+        // halves were previously joined only inside the binary's `#[cfg]`-
+        // excluded worker, where nothing could observe the join.
+        let (path, mut store) = file_store("worker-status-handoff");
+        let requester = async_command_requester().with_worker_status(
+            "action NOT executed - the factory-command lane failed at store-open (busy)",
+        );
+        let mut drain_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions_port = empty_decisions_port();
+        let poll_requester = poll_requester();
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-08-29T09:00:00Z",
+            &mut drain_port,
+            &mut work_item_port,
+            &decisions_port,
+            &poll_requester,
+            &requester,
+        );
+
+        let first = sink.take_worker_status();
+        let second = sink.take_worker_status();
+        cleanup_store(&path);
+
+        check(
+            first.unwrap_or_default().contains("NOT executed"),
+            "the session hands the render thread the worker's failure",
+        );
+        check(
+            second.is_none(),
+            "a status is delivered ONCE, so a single failure cannot pin the \
+             header for the rest of the session",
+        );
+    }
+
+    #[test]
+    fn a_quiet_worker_leaves_the_live_session_with_nothing_to_show() {
+        // MUST-NOT-FLAG CONTROL on the wire above, at the SESSION level: the
+        // ordinary tick has no worker failure waiting, and the session must
+        // report nothing rather than pinning a status on the operator's header.
+        let (path, mut store) = file_store("worker-status-quiet");
+        let requester = async_command_requester();
+        let mut drain_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions_port = empty_decisions_port();
+        let poll_requester = poll_requester();
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-08-29T09:00:00Z",
+            &mut drain_port,
+            &mut work_item_port,
+            &decisions_port,
+            &poll_requester,
+            &requester,
+        );
+
+        let status = sink.take_worker_status();
+        cleanup_store(&path);
+
+        check(
+            status.is_none(),
+            "a session whose worker reported nothing shows the operator nothing",
+        );
     }
 
     fn command_requester() -> RecordingPendingCommandRequester {

@@ -176,6 +176,11 @@ fn run_terminal_loop(
         if matches!(tick, LoopTick::Quit) {
             return Ok(effects);
         }
+        // Drain the out-of-band worker channel every tick, BEFORE the re-list.
+        // A command the worker could not execute leaves no trace in the event
+        // log — that is the whole defect — so the log refresh below can never
+        // surface it and this is the only place the operator is told.
+        apply_worker_status(&mut state, session.take_worker_status());
         // Re-list the store every iteration (cheap — source polling is off-thread
         // now, so this never blocks). After a ledger-mutating effect, `refresh_events`
         // also pings the off-thread poller to re-poll sources at once, so the
@@ -267,6 +272,26 @@ fn apply_sink_outcome(
         TuiRuntimeEffectSinkOutcome::NotApplied(reason) => {
             *state = state.clone().with_transient_status(Some(reason));
         }
+    }
+}
+
+/// Fold an out-of-band worker status into the loop's state.
+///
+/// Split out of the terminal-bound tick for exactly the reason `apply_sink_outcome`
+/// was: the loop around it is excluded from tests and coverage, and a
+/// honesty-carrying decision that nothing measures is how the silent-drop family
+/// got here in the first place (livespec-console-beads-fabro-zbnnlv).
+///
+/// It reuses the SAME transient-status surface a store-busy `NotApplied` and a
+/// refused action already use. There is no second channel to learn: whatever
+/// most recently contradicted the operator's expectation is what the header
+/// says. `None` — the overwhelmingly common case, one per render tick — leaves
+/// the state untouched rather than clearing a status the operator may not have
+/// read yet.
+#[cfg(any(test, not(coverage)))]
+fn apply_worker_status(state: &mut TuiInteractionState, status: Option<String>) {
+    if let Some(status) = status {
+        *state = state.clone().with_transient_status(Some(status));
     }
 }
 
@@ -381,6 +406,21 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// # Errors
     /// Returns an IO error when the store read fails.
     fn refresh_events(&mut self, request_poll: bool) -> std::io::Result<Option<Vec<ConsoleEvent>>>;
+
+    /// Take the next OUT-OF-BAND worker status the operator has not seen yet.
+    ///
+    /// The operator's mutating commands execute on a worker thread, so by the
+    /// time one of them fails the valve has already confirmed and the modal has
+    /// already closed. Without this the session had no way to be told, and a
+    /// dropped command was indistinguishable from a completed one
+    /// (livespec-console-beads-fabro-zbnnlv).
+    ///
+    /// Non-blocking: it returns what has already arrived and never waits, so the
+    /// render loop's tick is unaffected. Defaults to `None` for sessions with no
+    /// worker behind them.
+    fn take_worker_status(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Effect sink that preserves the legacy end-of-session flush behavior.
@@ -3116,7 +3156,7 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::apply_sink_outcome;
+    use crate::{apply_sink_outcome, apply_worker_status};
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{
@@ -3278,6 +3318,79 @@ mod tests {
         check(
             deferred_effects.len() == 1,
             "a deferred effect must still be queued for later handling",
+        );
+    }
+
+    #[test]
+    fn a_worker_that_could_not_execute_a_command_reaches_the_operator() {
+        // livespec-console-beads-fabro-zbnnlv. The mutating command runs on a
+        // WORKER thread, so by the time it fails the valve has confirmed and the
+        // modal has closed — and the failure leaves no event in the log, so the
+        // render loop's re-list can never surface it. This fold is the only
+        // place the operator is told, so it is asserted on the RENDERED frame
+        // rather than on the state field.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("worker-status-test".to_owned());
+
+        apply_worker_status(
+            &mut state,
+            Some(
+                "action NOT executed - the factory-command lane failed at store-open (busy)"
+                    .to_owned(),
+            ),
+        );
+
+        let rendered =
+            render_to_text(&build_tui_model_for_state(&[], &state), 200, 40).unwrap_or_default();
+        assert!(
+            rendered.contains("NOT executed"),
+            "the operator must SEE that their command never ran: {rendered}"
+        );
+        assert!(
+            rendered.contains("factory-command"),
+            "the surfaced line must name WHICH lane dropped the command: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_quiet_worker_leaves_the_operator_s_view_alone() {
+        // MUST-NOT-FLAG CONTROL. `None` is the overwhelmingly common case — once
+        // per render tick — so a fold that wrote on every tick would either
+        // manufacture a failure or wipe a status the operator has not read yet.
+        let base = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("worker-status-test".to_owned());
+
+        let mut quiet = base.clone();
+        apply_worker_status(&mut quiet, None);
+        let rendered =
+            render_to_text(&build_tui_model_for_state(&[], &quiet), 200, 40).unwrap_or_default();
+        assert!(
+            !rendered.contains("NOT executed"),
+            "a worker with nothing to report must not claim a failure: {rendered}"
+        );
+
+        // And an EARLIER status survives a quiet tick, rather than being cleared
+        // before the operator could read it.
+        let mut carried = base.with_transient_status(Some("earlier report".to_owned()));
+        apply_worker_status(&mut carried, None);
+        let rendered =
+            render_to_text(&build_tui_model_for_state(&[], &carried), 200, 40).unwrap_or_default();
+        assert!(
+            rendered.contains("earlier report"),
+            "a quiet tick must not erase a status the operator may not have read: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_worker_behind_it_reports_no_worker_status() {
+        // The trait default. A legacy no-store session has no command worker, so
+        // it must report nothing rather than inventing a failure — the same
+        // reason `refresh_events` keeps its startup snapshot there.
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_worker_status().is_none(),
+            "a session with no worker behind it reports no worker status",
         );
     }
 

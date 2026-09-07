@@ -39,10 +39,10 @@ use console_eventstore::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
-    BackingCliResolution, ConsoleLane, ConsoleRuntimeError, LaneStartupStage, NeedsAttentionIngest,
-    PendingCommandRequester, SourceAdapterRef, SourcePollRequester, TuiSessionRunner,
-    append_lane_diagnostic, lane_diagnostics_path, lane_open_failure_line,
-    lane_startup_failure_line, resolve_console_invoker,
+    BackingCliResolution, CommandLaneReporter, CommandLaneSteps, ConsoleLane, ConsoleRuntimeError,
+    LaneStartupStage, NeedsAttentionIngest, PendingCommandRequester, SourceAdapterRef,
+    SourcePollRequester, TuiSessionRunner, append_lane_diagnostic, lane_diagnostics_path,
+    lane_open_failure_line, lane_startup_failure_line, resolve_console_invoker, run_command_lane,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -337,9 +337,18 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         tx: poll_tx.clone(),
     };
     let (command_tx, command_rx) = std::sync::mpsc::channel::<CommandMessage>();
-    let command_worker = std::thread::spawn(move || command_worker_loop(&command_rx));
+    // The OUT-OF-BAND worker-to-render status channel
+    // (livespec-console-beads-fabro-zbnnlv). The command lanes execute the
+    // operator's mutating commands off this thread, so by the time one of them
+    // fails the valve has confirmed and the modal has closed. This is how the
+    // render thread finds out — deliberately NOT a store-backed event, since
+    // the store open is itself one of the failures it has to carry.
+    let (status_tx, status_rx) = std::sync::mpsc::channel::<String>();
+    let command_worker = std::thread::spawn(move || command_worker_loop(&command_rx, &status_tx));
     let command_requester = ChannelCommandRequester {
         tx: command_tx.clone(),
+        status_rx,
+        worker_unreachable: std::cell::Cell::new(false),
     };
     let session_result = livespec_console_beads_fabro::run_store_backed_tui_session(
         &mut store,
@@ -490,130 +499,259 @@ impl SourcePollRequester for ChannelPollRequester {
     }
 }
 
-/// Backs [`PendingCommandRequester`] with the channel to the command worker.
+/// Backs [`PendingCommandRequester`] with the channel to the command worker,
+/// and the RETURN path with the worker's out-of-band status channel.
 #[cfg(all(not(test), not(coverage)))]
 struct ChannelCommandRequester {
     tx: Sender<CommandMessage>,
+    status_rx: Receiver<String>,
+    /// Set when a wakeup could not be handed to the worker at all, so the next
+    /// render tick reports it. A flag rather than a queue: the worker is gone
+    /// for the rest of the session, and repeating the same line per keystroke
+    /// would bury the operator rather than inform them.
+    worker_unreachable: std::cell::Cell<bool>,
 }
 
 #[cfg(all(not(test), not(coverage)))]
 impl PendingCommandRequester for ChannelCommandRequester {
     fn request_pending_command_handling(&self) {
-        let _ = self.tx.send(CommandMessage::HandleNow);
+        // The ONLY way this send fails is that the worker thread is gone, which
+        // would otherwise discard every command for the rest of the session in
+        // silence — the same defect one level up from the lanes themselves.
+        if self.tx.send(CommandMessage::HandleNow).is_err() {
+            self.worker_unreachable.set(true);
+        }
+    }
+
+    fn take_worker_failure_status(&self) -> Option<String> {
+        // An unreachable worker outranks a queued lane report: it means nothing
+        // is executing at all, which is the more urgent thing to say.
+        if self.worker_unreachable.replace(false) {
+            return Some(livespec_console_beads_fabro::command_worker_unreachable_status());
+        }
+        // `try_recv`, never `recv`: this runs on the render thread's tick and
+        // must not wait. Empty and disconnected both mean "nothing to tell the
+        // operator right now".
+        self.status_rx.try_recv().ok()
     }
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn command_worker_loop(command_rx: &Receiver<CommandMessage>) {
+fn command_worker_loop(command_rx: &Receiver<CommandMessage>, status_tx: &Sender<String>) {
     while matches!(command_rx.recv(), Ok(CommandMessage::HandleNow)) {
-        spawn_factory_command_worker();
-        handle_pending_control_command_lane();
+        spawn_factory_command_worker(status_tx.clone());
+        run_command_lane(
+            ConsoleLane::ControlCommand,
+            &mut ControlCommandLaneSteps::new(),
+            &LaneFailureReporter::new(status_tx.clone()),
+        );
     }
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn spawn_factory_command_worker() {
-    let _ = std::thread::spawn(handle_pending_factory_command_lane);
+fn spawn_factory_command_worker(status_tx: Sender<String>) {
+    let _handle = std::thread::spawn(move || {
+        run_command_lane(
+            ConsoleLane::FactoryCommand,
+            &mut FactoryCommandLaneSteps::new(),
+            &LaneFailureReporter::new(status_tx),
+        )
+    });
+}
+
+/// Announce a lane failure on BOTH of its surfaces.
+///
+/// The durable lane log is written FIRST and the operator channel second,
+/// deliberately: the log outlives the session, so if the render thread has
+/// already been torn down the report still exists somewhere. And because the
+/// log's own write can fail, its failure is folded into the operator line
+/// rather than swallowed — the two surfaces are independent, and neither may
+/// quietly stand in for the other.
+#[cfg(all(not(test), not(coverage)))]
+struct LaneFailureReporter {
+    status_tx: Sender<String>,
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn handle_pending_factory_command_lane() {
-    let resolution = match BackingCliResolution::from_environment() {
-        Ok(resolution) => resolution,
-        Err(error) => {
-            report_lane_startup_failure(
-                ConsoleLane::FactoryCommand,
-                LaneStartupStage::BackingCliResolution,
-                &error.to_string(),
-            );
-            return;
-        }
-    };
-    let path = console_store_path();
-    let Some(mut store) = open_lane_store(ConsoleLane::FactoryCommand, &path) else {
-        return;
-    };
-    let observed_at = match current_requested_at() {
-        Ok(observed_at) => observed_at,
-        Err(error) => {
-            report_lane_startup_failure(
-                ConsoleLane::FactoryCommand,
-                LaneStartupStage::ObservationClock,
-                &error,
-            );
-            return;
-        }
-    };
-    let repo_path = resolution.drive_repo_arg();
-    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
-    let mut drain = DispatcherFactoryDrainPort::new(
-        &probe,
-        resolution.programs().dispatcher(),
-        &["loop", "--repo", repo_path.as_str()],
-    );
-    let mut dispatch_item = DispatcherFactoryDispatchItemPort::new(
-        &probe,
-        resolution.programs().dispatcher(),
-        &["loop", "--repo", repo_path.as_str()],
-    );
-    let mut drive = DispatcherOrchestratorActionPort::new(
-        &probe,
-        resolution.programs().drive(),
-        &["--repo", repo_path.as_str(), "--json"],
-    );
-    let _ = livespec_console_beads_fabro::handle_pending_factory_commands_with_dispatch_port(
-        &mut store,
-        &observed_at,
-        &mut drain,
-        &mut dispatch_item,
-    );
-    let _ = livespec_console_beads_fabro::handle_pending_control_commands(
-        &mut store,
-        &observed_at,
-        &mut drive,
-    );
+impl LaneFailureReporter {
+    const fn new(status_tx: Sender<String>) -> Self {
+        Self { status_tx }
+    }
 }
 
 #[cfg(all(not(test), not(coverage)))]
-fn handle_pending_control_command_lane() {
-    let resolution = match BackingCliResolution::from_environment() {
-        Ok(resolution) => resolution,
-        Err(error) => {
-            report_lane_startup_failure(
-                ConsoleLane::ControlCommand,
-                LaneStartupStage::BackingCliResolution,
-                &error.to_string(),
-            );
-            return;
+impl CommandLaneReporter for LaneFailureReporter {
+    fn report_lane_failure(&self, diagnostic: &str, operator_status: &str) {
+        let path = lane_diagnostics_path(&console_store_path());
+        let status = match append_lane_diagnostic(&path, diagnostic) {
+            Ok(()) => operator_status.to_owned(),
+            Err(error) => format!("{operator_status} [lane log unwritable: {error}]"),
+        };
+        // Best-effort BY CONSTRUCTION, not by neglect: the only way this send
+        // fails is that the render thread has already gone, i.e. the session
+        // ended, and the durable line above is what survives that.
+        self.status_tx.send(status).unwrap_or_default();
+    }
+}
+
+/// The FACTORY command lane's real effects.
+///
+/// The ports are built inside `execute_pending_commands` rather than held as
+/// fields because each one borrows the probe, which borrows the resolution — a
+/// struct holding all three would be self-referential. They are thin wrappers
+/// over the probe, so building them per invocation costs nothing.
+#[cfg(all(not(test), not(coverage)))]
+struct FactoryCommandLaneSteps {
+    resolution: Option<BackingCliResolution>,
+    store: Option<SqliteEventStore>,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl FactoryCommandLaneSteps {
+    const fn new() -> Self {
+        Self {
+            resolution: None,
+            store: None,
         }
-    };
-    let path = console_store_path();
-    let Some(mut store) = open_lane_store(ConsoleLane::ControlCommand, &path) else {
-        return;
-    };
-    let observed_at = match current_requested_at() {
-        Ok(observed_at) => observed_at,
-        Err(error) => {
-            report_lane_startup_failure(
-                ConsoleLane::ControlCommand,
-                LaneStartupStage::ObservationClock,
-                &error,
-            );
-            return;
+    }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl CommandLaneSteps for FactoryCommandLaneSteps {
+    fn read_observation_clock(&mut self) -> Result<String, String> {
+        current_requested_at()
+    }
+
+    fn resolve_backing_cli(&mut self) -> Result<(), String> {
+        self.resolution =
+            Some(BackingCliResolution::from_environment().map_err(|error| error.to_string())?);
+        Ok(())
+    }
+
+    fn open_store(&mut self) -> Result<(), String> {
+        self.store = Some(open_console_store(&console_store_path())?);
+        Ok(())
+    }
+
+    fn execute_pending_commands(&mut self, observed_at: &str) -> Result<(), String> {
+        let (Some(resolution), Some(store)) = (self.resolution.as_ref(), self.store.as_mut())
+        else {
+            return Err(lane_steps_out_of_order());
+        };
+        let repo_path = resolution.drive_repo_arg();
+        let probe = SystemSourceProbe::new(resolution.selected_repo_path());
+        let mut drain = DispatcherFactoryDrainPort::new(
+            &probe,
+            resolution.programs().dispatcher(),
+            &["loop", "--repo", repo_path.as_str()],
+        );
+        let mut dispatch_item = DispatcherFactoryDispatchItemPort::new(
+            &probe,
+            resolution.programs().dispatcher(),
+            &["loop", "--repo", repo_path.as_str()],
+        );
+        let mut drive = DispatcherOrchestratorActionPort::new(
+            &probe,
+            resolution.programs().drive(),
+            &["--repo", repo_path.as_str(), "--json"],
+        );
+        // BOTH handlers run even when the first fails — they claim different
+        // command rows, and refusing to run the second would drop a command
+        // that had nothing to do with the failure. Their errors are COLLECTED
+        // rather than discarded, so one report names everything that did not
+        // execute.
+        let mut failures = Vec::new();
+        if let Err(error) =
+            livespec_console_beads_fabro::handle_pending_factory_commands_with_dispatch_port(
+                store,
+                observed_at,
+                &mut drain,
+                &mut dispatch_item,
+            )
+        {
+            failures.push(format!("factory: {error:?}"));
         }
-    };
-    let repo_path = resolution.drive_repo_arg();
-    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
-    let mut drive = DispatcherOrchestratorActionPort::new(
-        &probe,
-        resolution.programs().drive(),
-        &["--repo", repo_path.as_str(), "--json"],
-    );
-    let _ = livespec_console_beads_fabro::handle_pending_control_commands(
-        &mut store,
-        &observed_at,
-        &mut drive,
-    );
+        if let Err(error) = livespec_console_beads_fabro::handle_pending_control_commands(
+            store,
+            observed_at,
+            &mut drive,
+        ) {
+            failures.push(format!("control: {error:?}"));
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+}
+
+/// The CONTROL command lane's real effects. Same shape as the factory lane, one
+/// handler instead of three ports.
+#[cfg(all(not(test), not(coverage)))]
+struct ControlCommandLaneSteps {
+    resolution: Option<BackingCliResolution>,
+    store: Option<SqliteEventStore>,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl ControlCommandLaneSteps {
+    const fn new() -> Self {
+        Self {
+            resolution: None,
+            store: None,
+        }
+    }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl CommandLaneSteps for ControlCommandLaneSteps {
+    fn read_observation_clock(&mut self) -> Result<String, String> {
+        current_requested_at()
+    }
+
+    fn resolve_backing_cli(&mut self) -> Result<(), String> {
+        self.resolution =
+            Some(BackingCliResolution::from_environment().map_err(|error| error.to_string())?);
+        Ok(())
+    }
+
+    fn open_store(&mut self) -> Result<(), String> {
+        self.store = Some(open_console_store(&console_store_path())?);
+        Ok(())
+    }
+
+    fn execute_pending_commands(&mut self, observed_at: &str) -> Result<(), String> {
+        let (Some(resolution), Some(store)) = (self.resolution.as_ref(), self.store.as_mut())
+        else {
+            return Err(lane_steps_out_of_order());
+        };
+        let repo_path = resolution.drive_repo_arg();
+        let probe = SystemSourceProbe::new(resolution.selected_repo_path());
+        let mut drive = DispatcherOrchestratorActionPort::new(
+            &probe,
+            resolution.programs().drive(),
+            &["--repo", repo_path.as_str(), "--json"],
+        );
+        livespec_console_beads_fabro::handle_pending_control_commands(
+            store,
+            observed_at,
+            &mut drive,
+        )
+        .map(|_handled| ())
+        .map_err(|error| format!("control: {error:?}"))
+    }
+}
+
+/// The detail a lane reports if its steps somehow ran out of order.
+///
+/// `run_command_lane` runs them in order and stops at the first failure, so this
+/// is not reachable through it. It is still an honest ERROR rather than a silent
+/// `return`, because a silent return on an impossible branch is precisely the
+/// shape this whole item exists to remove.
+#[cfg(all(not(test), not(coverage)))]
+fn lane_steps_out_of_order() -> String {
+    "lane ran its handlers before the store and backing-CLI resolution were ready".to_owned()
 }
 
 #[cfg(all(not(test), not(coverage)))]
