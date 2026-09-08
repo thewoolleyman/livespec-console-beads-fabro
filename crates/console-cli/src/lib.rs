@@ -48,7 +48,8 @@ use console_application::{
         NormalizeObservation, NormalizedSourceEvent, ObservedSourceAdapter, PullSourcePort,
         SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
-        diff_needs_attention, dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
+        diff_needs_attention, disambiguate_normalized_source_event,
+        dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
         materialize_attention_items, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
         parse_livespec_observation, parse_orchestrator_observation,
@@ -753,7 +754,24 @@ pub fn refresh_sources(
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
     let ingestion = backfill_source_adapters(store, observed_at, sources)?;
-    let _attention_ingested = ingest_needs_attention(store, needs_attention, observed_at)?;
+    match ingest_needs_attention(store, needs_attention, observed_at) {
+        Ok(_attention_ingested) => {}
+        // `AttentionResolveDuplicate` is the one ingest failure this path
+        // MUST NOT die on: this is the SYNCHRONOUS pre-first-frame ingest the
+        // interactive TUI runs at launch (`run_store_backed_tui_session`), and
+        // the off-thread poller's re-poll on this same function (both reach
+        // here — the poller already discards this Result entirely). The
+        // common trigger (an id re-resolving with content it already carried
+        // through an earlier resolution) is idempotent and never reaches this
+        // arm (see `ingest_needs_attention`'s `already_retired` check); what
+        // remains is a genuine anomaly worth recording, but attention-source
+        // reconciliation degrading for one poll is a stale row, not a crashed
+        // console (livespec-console-beads-fabro-mx9u.11-crash).
+        Err(error @ ConsoleRuntimeError::AttentionResolveDuplicate(_)) => {
+            eprintln!("attention-resolve diagnostic (not fatal): {error}");
+        }
+        Err(other) => return Err(other),
+    }
     Ok(ingestion)
 }
 
@@ -1840,20 +1858,52 @@ pub fn ingest_needs_attention(
         let outcome = store.append_event(&append)?;
         if outcome.status() == AppendStatus::Inserted {
             inserted += 1;
-        } else if append.event().event_type() == &EventType::AttentionItemResolved {
-            // A resolved event now carries a per-occurrence identity (see
-            // `attention_item_resolved_event`), so a genuinely new resolution
-            // should never collide with one already in the store. A Duplicate
-            // here means the row will NOT be retired this poll — surface it as
-            // a failure rather than silently returning Ok and letting the
-            // attention row sit open with nothing recording why
-            // (livespec-console-beads-fabro-mx9u.11).
-            return Err(ConsoleRuntimeError::AttentionResolveDuplicate(format!(
-                "{}:{}",
-                needs_attention.repo,
-                event.source_event_id()
-            )));
+            continue;
         }
+        if append.event().event_type() != &EventType::AttentionItemResolved {
+            // A non-resolved Duplicate (appeared/changed) is a genuine no-op:
+            // this exact content, for this id, is already on record.
+            continue;
+        }
+        // A resolved event's identity is content-derived (see
+        // `attention_item_resolved_event`): it folds in the resolved item's
+        // own appeared/changed content, which is stable for a given piece of
+        // content. So an id that returns to content it already carried
+        // through an EARLIER resolution (a `changed` event landing in
+        // between so THIS reappearance itself lands cleanly) recomputes that
+        // earlier resolution's identity exactly — even though it is a
+        // genuinely new, distinct real-world retirement that must still
+        // land, or the row is left stuck open despite having just
+        // disappeared from the live snapshot.
+        //
+        // Retry ONCE with this ingest cycle's `observed_at` folded in as a
+        // disambiguator (`disambiguate_normalized_source_event`):
+        // deterministic within this call, distinct from every past
+        // resolution's identity in virtually every real case. This is the
+        // idempotent path (a): the occurrence itself is unambiguous, only its
+        // content-derived identity collided, and it lands cleanly under a
+        // fresh identity. The retry is built from `event` itself (no lookup
+        // back into `prior` needed), so this path carries no defensive
+        // "can't happen" branch.
+        let retry = disambiguate_normalized_source_event(event, observed_at);
+        let retry_append = event_append_from_normalized_source_event(&retry, observed_at);
+        let retry_outcome = store.append_event(&retry_append)?;
+        if retry_outcome.status() == AppendStatus::Inserted {
+            inserted += 1;
+            continue;
+        }
+        // Even the disambiguated retry collided — path (b): a genuine
+        // anomaly the content-recurrence explanation does not cover, worth
+        // recording rather than silently swallowing
+        // (livespec-console-beads-fabro-mx9u.11). This still must never
+        // abort the console: `refresh_sources` downgrades this specific
+        // error to a recorded diagnostic before it can reach the TUI's
+        // startup path (livespec-console-beads-fabro-mx9u.11-crash).
+        return Err(ConsoleRuntimeError::AttentionResolveDuplicate(format!(
+            "{}:{}",
+            needs_attention.repo,
+            retry.source_event_id()
+        )));
     }
     Ok(inserted)
 }
@@ -3648,7 +3698,8 @@ mod tests {
             NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
             NotObservedFinding, ObservedSourceAdapter, PullSourcePort, SourceAdapterKind,
             SourceEventAppendPort, SourcePayload, SourceProbe, SourceProbeOutcome,
-            WorkItemSnapshot, diff_needs_attention, normalize_work_item_snapshot,
+            WorkItemSnapshot, diff_needs_attention, disambiguate_normalized_source_event,
+            materialize_attention_items, normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -13808,8 +13859,17 @@ mod tests {
     /// to prove `ingest_needs_attention` surfaces a rejected resolved append as
     /// an `AttentionResolveDuplicate` failure rather than folding it into a
     /// silent `Ok` — the (livespec-console-beads-fabro-mx9u.11) fix.
+    ///
+    /// `fail_retry_with_fault`, when set, additionally makes the SECOND
+    /// resolved-event append (the disambiguated retry
+    /// `ingest_needs_attention` tries on the first Duplicate) fail with a real
+    /// store error rather than Duplicating again — proves the retry's own
+    /// `store.append_event(&retry_append)?` propagates a genuine fault, not
+    /// only a second Duplicate (livespec-console-beads-fabro-mx9u.11-crash).
     struct DuplicateOnResolveStore<'a> {
         inner: &'a mut SqliteEventStore,
+        resolved_attempts: std::cell::Cell<usize>,
+        fail_retry_with_fault: bool,
     }
 
     impl FactoryCommandStore for DuplicateOnResolveStore<'_> {
@@ -13830,6 +13890,11 @@ mod tests {
 
         fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
             if append.event().event_type() == &EventType::AttentionItemResolved {
+                let attempt = self.resolved_attempts.get() + 1;
+                self.resolved_attempts.set(attempt);
+                if attempt > 1 && self.fail_retry_with_fault {
+                    return Err(EventStoreError::InvalidSequence);
+                }
                 return Ok(AppendOutcome::new(0, AppendStatus::Duplicate));
             }
             self.inner.append_event(append)
@@ -13885,6 +13950,42 @@ mod tests {
     }
 
     #[test]
+    fn ingest_needs_attention_propagates_a_store_fault_from_the_disambiguated_retry() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let seed_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "att-retry-fault",
+            "needs a human",
+        )]);
+        let seed_needs_attention =
+            NeedsAttentionIngest::new(&seed_port, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &seed_needs_attention, "2026-09-08T00:00:00Z").ok_test();
+
+        // Same decorator as the Duplicate-surfacing test below, but told to
+        // FAIL the disambiguated retry with a real store fault instead of
+        // Duplicating forever -- proves the retry's own
+        // `store.append_event(&retry_append)?` propagates a genuine error
+        // rather than assuming the retry can only ever collide.
+        let mut faulting = DuplicateOnResolveStore {
+            inner: &mut store,
+            resolved_attempts: std::cell::Cell::new(0),
+            fail_retry_with_fault: true,
+        };
+        let resolve_port = empty_needs_attention_port();
+        let resolve_needs_attention =
+            NeedsAttentionIngest::new(&resolve_port, "livespec-console-beads-fabro");
+        let outcome = ingest_needs_attention(
+            &mut faulting,
+            &resolve_needs_attention,
+            "2026-09-08T00:00:01Z",
+        );
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    #[test]
     fn ingest_needs_attention_surfaces_a_resolved_event_the_store_rejects_as_duplicate() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         let seed_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
@@ -13895,7 +13996,11 @@ mod tests {
             NeedsAttentionIngest::new(&seed_port, "livespec-console-beads-fabro");
         ingest_needs_attention(&mut store, &seed_needs_attention, "2026-09-08T00:00:00Z").ok_test();
 
-        let mut duplicating = DuplicateOnResolveStore { inner: &mut store };
+        let mut duplicating = DuplicateOnResolveStore {
+            inner: &mut store,
+            resolved_attempts: std::cell::Cell::new(0),
+            fail_retry_with_fault: false,
+        };
         let resolve_port = empty_needs_attention_port();
         let resolve_needs_attention =
             NeedsAttentionIngest::new(&resolve_port, "livespec-console-beads-fabro");
@@ -13990,6 +14095,139 @@ mod tests {
             )
             .contains("AttentionResolveDuplicate: resolved-event append for livespec-console-beads-fabro"),
             "assert failed",
+        );
+    }
+
+    /// `livespec-console-beads-fabro-mx9u.11-crash` (inline counterpart of the
+    /// `tests/attention_resolve_reoccurrence.rs` end-to-end regression, needed
+    /// because `console-cli`'s coverage gate runs `cargo llvm-cov --lib`, which
+    /// cannot see an integration test): an id that returns to CONTENT it
+    /// already carried through an earlier resolution (a `changed` event lands
+    /// in between, so the reappearance itself lands cleanly) recomputes that
+    /// earlier resolution's PRIMARY identity exactly. `ingest_needs_attention`
+    /// must retry with `disambiguate_normalized_source_event` and land the
+    /// retry rather than erroring.
+    #[test]
+    fn ingest_needs_attention_retries_a_disambiguated_identity_when_content_recurs() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let repo = "livespec-console-beads-fabro";
+        let id = "hygiene:idle-factory:livespec-console-beads-fabro";
+        // Stays open across every snapshot below, so the projected inbox is
+        // never empty and the `.any` assertion at the end genuinely exercises
+        // its closure rather than short-circuiting over an empty iterator.
+        let sentinel = attention_item_fixture("sentinel-always-open", "sentinel");
+
+        let port_message = ScriptedNeedsAttentionPort::observing(vec![
+            attention_item_fixture(id, "message"),
+            sentinel.clone(),
+        ]);
+        let na_message = NeedsAttentionIngest::new(&port_message, repo);
+        let port_only_sentinel = ScriptedNeedsAttentionPort::observing(vec![sentinel.clone()]);
+        let na_only_sentinel = NeedsAttentionIngest::new(&port_only_sentinel, repo);
+        let port_different = ScriptedNeedsAttentionPort::observing(vec![
+            attention_item_fixture(id, "different message"),
+            sentinel,
+        ]);
+        let na_different = NeedsAttentionIngest::new(&port_different, repo);
+
+        ingest_needs_attention(&mut store, &na_message, "t0").ok_test();
+        ingest_needs_attention(&mut store, &na_only_sentinel, "t1").ok_test();
+        ingest_needs_attention(&mut store, &na_different, "t2").ok_test();
+        ingest_needs_attention(&mut store, &na_message, "t3").ok_test();
+
+        // t4: disappears again while carrying "message" -- the primary
+        // resolved identity matches t1's exactly. Must retry and land, not
+        // error.
+        let outcome = ingest_needs_attention(&mut store, &na_only_sentinel, "t4");
+        check(
+            outcome.is_ok(),
+            "a Duplicate resolved-event append for an already-retired occurrence must not error",
+        );
+        let events = store.list_console_events().ok_test();
+        let open_ids = project_attention(&events);
+        check(
+            open_ids
+                .iter()
+                .any(|item| item.id() == "sentinel-always-open"),
+            "assert failed",
+        );
+        check(
+            !open_ids.iter().any(|item| item.id() == id),
+            "item must be retired after its second identical-content resolution",
+        );
+        check(
+            events
+                .iter()
+                .filter(|event| event.event_type() == &EventType::AttentionItemResolved)
+                .count()
+                == 2,
+            "both resolutions must be durably persisted as distinct events",
+        );
+    }
+
+    /// `refresh_sources` must NEVER let `AttentionResolveDuplicate` reach its
+    /// caller — that is the one ingest failure the TUI's synchronous
+    /// pre-first-frame startup path cannot survive
+    /// (livespec-console-beads-fabro-mx9u.11-crash). Even the residual
+    /// anomaly case (the disambiguated retry ALSO collides, proven here by
+    /// pre-occupying both identities) must downgrade to a diagnostic rather
+    /// than propagate.
+    #[test]
+    fn refresh_sources_downgrades_an_unresolvable_attention_resolve_duplicate_to_a_diagnostic() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let repo = "livespec-console-beads-fabro";
+        let id = "hygiene:idle-factory:livespec-console-beads-fabro";
+
+        let port_message =
+            ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(id, "message")]);
+        let na_message = NeedsAttentionIngest::new(&port_message, repo);
+        let port_empty = empty_needs_attention_port();
+        let na_empty = NeedsAttentionIngest::new(&port_empty, repo);
+        let port_different = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            id,
+            "different message",
+        )]);
+        let na_different = NeedsAttentionIngest::new(&port_different, repo);
+
+        ingest_needs_attention(&mut store, &na_message, "t0").ok_test();
+        ingest_needs_attention(&mut store, &na_empty, "t1").ok_test();
+        ingest_needs_attention(&mut store, &na_different, "t2").ok_test();
+        ingest_needs_attention(&mut store, &na_message, "t3").ok_test();
+
+        // Pre-occupy the DISAMBIGUATED identity that the coming "t4" ingest
+        // would retry with, so even the retry collides. Computed the same way
+        // `ingest_needs_attention` computes it: diff the current store state,
+        // then disambiguate the resulting resolved event with the SAME
+        // `observed_at` the real call below will use. Land it via
+        // `duplicate_collision_append` (a different event TYPE over the same
+        // stream id/seq and source_event_id) rather than a real resolved
+        // append: a genuine `AttentionItemResolved` event here would retire
+        // the id in `materialize_attention_items` before "t4" even runs,
+        // which would make `diff_needs_attention` skip resolving it entirely
+        // and never reach the collision this test needs to force.
+        let prior: Vec<_> = materialize_attention_items(&store.list_console_events().ok_test())
+            .into_iter()
+            .filter(|item| item.source_ref().repo() == repo)
+            .collect();
+        // `prior` carries exactly the one open id, `next` is empty, so
+        // `diff_needs_attention` emits exactly its resolved event.
+        let primary_events = diff_needs_attention(repo, &prior, &[]);
+        check(primary_events.len() == 1, "assert_eq failed");
+        let resolved_event = &primary_events[0];
+        check(
+            resolved_event.event().event_type() == &EventType::AttentionItemResolved,
+            "assert failed",
+        );
+        let retry_event = disambiguate_normalized_source_event(resolved_event, "t4");
+        store
+            .append_event(&duplicate_collision_append(&retry_event, "t3-preoccupy"))
+            .ok_test();
+
+        let outcome = refresh_sources(&mut store, "t4", &[], &na_empty);
+        check(
+            outcome.is_ok(),
+            "refresh_sources must downgrade AttentionResolveDuplicate to a diagnostic, never \
+             propagate it to the TUI's fatal startup path",
         );
     }
 
