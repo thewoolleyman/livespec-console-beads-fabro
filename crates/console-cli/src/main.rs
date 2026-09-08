@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[cfg(all(not(test), not(coverage)))]
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 #[cfg(all(not(test), not(coverage)))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
@@ -41,9 +41,10 @@ use console_eventstore::{
 use livespec_console_beads_fabro::{
     BackingCliResolution, CommandLaneReporter, CommandLaneSteps, ConsoleLane, ConsoleRuntimeError,
     LaneStartupStage, NeedsAttentionIngest, PendingCommandRequester, SourceAdapterRef,
-    SourcePollRequester, TuiSessionRunner, append_lane_diagnostic, bounded_operator_status,
-    lane_diagnostics_path, lane_open_failure_line, lane_startup_failure_line,
-    resolve_console_invoker, run_command_lane,
+    SourcePollHost, SourcePollRequester, SourcePollWake, TuiSessionRunner, append_lane_diagnostic,
+    bounded_operator_status, lane_diagnostics_path, lane_open_failure_line,
+    lane_startup_failure_line, resolve_console_invoker, run_command_lane,
+    run_paced_source_poll_loop,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -69,6 +70,18 @@ enum CommandMessage {
 /// external ledger changes surface promptly; the UI thread never waits on it.
 #[cfg(all(not(test), not(coverage)))]
 const POLLER_CADENCE: Duration = Duration::from_secs(2);
+
+/// How long a quitting session waits for an IDLE poller to observe its shutdown
+/// message before DETACHING it. Long enough for a thread sitting in
+/// `recv_timeout` to wake and return; far too short to sit through a backing
+/// CLI. See [`join_poller_or_detach`].
+#[cfg(all(not(test), not(coverage)))]
+const POLLER_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
+
+/// How often [`join_poller_or_detach`] re-checks the poller inside its grace
+/// window.
+#[cfg(all(not(test), not(coverage)))]
+const POLLER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 #[cfg(all(not(test), not(coverage)))]
 use time::OffsetDateTime;
 #[cfg(all(not(test), not(coverage)))]
@@ -375,10 +388,10 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         &requester,
         &command_requester,
     );
-    // Stop the poller (wake it if it is mid-`recv_timeout`) and join before
-    // returning, so no source poll outlives the session.
+    // Stop the poller (waking it if it is mid-wait), then join it only if it
+    // stops PROMPTLY — never wait out a poll that is already in flight.
     let _ = poll_tx.send(PollMessage::Shutdown);
-    let _ = poller.join();
+    join_poller_or_detach(poller, POLLER_SHUTDOWN_GRACE);
     drop(command_tx);
     if command_worker.is_finished() {
         let _ = command_worker.join();
@@ -479,22 +492,86 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
-    loop {
+    let mut host = ChannelSourcePollHost {
+        poll_rx,
+        store: &mut store,
+        sources: &sources,
+        needs_attention: &needs_attention,
+    };
+    // The PACING lives in the library (`source_poller`), where it is testable;
+    // this thread supplies only the effects — the CLI-shelling poll, the
+    // channel, and the clock. Before that split the wait here was a bare
+    // `recv_timeout`, so every queued `PollNow` started a sweep at once and a
+    // handful of operator actions respawned the backing CLIs back to back
+    // (livespec-console-beads-fabro-pzbdbo.25).
+    run_paced_source_poll_loop(&mut host, POLLER_CADENCE);
+}
+
+/// The poller thread's side of [`SourcePollHost`]: the store-writing source
+/// sweep, the channel wait, and the system clock.
+#[cfg(all(not(test), not(coverage)))]
+struct ChannelSourcePollHost<'a> {
+    poll_rx: &'a Receiver<PollMessage>,
+    store: &'a mut SqliteEventStore,
+    sources: &'a [SourceAdapterRef<'a>],
+    needs_attention: &'a NeedsAttentionIngest<'a>,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl SourcePollHost for ChannelSourcePollHost<'_> {
+    fn poll_sources(&mut self) {
         // A source poll failure (transient CLI/store hiccup) must NEVER crash the
         // poller — ignore it and try again next cycle.
         if let Ok(observed_at) = current_requested_at() {
             let _ = livespec_console_beads_fabro::refresh_sources(
-                &mut store,
+                self.store,
                 &observed_at,
-                &sources,
-                &needs_attention,
+                self.sources,
+                self.needs_attention,
             );
         }
-        match poll_rx.recv_timeout(POLLER_CADENCE) {
-            Ok(PollMessage::PollNow) | Err(RecvTimeoutError::Timeout) => {}
-            Ok(PollMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
+    }
+
+    fn wait(&mut self, timeout: Duration) -> SourcePollWake {
+        // A ZERO timeout is the loop asking "is there a stop pending?" before
+        // it starts a poll that is already due; `recv_timeout` answers that
+        // without blocking.
+        match self.poll_rx.recv_timeout(timeout) {
+            Ok(PollMessage::PollNow) => SourcePollWake::Requested,
+            Err(RecvTimeoutError::Timeout) => SourcePollWake::Elapsed,
+            Ok(PollMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
+                SourcePollWake::Stopped
+            }
         }
     }
+
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// Join the poller if it stops within `grace`, and DETACH it if it does not.
+///
+/// A poller mid-sweep is inside `Command::output()` on a backing CLI, which can
+/// block for as long as that CLI likes — an unresponsive `bd` against the
+/// ledger blocks indefinitely. An unconditional join therefore hung the whole
+/// process AFTER `run_tui` had already restored the terminal: the operator's
+/// `q` had been handled, the cockpit was gone, and what remained was a live
+/// process echoing raw keystrokes with no way out but `SIGTERM` — the shape
+/// dogfooding reported (livespec-console-beads-fabro-pzbdbo.25). The grace
+/// window is for the ORDINARY case (an idle poller observing the stop), and
+/// detaching is safe: the process exits immediately after, and the poller owns
+/// nothing the exit does not release.
+#[cfg(all(not(test), not(coverage)))]
+fn join_poller_or_detach(poller: std::thread::JoinHandle<()>, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    while !poller.is_finished() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(POLLER_SHUTDOWN_POLL_INTERVAL);
+    }
+    let _ = poller.join();
 }
 
 /// Backs [`SourcePollRequester`] with the channel to the poller thread: a
