@@ -822,6 +822,56 @@ pub fn selected_item_hint(ctx: &ActionContext, row_count: usize) -> String {
     format!("{prefix} | {} | {suffix}", tokens.join(" | "))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// The declared information value of one Status-line hint segment under width
+/// pressure. Lower variants are shed FIRST.
+///
+/// The ranking is DERIVED from [`ACTION_REGISTRY`] (see [`hint_priority`])
+/// rather than from a parallel table of hint strings, so a newly registered
+/// action is ranked the moment it is registered rather than the moment somebody
+/// remembers to rank it — the same single-derivation rule that keeps hidden
+/// hints and inert keys from diverging.
+pub enum HintPriority {
+    /// Pane navigation and transient context: where `up`/`down`, `enter` and
+    /// `esc` go, plus the list-edge cue. Shed first — these keys are
+    /// conventional, they are discoverable by pressing them, and none of them
+    /// acts on the selected work-item.
+    Navigation,
+    /// A `Policy dials` action: an override the operator SETS on the selection.
+    /// Real per-item work, but configuration rather than a lifecycle move, so
+    /// it yields ahead of the verbs.
+    PolicyDial,
+    /// The always-live globals (`? help`, `q quit`). `? help` outranks the
+    /// dials because it opens the roster listing every hint an overflow marker
+    /// has counted but could not draw.
+    Global,
+    /// A per-item VERB the selection currently admits: dispatch, the lifecycle
+    /// valves, the driver handoff. Shed LAST — an operator cannot discover an
+    /// available verb by guessing, so silently dropping one under-reports what
+    /// the console can do, which is the defect this ranking exists to prevent.
+    Verb,
+}
+
+/// The [`HintPriority`] of one ` | `-delimited Status-line hint segment.
+///
+/// A segment matching no registered action's hint token is pane navigation or a
+/// transient cue, which is exactly the class that yields first.
+#[must_use]
+pub fn hint_priority(segment: &str) -> HintPriority {
+    ACTION_REGISTRY
+        .iter()
+        .find(|spec| !spec.hint_token.is_empty() && spec.hint_token == segment)
+        .map_or(HintPriority::Navigation, |spec| {
+            if matches!(spec.staging, ActionStaging::Global(_)) {
+                HintPriority::Global
+            } else if spec.menu_path.contains(&"Policy dials") {
+                HintPriority::PolicyDial
+            } else {
+                HintPriority::Verb
+            }
+        })
+}
+
 /// Whether the registered action may be invoked for `ctx`, staged as the
 /// interaction intent it opens. `None` when the action is unavailable — the
 /// hotkey is inert exactly where the hint is suppressed.
