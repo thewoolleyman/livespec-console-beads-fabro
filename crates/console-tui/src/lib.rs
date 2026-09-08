@@ -872,6 +872,7 @@ fn staged_action_step(
 /// that nothing can reach.
 const fn global_interaction(action: action_registry::GlobalAction) -> Option<TuiInteraction> {
     match action {
+        action_registry::GlobalAction::GoToView(view) => Some(TuiInteraction::SelectView(view)),
         action_registry::GlobalAction::OpenSearch => Some(TuiInteraction::OpenSearch),
         action_registry::GlobalAction::OpenCommandPalette => {
             Some(TuiInteraction::OpenCommandPalette)
@@ -2562,6 +2563,7 @@ const fn help_outcome(spec: &action_registry::ActionSpec) -> &'static str {
     match spec.staging {
         action_registry::ActionStaging::DriverHandoff => "driver-handoff overlay",
         action_registry::ActionStaging::Global(action) => match action {
+            action_registry::GlobalAction::GoToView(_view) => "that view",
             action_registry::GlobalAction::OpenSearch => "search overlay",
             action_registry::GlobalAction::OpenCommandPalette => "command palette",
             action_registry::GlobalAction::OpenHelp => "help overlay",
@@ -2967,15 +2969,40 @@ fn content_focused(model: &TuiScreenModel) -> bool {
     model.focus() == FocusPane::Content
 }
 
+/// Each row carries the digit that jumps straight to it (`1 Attention`), so the
+/// direct view-switch keys are discoverable where the operator is already
+/// looking rather than only in the Help roster. The digit comes from the ACTION
+/// REGISTRY, not from the row's ordinal: the pane must show the key that is
+/// actually bound, and a row whose view carries no chord shows a blank of the
+/// same width so the names stay aligned.
+fn navigation_row_label(view: TuiView, active: bool) -> String {
+    let marker = if active { ">" } else { " " };
+    let digit = view_switch_accelerator(view);
+    format!("{marker} {digit} {}", view.label())
+}
+
+/// The single character bound to `view`'s direct view-switch action, or a space
+/// when the registry binds none.
+fn view_switch_accelerator(view: TuiView) -> char {
+    action_registry::ACTION_REGISTRY
+        .iter()
+        .filter(|spec| {
+            matches!(
+                spec.staging,
+                action_registry::ActionStaging::Global(action_registry::GlobalAction::GoToView(
+                    target
+                )) if target == view
+            )
+        })
+        .find_map(|spec| spec.hotkeys.first().map(|chord| chord.key))
+        .unwrap_or(' ')
+}
+
 fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
-    let items = model.navigation().iter().map(|view| {
-        let label = if *view == model.active_view() {
-            format!("> {}", view.label())
-        } else {
-            format!("  {}", view.label())
-        };
-        ListItem::new(label)
-    });
+    let items = model
+        .navigation()
+        .iter()
+        .map(|view| ListItem::new(navigation_row_label(*view, *view == model.active_view())));
     let title = focus_title("Views", model.focus() == FocusPane::Nav);
     Widget::render(
         List::new(items).block(Block::new().borders(Borders::ALL).title(title)),
@@ -3644,6 +3671,7 @@ mod tests {
             // And each one is described DISTINCTLY, so the help says which
             // surface opens rather than merely that it is not a confirm.
             let expected = match global {
+                action_registry::GlobalAction::GoToView(_view) => "that view",
                 action_registry::GlobalAction::OpenSearch => "search overlay",
                 action_registry::GlobalAction::OpenCommandPalette => "command palette",
                 action_registry::GlobalAction::OpenHelp => "help overlay",
@@ -4907,7 +4935,7 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("> Attention")),
+                .map(|rendered| rendered.contains("> 1 Attention")),
             Ok(true)
         );
         assert_eq!(
@@ -5117,7 +5145,7 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("> Events")),
+                .map(|rendered| rendered.contains("> 4 Events")),
             Ok(true)
         );
         assert_eq!(

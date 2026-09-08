@@ -16,7 +16,7 @@
 
 use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 use crate::{
-    DispatcherOverride, LaneWorkItem, OverrideBool, OverrideInt, PendingValve, RejectMode,
+    DispatcherOverride, LaneWorkItem, OverrideBool, OverrideInt, PendingValve, RejectMode, TuiView,
     driver_handoff_command, per_item_verb_is_state_valid, status_move_targets,
 };
 
@@ -180,6 +180,9 @@ impl core::fmt::Display for KeyChord {
 /// handled outside the registry before chords existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalAction {
+    /// Select one of the six views outright, without walking the Views nav or
+    /// cycling focus through the Header pane.
+    GoToView(TuiView),
     /// Open the search overlay.
     OpenSearch,
     /// Open the command palette.
@@ -521,6 +524,90 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     //
     // They introduce the FIRST top-level menu nodes beyond `Work item`, so the
     // menu bar becomes real rather than a single-node degenerate case.
+    // THE DIRECT VIEW-SWITCH KEYS. One digit per view, in `TuiView::all()`
+    // order, registered rather than matched as a literal key arm so they carry
+    // a menu path, a Help roster line and a generated-reference row by
+    // construction — the same rule every other key obeys.
+    //
+    // Measured at the real TUI 2026-09-08 (waves 2-42..44 and 3-02): reaching
+    // `Repos` from `Lanes`, the operator pressed `Tab` and landed on the HEADER
+    // pane, because `Tab` cycles FOCUS and the header is in that ring. Walking
+    // the nav instead cost two `Down`s plus an `Enter`, and reaching a ready
+    // item from Attention cost six keystrokes before any verb was available.
+    // Neither route is what "go to that view" means.
+    //
+    // Six entries rather than one parameterized entry: each is a distinct
+    // destination with its own key and its own menu row, and a single row
+    // cycling a "view" parameter would hide five of the six from the menus.
+    // The Status band collapses them back into ONE `1-6 view` token
+    // (`view_switch_hint_token`), so the honesty of the band does not pay for
+    // the completeness of the menus.
+    ActionSpec {
+        id: "go-to-attention-view",
+        label: "Attention view",
+        hint_token: "1 attention",
+        hotkeys: &[KeyChord::plain('1')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Attention)),
+    },
+    ActionSpec {
+        id: "go-to-spec-view",
+        label: "Spec view",
+        hint_token: "2 spec",
+        hotkeys: &[KeyChord::plain('2')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Spec)),
+    },
+    ActionSpec {
+        id: "go-to-lanes-view",
+        label: "Lanes view",
+        hint_token: "3 lanes",
+        hotkeys: &[KeyChord::plain('3')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Lanes)),
+    },
+    ActionSpec {
+        id: "go-to-events-view",
+        label: "Events view",
+        hint_token: "4 events",
+        hotkeys: &[KeyChord::plain('4')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Events)),
+    },
+    ActionSpec {
+        id: "go-to-repos-view",
+        label: "Repos view",
+        hint_token: "5 repos",
+        hotkeys: &[KeyChord::plain('5')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Repos)),
+    },
+    ActionSpec {
+        id: "go-to-settings-view",
+        label: "Settings view",
+        hint_token: "6 settings",
+        hotkeys: &[KeyChord::plain('6')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Settings)),
+    },
     ActionSpec {
         id: "open-search",
         label: "Search",
@@ -749,24 +836,68 @@ pub fn available_hint_tokens(ctx: &ActionContext) -> Vec<&'static str> {
         .collect()
 }
 
-/// The global shortcut tokens the Status band carries for every pane.
-///
-/// The permanent menu bar makes the menu taxonomy continuously visible, so this
-/// row carries only the always-live modal/exit shortcuts that stay useful beside
-/// pane-local hints. It still derives from [`ACTION_REGISTRY`], not a parallel
-/// Status-band string.
-#[must_use]
-pub fn global_status_hint_tokens() -> Vec<&'static str> {
+/// The keys the registry binds to the direct view-switch actions, in registry
+/// order — one per view that carries a chord.
+fn view_switch_digits() -> Vec<char> {
     ACTION_REGISTRY
         .iter()
         .filter(|spec| {
             matches!(
                 spec.staging,
-                ActionStaging::Global(GlobalAction::OpenHelp | GlobalAction::Quit)
+                ActionStaging::Global(GlobalAction::GoToView(_))
             )
         })
-        .map(|spec| spec.hint_token)
+        .filter_map(|spec| spec.hotkeys.first().map(|chord| chord.key))
         .collect()
+}
+
+/// The ONE Status-band token standing for every registered view-switch key, as
+/// a digit RANGE: `1-6 view`.
+///
+/// The band names a range rather than the six per-action tokens because those
+/// tokens would cost roughly sixty columns on every pane, and the Status band is
+/// the surface a narrow viewport sheds from first. The range is DERIVED from the
+/// registered chords (first and last), so registering a seventh view widens the
+/// token rather than leaving it quietly wrong.
+///
+/// `None` for an empty chord list — the honest answer for a band that would
+/// otherwise advertise a key nothing is bound to. Takes the digits as an
+/// ARGUMENT rather than reading [`ACTION_REGISTRY`] itself so that arm is
+/// reachable from a test: the registry is a non-empty const, so a function
+/// closing over it directly could never be driven down the empty path.
+fn view_switch_hint_token(digits: &[char]) -> Option<String> {
+    match digits {
+        [] => None,
+        // A single bound key is named outright: `1-1 view` would describe a
+        // range with one member, which reads as a typo rather than a hint.
+        [only] => Some(format!("{only} view")),
+        [first, .., last] => Some(format!("{first}-{last} view")),
+    }
+}
+
+/// The global shortcut tokens the Status band carries for every pane.
+///
+/// The permanent menu bar makes the menu taxonomy continuously visible, so this
+/// row carries only the always-live shortcuts that stay useful beside
+/// pane-local hints: the view-switch range and the modal/exit keys. It still
+/// derives from [`ACTION_REGISTRY`], not a parallel Status-band string.
+#[must_use]
+pub fn global_status_hint_tokens() -> Vec<String> {
+    let mut tokens: Vec<String> = view_switch_hint_token(&view_switch_digits())
+        .into_iter()
+        .collect();
+    tokens.extend(
+        ACTION_REGISTRY
+            .iter()
+            .filter(|spec| {
+                matches!(
+                    spec.staging,
+                    ActionStaging::Global(GlobalAction::OpenHelp | GlobalAction::Quit)
+                )
+            })
+            .map(|spec| spec.hint_token.to_owned()),
+    );
+    tokens
 }
 
 /// The joined global Status-band suffix, derived from the registry.
@@ -1107,6 +1238,7 @@ pub fn global_help_reference_lines() -> Vec<String> {
 
 fn global_help_label(action: GlobalAction) -> String {
     match action {
+        GlobalAction::GoToView(view) => format!("go to the {} view", view.label()),
         GlobalAction::OpenSearch => "open search".to_owned(),
         GlobalAction::OpenCommandPalette => "open the command palette (drain, actions)".to_owned(),
         GlobalAction::OpenHelp => "open this help".to_owned(),
@@ -1353,18 +1485,62 @@ mod tests {
     #[test]
     fn global_status_hint_tokens_derive_from_the_registry() {
         let tokens = global_status_hint_tokens();
-        let expected: Vec<&str> = ACTION_REGISTRY
-            .iter()
-            .filter(|spec| {
-                matches!(
-                    spec.staging,
-                    ActionStaging::Global(GlobalAction::OpenHelp | GlobalAction::Quit)
-                )
-            })
-            .map(|spec| spec.hint_token)
-            .collect();
+        // The view-switch range is ONE token standing for six registered
+        // actions, and it leads: it is the cheapest way out of the pane the
+        // operator is in, so it reads before the modal/exit keys.
+        let mut expected: Vec<String> =
+            vec![super::view_switch_hint_token(&super::view_switch_digits()).unwrap_or_default()];
+        expected.extend(
+            ACTION_REGISTRY
+                .iter()
+                .filter(|spec| {
+                    matches!(
+                        spec.staging,
+                        ActionStaging::Global(GlobalAction::OpenHelp | GlobalAction::Quit)
+                    )
+                })
+                .map(|spec| spec.hint_token.to_owned()),
+        );
         assert_eq!(tokens, expected);
-        assert_eq!(tokens, ["? help", "q quit"]);
+        assert_eq!(tokens, ["1-6 view", "? help", "q quit"]);
+    }
+
+    #[test]
+    fn the_view_switch_range_spans_the_registered_view_chords() {
+        // Derived, not literal: the token must name the FIRST and LAST digit the
+        // registry actually binds, so a seventh view widens it by construction.
+        assert_eq!(super::view_switch_digits(), ['1', '2', '3', '4', '5', '6']);
+        assert_eq!(
+            super::view_switch_hint_token(&super::view_switch_digits()),
+            Some("1-6 view".to_owned())
+        );
+        // A single bound key is named outright rather than as a one-member
+        // range, and an EMPTY set contributes no token at all — the band never
+        // advertises a key nothing is bound to.
+        assert_eq!(
+            super::view_switch_hint_token(&['1']),
+            Some("1 view".to_owned())
+        );
+        assert_eq!(super::view_switch_hint_token(&[]), None);
+    }
+
+    #[test]
+    fn every_view_carries_exactly_one_registered_switch_action() {
+        // The completeness half of the binding: a view with no key would be
+        // reachable only by walking the nav, which is the defect the digits
+        // exist to remove.
+        for view in crate::TuiView::all() {
+            let bound = ACTION_REGISTRY
+                .iter()
+                .filter(|spec| {
+                    matches!(
+                        spec.staging,
+                        ActionStaging::Global(GlobalAction::GoToView(target)) if target == *view
+                    )
+                })
+                .count();
+            check(bound == 1, view.label());
+        }
     }
 
     #[test]

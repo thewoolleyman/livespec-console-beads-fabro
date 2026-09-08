@@ -4029,7 +4029,7 @@ mod tests {
             output.message().contains("LiveSpec Console"),
             "assert failed",
         );
-        check(output.message().contains("> Attention"), "assert failed");
+        check(output.message().contains("> 1 Attention"), "assert failed");
         check(
             output.message().contains("> Blocked: needs-human"),
             "assert failed",

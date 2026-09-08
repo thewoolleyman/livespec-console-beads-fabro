@@ -6,7 +6,7 @@ The menu bar is generated from the registry's menu taxonomy. Open it with `v`; f
 
 ## Global Status Hint Tokens
 
-`? help | q quit`
+`1-6 view | ? help | q quit`
 
 ## Menu Actions
 
@@ -25,6 +25,12 @@ The menu bar is generated from the registry's menu taxonomy. Open it with `v`; f
 | Work item > Factory safety > Set workflow scope override | Set workflow scope override | none | Available for a ready work-item that is awaiting the workflow-scope override. | the registry valve-confirm flow |
 | Factory > Dispatch > Dispatch ready work | Dispatch ready work | none | Available when the board has at least one ready work-item. | the factory-drain command for ready work |
 | Factory > Dispatch > Dispatch selected item | Dispatch selected item | d | Available for a selected ready work-item, on either per-item surface. | selected-item factory dispatch confirmation |
+| View > Go to view > Attention view | Attention view | 1 | Available globally from every view. | the registered global console action |
+| View > Go to view > Spec view | Spec view | 2 | Available globally from every view. | the registered global console action |
+| View > Go to view > Lanes view | Lanes view | 3 | Available globally from every view. | the registered global console action |
+| View > Go to view > Events view | Events view | 4 | Available globally from every view. | the registered global console action |
+| View > Go to view > Repos view | Repos view | 5 | Available globally from every view. | the registered global console action |
+| View > Go to view > Settings view | Settings view | 6 | Available globally from every view. | the registered global console action |
 | View > Search > Search | Search | / | Available globally from every view. | the registered global console action |
 | View > Command palette > Command palette | Command palette | : | Available globally from every view. | the registered global console action |
 | View > Menu bar > Menu bar | Menu bar | v | Available globally from every view; Left from the Views pane also opens it without a hotkey. | the registered global console action |
