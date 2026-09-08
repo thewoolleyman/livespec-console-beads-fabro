@@ -28,6 +28,9 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 /// The single source of truth for the per-item operator action set, from
 /// which hints, key bindings, and menus derive.
 pub mod action_registry;
+/// The `doctor` diagnostic: console-health findings derived from the SAME
+/// in-process projection the header renders.
+pub mod doctor;
 /// Module containing source-adapters support.
 pub mod source_adapters;
 
@@ -4102,6 +4105,26 @@ pub struct TuiProjection {
     needs_attention_by_work_item: NeedsAttentionByWorkItem,
 }
 
+impl TuiProjection {
+    #[must_use]
+    /// The backing sources that degraded to a not-observed finding this
+    /// cycle, exactly as [`TuiScreenModel::unavailable_sources`] renders in
+    /// the header -- `doctor` reads THIS accessor rather than re-deriving the
+    /// tally, so it can never disagree with what the header shows
+    /// (livespec-console-beads-fabro-mx9u.14).
+    pub fn unavailable_sources(&self) -> &[String] {
+        &self.unavailable_sources
+    }
+
+    #[must_use]
+    /// The needs-attention inbox total, exactly as
+    /// [`TuiScreenModel::attention_total`] renders in the header's
+    /// `attention:` count.
+    pub const fn attention_total(&self) -> usize {
+        self.attention_total
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Counts calls to [`project_tui_events`] -- the EXPENSIVE, event-log-scanning
@@ -4421,6 +4444,33 @@ fn header_repo_label(selected_repo: &str) -> &str {
     }
 }
 
+/// Whether `event_type` is a POSITIVE observation of its source: a data
+/// snapshot, journal entry, or observed-and-idle marker that clears any prior
+/// not-observed finding for the same source.
+///
+/// Shared by [`unavailable_sources`] (deciding WHICH sources the header counts
+/// as down) and [`doctor::build_doctor_report`] (dating WHEN each unavailable
+/// source last succeeded), so the two can never classify an event
+/// differently -- doctor's staleness timestamp is always the moment the
+/// header's own tally used to decide the source was down
+/// (livespec-console-beads-fabro-mx9u.14).
+#[must_use]
+pub(crate) const fn is_positive_source_observation(event_type: EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::SourceObservedFindingObserved
+            | EventType::WorkItemSnapshotObserved
+            | EventType::SourceCompletenessFindingObserved
+            | EventType::DispatcherBacklogBounceObserved
+            | EventType::DispatcherJournalProgressObserved
+            | EventType::DispatcherRefusalObserved
+            | EventType::FabroRunObserved
+            | EventType::GithubPullRequestSnapshotObserved
+            | EventType::LivespecNextSnapshotObserved
+            | EventType::LivespecReviseRequired
+    )
+}
+
 /// The distinct backing-source names whose MOST RECENT observation was a
 /// not-observed finding, sorted for a stable header order.
 ///
@@ -4437,29 +4487,19 @@ fn header_repo_label(selected_repo: &str) -> &str {
 fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
     let mut unavailable: BTreeMap<String, bool> = BTreeMap::new();
     for event in events {
-        match event.event_type() {
-            EventType::SourceNotObservedFindingObserved => {
-                unavailable.insert(event.source().to_owned(), true);
-            }
+        if *event.event_type() == EventType::SourceNotObservedFindingObserved {
+            unavailable.insert(event.source().to_owned(), true);
+            continue;
+        }
+        if is_positive_source_observation(*event.event_type()) {
             // A positive observation from a backing source clears any prior
-            // not-observed finding for it. `and_modify` (never `insert`) keeps a
-            // never-degraded source out of the map entirely, so only genuinely
-            // degraded-then-recovered sources are tracked and cleared.
-            EventType::SourceObservedFindingObserved
-            | EventType::WorkItemSnapshotObserved
-            | EventType::SourceCompletenessFindingObserved
-            | EventType::DispatcherBacklogBounceObserved
-            | EventType::DispatcherJournalProgressObserved
-            | EventType::DispatcherRefusalObserved
-            | EventType::FabroRunObserved
-            | EventType::GithubPullRequestSnapshotObserved
-            | EventType::LivespecNextSnapshotObserved
-            | EventType::LivespecReviseRequired => {
-                unavailable
-                    .entry(event.source().to_owned())
-                    .and_modify(|degraded| *degraded = false);
-            }
-            _other => {}
+            // not-observed finding for it. `and_modify` (never `insert`) keeps
+            // a never-degraded source out of the map entirely, so only
+            // genuinely degraded-then-recovered sources are tracked and
+            // cleared.
+            unavailable
+                .entry(event.source().to_owned())
+                .and_modify(|degraded| *degraded = false);
         }
     }
     unavailable

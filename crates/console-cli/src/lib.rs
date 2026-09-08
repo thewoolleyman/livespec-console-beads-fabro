@@ -34,12 +34,14 @@ use console_application::{
     ApplicationError, AutonomousDecision, AutonomousDecisionsPort, DispatcherSettingsPort,
     DispatcherSettingsRead, FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort,
     MAX_TRANSIENT_STATUS_CHARS, OrchestratorActionPort, autonomous_reflection_attention_id,
-    build_tui_model, handle_config_dispatcher_setting_set_command,
-    handle_factory_dispatch_item_command, handle_factory_drain_command,
-    handle_work_item_accept_command, handle_work_item_approve_command,
-    handle_work_item_move_command, handle_work_item_reject_command,
-    handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
-    handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
+    build_tui_model,
+    doctor::build_doctor_report,
+    handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
+    handle_factory_drain_command, handle_work_item_accept_command,
+    handle_work_item_approve_command, handle_work_item_move_command,
+    handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
+    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+    handle_work_item_set_dispatcher_override_command,
     handle_work_item_set_workflow_scope_override_command, plan_page_url, project_attention,
     project_plan_page, render_plan_page_html,
     source_adapters::{
@@ -174,7 +176,7 @@ pub fn run_with_store_and_dispatch_port(
         Some("events") => run_events_with_store(args, store),
         Some("plans") => run_plans_with_store(args, store),
         Some("snapshot") => run_store_result(snapshot_report(store), "snapshot"),
-        Some("doctor") => run_store_result(doctor_report(store), "doctor"),
+        Some("doctor") => run_doctor_result(doctor_report(store)),
         _other => run_static(args),
     }
 }
@@ -232,6 +234,21 @@ fn run_runtime_result(result: ConsoleRuntimeResult<String>, command: &str) -> Ru
     match result {
         Ok(message) => RunOutput::new(0, message),
         Err(error) => RunOutput::new(1, format!("{command} error: {error:?}")),
+    }
+}
+
+/// Turn `doctor`'s outcome into a [`RunOutput`], gating the exit code on
+/// whether any finding is present (livespec-console-beads-fabro-mx9u.14
+/// AC3): non-zero when `doctor` has something to report, zero on a clean
+/// bill of health, matching `run_store_result`'s error mapping when the
+/// store read itself fails.
+fn run_doctor_result(result: EventStoreResult<DoctorRunResult>) -> RunOutput {
+    match result {
+        Ok(outcome) => RunOutput::new(
+            i32::from(outcome.has_findings()),
+            outcome.message().to_owned(),
+        ),
+        Err(error) => RunOutput::new(1, format!("doctor error: {error:?}")),
     }
 }
 
@@ -2030,17 +2047,62 @@ pub fn snapshot_report(store: &SqliteEventStore) -> EventStoreResult<String> {
     ))
 }
 
+/// `doctor`'s outcome: its rendered report text, plus whether it is
+/// reporting any finding -- the CLI exit code the caller derives
+/// (livespec-console-beads-fabro-mx9u.14 AC3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoctorRunResult {
+    message: String,
+    has_findings: bool,
+}
+
+impl DoctorRunResult {
+    #[must_use]
+    /// Return the rendered report text.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    #[must_use]
+    /// Return whether any finding is present.
+    pub const fn has_findings(&self) -> bool {
+        self.has_findings
+    }
+}
+
 /// Return the doctor report value.
-pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<String> {
+///
+/// Findings are derived from the SAME in-process state the header renders
+/// ([`build_doctor_report`], which reuses `console-application`'s
+/// `project_tui_events`), so `doctor` can never disagree with what the
+/// header already shows the operator
+/// (livespec-console-beads-fabro-mx9u.14). A console with every source
+/// available and an attention count matching the needs-attention surface's
+/// own reproduces the pre-mx9u.14 bare `doctor: no findings` text exactly.
+pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<DoctorRunResult> {
     let events = store.list_console_events()?;
+    let events_with_observed_at = store.list_console_events_with_observed_at()?;
     let commands = store.list_commands()?;
-    let attention_count = project_attention(&events).len();
-    Ok(format!(
-        "doctor: no findings\nstore events: {}\ncommands: {}\nattention: {}",
-        events.len(),
-        commands.len(),
-        attention_count
-    ))
+    let report = build_doctor_report(&events, &events_with_observed_at);
+    let has_findings = report.has_findings();
+
+    let mut lines = Vec::new();
+    if has_findings {
+        lines.push(format!("doctor: {} finding(s)", report.findings().len()));
+        for finding in report.findings() {
+            lines.push(format!("- {}", finding.message()));
+        }
+    } else {
+        lines.push("doctor: no findings".to_owned());
+    }
+    lines.push(format!("store events: {}", events.len()));
+    lines.push(format!("commands: {}", commands.len()));
+    lines.push(format!("attention: {}", report.attention_line()));
+
+    Ok(DoctorRunResult {
+        message: lines.join("\n"),
+        has_findings,
+    })
 }
 
 /// Return the plan page report value.
@@ -3717,9 +3779,9 @@ mod tests {
         BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandAppendStore,
         CommandLaneFailure, CommandLaneReporter, CommandLaneSteps,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
-        ConsoleRuntimeResult, ErroringPullSource, EventAppendStore, FactoryCommandStore,
-        InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN, LaneStartupStage,
-        MAX_TRANSIENT_STATUS_CHARS, NeedsAttentionIngest, PendingCommandOutcome,
+        ConsoleRuntimeResult, DoctorRunResult, ErroringPullSource, EventAppendStore,
+        FactoryCommandStore, InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN,
+        LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS, NeedsAttentionIngest, PendingCommandOutcome,
         PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
         ScriptedSource, SessionTailCounts, SharedSqliteStore, SourceAdapterRef,
         SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
@@ -4632,6 +4694,17 @@ mod tests {
     }
 
     #[test]
+    fn doctor_result_reports_event_store_errors() {
+        let output = super::run_doctor_result(Err(EventStoreError::InvalidSequence));
+
+        check((output.code()) == (1), "assert_eq failed");
+        check(
+            (output.message()) == ("doctor error: InvalidSequence"),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
     fn runtime_result_reports_console_runtime_errors() {
         let output = super::run_runtime_result(
             Err(ConsoleRuntimeError::Application(
@@ -4752,7 +4825,6 @@ mod tests {
     #[test]
     fn store_backed_doctor_reports_no_findings_with_store_counts() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
-        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
 
         let output =
             run_with_store_scripted(&command_args(&["bin", "doctor"]), &mut store, "unused");
@@ -4760,8 +4832,72 @@ mod tests {
         check((output.code()) == (0), "assert_eq failed");
         check(
             (output.message())
-                == ("doctor: no findings\nstore events: 2\ncommands: 0\nattention: 0"),
+                == ("doctor: no findings\nstore events: 0\ncommands: 0\nattention: 0"),
             "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn store_backed_doctor_reports_the_demo_fixtures_attention_disagreement_as_a_finding() {
+        // The demo fixture's two work-item snapshots are both attention-worthy
+        // (blocked/needs-human, acceptance/ai-then-human) but neither has a
+        // matching needs-attention ingest, so the console's own attention
+        // count (2) genuinely disagrees with what the needs-attention source
+        // itself carries (0). Before livespec-console-beads-fabro-mx9u.14,
+        // `doctor` computed its `attention:` line from the needs-attention
+        // surface ALONE and so silently reported 0, never surfacing this;
+        // now it reports the real disagreement as a finding and exits
+        // non-zero (AC3, AC4).
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
+
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "doctor"]), &mut store, "unused");
+
+        check((output.code()) == (1), "assert_eq failed");
+        check(
+            (output.message())
+                == ("doctor: 1 finding(s)\n- attention count disagrees with the needs-attention source: console reports 2, source reports 0\nstore events: 2\ncommands: 0\nattention: 2 (source reports 0)"),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn store_backed_doctor_reports_an_unavailable_source_as_a_finding() {
+        use console_application::source_adapters::{
+            NotObservedFinding, SourceAdapterKind, not_observed_finding_payload_json,
+        };
+
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let finding = NotObservedFinding::new(
+            "livespec-console-beads-fabro",
+            SourceAdapterKind::Dispatcher,
+            "dispatcher binary not found",
+        );
+        let event = ConsoleEvent::fixture(
+            "evt_dispatcher_not_observed",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )
+        .with_payload_json(not_observed_finding_payload_json(&finding));
+        let append = event_append_from_console_event(&event, "2026-06-23T00:00:00Z");
+        store.append_event(&append).ok_test();
+
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "doctor"]), &mut store, "unused");
+
+        check((output.code()) == (1), "assert_eq failed");
+        check(
+            output
+                .message()
+                .contains("source unavailable: dispatcher (dispatcher binary not found)"),
+            "expected the unavailable-source finding in doctor's output",
+        );
+        check(
+            output
+                .message()
+                .contains("last successful read: never observed"),
+            "expected the staleness annotation naming no prior successful read",
         );
     }
 
@@ -4797,9 +4933,15 @@ mod tests {
                 == ("snapshot: events 6, attention 0, commands 0, pending 0"),
             "assert_eq failed",
         );
+        // The single ingested work-item snapshot is attention-worthy
+        // (blocked/needs-human) but no needs-attention snapshot was ever
+        // ingested (`empty_needs_attention_port` above), so `doctor` now
+        // reports the genuine disagreement between the console's attention
+        // count and the needs-attention source's own count, rather than the
+        // pre-mx9u.14 needs-attention-only count that silently read 0.
         check(
-            (doctor_report(&store).ok_test())
-                == ("doctor: no findings\nstore events: 6\ncommands: 0\nattention: 0"),
+            (doctor_report(&store).ok_test().message())
+                == ("doctor: 1 finding(s)\n- attention count disagrees with the needs-attention source: console reports 1, source reports 0\nstore events: 6\ncommands: 0\nattention: 1 (source reports 0)"),
             "assert_eq failed",
         );
     }
@@ -11401,7 +11543,7 @@ mod tests {
             } else if command == "snapshot" {
                 err_eventstore_string(snapshot_report(&store))
             } else if command == "doctor" {
-                err_eventstore_string(doctor_report(&store))
+                err_eventstore_doctor(doctor_report(&store))
             } else {
                 err_eventstore_string(plan_page_report(&store, "epic-1"))
             };
@@ -11409,6 +11551,31 @@ mod tests {
             check_event_store_error(error);
             cleanup_store(&path);
         }
+    }
+
+    #[test]
+    fn doctor_report_propagates_a_list_console_events_with_observed_at_error() {
+        let (path, store) = file_store("doctor-missing-observed-at-column");
+        // A table missing `observed_at` lets `list_console_events` succeed
+        // (it never selects that column) while
+        // `list_console_events_with_observed_at` fails to prepare its own
+        // query -- exercising `doctor_report`'s propagation of THIS
+        // specific store read's error, distinct from the missing-event-
+        // table case above where both reads fail identically and the first
+        // `?` returns before the second is ever reached.
+        corrupt_store(
+            &path,
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', \
+             'src', 'st', 1, '{}');",
+        );
+
+        let error = err_eventstore_doctor(doctor_report(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
     }
 
     #[test]
@@ -11420,7 +11587,7 @@ mod tests {
             let error = if command == "snapshot" {
                 err_eventstore_string(snapshot_report(&store))
             } else {
-                err_eventstore_string(doctor_report(&store))
+                err_eventstore_doctor(doctor_report(&store))
             };
 
             check_event_store_error(error);
@@ -12461,6 +12628,15 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "err_eventstore_doctor failed")]
+    fn err_eventstore_doctor_panics() {
+        err_eventstore_doctor(Ok(DoctorRunResult {
+            message: String::new(),
+            has_findings: false,
+        }));
+    }
+
+    #[test]
     #[should_panic(expected = "err_runtime_usize failed")]
     fn err_runtime_usize_panics() {
         err_runtime_usize(Ok(0));
@@ -12563,6 +12739,13 @@ mod tests {
     #[should_panic(expected = "ok_eventstore_string failed")]
     fn ok_eventstore_string_panics() {
         let result: EventStoreResult<String> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_doctor failed")]
+    fn ok_eventstore_doctor_panics() {
+        let result: EventStoreResult<DoctorRunResult> = Err(EventStoreError::InvalidSequence);
         result.ok_test();
     }
 
@@ -12924,6 +13107,18 @@ mod tests {
             match self {
                 Ok(value) => value,
                 Err(error) => panic!("ok_eventstore_string failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<DoctorRunResult> {
+        type Output = DoctorRunResult;
+
+        #[track_caller]
+        fn ok_test(self) -> DoctorRunResult {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_doctor failed: {error:?}"),
             }
         }
     }
@@ -13382,6 +13577,14 @@ mod tests {
     fn err_eventstore_string(result: EventStoreResult<String>) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_eventstore_string failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_doctor(result: EventStoreResult<DoctorRunResult>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_doctor failed"),
             Err(error) => error,
         }
     }
