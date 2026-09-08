@@ -1734,8 +1734,16 @@ fn lane_execution_state_suffix(item: &LaneWorkItem) -> String {
     }
 }
 
+/// Draw the Status band, fitted to the room INSIDE its borders.
+///
+/// `Paragraph` clips whatever overruns the line silently, so handing it the raw
+/// hint row let a narrow pane hide an available action with nothing on screen
+/// saying so. `footer_line` sheds by declared priority and declares the count
+/// instead; the band is the only place that knows its own width, so it is the
+/// place that measures.
 fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
-    Paragraph::new(model.footer())
+    let inner_width = usize::from(area.width.saturating_sub(2));
+    Paragraph::new(model.footer_line(inner_width))
         .block(Block::new().borders(Borders::ALL).title("Status"))
         .render(area, buffer);
 }
@@ -6959,6 +6967,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_narrow_status_band_marks_its_overflow_and_keeps_the_dispatch_verb() {
+        // livespec-console-beads-fabro-pzbdbo.26, dogfooded in a 105-column
+        // pane: a ready row was selected, the Status band ended before reaching
+        // `d dispatch`, and NOTHING on screen said a hint had been dropped --
+        // widening to 240 columns was the only way to find out. At the RENDERED
+        // band, the honesty rule is that an available action is never silently
+        // hidden.
+        let events = dispatch_key_events(Lane::Ready);
+        let state = dispatch_key_state(Lane::Ready, false, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        // The premise: this row genuinely cannot fit inside a 100-column band
+        // (98 columns inside its borders), so this is the truncating case.
+        let narrow = Rect::new(0, 0, 100, 3);
+        assert!(model.footer().chars().count() > 98);
+
+        let mut buffer = Buffer::empty(narrow);
+        render_footer(&model, narrow, &mut buffer);
+        let status = buffer_to_text(&buffer, narrow);
+        let fitted = model.footer_line(98);
+
+        check(
+            status.contains(&fitted) && fitted.ends_with(" more"),
+            "the band must draw the fitted row and declare the hints it dropped",
+        );
+        check(
+            status.contains("d dispatch"),
+            "the dispatch verb must survive where the selection admits it",
+        );
+        check(
+            !status.contains("up/down move"),
+            "and navigation must be what yielded to make room for it",
+        );
+    }
+
+    #[test]
+    fn the_wide_status_band_still_draws_every_hint_untouched() {
+        // The no-regression half of the same clause: given room, the band is
+        // exactly the hints the context owns, with no marker and nothing shed.
+        let area = Rect::new(0, 0, 200, 3);
+        let events = dispatch_key_events(Lane::Ready);
+        let state = dispatch_key_state(Lane::Ready, false, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let mut buffer = Buffer::empty(area);
+        render_footer(&model, area, &mut buffer);
+        let status = buffer_to_text(&buffer, area);
+
+        check(
+            status.contains(model.footer().as_ref()),
+            "a band with room to spare must draw the whole hint row",
+        );
+        check(!status.contains(" more"), "and carry no overflow marker");
     }
 
     #[test]

@@ -18,6 +18,7 @@
 #![warn(missing_docs)]
 
 use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -2256,6 +2257,29 @@ impl TuiScreenModel {
             (TuiOverlay::None, _) => model_pane_footer_hint(self),
             (overlay, _) => overlay_footer_hint(overlay),
         }
+    }
+
+    #[must_use]
+    /// Compose the Status-line hints to fit `width` display columns, declaring
+    /// anything shed instead of letting the terminal clip it away.
+    ///
+    /// [`footer`](Self::footer) composes the hints the context owns; nothing in
+    /// that string knows how wide the Status band is, so a band narrower than
+    /// the row simply STOPPED mid-hint and said nothing about it. Measured
+    /// 2026-09-08 in a 105-column pane: a selected ready work-item's `d
+    /// dispatch` fell off the right edge with no ellipsis, so an operator
+    /// reading the band could not tell an unavailable verb from an undrawn one.
+    /// That under-reports available actions, which the Status-line honesty
+    /// contract forbids.
+    ///
+    /// So the hints degrade the way the header does: whole segments are shed by
+    /// declared [`HintPriority`](action_registry::HintPriority) — navigation,
+    /// then policy dials, then the globals, and the per-item verbs last — and
+    /// the count of everything shed is carried in an explicit `+N more` marker.
+    /// At a width wide enough for everything this returns [`footer`](Self::footer)
+    /// unchanged.
+    pub fn footer_line(&self, width: usize) -> String {
+        fit_footer_line(&self.footer(), width)
     }
 
     /// The availability context for the selected work-item, or `None` when no
@@ -4509,6 +4533,74 @@ fn fit_header_line(
         line = compose(&fields, source_idx);
     }
     line
+}
+
+/// The separator every Status-line hint row is composed with, and therefore the
+/// seam [`fit_footer_line`] splits it back apart on. No hint token contains it,
+/// so the split recovers exactly the segments the composers joined.
+const HINT_SEPARATOR: &str = " | ";
+
+/// The display width of a Status-line hint row in terminal columns. Hint tokens
+/// are ASCII (key names and verbs), so a char count is its column width.
+fn hint_display_width(line: &str) -> usize {
+    line.chars().count()
+}
+
+/// The hint row with the `kept` segments joined back together and the count of
+/// everything shed carried as an explicit `+N more` marker.
+///
+/// Callers shed at least one segment before composing, so the marker is
+/// unconditional here; a row that fits is returned by [`fit_footer_line`]
+/// without ever reaching this.
+fn compose_footer_line(segments: &[&str], kept: &[bool]) -> String {
+    let shed = kept.iter().filter(|keep| !**keep).count();
+    let mut parts = segments
+        .iter()
+        .zip(kept)
+        .filter(|(_segment, keep)| **keep)
+        .map(|(segment, _keep)| (*segment).to_owned())
+        .collect::<Vec<_>>();
+    parts.push(format!("+{shed} more"));
+    parts.join(HINT_SEPARATOR)
+}
+
+/// Compose the width-fitted Status line. See [`TuiScreenModel::footer_line`] for
+/// the degradation contract. This is the pure core: each hint segment is atomic
+/// — kept or shed whole, never mid-truncated — and while the row is over `width`
+/// it sheds one more segment, lowest declared priority first and right-to-left
+/// within a priority, re-measuring after each step and stopping as soon as it
+/// fits.
+///
+/// Right-to-left within a priority keeps the LEFTMOST segment of a class
+/// longest, which is what preserves the list-edge cue ahead of the navigation
+/// keys it explains.
+///
+/// The final `take(width)` is the degenerate tail: a band too narrow even for
+/// the bare marker still must not return a row wider than the space on offer.
+fn fit_footer_line(hints: &str, width: usize) -> String {
+    if hint_display_width(hints) <= width {
+        return hints.to_owned();
+    }
+    let segments = hints.split(HINT_SEPARATOR).collect::<Vec<_>>();
+    let mut shed_order = (0..segments.len()).collect::<Vec<_>>();
+    shed_order.sort_by_key(|index| {
+        (
+            action_registry::hint_priority(segments[*index]),
+            Reverse(*index),
+        )
+    });
+    let mut kept = vec![true; segments.len()];
+    for index in shed_order {
+        kept[index] = false;
+        let line = compose_footer_line(&segments, &kept);
+        if hint_display_width(&line) <= width {
+            return line;
+        }
+    }
+    compose_footer_line(&segments, &kept)
+        .chars()
+        .take(width)
+        .collect()
 }
 
 /// Columns the focused Header pane pans per `left`/`right` press. Larger than a
@@ -8639,16 +8731,17 @@ mod tests {
         PluginResolution, RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay,
         TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
         command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
-        factory_dispatch_item_command, handle_config_dispatcher_setting_set_command,
-        handle_factory_dispatch_item_command, handle_factory_drain_command,
-        handle_work_item_accept_command, handle_work_item_approve_command,
-        handle_work_item_move_command, handle_work_item_reject_command,
-        handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
-        handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
+        factory_dispatch_item_command, fit_footer_line,
+        handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
+        handle_factory_drain_command, handle_work_item_accept_command,
+        handle_work_item_approve_command, handle_work_item_move_command,
+        handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
+        handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
+        handle_work_item_set_dispatcher_override_command,
         handle_work_item_set_workflow_scope_override_command, header_help_section,
-        help_section_for_focus, help_section_for_view, model_pane_footer_hint, overlay_footer_hint,
-        per_item_verb_is_state_valid, plan_page_url, project_action_failures, project_attention,
-        project_lane_board, project_orphaned_factory_runs, project_plan_page,
+        help_section_for_focus, help_section_for_view, hint_display_width, model_pane_footer_hint,
+        overlay_footer_hint, per_item_verb_is_state_valid, plan_page_url, project_action_failures,
+        project_attention, project_lane_board, project_orphaned_factory_runs, project_plan_page,
         reduce_tui_interaction, render_plan_page_html, resolve_command_palette_action,
         resolve_dispatcher_setting_edit, resolve_valve_action, set_acceptance_policy_from_payload,
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
@@ -15516,6 +15609,75 @@ mod tests {
         let state =
             TuiInteractionState::new(0, TuiOverlay::None).with_selected_repo(repo.to_owned());
         build_tui_model_for_state(&events, &state)
+    }
+
+    /// The dogfooded hint row: a selected READY work-item in a drilled-in lane,
+    /// which is the widest row the Status band composes (navigation, the driver
+    /// handoff, the lifecycle move, all five policy dials, `d dispatch`, and the
+    /// globals). Derived from the registry so it cannot drift from what ships.
+    fn ready_item_hints() -> String {
+        action_registry::selected_item_hint(&action_registry::ActionContext {
+            lane: Lane::Ready,
+            admission_policy: AdmissionPolicy::Manual,
+            acceptance_policy: AcceptancePolicy::AiThenHuman,
+            has_driver_handoff: true,
+            awaits_scope_override: false,
+            ready_work_item_count: 1,
+            surface: action_registry::ActionSurface::LaneDrill,
+        })
+    }
+
+    #[test]
+    fn a_narrow_status_band_declares_the_hints_it_could_not_draw() {
+        // The measured defect (2026-09-08, a 105-column pane): the band ran out
+        // of room mid-row and simply STOPPED, so an operator could not tell an
+        // unavailable verb from an undrawn one. Whatever is shed is now COUNTED.
+        let hints = ready_item_hints();
+        assert!(hint_display_width(&hints) > 98);
+
+        let fitted = fit_footer_line(&hints, 98);
+        assert!(hint_display_width(&fitted) <= 98);
+        check(
+            fitted.ends_with(" more") && fitted.contains('+'),
+            "a band too narrow for every hint must say how many it dropped",
+        );
+    }
+
+    #[test]
+    fn the_status_band_sheds_navigation_before_the_verbs_the_selection_admits() {
+        // Priority, not position. `d dispatch` sits at the RIGHT-HAND end of the
+        // registry's canonical hint order, so plain clipping took it first --
+        // exactly the action the factory exists for. Navigation keys are
+        // conventional and discoverable by pressing them; an available verb is
+        // not, so the verbs outlive them.
+        let fitted = fit_footer_line(&ready_item_hints(), 98);
+
+        check(
+            fitted.contains("d dispatch"),
+            "the verb the pane exists for must survive the width squeeze",
+        );
+        check(
+            !fitted.contains("up/down move"),
+            "and the navigation keys must be what yielded to make room for it",
+        );
+    }
+
+    #[test]
+    fn a_status_band_wide_enough_carries_the_hint_row_untouched() {
+        // The no-regression half: given room, the fitter is the identity, so
+        // every hint the context owns renders exactly as it does today.
+        let hints = ready_item_hints();
+        assert_eq!(fit_footer_line(&hints, 300), hints);
+        assert!(!hints.contains(" more"));
+    }
+
+    #[test]
+    fn a_status_band_too_narrow_even_for_the_marker_still_fits_the_band() {
+        // The degenerate tail. Nothing useful can be said in four columns, but
+        // the fitter still must not hand the renderer a row wider than the band
+        // and let the clip it exists to prevent happen anyway.
+        let fitted = fit_footer_line(&ready_item_hints(), 4);
+        assert_eq!(fitted, "+12 ");
     }
 
     #[test]
