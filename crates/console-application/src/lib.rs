@@ -8719,15 +8719,34 @@ fn repos_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
     let mut repos = events.iter().filter_map(repo_id).collect::<Vec<_>>();
     repos.sort();
     repos.dedup();
-    let unattributable = events.len()
-        - events
-            .iter()
-            .filter(|event| repo_id(event).is_some())
-            .count();
+    let mut fleet_streams = events
+        .iter()
+        .map(ConsoleEvent::stream_id)
+        .filter(|stream_id| fleet_scoped(stream_id))
+        .collect::<Vec<_>>();
+    let fleet_scoped_events = fleet_streams.len();
+    fleet_streams.sort_unstable();
+    fleet_streams.dedup();
+    let unattributable = events
+        .iter()
+        .filter(|event| repo_id(event).is_none() && !fleet_scoped(event.stream_id()))
+        .count();
     let mut items = vec![ViewSummaryItem::new(
         format!("Repos observed: {}", repos.len()),
         repos.join(", "),
     )];
+    // NOT SILENT either. A fleet stream belongs to no repository, but that is a
+    // reason to attribute it correctly rather than to drop it: an operator who
+    // knows the store holds drain commands and sees them in no row learns that
+    // this view is partial, which is exactly the trust the row below protects.
+    // The detail is the observed fleet-stream roster, the same operational
+    // shape as the repo roster above.
+    if fleet_scoped_events > 0 {
+        items.push(ViewSummaryItem::new(
+            format!("Fleet-scoped events: {fleet_scoped_events}"),
+            fleet_streams.join(", "),
+        ));
+    }
     // NOT SILENT. Dropping the unattributable events without saying so would
     // turn "Repos observed: 1" into a number that quietly excludes a fifth of
     // the store, which is the same reassuring-but-partial signal this projection
@@ -8787,11 +8806,25 @@ fn count_events(events: &[ConsoleEvent], event_type: EventType) -> usize {
 /// That contradicted this module's own stated invariant, that the projection
 /// "collapses to the single observed tenant".
 ///
+/// A FOURTH shape is not a defect at all and still had to be excluded: a stream
+/// under the FLEET context, `fleet:{family}`. It satisfies `{context}:{repo}`
+/// syntactically, so the second bullet extracted its family name — `livespec` —
+/// and rendered it as a repository. Measured in the same live store: "Repos
+/// observed: 2: livespec, livespec-console-beads-fabro" on a single-tenant
+/// store, from the 56 events on the one `fleet:livespec` stream. See
+/// [`fleet_scoped`].
+///
 /// The ROOT CAUSE is upstream of here: those streams do not follow the
 /// `{context}:{repo}` contract the second bullet describes. Correcting the keys
 /// themselves is event-identity work and belongs to that thread; this function's
 /// job is to stop manufacturing data it does not have.
 fn repo_id(event: &ConsoleEvent) -> Option<String> {
+    // Checked before the event-shape match, not inside one arm of it, so the
+    // answer is "no repository" for a fleet stream whatever event rides it --
+    // including an event whose payload carries a repo of its own.
+    if fleet_scoped(event.stream_id()) {
+        return None;
+    }
     match event.event_type() {
         EventType::AttentionItemAppeared | EventType::AttentionItemChanged => {
             attention_item_snapshot_from_payload_json(event.payload_json()).map_or_else(
@@ -8802,6 +8835,22 @@ fn repo_id(event: &ConsoleEvent) -> Option<String> {
         EventType::AttentionItemResolved => attention_stream_repo(event.stream_id()),
         _other => stream_prefix_repo(event.stream_id()),
     }
+}
+
+/// The stream context that carries FLEET-scoped state: state of the product
+/// family as a whole rather than of any one repository.
+const FLEET_STREAM_CONTEXT: &str = "fleet";
+
+/// Whether a stream key is fleet-scoped, i.e. keyed `fleet:{family}`.
+///
+/// `fleet:livespec` is the one such stream today: every operator factory-drain
+/// command is keyed under it (see `factory_drain_command`), and the aggregate it
+/// names is the product FAMILY the header renders as `fleet: livespec` — not a
+/// tenant, not a checkout, and so not a row in the repo roster.
+fn fleet_scoped(stream_id: &str) -> bool {
+    stream_id
+        .split_once(':')
+        .is_some_and(|(context, _family)| context == FLEET_STREAM_CONTEXT)
 }
 
 /// The repo segment of a `{context}:{repo}` stream key: the text after the first
@@ -13001,6 +13050,82 @@ mod tests {
         check(
             !rendered.contains("no derivable repo"),
             "a store with nothing to report must stay quiet",
+        );
+        // The same negative control for the fleet row: this store has no fleet
+        // stream, so the row that reports one must not appear.
+        check(
+            !rendered.contains("Fleet-scoped events"),
+            "a store with no fleet stream must not grow a fleet row",
+        );
+    }
+
+    #[test]
+    fn the_fleet_stream_is_a_product_family_not_a_second_repository() {
+        // FOUND BY DOGFOODING, on the same single-tenant store as the test
+        // above, after the colonless-key fix had landed: "Repos observed: 2:
+        // livespec, livespec-console-beads-fabro". The `livespec` row came from
+        // the 56 events on the ONE `fleet:livespec` stream -- every operator
+        // factory-drain command -- whose key satisfies `{context}:{repo}`
+        // syntactically while naming the product FAMILY, not a tenant.
+        let repo_scoped = ConsoleEvent::new(
+            "evt_repo_scoped".to_owned(),
+            1,
+            "repo".to_owned(),
+            EventType::LivespecReviseRequired,
+            "livespec".to_owned(),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            1,
+        );
+        let drain_requested = ConsoleEvent::new(
+            "evt_drain_requested".to_owned(),
+            1,
+            "console".to_owned(),
+            EventType::FactoryDrainRequested,
+            "console:factory-command-handler".to_owned(),
+            "fleet:livespec".to_owned(),
+            1,
+        );
+        let drain_completed = ConsoleEvent::new(
+            "evt_drain_completed".to_owned(),
+            1,
+            "console".to_owned(),
+            EventType::FactoryDrainCompleted,
+            "console:factory-command-handler".to_owned(),
+            "fleet:livespec".to_owned(),
+            2,
+        );
+
+        // No repo, whatever the event shape: the derivation refuses the stream,
+        // not one event type riding it.
+        assert_eq!(super::repo_id(&drain_requested), None);
+        check(
+            super::fleet_scoped("fleet:livespec") && !super::fleet_scoped(repo_scoped.stream_id()),
+            "only the fleet context is fleet-scoped",
+        );
+
+        let items = super::repos_view_items(&[repo_scoped, drain_requested, drain_completed]);
+        let rendered = format!("{items:?}");
+
+        check(
+            rendered.contains("Repos observed: 1"),
+            "the family name must not be counted as a second repository",
+        );
+        // NOT SILENT: the fleet events are counted out loud on their own row,
+        // with the stream roster as its operational detail.
+        check(
+            rendered.contains("Fleet-scoped events: 2"),
+            "the fleet events must be reported, not quietly excluded",
+        );
+        check(
+            rendered.contains("fleet:livespec"),
+            "the fleet row names the stream its count came from",
+        );
+        // They are NOT folded into the unattributable row either: that row is a
+        // defect report about keys that break the `{context}:{repo}` contract,
+        // and a fleet key does not break it.
+        check(
+            !rendered.contains("no derivable repo"),
+            "a fleet stream is attributed, not unattributable",
         );
     }
 

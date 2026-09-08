@@ -10634,6 +10634,53 @@ mod tests {
         );
     }
 
+    /// The Repos pane as the OPERATOR reads it -- rendered through the real TUI,
+    /// not read off the projection rows.
+    ///
+    /// The defect this pins was reported from a rendered screen: a single-tenant
+    /// store whose Repos pane said "Repos observed: 2: livespec,
+    /// livespec-console-beads-fabro", the `livespec` row being the product
+    /// family named by the one `fleet:livespec` stream every operator
+    /// factory-drain command is keyed under. Asserting on the rendered frame is
+    /// the point: the projection and the pane can disagree, and the pane is what
+    /// the operator trusts.
+    #[test]
+    fn the_repos_pane_renders_fleet_events_on_their_own_row() {
+        let events = [
+            ConsoleEvent::new(
+                "evt_repo_scoped".to_owned(),
+                1,
+                "repo".to_owned(),
+                EventType::LivespecReviseRequired,
+                "livespec".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_drain_requested".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainRequested,
+                "console:factory-command-handler".to_owned(),
+                "fleet:livespec".to_owned(),
+                1,
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Repos, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let rendered = render_tui_preview(&model, 200, 40);
+
+        check(
+            rendered.contains("Repos observed: 1"),
+            "the rendered pane must not count the fleet family as a repository",
+        );
+        check(
+            rendered.contains("Fleet-scoped events: 1"),
+            "the rendered pane must surface the fleet events on their own row",
+        );
+    }
+
     #[test]
     fn live_source_adapters_rejects_empty_repo() {
         let probe = UnavailableProbe;
