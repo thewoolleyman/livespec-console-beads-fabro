@@ -849,22 +849,47 @@ impl SqliteEventStore {
         let mut rows = statement.raw_query();
         let mut events = Vec::new();
         while let Some(row) = rows.next()? {
-            let event_type_name = row.get::<_, String>(3)?;
-            let Some(event_type) = EventType::from_contract_name(&event_type_name) else {
-                return Err(EventStoreError::UnknownEventType(event_type_name));
-            };
-            events.push(
-                ConsoleEvent::new(
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    event_type,
-                    row.get(4)?,
-                    row.get(5)?,
-                    sequence_from_rowid(row.get::<_, i64>(6)?)?,
-                )
-                .with_payload_json(row.get::<_, String>(7)?),
-            );
+            events.push(console_event_from_row(row)?);
+        }
+        Ok(events)
+    }
+
+    /// List console events from the backing store, each paired with the
+    /// store's own persisted `observed_at`, in the same `global_seq` order as
+    /// [`Self::list_console_events`].
+    ///
+    /// A separate read rather than folding `observed_at` onto [`ConsoleEvent`]
+    /// itself: the domain envelope is shared by every projection in
+    /// `console-application`, and threading a timestamp through all of them
+    /// for the one diagnostic that needs a per-source last-successful-read
+    /// moment (`doctor`, livespec-console-beads-fabro-mx9u.14) would touch far
+    /// more call sites than the fact is used by.
+    ///
+    /// Decodes the eight columns it shares with [`Self::list_console_events`]
+    /// through the SAME [`console_event_from_row`] helper, so this method
+    /// needs its own dedicated test only for the `observed_at` column it adds
+    /// -- the shared columns' decode-failure paths are already exercised by
+    /// `list_console_events`'s own test family.
+    pub fn list_console_events_with_observed_at(
+        &self,
+    ) -> EventStoreResult<Vec<(ConsoleEvent, String)>> {
+        let sql = r"
+            select event_id, schema_version, context, type, source, stream_id, stream_seq,
+                   payload_json, observed_at
+            from events
+            order by global_seq
+        ";
+        let mut statement = self.connection.prepare(sql)?;
+        // `raw_query` binds nothing and returns rows infallibly for this
+        // parameterless statement, so it avoids a permanently-unreachable `?`
+        // arm that `query([])` would introduce; step and row-decode errors
+        // still surface through `rows.next()?` below.
+        let mut rows = statement.raw_query();
+        let mut events = Vec::new();
+        while let Some(row) = rows.next()? {
+            let event = console_event_from_row(row)?;
+            let observed_at: String = row.get(8)?;
+            events.push((event, observed_at));
         }
         Ok(events)
     }
@@ -1214,6 +1239,31 @@ fn sequence_from_rowid(value: i64) -> EventStoreResult<u64> {
     Ok(u64::try_from(value)?)
 }
 
+/// Decode a [`ConsoleEvent`] from the eight columns
+/// `event_id, schema_version, context, type, source, stream_id, stream_seq,
+/// payload_json` (in that order) of a row from either
+/// [`SqliteEventStore::list_console_events`] or
+/// [`SqliteEventStore::list_console_events_with_observed_at`]'s query.
+///
+/// Shared by both so their common columns' decode-failure paths need exactly
+/// ONE family of tests, not two duplicated ones.
+fn console_event_from_row(row: &rusqlite::Row<'_>) -> EventStoreResult<ConsoleEvent> {
+    let event_type_name = row.get::<_, String>(3)?;
+    let Some(event_type) = EventType::from_contract_name(&event_type_name) else {
+        return Err(EventStoreError::UnknownEventType(event_type_name));
+    };
+    Ok(ConsoleEvent::new(
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        event_type,
+        row.get(4)?,
+        row.get(5)?,
+        sequence_from_rowid(row.get::<_, i64>(6)?)?,
+    )
+    .with_payload_json(row.get::<_, String>(7)?))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
@@ -1542,6 +1592,52 @@ mod tests {
     }
 
     #[test]
+    fn list_console_events_with_observed_at_pairs_each_event_with_its_own_stamp() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let first = event_append("evt_1", Some("source-1"));
+        let second = EventAppend::new(
+            ConsoleEvent::fixture(
+                "evt_2",
+                EventType::DispatcherBacklogBounceObserved,
+                "dispatcher",
+            ),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            "2026-06-24T00:00:00Z".to_owned(),
+            "2026-06-24T00:00:02Z".to_owned(),
+            None,
+            "corr_2".to_owned(),
+            Some("source-2".to_owned()),
+            "{}".to_owned(),
+            "{}".to_owned(),
+        );
+
+        ok_append_outcome(store.append_event(&first));
+        ok_append_outcome(store.append_event(&second));
+        let events =
+            ok_console_events_with_observed_at(store.list_console_events_with_observed_at());
+
+        check(events.len() == 2, "eventstore test assertion");
+        check(
+            events[0].0.event_id() == "evt_1",
+            "eventstore test assertion",
+        );
+        // `event_append`'s fixture observed_at, distinct from `second`'s so a
+        // swap between the two rows would be caught.
+        check(
+            events[0].1 == "2026-06-23T00:00:01Z",
+            "eventstore test assertion",
+        );
+        check(
+            events[1].0.event_id() == "evt_2",
+            "eventstore test assertion",
+        );
+        check(
+            events[1].1 == "2026-06-24T00:00:02Z",
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
     fn list_console_events_attaches_persisted_payload_json() {
         let mut store = ok_store(SqliteEventStore::open_in_memory());
         let payload = r#"{"repo":"console","work_item_id":"console-1","lane":"ready"}"#;
@@ -1706,6 +1802,61 @@ mod tests {
         let error = err_console_events(store.list_console_events());
 
         check_unknown_event_type(error, "unknown.event");
+    }
+
+    #[test]
+    fn list_console_events_with_observed_at_rejects_unknown_event_type() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+
+        let inserted = ok_execute_count(store.connection.execute(
+            r"
+            insert into events (
+              event_id,
+              context,
+              aggregate_id,
+              stream_id,
+              stream_seq,
+              type,
+              schema_version,
+              occurred_at,
+              observed_at,
+              correlation_id,
+              source,
+              payload_json,
+              metadata_json
+            ) values ('evt_bad', 'factory', 'repo:livespec', 'repo:livespec', 1,
+              'unknown.event', 1, '2026-06-23T00:00:00Z',
+              '2026-06-23T00:00:01Z', 'corr_1', 'test', '{}', '{}')
+            ",
+            [],
+        ));
+        check(inserted == 1, "eventstore test assertion");
+
+        let error =
+            err_console_events_with_observed_at(store.list_console_events_with_observed_at());
+
+        check_unknown_event_type(error, "unknown.event");
+    }
+
+    #[test]
+    fn list_console_events_with_observed_at_reports_blob_observed_at_column_decode_failure() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // A BLOB in the observed_at column fails the `row.get::<_, String>(8)`
+        // decode -- the one column this method reads beyond the eight
+        // `console_event_from_row` already covers (and that
+        // `list_console_events`'s own test family already exercises) for
+        // `list_console_events`.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json, observed_at); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', 'src', \
+             'st', 1, '{}', x'01');",
+        ));
+
+        check_sqlite_error(err_console_events_with_observed_at(
+            store.list_console_events_with_observed_at(),
+        ));
     }
 
     #[test]
@@ -2475,6 +2626,9 @@ mod tests {
         ok_sqlite_unit(store.connection.execute_batch("drop table events"));
         check_sqlite_error(err_events(store.list_events()));
         check_sqlite_error(err_console_events(store.list_console_events()));
+        check_sqlite_error(err_console_events_with_observed_at(
+            store.list_console_events_with_observed_at(),
+        ));
 
         let store = ok_store(SqliteEventStore::open_in_memory());
         ok_sqlite_unit(store.connection.execute_batch("drop table commands"));
@@ -2809,6 +2963,9 @@ mod tests {
         let store = ok_store(SqliteEventStore::open(&path));
 
         check_sqlite_error(err_events(store.list_events()));
+        check_sqlite_error(err_console_events_with_observed_at(
+            store.list_console_events_with_observed_at(),
+        ));
         let _ignored = std::fs::remove_dir_all(&dir);
     }
 
@@ -3003,6 +3160,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "ok_console_events_with_observed_at failed")]
+    fn ok_console_events_with_observed_at_panics() {
+        ok_console_events_with_observed_at(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
     #[should_panic(expected = "ok_command_append_outcome failed")]
     fn ok_command_append_outcome_panics() {
         ok_command_append_outcome(Err(EventStoreError::InvalidSequence));
@@ -3103,6 +3266,12 @@ mod tests {
     #[should_panic(expected = "err_console_events failed")]
     fn err_console_events_panics() {
         err_console_events(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_console_events_with_observed_at failed")]
+    fn err_console_events_with_observed_at_panics() {
+        err_console_events_with_observed_at(Ok(Vec::new()));
     }
 
     #[test]
@@ -3295,6 +3464,16 @@ mod tests {
     }
 
     #[track_caller]
+    fn ok_console_events_with_observed_at(
+        result: EventStoreResult<Vec<(ConsoleEvent, String)>>,
+    ) -> Vec<(ConsoleEvent, String)> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_console_events_with_observed_at failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
     fn ok_command_append_outcome(
         result: EventStoreResult<super::CommandAppendOutcome>,
     ) -> super::CommandAppendOutcome {
@@ -3458,6 +3637,16 @@ mod tests {
     fn err_console_events(result: EventStoreResult<Vec<ConsoleEvent>>) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_console_events failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_console_events_with_observed_at(
+        result: EventStoreResult<Vec<(ConsoleEvent, String)>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_console_events_with_observed_at failed"),
             Err(error) => error,
         }
     }
