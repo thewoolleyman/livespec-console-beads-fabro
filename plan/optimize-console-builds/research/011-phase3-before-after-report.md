@@ -168,3 +168,43 @@ optimizations: `pis7qu` (e2e harness ceilings), `1d5f` (eventstore
 The approval (or the amendments required) is recorded as a comment on the plan
 epic `livespec-console-beads-fabro-gqmtwa`; the plan archives only after that
 comment exists (`research/001` requirement 3).
+
+## Amendment 2026-09-08 — the factory sccache row (di6fn5)
+
+Appended per the maintainer's approval of 2026-09-06 ("approve now, sccache
+row by amendment"). Both 2026-09-06 defects are resolved: the wrapper's probe
+no longer starves under contention (dev-tooling #1845, merged 2026-09-06T13:21Z as c15af819, first released in v1.52.7; the console factory pin python-rust-agent-v1.58.5 carries it) and the
+factory receiver now admits the `build.cache.sccache.*` attributes
+(orchestrator bd-ib-dorc, delivered by orchestrator f1836767, released v0.141.1, live on hp's receiver since 2026-09-07T09:05Z; closed 2026-09-08 with proxy gqmtwa.3). Window: `build.env = factory`,
+`build.cache.sccache.enabled = true`, `exit_code = 0`.
+
+| Optimization | Item | Measure | BEFORE (`research/007`) | AFTER, low-load window 09-07T08–22Z (13 dispatches, n = 275) | Δ | Query |
+|---|---|---|---|---|---|---|
+| sccache in the agent image + `sccache-redis` on hp | `di6fn5` | build.cargo-build P50 / P95 / MAX | 0.13 / 49.75 / 50.40 s | 0.16 / 8.9 / 49.9 s | P95 **−82 %** (−75 % vs the baked-registry AFTER's 36.0 s); MAX is one cold compile | [7JwDJxt5hnH](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/7JwDJxt5hnH) |
+| same | `di6fn5` | build.cargo-clippy P50 / P95 / MAX | 1.44 / 9.53 / 23.01 s | 0.27 / 5.4 / 5.7 s | P95 −43 %, MAX −75 % | same |
+| same | `di6fn5` | build.cargo-llvm-cov P50 / P95 / MAX | 9.59 / 29.07 / 61.51 s | 8.7 / 27.9 / 42.5 s | P95 −4 %, MAX −31 % (llvm-cov re-instruments; only its dependency half is cacheable) | same |
+| same | `di6fn5` | build.cargo-nextest P50 / P95 / MAX | 3.14 / 13.83 / 30.22 s | 12.3 / 21.7 / 21.7 s | worse at P50/P95: test-binary link dominates and is not cacheable (nextest hit rate 21 %) | same |
+| same | `di6fn5` | build.cargo-test P50 / P95 / MAX | 7.82 / 31.86 / 61.67 s | 1.8 / 50.3 / 68.8 s | P50 −77 %; P95/MAX worse under this name's highest concurrency (0.36) | same |
+| same | `di6fn5` | sccache hit rate, 09-07T08Z → 09-08T05Z, 839 spans / 27 dispatches | 0 % (no cache) | **84 %** aggregate: 2,489 hits / 483 misses; build 85 %, clippy 98 %, llvm-cov 75 %, test 77 %, nextest 21 % | — | [hNXCW91pebd](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/hNXCW91pebd) |
+
+**Why a low-load window.** The full window (27 dispatches, n = 616,
+[cw38qzGhqfJ](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/cw38qzGhqfJ))
+puts every P95 above BEFORE (cargo-build 85.9 s, test 68.8 s), and the
+difference to the low-load window is load, not cache: the 09-08 half of the
+window carries the factory's highest span concurrency since telemetry began
+([sJUThPUL9vV](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/sJUThPUL9vV)),
+with the same image and the same hit rate. That regression is a factory
+capacity finding, filed as orchestrator bd-ib-9zg1 (bound per-host factory concurrency on hp-xubuntu), and is outside this plan's
+cache levers.
+
+**Reading.** sccache wins exactly where it can hit — dependency compiles
+(cargo-build P95 −82 %, clippy −43 %) — and is neutral-to-negative for
+link- and test-dominated invocations, which are most of a `just check` run's
+wall time in the sandbox. It is kept: the 4 GB LRU acceptance of 2026-09-06
+stands, and bullet 5 (a cache fault never changes cargo's exit code) held
+through both defective runs. The `hit_ratio` attribute itself reads 0 on every
+span while `hits` / `misses` are populated, and `backend` reads `unknown` for
+redis; that is a dev-tooling timer nit, not a data gap.
+
+With this row the factory leg is complete; the report's three legs are now
+all measured.
