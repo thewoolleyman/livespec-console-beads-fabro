@@ -2,8 +2,27 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const fn checker() -> &'static str {
-    env!("CARGO_BIN_EXE_console-arch-check")
+/// The shipped checker binary, resolved the way `console-cli`'s harness
+/// resolves its own: `option_env!` at COMPILE time first, then the process
+/// environment. `cargo clippy --all-targets` does not set `CARGO_BIN_EXE_*` at
+/// check time, so a bare `env!` failed the compile and took `just check-clippy`
+/// with it; `option_env!` compiles to `None` there, and `cargo test` (which
+/// sets it at compile time) and `cargo nextest` (which sets it at run time) are
+/// each covered by one of the two halves.
+fn checker() -> std::io::Result<PathBuf> {
+    option_env!("CARGO_BIN_EXE_console-arch-check").map_or_else(
+        || {
+            std::env::var_os("CARGO_BIN_EXE_console-arch-check")
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    std::io::Error::other(
+                        "CARGO_BIN_EXE_console-arch-check is neither compiled in nor set in the \
+                         environment; run this suite through cargo test or cargo nextest",
+                    )
+                })
+        },
+        |path| Ok(PathBuf::from(path)),
+    )
 }
 
 fn temp_root(name: &str) -> std::io::Result<PathBuf> {
@@ -39,7 +58,7 @@ fn temp_root(name: &str) -> std::io::Result<PathBuf> {
 }
 
 fn run_checker(root: &Path) -> std::io::Result<String> {
-    let output = Command::new(checker()).current_dir(root).output()?;
+    let output = Command::new(checker()?).current_dir(root).output()?;
     let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
     Ok(combined)
