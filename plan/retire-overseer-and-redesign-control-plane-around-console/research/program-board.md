@@ -34,6 +34,15 @@ becomes an action or the one decision question. The mechanical side lives in
 the overseer registry row (`ctx_threshold: 50`) and in `~/.claude.json`
 (`autoCompactEnabled: false`), neither of which is tracked in git.
 
+The maintainer watches the console at the real TUI while the plan session
+works (ruling 2026-09-08, "I need to see the TUI"): the session's tmux
+window carries the TUI in a right-hand pane at two thirds of the width,
+recreated on every restart right after the STATUS RE-PRINT and recorded
+by pane id in the handoff; dogfood passes drive that pane one agent at a
+time and leave it running. The mechanics (split command, the wrapper's
+TERM stripping, the `sudo` process name, the read-only key rules) live in
+`CLAUDE.md`, restarted-session section, item 6.
+
 ## Rulings log
 
 ### 2026-09-01 — resume brief and the four-question batch
