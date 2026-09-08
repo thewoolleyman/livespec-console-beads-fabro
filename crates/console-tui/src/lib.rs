@@ -1894,9 +1894,13 @@ fn render_valve_confirm(
         Line::from(format!("{} work-item", valve.valve_label())),
         Line::from(format!("Target: {work_item}")),
     ];
+    // The staged parameter, under the caption the MODEL gives it: the move
+    // valve's is the whole `<from> -> <to>` transition Enter would fire, which
+    // the modal opens pre-staged and nothing else on screen names.
     if let Some(option) = valve.option_display() {
         lines.push(Line::from(format!(
-            "Policy/mode: {option}  (up/down to change)"
+            "{}: {option}  (up/down to change)",
+            valve.option_caption()
         )));
     }
     // The optional free-text answer sits BESIDE the target-status choice, on the
@@ -9300,6 +9304,34 @@ mod tests {
                 .as_ref()
                 .map(|r| r.contains("dangerous / use with caution")),
             Ok(false)
+        );
+
+        // The move-status valve opens PRE-STAGED, so the modal names the whole
+        // transition `Enter` would fire under its own caption -- an operator
+        // must not have to know the status-move table to read it.
+        let move_status = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::ValveConfirm {
+                    valve: PendingValve::MoveStatus {
+                        from: Lane::Backlog,
+                        to: Lane::Ready,
+                    },
+                    answer: String::new(),
+                },
+            ),
+        );
+        let output = render_to_text(&move_status, 96, 24);
+        assert_eq!(
+            output.as_ref().map(|r| r.contains("Move status work-item")),
+            Ok(true)
+        );
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("Move: backlog -> ready  (up/down to change)")),
+            Ok(true)
         );
     }
 

@@ -387,10 +387,27 @@ impl PendingValve {
     /// The dialed-in option as an owned display string, for every payload valve
     /// (including the per-item override, whose value is dynamic and so has no
     /// `'static` label). `None` for the payload-free approve/accept valves.
+    ///
+    /// The move-to-status valve renders the whole staged TRANSITION
+    /// (`<from> -> <to>`), not the target alone: the modal opens pre-staged on
+    /// the first legal target, and a bare target name never says what `Enter`
+    /// would actually do to the selected item.
     pub fn option_display(&self) -> Option<String> {
         match self {
             Self::SetOverride(dial) => Some(dial.option_display()),
+            Self::MoveStatus { from, to } => Some(format!("{} -> {}", from.label(), to.label())),
             _other => self.option_label().map(str::to_owned),
+        }
+    }
+
+    #[must_use]
+    /// The caption the dialed-in option is rendered under, in the confirm modal
+    /// and in the Status line. The move valve stages a lane TRANSITION; every
+    /// other payload valve stages a policy or mode.
+    pub const fn option_caption(&self) -> &'static str {
+        match self {
+            Self::MoveStatus { .. } => "Move",
+            _other => "Policy/mode",
         }
     }
 
@@ -1061,6 +1078,36 @@ pub enum TuiInteraction {
     CycleValveOption(bool),
 }
 
+/// Which end of a list a selection move was refused at.
+///
+/// Recorded by the reducer whenever `up`/`down` cannot move the routed
+/// selection any further, and rendered by the Status line as a cue. The
+/// selection itself is UNCHANGED — the console does not wrap — so this value is
+/// how a reached edge is told apart from a broken key.
+///
+/// Measured 2026-08-31, the dogfooding session's FIRST keystroke: focus starts
+/// on the Views navigation with `Attention` (the first entry) selected, the
+/// operator pressed `Up` ("Up arrow seems intuitive, but doesn't work"), and
+/// nothing at all happened — no wrap, no cue, no hint change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListEdge {
+    /// The selection is on the first entry and `up` moved nothing.
+    Top,
+    /// The selection is on the last entry and `down` moved nothing.
+    Bottom,
+}
+
+impl ListEdge {
+    #[must_use]
+    /// The Status-line cue naming this edge.
+    pub const fn cue(self) -> &'static str {
+        match self {
+            Self::Top => "at top of list",
+            Self::Bottom => "at end of list",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents tui interaction state data used by the console.
 pub struct TuiInteractionState {
@@ -1085,6 +1132,7 @@ pub struct TuiInteractionState {
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: PluginResolution,
     transient_status: Option<String>,
+    list_edge: Option<ListEdge>,
 }
 
 impl TuiInteractionState {
@@ -1113,6 +1161,7 @@ impl TuiInteractionState {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
             transient_status: None,
+            list_edge: None,
         }
     }
 
@@ -1145,6 +1194,7 @@ impl TuiInteractionState {
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
             plugin_resolution: PluginResolution::unresolved(),
             transient_status: None,
+            list_edge: None,
         }
     }
 
@@ -1344,6 +1394,23 @@ impl TuiInteractionState {
     pub fn with_transient_status(mut self, transient_status: Option<String>) -> Self {
         self.transient_status = transient_status;
         self
+    }
+
+    #[must_use]
+    /// Return this value with the reached list edge replaced.
+    ///
+    /// The reducer re-derives this on EVERY interaction, so a cue never
+    /// outlives the keystroke that earned it: the next keystroke either reaches
+    /// an edge again or clears the cue.
+    pub const fn with_list_edge(mut self, list_edge: Option<ListEdge>) -> Self {
+        self.list_edge = list_edge;
+        self
+    }
+
+    #[must_use]
+    /// Return the list edge the last interaction was refused at, if any.
+    pub const fn list_edge(&self) -> Option<ListEdge> {
+        self.list_edge
     }
 
     #[must_use]
@@ -1813,6 +1880,7 @@ pub struct TuiScreenModel {
     unavailable_sources: Vec<String>,
     factory_activity: Option<String>,
     transient_status: Option<String>,
+    list_edge: Option<ListEdge>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
@@ -2117,7 +2185,22 @@ impl TuiScreenModel {
     /// open overlay replaces the pane's hints with that overlay's (restored when
     /// the overlay closes). It is never empty, so no context in which shortcut
     /// actions are available shows a blank hint line. See [`footer_hint`].
+    ///
+    /// A reached list edge ([`ListEdge`]) is CUED ahead of those hints, so an
+    /// `up`/`down` that could not move the selection says so instead of looking
+    /// inert. The cue is transient state carried by the reducer, not a context
+    /// keyed derivation, so it prefixes whichever hints the context already
+    /// owns rather than replacing them.
     pub fn footer(&self) -> Cow<'static, str> {
+        self.list_edge.map_or_else(
+            || self.context_footer_hint(),
+            |edge| Cow::Owned(format!("{} | {}", edge.cue(), self.context_footer_hint())),
+        )
+    }
+
+    /// The Status-line hints the CURRENT focus + overlay context owns, before
+    /// any list-edge cue is prefixed.
+    fn context_footer_hint(&self) -> Cow<'static, str> {
         // The Header pane is not view-keyed, so its focused hints come from
         // `focus` rather than `active_view`: while it holds focus (and no overlay
         // owns the line), the hints describe its horizontal-scroll keys. An open
@@ -2220,9 +2303,7 @@ fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
         TuiOverlay::FactoryDrainConfirm { .. } => {
             Cow::Borrowed("enter dispatch ready work | esc cancel")
         }
-        TuiOverlay::ValveConfirm { .. } => {
-            Cow::Borrowed("up/down change | enter confirm | esc cancel")
-        }
+        TuiOverlay::ValveConfirm { valve, .. } => valve_confirm_footer_hint(*valve),
         TuiOverlay::DriverHandoff { .. } => {
             Cow::Borrowed("enter copy sent to terminal | esc cancel")
         }
@@ -2233,6 +2314,31 @@ fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
             Cow::Borrowed("left/right pane | up/down act | PgUp/PgDn page | esc close help")
         }
     }
+}
+
+/// The Status-line hints an open valve-confirm modal owns, LEADING with the
+/// parameter it currently has staged.
+///
+/// A payload valve opens already staged — the move-to-status valve on the first
+/// target the operator may drive from the item's current lane — and `Enter`
+/// fires THAT one. Naming it here (and in the modal, see the caption below)
+/// is what lets the operator read the pending transition off the screen instead
+/// of knowing `status_move_targets` by heart; it re-renders as up/down cycle
+/// the choice. Measured 2026-08-31: the dogfooding recipe had to warn "if it
+/// isn't showing ready, cycle to it before Enter".
+///
+/// The payload-free approve/accept valves stage no parameter, so their hints are
+/// unchanged.
+fn valve_confirm_footer_hint(valve: PendingValve) -> Cow<'static, str> {
+    const KEYS: &str = "up/down change | enter confirm | esc cancel";
+    valve
+        .option_display()
+        .map_or(Cow::Borrowed(KEYS), |staged| {
+            Cow::Owned(format!(
+                "{}: {staged} | {KEYS}",
+                valve.option_caption().to_ascii_lowercase()
+            ))
+        })
 }
 
 /// The Status-line hints for a focused pane `view` with no overlay open: the
@@ -3847,6 +3953,7 @@ pub fn build_tui_model_for_state(
         unavailable_sources,
         factory_activity,
         transient_status: state.transient_status.clone(),
+        list_edge: state.list_edge(),
         orphaned_factory_runs: project_orphaned_factory_runs(events),
     }
 }
@@ -4268,9 +4375,23 @@ pub fn reduce_tui_interaction(
     interaction: TuiInteraction,
 ) -> TuiInteractionState {
     let model = build_tui_model_for_state(events, state);
+    // Derived BEFORE the move is applied, from the selection the keystroke was
+    // pressed against, and stamped on EVERY interaction's result: a cue never
+    // outlives the keystroke that earned it.
+    let list_edge = list_edge_reached(state, &model, interaction);
+    reduce_interaction_state(state, &model, interaction).with_list_edge(list_edge)
+}
+
+/// The state change one interaction makes, before [`reduce_tui_interaction`]
+/// stamps the list-edge cue on it.
+fn reduce_interaction_state(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
     match interaction {
-        TuiInteraction::SelectNext => select_next(state, &model),
-        TuiInteraction::SelectPrevious => select_previous(state, &model),
+        TuiInteraction::SelectNext => select_next(state, model),
+        TuiInteraction::SelectPrevious => select_previous(state, model),
         TuiInteraction::SelectNextView => state
             .clone()
             .with_active_view(move_view_down(state.active_view()))
@@ -4287,8 +4408,8 @@ pub fn reduce_tui_interaction(
                 query: String::new(),
             })
         }
-        TuiInteraction::OpenCommandModal => state.clone().with_overlay(open_command_modal(&model)),
-        TuiInteraction::OpenCommandExplainer => open_command_explainer_state(state, &model),
+        TuiInteraction::OpenCommandModal => state.clone().with_overlay(open_command_modal(model)),
+        TuiInteraction::OpenCommandExplainer => open_command_explainer_state(state, model),
         TuiInteraction::OpenMenu
         | TuiInteraction::MenuNextTop
         | TuiInteraction::MenuPreviousTop => menu_interaction_state(state, interaction),
@@ -4308,7 +4429,7 @@ pub fn reduce_tui_interaction(
         TuiInteraction::SelectPreviousAction => {
             state.clone().with_overlay(move_action_up(state.overlay()))
         }
-        TuiInteraction::DrillIntoLane => drill_into_lane(state, &model),
+        TuiInteraction::DrillIntoLane => drill_into_lane(state, model),
         TuiInteraction::ReturnToLaneOverview => state.clone().with_lane_focus(LaneFocus::Overview),
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
@@ -4356,13 +4477,13 @@ pub fn reduce_tui_interaction(
         | TuiInteraction::HelpFocusText => help_interaction_state(state, interaction),
         TuiInteraction::OpenDriverHandoff => state
             .clone()
-            .with_overlay(open_driver_handoff_overlay(&model)),
+            .with_overlay(open_driver_handoff_overlay(model)),
         TuiInteraction::OpenWorkItemDetail => {
-            state.clone().with_overlay(open_work_item_detail(&model))
+            state.clone().with_overlay(open_work_item_detail(model))
         }
         TuiInteraction::OpenFactoryDispatchItemConfirm
         | TuiInteraction::OpenFactoryDrainConfirm => {
-            open_factory_confirm_state(state, &model, interaction)
+            open_factory_confirm_state(state, model, interaction)
         }
         TuiInteraction::WorkItemDetailScrollDown(rows) => {
             work_item_detail_scroll_state(state, rows, true)
@@ -4372,10 +4493,77 @@ pub fn reduce_tui_interaction(
         }
         TuiInteraction::WorkItemDetailPageDown => work_item_detail_page_scroll_state(state, true),
         TuiInteraction::WorkItemDetailPageUp => work_item_detail_page_scroll_state(state, false),
-        TuiInteraction::OpenValveConfirm(valve) => open_valve_confirm_state(state, &model, valve),
+        TuiInteraction::OpenValveConfirm(valve) => open_valve_confirm_state(state, model, valve),
         TuiInteraction::CycleValveOption(forward) => state
             .clone()
             .with_overlay(cycle_valve_option(state.overlay(), forward)),
+    }
+}
+
+/// The list edge an `up`/`down` keystroke was refused at, or `None` when the
+/// selection actually moves (or the interaction moves no list selection at all).
+///
+/// The selection does NOT wrap — wrapping would change behaviour — so the
+/// refusal is ANNOUNCED instead: the reducer records the edge and the Status
+/// line cues it. Read from the state the keystroke was pressed against, so the
+/// question asked is "could this move go anywhere?", the same question the
+/// clamped `move_selection_*` helpers answer silently.
+///
+/// With an overlay open, `up`/`down` scroll a reading surface, cycle a staged
+/// valve parameter, or walk an action roster rather than moving the Content
+/// pane's list, so no edge is announced there.
+fn list_edge_reached(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    interaction: TuiInteraction,
+) -> Option<ListEdge> {
+    if !matches!(state.overlay(), TuiOverlay::None) {
+        return None;
+    }
+    let (index, count) = match interaction {
+        TuiInteraction::SelectPreviousView | TuiInteraction::SelectNextView => {
+            (view_index(state.active_view()), TuiView::all().len())
+        }
+        TuiInteraction::SelectPrevious | TuiInteraction::SelectNext => {
+            content_selection_cursor(state, model)
+        }
+        _other => return None,
+    };
+    if count == 0 {
+        // No rows at all: an empty drilled-in lane or an empty inbox has no top
+        // and no end to reach, and its hints already say so.
+        return None;
+    }
+    match interaction {
+        TuiInteraction::SelectPreviousView | TuiInteraction::SelectPrevious => {
+            (index == 0).then_some(ListEdge::Top)
+        }
+        _other => (index + 1 >= count).then_some(ListEdge::Bottom),
+    }
+}
+
+/// The Content pane's routed selection cursor and the length of the list it
+/// indexes: which list `SelectNext` / `SelectPrevious` actually move, and how
+/// far it goes. Routed exactly as [`select_next`] routes them, so the edge
+/// announced is the edge of the list that refused to move.
+fn content_selection_cursor(state: &TuiInteractionState, model: &TuiScreenModel) -> (usize, usize) {
+    if is_lane_overview(state) {
+        (state.selected_lane_index(), Lane::all().len())
+    } else if is_lane_drilldown(state) {
+        (
+            current_lane_item_index(state, model),
+            drilldown_item_count(state, model),
+        )
+    } else if is_settings_view(state) {
+        (
+            state.selected_setting_index(),
+            DispatcherSettingRow::all().len(),
+        )
+    } else {
+        (
+            state.selected_attention_index(),
+            model.attention_items().len(),
+        )
     }
 }
 
@@ -8248,8 +8436,8 @@ mod tests {
         FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest, FactoryDrainPolicy,
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort,
-        LaneExecutionState, LaneFocus, LaneWorkItem, MAX_TRANSIENT_STATUS_CHARS, OperatorAction,
-        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge, MAX_TRANSIENT_STATUS_CHARS,
+        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
         OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, PluginResolution,
         RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
         TuiView, action_registry, build_tui_model, build_tui_model_for_state,
@@ -9291,6 +9479,182 @@ mod tests {
         assert_eq!(state.active_view(), TuiView::Settings);
     }
 
+    /// The dogfooding session's FIRST keystroke: `Up` on the Views navigation
+    /// with `Attention` (the first entry) already selected. The selection still
+    /// does not move and still does not wrap -- the Status line SAYS so, which
+    /// is what tells a reached edge from a broken key.
+    #[test]
+    fn an_arrow_at_a_views_navigation_edge_cues_the_edge_it_reached() {
+        let events = fabro_gate_events();
+        let start = TuiInteractionState::new(0, TuiOverlay::None);
+        let hints = build_tui_model_for_state(&events, &start)
+            .footer()
+            .into_owned();
+
+        let top = reduce_tui_interaction(&start, &events, TuiInteraction::SelectPreviousView);
+        assert_eq!(top.active_view(), TuiView::Attention);
+        assert_eq!(top.list_edge(), Some(ListEdge::Top));
+        // The cue LEADS the hints the context already owned; it does not
+        // replace them, so nothing the operator could press stops being named.
+        assert_eq!(
+            build_tui_model_for_state(&events, &top).footer(),
+            format!("at top of list | {hints}")
+        );
+
+        // The mirror at the other end: `Down` on the LAST view.
+        let last = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None);
+        let bottom = reduce_tui_interaction(&last, &events, TuiInteraction::SelectNextView);
+        assert_eq!(bottom.active_view(), TuiView::Settings);
+        assert_eq!(bottom.list_edge(), Some(ListEdge::Bottom));
+        assert!(
+            build_tui_model_for_state(&events, &bottom)
+                .footer()
+                .starts_with("at end of list | "),
+        );
+
+        // A move that MOVES carries no cue, and the cue does not outlive the
+        // keystroke that earned it.
+        let moved = reduce_tui_interaction(&top, &events, TuiInteraction::SelectNextView);
+        assert_eq!(moved.active_view(), TuiView::Spec);
+        assert_eq!(moved.list_edge(), None);
+        assert_eq!(
+            build_tui_model_for_state(&events, &moved).footer(),
+            build_tui_model_for_state(
+                &events,
+                &TuiInteractionState::for_view(TuiView::Spec, 0, TuiOverlay::None)
+            )
+            .footer()
+        );
+    }
+
+    /// Every list the Content pane hosts cues its own edges: the attention
+    /// inbox, the lane overview, a drilled-in lane, and the settings rows.
+    #[test]
+    fn an_arrow_at_a_content_list_edge_cues_the_edge_it_reached() {
+        let events = fabro_gate_events();
+        let attention_count =
+            build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None))
+                .attention_items()
+                .len();
+        check(attention_count > 1, "the inbox fixture must hold a list");
+
+        for (label, on_first, on_last, movable) in [
+            (
+                "attention inbox",
+                TuiInteractionState::new(0, TuiOverlay::None),
+                TuiInteractionState::new(attention_count - 1, TuiOverlay::None),
+                TuiInteractionState::new(0, TuiOverlay::None),
+            ),
+            (
+                "lane overview",
+                TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+                TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                    .with_selected_lane_index(Lane::all().len() - 1),
+                TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
+            ),
+            (
+                "settings rows",
+                TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None),
+                TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+                    .with_selected_setting_index(DispatcherSettingRow::all().len() - 1),
+                TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None),
+            ),
+        ] {
+            let at_top = reduce_tui_interaction(&on_first, &events, TuiInteraction::SelectPrevious);
+            check(
+                at_top.list_edge() == Some(ListEdge::Top),
+                &format!("{label}: up on the first row must cue the top"),
+            );
+            check(
+                build_tui_model_for_state(&events, &at_top)
+                    .footer()
+                    .starts_with("at top of list | "),
+                &format!("{label}: the top cue must lead the Status line"),
+            );
+
+            let at_end = reduce_tui_interaction(&on_last, &events, TuiInteraction::SelectNext);
+            check(
+                at_end.list_edge() == Some(ListEdge::Bottom),
+                &format!("{label}: down on the last row must cue the end"),
+            );
+            check(
+                build_tui_model_for_state(&events, &at_end)
+                    .footer()
+                    .starts_with("at end of list | "),
+                &format!("{label}: the end cue must lead the Status line"),
+            );
+
+            let moved = reduce_tui_interaction(&movable, &events, TuiInteraction::SelectNext);
+            check(
+                moved.list_edge().is_none(),
+                &format!("{label}: a move that moves carries no cue"),
+            );
+        }
+
+        // A drilled-in lane: two pending-approval items, so index 0 is the top
+        // and index 1 is the end.
+        let drilldown = drilldown_events();
+        let first = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
+        assert_eq!(
+            reduce_tui_interaction(&first, &drilldown, TuiInteraction::SelectPrevious).list_edge(),
+            Some(ListEdge::Top)
+        );
+        assert_eq!(
+            reduce_tui_interaction(&first, &drilldown, TuiInteraction::SelectNext).list_edge(),
+            None
+        );
+        let last = drilldown_state(Lane::PendingApproval, 1, TuiOverlay::None);
+        let at_end = reduce_tui_interaction(&last, &drilldown, TuiInteraction::SelectNext);
+        assert_eq!(at_end.list_edge(), Some(ListEdge::Bottom));
+        assert!(
+            build_tui_model_for_state(&drilldown, &at_end)
+                .footer()
+                .starts_with("at end of list | ")
+        );
+    }
+
+    /// Where there is no list to reach the end of, and where up/down mean
+    /// something else, nothing is cued.
+    #[test]
+    fn no_edge_is_cued_without_a_list_or_behind_an_open_overlay() {
+        let events = drilldown_events();
+        // An EMPTY drilled-in lane (backlog carries no fixture item) has no top
+        // and no end: its hints already say only stepping back out does anything.
+        let empty = drilldown_state(Lane::Backlog, 0, TuiOverlay::None);
+        assert_eq!(
+            reduce_tui_interaction(&empty, &events, TuiInteraction::SelectNext).list_edge(),
+            None
+        );
+        assert_eq!(
+            reduce_tui_interaction(&empty, &events, TuiInteraction::SelectPrevious).list_edge(),
+            None
+        );
+
+        // Behind an open overlay up/down scroll, cycle, or walk a roster rather
+        // than moving the Content pane's list, so no edge is announced.
+        let searching = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: String::new(),
+            },
+        );
+        assert_eq!(
+            reduce_tui_interaction(&searching, &events, TuiInteraction::SelectPrevious).list_edge(),
+            None
+        );
+
+        // An interaction that moves no list selection never cues either.
+        assert_eq!(
+            reduce_tui_interaction(
+                &TuiInteractionState::new(0, TuiOverlay::None),
+                &events,
+                TuiInteraction::FocusContent,
+            )
+            .list_edge(),
+            None
+        );
+    }
+
     #[test]
     fn tui_interaction_moves_focus_between_the_nav_and_content_panes() {
         let events = fabro_gate_events();
@@ -10313,6 +10677,7 @@ mod tests {
             unavailable_sources: Vec::new(),
             factory_activity: None,
             transient_status: None,
+            list_edge: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
@@ -10361,6 +10726,7 @@ mod tests {
             unavailable_sources: Vec::new(),
             factory_activity: None,
             transient_status: None,
+            list_edge: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: vec![run.clone()],
@@ -16611,15 +16977,20 @@ mod tests {
         assert!(!PendingValve::Approve.is_destructive());
         assert!(!PendingValve::SetAdmission(AdmissionPolicy::Auto).is_destructive());
 
-        // The move-status valve labels itself and shows its target lane; it is
-        // never destructive (its reject-based routes are excluded).
+        // The move-status valve labels itself and shows its staged transition;
+        // it is never destructive (its reject-based routes are excluded).
         let move_valve = PendingValve::MoveStatus {
             from: Lane::PendingApproval,
             to: Lane::Ready,
         };
         assert_eq!(move_valve.valve_label(), "Move status");
         assert_eq!(move_valve.option_label(), Some("ready"));
-        assert_eq!(move_valve.option_display(), Some("ready".to_owned()));
+        // The DISPLAY carries the whole staged transition rather than the
+        // target alone: what `Enter` would actually do to the selected item.
+        assert_eq!(
+            move_valve.option_display(),
+            Some("pending-approval -> ready".to_owned())
+        );
         assert!(!move_valve.is_destructive());
 
         // The per-item override valve labels itself, carries no `'static`
@@ -16634,6 +17005,80 @@ mod tests {
             Some("review_fix_cap = 3".to_owned())
         );
         assert!(!override_valve.is_destructive());
+    }
+
+    /// The move picker opens PRE-STAGED on the first legal target, so the
+    /// staged transition is rendered -- in the picker and in the Status line --
+    /// before the operator confirms, and re-rendered as they cycle the choice.
+    ///
+    /// Measured 2026-08-31: nothing before confirmation said which transition
+    /// `Enter` would fire, and the dogfooding recipe had to warn "if it isn't
+    /// showing ready, cycle to it before Enter".
+    #[test]
+    fn the_move_picker_renders_its_staged_transition_before_confirmation() {
+        let events = [lane_event(
+            "e1",
+            "wi-back",
+            Lane::Backlog,
+            None,
+            "a",
+            "backlog",
+        )];
+        let drilled = drilldown_state(Lane::Backlog, 0, TuiOverlay::None);
+        // The picker opens pre-staged on the FIRST target `backlog` may drive.
+        let staged = PendingValve::MoveStatus {
+            from: Lane::Backlog,
+            to: Lane::Ready,
+        };
+        assert_eq!(
+            build_tui_model_for_state(&events, &drilled).selected_move_status_valve(),
+            Some(staged)
+        );
+
+        // The picker's own text: the caption the transition is rendered under,
+        // and the transition itself. The renderer composes the two verbatim.
+        assert_eq!(staged.option_caption(), "Move");
+        assert_eq!(staged.option_display(), Some("backlog -> ready".to_owned()));
+        // A policy valve keeps its own caption.
+        assert_eq!(PendingValve::Approve.option_caption(), "Policy/mode");
+
+        // The Status line leads with the same staged transition, ahead of the
+        // keys that act on the open modal.
+        let opened =
+            reduce_tui_interaction(&drilled, &events, TuiInteraction::OpenValveConfirm(staged));
+        assert_eq!(
+            build_tui_model_for_state(&events, &opened).footer(),
+            "move: backlog -> ready | up/down change | enter confirm | esc cancel"
+        );
+
+        // Cycling the choice re-renders BOTH surfaces against the newly staged
+        // target -- `backlog` also drives `blocked`.
+        let cycled =
+            reduce_tui_interaction(&opened, &events, TuiInteraction::CycleValveOption(true));
+        assert_eq!(
+            cycled
+                .overlay()
+                .valve_confirm()
+                .and_then(|valve| valve.option_display()),
+            Some("backlog -> blocked".to_owned())
+        );
+        assert_eq!(
+            build_tui_model_for_state(&events, &cycled).footer(),
+            "move: backlog -> blocked | up/down change | enter confirm | esc cancel"
+        );
+
+        // A payload-free valve stages no parameter, so its hints are unchanged.
+        assert_eq!(
+            build_tui_model_for_state(
+                &events,
+                &drilled.with_overlay(TuiOverlay::ValveConfirm {
+                    valve: PendingValve::Approve,
+                    answer: String::new(),
+                })
+            )
+            .footer(),
+            "up/down change | enter confirm | esc cancel"
+        );
     }
 
     #[test]
@@ -17522,6 +17967,7 @@ mod tests {
             unavailable_sources: vec![],
             factory_activity: None,
             transient_status: None,
+            list_edge: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
@@ -17748,6 +18194,7 @@ mod tests {
             unavailable_sources: vec![],
             factory_activity: None,
             transient_status: None,
+            list_edge: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
