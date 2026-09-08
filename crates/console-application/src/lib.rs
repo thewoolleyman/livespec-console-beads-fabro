@@ -2031,6 +2031,28 @@ impl TuiScreenModel {
         }
     }
 
+    /// How many rows the list the per-item cursor moves over currently holds.
+    ///
+    /// The LIST-state input to the Status line's navigation hint, read from the
+    /// same collection the up/down keys step through: the needs-attention rows
+    /// in `Attention`, the drilled-in lane's column in `Lanes`. The views that
+    /// carry no per-item cursor report `0`, as does the lane overview — its
+    /// cursor moves over LANES, and its hint is composed separately.
+    ///
+    /// Deliberately independent of what the selection ADMITS: the cursor moves
+    /// over a terminal-lane row exactly as it moves over a ready one.
+    #[must_use]
+    pub fn selected_list_row_count(&self) -> usize {
+        match self.active_view {
+            TuiView::Attention => self.attention_items.len(),
+            TuiView::Lanes => match self.lane_focus {
+                LaneFocus::Overview => 0,
+                LaneFocus::Lane(lane) => self.lane_board.column(lane).map_or(0, LaneColumn::count),
+            },
+            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => 0,
+        }
+    }
+
     /// The selected work-item's eligible driver-handoff command, if its lane and
     /// factory-safety marker admit the handoff verb.
     #[must_use]
@@ -2382,7 +2404,12 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
         // advertised.
         TuiView::Attention => model.selected_action_context().map_or_else(
             || Cow::Owned(action_registry::global_status_hint()),
-            |ctx| Cow::Owned(action_registry::selected_item_hint(&ctx)),
+            |ctx| {
+                Cow::Owned(action_registry::selected_item_hint(
+                    &ctx,
+                    model.selected_list_row_count(),
+                ))
+            },
         ),
         TuiView::Lanes => match model.lane_focus {
             // The lane OVERVIEW selects a LANE, never a work-item, so every
@@ -2395,7 +2422,12 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
             // move over. Only stepping back out does anything.
             LaneFocus::Lane(_lane) => model.selected_action_context().map_or_else(
                 || Cow::Owned(with_global_status_hint("esc lane list")),
-                |ctx| Cow::Owned(action_registry::selected_item_hint(&ctx)),
+                |ctx| {
+                    Cow::Owned(action_registry::selected_item_hint(
+                        &ctx,
+                        model.selected_list_row_count(),
+                    ))
+                },
             ),
         },
         TuiView::Settings => Cow::Owned(with_global_status_hint(
@@ -15403,6 +15435,72 @@ mod tests {
     }
 
     #[test]
+    fn the_navigation_row_count_reads_the_list_the_cursor_moves_over() {
+        // The LIST-state input the Status line's movement hint is composed
+        // from. It counts ROWS, never actions, so the terminal lane reports its
+        // column size exactly as an actionable lane does.
+        let inbox = [
+            attention_appeared("evt_inbox_a", &attention_item("console-a", "approval", "A")),
+            attention_appeared("evt_inbox_b", &attention_item("console-b", "approval", "B")),
+        ];
+        let attention =
+            build_tui_model_for_state(&inbox, &TuiInteractionState::new(0, TuiOverlay::None));
+        assert_eq!(attention.active_view(), TuiView::Attention);
+        assert_eq!(attention.selected_list_row_count(), 2);
+
+        let done_rows = [
+            lane_event(
+                "evt_done_a",
+                "console-done-a",
+                Lane::Done,
+                None,
+                "a0",
+                "done",
+            ),
+            lane_event(
+                "evt_done_b",
+                "console-done-b",
+                Lane::Done,
+                None,
+                "a1",
+                "done",
+            ),
+        ];
+        let drilled_state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Done));
+        assert_eq!(
+            build_tui_model_for_state(&done_rows, &drilled_state).selected_list_row_count(),
+            2
+        );
+        // A lane the board holds no column for has nothing to move over.
+        let empty_state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+        assert_eq!(
+            build_tui_model_for_state(&done_rows, &empty_state).selected_list_row_count(),
+            0
+        );
+        // The lane OVERVIEW's cursor moves over LANES, not items, so its hint
+        // is composed separately and it reports no item rows.
+        assert_eq!(
+            build_tui_model_for_state(
+                &done_rows,
+                &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            )
+            .selected_list_row_count(),
+            0
+        );
+        // The views carrying no per-item cursor report none either.
+        for view in [
+            TuiView::Spec,
+            TuiView::Events,
+            TuiView::Repos,
+            TuiView::Settings,
+        ] {
+            assert_eq!(view_model(view).selected_list_row_count(), 0);
+        }
+    }
+
+    #[test]
     fn footer_hint_changes_when_focus_moves_to_a_different_pane() {
         // Scenario 19 case 2: moving focus from Lanes to Settings changes the
         // hints to that pane's actions, and the two panes' hints DIFFER (their
@@ -15655,9 +15753,14 @@ mod tests {
         }
     }
 
+    /// The row count of the standard test list: a multi-row list, which is what
+    /// every pinned hint string below documents. The navigation fragment is
+    /// composed from THIS, not from the lane's action set.
+    const TEST_LIST_ROWS: usize = 2;
+
     /// The registry-derived Status-line hint for the standard test context.
     fn item_hint(surface: action_registry::ActionSurface, lane: Lane) -> String {
-        action_registry::selected_item_hint(&test_item_ctx(surface, lane))
+        action_registry::selected_item_hint(&test_item_ctx(surface, lane), TEST_LIST_ROWS)
     }
 
     #[test]
@@ -16114,25 +16217,42 @@ mod tests {
 
     #[test]
     fn lane_hint_falls_back_to_non_verb_navigation_for_unrendered_combinations() {
-        // A terminal-lane selection admits no action, and the derived hint
-        // drops the up/down fragment with the verbs -- the pinned done-row form.
+        // A terminal-lane selection admits no action, so the derived hint drops
+        // every VERB -- and keeps the navigation fragment, because the cursor
+        // still moves over the lane's rows. The movement hint is composed from
+        // the list, never from the action set.
         let hint = item_hint(action_registry::ActionSurface::LaneDrill, Lane::Done);
-        assert_eq!(hint, "enter item | esc lane list | ? help | q quit");
+        assert_eq!(
+            hint,
+            "up/down move | enter item | esc lane list | ? help | q quit"
+        );
+        // The one-row lane is the only case that drops it: there is nowhere to
+        // move to, so naming the key would be the same dishonesty inverted.
+        assert_eq!(
+            action_registry::selected_item_hint(
+                &test_item_ctx(action_registry::ActionSurface::LaneDrill, Lane::Done),
+                1,
+            ),
+            "enter item | esc lane list | ? help | q quit"
+        );
     }
 
     #[test]
     fn lane_handoff_footer_hint_is_only_added_where_the_item_claims_the_driver_verb() {
         use action_registry::{ActionContext, ActionSurface, selected_item_hint};
         let ready = |handoff: bool| {
-            selected_item_hint(&ActionContext {
-                lane: Lane::Ready,
-                admission_policy: AdmissionPolicy::Manual,
-                acceptance_policy: AcceptancePolicy::AiThenHuman,
-                has_driver_handoff: handoff,
-                awaits_scope_override: false,
-                ready_work_item_count: 1,
-                surface: ActionSurface::LaneDrill,
-            })
+            selected_item_hint(
+                &ActionContext {
+                    lane: Lane::Ready,
+                    admission_policy: AdmissionPolicy::Manual,
+                    acceptance_policy: AcceptancePolicy::AiThenHuman,
+                    has_driver_handoff: handoff,
+                    awaits_scope_override: false,
+                    ready_work_item_count: 1,
+                    surface: ActionSurface::LaneDrill,
+                },
+                TEST_LIST_ROWS,
+            )
         };
         assert!(ready(true).contains("h handoff") && ready(true).contains("g merge cap"));
         assert!(!ready(false).contains("h handoff"));
@@ -16140,15 +16260,18 @@ mod tests {
         // row on an item that claims the handoff hints it exactly as the
         // drilled-in lane does, and the key acts there (Scenario 31).
         let backlog = |surface| {
-            selected_item_hint(&ActionContext {
-                lane: Lane::Backlog,
-                admission_policy: AdmissionPolicy::Manual,
-                acceptance_policy: AcceptancePolicy::AiThenHuman,
-                has_driver_handoff: true,
-                awaits_scope_override: false,
-                ready_work_item_count: 1,
-                surface,
-            })
+            selected_item_hint(
+                &ActionContext {
+                    lane: Lane::Backlog,
+                    admission_policy: AdmissionPolicy::Manual,
+                    acceptance_policy: AcceptancePolicy::AiThenHuman,
+                    has_driver_handoff: true,
+                    awaits_scope_override: false,
+                    ready_work_item_count: 1,
+                    surface,
+                },
+                TEST_LIST_ROWS,
+            )
         };
         assert!(backlog(ActionSurface::Attention).contains("h handoff"));
         assert!(backlog(ActionSurface::LaneDrill).contains("h handoff"));
@@ -16255,7 +16378,9 @@ mod tests {
                 LaneDrill,
                 Lane::Done,
                 false,
-                "enter item | esc lane list | ? help | q quit",
+                // The terminal lane offers no verb and still names the move:
+                // the navigation fragment is the LIST's, not the verbs'.
+                "up/down move | enter item | esc lane list | ? help | q quit",
             ),
         ] {
             let ctx = action_registry::ActionContext {
@@ -16267,7 +16392,10 @@ mod tests {
                 ready_work_item_count: 1,
                 surface,
             };
-            assert_eq!(action_registry::selected_item_hint(&ctx), expected);
+            assert_eq!(
+                action_registry::selected_item_hint(&ctx, TEST_LIST_ROWS),
+                expected
+            );
         }
     }
 
@@ -16290,7 +16418,7 @@ mod tests {
             ready_work_item_count: 1,
             surface: ActionSurface::Attention,
         };
-        let hint = selected_item_hint(&auto);
+        let hint = selected_item_hint(&auto, TEST_LIST_ROWS);
         assert_eq!(
             hint,
             "up/down move | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
@@ -16303,7 +16431,7 @@ mod tests {
             ..auto
         };
         assert_eq!(
-            selected_item_hint(&drilled_auto),
+            selected_item_hint(&drilled_auto, TEST_LIST_ROWS),
             "up/down move | enter item | esc lane list | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
         );
 
@@ -16312,7 +16440,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Manual,
             ..auto
         };
-        assert!(selected_item_hint(&manual).contains("p approve"));
+        assert!(selected_item_hint(&manual, TEST_LIST_ROWS).contains("p approve"));
         let staged = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &manual));
         assert_eq!(
             staged,
