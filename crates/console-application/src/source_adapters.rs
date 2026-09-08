@@ -2106,6 +2106,7 @@ impl ObservedSource {
 pub struct ParsedObservation {
     checkpoint: String,
     events: Vec<NormalizedSourceEvent>,
+    idle: bool,
 }
 
 impl ParsedObservation {
@@ -2115,7 +2116,34 @@ impl ParsedObservation {
         Self {
             checkpoint: checkpoint.to_owned(),
             events,
+            idle: false,
         }
+    }
+
+    #[must_use]
+    /// The normalizer's OBSERVED-AND-IDLE verdict: the payload was read and
+    /// understood, and it holds nothing to report.
+    ///
+    /// [`is_idle_payload`] catches the envelope-level idle shapes (a blank
+    /// payload, `null`, `[]`, `{}`) before any normalizer runs, but a source
+    /// whose payload is a stream of records can also be idle WITHIN a
+    /// well-formed envelope -- a dispatch journal carrying only background
+    /// entries and no dispatch record. Only the source-specific normalizer can
+    /// tell that apart from an uninterpretable payload, so it says so here
+    /// rather than returning an `Err` the adapter would dress as
+    /// unavailability.
+    pub fn observed_idle() -> Self {
+        Self {
+            checkpoint: OBSERVED_IDLE_CHECKPOINT.to_owned(),
+            events: Vec::new(),
+            idle: true,
+        }
+    }
+
+    #[must_use]
+    /// Whether this is the normalizer's observed-and-idle verdict.
+    pub const fn is_idle(&self) -> bool {
+        self.idle
     }
 }
 
@@ -2239,6 +2267,10 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                         AvailabilityCheckpoint::from_previous(previous).0.as_deref(),
                     );
                 match (self.normalize)(&observed) {
+                    // A normalizer that read its payload and found nothing to
+                    // report is observed-and-idle on the same terms as the
+                    // envelope-level gate above -- it reached the source.
+                    Ok(parsed) if parsed.is_idle() => Ok(self.idle_poll(previous)),
                     Ok(parsed) if !parsed.events.is_empty() => {
                         let (checkpoint, _transition_epoch) = availability_transition(
                             previous,
@@ -2744,17 +2776,30 @@ pub fn parse_github_observation(observed: &ObservedSource) -> Result<ParsedObser
     ))
 }
 
-/// Normalize the last real Dispatcher journal JSONL line into a dispatch event.
+/// Normalize the most recent real Dispatcher journal DISPATCH entry into a
+/// dispatch event.
+///
+/// The journal is an append-only JSONL stream carrying more than dispatch
+/// records: the watchdog's discovery poll writes a `watchdog-discovery-poll`
+/// entry on every sweep, which carries a `work_item_id` but no `dispatch_id`
+/// because no dispatch happened. Those background entries are the DOMINANT
+/// recent line in a live journal, so reading the tail line alone and demanding
+/// a dispatch id there marked the source unavailable for as long as the
+/// watchdog kept polling -- 27 of this repo's 34 recorded not-observed findings
+/// across all sources, essentially all of them "no dispatch id in journal
+/// entry", while the journal held thousands of perfectly good dispatch records
+/// (livespec-console-beads-fabro-pzbdbo.31). So: scan BACKWARD to the most
+/// recent DISPATCH-shaped entry, skipping every non-dispatch record on the way.
 pub fn parse_dispatcher_observation(
     observed: &ObservedSource,
 ) -> Result<ParsedObservation, String> {
-    let line = observed
-        .stdout()
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| "empty dispatcher journal".to_owned())?;
-    let observed_entry = observed_dispatcher_journal_entry(line)?;
+    let Some(observed_entry) = most_recent_dispatch_journal_entry(observed.stdout())? else {
+        // A journal of only background entries is a factory that has reported
+        // no dispatch, not an unreadable source: observed-and-idle, exactly as
+        // an absent journal already is (`contracts.md`, the
+        // cockpit-blind-vs-idle distinction).
+        return Ok(ParsedObservation::observed_idle());
+    };
     let work_item_id = observed_entry.work_item_id;
     let dispatch_id = observed_entry.dispatch_id;
     let version = source_stream_seq(&[&work_item_id, &dispatch_id]);
@@ -2809,19 +2854,63 @@ struct RawDispatcherJournalOutcome {
     detail: Option<String>,
 }
 
-fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJournalEntry, String> {
+/// Scan the journal backward for the most recent DISPATCH-shaped entry.
+///
+/// `Ok(Some(entry))` is that entry; `Ok(None)` says every entry in the journal
+/// was a well-formed NON-dispatch record (the watchdog's discovery poll and any
+/// other stage that journals no dispatch), which is idle, not unavailable.
+///
+/// A line the reader cannot interpret at all does NOT abort the scan: an
+/// envelope the adapter can read stays OBSERVED even when one of its items is
+/// unparseable (`contracts.md`, adapter honesty), so a torn or truncated write
+/// at the tail must not hide the good dispatch record beneath it. Its reason is
+/// remembered and reported only if the whole scan finds no dispatch entry --
+/// then nothing in the journal was interpretable and the honest answer is the
+/// most recent malformed entry's reason, not silent idleness.
+fn most_recent_dispatch_journal_entry(
+    stdout: &str,
+) -> Result<Option<ObservedDispatcherJournalEntry>, String> {
+    let mut saw_entry = false;
+    let mut malformed: Option<String> = None;
+    for line in stdout.lines().rev().filter(|line| !line.trim().is_empty()) {
+        saw_entry = true;
+        match observed_dispatcher_journal_entry(line) {
+            Ok(Some(entry)) => return Ok(Some(entry)),
+            Ok(None) => {}
+            Err(reason) => {
+                if malformed.is_none() {
+                    malformed = Some(reason);
+                }
+            }
+        }
+    }
+    if !saw_entry {
+        return Err("empty dispatcher journal".to_owned());
+    }
+    malformed.map_or(Ok(None), Err)
+}
+
+/// Read ONE journal line: `Ok(None)` when it journals no dispatch at all.
+///
+/// A record with no `dispatch_id` is not a malformed dispatch record, it is a
+/// different KIND of record -- `watchdog-discovery-poll` is the frequent one --
+/// and the console has nothing to say about it. A record that DOES carry a
+/// dispatch id but no work-item is malformed, because a dispatch is always of
+/// something.
+fn observed_dispatcher_journal_entry(
+    line: &str,
+) -> Result<Option<ObservedDispatcherJournalEntry>, String> {
     let raw: RawDispatcherJournalEntry = serde_json::from_str(line)
         .map_err(|_error| "invalid dispatcher journal JSON".to_owned())?;
+    let Some(dispatch_id) = raw.dispatch_id.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
     let work_item_id = raw
         .work_item_id
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "no work-item in journal entry".to_owned())?;
-    let dispatch_id = raw
-        .dispatch_id
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "no dispatch id in journal entry".to_owned())?;
     if raw.stage.as_deref() == Some("non-convergence-bounce") {
-        return Ok(ObservedDispatcherJournalEntry {
+        return Ok(Some(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
             kind: DispatcherJournalKind::BacklogBounce,
@@ -2830,16 +2919,16 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
                 .outcome_status
                 .filter(|value| !value.trim().is_empty())
                 .or_else(|| Some("bounced".to_owned())),
-        });
+        }));
     }
     let Some(outcome) = raw.outcome else {
-        return Ok(ObservedDispatcherJournalEntry {
+        return Ok(Some(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
             kind: DispatcherJournalKind::Progress,
             diagnostic: None,
             terminal_status: None,
-        });
+        }));
     };
     let stage = outcome.stage.as_deref().unwrap_or_default();
     let status = outcome.status.as_deref().unwrap_or_default();
@@ -2851,22 +2940,22 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
                     .as_deref()
                     .is_some_and(|detail| detail.contains("LIVESPEC_NON_CONVERGED"))))
     {
-        return Ok(ObservedDispatcherJournalEntry {
+        return Ok(Some(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
             kind: DispatcherJournalKind::BacklogBounce,
             diagnostic: None,
             terminal_status: Some(status.to_owned()),
-        });
+        }));
     }
     if raw.stage.as_deref() != Some("outcome") || status != "failed" {
-        return Ok(ObservedDispatcherJournalEntry {
+        return Ok(Some(ObservedDispatcherJournalEntry {
             work_item_id,
             dispatch_id,
             kind: DispatcherJournalKind::Progress,
             diagnostic: None,
             terminal_status: None,
-        });
+        }));
     }
     let kind = match stage {
         "dispatcher-staleness-refused" => DispatcherJournalKind::DispatcherStalenessRefused,
@@ -2878,13 +2967,13 @@ fn observed_dispatcher_journal_entry(line: &str) -> Result<ObservedDispatcherJou
         .detail
         .map(|detail| detail.trim().to_owned())
         .filter(|detail| !detail.is_empty());
-    Ok(ObservedDispatcherJournalEntry {
+    Ok(Some(ObservedDispatcherJournalEntry {
         work_item_id,
         dispatch_id,
         kind,
         diagnostic,
         terminal_status: None,
-    })
+    }))
 }
 
 /// Normalize real `fabro ps`/run output into a Fabro run snapshot.
@@ -6795,6 +6884,9 @@ mod tests {
 
     #[test]
     fn parse_dispatcher_reports_missing_and_invalid_records() {
+        // Criterion 3: a GENUINELY malformed entry -- unreadable JSON, or a
+        // dispatch record naming no work-item -- still yields an honest
+        // not-observed reason. Only a recognized non-dispatch record is skipped.
         assert_eq!(
             parse_dispatcher_observation(&observed_for(
                 SourceAdapterKind::Dispatcher,
@@ -6822,18 +6914,120 @@ mod tests {
         assert_eq!(
             parse_dispatcher_observation(&observed_for(
                 SourceAdapterKind::Dispatcher,
-                "console",
-                "{\"work_item_id\": \"console-1\"}"
-            )),
-            Err("no dispatch id in journal entry".to_owned())
-        );
-        assert_eq!(
-            parse_dispatcher_observation(&observed_for(
-                SourceAdapterKind::Dispatcher,
                 "",
                 "{\"work_item_id\": \"console-1\", \"dispatch_id\": \"dispatch_9\"}"
             )),
             Err("invalid journal entry".to_owned())
+        );
+    }
+
+    /// The journal's REAL tail shape: the watchdog's discovery poll writes a
+    /// `work_item_id` and no `dispatch_id` on every sweep, so the tail line is
+    /// almost never the most recent dispatch. Reading the tail alone marked the
+    /// dispatcher source unavailable for as long as the watchdog kept polling
+    /// (livespec-console-beads-fabro-pzbdbo.31).
+    const WATCHDOG_DISCOVERY_POLL_LINE: &str = r#"{"at":"2026-09-08T09:12:36Z","stage":"watchdog-discovery-poll","work_item_id":"livespec-console-beads-fabro-gqmtwa.4"}"#;
+
+    #[test]
+    fn parse_dispatcher_scans_back_past_watchdog_polls_to_the_last_dispatch() {
+        let journal = format!(
+            "{}\n{WATCHDOG_DISCOVERY_POLL_LINE}\n{WATCHDOG_DISCOVERY_POLL_LINE}\n",
+            r#"{"work_item_id": "console-1", "dispatch_id": "dispatch_9"}"#
+        );
+        let parsed = ok_parsed_observation(parsed_dispatcher(&journal));
+        let version = super::source_stream_seq(&["console-1", "dispatch_9"]);
+
+        assert!(!parsed.is_idle());
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: "dispatch_9".to_owned(),
+                kind: DispatcherJournalKind::Progress,
+                diagnostic: None,
+                terminal_status: None,
+                source_version: version,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_dispatcher_scans_back_past_a_torn_tail_write_to_the_last_dispatch() {
+        // An unparseable item does not promote to an uninterpretable payload
+        // for the whole source (`contracts.md`, adapter honesty): a truncated
+        // write at the tail must not hide the dispatch record beneath it.
+        let journal = format!(
+            "{}\n{{\"at\":\"2026-09-08T09:12:36Z\",\"sta\n",
+            r#"{"work_item_id": "console-1", "dispatch_id": "dispatch_9"}"#
+        );
+        let parsed = ok_parsed_observation(parsed_dispatcher(&journal));
+
+        assert!(!parsed.is_idle());
+        assert_eq!(
+            first_payload(&parsed),
+            &SourcePayload::DispatcherJournalEntry(DispatcherJournalEntry {
+                repo: "console".to_owned(),
+                work_item_id: "console-1".to_owned(),
+                dispatch_id: "dispatch_9".to_owned(),
+                kind: DispatcherJournalKind::Progress,
+                diagnostic: None,
+                terminal_status: None,
+                source_version: super::source_stream_seq(&["console-1", "dispatch_9"]),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_dispatcher_reports_the_most_recent_malformed_entry_when_no_dispatch_exists() {
+        // Nothing in the journal was interpretable, so the honest answer is a
+        // reason -- and it is the MOST RECENT malformed entry's reason, the one
+        // the backward scan reached first, not an older one behind it.
+        let journal = format!("{}\nnot json\n", r#"{"dispatch_id": "dispatch_9"}"#);
+        assert_eq!(
+            parsed_dispatcher(&journal),
+            Err("invalid dispatcher journal JSON".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_dispatcher_treats_a_journal_of_only_watchdog_polls_as_observed_and_idle() {
+        // Criterion 2: a factory that has journaled background activity but no
+        // dispatch is IDLE on the same terms as one that has written no journal
+        // at all -- reached, and holding nothing to report.
+        let journal = format!("{WATCHDOG_DISCOVERY_POLL_LINE}\n{WATCHDOG_DISCOVERY_POLL_LINE}\n");
+        let parsed = ok_parsed_observation(parsed_dispatcher(&journal));
+
+        assert!(parsed.is_idle());
+        assert!(parsed.events.is_empty());
+    }
+
+    #[test]
+    fn observed_source_adapter_treats_a_normalizer_idle_verdict_as_observed() {
+        // The idle verdict must reach the POLL as observed-and-idle: one
+        // positive observed marker, no not-observed finding. This is the whole
+        // point of the fix -- the live dispatcher journal's tail is a watchdog
+        // poll, and the source must read as reached, not as cockpit-blind.
+        let probe = StubProbe::file(SourceProbeOutcome::observed(
+            &format!("{WATCHDOG_DISCOVERY_POLL_LINE}\n"),
+            true,
+        ));
+        let adapter = ok_observed_source_adapter(ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Dispatcher,
+            "console",
+            SourceObservationPlan::file("tmp/fabro-dispatch-journal.jsonl"),
+            parse_dispatcher_observation,
+        ));
+
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(
+            AdapterPollRequest::new("dispatcher:console", None, 1),
+        )));
+
+        assert_observed_idle(&poll);
+        assert_eq!(
+            availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
+            Some("observed_idle")
         );
     }
 
