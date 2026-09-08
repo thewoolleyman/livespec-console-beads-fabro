@@ -10,9 +10,10 @@
 
 use super::{
     Audience, ClauseLink, CoverageEntry, CoverageReport, InvalidTestRegistration, Mode, NFR_FILE,
-    PendingTestRegistration, SpecSource, UnlinkedClause, UntestedScenario, contains_whole_word,
-    derive_gap_id, evaluate, extract_rules, nfr_scenarios, normalize_scenario, operator_scenarios,
-    parse_heading, parse_registry, push_heading, resolve_mode, validate_test_registrations,
+    PendingTestRegistration, SpecSource, StaleFencedBlock, UnlinkedClause, UntestedScenario,
+    contains_whole_word, derive_gap_id, evaluate, extract_rules, nfr_scenarios, normalize_scenario,
+    operator_scenarios, parse_heading, parse_registry, push_heading, resolve_mode,
+    stale_fenced_blocks, validate_test_registrations,
 };
 
 const FIXTURE: &str = include_str!("../tests/data/parity_fixture.md");
@@ -940,4 +941,148 @@ fn resolve_mode_defaults_to_fail() {
     assert_eq!(resolve_mode(Some("warn")), Mode::Warn);
     assert_eq!(resolve_mode(Some("  WARN  ")), Mode::Warn);
     assert_eq!(resolve_mode(Some("whatever")), Mode::Fail);
+}
+
+// ---------------------------------------------------------------------------
+// Fenced-block staleness — see `staleness.rs`.
+//
+// The four v048 review-round defects are the fixtures; `tests/
+// fenced_block_staleness.rs` asserts them at the integration boundary, and
+// these unit tests pin the same behaviour plus the parsing edges a real spec
+// file does not happen to contain.
+// ---------------------------------------------------------------------------
+
+const NIGHTLY_PREVIOUS: &str =
+    include_str!("../tests/data/staleness/v048-nightly-filing-previous.md");
+const NIGHTLY_CURRENT: &str =
+    include_str!("../tests/data/staleness/v048-nightly-filing-current.md");
+const CREDENTIAL_PREVIOUS: &str =
+    include_str!("../tests/data/staleness/v048-credential-claim-previous.md");
+const CREDENTIAL_CURRENT: &str =
+    include_str!("../tests/data/staleness/v048-credential-claim-current.md");
+
+/// A minimal removed normative clause plus a block that still restates it.
+const STALE_PREVIOUS: &str = "The console MUST file at the top of the rank order.\n\n```mermaid\nflowchart LR\n  Chore[\"top-ranked chore\"]\n```\n";
+const STALE_CURRENT: &str = "The console files the finding.\n\n```mermaid\nflowchart LR\n  Chore[\"top-ranked chore\"]\n```\n";
+
+fn terms_for(findings: &[StaleFencedBlock], block: (usize, usize)) -> Vec<&str> {
+    findings
+        .iter()
+        .filter(|finding| (finding.start_line, finding.end_line) == block)
+        .map(|finding| finding.term.as_str())
+        .collect()
+}
+
+#[test]
+fn v048_rank_order_and_capture_surface_removals_flag_their_stale_blocks() {
+    let findings = stale_fenced_blocks(NFR_FILE, NIGHTLY_PREVIOUS, NIGHTLY_CURRENT);
+
+    let pyramid = terms_for(&findings, (62, 82));
+    let gherkin = terms_for(&findings, (84, 106));
+    assert_eq!(
+        pyramid,
+        vec!["top rank"],
+        "the quality-gate pyramid mermaid still says top-ranked"
+    );
+    assert!(
+        gherkin.contains(&"rank order"),
+        "the Scenario C gherkin still files at the top of the rank order: {gherkin:?}"
+    );
+    assert!(
+        gherkin.contains(&"capture surface"),
+        "the Scenario C gherkin still files through the capture surface: {gherkin:?}"
+    );
+    assert!(
+        findings.iter().all(|finding| finding.spec_file == NFR_FILE),
+        "every finding names its file"
+    );
+    assert_eq!(
+        findings.len(),
+        pyramid.len() + gherkin.len(),
+        "the diagram one section earlier is merely present, not stale: {findings:?}"
+    );
+}
+
+#[test]
+fn v048_credential_claim_removal_flags_the_scenario_e_edge_only() {
+    let findings = stale_fenced_blocks(NFR_FILE, CREDENTIAL_PREVIOUS, CREDENTIAL_CURRENT);
+
+    assert_eq!(
+        findings,
+        vec![StaleFencedBlock {
+            spec_file: NFR_FILE.to_string(),
+            start_line: 20,
+            end_line: 27,
+            term: "host bd".to_string(),
+        }],
+        "the edge OP --> Bare --> HostBd --> Beads still carries the removed claim"
+    );
+}
+
+#[test]
+fn a_file_whose_prose_did_not_change_yields_no_findings() {
+    assert!(stale_fenced_blocks(NFR_FILE, NIGHTLY_CURRENT, NIGHTLY_CURRENT).is_empty());
+    assert!(stale_fenced_blocks(NFR_FILE, CREDENTIAL_CURRENT, CREDENTIAL_CURRENT).is_empty());
+}
+
+#[test]
+fn a_removed_line_with_no_normative_keyword_is_not_a_clause() {
+    let previous = STALE_PREVIOUS.replace("MUST file", "files");
+    let current = STALE_CURRENT;
+    assert!(
+        stale_fenced_blocks("spec.md", &previous, current).is_empty(),
+        "only normative removals can leave a block stale"
+    );
+}
+
+#[test]
+fn an_unterminated_fence_runs_to_the_end_of_the_file() {
+    let previous = STALE_PREVIOUS.replace("```\n", "");
+    let current = STALE_CURRENT.replace("```\n", "");
+
+    let findings = stale_fenced_blocks("spec.md", &previous, &current);
+
+    assert_eq!(
+        findings,
+        vec![StaleFencedBlock {
+            spec_file: "spec.md".to_string(),
+            start_line: 3,
+            end_line: 6,
+            term: "top rank".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn carriage_returns_do_not_change_the_reading() {
+    let previous = STALE_PREVIOUS.replace('\n', "\r\n");
+    let current = STALE_CURRENT.replace('\n', "\r\n");
+
+    let findings = stale_fenced_blocks("spec.md", &previous, &current);
+
+    assert_eq!(terms_for(&findings, (3, 6)), vec!["top rank"]);
+}
+
+#[test]
+fn a_mermaid_line_with_no_readable_label_is_read_whole() {
+    // `TopRank[` never closes and `Bare[]` encloses nothing, so neither line
+    // yields a label; the identifiers are then all the content there is, and
+    // the check reads them exactly as it reads an edge's.
+    let diagram = "flowchart LR\n  TopRank[\n  Bare[]\n";
+    let previous = STALE_PREVIOUS.replace("flowchart LR\n  Chore[\"top-ranked chore\"]\n", diagram);
+    let current = STALE_CURRENT.replace("flowchart LR\n  Chore[\"top-ranked chore\"]\n", diagram);
+
+    let findings = stale_fenced_blocks("spec.md", &previous, &current);
+
+    assert_eq!(terms_for(&findings, (3, 7)), vec!["top rank"]);
+}
+
+#[test]
+fn a_block_whose_language_changed_counts_as_touched() {
+    let current = STALE_CURRENT.replace("```mermaid", "```text");
+
+    assert!(
+        stale_fenced_blocks("spec.md", STALE_PREVIOUS, &current).is_empty(),
+        "the change rewrote the block, so it is not stale"
+    );
 }
