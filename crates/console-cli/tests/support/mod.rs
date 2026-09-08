@@ -462,6 +462,7 @@ pub type HarnessResult<T> = Result<T, String>;
 /// scenarios use `lifecycle::LifecycleFixture` to supply one.
 pub mod attention_rows;
 pub mod lifecycle;
+pub mod real_store_seed;
 
 /// Identifies the repo/tenant a harness run observes.
 ///
@@ -985,4 +986,165 @@ fn write_launcher_with_env(
         .map_err(|error| format!("write launcher {} failed: {error}", launcher.display()))?;
     make_executable(&launcher)?;
     Ok(launcher)
+}
+
+// --- real-store smoke extension (livespec-console-beads-fabro-mx9u.15) -----
+//
+// The default `launch`/`launch_with_env` constructors always start from an
+// EMPTY store (the binary creates `store.sqlite` fresh on first open). The
+// real-store smoke gate needs the opposite: a store already holding REAL
+// captured event history before the binary ever opens it, so this extension
+// seeds the file first and only then spawns `tmux`.
+
+/// BASE ceiling for the real-store smoke gate's first-frame wait, wider than
+/// [`DEFAULT_READY_TIMEOUT_SECS`] because — unlike every other harness
+/// scenario, which points every backing CLI at an instant `{}` stub — this
+/// gate opens a store carrying real accumulated history, and the console's
+/// startup ingest pass is sized against that content, not against an empty
+/// store. Overridable via `LIVESPEC_CONSOLE_E2E_REAL_STORE_READY_TIMEOUT_SECS`
+/// and still widened by measured host load and clamped at [`MAX_TIMEOUT`], so
+/// this can only ever be a wider (never unbounded) version of the same ceiling
+/// every other scenario uses.
+const DEFAULT_REAL_STORE_READY_TIMEOUT_SECS: u64 = 150;
+
+/// The first-frame readiness ceiling for the real-store smoke gate.
+#[must_use]
+pub fn real_store_smoke_ready_timeout() -> Duration {
+    scaled_timeout(
+        env_timeout(
+            "LIVESPEC_CONSOLE_E2E_REAL_STORE_READY_TIMEOUT_SECS",
+            DEFAULT_REAL_STORE_READY_TIMEOUT_SECS,
+        ),
+        host_load_scale_permille(),
+    )
+}
+
+impl TmuxConsole {
+    /// Launch the console for `repo` against a store PRE-SEEDED from
+    /// `fixtures` (see [`real_store_seed`]), waiting up to `ready_timeout`
+    /// for the first painted frame.
+    ///
+    /// Like [`Self::launch_with_env`], `extra_env` exports are appended AFTER
+    /// the default hermetic stub `*_PROGRAM` overrides, so a caller can repoint
+    /// exactly the sources this scenario cares about (typically
+    /// `LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM`, to report the seeded
+    /// occurrence as currently absent) while the rest stay idle.
+    ///
+    /// On a failed readiness wait, the returned error carries the PANE'S OWN
+    /// last capture (which, for a startup crash, contains both the process's
+    /// `tui error: ...` diagnostic and the `TUI_EXIT=<code>` line the launcher
+    /// always prints) — so a crash is diagnosable from this error string alone,
+    /// with no `tmux remain-on-exit` dance needed
+    /// (`livespec-console-beads-fabro-mx9u.15` AC3).
+    ///
+    /// # Errors
+    /// Returns a message if the binary or `tmux` cannot be resolved, seeding
+    /// the store fails, `tmux` cannot be spawned, or no frame paints within
+    /// `ready_timeout`.
+    pub fn launch_seeded(
+        repo: &RepoFixture,
+        fixtures: &[real_store_seed::FixtureEvent],
+        extra_env: &[(&str, &str)],
+        ready_timeout: Duration,
+    ) -> HarnessResult<Self> {
+        Self::launch_seeded_with_binary(repo, None, fixtures, extra_env, ready_timeout)
+    }
+
+    /// Like [`Self::launch_seeded`], but with an explicit `binary_override`
+    /// instead of resolving `LIVESPEC_CONSOLE_E2E_BIN` / the profile-built
+    /// binary — used to point the harness at a deliberate "known-bad"
+    /// reproduction binary without mutating process environment (this
+    /// workspace forbids `unsafe`, so `std::env::set_var` is unavailable to
+    /// tests; an explicit parameter is the safe alternative).
+    ///
+    /// # Errors
+    /// Returns a message if the binary or `tmux` cannot be resolved, seeding
+    /// the store fails, `tmux` cannot be spawned, or no frame paints within
+    /// `ready_timeout`.
+    pub fn launch_seeded_with_binary(
+        repo: &RepoFixture,
+        binary_override: Option<&Path>,
+        fixtures: &[real_store_seed::FixtureEvent],
+        extra_env: &[(&str, &str)],
+        ready_timeout: Duration,
+    ) -> HarnessResult<Self> {
+        let slot = ConsoleSlot::acquire()?;
+        let tmux = resolve_tmux()?;
+        let binary = match binary_override {
+            Some(path) => path.to_path_buf(),
+            None => resolve_binary()?,
+        };
+        if !binary.is_file() {
+            return Err(format!(
+                "console binary not found at {}; run `just check-real-store-smoke` (which \
+                 builds the release binary and sets LIVESPEC_CONSOLE_E2E_BIN)",
+                binary.display()
+            ));
+        }
+
+        let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
+        let unique = format!("{}-{nonce}", std::process::id());
+        let scratch = std::env::temp_dir().join(format!("lc-real-store-{unique}"));
+        std::fs::create_dir_all(&scratch)
+            .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
+        let store_path = scratch.join("store.sqlite");
+
+        // Seed BEFORE the binary ever opens this path, so the console's very
+        // first open sees the real captured history already on disk.
+        real_store_seed::seed_store_file(&store_path, fixtures)?;
+
+        let stub = write_named_stub(&scratch, "stub-backing-cli.sh")?;
+        write_named_stub(&scratch, "gh")?;
+        let launcher =
+            write_launcher_with_env(&scratch, &binary, repo, &store_path, &stub, extra_env)?;
+
+        let session = format!("lc_rss_{unique}");
+        let socket = session.clone();
+        run_tmux(&tmux, &socket, &scratch, &["kill-session", "-t", &session]);
+
+        let status = Command::new(&tmux)
+            .env("TMUX_TMPDIR", &scratch)
+            .args([
+                "-L",
+                &socket,
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "-x",
+                &DEFAULT_COLS.to_string(),
+                "-y",
+                &DEFAULT_ROWS.to_string(),
+            ])
+            .arg(&launcher)
+            .status()
+            .map_err(|error| format!("spawn tmux new-session failed: {error}"))?;
+        if !status.success() {
+            return Err(format!("tmux new-session exited unsuccessfully: {status}"));
+        }
+
+        let console = Self {
+            tmux,
+            session,
+            socket,
+            scratch,
+            store_path,
+            _slot: slot,
+        };
+        let ready_context = format!(" in tmux session {}", console.session);
+        if let Err(error) = poll_ready(|| console.capture(), ready_timeout, &ready_context) {
+            // Augment with a fresh capture even though `poll_ready`'s own
+            // message did not include one: a fast crash usually already made
+            // the pane non-blank (the process's `tui error: ...` text, plus
+            // the launcher's own `TUI_EXIT=<code>` line), so this is the exit
+            // status AND last terminal output this gate must report on
+            // failure (AC3), captured before the handle (and its tmux
+            // session) is dropped.
+            let last = console.capture().unwrap_or_default();
+            return Err(format!(
+                "{error}\n---- last capture ----\n{last}\n---- end capture ----"
+            ));
+        }
+        Ok(console)
+    }
 }

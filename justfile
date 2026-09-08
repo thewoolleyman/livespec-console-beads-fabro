@@ -96,6 +96,38 @@ check-e2e-tmux:
       exit 1
     fi
 
+# Real-store smoke gate (livespec-console-beads-fabro-mx9u.15) — starts the
+# RELEASE binary's `tui` against a store seeded from REAL captured event
+# history (see `crates/console-cli/tests/fixtures/real_store_smoke/`, and its
+# provenance doc in `crates/console-cli/tests/support/real_store_seed.rs`) and
+# fails if the process exits non-zero or never renders a frame. Distinct from
+# `check-e2e-tmux`: that gate always starts from an EMPTY store built in-test,
+# so a defect that depends on EXISTING STORE STATE (as
+# `livespec-console-beads-fabro-mx9u.11`'s regression did — dd50c09 shipped
+# with all 20 CI checks green and made the console exit 1 shortly after
+# startup against the maintainer's real store) is invisible to it. This gate
+# closes that blind spot. Hermetic (fast hermetic stubs, no beads backend, no
+# credential wrapper); needs only `tmux` and the release binary, matching
+# `check-e2e-tmux`'s prerequisites exactly.
+#
+# Same silent-pass guard as `check-e2e-tmux`: `cargo test -- --ignored` exits 0
+# even on zero matched tests, so the summary must report at least one PASS.
+# errexit is deliberately omitted so captured test output is emitted on failure.
+check-real-store-smoke:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    cargo build --release --package livespec-console-beads-fabro || exit $?
+    target_dir="${CARGO_TARGET_DIR:-$(pwd)/target}"
+    output="$(LIVESPEC_CONSOLE_E2E_BIN="$target_dir/release/livespec-console-beads-fabro" \
+      cargo test --package livespec-console-beads-fabro --test real_store_smoke -- --ignored 2>&1)"
+    status=$?
+    echo "$output"
+    if [ "$status" -ne 0 ]; then exit "$status"; fi
+    if ! grep -qE '[1-9][0-9]* passed' <<<"$output"; then
+      echo "ERROR: the real-store smoke suite ran ZERO tests (0 passed) — did the #[ignore] get dropped, or the test rename?" >&2
+      exit 1
+    fi
+
 # First-touch setup — a THIN delegator to the shipped LOCAL first-touch
 # reconcile verb (`livespec_dev_tooling.fleet.local_reconcile`), the
 # generalized successor to this recipe's former inline steps (livespec-zs22.8
@@ -245,6 +277,7 @@ check:
         check-plugin-resolution
         check-doctor-static
         check-e2e-tmux
+        check-real-store-smoke
         check-ci-parity
         check-fork-drift
         check-red-green-replay
