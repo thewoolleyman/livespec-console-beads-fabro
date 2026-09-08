@@ -36,7 +36,7 @@ the overseer registry row (`ctx_threshold: 50`) and in `~/.claude.json`
 
 The maintainer watches the console at the real TUI while the plan session
 works (ruling 2026-09-08, "I need to see the TUI"): the session's tmux
-window carries the TUI in a right-hand pane at two thirds of the width,
+window carries the TUI in a right-hand pane at half of the width,
 recreated on every restart right after the STATUS RE-PRINT and recorded
 by pane id in the handoff; dogfood passes drive that pane one agent at a
 time and leave it running. The mechanics (split command, the wrapper's
