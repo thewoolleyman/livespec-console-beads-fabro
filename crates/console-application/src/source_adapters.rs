@@ -3783,7 +3783,20 @@ fn attention_item_resolved_event(
     repo: &str,
     item: &AttentionItemSnapshot,
 ) -> NormalizedSourceEvent {
-    let version = attention_stream_seq(&[repo, item.id(), "resolved"]);
+    // The resolved event's identity MUST depend on which occurrence is being
+    // resolved, not just on `(repo, id)`. An attention id can appear, resolve,
+    // and then reappear and need to resolve again (a worktree recreated at the
+    // same path, or any other toggling condition). Folding the resolved item's
+    // own appeared/changed version into the hash ties this resolution to the
+    // specific occurrence it retires, so a second resolution of the same id
+    // computes a distinct identity from the first. Without this, every
+    // resolution of a given id hashed identically, the event store's
+    // UNIQUE(source, source_event_id) constraint let only the FIRST resolution
+    // ever land, and every later one was silently swallowed as a Duplicate —
+    // the row then stayed open forever (livespec-console-beads-fabro-mx9u.11).
+    let occurrence_version = attention_item_version(repo, item);
+    let version =
+        attention_stream_seq(&[repo, item.id(), "resolved", &occurrence_version.to_string()]);
     let source_event_id = format!("needs-attention:{repo}:{}:resolved:{version}", item.id());
     NormalizedSourceEvent::new(
         ConsoleEvent::new(

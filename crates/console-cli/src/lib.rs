@@ -1810,8 +1810,22 @@ pub fn ingest_needs_attention(
     let mut inserted = 0;
     for event in &events {
         let append = event_append_from_normalized_source_event(event, observed_at);
-        if store.append_event(&append)?.status() == AppendStatus::Inserted {
+        let outcome = store.append_event(&append)?;
+        if outcome.status() == AppendStatus::Inserted {
             inserted += 1;
+        } else if append.event().event_type() == &EventType::AttentionItemResolved {
+            // A resolved event now carries a per-occurrence identity (see
+            // `attention_item_resolved_event`), so a genuinely new resolution
+            // should never collide with one already in the store. A Duplicate
+            // here means the row will NOT be retired this poll — surface it as
+            // a failure rather than silently returning Ok and letting the
+            // attention row sit open with nothing recording why
+            // (livespec-console-beads-fabro-mx9u.11).
+            return Err(ConsoleRuntimeError::AttentionResolveDuplicate(format!(
+                "{}:{}",
+                needs_attention.repo,
+                event.source_event_id()
+            )));
         }
     }
     Ok(inserted)
@@ -2068,6 +2082,16 @@ pub enum ConsoleRuntimeError {
     Adapter(AdapterError),
     /// Application variant.
     Application(ApplicationError),
+    /// An `attention_item.resolved` append the store rejected as a duplicate.
+    ///
+    /// Every resolved event carries a per-occurrence identity (folded from the
+    /// resolved item's own appeared/changed version), so a genuinely new
+    /// resolution should never collide. A collision here means the store
+    /// already holds an event claiming this exact occurrence's identity —
+    /// surfaced rather than silently dropped, so the attention row is never
+    /// left open forever believing a write it never actually made
+    /// (livespec-console-beads-fabro-mx9u.11). Carries `repo:source_event_id`.
+    AttentionResolveDuplicate(String),
     /// Backing CLI resolution variant.
     BackingCliResolution(String),
     /// Event store variant.
@@ -2112,6 +2136,12 @@ impl std::fmt::Display for ConsoleRuntimeError {
         match self {
             Self::Adapter(error) => write!(formatter, "Adapter({error:?})"),
             Self::Application(error) => write!(formatter, "Application({error:?})"),
+            Self::AttentionResolveDuplicate(detail) => {
+                write!(
+                    formatter,
+                    "AttentionResolveDuplicate: resolved-event append for {detail} was rejected as a duplicate — an earlier resolved event already claims this occurrence's identity, so the attention row could not be retired"
+                )
+            }
             Self::BackingCliResolution(error) => {
                 write!(formatter, "BackingCliResolution({error})")
             }
@@ -13668,6 +13698,196 @@ mod tests {
 
         check(
             format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    /// A store decorator that always reports a resolved-event append as
+    /// `Duplicate`, delegating everything else to the wrapped real store. Used
+    /// to prove `ingest_needs_attention` surfaces a rejected resolved append as
+    /// an `AttentionResolveDuplicate` failure rather than folding it into a
+    /// silent `Ok` — the (livespec-console-beads-fabro-mx9u.11) fix.
+    struct DuplicateOnResolveStore<'a> {
+        inner: &'a mut SqliteEventStore,
+    }
+
+    impl FactoryCommandStore for DuplicateOnResolveStore<'_> {
+        fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
+            self.inner.list_commands()
+        }
+
+        fn list_console_events(&self) -> EventStoreResult<Vec<ConsoleEvent>> {
+            self.inner.list_console_events()
+        }
+
+        fn append_command(
+            &mut self,
+            append: &CommandAppend,
+        ) -> EventStoreResult<CommandAppendOutcome> {
+            self.inner.append_command(append)
+        }
+
+        fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
+            if append.event().event_type() == &EventType::AttentionItemResolved {
+                return Ok(AppendOutcome::new(0, AppendStatus::Duplicate));
+            }
+            self.inner.append_event(append)
+        }
+
+        fn claim_command(&mut self, command_id: &str, claimed_at: &str) -> EventStoreResult<bool> {
+            self.inner.claim_command(command_id, claimed_at)
+        }
+
+        fn update_command_status(
+            &mut self,
+            command_id: &str,
+            status: &str,
+            updated_at: &str,
+            result_json: Option<&str>,
+            error_json: Option<&str>,
+        ) -> EventStoreResult<CommandStatusUpdateOutcome> {
+            self.inner.update_command_status(
+                command_id,
+                status,
+                updated_at,
+                result_json,
+                error_json,
+            )
+        }
+
+        fn finalize_executing_command_status(
+            &mut self,
+            command_id: &str,
+            status: &str,
+            updated_at: &str,
+            result_json: Option<&str>,
+            error_json: Option<&str>,
+        ) -> EventStoreResult<CommandStatusUpdateOutcome> {
+            self.inner.finalize_executing_command_status(
+                command_id,
+                status,
+                updated_at,
+                result_json,
+                error_json,
+            )
+        }
+
+        fn fail_stale_executing_commands(
+            &mut self,
+            stale_before: &str,
+            recovered_at: &str,
+            error_json: &str,
+        ) -> EventStoreResult<usize> {
+            self.inner
+                .fail_stale_executing_commands(stale_before, recovered_at, error_json)
+        }
+    }
+
+    #[test]
+    fn ingest_needs_attention_surfaces_a_resolved_event_the_store_rejects_as_duplicate() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let seed_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "att-dup",
+            "needs a human",
+        )]);
+        let seed_needs_attention =
+            NeedsAttentionIngest::new(&seed_port, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &seed_needs_attention, "2026-09-08T00:00:00Z").ok_test();
+
+        let mut duplicating = DuplicateOnResolveStore { inner: &mut store };
+        let resolve_port = empty_needs_attention_port();
+        let resolve_needs_attention =
+            NeedsAttentionIngest::new(&resolve_port, "livespec-console-beads-fabro");
+        let outcome = ingest_needs_attention(
+            &mut duplicating,
+            &resolve_needs_attention,
+            "2026-09-08T00:00:01Z",
+        );
+
+        check(
+            format!("{outcome:?}").contains("AttentionResolveDuplicate"),
+            "assert failed",
+        );
+
+        // A non-resolved event append (the item reappearing with different
+        // content) must still reach the wrapped inner store -- only a resolved
+        // event is force-Duplicated. Reuses the same decorator instance.
+        let reappear_port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "att-dup",
+            "needs a human, again",
+        )]);
+        let reappear_needs_attention =
+            NeedsAttentionIngest::new(&reappear_port, "livespec-console-beads-fabro");
+        let reappeared = ingest_needs_attention(
+            &mut duplicating,
+            &reappear_needs_attention,
+            "2026-09-08T00:00:02Z",
+        );
+        check((reappeared.ok_test()) == (1), "assert_eq failed");
+
+        // The decorator's non-append methods are pure passthroughs to the
+        // wrapped real store -- exercise each once so the decorator itself is
+        // proven correct rather than left as untested boilerplate.
+        check(duplicating.list_commands().is_ok(), "assert failed");
+        let probe_append = CommandAppend::new(
+            CommandEnvelope::new(
+                "cmd_dup_probe".to_owned(),
+                CommandType::WorkItemApproveRequested,
+                "wi-dup-probe".to_owned(),
+                "idem_dup_probe".to_owned(),
+                "operator".to_owned(),
+            ),
+            "2026-09-08T00:00:02Z".to_owned(),
+            None,
+            "corr_dup_probe".to_owned(),
+            "{}".to_owned(),
+        );
+        check(
+            duplicating.append_command(&probe_append).is_ok(),
+            "assert failed",
+        );
+        check(
+            duplicating
+                .claim_command("cmd_dup_probe", "2026-09-08T00:00:03Z")
+                .is_ok(),
+            "assert failed",
+        );
+        // These two require the command to already be in an executing state to
+        // succeed, which is not this test's concern -- only that the decorator
+        // reaches the inner store rather than swallowing the call.
+        let _ = duplicating.update_command_status(
+            "cmd_dup_probe",
+            "done",
+            "2026-09-08T00:00:04Z",
+            None,
+            None,
+        );
+        let _ = duplicating.finalize_executing_command_status(
+            "cmd_dup_probe",
+            "done",
+            "2026-09-08T00:00:05Z",
+            None,
+            None,
+        );
+        check(
+            duplicating
+                .fail_stale_executing_commands("2026-09-08T00:00:00Z", "2026-09-08T00:00:06Z", "{}")
+                .is_ok(),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn attention_resolve_duplicate_display_names_the_repo_and_reason() {
+        check(
+            format!(
+                "{}",
+                ConsoleRuntimeError::AttentionResolveDuplicate(
+                    "livespec-console-beads-fabro:evt:needs-attention:livespec-console-beads-fabro:att-dup:resolved:1"
+                        .to_owned()
+                )
+            )
+            .contains("AttentionResolveDuplicate: resolved-event append for livespec-console-beads-fabro"),
             "assert failed",
         );
     }
