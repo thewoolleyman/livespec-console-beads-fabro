@@ -16,6 +16,24 @@ picture readable or drown in context). Consequences:
 - **Anchor:** `associated_work_item_id` → `livespec-console-beads-fabro-pzbdbo`
   (epic, `metadata.plan_slug` = this directory's name), created 2026-09-01.
 
+## Session protocol (ruling 2026-09-08 — restart re-print, no compaction)
+
+The session that drives this plan runs under an overseerd track that restarts
+it at 50% remaining context, and never compacts. Reasoning, recorded here
+because it is a working-agreement decision and not a status: (1) the maintainer
+reads the pane, and a restart destroys the old pane's scrollback, so the FIRST
+output of every restarted session is the STATUS RE-PRINT defined in
+`CLAUDE.md` (restarted-session section) — goal, landed, in flight, decisions
+taken on the maintainer's behalf, decisions owed, next action; (2) the
+pre-restart handoff on the epic timeline is written FOR that re-print and
+begins with `FIRST ACTION ON RESUME: print the STATUS RE-PRINT`; (3)
+auto-compaction stays off because a compacted session inherits its own
+mislabels and stops when its checklist empties — a restart from ledger-held
+state does not; (4) a turn never ends on a "still outstanding" list: each line
+becomes an action or the one decision question. The mechanical side lives in
+the overseer registry row (`ctx_threshold: 50`) and in `~/.claude.json`
+(`autoCompactEnabled: false`), neither of which is tracked in git.
+
 ## Rulings log
 
 ### 2026-09-01 — resume brief and the four-question batch

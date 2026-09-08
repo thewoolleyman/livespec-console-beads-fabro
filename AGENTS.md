@@ -75,6 +75,55 @@ which now carries a revision history (`SPECIFICATION/history/v001/`). A Rust
 workspace under `crates/` implements the console against that spec; ongoing
 implementation work is tracked in the Beads ledger, not in this file.
 
+## ⛔ Restarted or resumed session: the FIRST output is a status re-print
+
+Maintainer ruling 2026-09-08, binding on every session of every plan in this
+repo. The overseerd track for a plan restarts the session at 50% remaining
+context (`ctx_threshold: 50` on its registry row). A restart replaces the tmux
+pane the maintainer reads, so everything the previous session printed is gone;
+the maintainer reads the NEW pane by scrolling up. Auto-compaction is OFF
+host-wide (`autoCompactEnabled: false` in `~/.claude.json`) and MUST stay off:
+a compacted session resumes onto a self-written checklist with its own
+mislabels baked in, and stops when the checklist empties (measured 2026-09-08,
+this plan: the pivot to the console queue was in the summary and the session
+still ended its turn on a "still outstanding" list).
+
+1. **First output on resume is the STATUS RE-PRINT.** When a session starts
+   from the overseerd resume prompt (`resume plan epic <id> in repository
+   <repo>; read its ledger-held plan state`) or from
+   `/livespec-orchestrator-beads-fabro:plan <topic>`, its first message —
+   after only the reads needed to gather it (the epic's latest handoff entry
+   and ONE cached `bd list --status all --json -n 0`) — prints, under a
+   `STATUS RE-PRINT` heading: (a) the plan goal in one line; (b) what landed
+   in the previous session, with PR numbers and item ids; (c) what is in
+   flight, with run ids, PR numbers, and what each waits on; (d) every
+   decision taken on the maintainer's behalf since their last message; (e)
+   anything only the maintainer can decide, each with a recommendation; (f)
+   the next action, which the session then takes in the same turn. This is
+   the ONE place a handoff body is printed in chat; the "never print a handoff
+   inline" rule below yields to it on restart.
+2. **The pre-restart handoff is written FOR that re-print.** The handoff the
+   dying session appends to the epic timeline (`plan.append_handoff`) MUST
+   begin with the line `FIRST ACTION ON RESUME: print the STATUS RE-PRINT
+   (CLAUDE.md, restarted-session section)` and MUST carry items (a)–(f) so
+   the successor prints them without re-deriving. Its `next_action` is
+   non-human unless it names the exact decision the maintainer owns.
+3. **Turn-ending rule.** A final message may contain only three kinds of
+   item: done (with ids), in flight (with ids and what it waits on), or ONE
+   decision question with a recommendation. A "still outstanding" / "next for
+   this plan" list is forbidden: convert each line into an action taken this
+   turn or into that one question before ending the turn. An empty checklist
+   never ends a turn; the recorded next action and the standing directives
+   are the instruction when the maintainer's last message runs out.
+4. **The self-loop is repointed, never deleted.** When a foreman / watcher
+   loop's watched tracks finish, its prompt becomes "advance this plan's
+   recorded next action". The loop stops only when the epic closes.
+5. **Re-verify every "maintainer-owned" label before reporting it.** A label
+   inherited from an earlier session or summary is a claim, not a fact
+   (2026-07-22 and 2026-09-08 both: items reported as "still yours" that the
+   session could act on itself). If the reason it is the maintainer's cannot
+   be stated in one sentence with a current fact, act on it.
+
 ## Repository scope
 
 `livespec-console-beads-fabro` is a separate product from:
@@ -188,8 +237,10 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   topic; resume via `/livespec-orchestrator-beads-fabro:plan <topic>`); UPDATE
   it in place and print its PATH. Completed threads archive to
   `plan/archive/<topic>/`; legacy prompt handoffs live in `archive/prompts/`.
-  Do not print a handoff body in the chat, and do not proliferate new handoff
-  files.
+  Do not print a handoff body in the chat (the restart STATUS RE-PRINT above is
+  the one exception), and do not proliferate new handoff files. For a plan
+  anchored on a ledger epic, the living handoff is the epic's timeline
+  (`plan.append_handoff` / `set_next_action`); the file form is legacy.
 - **NO SHADOW LEDGER — never duplicate in git what the ledger already holds.**
   Status, progress, "X merged", "Y filed / reparented", next actions and
   who-owns-what live in the beads ledger (epic timelines, children, item
