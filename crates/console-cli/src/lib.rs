@@ -67,12 +67,14 @@ use console_tui::{
 };
 
 mod backing_cli;
+mod source_poller;
 
 pub use backing_cli::{
     BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
     ConsoleInvokerResolution, PluginResolution, ResolveInputs, python_normalized_invocation,
     resolve_console_invoker,
 };
+pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents run output data used by the console.

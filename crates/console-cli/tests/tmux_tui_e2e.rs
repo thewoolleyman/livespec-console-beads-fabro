@@ -1615,3 +1615,188 @@ fn tmux_tui_e2e_deduped_work_item_row_still_carries_the_advertised_valve() -> Ha
     );
     Ok(())
 }
+
+// --- Responsiveness under a BLOCKED backing-CLI poll (pzbdbo.25) -------------
+//
+// Dogfooded 2026-09-08: with the attention source refreshing continuously the
+// console stopped consuming keyboard input, typed keys rendered raw, `q` no
+// longer quit, and the process needed `SIGTERM`. The in-process
+// `source_poller_cadence.rs` test pins the poller's cadence floor; only a real
+// terminal can pin the other half — that the operator keeps their cockpit while
+// one of those polls is stuck. So this scene BLOCKS the `needs-attention`
+// backing CLI for as long as the console lives and then drives real keys
+// against it.
+
+/// A `needs-attention` backing CLI whose FIRST invocation returns at once and
+/// whose every later invocation BLOCKS until the console exits.
+///
+/// The first invocation is the launch path's synchronous ingest: blocking it
+/// would stop the TUI painting at all, which proves nothing about input. Every
+/// later invocation is the off-thread poller's, and blocking those is the
+/// condition under test.
+///
+/// The block is bounded by the CONSOLE'S OWN LIFETIME rather than by a sleep:
+/// the script waits while its parent (the console process that spawned it) is
+/// alive. A stuck backing CLI is therefore genuinely indefinite from the
+/// console's side — nothing is racing a timer — while the host is left with no
+/// lingering process once the pane is gone.
+struct BlockingAttentionCli {
+    scratch: PathBuf,
+    program: PathBuf,
+    spawns: PathBuf,
+}
+
+impl BlockingAttentionCli {
+    /// The marker a blocked invocation writes when it starts.
+    const BLOCKED: &'static str = "blocked";
+    /// The marker it writes if it ever returns.
+    const RETURNED: &'static str = "returned";
+
+    /// Write the script into a dedicated scratch dir OUTSIDE the harness's own
+    /// (the harness removes its scratch on `Drop`, and bash reads a script
+    /// incrementally — a deleted script mid-run is a spurious failure).
+    fn install() -> HarnessResult<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch =
+            std::env::temp_dir().join(format!("lc-e2e-blocked-poll-{}", std::process::id()));
+        let _ignored = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch)
+            .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
+        let program = scratch.join("blocking-needs-attention.sh");
+        let spawns = scratch.join("spawns");
+        let body = format!(
+            "#!/usr/bin/env bash\n\
+             first={first}\n\
+             spawns={spawns}\n\
+             if [ ! -e \"$first\" ]; then\n\
+             \x20 : >\"$first\"\n\
+             \x20 printf '{{}}\\n'\n\
+             \x20 exit 0\n\
+             fi\n\
+             printf '{blocked}\\n' >>\"$spawns\"\n\
+             parent=$PPID\n\
+             while kill -0 \"$parent\" 2>/dev/null; do sleep 0.1; done\n\
+             printf '{returned}\\n' >>\"$spawns\"\n\
+             printf '{{}}\\n'\n",
+            first = shell_quoted(&scratch.join("first-invocation-done")),
+            spawns = shell_quoted(&spawns),
+            blocked = Self::BLOCKED,
+            returned = Self::RETURNED,
+        );
+        std::fs::write(&program, body)
+            .map_err(|error| format!("write {} failed: {error}", program.display()))?;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("chmod {} failed: {error}", program.display()))?;
+        Ok(Self {
+            scratch,
+            program,
+            spawns,
+        })
+    }
+
+    /// The path to hand to `LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM`.
+    fn program(&self) -> String {
+        self.program.display().to_string()
+    }
+
+    /// Everything the spawned invocations have recorded so far.
+    fn markers(&self) -> HarnessResult<String> {
+        match std::fs::read_to_string(&self.spawns) {
+            Ok(contents) => Ok(contents),
+            // Absent means the poller has not reached the attention source yet.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(format!("read {} failed: {error}", self.spawns.display())),
+        }
+    }
+
+    /// Block until a poller invocation is IN FLIGHT — started and not returned.
+    fn wait_until_blocked(&self, timeout: Duration) -> HarnessResult<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let markers = self.markers()?;
+            if markers.contains(Self::BLOCKED) && !markers.contains(Self::RETURNED) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out after {timeout:?} waiting for the needs-attention backing CLI \
+                     to be spawned and blocked; markers so far: {markers:?}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Whether the in-flight invocation is STILL in flight.
+    fn still_blocked(&self) -> HarnessResult<bool> {
+        Ok(!self.markers()?.contains(Self::RETURNED))
+    }
+}
+
+impl Drop for BlockingAttentionCli {
+    fn drop(&mut self) {
+        let _ignored = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+/// Single-quote a path for the generated bash script.
+fn shell_quoted(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+/// Real keys keep working — and `q` still quits — while a backing-CLI source
+/// poll is stuck (livespec-console-beads-fabro-pzbdbo.25).
+///
+/// Two properties, both of which the shipped console failed to hold once a poll
+/// stopped returning:
+///
+/// 1. Navigation is processed while the poll is in flight. The polls run off
+///    the UI thread, and this is what proves the operator feels that.
+/// 2. `q` quits. It did not: the session tore the terminal down and then JOINED
+///    the poller thread, which was itself inside `Command::output()` on the
+///    stuck CLI. The process stayed alive with the terminal already restored —
+///    exactly the reported "keys render raw and `q` does nothing, killed with
+///    SIGTERM". The shutdown now detaches a poller that is mid-poll, so reaching
+///    `TUI_EXIT=0` here at all is the assertion.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_input_and_quit_survive_a_blocked_source_poll() -> HarnessResult<()> {
+    let attention = BlockingAttentionCli::install()?;
+    let repo = RepoFixture::new(
+        "e2e-blocked-poll",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    );
+    let console = TmuxConsole::launch_with_env(
+        &repo,
+        &[(
+            "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM",
+            attention.program().as_str(),
+        )],
+    )?;
+    console.wait_for_settled("view: Attention", render_timeout())?;
+
+    // The poller's invocation is now started and will not return while the
+    // console lives: everything below happens with a source poll IN FLIGHT.
+    attention.wait_until_blocked(render_timeout())?;
+
+    // 1. A real keypress is still processed: Attention -> Spec -> Lanes.
+    console.send_keys(&["Down"])?;
+    console.send_keys(&["Down"])?;
+    console.send_keys(&["Enter"])?;
+    let lanes = console.wait_for_settled("view: Lanes", render_timeout())?;
+    assert!(
+        lanes.contains("repo: e2e-blocked-poll"),
+        "the cockpit must keep rendering its tenant while a poll is stuck:\n{lanes}"
+    );
+    assert!(
+        attention.still_blocked()?,
+        "the backing CLI returned mid-scene, so the navigation above was not \
+         asserted against a poll that was actually in flight"
+    );
+
+    // 2. And `q` quits, rather than hanging the process on the stuck poll.
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
+    Ok(())
+}
