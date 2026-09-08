@@ -344,6 +344,26 @@ factory-safety marking (implement). Any marking counts — the factory refuses a
 marked item whatever the marking says, so an attended host session is the route
 forward.
 
+**The Status line also reports how your last command ended.** Approve, reject,
+accept, a status move, a factory drain and a per-item dispatch all run away from
+the keyboard, and until one reaches a terminal outcome the console tells you
+nothing about it. When it does, the outcome joins the shortcut hints on the same
+line, after them:
+
+    up/down move | enter drill | ? help | q quit | last command: approve:lcbf-k0w failed — invalid_state: item is not at pending-approval
+
+A success is reported just as loudly as a failure — a landed drain that
+confirmed nothing was as hard to read as a failed one. A failure carries the
+cause the store recorded for it; when the command surface recorded no cause at
+all, the message says `cause not reported` rather than leaving you with a bare
+`failed` to interpret. `drain not wired` and `drain stopped at a human valve`
+are reported as themselves, since neither is a success or a failure.
+
+The message is transient in the stream's own terms: it is retired the moment you
+launch the next command, so it always belongs to the command you last ran. It is
+derived from the outcome events the console already stores, so what you read on
+the Status line is what a later query of the event store will say too.
+
 **Availability never depends on which view you are looking at.** The
 needs-attention row and the drilled-in lane selection are the two per-item
 surfaces, and a row backed by a known work-item id offers exactly what the

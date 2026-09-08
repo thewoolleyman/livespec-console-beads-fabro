@@ -1881,6 +1881,7 @@ pub struct TuiScreenModel {
     factory_activity: Option<String>,
     transient_status: Option<String>,
     list_edge: Option<ListEdge>,
+    command_outcome: Option<String>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
@@ -2197,8 +2198,40 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// The whole Status line: a reached list edge's cue and the transient
+    /// operator-feedback message for the last command that reached a terminal
+    /// outcome, when either is present, beside the context shortcut hints.
+    ///
+    /// The hints are rendered in the MIDDLE, cue first and outcome message
+    /// last, rather than replacing them. Both surrounding facts are
+    /// load-bearing. Replacing the hints with either the cue or the outcome
+    /// message would empty the hint line for as long as one was shown, which
+    /// the Status-line-hints contract forbids outright. A reached list edge
+    /// ([`ListEdge`]) is CUED ahead of the hints, so an `up`/`down` that could
+    /// not move the selection says so instead of looking inert; the cue is
+    /// transient state carried by the reducer, not a context-keyed derivation,
+    /// so it prefixes whichever hints the context already owns rather than
+    /// replacing them. An outcome message can be long -- a `move-status`
+    /// action id carries a full work-item id, and a refusal carries the
+    /// store's own diagnostic -- so this is the common case, not the corner;
+    /// it is appended last so it never pushes the cue or the hints past the
+    /// right edge of a narrow Status pane.
+    pub fn footer(&self) -> Cow<'static, str> {
+        let hints = self.list_edge.map_or_else(
+            || self.context_footer_hint(),
+            |edge| Cow::Owned(format!("{} | {}", edge.cue(), self.context_footer_hint())),
+        );
+        let Some(outcome) = self.command_outcome.as_deref() else {
+            return hints;
+        };
+        Cow::Owned(format!("{hints} | {outcome}"))
+    }
+
+    #[must_use]
     /// The Status-line shortcut hints for the CURRENT context (per the TUI
-    /// Contract's Status-line-hints clause / Scenario 19).
+    /// Contract's Status-line-hints clause / Scenario 19), before any
+    /// list-edge cue or command-outcome message is composed around them by
+    /// [`Self::footer`].
     ///
     /// Derived on read from the currently-focused pane (`active_view`) and any
     /// open modal/overlay (`overlay`) rather than stored, so the hint line is
@@ -2206,22 +2239,7 @@ impl TuiScreenModel {
     /// current context, it changes when focus moves to a different pane, and an
     /// open overlay replaces the pane's hints with that overlay's (restored when
     /// the overlay closes). It is never empty, so no context in which shortcut
-    /// actions are available shows a blank hint line. See [`footer_hint`].
-    ///
-    /// A reached list edge ([`ListEdge`]) is CUED ahead of those hints, so an
-    /// `up`/`down` that could not move the selection says so instead of looking
-    /// inert. The cue is transient state carried by the reducer, not a context
-    /// keyed derivation, so it prefixes whichever hints the context already
-    /// owns rather than replacing them.
-    pub fn footer(&self) -> Cow<'static, str> {
-        self.list_edge.map_or_else(
-            || self.context_footer_hint(),
-            |edge| Cow::Owned(format!("{} | {}", edge.cue(), self.context_footer_hint())),
-        )
-    }
-
-    /// The Status-line hints the CURRENT focus + overlay context owns, before
-    /// any list-edge cue is prefixed.
+    /// actions are available shows a blank hint line. See [`Self::footer`].
     fn context_footer_hint(&self) -> Cow<'static, str> {
         // The Header pane is not view-keyed, so its focused hints come from
         // `focus` rather than `active_view`: while it holds focus (and no overlay
@@ -3986,6 +4004,7 @@ pub fn build_tui_model_for_state(
         factory_activity,
         transient_status: state.transient_status.clone(),
         list_edge: state.list_edge(),
+        command_outcome: project_command_outcome(events),
         orphaned_factory_runs: project_orphaned_factory_runs(events),
     }
 }
@@ -4123,6 +4142,151 @@ fn factory_activity_segment(activity: Option<&str>) -> String {
 
 fn transient_status_segment(status: Option<&str>) -> String {
     status.map_or_else(String::new, |value| format!(" | status: {value}"))
+}
+
+/// What a failed command's Status-line message says when its stored error
+/// payload names no cause at all.
+///
+/// The reported defect was a command row reading `status: failed` beside
+/// `error_json: {}`. A bare "failed" is not diagnosable by anyone, so the
+/// ABSENCE is stated rather than left to read as a message that simply had
+/// nothing to add.
+const OUTCOME_CAUSE_ABSENT: &str = "cause not reported";
+
+/// The transient operator-feedback slot: the terminal outcome of the operator's
+/// LAST command, rendered for the Status line.
+///
+/// Derived on read from the command-outcome events already in the store -- the
+/// `factory.drain.*`, `factory.dispatch_item.*` and `work_item.action.*`
+/// terminal contracts the command handlers already append -- so the slot has NO
+/// write path of its own. Nothing stores it and nothing has to remember to
+/// clear it, which is why it cannot drift out of step with what actually
+/// happened.
+///
+/// TRANSIENCE IS THE EVENT STREAM'S, not a timer's. The fold walks BACKWARDS
+/// and stops at the first event that decides the slot: a terminal outcome fills
+/// it, and a request/start marker EMPTIES it. So the moment the operator
+/// launches the next command the previous verdict stops being reported beside
+/// hints that now describe a different action, and a message can never outlive
+/// the command it belongs to. A timer would have needed a clock in a pure
+/// projection and would have hidden the outcome from an operator who looked
+/// away for a moment; the stream already carries the only boundary that matters.
+fn project_command_outcome(events: &[ConsoleEvent]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event.event_type() {
+            EventType::FactoryDrainCompleted => {
+                Some(Some(command_outcome_notice("drain", "succeeded", None)))
+            }
+            EventType::FactoryDrainFailed => {
+                Some(Some(failed_command_notice("drain", event.payload_json())))
+            }
+            EventType::FactoryDrainAwaitingHuman => Some(Some(command_outcome_notice(
+                "drain",
+                "stopped at a human valve",
+                None,
+            ))),
+            EventType::FactoryDrainNotWired => {
+                Some(Some(command_outcome_notice("drain", "not wired", None)))
+            }
+            EventType::FactoryDispatchItemCompleted => Some(Some(command_outcome_notice(
+                "dispatch item",
+                "succeeded",
+                None,
+            ))),
+            EventType::FactoryDispatchItemFailed => Some(Some(failed_command_notice(
+                "dispatch item",
+                event.payload_json(),
+            ))),
+            EventType::FactoryDispatchItemNotWired => Some(Some(command_outcome_notice(
+                "dispatch item",
+                "not wired",
+                None,
+            ))),
+            EventType::WorkItemActionCompleted => Some(Some(command_outcome_notice(
+                &work_item_action_name(event.payload_json()),
+                "succeeded",
+                None,
+            ))),
+            EventType::WorkItemActionFailed => Some(Some(failed_command_notice(
+                &work_item_action_name(event.payload_json()),
+                event.payload_json(),
+            ))),
+            EventType::WorkItemActionNotWired => Some(Some(command_outcome_notice(
+                &work_item_action_name(event.payload_json()),
+                "not wired",
+                None,
+            ))),
+            // A newly requested or started command retires the previous
+            // verdict: from here on the operator is waiting on THIS command,
+            // and the last one's outcome is no longer feedback, it is history.
+            EventType::FactoryDrainRequested
+            | EventType::FactoryDrainStarted
+            | EventType::FactoryDispatchItemRequested
+            | EventType::FactoryDispatchItemStarted
+            | EventType::WorkItemActionStarted => Some(None),
+            _other => None,
+        })
+        .flatten()
+}
+
+/// One command's Status-line message: which command, how it ended, and the
+/// cause when one is carried.
+fn command_outcome_notice(command: &str, outcome: &str, cause: Option<String>) -> String {
+    cause.map_or_else(
+        || format!("last command: {command} {outcome}"),
+        |cause| format!("last command: {command} {outcome} — {cause}"),
+    )
+}
+
+/// A failed command's Status-line message: the cause its stored error payload
+/// carries, or an explicit statement that the payload carries none.
+fn failed_command_notice(command: &str, payload_json: &str) -> String {
+    command_outcome_notice(
+        command,
+        "failed",
+        Some(failure_cause(payload_json).unwrap_or_else(|| OUTCOME_CAUSE_ABSENT.to_owned())),
+    )
+}
+
+/// The failure cause a command's stored error payload carries, or `None` when
+/// it carries none.
+///
+/// One reader serves all three failure contracts because they share one writer,
+/// [`diagnostic_event_payload`]: a STRUCTURED refusal (the drive surface's
+/// `--json` shape) is spliced in whole, so its `domain_error` / `summary` sit
+/// at the payload root rather than under a `refusal` key; an unstructured
+/// diagnostic is wrapped as `refusal`; and a surface that emitted nothing at
+/// all leaves the empty object behind.
+fn failure_cause(payload_json: &str) -> Option<String> {
+    let payload: Option<serde_json::Value> = serde_json::from_str(payload_json).ok();
+    let field = |key: &str| {
+        payload
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    match (field("domain_error"), field("summary")) {
+        (Some(domain_error), Some(summary)) => Some(format!("{domain_error}: {summary}")),
+        (Some(domain_error), None) => Some(domain_error),
+        (None, Some(summary)) => Some(summary),
+        (None, None) => field("refusal"),
+    }
+}
+
+/// The `action_id` a `work_item.action.*` event carries (`approve:<id>`,
+/// `move-status:<id>:<value>`) -- the name the operator recognizes as the
+/// command they issued -- or the contract's own name when the payload names no
+/// action.
+fn work_item_action_name(payload_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .as_ref()
+        .and_then(|payload| payload.get("action_id"))
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| "work-item action".to_owned(), str::to_owned)
 }
 
 fn factory_drain_activity(events: &[ConsoleEvent]) -> Option<String> {
@@ -8451,6 +8615,7 @@ mod tests {
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
+    use super::failure_cause;
     use super::source_adapters::{
         AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
@@ -8469,10 +8634,10 @@ mod tests {
         FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
         HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort,
         LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge, MAX_TRANSIENT_STATUS_CHARS,
-        OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
-        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, PluginResolution,
-        RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, action_registry, build_tui_model, build_tui_model_for_state,
+        OUTCOME_CAUSE_ABSENT, OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome,
+        OrchestratorActionPort, OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve,
+        PluginResolution, RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay,
+        TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
         command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
         factory_dispatch_item_command, handle_config_dispatcher_setting_set_command,
         handle_factory_dispatch_item_command, handle_factory_drain_command,
@@ -8487,7 +8652,7 @@ mod tests {
         reduce_tui_interaction, render_plan_page_html, resolve_command_palette_action,
         resolve_dispatcher_setting_edit, resolve_valve_action, set_acceptance_policy_from_payload,
         set_admission_policy_from_payload, status_move_targets, validate_operator_action,
-        work_item_failure_event, work_item_override_outcome,
+        work_item_action_name, work_item_failure_event, work_item_override_outcome,
     };
 
     #[track_caller]
@@ -9915,6 +10080,194 @@ mod tests {
         assert!(rejected_model.header().contains("factory: drain rejected"));
     }
 
+    /// The Lanes overview with no overlay open: an ordinary operator screen
+    /// whose hint line is non-empty, so an outcome message is asserted BESIDE
+    /// the hints rather than in place of them.
+    fn lane_overview_status_line(events: &[ConsoleEvent]) -> String {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        build_tui_model_for_state(events, &state)
+            .footer()
+            .into_owned()
+    }
+
+    fn outcome_event(event_type: EventType, payload_json: &str) -> ConsoleEvent {
+        ConsoleEvent::fixture(
+            "evt_command_outcome",
+            event_type,
+            "console:factory-command-handler",
+        )
+        .with_payload_json(payload_json.to_owned())
+    }
+
+    const LANE_OVERVIEW_HINTS: &str = "up/down move | enter drill | ? help | q quit";
+
+    #[test]
+    fn the_status_line_reports_a_succeeded_command_beside_the_context_hints() {
+        // The success direction of the same defect: a landed drain, dispatch or
+        // valve confirmed nothing, so "it worked" and "it failed" looked alike.
+        let succeeded = [
+            (
+                outcome_event(EventType::FactoryDrainCompleted, "{}"),
+                "last command: drain succeeded",
+            ),
+            (
+                outcome_event(EventType::FactoryDispatchItemCompleted, "{}"),
+                "last command: dispatch item succeeded",
+            ),
+            (
+                outcome_event(
+                    EventType::WorkItemActionCompleted,
+                    r#"{"action_id":"approve:lcbf-k0w"}"#,
+                ),
+                "last command: approve:lcbf-k0w succeeded",
+            ),
+        ];
+
+        for (event, message) in succeeded {
+            assert_eq!(
+                lane_overview_status_line(std::slice::from_ref(&event)),
+                format!("{LANE_OVERVIEW_HINTS} | {message}")
+            );
+        }
+    }
+
+    #[test]
+    fn the_status_line_reports_a_failed_command_with_the_cause_the_store_carries() {
+        let structured =
+            r#"{"domain_error":"dispatch_refused","summary":"no ready work-item is factory-safe"}"#;
+        let failed = [
+            (
+                outcome_event(EventType::FactoryDrainFailed, structured),
+                "last command: drain failed — dispatch_refused: no ready work-item is factory-safe",
+            ),
+            (
+                outcome_event(EventType::FactoryDispatchItemFailed, structured),
+                "last command: dispatch item failed — dispatch_refused: no ready work-item is factory-safe",
+            ),
+            (
+                outcome_event(
+                    EventType::WorkItemActionFailed,
+                    r#"{"action_id":"approve:lcbf-k0w","refusal":"the ledger refused the transition"}"#,
+                ),
+                "last command: approve:lcbf-k0w failed — the ledger refused the transition",
+            ),
+        ];
+
+        for (event, message) in failed {
+            assert_eq!(
+                lane_overview_status_line(std::slice::from_ref(&event)),
+                format!("{LANE_OVERVIEW_HINTS} | {message}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_whose_stored_payload_names_no_cause_says_the_cause_is_absent() {
+        // The reported shape: `status: failed` beside `error_json: {}`. The
+        // absence is STATED; a bare "failed" is diagnosable by nobody.
+        let event = outcome_event(EventType::FactoryDrainFailed, "{}");
+
+        assert_eq!(
+            lane_overview_status_line(std::slice::from_ref(&event)),
+            format!("{LANE_OVERVIEW_HINTS} | last command: drain failed — {OUTCOME_CAUSE_ABSENT}")
+        );
+    }
+
+    #[test]
+    fn the_remaining_terminal_outcomes_are_named_for_what_they_are() {
+        // Not-wired and a human-valve park are terminal too, and neither is a
+        // success or a failure -- reporting them as either would be the same
+        // dishonesty in a different direction.
+        let named = [
+            (
+                outcome_event(EventType::FactoryDrainNotWired, "{}"),
+                "last command: drain not wired",
+            ),
+            (
+                outcome_event(EventType::FactoryDispatchItemNotWired, "{}"),
+                "last command: dispatch item not wired",
+            ),
+            (
+                outcome_event(EventType::WorkItemActionNotWired, "{}"),
+                "last command: work-item action not wired",
+            ),
+            (
+                outcome_event(EventType::FactoryDrainAwaitingHuman, "{}"),
+                "last command: drain stopped at a human valve",
+            ),
+        ];
+
+        for (event, message) in named {
+            assert_eq!(
+                lane_overview_status_line(std::slice::from_ref(&event)),
+                format!("{LANE_OVERVIEW_HINTS} | {message}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_in_flight_retires_the_previous_command_s_verdict() {
+        // Transience comes from the stream, not a clock: every request/start
+        // marker empties the slot, so a verdict never outlives its command.
+        let completed = outcome_event(EventType::FactoryDrainCompleted, "{}");
+        for in_flight in [
+            EventType::FactoryDrainRequested,
+            EventType::FactoryDrainStarted,
+            EventType::FactoryDispatchItemRequested,
+            EventType::FactoryDispatchItemStarted,
+            EventType::WorkItemActionStarted,
+        ] {
+            let events = [completed.clone(), outcome_event(in_flight, "{}")];
+
+            assert_eq!(lane_overview_status_line(&events), LANE_OVERVIEW_HINTS);
+        }
+    }
+
+    #[test]
+    fn an_event_that_is_not_a_command_outcome_leaves_the_status_line_alone() {
+        let events = fabro_gate_events();
+
+        assert_eq!(lane_overview_status_line(&events), LANE_OVERVIEW_HINTS);
+        assert_eq!(lane_overview_status_line(&[]), LANE_OVERVIEW_HINTS);
+    }
+
+    #[test]
+    fn a_failure_cause_is_read_from_whichever_shape_the_payload_stored() {
+        // `diagnostic_event_payload` splices a structured refusal in whole,
+        // wraps an unstructured one as `refusal`, and stores `{}` for silence,
+        // so all four shapes reach this reader.
+        assert_eq!(
+            failure_cause(
+                r#"{"domain_error":"invalid_state","summary":"not at pending-approval"}"#
+            ),
+            Some("invalid_state: not at pending-approval".to_owned())
+        );
+        assert_eq!(
+            failure_cause(r#"{"domain_error":"invalid_state"}"#),
+            Some("invalid_state".to_owned())
+        );
+        assert_eq!(
+            failure_cause(r#"{"summary":"not at pending-approval"}"#),
+            Some("not at pending-approval".to_owned())
+        );
+        assert_eq!(
+            failure_cause(r#"{"refusal":"exit status 1"}"#),
+            Some("exit status 1".to_owned())
+        );
+        assert_eq!(failure_cause("{}"), None);
+        assert_eq!(failure_cause("not json at all"), None);
+    }
+
+    #[test]
+    fn a_work_item_action_without_an_action_id_is_named_by_its_contract() {
+        assert_eq!(
+            work_item_action_name(r#"{"action_id":"reject:lcbf-k0w"}"#),
+            "reject:lcbf-k0w"
+        );
+        assert_eq!(work_item_action_name("{}"), "work-item action");
+        assert_eq!(work_item_action_name("not json at all"), "work-item action");
+    }
+
     #[test]
     fn open_help_from_the_focused_header_opens_the_header_section() {
         // Scenario 20 / B4 consistency: `?` while the header is focused opens Help
@@ -10710,6 +11063,7 @@ mod tests {
             factory_activity: None,
             transient_status: None,
             list_edge: None,
+            command_outcome: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
@@ -10759,6 +11113,7 @@ mod tests {
             factory_activity: None,
             transient_status: None,
             list_edge: None,
+            command_outcome: None,
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: vec![run.clone()],
@@ -18096,6 +18451,7 @@ mod tests {
             factory_activity: None,
             transient_status: None,
             list_edge: None,
+            command_outcome: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
@@ -18323,6 +18679,7 @@ mod tests {
             factory_activity: None,
             transient_status: None,
             list_edge: None,
+            command_outcome: None,
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
