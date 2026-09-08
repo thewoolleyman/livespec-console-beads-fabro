@@ -1131,6 +1131,7 @@ pub struct TuiInteractionState {
     selected_repo: String,
     selected_setting_index: usize,
     dispatcher_settings: DispatcherSettingsRead,
+    dispatcher_setting_write: DispatcherSettingWriteState,
     plugin_resolution: PluginResolution,
     transient_status: Option<String>,
     list_edge: Option<ListEdge>,
@@ -1160,6 +1161,7 @@ impl TuiInteractionState {
             selected_repo: String::new(),
             selected_setting_index: 0,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             transient_status: None,
             list_edge: None,
@@ -1193,6 +1195,7 @@ impl TuiInteractionState {
             selected_repo: String::new(),
             selected_setting_index: 0,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             transient_status: None,
             list_edge: None,
@@ -1380,6 +1383,25 @@ impl TuiInteractionState {
         dispatcher_settings: DispatcherSettingsRead,
     ) -> Self {
         self.dispatcher_settings = dispatcher_settings;
+        self
+    }
+
+    #[must_use]
+    /// Return the standing of the operator's most recent dispatcher-setting
+    /// write.
+    pub const fn dispatcher_setting_write(&self) -> &DispatcherSettingWriteState {
+        &self.dispatcher_setting_write
+    }
+
+    #[must_use]
+    /// Return this value with the dispatcher-setting write lifecycle replaced:
+    /// set when an edit is submitted, folded again when a fresh effective read
+    /// confirms (or fails to confirm) it.
+    pub const fn with_dispatcher_setting_write(
+        mut self,
+        dispatcher_setting_write: DispatcherSettingWriteState,
+    ) -> Self {
+        self.dispatcher_setting_write = dispatcher_setting_write;
         self
     }
 
@@ -1877,6 +1899,7 @@ pub struct TuiScreenModel {
     selected_repo: String,
     selected_setting_index: Option<usize>,
     dispatcher_settings: DispatcherSettingsRead,
+    dispatcher_setting_write: DispatcherSettingWriteState,
     plugin_resolution: PluginResolution,
     unavailable_sources: Vec<String>,
     factory_activity: Option<String>,
@@ -2141,6 +2164,15 @@ impl TuiScreenModel {
     /// own; an unreadable read surface stays `NotObserved`.
     pub const fn dispatcher_settings(&self) -> &DispatcherSettingsRead {
         &self.dispatcher_settings
+    }
+
+    #[must_use]
+    /// Return the standing of the operator's most recent dispatcher-setting
+    /// write, which qualifies the ONE `Settings` row that write targets. The
+    /// console still owns no setting state: this is the standing of the
+    /// operator's own edit, which the orchestrator cannot report.
+    pub const fn dispatcher_setting_write(&self) -> &DispatcherSettingWriteState {
+        &self.dispatcher_setting_write
     }
 
     #[must_use]
@@ -4041,6 +4073,7 @@ pub fn build_tui_model_for_state(
         selected_repo: state.selected_repo().to_owned(),
         selected_setting_index,
         dispatcher_settings: state.dispatcher_settings().clone(),
+        dispatcher_setting_write: state.dispatcher_setting_write().clone(),
         plugin_resolution: state.plugin_resolution().clone(),
         action_failures: project_action_failures(events),
         // The canonical, untruncated header. `header_line` keeps this display
@@ -6737,6 +6770,46 @@ impl DispatcherSettingWrite {
             }
         }
     }
+
+    #[must_use]
+    /// The `Settings` row this write targets.
+    ///
+    /// Total by construction: writes and rows are the same six API-configurable
+    /// keys, so a write always names exactly one row and the mapping never has
+    /// to fail. That is what lets the write lifecycle
+    /// ([`DispatcherSettingWriteState`]) qualify the ONE row the operator edited
+    /// without a lookup that could come back empty.
+    pub const fn row(&self) -> DispatcherSettingRow {
+        match self {
+            Self::AutoApproveReady(_) => DispatcherSettingRow::AutoApproveReady,
+            Self::MergeOnReviewCap(_) => DispatcherSettingRow::MergeOnReviewCap,
+            Self::AcceptanceMode(_) => DispatcherSettingRow::AcceptanceMode,
+            Self::ReviewFixCap(_) => DispatcherSettingRow::ReviewFixCap,
+            Self::AcceptanceReworkCap(_) => DispatcherSettingRow::AcceptanceReworkCap,
+            Self::WipCap(_) => DispatcherSettingRow::WipCap,
+        }
+    }
+
+    #[must_use]
+    /// The requested value rendered exactly as [`DispatcherSettingRow::value`]
+    /// renders an effective one -- `on`/`off` for a bool, the kebab-case label
+    /// for [`AcceptancePolicy`], the decimal digits for an int.
+    ///
+    /// Deliberately NOT [`Self::value_literal`], which is the orchestrator's
+    /// `set-config` wire grammar (`true`/`false`). The re-read confirmation
+    /// compares this against the row's freshly-observed value, so the two must
+    /// be the SAME rendering or a landed write would read as unchanged.
+    pub fn rendered_value(&self) -> String {
+        match self {
+            Self::AutoApproveReady(value) | Self::MergeOnReviewCap(value) => {
+                bool_label(*value).to_owned()
+            }
+            Self::AcceptanceMode(policy) => policy.label().to_owned(),
+            Self::ReviewFixCap(value) | Self::AcceptanceReworkCap(value) | Self::WipCap(value) => {
+                value.to_string()
+            }
+        }
+    }
 }
 
 /// The largest value the console proposes when cycling an integer setting row;
@@ -6915,14 +6988,38 @@ impl DispatcherSettingRow {
     }
 }
 
-/// A `Settings` view row prepared for rendering: the label, the effective value,
-/// the inline help for the detail pane, and whether the row is dangerous.
+/// How a `Settings` row qualifies its effective value while a write of that row
+/// is in flight, or has settled without moving it.
+///
+/// The row's value is ALWAYS the effective value the console last observed. This
+/// says what the operator's own outstanding edit did to that value's standing,
+/// so a landed edit is never rendered as if nothing had been asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingRowStatus {
+    /// No write of this row is outstanding: the effective value stands alone.
+    Effective,
+    /// A write of this row is in flight and nothing has confirmed it yet. The
+    /// wrapped string is the value the operator asked for, rendered as the row
+    /// renders an effective one.
+    Pending(String),
+    /// A write of this row settled and the fresh effective read STILL reports
+    /// the value observed before it. The wrapped string is the value the
+    /// operator asked for and did not get.
+    Unchanged(String),
+}
+
+/// A `Settings` view row prepared for rendering.
+///
+/// Carries the label, the effective value, the inline help for the detail pane,
+/// whether the row is dangerous, and how an outstanding write of this row
+/// qualifies that value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingRow {
     label: &'static str,
     value: String,
     help: &'static str,
     dangerous: bool,
+    status: SettingRowStatus,
 }
 
 impl SettingRow {
@@ -6949,15 +7046,216 @@ impl SettingRow {
     pub const fn dangerous(&self) -> bool {
         self.dangerous
     }
+
+    #[must_use]
+    /// How an outstanding write of this row qualifies its effective value.
+    pub const fn status(&self) -> &SettingRowStatus {
+        &self.status
+    }
+
+    #[must_use]
+    /// The operator-facing text of this row, value cell and all.
+    ///
+    /// Lives HERE rather than in the renderer because it is the sentence the
+    /// operator reads to decide whether the factory is armed, and the defect
+    /// this closes was precisely that the sentence lied
+    /// (livespec-console-beads-fabro-30c). A presentation layer adds only the
+    /// selection marker; the words themselves are model-layer and asserted by
+    /// model-layer tests across the write boundary.
+    pub fn text(&self) -> String {
+        let danger = if self.dangerous { "  (dangerous)" } else { "" };
+        let label = self.label;
+        let value = &self.value;
+        match &self.status {
+            SettingRowStatus::Effective => format!("{label}  [ {value} ]{danger}"),
+            SettingRowStatus::Pending(requested) => {
+                format!("{label}  [ {value} -> {requested} ]  writing...{danger}")
+            }
+            SettingRowStatus::Unchanged(requested) => {
+                format!("{label}  [ {value} ]  unchanged (requested {requested}){danger}")
+            }
+        }
+    }
+}
+
+/// The lifecycle of the operator's most recent dispatcher-setting write, as the
+/// `Settings` view renders it.
+///
+/// The console still holds NO setting state of its own: every value rendered is
+/// the effective value read from the orchestrator's published read surface. What
+/// this holds is the standing of the operator's own outstanding EDIT, which the
+/// orchestrator has no way to report and which is exactly what went missing --
+/// a write landed, the pane kept rendering the launch-time snapshot, and the
+/// operator was told their change was lost
+/// (livespec-console-beads-fabro-30c).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum DispatcherSettingWriteState {
+    /// No write is outstanding: every row renders its effective value alone.
+    /// A settled write that MOVED the effective value returns here, because the
+    /// fresh value is then the whole story.
+    #[default]
+    Idle,
+    /// A write was submitted and neither its outcome event nor a confirming
+    /// re-read has been observed yet.
+    Pending {
+        /// The single-setting write the operator submitted.
+        write: DispatcherSettingWrite,
+        /// How many events the log held when the write was submitted, so this
+        /// write's outcome event is told apart from an older one for the same
+        /// setting. The log is append-only, so the count is a stable watermark.
+        submitted_after_events: usize,
+    },
+    /// The write's outcome landed and the fresh effective read still reports the
+    /// value observed before it -- the orchestrator did not take the change.
+    Unchanged {
+        /// The single-setting write whose value the operator did not get.
+        write: DispatcherSettingWrite,
+    },
+}
+
+impl DispatcherSettingWriteState {
+    #[must_use]
+    /// The pending state a just-applied runtime effect implies, or `None` when
+    /// the effect persisted something other than a well-formed dispatcher-setting
+    /// write.
+    ///
+    /// `event_count` is the size of the event log at submission time -- the
+    /// watermark the `Pending` variant carries.
+    pub fn submitted(
+        command_type: &CommandType,
+        payload_json: &str,
+        event_count: usize,
+    ) -> Option<Self> {
+        if !matches!(command_type, CommandType::ConfigDispatcherSettingSet) {
+            return None;
+        }
+        let request = DispatcherSettingSetRequest::from_payload_json(payload_json).ok()?;
+        Some(Self::Pending {
+            write: request.write().clone(),
+            submitted_after_events: event_count,
+        })
+    }
+
+    #[must_use]
+    /// The write this state is about, or `None` when nothing is outstanding.
+    pub const fn write(&self) -> Option<&DispatcherSettingWrite> {
+        match self {
+            Self::Idle => None,
+            Self::Pending { write, .. } | Self::Unchanged { write } => Some(write),
+        }
+    }
+
+    /// How this state qualifies `row`: only the ONE row the outstanding write
+    /// targets is qualified; every other row renders its effective value alone.
+    fn status_for(&self, row: DispatcherSettingRow) -> SettingRowStatus {
+        match self {
+            Self::Pending { write, .. } if write.row() == row => {
+                SettingRowStatus::Pending(write.rendered_value())
+            }
+            Self::Unchanged { write } if write.row() == row => {
+                SettingRowStatus::Unchanged(write.rendered_value())
+            }
+            Self::Idle | Self::Pending { .. } | Self::Unchanged { .. } => {
+                SettingRowStatus::Effective
+            }
+        }
+    }
+}
+
+/// Whether the pending write's outcome has landed in the event log, so a fresh
+/// effective read is now worth its shell-out.
+///
+/// The gate exists because the `config` read is a real orchestrator invocation:
+/// re-reading on every render tick would shell out four times a second for a
+/// value that changes only when the operator edits it. Waiting for the outcome
+/// event is also the only way to tell "the worker has not run the write yet"
+/// from "the write ran and the value did not move" -- both look identical in a
+/// bare re-read, and reporting the first as the second is a fresh lie.
+///
+/// Matches on the SETTING KEY at or after the submission watermark, so an older
+/// outcome for the same setting earlier in the session never settles this write.
+/// A not-wired outcome settles it too: the write is over, and the re-read will
+/// find the value unmoved and say so.
+#[must_use]
+pub fn dispatcher_setting_write_settled(
+    state: &DispatcherSettingWriteState,
+    events: &[ConsoleEvent],
+) -> bool {
+    let DispatcherSettingWriteState::Pending {
+        write,
+        submitted_after_events,
+    } = state
+    else {
+        return false;
+    };
+    events
+        .iter()
+        .skip(*submitted_after_events)
+        .any(|event| dispatcher_setting_outcome_names(event, write.key()))
+}
+
+/// Whether one event is a dispatcher-setting outcome (changed or not-wired) for
+/// `key`. An unparseable or key-less payload is not a match -- an outcome that
+/// cannot say which setting it is about settles nothing.
+fn dispatcher_setting_outcome_names(event: &ConsoleEvent, key: &str) -> bool {
+    if !matches!(
+        event.event_type(),
+        EventType::ConfigDispatcherSettingChanged | EventType::ConfigDispatcherSettingNotWired
+    ) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(event.payload_json())
+        .ok()
+        .as_ref()
+        .and_then(|payload| payload.get("setting"))
+        .and_then(serde_json::Value::as_str)
+        == Some(key)
+}
+
+/// Fold a fresh effective read into the write state.
+///
+/// This is the confirmation step the `Settings` view was missing: the value the
+/// orchestrator NOW reports either carries the operator's edit -- in which case
+/// the write is over and the fresh value is the whole story ([`Idle`]) -- or it
+/// does not, in which case the row says so rather than rendering the old value
+/// as though nothing had been asked for ([`Unchanged`]).
+///
+/// A read surface that went unreadable confirms NOTHING, so the write stays
+/// pending; the pane degrades to its named not-observed finding, which is the
+/// honest report of a console that cannot see the effective policy.
+///
+/// [`Idle`]: DispatcherSettingWriteState::Idle
+/// [`Unchanged`]: DispatcherSettingWriteState::Unchanged
+#[must_use]
+pub fn fold_dispatcher_setting_reread(
+    state: &DispatcherSettingWriteState,
+    fresh: &DispatcherSettingsRead,
+) -> DispatcherSettingWriteState {
+    let DispatcherSettingWriteState::Pending { write, .. } = state else {
+        return state.clone();
+    };
+    let DispatcherSettingsRead::Observed(settings) = fresh else {
+        return state.clone();
+    };
+    if write.row().value(settings) == write.rendered_value() {
+        DispatcherSettingWriteState::Idle
+    } else {
+        DispatcherSettingWriteState::Unchanged {
+            write: write.clone(),
+        }
+    }
 }
 
 /// Build the `Settings` rows from the effective values the console observed,
-/// in display order.
+/// in display order, each qualified by the operator's outstanding write.
 ///
 /// The `Settings` view renders these; an unobserved read surface has no rows to
 /// render (the caller degrades to a not-observed finding).
 #[must_use]
-pub fn dispatcher_setting_rows(settings: &DispatcherSettings) -> Vec<SettingRow> {
+pub fn dispatcher_setting_rows(
+    settings: &DispatcherSettings,
+    write_state: &DispatcherSettingWriteState,
+) -> Vec<SettingRow> {
     DispatcherSettingRow::all()
         .iter()
         .map(|row| SettingRow {
@@ -6965,6 +7263,7 @@ pub fn dispatcher_setting_rows(settings: &DispatcherSettings) -> Vec<SettingRow>
             value: row.value(settings),
             help: row.help(),
             dangerous: row.dangerous(),
+            status: write_state.status_for(*row),
         })
         .collect()
 }
@@ -8757,18 +9056,19 @@ mod tests {
         AutonomousAudit, AutonomousDecisionsPort, ConfigCommandOutcome,
         DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
-        DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettings,
-        DispatcherSettingsPort, DispatcherSettingsRead, FactoryDispatchItemPort,
-        FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest, FactoryDrainPolicy,
-        FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest, FocusPane,
-        HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus, JournalAutonomousDecisionsPort,
-        LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge, MAX_TRANSIENT_STATUS_CHARS,
-        OUTCOME_CAUSE_ABSENT, OperatorAction, OperatorActionOutcome, OrchestratorActionOutcome,
-        OrchestratorActionPort, OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve,
-        PluginResolution, RejectMode, SettingRow, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
-        command_palette_query_opens_action_invoker, dispatcher_setting_rows, drilldown_item_count,
-        factory_dispatch_item_command, fit_footer_line,
+        DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettingWriteState,
+        DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead,
+        FactoryDispatchItemPort, FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest,
+        FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
+        FocusPane, HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus,
+        JournalAutonomousDecisionsPort, LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge,
+        MAX_TRANSIENT_STATUS_CHARS, OUTCOME_CAUSE_ABSENT, OperatorAction, OperatorActionOutcome,
+        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
+        OverrideInt, PendingValve, PluginResolution, RejectMode, SettingRow, SettingRowStatus,
+        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
+        build_tui_model, build_tui_model_for_state, command_palette_query_opens_action_invoker,
+        dispatcher_setting_rows, dispatcher_setting_write_settled, drilldown_item_count,
+        factory_dispatch_item_command, fit_footer_line, fold_dispatcher_setting_reread,
         handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
         handle_factory_drain_command, handle_work_item_accept_command,
         handle_work_item_approve_command, handle_work_item_move_command,
@@ -11237,6 +11537,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             factory_activity: None,
@@ -11287,6 +11588,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
             factory_activity: None,
@@ -17420,7 +17722,8 @@ mod tests {
     #[test]
     fn dispatcher_setting_rows_render_each_effective_value_and_flag_dangerous_rows() {
         let settings = DispatcherSettings::new(true, false, AcceptancePolicy::AiOnly, 4, 2, 5);
-        let rows: Vec<SettingRow> = dispatcher_setting_rows(&settings);
+        let rows: Vec<SettingRow> =
+            dispatcher_setting_rows(&settings, &DispatcherSettingWriteState::Idle);
         assert_eq!(rows.len(), 6);
 
         let rendered: Vec<(&str, &str, bool)> = rows
@@ -17459,6 +17762,338 @@ mod tests {
                 "acceptance_rework_cap",
                 "wip_cap",
             ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The write boundary: a dispatcher-setting edit is pending until its
+    // outcome lands, then a fresh effective read either carries it or does not,
+    // and the row SAYS WHICH. Before this, the Settings pane rendered the
+    // effective policy read once at launch and never re-read, so a landed edit
+    // rendered as the pre-edit value for the rest of the session and the
+    // operator was told their change was lost
+    // (livespec-console-beads-fabro-30c).
+    // -----------------------------------------------------------------------
+
+    /// The observed policy the write-boundary tests start from: `wip_cap` 5 and
+    /// `auto_approve_ready` off — the exact pair from the filed defect.
+    fn observed_policy(wip_cap: u32, auto_approve_ready: bool) -> DispatcherSettings {
+        DispatcherSettings::new(
+            auto_approve_ready,
+            false,
+            AcceptancePolicy::AiThenHuman,
+            4,
+            2,
+            wip_cap,
+        )
+    }
+
+    /// Display-order indices of the rows the write-boundary tests assert on.
+    /// The order itself is pinned by
+    /// `dispatcher_setting_rows_render_each_effective_value_and_flag_dangerous_rows`.
+    const AUTO_APPROVE_ROW: usize = 0;
+    const REVIEW_FIX_CAP_ROW: usize = 3;
+    const WIP_CAP_ROW: usize = 5;
+
+    /// The rendered text of the Settings row at `index` under `write_state`.
+    fn row_text(
+        settings: &DispatcherSettings,
+        write_state: &DispatcherSettingWriteState,
+        index: usize,
+    ) -> String {
+        dispatcher_setting_rows(settings, write_state)[index].text()
+    }
+
+    /// A `config.dispatcher_setting.changed` / `.not_wired` outcome event for
+    /// `setting`, as the config command handler appends it.
+    fn setting_outcome_event(event_type: EventType, setting: &str) -> ConsoleEvent {
+        ConsoleEvent::fixture("evt_setting_outcome", event_type, "console:test")
+            .with_payload_json(serde_json::json!({ "setting": setting }).to_string())
+    }
+
+    #[test]
+    fn a_row_with_no_outstanding_write_renders_its_effective_value_alone() {
+        let settings = observed_policy(5, false);
+        let idle = DispatcherSettingWriteState::Idle;
+
+        assert_eq!(row_text(&settings, &idle, WIP_CAP_ROW), "WIP cap  [ 5 ]");
+        assert_eq!(
+            row_text(&settings, &idle, AUTO_APPROVE_ROW),
+            "Auto-approve ready  [ off ]  (dangerous)"
+        );
+        assert_eq!(idle.write(), None);
+    }
+
+    #[test]
+    fn a_pending_write_renders_the_transition_on_its_own_row_only() {
+        let settings = observed_policy(5, false);
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::WipCap(6),
+            submitted_after_events: 0,
+        };
+
+        // The edited row does NOT present the pre-edit value as current: it
+        // names the value asked for and says the write is still running.
+        assert_eq!(
+            row_text(&settings, &pending, WIP_CAP_ROW),
+            "WIP cap  [ 5 -> 6 ]  writing..."
+        );
+        assert_eq!(
+            dispatcher_setting_rows(&settings, &pending)[5].status(),
+            &SettingRowStatus::Pending("6".to_owned())
+        );
+        // Every other row is untouched — one write qualifies one row.
+        assert_eq!(
+            row_text(&settings, &pending, AUTO_APPROVE_ROW),
+            "Auto-approve ready  [ off ]  (dangerous)"
+        );
+        assert_eq!(pending.write(), Some(&DispatcherSettingWrite::WipCap(6)));
+    }
+
+    #[test]
+    fn a_pending_dangerous_toggle_keeps_its_dangerous_label_while_it_arms() {
+        // The arming case the defect made dangerous: the operator flips
+        // autonomy on, the dispatcher honours it on its next read, and the
+        // cockpit used to keep rendering `off` for the rest of the session.
+        let settings = observed_policy(5, false);
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::AutoApproveReady(true),
+            submitted_after_events: 3,
+        };
+
+        assert_eq!(
+            row_text(&settings, &pending, AUTO_APPROVE_ROW),
+            "Auto-approve ready  [ off -> on ]  writing...  (dangerous)"
+        );
+    }
+
+    #[test]
+    fn a_reread_that_carries_the_write_renders_the_new_value_with_nothing_left_over() {
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::WipCap(6),
+            submitted_after_events: 0,
+        };
+        // The orchestrator now reports 6 — the edit landed.
+        let fresh = DispatcherSettingsRead::Observed(observed_policy(6, false));
+
+        let folded = fold_dispatcher_setting_reread(&pending, &fresh);
+
+        assert_eq!(folded, DispatcherSettingWriteState::Idle);
+        assert_eq!(
+            row_text(&observed_policy(6, false), &folded, WIP_CAP_ROW),
+            "WIP cap  [ 6 ]"
+        );
+    }
+
+    #[test]
+    fn a_reread_that_did_not_move_the_value_says_so_instead_of_showing_the_old_one_silently() {
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::WipCap(6),
+            submitted_after_events: 0,
+        };
+        // The write reported an outcome but the effective policy is still 5.
+        let settings = observed_policy(5, false);
+        let fresh = DispatcherSettingsRead::Observed(settings.clone());
+
+        let folded = fold_dispatcher_setting_reread(&pending, &fresh);
+
+        assert_eq!(
+            folded,
+            DispatcherSettingWriteState::Unchanged {
+                write: DispatcherSettingWrite::WipCap(6),
+            }
+        );
+        assert_eq!(folded.write(), Some(&DispatcherSettingWrite::WipCap(6)));
+        assert_eq!(
+            row_text(&settings, &folded, WIP_CAP_ROW),
+            "WIP cap  [ 5 ]  unchanged (requested 6)"
+        );
+        assert_eq!(
+            dispatcher_setting_rows(&settings, &folded)[5].status(),
+            &SettingRowStatus::Unchanged("6".to_owned())
+        );
+        // The unchanged report qualifies only the row it is about.
+        assert_eq!(
+            row_text(&settings, &folded, REVIEW_FIX_CAP_ROW),
+            "Review fix cap  [ 4 ]"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_reread_confirms_nothing_and_leaves_the_write_pending() {
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::WipCap(6),
+            submitted_after_events: 2,
+        };
+
+        // A read surface that went unreadable is not evidence either way, so the
+        // write is NOT reported as unchanged; the pane degrades to its named
+        // not-observed finding.
+        assert_eq!(
+            fold_dispatcher_setting_reread(&pending, &DispatcherSettingsRead::NotObserved),
+            pending
+        );
+    }
+
+    #[test]
+    fn folding_a_reread_leaves_a_state_with_no_write_in_flight_alone() {
+        let fresh = DispatcherSettingsRead::Observed(observed_policy(5, false));
+        let unchanged = DispatcherSettingWriteState::Unchanged {
+            write: DispatcherSettingWrite::WipCap(6),
+        };
+
+        assert_eq!(
+            fold_dispatcher_setting_reread(&DispatcherSettingWriteState::Idle, &fresh),
+            DispatcherSettingWriteState::Idle
+        );
+        // An already-reported unchanged outcome is not re-decided by a later
+        // read; the operator's next edit of that row replaces it.
+        assert_eq!(
+            fold_dispatcher_setting_reread(&unchanged, &fresh),
+            unchanged
+        );
+    }
+
+    #[test]
+    fn a_write_settles_on_its_own_outcome_event_and_on_nothing_else() {
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::WipCap(6),
+            submitted_after_events: 1,
+        };
+        let older = setting_outcome_event(EventType::ConfigDispatcherSettingChanged, "wip_cap");
+        let mine = setting_outcome_event(EventType::ConfigDispatcherSettingChanged, "wip_cap");
+        let other = setting_outcome_event(
+            EventType::ConfigDispatcherSettingChanged,
+            "auto_approve_ready",
+        );
+        let unrelated =
+            ConsoleEvent::fixture("evt_other", EventType::CommandAccepted, "console:test");
+
+        // Nothing outstanding never settles.
+        assert!(!dispatcher_setting_write_settled(
+            &DispatcherSettingWriteState::Idle,
+            std::slice::from_ref(&mine)
+        ));
+        // An outcome BEFORE the submission watermark is a previous edit's.
+        assert!(!dispatcher_setting_write_settled(
+            &pending,
+            std::slice::from_ref(&older)
+        ));
+        // An event that is not a settings outcome at all, and an outcome for a
+        // different setting, are both after the watermark and neither settles.
+        assert!(!dispatcher_setting_write_settled(
+            &pending,
+            &[older.clone(), unrelated, other]
+        ));
+        // This write's own outcome, at the watermark, settles it.
+        assert!(dispatcher_setting_write_settled(&pending, &[older, mine]));
+    }
+
+    #[test]
+    fn a_not_wired_outcome_settles_the_write_and_a_key_less_payload_settles_nothing() {
+        let pending = DispatcherSettingWriteState::Pending {
+            write: DispatcherSettingWrite::WipCap(6),
+            submitted_after_events: 0,
+        };
+
+        // The write is over even though it achieved nothing; the re-read then
+        // finds the value unmoved and the row reports that.
+        assert!(dispatcher_setting_write_settled(
+            &pending,
+            &[setting_outcome_event(
+                EventType::ConfigDispatcherSettingNotWired,
+                "wip_cap"
+            )]
+        ));
+        // An outcome that cannot say which setting it is about settles nothing:
+        // unparseable, absent, and wrongly-typed all report the same.
+        let settled = ["not json at all", "{}", r#"{"setting":42}"#]
+            .into_iter()
+            .map(|payload| {
+                let opaque = ConsoleEvent::fixture(
+                    "evt_opaque",
+                    EventType::ConfigDispatcherSettingChanged,
+                    "console:test",
+                )
+                .with_payload_json(payload.to_owned());
+                dispatcher_setting_write_settled(&pending, &[opaque])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(settled, [false, false, false]);
+    }
+
+    #[test]
+    fn a_submitted_setting_write_becomes_pending_and_anything_else_does_not() {
+        let payload = serde_json::json!({
+            "repo": CONFIRM_REPO,
+            "setting": "wip_cap",
+            "value": 6,
+        })
+        .to_string();
+
+        assert_eq!(
+            DispatcherSettingWriteState::submitted(
+                &CommandType::ConfigDispatcherSettingSet,
+                &payload,
+                7
+            ),
+            Some(DispatcherSettingWriteState::Pending {
+                write: DispatcherSettingWrite::WipCap(6),
+                submitted_after_events: 7,
+            })
+        );
+        // A command of any other type is not a settings write.
+        assert_eq!(
+            DispatcherSettingWriteState::submitted(
+                &CommandType::WorkItemApproveRequested,
+                &payload,
+                7
+            ),
+            None
+        );
+        // A malformed payload names no setting, so nothing is claimed pending.
+        assert_eq!(
+            DispatcherSettingWriteState::submitted(
+                &CommandType::ConfigDispatcherSettingSet,
+                "{}",
+                7
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn every_setting_write_names_its_row_and_renders_as_that_row_renders() {
+        let writes = [
+            DispatcherSettingWrite::AutoApproveReady(true),
+            DispatcherSettingWrite::MergeOnReviewCap(false),
+            DispatcherSettingWrite::AcceptanceMode(AcceptancePolicy::AiOnly),
+            DispatcherSettingWrite::ReviewFixCap(4),
+            DispatcherSettingWrite::AcceptanceReworkCap(2),
+            DispatcherSettingWrite::WipCap(6),
+        ];
+
+        // Writes and rows are the same six keys in the same order.
+        assert_eq!(
+            writes
+                .iter()
+                .map(DispatcherSettingWrite::row)
+                .collect::<Vec<_>>(),
+            DispatcherSettingRow::all()
+        );
+        // The requested value is rendered the way an EFFECTIVE value is, which
+        // is what lets the re-read confirmation compare the two: `on`, not the
+        // `true` of the orchestrator's `set-config` wire grammar.
+        assert_eq!(
+            writes
+                .iter()
+                .map(DispatcherSettingWrite::rendered_value)
+                .collect::<Vec<_>>(),
+            ["on", "off", "ai-only", "4", "2", "6"]
+        );
+        assert_eq!(
+            DispatcherSettingWrite::AutoApproveReady(true).value_literal(),
+            "true"
         );
     }
 
@@ -18697,6 +19332,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
             factory_activity: None,
@@ -18925,6 +19561,7 @@ mod tests {
             selected_repo: String::new(),
             selected_setting_index: None,
             dispatcher_settings: DispatcherSettingsRead::NotObserved,
+            dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
             factory_activity: None,

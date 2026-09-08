@@ -32,14 +32,14 @@ use console_application::source_adapters::{
 };
 use console_application::{
     ApplicationError, AutonomousDecision, AutonomousDecisionsPort, DispatcherSettingsPort,
-    FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort, MAX_TRANSIENT_STATUS_CHARS,
-    OrchestratorActionPort, autonomous_reflection_attention_id, build_tui_model,
-    handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
-    handle_factory_drain_command, handle_work_item_accept_command,
-    handle_work_item_approve_command, handle_work_item_move_command,
-    handle_work_item_reject_command, handle_work_item_resolve_blocked_command,
-    handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
-    handle_work_item_set_dispatcher_override_command,
+    DispatcherSettingsRead, FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort,
+    MAX_TRANSIENT_STATUS_CHARS, OrchestratorActionPort, autonomous_reflection_attention_id,
+    build_tui_model, handle_config_dispatcher_setting_set_command,
+    handle_factory_dispatch_item_command, handle_factory_drain_command,
+    handle_work_item_accept_command, handle_work_item_approve_command,
+    handle_work_item_move_command, handle_work_item_reject_command,
+    handle_work_item_resolve_blocked_command, handle_work_item_set_acceptance_command,
+    handle_work_item_set_admission_command, handle_work_item_set_dispatcher_override_command,
     handle_work_item_set_workflow_scope_override_command, plan_page_url, project_attention,
     project_plan_page, render_plan_page_html,
     source_adapters::{
@@ -689,6 +689,24 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
         };
         self.consecutive_transient_refresh_failures = 0;
         Ok(Some(events))
+    }
+
+    fn refresh_dispatcher_settings(&mut self) -> std::io::Result<Option<DispatcherSettingsRead>> {
+        // The SAME published read surface the composition root consults at
+        // launch (`drive --action config`), consulted again now that the
+        // operator's write has reported an outcome. This is the one place the
+        // UI thread shells out, and it is bounded to once per settings write:
+        // the loop gates the call on the write's outcome event.
+        //
+        // An untrustworthy read degrades to the named not-observed finding
+        // rather than propagating -- exactly as the launch read does. A console
+        // that cannot see the effective policy says so; it does not die, and it
+        // does not keep rendering a value it can no longer vouch for.
+        Ok(Some(
+            DispatcherSettingsPort::new(&mut *self.work_item_port)
+                .read_settings()
+                .unwrap_or(DispatcherSettingsRead::NotObserved),
+        ))
     }
 }
 
@@ -3542,9 +3560,9 @@ mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
 
     use crate::{
-        MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, checkpoint_load_failed, checkpoint_save_failed,
-        effect_sink_io_error, resolve_console_invoker, sink_outcome_for_persist_error,
-        tolerate_transient_refresh,
+        DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, checkpoint_load_failed,
+        checkpoint_save_failed, effect_sink_io_error, resolve_console_invoker,
+        sink_outcome_for_persist_error, tolerate_transient_refresh,
     };
 
     use std::cell::RefCell;
@@ -11548,6 +11566,10 @@ mod tests {
         outcome: Option<OrchestratorActionOutcome>,
         observed_action_ids: Vec<String>,
         observed_requested_by: Vec<String>,
+        // The `config` READ's stdout, when this double has a read surface at
+        // all. `None` keeps the port's default not-wired reading, which is what
+        // every pre-existing test expects.
+        config_read_stdout: Option<String>,
     }
 
     impl SimulatedWorkItemActionPort {
@@ -11556,6 +11578,25 @@ mod tests {
                 outcome: Some(outcome),
                 observed_action_ids: Vec::new(),
                 observed_requested_by: Vec::new(),
+                config_read_stdout: None,
+            }
+        }
+
+        /// A port whose `config` read reports the six effective settings with
+        /// `wip_cap` set to `wip_cap`.
+        fn reading_wip_cap(wip_cap: u32) -> Self {
+            Self {
+                config_read_stdout: Some(format!(
+                    r#"{{"settings":[
+                        {{"key":"auto_approve_ready","value":false}},
+                        {{"key":"merge_on_review_cap","value":false}},
+                        {{"key":"acceptance_mode","value":"ai-then-human"}},
+                        {{"key":"review_fix_cap","value":3}},
+                        {{"key":"acceptance_rework_cap","value":2}},
+                        {{"key":"wip_cap","value":{wip_cap}}}
+                    ]}}"#
+                )),
+                ..Self::default()
             }
         }
     }
@@ -11572,6 +11613,19 @@ mod tests {
                 .outcome
                 .clone()
                 .unwrap_or(OrchestratorActionOutcome::Completed))
+        }
+
+        fn read_action(
+            &mut self,
+            _request: &OrchestratorActionRequest,
+        ) -> Result<console_application::OrchestratorActionReading, ApplicationError> {
+            // Reads are NOT recorded in `observed_action_ids`: that vector is
+            // what the write-path tests assert on, and the config handler reads
+            // the previous value before every write.
+            Ok(self.config_read_stdout.clone().map_or_else(
+                console_application::OrchestratorActionReading::not_wired,
+                console_application::OrchestratorActionReading::observed,
+            ))
         }
     }
 
@@ -11720,6 +11774,69 @@ mod tests {
         fn take_worker_failure_status(&self) -> Option<String> {
             self.worker_status.borrow_mut().take()
         }
+    }
+
+    #[test]
+    fn the_live_session_re_reads_the_effective_policy_from_the_published_surface() {
+        // The MISSING HOP. The composition root read the effective policy once,
+        // before the TUI started; the render loop had no way to ask again, so a
+        // landed settings edit rendered as the pre-edit value for the rest of
+        // the session (livespec-console-beads-fabro-30c). This is the session
+        // end of the re-read the loop now performs once a write settles.
+        let (path, mut store) = file_store("settings-reread");
+        let requester = async_command_requester();
+        let mut drain_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::reading_wip_cap(6);
+        let decisions_port = empty_decisions_port();
+        let poll_requester = poll_requester();
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-08-29T09:00:00Z",
+            &mut drain_port,
+            &mut work_item_port,
+            &decisions_port,
+            &poll_requester,
+            &requester,
+        );
+
+        let read = sink.refresh_dispatcher_settings();
+        cleanup_store(&path);
+
+        check(
+            matches!(read, Ok(Some(DispatcherSettingsRead::Observed(ref settings)))
+                if settings.wip_cap() == 6),
+            "the session re-reads the CURRENT effective wip_cap, not a snapshot",
+        );
+    }
+
+    #[test]
+    fn an_unreadable_surface_degrades_the_re_read_to_the_named_not_observed_finding() {
+        // MUST-NOT-FLAG CONTROL: a port with no real read capability must not
+        // fabricate values and must not kill the session. It reports the same
+        // named finding the launch read reports, and the pane says so.
+        let (path, mut store) = file_store("settings-reread-not-observed");
+        let requester = async_command_requester();
+        let mut drain_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions_port = empty_decisions_port();
+        let poll_requester = poll_requester();
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-08-29T09:00:00Z",
+            &mut drain_port,
+            &mut work_item_port,
+            &decisions_port,
+            &poll_requester,
+            &requester,
+        );
+
+        let read = sink.refresh_dispatcher_settings();
+        cleanup_store(&path);
+
+        check(
+            read.ok().flatten() == Some(DispatcherSettingsRead::NotObserved),
+            "an unreadable surface degrades to the named not-observed finding",
+        );
     }
 
     #[test]

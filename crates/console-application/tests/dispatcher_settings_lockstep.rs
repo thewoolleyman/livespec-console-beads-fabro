@@ -1,10 +1,12 @@
 use console_application::source_adapters::AcceptancePolicy;
-use console_application::{DispatcherSettingRow, DispatcherSettings, dispatcher_setting_rows};
+use console_application::{
+    DispatcherSettingRow, DispatcherSettingWriteState, DispatcherSettings, dispatcher_setting_rows,
+};
 
 #[test]
 fn dispatcher_settings_surface_matches_the_released_config_manifest_rows() {
     let settings = DispatcherSettings::new(true, false, AcceptancePolicy::AiOnly, 4, 2, 5);
-    let rows = dispatcher_setting_rows(&settings);
+    let rows = dispatcher_setting_rows(&settings, &DispatcherSettingWriteState::Idle);
 
     let rendered = rows
         .iter()
