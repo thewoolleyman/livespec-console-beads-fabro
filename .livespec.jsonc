@@ -206,7 +206,12 @@
       "detection_coverage_anchor": "livespec-console-beads-fabro-us67nl",
       "auto_approve_ready": true,
       "acceptance_mode": "ai-only",
-      "wip_cap": 10,
+      // Serialized 2026-09-08 while orchestrator bd-ib-cewr.5 is open: a fresh
+      // run is cancelled by the watchdog orphan sweep when a concurrent
+      // dispatch's discovery poll runs while the ledger still names the
+      // item's previous terminal run, so more than one in-flight dispatch
+      // loses runs. Raise this again once cewr.5 lands.
+      "wip_cap": 1,
       "factories": {
         "hp": { "server": "https://hp-xubuntu.perch-rudd.ts.net:32276" },
         "vps": { "server": "https://vps.perch-rudd.ts.net:32276" }
@@ -348,7 +353,10 @@
       // inventing a third adapter string.
       "acp_nodes": {
         "pr": "npx -y @agentclientprotocol/claude-agent-acp"
-      }
+      },
+      // Outer, post-merge rework attempt cap per item (paired with
+      // review_fix_cap's inner, pre-merge cap); set to 3.
+      "acceptance_rework_cap": 3
     }
   }
 }
