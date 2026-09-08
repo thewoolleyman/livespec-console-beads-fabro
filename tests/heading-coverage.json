@@ -284,6 +284,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: a top-of-pyramid contributor acceptance test should exercise the spec placement boundary by validating that operator-observable content routes to the functional files while contributor-only constraints route to non-functional-requirements.md. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-cwfojsth",
@@ -320,6 +321,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: the top-of-pyramid hook/check acceptance test should cover accepted Red-Green-Replay evidence, rejected malformed product commits, and the non-product exemption once the Rust replay checker lands. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-7y6ca6tv",
@@ -481,6 +483,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: the top-of-pyramid CI/work-items access acceptance test should verify the single bare BEADS_DOLT_PASSWORD convention without echoing or committing secrets. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-je2rqb7t",
@@ -509,6 +512,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify product crates are Rust crates and declare #![forbid(unsafe_code)] unless a future spec revision grants an exception. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-asgj526f",
@@ -525,6 +529,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify typed Result rails, panic/unwrap/expect exclusions, rejection-versus-infrastructure error separation, and pipeline-shaped use cases. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-elbrtgyb",
@@ -549,6 +554,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify bounded-context ownership, domain infrastructure isolation, source-adapter isolation, UI source isolation, and the zero-Beads-knowledge read path. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-h4eusndl",
@@ -577,6 +583,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: the top-of-pyramid architecture-check acceptance test should verify the compiled check enforces the Domain-Driven Design rule set from structured crate metadata and Rust AST inspection. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-sbflemi5",
@@ -821,6 +828,7 @@
     "scenario_file": "scenarios.md",
     "test": "TODO",
     "reason": "Test tier: top-of-pyramid acceptance test pending for the per-item override valve: an override beating the global default, the `wip_cap` rejection (a per-repo concurrency ceiling admits none), the one-console-command-per-overridable-setting rule, and the TUI driving all six Work-item Lifecycle commands. The six-command TUI clause binds here rather than to Scenario 11 because Scenario 11 is fully covered by built tests while the sixth (override) scene is not yet built. Owner: W3 Settings-surface code child, which lands the per-item override control under crates/console-cli/tests/.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-6i3hqmed",
@@ -953,6 +961,7 @@
     "scenario_file": "scenarios.md",
     "test": "TODO",
     "reason": "Test tier: top-of-pyramid acceptance test pending for the factory-drain launcher argv: the drain port invokes the Dispatcher with NO per-run policy-arming argument, leaving dispatch-time policy to the orchestrator-owned `dispatcher.*` settings the Dispatcher reads itself. A per-run flag writes no setting, so this is a distinct obligation from the settings-write scenarios and earns its own bound test. Owner: drain-launcher code child under crates/console-cli/tests/; W1 already fixed the shipped launcher, so this test pins that fix against regression rather than driving new behavior.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-xgf6bv6m",
@@ -1141,6 +1150,7 @@
     "scenario_file": "scenarios.md",
     "test": "TODO",
     "reason": "Test tier: top-of-pyramid acceptance coverage is owed by the menu-shell implementation (plan/02-menu-shell-primacy/): the generic menu-traversal E2E driving every registered action's menu path, plus the hotkey-free-build reachability run, are the integration/acceptance tests this scenario names. Registered as TODO at ratification time because the menu system this scenario specifies does not exist yet -- the registry (plan/01) and menu shell (plan/02) are the implementing plans, and the scenario is ratified ahead of them by deliberate maintainer decision (2026-08-02).",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-pdamcd6a",
@@ -1189,6 +1199,7 @@
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
     "reason": "Test tier: a top-of-pyramid acceptance/integration test lands with the parity check itself (plan/01-action-registry-and-invoker slice A ships crates/console-cli/tests/drive_surface_parity.rs, born red against the currently-unbound valve actions as its red demonstration, then green with bindings and reasoned omissions). Registered as TODO until that slice merges; the test name is recorded here at merge time.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-3hzrpeqq",
@@ -1217,6 +1228,7 @@
     "scenario_file": "scenarios.md",
     "test": "TODO",
     "reason": "Test tier: a top-of-pyramid acceptance test would need to prove a UI absence -- that the console's Settings surface never gains a `livespec-overseer` foreman/overseer configuration lever (for example `foreman_valve_disposition`) and that no console code path invokes the overseer/foreman layer. This v040 Scope Boundary clause is bound here because Scenario 11 is the console's other orthogonal-system boundary case (the orchestrator's ratified action surface, which the console maps commands onto and never bypasses); the overseer/foreman clause is the same shape of boundary against a second, independent system. Coverage today is structural rather than behavioral: console-arch-check enforces that the Settings surface stays limited to the orchestrator-declared `dispatcher.*` levers (Scenario 14), and no `livespec-overseer` client exists in this crate tree for a test to invoke. Registered now, pending, per the console-spec-check requirement that every live clause bind to a scenario.",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": []
   },
   {
@@ -1292,6 +1304,7 @@
     "scenario_file": "scenarios.md",
     "test": "TODO",
     "reason": "Test tier: a top-of-pyramid acceptance test should prove the control-plane boundary ratified in v046: the roster / attention / valve surfaces render from orchestrator-published projections only, every disposition the console issues is a recorded operator command, no console component issues a valve / selects a next action / answers a run question on its own initiative, no session is driven or observed through a terminal multiplexer or screen-scraping transport, and no local realization exists for a capability the orchestrator has not published (including run questions, whose wire form the orchestrator has not ratified). Registered pending at ratification time because the console-spec-check requires every live scenario to carry a non-empty test registration; the implementing work is the console phase-1 children of plan retire-overseer-and-redesign-control-plane-around-console (epic livespec-console-beads-fabro-pzbdbo), and the structural half is already enforced by console-arch-check (Scenario 14 keeps the Settings surface on orchestrator-declared levers).",
+    "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
         "gap_id": "gap-h2s3rdaa",
