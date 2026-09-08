@@ -175,6 +175,68 @@ fn a_repeatedly_toggling_attention_item_tracks_open_and_retired_state_at_every_s
     Ok(())
 }
 
+/// Regression (`livespec-console-beads-fabro-mx9u.11` crash, dd50c09): the
+/// resolved event's identity depends on the resolved item's own content
+/// (`attention_item_version`), so an occurrence that returns to CONTENT it
+/// already carried once before, and is resolved again while carrying that
+/// same content, recomputes the IDENTICAL resolved-event identity as the
+/// earlier resolution — even though the two resolutions retire genuinely
+/// different real-world occurrences (a different `changed` event landed in
+/// between). This is expected and not a defect the operator needs to see: the
+/// store already durably records that this exact content was retired once,
+/// so a second identical-content retirement carries no new information.
+/// Before the fix `ingest_needs_attention` surfaced this as
+/// `ConsoleRuntimeError::AttentionResolveDuplicate`, which the TUI's
+/// synchronous startup ingest propagates with a bare `?` all the way to
+/// `main`'s fatal `Err(error) => std::process::exit(1)` — so on ANY store
+/// already holding a prior resolved event whose content later recurred, the
+/// console crashed within one poll of starting. This must ingest cleanly
+/// (`Ok`, item retired) rather than erroring.
+#[test]
+fn a_reoccurring_identical_content_resolution_is_idempotent_not_a_fatal_duplicate()
+-> Result<(), ConsoleRuntimeError> {
+    let mut store = SqliteEventStore::open_in_memory()?;
+    let id = "hygiene:idle-factory:livespec-console-beads-fabro";
+
+    // t0/t1: appears and resolves while carrying "message" -- this resolution
+    // burns the identity `resolved` will compute for content "message".
+    ingest(&mut store, vec![attention_item(id, "message")], "t0")?;
+    ingest(&mut store, vec![], "t1")?;
+    assert_eq!(resolved_event_count(&store)?, 1);
+
+    // t2: reappears carrying DIFFERENT content -- a genuinely new occurrence,
+    // its own `appeared` identity is unique, this succeeds cleanly.
+    ingest(
+        &mut store,
+        vec![attention_item(id, "different message")],
+        "t2",
+    )?;
+    assert!(is_open(&store, id)?, "item should reopen at t2");
+
+    // t3: content changes BACK to "message" while still open -- a `changed`
+    // event, whose identity differs from the original `appeared` event's (the
+    // tag differs), so this also succeeds and lands as a distinct event.
+    ingest(&mut store, vec![attention_item(id, "message")], "t3")?;
+    assert!(is_open(&store, id)?, "item should still be open at t3");
+
+    // t4: disappears again while carrying "message" -- the resolved event's
+    // occurrence_version is content-derived, so this computes the SAME
+    // identity as the t1 resolution. Pre-fix this returned
+    // `Err(AttentionResolveDuplicate)`; the fix must treat it as the
+    // idempotent retirement it is and return `Ok`.
+    let outcome = ingest(&mut store, vec![], "t4");
+    assert!(
+        outcome.is_ok(),
+        "a Duplicate resolved-event append for an already-retired occurrence must not error: {outcome:?}"
+    );
+    assert!(
+        !is_open(&store, id)?,
+        "item must be retired after its second identical-content resolution"
+    );
+
+    Ok(())
+}
+
 /// AC3: a resolved-event append the store rejects as Duplicate is surfaced as
 /// a failure, not silently swallowed into a plain `Ok`.
 #[test]

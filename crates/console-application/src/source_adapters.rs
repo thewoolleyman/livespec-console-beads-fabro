@@ -3794,6 +3794,15 @@ fn attention_item_resolved_event(
     // UNIQUE(source, source_event_id) constraint let only the FIRST resolution
     // ever land, and every later one was silently swallowed as a Duplicate —
     // the row then stayed open forever (livespec-console-beads-fabro-mx9u.11).
+    //
+    // This identity is still purely CONTENT-derived, so an id that returns to
+    // content it already carried through an earlier resolution (a `changed`
+    // event landing in between so the reappearance itself lands cleanly)
+    // recomputes that earlier resolution's identity exactly, even though it
+    // is a distinct real-world occurrence that must still retire. See
+    // `disambiguate_normalized_source_event`, which `ingest_needs_attention`
+    // retries with on that collision
+    // (livespec-console-beads-fabro-mx9u.11-crash).
     let occurrence_version = attention_item_version(repo, item);
     let version =
         attention_stream_seq(&[repo, item.id(), "resolved", &occurrence_version.to_string()]);
@@ -3810,6 +3819,46 @@ fn attention_item_resolved_event(
         ),
         source_event_id,
         SourcePayload::AttentionItemResolved(item.id().to_owned()),
+    )
+}
+
+/// Rebuild `original` under a fresh identity.
+///
+/// Folds `disambiguator` into the hash alongside `original`'s own
+/// `source_event_id`. Every other field (event type, schema version,
+/// context, source, stream id, payload) is carried over unchanged.
+///
+/// Used by `ingest_needs_attention` to retry a resolved-event append whose
+/// PRIMARY identity collided: `attention_item_resolved_event`'s identity is
+/// derived purely from the resolved item's content, so an id that returns to
+/// content it already carried through an earlier resolution recomputes that
+/// earlier resolution's identity exactly, even though it is a distinct
+/// real-world occurrence that must still land. Folding in the current ingest
+/// cycle's `observed_at` as the disambiguator is deterministic within one
+/// ingest call but distinct from every past identity in virtually every real
+/// case (livespec-console-beads-fabro-mx9u.11-crash). Generic over the
+/// ORIGINAL event rather than re-deriving it from the resolved item, so no
+/// lookup back into a snapshot list is needed at the call site.
+#[must_use]
+pub fn disambiguate_normalized_source_event(
+    original: &NormalizedSourceEvent,
+    disambiguator: &str,
+) -> NormalizedSourceEvent {
+    let version = attention_stream_seq(&[original.source_event_id(), disambiguator]);
+    let source_event_id = format!("{}:disambiguated:{version}", original.source_event_id());
+    let event = original.event();
+    NormalizedSourceEvent::new(
+        ConsoleEvent::new(
+            format!("evt:{source_event_id}"),
+            event.schema_version(),
+            event.context().to_owned(),
+            *event.event_type(),
+            event.source().to_owned(),
+            event.stream_id().to_owned(),
+            version,
+        ),
+        source_event_id,
+        original.payload().clone(),
     )
 }
 
