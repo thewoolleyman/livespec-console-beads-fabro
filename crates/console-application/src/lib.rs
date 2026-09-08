@@ -1924,6 +1924,7 @@ pub struct TuiScreenModel {
     active_view: TuiView,
     navigation: Vec<TuiView>,
     attention_items: Vec<AttentionItem>,
+    attention_total: usize,
     selected_attention_index: Option<usize>,
     detail: Option<AttentionDetail>,
     view_items: Vec<ViewSummaryItem>,
@@ -1981,6 +1982,19 @@ impl TuiScreenModel {
     /// Return the attention items value.
     pub fn attention_items(&self) -> &[AttentionItem] {
         &self.attention_items
+    }
+
+    /// How many items the needs-attention inbox holds in total, ignoring any
+    /// active search filter.
+    ///
+    /// [`Self::attention_items`] is the FILTERED list -- what the content pane
+    /// draws -- while this is the whole inbox, which is what the header's
+    /// `attention:` count reports and what the search overlay's `N of M match`
+    /// feedback measures against. Keeping the two apart is the point: a filter
+    /// changes what is shown, not how much work is waiting.
+    #[must_use]
+    pub const fn attention_total(&self) -> usize {
+        self.attention_total
     }
 
     #[must_use]
@@ -2262,7 +2276,11 @@ impl TuiScreenModel {
         fit_header_line(
             header_repo_label(&self.selected_repo),
             self.active_view.label(),
-            self.attention_items.len(),
+            // The INBOX total, matching [`header`](Self::header) exactly: this
+            // is the shrink-to-fit rendering of the same line, so it cannot
+            // report a different count. A search filter narrows
+            // `attention_items`; it never changes how much work is waiting.
+            self.attention_total,
             self.factory_activity.as_deref(),
             self.transient_status.as_deref(),
             &self.unavailable_sources,
@@ -4070,6 +4088,20 @@ pub fn build_tui_model_for_state(
     let attention_count = attention_items.len();
     let (selected_attention_index, displaced_attention_id) =
         selected_attention_for_state(&attention_entries, state);
+    // The header's `attention:` count is the INBOX TOTAL, never the filtered
+    // match count. A search narrows what the list SHOWS, not how much work is
+    // waiting, and a header that followed the filter turned the one number
+    // reporting the operator's outstanding load into a report on the current
+    // query (dogfooded 2026-09-08: `attention: 80` became `attention: 1` under
+    // `/una`, then `attention: 22`, none of which was the inbox). The match
+    // count belongs to the search overlay, which is where the operator typed.
+    //
+    // The unfiltered pass runs only while a non-empty query is actually
+    // narrowing something: with no query the two counts are the same list.
+    let attention_total = match search_query {
+        Some(query) if !query.is_empty() => unified_attention_entries(events, None).len(),
+        _no_active_filter => attention_count,
+    };
     let detail = selected_attention_index.map(|index| attention_entries[index].to_detail(events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
@@ -4114,6 +4146,7 @@ pub fn build_tui_model_for_state(
         active_view,
         navigation: TuiView::all().to_vec(),
         attention_items,
+        attention_total,
         selected_attention_index,
         detail,
         view_items: view_summary_items(active_view, events),
@@ -4139,7 +4172,7 @@ pub fn build_tui_model_for_state(
             "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
-            attention_count,
+            attention_total,
             factory_activity_segment(factory_activity.as_deref()),
             transient_status_segment(transient_status.as_deref()),
             source_health_header_segment(&unavailable_sources)
@@ -11798,6 +11831,7 @@ mod tests {
             active_view: TuiView::Attention,
             navigation: vec![TuiView::Attention],
             attention_items: Vec::new(),
+            attention_total: 0,
             selected_attention_index: None,
             detail: None,
             view_items: Vec::new(),
@@ -11851,6 +11885,7 @@ mod tests {
             active_view: TuiView::Attention,
             navigation: vec![TuiView::Attention],
             attention_items: Vec::new(),
+            attention_total: 0,
             selected_attention_index: None,
             detail: None,
             view_items: Vec::new(),
@@ -20052,6 +20087,7 @@ mod tests {
             active_view: TuiView::Attention,
             navigation: vec![TuiView::Attention],
             attention_items: vec![],
+            attention_total: 0,
             selected_attention_index: None,
             detail: Some(detail),
             view_items: vec![],
@@ -20272,6 +20308,7 @@ mod tests {
             active_view: TuiView::Attention,
             navigation: TuiView::all().to_vec(),
             attention_items: vec![],
+            attention_total: 0,
             selected_attention_index: Some(0),
             detail: Some(AttentionDetail::new(
                 "repo".to_owned(),
