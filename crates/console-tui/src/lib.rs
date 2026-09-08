@@ -188,6 +188,18 @@ fn run_terminal_loop(
         if let Some(fresh) = session.refresh_events(matches!(tick, LoopTick::Mutated))? {
             events = fresh;
         }
+        // The operator's own settings write has now reported an outcome, so the
+        // effective policy is re-read ONCE and folded in. Gated on the outcome
+        // event because the `config` read is a real orchestrator invocation and
+        // because "the worker has not run it yet" and "it ran and changed
+        // nothing" are indistinguishable in a bare re-read.
+        if console_application::dispatcher_setting_write_settled(
+            state.dispatcher_setting_write(),
+            &events,
+        ) && let Some(fresh) = session.refresh_dispatcher_settings()?
+        {
+            apply_dispatcher_settings_reread(&mut state, fresh);
+        }
     }
 }
 
@@ -237,7 +249,7 @@ fn process_input_tick(
     let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
     let mutated = effect_triggers_source_poll(&effect);
     let outcome = session.handle_runtime_effect(&effect)?;
-    apply_sink_outcome(state, effects, effect, outcome);
+    apply_sink_outcome(state, effects, effect, outcome, events.len());
     if should_quit {
         return Ok(LoopTick::Quit);
     }
@@ -259,7 +271,26 @@ fn apply_sink_outcome(
     effects: &mut Vec<TuiRuntimeEffect>,
     effect: TuiRuntimeEffect,
     outcome: TuiRuntimeEffectSinkOutcome,
+    event_count: usize,
 ) {
+    // A dispatcher-setting write that the sink APPLIED is now in flight on the
+    // command worker. Record it so the row it targets renders as pending rather
+    // than presenting the pre-edit value as current -- the launch-snapshot
+    // defect this closes (livespec-console-beads-fabro-30c). Only an applied
+    // effect counts: a deferred or store-busy one never reached the worker.
+    if matches!(outcome, TuiRuntimeEffectSinkOutcome::Applied)
+        && let TuiRuntimeEffect::PersistCommandWithPayload {
+            command,
+            payload_json,
+        } = &effect
+        && let Some(pending) = console_application::DispatcherSettingWriteState::submitted(
+            command.command_type(),
+            payload_json,
+            event_count,
+        )
+    {
+        *state = state.clone().with_dispatcher_setting_write(pending);
+    }
     match outcome {
         TuiRuntimeEffectSinkOutcome::Deferred => effects.push(effect),
         TuiRuntimeEffectSinkOutcome::Applied => {}
@@ -293,6 +324,29 @@ fn apply_worker_status(state: &mut TuiInteractionState, status: Option<String>) 
     if let Some(status) = status {
         *state = state.clone().with_transient_status(Some(status));
     }
+}
+
+/// Fold a fresh effective-policy read into the loop's state.
+///
+/// Split out of the terminal-bound loop for the same reason `apply_sink_outcome`
+/// and `apply_worker_status` were: the loop is excluded from tests and coverage,
+/// and this is where the console decides whether the operator's edit LANDED.
+/// The read replaces what every row renders; the fold decides whether the row
+/// the operator edited now reports the new value, or reports that it did not
+/// move.
+#[cfg(any(test, not(coverage)))]
+fn apply_dispatcher_settings_reread(
+    state: &mut TuiInteractionState,
+    fresh: DispatcherSettingsRead,
+) {
+    let folded = console_application::fold_dispatcher_setting_reread(
+        state.dispatcher_setting_write(),
+        &fresh,
+    );
+    *state = state
+        .clone()
+        .with_dispatcher_setting_write(folded)
+        .with_dispatcher_settings(fresh);
 }
 
 // `effect_triggers_source_poll` is used by the terminal loop (excluded from tests
@@ -420,6 +474,26 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// worker behind them.
     fn take_worker_status(&mut self) -> Option<String> {
         None
+    }
+
+    /// Re-read the EFFECTIVE dispatcher policy from the orchestrator's published
+    /// read surface, returning `Some(read)` to replace what the view renders or
+    /// `None` when this session has no read surface behind it.
+    ///
+    /// Unlike [`Self::refresh_events`] this DOES shell out, which is why the
+    /// loop calls it only once a submitted write's outcome has landed rather
+    /// than on the render cadence. That is the whole fix: the composition root
+    /// used to read the effective policy exactly once, before the TUI started,
+    /// so every later frame rendered a launch-time snapshot and a landed edit
+    /// looked lost (livespec-console-beads-fabro-30c).
+    ///
+    /// # Errors
+    /// Returns an IO error when the read surface cannot be consulted at all.
+    /// An orchestrator that answers untrustworthily is NOT an error -- it is
+    /// `DispatcherSettingsRead::NotObserved`, the named finding the view already
+    /// renders.
+    fn refresh_dispatcher_settings(&mut self) -> std::io::Result<Option<DispatcherSettingsRead>> {
+        Ok(None)
     }
 }
 
@@ -3059,7 +3133,7 @@ fn render_settings(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     let block = Block::new().borders(Borders::ALL).title(title);
     match model.dispatcher_settings() {
         DispatcherSettingsRead::Observed(settings) => {
-            let rows = dispatcher_setting_rows(settings);
+            let rows = dispatcher_setting_rows(settings, model.dispatcher_setting_write());
             let items = std::iter::once(plugin_resolution_row(model.plugin_resolution()))
                 .chain(
                     rows.iter()
@@ -3101,8 +3175,10 @@ fn plugin_resolution_line(plugin: &PluginResolution) -> Line<'static> {
 fn settings_row_line(model: &TuiScreenModel, index: usize, row: &SettingRow) -> ListItem<'static> {
     let selected = Some(index) == model.selected_setting_index();
     let marker = if selected { ">" } else { " " };
-    let danger = if row.dangerous() { "  (dangerous)" } else { "" };
-    let label = format!("{marker} {}  [ {} ]{danger}", row.label(), row.value());
+    // The row's WORDS are model-layer (`SettingRow::text`) so a pending or
+    // unchanged write is reported in the one sentence the operator reads; the
+    // renderer adds only the selection marker.
+    let label = format!("{marker} {}", row.text());
     ListItem::new(label).style(if selected {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
@@ -3133,7 +3209,7 @@ fn settings_detail_lines(model: &TuiScreenModel) -> Vec<Line<'static>> {
         lines.push(Line::from("Dispatcher settings not observed"));
         return lines;
     };
-    let rows = dispatcher_setting_rows(settings);
+    let rows = dispatcher_setting_rows(settings, model.dispatcher_setting_write());
     lines.push(Line::from(String::new()));
     lines.extend(
         model
@@ -3143,7 +3219,10 @@ fn settings_detail_lines(model: &TuiScreenModel) -> Vec<Line<'static>> {
                 || vec![Line::from("No setting selected")],
                 |row| {
                     vec![
-                        Line::from(format!("{}: {}", row.label(), row.value())),
+                        // The SAME model-layer sentence the content row renders,
+                        // so the detail pane cannot contradict it about whether
+                        // an edit is in flight.
+                        Line::from(row.text()),
                         Line::from(String::new()),
                         Line::from(row.help().to_owned()),
                     ]
@@ -3289,7 +3368,11 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::{HELP_MODAL_MARGIN, apply_sink_outcome, apply_worker_status};
+    use crate::{
+        HELP_MODAL_MARGIN, apply_dispatcher_settings_reread, apply_sink_outcome,
+        apply_worker_status,
+    };
+    use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{
@@ -3399,6 +3482,7 @@ mod tests {
             TuiRuntimeEffectSinkOutcome::NotApplied(
                 "store busy - action NOT applied, press the key again to retry".to_owned(),
             ),
+            0,
         );
 
         check(
@@ -3428,6 +3512,7 @@ mod tests {
             &mut applied_effects,
             TuiRuntimeEffect::Render,
             TuiRuntimeEffectSinkOutcome::Applied,
+            0,
         );
         let rendered = render_to_text(&build_tui_model_for_state(&[], &applied_state), 200, 40)
             .unwrap_or_default();
@@ -3447,6 +3532,7 @@ mod tests {
             &mut deferred_effects,
             TuiRuntimeEffect::Render,
             TuiRuntimeEffectSinkOutcome::Deferred,
+            0,
         );
         check(
             deferred_effects.len() == 1,
@@ -8883,6 +8969,10 @@ mod tests {
 
     const CONFIRM_REPO: &str = "livespec-console-beads-fabro";
 
+    /// The `{ repo, setting, value }` payload a `wip_cap` 5 -> 6 edit persists.
+    const WIP_CAP_6_PAYLOAD: &str =
+        r#"{"repo":"livespec-console-beads-fabro","setting":"wip_cap","value":6}"#;
+
     /// Six effective dispatcher settings for the Settings-surface tests, with
     /// `auto_approve_ready` off so editing it records a `false -> true` change.
     fn observed_settings() -> DispatcherSettings {
@@ -8994,6 +9084,145 @@ mod tests {
         assert!(text.contains("ai-then-human"));
         // The selected dangerous row's detail help carries the required label.
         assert!(text.contains("dangerous / use with caution"));
+    }
+
+    #[test]
+    fn a_session_with_no_read_surface_offers_no_effective_policy_to_re_read() {
+        // The trait default. The legacy no-store path has no orchestrator behind
+        // it, so it reports "nothing to replace" and the loop keeps rendering
+        // what it has -- rather than inventing a read it cannot make.
+        let mut session = DeferredTuiRuntimeEffectSink;
+        assert_eq!(session.refresh_dispatcher_settings().ok().flatten(), None);
+    }
+
+    #[test]
+    fn an_applied_settings_write_leaves_its_row_pending_in_the_very_next_frame() {
+        // The submitted-write transition the terminal loop makes for real. Before
+        // this the loop recorded nothing, so the row went on rendering the
+        // launch-time snapshot as though no edit had been made
+        // (livespec-console-beads-fabro-30c).
+        let mut state = settings_state(5);
+        let mut effects = Vec::new();
+        let effect = TuiRuntimeEffect::PersistCommandWithPayload {
+            command: CommandEnvelope::new(
+                "cmd_wip_cap_6".to_owned(),
+                CommandType::ConfigDispatcherSettingSet,
+                CONFIRM_REPO.to_owned(),
+                "key".to_owned(),
+                "operator".to_owned(),
+            ),
+            payload_json: WIP_CAP_6_PAYLOAD.to_owned(),
+        };
+
+        apply_sink_outcome(
+            &mut state,
+            &mut effects,
+            effect,
+            TuiRuntimeEffectSinkOutcome::Applied,
+            4,
+        );
+
+        assert_eq!(
+            state.dispatcher_setting_write(),
+            &DispatcherSettingWriteState::Pending {
+                write: console_application::DispatcherSettingWrite::WipCap(6),
+                submitted_after_events: 4,
+            }
+        );
+        let text =
+            render_to_text(&build_tui_model_for_state(&[], &state), 120, 24).unwrap_or_default();
+        assert!(text.contains("WIP cap  [ 5 -> 6 ]  writing..."), "{text}");
+    }
+
+    #[test]
+    fn a_settings_write_the_sink_refused_leaves_no_pending_row() {
+        // A store-busy refusal never reached the command worker, so claiming the
+        // row is writing would be the same lie in the other direction.
+        let mut state = settings_state(5);
+        let mut effects = Vec::new();
+
+        apply_sink_outcome(
+            &mut state,
+            &mut effects,
+            TuiRuntimeEffect::PersistCommandWithPayload {
+                command: CommandEnvelope::new(
+                    "cmd_wip_cap_6".to_owned(),
+                    CommandType::ConfigDispatcherSettingSet,
+                    CONFIRM_REPO.to_owned(),
+                    "key".to_owned(),
+                    "operator".to_owned(),
+                ),
+                payload_json: WIP_CAP_6_PAYLOAD.to_owned(),
+            },
+            TuiRuntimeEffectSinkOutcome::NotApplied("store busy".to_owned()),
+            4,
+        );
+
+        assert_eq!(
+            state.dispatcher_setting_write(),
+            &DispatcherSettingWriteState::Idle
+        );
+    }
+
+    #[test]
+    fn a_fresh_effective_read_lands_in_the_settings_pane_without_a_restart() {
+        // The acceptance case: the write completed, the orchestrator now reports
+        // the new value, and the SAME session renders it.
+        let mut state =
+            settings_state(5).with_dispatcher_setting_write(DispatcherSettingWriteState::Pending {
+                write: console_application::DispatcherSettingWrite::WipCap(6),
+                submitted_after_events: 0,
+            });
+
+        apply_dispatcher_settings_reread(
+            &mut state,
+            DispatcherSettingsRead::Observed(DispatcherSettings::new(
+                false,
+                false,
+                AcceptancePolicy::AiThenHuman,
+                3,
+                2,
+                6,
+            )),
+        );
+
+        assert_eq!(
+            state.dispatcher_setting_write(),
+            &DispatcherSettingWriteState::Idle
+        );
+        let text =
+            render_to_text(&build_tui_model_for_state(&[], &state), 120, 24).unwrap_or_default();
+        assert!(text.contains("WIP cap  [ 6 ]"), "{text}");
+        assert!(!text.contains("writing..."), "{text}");
+    }
+
+    #[test]
+    fn a_reread_that_did_not_carry_the_write_renders_the_unchanged_outcome() {
+        let mut state =
+            settings_state(5).with_dispatcher_setting_write(DispatcherSettingWriteState::Pending {
+                write: console_application::DispatcherSettingWrite::WipCap(6),
+                submitted_after_events: 0,
+            });
+
+        apply_dispatcher_settings_reread(
+            &mut state,
+            DispatcherSettingsRead::Observed(observed_settings()),
+        );
+
+        let text =
+            render_to_text(&build_tui_model_for_state(&[], &state), 120, 24).unwrap_or_default();
+        assert!(
+            text.contains("WIP cap  [ 5 ]  unchanged (requested 6)"),
+            "{text}"
+        );
+        // The detail pane tells the SAME story as the row it describes.
+        let model = build_tui_model_for_state(&[], &state);
+        assert!(
+            settings_detail_lines(&model)
+                .iter()
+                .any(|line| line.to_string().contains("unchanged (requested 6)")),
+            "detail pane contradicted the row"
+        );
     }
 
     #[test]
