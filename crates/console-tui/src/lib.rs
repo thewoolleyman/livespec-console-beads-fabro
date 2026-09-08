@@ -1683,15 +1683,32 @@ fn lane_item_summary(item: &LaneWorkItem) -> String {
 /// fields operators scan first: id, rank, status, and title.
 fn lane_item_detail_text(item: &LaneWorkItem) -> String {
     format!(
-        "{}  rank {}  [{}]{}  {}  repo {}{}",
+        "{}  rank {}  [{}]{}{}  {}  repo {}{}",
         item.work_item_id(),
         item.rank(),
         item.status(),
         lane_execution_state_suffix(item),
+        lane_unconfirmed_suffix(item),
         lane_item_title(item),
         item.repo(),
         lane_reason_suffix(item)
     )
+}
+
+/// The marker on a row whose backing source could not be read on the latest
+/// poll, or empty when the console can vouch for the row.
+///
+/// It sits immediately after the lifecycle fields rather than at the end of the
+/// line, because a lane row TRUNCATES at the pane width and an honesty marker
+/// that only survives on a wide terminal is not one
+/// (`livespec-console-beads-fabro-v8un`, operator rider [2]). The row carries
+/// the flag; the detail pane carries the sentence.
+const fn lane_unconfirmed_suffix(item: &LaneWorkItem) -> &'static str {
+    if item.observation_confirmed() {
+        ""
+    } else {
+        "  (unconfirmed)"
+    }
 }
 
 /// The title rendered in lane rows, or a stable placeholder for legacy
@@ -2116,6 +2133,7 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
             policy_field(
                 detail.admission_policy.as_deref(),
                 item.admission_policy().label(),
+                item.observation_confirmed(),
             ),
         ),
         (
@@ -2123,6 +2141,7 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
             policy_field(
                 detail.acceptance_policy.as_deref(),
                 item.acceptance_policy().label(),
+                item.observation_confirmed(),
             ),
         ),
         ("origin", optional_field(detail.origin.as_deref())),
@@ -2200,11 +2219,31 @@ fn push_text_block(lines: &mut Vec<Line<'static>>, label: &str, value: Option<&s
 /// for an item inheriting a non-default policy. The fallback is still worth
 /// showing, because it IS what this console acts on -- so it is shown, labelled
 /// as the console's own assumption rather than as the item's field.
-fn policy_field(emitted: Option<&str>, console_default: &str) -> String {
-    emitted.map_or_else(
-        || format!("{ITEM_FIELD_ABSENT} (not emitted; console assumes {console_default})"),
-        str::to_owned,
-    )
+///
+/// UNKNOWN IS NOT UNSET, and an absent policy means different things on either
+/// side of that line (`livespec-console-beads-fabro-v8un`, operator rider [2]).
+/// When the backing source WAS read and emitted nothing, the field is genuinely
+/// unset and the labelled fallback above is the honest reading. When the source
+/// could NOT be read, the console has no reading at all -- and printing its own
+/// default there would be exactly the fabrication the port discipline forbids
+/// ("never emit a success or outcome event for an effect the port did not
+/// actually achieve"). Measured consequence: plan 02's R10 walk recorded a
+/// blank policy on an unreadable row as a VERIFIED UNARMED baseline. It was not
+/// evidence of anything, and nothing on screen said so.
+fn policy_field(
+    emitted: Option<&str>,
+    console_default: &str,
+    observation_confirmed: bool,
+) -> String {
+    match (emitted, observation_confirmed) {
+        (Some(policy), _) => policy.to_owned(),
+        (None, true) => {
+            format!("{ITEM_FIELD_ABSENT} (not emitted; console assumes {console_default})")
+        }
+        (None, false) => format!(
+            "{ITEM_FIELD_ABSENT} (not read; the orchestrator source was not observed on the latest poll)"
+        ),
+    }
 }
 
 /// One optional record field as display text, or [`ITEM_FIELD_ABSENT`] when the
@@ -5244,6 +5283,71 @@ mod tests {
                 .as_ref()
                 .map(|r| r.contains("orphaned factory runs (0)")),
             Ok(true)
+        );
+    }
+
+    /// The honest marker the adapter appends when a poll could not read a
+    /// source, keyed on the same source name the lane snapshots carry.
+    fn orchestrator_not_observed_event(event_id: &str) -> ConsoleEvent {
+        ConsoleEvent::fixture(
+            event_id,
+            EventType::SourceNotObservedFindingObserved,
+            "orchestrator",
+        )
+        .with_payload_json(
+            r#"{"repo":"console","source":"orchestrator","reason":"source command exited non-zero"}"#
+                .to_owned(),
+        )
+    }
+
+    /// `livespec-console-beads-fabro-v8un`, operator rider [2]. A row whose
+    /// backing source could not be read on the latest poll is serving
+    /// last-known values, and the row SAYS SO instead of rendering them as
+    /// confirmed. The marker sits with the lifecycle fields so it survives the
+    /// truncation a narrow pane applies.
+    #[test]
+    fn render_to_text_marks_a_lane_row_whose_source_was_not_observed() {
+        let mut events = lane_render_events().to_vec();
+        events.push(orchestrator_not_observed_event("evt_not_observed"));
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(Lane::Ready));
+
+        let model = build_tui_model_for_state(&events, &state);
+        let output = render_to_text(&model, 96, 24);
+
+        assert_eq!(
+            output
+                .as_ref()
+                .map(|r| r.contains("console-ready-a  rank a0  [ready]  (unconfirmed)")),
+            Ok(true)
+        );
+        // The CONTROL: with every source observed, no row is marked.
+        let confirmed = build_tui_model_for_state(&lane_render_events(), &state);
+        assert_eq!(
+            render_to_text(&confirmed, 96, 24)
+                .as_ref()
+                .map(|r| r.contains("unconfirmed")),
+            Ok(false)
+        );
+    }
+
+    /// The same rider's sharper half: an ABSENT policy on a row the console
+    /// could not read must NOT render as the console's assumed default, because
+    /// that shows "unknown" and "unset" identically. A positive read stays a
+    /// reading; a read source that emitted nothing stays an honest unset.
+    #[test]
+    fn an_unreadable_policy_is_reported_as_unread_not_as_the_console_default() {
+        assert_eq!(
+            super::policy_field(Some("ai-only"), "ai-then-human", true),
+            "ai-only"
+        );
+        assert_eq!(
+            super::policy_field(None, "ai-then-human", true),
+            "\u{2014} (not emitted; console assumes ai-then-human)"
+        );
+        assert_eq!(
+            super::policy_field(None, "ai-then-human", false),
+            "\u{2014} (not read; the orchestrator source was not observed on the latest poll)"
         );
     }
 

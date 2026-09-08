@@ -3349,11 +3349,16 @@ pub struct LaneWorkItem {
     status: String,
     admission_policy: AdmissionPolicy,
     acceptance_policy: AcceptancePolicy,
+    observation_confirmed: bool,
     detail: WorkItemDetail,
 }
 
 impl LaneWorkItem {
-    fn from_snapshot(snapshot: &WorkItemSnapshot, execution_state: LaneExecutionState) -> Self {
+    fn from_snapshot(
+        snapshot: &WorkItemSnapshot,
+        execution_state: LaneExecutionState,
+        observation_confirmed: bool,
+    ) -> Self {
         Self {
             work_item_id: snapshot.work_item_id().to_owned(),
             repo: snapshot.repo().to_owned(),
@@ -3364,8 +3369,28 @@ impl LaneWorkItem {
             status: snapshot.status().to_owned(),
             admission_policy: snapshot.admission_policy(),
             acceptance_policy: snapshot.acceptance_policy(),
+            observation_confirmed,
             detail: snapshot.detail().clone(),
         }
+    }
+
+    #[must_use]
+    /// Whether the backing source that fed this row was successfully observed
+    /// on its LATEST poll.
+    ///
+    /// `false` means every value on this row -- `rank`, the title, the policies
+    /// -- is LAST-KNOWN rather than current: the console could not read the
+    /// source this cycle and is serving what it last saw. It is the same fact
+    /// the header's `sources: N unavailable` tally reports, carried down to the
+    /// row so the surface can qualify the values instead of presenting them as
+    /// confirmed (`livespec-console-beads-fabro-v8un`, operator rider [2]).
+    ///
+    /// It is deliberately NOT a claim that the row is WRONG -- an unavailable
+    /// source usually means the values still hold. It is a claim that the
+    /// console cannot vouch for them, which is the distinction between unknown
+    /// and unset that rider [2] requires.
+    pub const fn observation_confirmed(&self) -> bool {
+        self.observation_confirmed
     }
 
     #[must_use]
@@ -3806,6 +3831,11 @@ fn escape_url_path_segment(text: &str) -> String {
 #[must_use]
 pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
     let execution_states = observed_execution_states(events);
+    // The sources whose MOST RECENT observation failed. A row fed by one of
+    // them is serving last-known values the console cannot currently vouch for,
+    // and it says so rather than rendering them as confirmed
+    // (`livespec-console-beads-fabro-v8un`, operator rider [2]).
+    let degraded = unavailable_sources(events);
     let mut latest: BTreeMap<String, LaneWorkItem> = BTreeMap::new();
     for event in events {
         if *event.event_type() != EventType::WorkItemSnapshotObserved {
@@ -3815,9 +3845,10 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
             continue;
         };
         let execution_state = execution_state_for_snapshot(&snapshot, &execution_states);
+        let observation_confirmed = !degraded.iter().any(|source| source == event.source());
         latest.insert(
             snapshot.work_item_id().to_owned(),
-            LaneWorkItem::from_snapshot(&snapshot, execution_state),
+            LaneWorkItem::from_snapshot(&snapshot, execution_state, observation_confirmed),
         );
     }
     let columns = Lane::all()
@@ -8197,7 +8228,13 @@ fn advertised_valve_commands(events: &[ConsoleEvent], work_item_id: &str) -> Vec
 /// what is not per-item at all — the selection-less globals and the board-wide
 /// ready drain, neither of which acts on this row's work-item.
 fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
-    let item = LaneWorkItem::from_snapshot(&entry.snapshot, LaneExecutionState::NotActive);
+    // This item is a vehicle for deriving the ACTION roster; it is never
+    // rendered as a lane row, and the registry does not read the confirmation
+    // flag. Nothing on this path knows the backing source's health, so it
+    // claims none: an unvouched-for row that is never shown costs nothing,
+    // while claiming `confirmed` here would be a false assurance if this item
+    // ever did reach a surface.
+    let item = LaneWorkItem::from_snapshot(&entry.snapshot, LaneExecutionState::NotActive, false);
     let ctx = action_registry::ActionContext::for_item(
         &item,
         action_registry::ActionSurface::Attention,
