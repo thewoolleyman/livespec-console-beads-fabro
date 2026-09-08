@@ -4,6 +4,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const ORCHESTRATOR_PLUGIN_NAME: &str = "livespec-orchestrator-beads-fabro";
+/// The livespec CORE plugin name in the Claude plugin cache. Core ships the
+/// SPEC-side ranking CLI the livespec source observes, at
+/// `<root>/scripts/bin/next.py` once the installer has flattened the layout.
+const LIVESPEC_CORE_PLUGIN_NAME: &str = "livespec";
+const LIVESPEC_CORE_NEXT_SCRIPT: &str = "next.py";
 const PLUGIN_ROOT_ENV: &str = "LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT";
 const SELECTED_REPO_PATH_ENV: &str = "LIVESPEC_CONSOLE_REPO_PATH";
 const LIST_WORK_ITEMS_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM";
@@ -168,6 +173,12 @@ impl BackingCliResolution {
         // `LIVESPEC_CONSOLE_FABRO_PROGRAM` override (applied next) still wins.
         if let Some(resolved) = resolve_fabro_program(inputs.home_dir.as_deref()) {
             programs.fabro = resolved;
+        }
+        // Same rung for the bare `livespec` default, which the wrapper's
+        // scrubbed PATH can never spawn. An explicit
+        // `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` override still wins.
+        if let Some(resolved) = resolve_livespec_command(inputs, &selected_repo_path)? {
+            programs.livespec = resolved;
         }
         apply_program_overrides(&inputs.env, &mut programs);
         Ok(Self {
@@ -382,7 +393,9 @@ fn resolve_plugin_root(
         ));
     }
 
-    let Some((root, version)) = installed_plugin_root(inputs, selected_repo_path)? else {
+    let Some((root, version)) =
+        installed_plugin_root(inputs, selected_repo_path, ORCHESTRATOR_PLUGIN_NAME)?
+    else {
         return Ok(PluginResolution::unresolved("not resolved".to_owned()));
     };
     validate_plugin_root(&root)?;
@@ -393,9 +406,16 @@ fn resolve_plugin_root(
     ))
 }
 
+/// Return the newest applicable installed-cache root recorded for `plugin_name`
+/// under the injected home, with its version when the record carries one.
+///
+/// `plugin_name` is the cache key's plugin half — cache keys are
+/// `<plugin>@<marketplace>`, so the same plugin installed from several
+/// marketplaces contributes every one of its records to the same selection.
 fn installed_plugin_root(
     inputs: &ResolveInputs,
     selected_repo_path: &Path,
+    plugin_name: &str,
 ) -> Result<Option<(PathBuf, Option<String>)>, BackingCliResolutionError> {
     let Some(home_dir) = &inputs.home_dir else {
         return Ok(None);
@@ -416,7 +436,7 @@ fn installed_plugin_root(
     let selected_repo = selected_repo_path.to_string_lossy();
     let mut selected: Option<InstalledPluginCandidate> = None;
     for (name, installs) in plugins {
-        if !name.starts_with(&format!("{ORCHESTRATOR_PLUGIN_NAME}@")) {
+        if !name.starts_with(&format!("{plugin_name}@")) {
             continue;
         }
         let Some(entries) = installs.as_array() else {
@@ -546,9 +566,10 @@ fn programs_from_plugin_bin(bin: &Path) -> BackingCliPrograms {
         // `next.py` (which ranks work-items). Resolving it from the orchestrator
         // plugin bin wired it to the wrong CLI, whose work-item-ranking output
         // never parses as a spec-next action and so degraded the source. Keep the
-        // spec-side `livespec next --json` command; the
-        // `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` override points it at a concrete
-        // spec-side next CLI (for example core's `next.py`) where one is present.
+        // spec-side `livespec next --json` command here; `resolve_livespec_command`
+        // then points it at the livespec-CORE plugin's `next.py` when one is
+        // discoverable, and the `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` override wins
+        // over both.
         livespec: CommandShape::new("livespec", &["next", "--json"]),
         fabro: "fabro".to_owned(),
         dispatcher: bin.join("dispatcher.py").display().to_string(),
@@ -608,6 +629,55 @@ fn resolve_fabro_program(home_dir: Option<&Path>) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve the spec-side `livespec next` command to the `next.py` shipped by a
+/// discovered livespec-CORE plugin install, or `None` to keep the bare
+/// `livespec` default.
+///
+/// The cockpit runs under the credential wrapper, whose scrubbed `PATH`
+/// (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) holds no
+/// `livespec` binary, so the bare default can never spawn there: every poll
+/// failed with `No such file or directory` and the livespec source read as
+/// permanently not-observed. This adds the rung the orchestrator plugin
+/// ([`installed_plugin_root`]) and `fabro` ([`resolve_fabro_program`]) already
+/// have — discover the install and use an absolute path — for the one backing
+/// CLI that had none.
+///
+/// Core's `next.py` is the SPEC-side ranker, NOT the orchestrator plugin's
+/// impl-side `next.py` (which ranks work-items), so this discovery stays keyed
+/// to the livespec-core plugin and never reads the orchestrator plugin bin. It
+/// also carries a different argument surface than the bare `livespec` CLI: it
+/// emits its JSON payload on stdout unconditionally, taking neither a `next`
+/// subcommand nor `--json`, and takes `--project-root <path>` — passed the
+/// selected repo so the ranker reads THAT checkout's `SPECIFICATION/` rather
+/// than depending on the console's working directory.
+///
+/// Resolution reads ONLY the injected home (never the ambient filesystem), so a
+/// caller with no injected home, no livespec-core record, or a recorded install
+/// that ships no `next.py` deterministically keeps the bare default, and any
+/// host that legitimately has `livespec` on `PATH` is unaffected.
+fn resolve_livespec_command(
+    inputs: &ResolveInputs,
+    selected_repo_path: &Path,
+) -> Result<Option<CommandShape>, BackingCliResolutionError> {
+    let Some((root, _version)) =
+        installed_plugin_root(inputs, selected_repo_path, LIVESPEC_CORE_PLUGIN_NAME)?
+    else {
+        return Ok(None);
+    };
+    let Some(script) = plugin_bin_dir(&root).map(|bin| bin.join(LIVESPEC_CORE_NEXT_SCRIPT)) else {
+        return Ok(None);
+    };
+    if !script.is_file() {
+        return Ok(None);
+    }
+    let program = script.display().to_string();
+    let project_root = selected_repo_path.display().to_string();
+    Ok(Some(CommandShape::new(
+        &program,
+        &["--project-root", &project_root],
+    )))
 }
 
 fn apply_program_overrides(env: &BTreeMap<String, String>, programs: &mut BackingCliPrograms) {
