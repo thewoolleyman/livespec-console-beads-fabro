@@ -4096,12 +4096,22 @@ pub fn build_tui_model_for_state(
     // `/una`, then `attention: 22`, none of which was the inbox). The match
     // count belongs to the search overlay, which is where the operator typed.
     //
-    // The unfiltered pass runs only while a non-empty query is actually
-    // narrowing something: with no query the two counts are the same list.
-    let attention_total = match search_query {
-        Some(query) if !query.is_empty() => unified_attention_entries(events, None).len(),
-        _no_active_filter => attention_count,
-    };
+    // Any active search overlay -- even one whose query is still empty --
+    // recomputes the unfiltered pass, rather than special-casing the empty
+    // string: `attention_item_matches` / `attention_snapshot_matches` already
+    // treat an empty query as matching everything, so `attention_count` (the
+    // filtered pass) and the unfiltered recompute agree on the empty-query
+    // count regardless. A guard here that tried to skip the recompute for
+    // "nothing to narrow yet" would be redundant with that agreement, not an
+    // optimization -- it can only ever produce a mutation-testing survivor
+    // with no observable effect (measured 2026-09-08, PR #1096 check-mutants:
+    // `!query.is_empty()` replaced with `true` survived because both sides
+    // compute the same count). With no active overlay at all, there is no
+    // query to narrow by, so the filtered and unfiltered lists are the same
+    // list.
+    let attention_total = search_query.map_or(attention_count, |_query| {
+        unified_attention_entries(events, None).len()
+    });
     let detail = selected_attention_index.map(|index| attention_entries[index].to_detail(events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
