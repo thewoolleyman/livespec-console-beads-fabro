@@ -20,6 +20,7 @@
 //! checks deliberately avoid.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use crate::has_rule_keyword;
 
@@ -35,6 +36,71 @@ pub struct StaleFencedBlock {
     pub end_line: usize,
     /// The removed term the block still carries, as its normalized words.
     pub term: String,
+}
+
+impl StaleFencedBlock {
+    /// This finding as one diagnostic line, in `console-spec-check`'s existing
+    /// style: the severity `label`, what happened, the offending file in
+    /// brackets, the block's fence line range, and — after the `::` the other
+    /// diagnostics use for the offending text — the removed term the block
+    /// still carries.
+    ///
+    /// All three are load-bearing. The file and the line range are what let a
+    /// reader open the block instead of sweeping every block in the tree, and
+    /// the term is what tells them WHICH removed sentence the block now
+    /// contradicts.
+    #[must_use]
+    pub fn render(&self, label: &str) -> String {
+        format!(
+            "{label}: fenced block still states text the change removed [{}] lines {}-{} :: {}",
+            self.spec_file, self.start_line, self.end_line, self.term
+        )
+    }
+}
+
+/// One spec file as a change carries it: the content before, and the content
+/// now.
+///
+/// The binary builds these from git — `previous` is the file at the comparison
+/// base, `current` is the working tree's copy — so a change set covers both
+/// what the branch committed and what is still uncommitted. A file the change
+/// ADDED or DELETED is not an entry at all: with only one side there is no
+/// removed prose, so nothing in it can have gone stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecChange {
+    /// Repository-relative path of the spec file.
+    pub spec_file: String,
+    /// The file's content at the comparison base.
+    pub previous: String,
+    /// The file's content in the working tree.
+    pub current: String,
+}
+
+/// Every stale fenced block across `changes`, in change-set order and then in
+/// [`stale_fenced_blocks`] order within each file.
+#[must_use]
+pub fn stale_fenced_blocks_in_changes(changes: &[SpecChange]) -> Vec<StaleFencedBlock> {
+    changes
+        .iter()
+        .flat_map(|change| {
+            stale_fenced_blocks(&change.spec_file, &change.previous, &change.current)
+        })
+        .collect()
+}
+
+/// Whether `path` names a spec markdown file this check reads.
+///
+/// The WHOLE `SPECIFICATION/` tree, history included. A proposed change is
+/// amended round after round in its own file under `history/`, which is where
+/// the v048 defects were actually introduced, and widening the scan costs
+/// nothing on the rest of the tree: only files the change MODIFIED reach the
+/// detector, and a file with no removed normative prose yields no findings.
+#[must_use]
+pub fn is_spec_markdown(path: &str) -> bool {
+    path.starts_with("SPECIFICATION/")
+        && Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
 }
 
 /// The fenced blocks of `current` that still carry a distinctive term from a

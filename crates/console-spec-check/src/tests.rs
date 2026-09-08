@@ -10,10 +10,11 @@
 
 use super::{
     Audience, ClauseLink, CoverageEntry, CoverageReport, InvalidTestRegistration, Mode, NFR_FILE,
-    PendingTestRegistration, SpecSource, StaleFencedBlock, UnlinkedClause, UntestedScenario,
-    contains_whole_word, derive_gap_id, evaluate, extract_rules, nfr_scenarios, normalize_scenario,
-    operator_scenarios, parse_heading, parse_registry, push_heading, resolve_mode,
-    stale_fenced_blocks, validate_test_registrations,
+    PendingTestRegistration, SpecChange, SpecSource, StaleFencedBlock, UnlinkedClause,
+    UntestedScenario, contains_whole_word, derive_gap_id, evaluate, extract_rules,
+    is_spec_markdown, nfr_scenarios, normalize_scenario, operator_scenarios, parse_heading,
+    parse_registry, push_heading, resolve_mode, stale_fenced_blocks,
+    stale_fenced_blocks_in_changes, validate_test_registrations,
 };
 
 const FIXTURE: &str = include_str!("../tests/data/parity_fixture.md");
@@ -1084,5 +1085,100 @@ fn a_block_whose_language_changed_counts_as_touched() {
     assert!(
         stale_fenced_blocks("spec.md", STALE_PREVIOUS, &current).is_empty(),
         "the change rewrote the block, so it is not stale"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The shipped gate's seams: the change set it runs over, the paths it reads,
+// and the diagnostic it prints. The binary supplies the git reads; everything
+// it decides with is here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_change_set_reports_every_file_in_order() {
+    let changes = vec![
+        SpecChange {
+            spec_file: "SPECIFICATION/spec.md".to_string(),
+            previous: STALE_PREVIOUS.to_string(),
+            current: STALE_CURRENT.to_string(),
+        },
+        SpecChange {
+            spec_file: "SPECIFICATION/contracts.md".to_string(),
+            previous: STALE_PREVIOUS.to_string(),
+            current: STALE_CURRENT.to_string(),
+        },
+    ];
+
+    let findings = stale_fenced_blocks_in_changes(&changes);
+
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.spec_file.as_str())
+            .collect::<Vec<_>>(),
+        vec!["SPECIFICATION/spec.md", "SPECIFICATION/contracts.md"],
+        "each changed file is read, in change-set order"
+    );
+}
+
+#[test]
+fn a_change_set_with_nothing_stale_is_silent() {
+    let unchanged = vec![SpecChange {
+        spec_file: "SPECIFICATION/spec.md".to_string(),
+        previous: STALE_CURRENT.to_string(),
+        current: STALE_CURRENT.to_string(),
+    }];
+
+    assert!(stale_fenced_blocks_in_changes(&unchanged).is_empty());
+    assert!(
+        stale_fenced_blocks_in_changes(&[]).is_empty(),
+        "a change touching no spec file has nothing to report"
+    );
+}
+
+#[test]
+fn the_scan_reads_markdown_anywhere_under_the_spec_tree_and_nothing_else() {
+    assert!(is_spec_markdown("SPECIFICATION/spec.md"));
+    assert!(
+        is_spec_markdown("SPECIFICATION/history/v048/proposed_changes/amendment.md"),
+        "a proposed change is amended round after round in its own file"
+    );
+    assert!(is_spec_markdown("SPECIFICATION/spec.MD"), "extension case");
+
+    assert!(
+        !is_spec_markdown("SPECIFICATION/scenarios.json"),
+        "only markdown carries fenced blocks the clause extractor skips"
+    );
+    assert!(
+        !is_spec_markdown("SPECIFICATION/README"),
+        "a file with no extension at all"
+    );
+    assert!(
+        !is_spec_markdown("docs/detailed-usage.md"),
+        "markdown outside the spec tree is not this gate's business"
+    );
+    assert!(
+        !is_spec_markdown("crates/console-spec-check/tests/data/staleness/fixture.md"),
+        "this check's OWN fixtures stay out of the counted spec tree"
+    );
+}
+
+#[test]
+fn a_finding_renders_its_file_its_block_range_and_the_removed_term() {
+    let finding = StaleFencedBlock {
+        spec_file: "SPECIFICATION/non-functional-requirements.md".to_string(),
+        start_line: 62,
+        end_line: 82,
+        term: "top rank".to_string(),
+    };
+
+    assert_eq!(
+        finding.render("error"),
+        "error: fenced block still states text the change removed \
+         [SPECIFICATION/non-functional-requirements.md] lines 62-82 :: top rank"
+    );
+    assert!(
+        finding.render("warn").starts_with("warn: "),
+        "the severity label is the caller's, as it is for every other diagnostic"
     );
 }

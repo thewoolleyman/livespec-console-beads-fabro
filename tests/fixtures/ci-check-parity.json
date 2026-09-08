@@ -42,6 +42,11 @@
       "reason": "Runs in the janitor/local aggregate to validate origin/master..HEAD Rust commits before Stage 3 commit-msg enforcement; this factory slice may not edit .github/workflows/ to add a new CI job."
     },
     {
+      "name": "check-spec-fenced-block-staleness",
+      "present_in_ci": false,
+      "reason": "Fenced-block staleness gate (livespec-console-beads-fabro-4jb3kl.6), the same shape as check-red-green-replay above: it diffs the working tree against the merge base with origin/master, and the matrix job's shared actions/checkout runs at the default fetch-depth 1, where neither that ref nor any history exists — the gate would resolve no base and skip, so a CI job would be vacuous until the checkout fetches history for every target. It runs where the diff is real: the lefthook pre-push aggregate and the post-merge janitor. This factory slice also may not edit .github/workflows/."
+    },
+    {
       "name": "check-spec-governance-default-block",
       "present_in_ci": false,
       "reason": "Runs in the janitor/local aggregate as a hermetic spec-governance guard; CI's matrix predates this target and this factory slice may not edit .github/workflows/ to add a new CI job."
