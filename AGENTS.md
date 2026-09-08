@@ -123,6 +123,25 @@ still ended its turn on a "still outstanding" list).
    (2026-07-22 and 2026-09-08 both: items reported as "still yours" that the
    session could act on itself). If the reason it is the maintainer's cannot
    be stated in one sentence with a current fact, act on it.
+6. **The maintainer watches the console TUI in a tmux pane beside the plan
+   session; recreate it on every restart.** (Maintainer ruling 2026-09-08.)
+   The plan session's tmux window carries the TUI in a RIGHT-hand pane at
+   two thirds of the window width, left running between dogfood passes on
+   the Attention view. Right after the STATUS RE-PRINT, check
+   `tmux list-panes -t <session> -F '#{pane_id} #{pane_width} #{pane_current_command}'`:
+   the TUI pane's command shows as `sudo` (the credential wrapper's re-exec),
+   not the binary name. If it is absent, rebuild when master moved
+   (`cargo build --release --bin livespec-console-beads-fabro`) and recreate it:
+   `tmux split-window -h -l 67% -t <session> -P -F '#{pane_id}' "bash -c 'exec /data/projects/1password-env-wrapper/with-livespec-env.sh -- env TERM=screen-256color COLORTERM=truecolor LIVESPEC_CONSOLE_REPO_PATH=/data/projects/livespec-console-beads-fabro /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro tui'"`
+   then `tmux select-pane -L` to return focus. The wrapper strips TERM, so
+   pass it explicitly or the TUI renders without colour and looks blank.
+   Record the pane id in the handoff. Every dogfood pass drives THAT pane
+   (`tmux send-keys -t <pane>` / `capture-pane -p -t <pane> -J`), one agent
+   at a time, read-only: dialogs are opened only to observe and cancelled
+   with Escape, and the mutating keys h s p c r m g f n k are never pressed
+   unless the pass is explicitly a mutation test. Never kill the pane at the
+   end of a pass. A subagent's wait loop must not key on
+   `pane_current_command` matching the binary name (it never does).
 
 ## Repository scope
 
