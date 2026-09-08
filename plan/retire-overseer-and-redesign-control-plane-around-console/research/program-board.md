@@ -43,6 +43,13 @@ time and leave it running. The mechanics (split command, the wrapper's
 TERM stripping, the `sudo` process name, the read-only key rules) live in
 `CLAUDE.md`, restarted-session section, item 6.
 
+A parallel track, the TUI UX improvements epic (label `track:tui-ux`, ruling
+2026-09-08), is one of this plan's exit criteria: every dogfood pass writes
+the rubric report in `research/tui-ux-rubric.md` on the item it exercised, a
+Fable-model agent turns each report into improvement items under that epic
+when the item closes, and the plan session dispatches them and reports on the
+track at least every two hours.
+
 ## Rulings log
 
 ### 2026-09-01 — resume brief and the four-question batch
