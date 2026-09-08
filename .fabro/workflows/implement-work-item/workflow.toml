@@ -149,7 +149,7 @@ pull_requests = "write"
 # the baked global offline with no npx cache created, while `@0.43.0` reached
 # for registry.npmjs.org and created one. Full measurements, including the
 # rejected `--no-install` variant and the residual hazard, in
-# `plan/pluggable-factory-workflow-configs/research/004-claude-agent-acp-baked-or-fetched-2026-09-06.md`
+# `plan/archive/pluggable-factory-workflow-configs/research/004-claude-agent-acp-baked-or-fetched-2026-09-06.md`
 # (work-item bd-ib-yqpdrt.2).
 #
 # IMPLEMENTER NODES: Claude Opus 5 + high thinking. The Dispatcher emits
