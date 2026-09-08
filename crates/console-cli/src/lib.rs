@@ -570,11 +570,37 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
     }
 }
 
+/// Whether `effect` can EVER become a persisted command -- the same split
+/// `command_append_from_tui_effect` makes when it decides what to append.
+///
+/// A pure navigation `Render` (what fires on every Attention selection-change
+/// keystroke), a `CopyDriverHandoff`, a `Quit`, or an `ApplicationError` never
+/// does. `handle_runtime_effect` below short-circuits on exactly this check
+/// BEFORE touching the store: `persist_tui_runtime_effects` used to run TWO
+/// local-store reads (`command_count`, `list_commands`) for EVERY effect
+/// regardless of whether anything would ever be appended, which is a ledger
+/// read on the selection-change path livespec-console-beads-fabro-mx9u.8's
+/// acceptance criteria forbid outright.
+const fn effect_may_persist_command(effect: &TuiRuntimeEffect) -> bool {
+    matches!(
+        effect,
+        TuiRuntimeEffect::PersistCommand(_) | TuiRuntimeEffect::PersistCommandWithPayload { .. }
+    )
+}
+
 impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
     fn handle_runtime_effect(
         &mut self,
         effect: &TuiRuntimeEffect,
     ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+        if !effect_may_persist_command(effect) {
+            // Nothing below would ever append a command for this effect (see
+            // `effect_may_persist_command`), so return WITHOUT the store reads
+            // `persist_tui_runtime_effects` would otherwise perform. The
+            // outcome matches what that path already produced for these
+            // effects (an empty `persisted` list, `Applied`).
+            return Ok(TuiRuntimeEffectSinkOutcome::Applied);
+        }
         let persisted = match persist_tui_runtime_effects(
             self.store,
             std::slice::from_ref(effect),
@@ -583,33 +609,34 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
             Ok(persisted) => persisted,
             Err(error) => return sink_outcome_for_persist_error(error),
         };
-        if !persisted.is_empty() {
-            if !self.command_requester.handles_pending_commands_inline() {
-                append_factory_drain_requested_events(self.store, &persisted, self.observed_at)
+        // `persisted` is NEVER empty here: the guard above already proved
+        // `effect_may_persist_command(effect)`, and `command_append_from_tui_effect`
+        // returns `Some` unconditionally for both effects that satisfy it
+        // (`PersistCommand` / `PersistCommandWithPayload`), so this single-effect
+        // call always appends exactly one outcome. An `is_empty` guard here used
+        // to be reachable too -- via the non-command effects the check above now
+        // turns away before this point -- and would be dead code once they no
+        // longer reach here, so it is gone rather than kept as an unreachable
+        // branch nothing can exercise.
+        if !self.command_requester.handles_pending_commands_inline() {
+            append_factory_drain_requested_events(self.store, &persisted, self.observed_at)
+                .map_err(effect_sink_io_error)?;
+        }
+        self.command_requester.request_pending_command_handling();
+        if self.command_requester.handles_pending_commands_inline() {
+            let factory_handled =
+                handle_pending_factory_commands(self.store, self.observed_at, self.factory_port)
                     .map_err(effect_sink_io_error)?;
-            }
-            self.command_requester.request_pending_command_handling();
-            if self.command_requester.handles_pending_commands_inline() {
-                let factory_handled = handle_pending_factory_commands(
-                    self.store,
-                    self.observed_at,
-                    self.factory_port,
-                )
-                .map_err(effect_sink_io_error)?;
-                let _work_item_handled = handle_pending_work_item_commands(
-                    self.store,
-                    self.observed_at,
-                    self.work_item_port,
-                )
-                .map_err(effect_sink_io_error)?;
-                let _config_handled = handle_pending_config_commands(
-                    self.store,
-                    self.observed_at,
-                    self.work_item_port,
-                )
-                .map_err(effect_sink_io_error)?;
-                self.handled_command_count += factory_handled.len();
-            }
+            let _work_item_handled = handle_pending_work_item_commands(
+                self.store,
+                self.observed_at,
+                self.work_item_port,
+            )
+            .map_err(effect_sink_io_error)?;
+            let _config_handled =
+                handle_pending_config_commands(self.store, self.observed_at, self.work_item_port)
+                    .map_err(effect_sink_io_error)?;
+            self.handled_command_count += factory_handled.len();
         }
         self.persisted_command_count += persisted.len();
         Ok(TuiRuntimeEffectSinkOutcome::Applied)
@@ -3593,8 +3620,8 @@ mod tests {
 
     use crate::{
         DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, checkpoint_load_failed,
-        checkpoint_save_failed, effect_sink_io_error, resolve_console_invoker,
-        sink_outcome_for_persist_error, tolerate_transient_refresh,
+        checkpoint_save_failed, effect_may_persist_command, effect_sink_io_error,
+        resolve_console_invoker, sink_outcome_for_persist_error, tolerate_transient_refresh,
     };
 
     use std::cell::RefCell;
@@ -11200,6 +11227,80 @@ mod tests {
                 r#"{"repo":"livespec-console-beads-fabro","setting":"auto_approve_ready","value":true}"#
                     .to_owned(),
         }
+    }
+
+    /// `effect_may_persist_command` mirrors `command_append_from_tui_effect`'s
+    /// own split -- true only for the two command-bearing effects, which is
+    /// what lets `handle_runtime_effect` short-circuit before touching the
+    /// store for everything else (see the function's own doc comment).
+    #[test]
+    fn effect_may_persist_command_is_true_only_for_command_bearing_effects() {
+        check(
+            effect_may_persist_command(&factory_drain_effect()),
+            "a PersistCommand effect must qualify",
+        );
+        check(
+            effect_may_persist_command(&dispatcher_setting_set_effect()),
+            "a PersistCommandWithPayload effect must qualify",
+        );
+        check(
+            !effect_may_persist_command(&TuiRuntimeEffect::Render),
+            "a pure navigation Render must never qualify -- this is the \
+             Attention selection-change fast path livespec-console-beads-fabro-mx9u.8 protects",
+        );
+        check(
+            !effect_may_persist_command(&TuiRuntimeEffect::Quit),
+            "Quit must never qualify",
+        );
+        check(
+            !effect_may_persist_command(&TuiRuntimeEffect::CopyDriverHandoff(
+                "claude groom wi".to_owned(),
+            )),
+            "CopyDriverHandoff must never qualify",
+        );
+        check(
+            !effect_may_persist_command(&TuiRuntimeEffect::ApplicationError(
+                console_application::ApplicationError::UnavailableOperatorAction,
+            )),
+            "ApplicationError must never qualify",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.8, acceptance criterion 2: "The
+    /// selection-change path performs no backing-CLI invocation and no ledger
+    /// read." A pure navigation `Render` effect (what a `SelectNext` /
+    /// `SelectPrevious` keystroke produces) must leave the store completely
+    /// untouched -- no command persisted, no worker asked to handle anything.
+    #[test]
+    fn handling_a_render_effect_touches_neither_the_store_nor_the_worker() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions = empty_decisions_port();
+        let requester = poll_requester();
+        let commands = command_requester();
+        let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+            &mut store,
+            "2026-07-17T00:00:01Z",
+            &mut factory_port,
+            &mut work_item_port,
+            &decisions,
+            &requester,
+            &commands,
+        );
+
+        let outcome = sink
+            .handle_runtime_effect(&TuiRuntimeEffect::Render)
+            .ok()
+            .ok_or_else(tui_runtime_failed_without_source)
+            .ok_test();
+
+        check(
+            outcome == TuiRuntimeEffectSinkOutcome::Applied,
+            "assert_eq failed",
+        );
+        check(sink.persisted_command_count() == 0, "assert_eq failed");
+        check(sink.handled_command_count() == 0, "assert_eq failed");
     }
 
     fn command_args(values: &[&str]) -> Vec<String> {

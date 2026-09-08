@@ -40,15 +40,22 @@ use ratatui::widgets::{
 
 const UNAVAILABLE_HERE_MARKER: &str = "  (unavailable here)";
 
-#[cfg(all(not(test), not(coverage)))]
+// `io`, `Event`, and `KeyEventKind` back the testable burst-drain seam
+// (`InputSource`, `drain_input_burst`, `apply_tick_refresh`, `LoopTick`) as
+// well as the real terminal loop, so they are available whenever either is
+// compiled (`test`, or the real non-coverage build).
+#[cfg(any(test, not(coverage)))]
+use crossterm::event::{Event, KeyEventKind};
+#[cfg(any(test, not(coverage)))]
 use std::io;
-// `Duration` backs the loop's keyboard poll only (source polling is off-thread
-// now), so it lives with the terminal loop's build.
+// `Duration` and the `event` module (`event::poll`/`event::read`) back the
+// REAL crossterm-backed input source and the loop's own initial wait only, so
+// they stay with the terminal loop's build.
 #[cfg(all(not(test), not(coverage)))]
 use std::time::Duration;
 
 #[cfg(all(not(test), not(coverage)))]
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event;
 #[cfg(all(not(test), not(coverage)))]
 use crossterm::execute;
 #[cfg(all(not(test), not(coverage)))]
@@ -154,8 +161,20 @@ fn run_terminal_loop(
     // startup, so the board and detail panes stay live.
     let mut events = events.to_vec();
     let mut effects = Vec::new();
+    // The event-log-derived half of the model, cached across ticks and rebuilt
+    // only when the log or the active search query actually changed (see
+    // `ProjectionCache`) -- NOT on every keystroke. This, together with
+    // `process_input_tick` reusing the model it draws instead of rebuilding its
+    // own copy to interpret the key, and `reduce_tui_interaction_with_model`
+    // taking that same model instead of rebuilding a THIRD copy, is the fix for
+    // livespec-console-beads-fabro-mx9u.8 ("moving between attention items is
+    // very laggy"): before this, a single keystroke rebuilt the whole
+    // projection from scratch four times over.
+    let mut projection_cache = ProjectionCache::new();
     loop {
-        let model = build_tui_model_for_state(&events, &state);
+        let search_query = console_application::tui_search_query(state.overlay());
+        let projection = projection_cache.get_or_build(&events, search_query);
+        let model = console_application::render_tui_model(projection, &events, &state);
         // Measure the Detail pane's wrapped max scroll while drawing and feed it
         // back into the state, so the next ScrollDetailDown clamps to the true
         // wrapped bottom (the SAME count the scrollbar is sized from) rather than
@@ -172,20 +191,30 @@ fn run_terminal_loop(
                 extents.work_item_detail_max_scroll,
                 extents.work_item_detail_page_rows,
             );
-        let tick = process_input_tick(&mut state, &events, requested_by, &mut effects, session)?;
+        let tick = process_input_tick(
+            &mut state,
+            &events,
+            projection,
+            requested_by,
+            &mut effects,
+            session,
+        )?;
         if matches!(tick, LoopTick::Quit) {
             return Ok(effects);
         }
         // Drain the out-of-band worker channel every tick, BEFORE the re-list.
         // A command the worker could not execute leaves no trace in the event
         // log — that is the whole defect — so the log refresh below can never
-        // surface it and this is the only place the operator is told.
+        // surface it and this is the only place the operator is told. This is a
+        // non-blocking in-memory channel read, never a store or backing-CLI
+        // call, so it stays unconditional even on the fast navigation path.
         apply_worker_status(&mut state, session.take_worker_status());
-        // Re-list the store every iteration (cheap — source polling is off-thread
-        // now, so this never blocks). After a ledger-mutating effect, `refresh_events`
-        // also pings the off-thread poller to re-poll sources at once, so the
-        // operator's own action AND the ledger's lane change appear promptly.
-        if let Some(fresh) = session.refresh_events(matches!(tick, LoopTick::Mutated))? {
+        // Whether -- and how -- this tick's outcome warrants a store refresh.
+        // `LoopTick::HandledInput` (one or more keys handled, none mutating)
+        // skips it entirely: no store read, no backing-CLI call on the
+        // selection-change path (livespec-console-beads-fabro-mx9u.8, acceptance
+        // criterion 2). See `apply_tick_refresh`.
+        if let Some(fresh) = apply_tick_refresh(tick, session)? {
             events = fresh;
         }
         // The operator's own settings write has now reported an outcome, so the
@@ -203,12 +232,88 @@ fn run_terminal_loop(
     }
 }
 
-/// The outcome of one 250 ms input tick, telling the loop whether to re-poll
-/// sources at once or return.
+/// Caches the event-log-derived projection ([`console_application::TuiProjection`])
+/// across terminal-loop ticks, rebuilding it only when
+/// [`ProjectionCacheKey`] changes -- i.e. only when the event log or the
+/// active search query actually changed since the last build. A run of
+/// navigation keystrokes with no intervening store refresh shares ONE
+/// projection across every render, which is exactly the property
+/// livespec-console-beads-fabro-mx9u.8's acceptance criterion 3 ("one
+/// projection, ten renders") measures.
+/// The cache holds a REAL entry from construction on (an empty-log projection,
+/// keyed to match) rather than an `Option`, so `get_or_build` never needs to
+/// prove-then-unwrap a value it just inserted; the empty-log entry is simply
+/// correct-by-construction for an empty log and gets replaced on the first
+/// real one, same as any other stale entry.
 #[cfg(all(not(test), not(coverage)))]
+struct ProjectionCache {
+    entry: (ProjectionCacheKey, console_application::TuiProjection),
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl ProjectionCache {
+    fn new() -> Self {
+        Self {
+            entry: (
+                ProjectionCacheKey::new(&[], None),
+                console_application::project_tui_events(&[], None),
+            ),
+        }
+    }
+
+    fn get_or_build(
+        &mut self,
+        events: &[ConsoleEvent],
+        search_query: Option<&str>,
+    ) -> &console_application::TuiProjection {
+        let key = ProjectionCacheKey::new(events, search_query);
+        if self.entry.0 != key {
+            self.entry = (
+                key,
+                console_application::project_tui_events(events, search_query),
+            );
+        }
+        &self.entry.1
+    }
+}
+
+/// A cheap fingerprint of the inputs [`console_application::project_tui_events`]
+/// depends on. The event log is append-only within one session and event ids
+/// are stable, so `(event count, last event id)` is enough to detect a real
+/// change without comparing the whole log on every tick.
+#[cfg(all(not(test), not(coverage)))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectionCacheKey {
+    event_count: usize,
+    last_event_id: Option<String>,
+    search_query: Option<String>,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl ProjectionCacheKey {
+    fn new(events: &[ConsoleEvent], search_query: Option<&str>) -> Self {
+        Self {
+            event_count: events.len(),
+            last_event_id: events.last().map(|event| event.event_id().to_owned()),
+            search_query: search_query.map(str::to_owned),
+        }
+    }
+}
+
+/// The outcome of one input tick, telling the loop whether -- and how -- to
+/// refresh from the store afterward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(test, not(coverage)))]
 enum LoopTick {
-    /// A poll timeout or an inert key — just re-project on the normal cadence.
+    /// A true poll timeout: no key arrived at all this tick. Still worth a
+    /// refresh on the loop's normal cadence, so the inbox keeps tracking the
+    /// poller's own background work while the operator is idle.
     Idle,
+    /// One or more keys were handled by [`drain_input_burst`] and NONE of them
+    /// mutated the ledger -- the fast navigation path
+    /// livespec-console-beads-fabro-mx9u.8 exists for. Skips the refresh
+    /// entirely: no store read, no backing-CLI call.
+    HandledInput,
     /// A ledger-mutating effect was applied — re-poll the sources at once so the
     /// operator sees their own action's lane change without waiting.
     Mutated,
@@ -216,16 +321,179 @@ enum LoopTick {
     Quit,
 }
 
-/// Handle at most one keyboard event: map it to an interaction, step the pure
-/// runtime, apply the resulting effect through the session, and report whether
-/// it mutated the ledger or asked to quit. Terminal-bound (blocks on
-/// `event::poll`), so excluded from tests; the logic it composes
-/// (`key_event_to_terminal_input`, `step_tui_runtime`,
-/// `effect_triggers_source_poll`) is exercised directly.
+/// Decide whether this tick's outcome warrants a store refresh, and perform
+/// it. Split out from the terminal-bound loop for the same reason
+/// `apply_sink_outcome` is: this DECISION -- that a
+/// [`LoopTick::HandledInput`] tick skips the refresh outright -- is exactly
+/// what livespec-console-beads-fabro-mx9u.8's acceptance criterion 2 ("no
+/// backing-CLI invocation and no ledger read" on the selection-change path)
+/// requires, and it needs to be provable without a real terminal.
+#[cfg(any(test, not(coverage)))]
+fn apply_tick_refresh(
+    tick: LoopTick,
+    session: &mut dyn TuiLiveSession,
+) -> io::Result<Option<Vec<ConsoleEvent>>> {
+    match tick {
+        LoopTick::Idle => session.refresh_events(false),
+        LoopTick::Mutated => session.refresh_events(true),
+        LoopTick::HandledInput | LoopTick::Quit => Ok(None),
+    }
+}
+
+/// A source of terminal input events the burst-drain loop reads from -- the
+/// crossterm-backed implementation the terminal loop uses, or a scripted
+/// in-memory queue in tests. This is the seam that makes burst coalescing
+/// (livespec-console-beads-fabro-mx9u.9) testable without a real terminal.
+#[cfg(any(test, not(coverage)))]
+trait InputSource {
+    /// Whether another input event is already buffered, WITHOUT blocking.
+    fn poll_now(&mut self) -> io::Result<bool>;
+    /// Read the next input event. Callers call this only once they (or the
+    /// tick's initial wait) already know one is ready, so it never blocks.
+    fn read(&mut self) -> io::Result<Event>;
+}
+
+#[cfg(all(not(test), not(coverage)))]
+struct CrosstermInputSource;
+
+#[cfg(all(not(test), not(coverage)))]
+impl InputSource for CrosstermInputSource {
+    fn poll_now(&mut self) -> io::Result<bool> {
+        event::poll(Duration::ZERO)
+    }
+
+    fn read(&mut self) -> io::Result<Event> {
+        event::read()
+    }
+}
+
+/// The most buffered movement keystrokes one tick will coalesce before
+/// stopping to render — livespec-console-beads-fabro-mx9u.9, acceptance
+/// criterion 2: "the buffer is bounded". Generous enough that a real burst of
+/// held-down arrow keys never hits it in practice, but finite so a runaway
+/// input source cannot starve the render loop forever.
+#[cfg(any(test, not(coverage)))]
+const MAX_COALESCED_MOVEMENT_KEYS: usize = 64;
+
+/// Whether `input` is the one class of interaction `drain_input_burst` is
+/// willing to coalesce -- i.e. apply without returning to the caller for a
+/// terminal redraw: plain Attention-list navigation. Every key the burst reads
+/// is applied against a freshly re-rendered model regardless (see
+/// `drain_input_burst`'s doc comment), so this is not a correctness boundary;
+/// it is a UX one -- a verb, Enter, or Escape gets its own visible frame right
+/// away rather than being buried inside a movement batch. Scoped narrowly to
+/// `SelectNext`/`SelectPrevious` (Up/Down in the Attention list, the exact
+/// keystroke livespec-console-beads-fabro-mx9u.8 and -mx9u.9 report on) rather
+/// than every interaction that happens to be navigation-shaped today, so a
+/// future addition to that set is a deliberate choice, not an accident.
+#[cfg(any(test, not(coverage)))]
+const fn is_navigation_interaction(input: &TuiTerminalInput) -> bool {
+    matches!(
+        input,
+        TuiTerminalInput::Interaction(TuiInteraction::SelectNext | TuiInteraction::SelectPrevious)
+    )
+}
+
+/// Drain a burst of ALREADY-BUFFERED terminal input in one tick, coalescing a
+/// run of pure navigation keys into one state transition (and so one eventual
+/// TERMINAL render) instead of redrawing between each —
+/// livespec-console-beads-fabro-mx9u.9: "it queues keystrokes and does them
+/// all ... you have to wait for an unresponsive queue of keystrokes to finish
+/// before you can SLOWLY move to what you want." Reads from `source` rather
+/// than a real terminal, so it is exercised directly in tests; the terminal
+/// loop's own entry point ([`process_input_tick`]) is a thin, untestable
+/// wrapper that supplies the real crossterm-backed source.
+///
+/// Every key is applied in the order read — verb, Enter, and Escape keys are
+/// NEVER dropped or reordered (acceptance criterion 3). What is coalesced is
+/// only the caller's TERMINAL frame: `drain_input_burst` keeps draining
+/// without returning (and so without the caller calling `terminal.draw`) for
+/// as long as the next buffered key is more navigation, up to
+/// [`MAX_COALESCED_MOVEMENT_KEYS`]. The first non-navigation key — a verb, or
+/// one that maps to no interaction at all — is still applied, but ends the
+/// burst, so it always gets its own visible frame rather than being buried
+/// inside a movement batch.
+///
+/// `model` is rebuilt from `projection` (cheap — see
+/// [`console_application::TuiProjection`]) at the TOP of every loop pass,
+/// reflecting `state` as of that pass. This is not an optimization to skip;
+/// it is required for correctness: `select_next`/`select_previous` prefer
+/// `model.selected_attention_index()` (the anchor re-resolved against the
+/// model a fresh render would carry) over the state's own raw index, so
+/// reducing several keys against ONE stale model — the model from before any
+/// of them — would resolve every step from the BURST'S starting position
+/// instead of the previous step's result.
+#[cfg(any(test, not(coverage)))]
+fn drain_input_burst(
+    state: &mut TuiInteractionState,
+    projection: &console_application::TuiProjection,
+    events: &[ConsoleEvent],
+    requested_by: &str,
+    effects: &mut Vec<TuiRuntimeEffect>,
+    session: &mut dyn TuiLiveSession,
+    source: &mut dyn InputSource,
+) -> io::Result<LoopTick> {
+    let mut handled_any = false;
+    let mut mutated = false;
+    let mut coalesced = 0_usize;
+    loop {
+        let model = console_application::render_tui_model(projection, events, state);
+        let Event::Key(key_event) = source.read()? else {
+            // A non-key event (resize, mouse, paste, focus) carries nothing to
+            // coalesce; stop here and let the caller redraw.
+            break;
+        };
+        if key_event.kind != KeyEventKind::Press {
+            if !source.poll_now()? {
+                break;
+            }
+            continue;
+        }
+        let Some(input) = key_event_to_terminal_input(key_event, &model) else {
+            if !source.poll_now()? {
+                break;
+            }
+            continue;
+        };
+        let navigation = is_navigation_interaction(&input);
+        let step = step_tui_runtime_with_model(state, &model, events, input, requested_by);
+        *state = step.state().clone();
+        handled_any = true;
+        let effect = step.effect().clone();
+        let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
+        mutated |= effect_triggers_source_poll(&effect);
+        let outcome = session.handle_runtime_effect(&effect)?;
+        apply_sink_outcome(state, effects, effect, outcome, events.len());
+        if should_quit {
+            return Ok(LoopTick::Quit);
+        }
+        coalesced += 1;
+        if !navigation || coalesced >= MAX_COALESCED_MOVEMENT_KEYS {
+            break;
+        }
+        if !source.poll_now()? {
+            break;
+        }
+    }
+    if !handled_any {
+        return Ok(LoopTick::Idle);
+    }
+    Ok(if mutated {
+        LoopTick::Mutated
+    } else {
+        LoopTick::HandledInput
+    })
+}
+
+/// Wait for the first key of a tick, then hand off to [`drain_input_burst`]
+/// against the real terminal. Terminal-bound (blocks on `event::poll`), so
+/// excluded from tests; the burst-coalescing DECISION it delegates to is
+/// exercised directly there instead.
 #[cfg(all(not(test), not(coverage)))]
 fn process_input_tick(
     state: &mut TuiInteractionState,
     events: &[ConsoleEvent],
+    projection: &console_application::TuiProjection,
     requested_by: &str,
     effects: &mut Vec<TuiRuntimeEffect>,
     session: &mut dyn TuiLiveSession,
@@ -233,31 +501,16 @@ fn process_input_tick(
     if !event::poll(Duration::from_millis(250))? {
         return Ok(LoopTick::Idle);
     }
-    let Event::Key(key_event) = event::read()? else {
-        return Ok(LoopTick::Idle);
-    };
-    if key_event.kind != KeyEventKind::Press {
-        return Ok(LoopTick::Idle);
-    }
-    let model = build_tui_model_for_state(events, state);
-    let Some(input) = key_event_to_terminal_input(key_event, &model) else {
-        return Ok(LoopTick::Idle);
-    };
-    let step = step_tui_runtime(state, events, input, requested_by);
-    *state = step.state().clone();
-    let effect = step.effect().clone();
-    let should_quit = matches!(effect, TuiRuntimeEffect::Quit);
-    let mutated = effect_triggers_source_poll(&effect);
-    let outcome = session.handle_runtime_effect(&effect)?;
-    apply_sink_outcome(state, effects, effect, outcome, events.len());
-    if should_quit {
-        return Ok(LoopTick::Quit);
-    }
-    Ok(if mutated {
-        LoopTick::Mutated
-    } else {
-        LoopTick::Idle
-    })
+    let mut source = CrosstermInputSource;
+    drain_input_burst(
+        state,
+        projection,
+        events,
+        requested_by,
+        effects,
+        session,
+        &mut source,
+    )
 }
 
 /// Fold one sink outcome into the loop's state and deferred-effect list.
@@ -586,15 +839,39 @@ impl TuiRuntimeStep {
 
 #[must_use]
 /// Return the step tui runtime value.
+///
+/// Builds its own model from `events` and `state` before stepping -- the
+/// convenience form for a caller with no already-built model to reuse (most
+/// tests, and any one-shot caller). The terminal loop's hot path calls
+/// [`step_tui_runtime_with_model`] directly against its cached model instead;
+/// see that function and [`console_application::TuiProjection`] for why.
 pub fn step_tui_runtime(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
     input: TuiTerminalInput,
     requested_by: &str,
 ) -> TuiRuntimeStep {
+    let model = build_tui_model_for_state(events, state);
+    step_tui_runtime_with_model(state, &model, events, input, requested_by)
+}
+
+#[must_use]
+/// The cheap half of [`step_tui_runtime`].
+///
+/// Steps `input` against an ALREADY-BUILT `model` rather than deriving one
+/// from the raw event log (which, for the `Interaction` arm, used to mean
+/// `reduce_tui_interaction` building yet ANOTHER copy internally — see
+/// [`console_application::reduce_tui_interaction_with_model`]).
+pub fn step_tui_runtime_with_model(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    events: &[ConsoleEvent],
+    input: TuiTerminalInput,
+    requested_by: &str,
+) -> TuiRuntimeStep {
     match input {
         TuiTerminalInput::Interaction(interaction) => TuiRuntimeStep::new(
-            reduce_tui_interaction(state, events, interaction),
+            console_application::reduce_tui_interaction_with_model(state, model, interaction),
             TuiRuntimeEffect::Render,
         ),
         TuiTerminalInput::Confirm => confirm_operator_action(state, events, requested_by),
@@ -3548,17 +3825,19 @@ mod tests {
     use ratatui::text::Line;
 
     use super::{
-        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, LANE_OVERVIEW_PREVIEW, TuiLiveSession,
-        TuiRenderError, TuiRenderResult, TuiRuntimeEffect, TuiRuntimeEffectSink,
-        TuiRuntimeEffectSinkOutcome, TuiTerminalInput, action_available_for_model,
-        action_outcome_effect, attention_item_line, buffer_to_text, command_explainer_confirm_step,
-        command_explainer_lines, command_explanation_for_action, detail_lines,
+        DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, InputSource, LANE_OVERVIEW_PREVIEW,
+        LoopTick, MAX_COALESCED_MOVEMENT_KEYS, TuiLiveSession, TuiRenderError, TuiRenderResult,
+        TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome, TuiTerminalInput,
+        action_available_for_model, action_outcome_effect, apply_tick_refresh, attention_item_line,
+        buffer_to_text, command_explainer_confirm_step, command_explainer_lines,
+        command_explanation_for_action, detail_lines, drain_input_burst,
         effect_triggers_source_poll, elide_to_width, full_width_explainer_rect, global_help_lines,
-        help_lines_for_view, help_outcome, key_event_to_terminal_input, menu_confirm_step,
-        registry_action_input, registry_staging_explanation, render_command_explainer,
-        render_command_modal, render_detail, render_footer, render_menu_overlay, render_model,
-        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
-        staged_action_step, step_tui_runtime, text_input,
+        help_lines_for_view, help_outcome, is_navigation_interaction, key_event_to_terminal_input,
+        menu_confirm_step, registry_action_input, registry_staging_explanation,
+        render_command_explainer, render_command_modal, render_detail, render_footer,
+        render_menu_overlay, render_model, render_summary_detail, render_to_text,
+        render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
+        step_tui_runtime_with_model, text_input,
     };
 
     macro_rules! assert {
@@ -3870,6 +4149,36 @@ mod tests {
         );
     }
 
+    /// Unwrap a `drain_input_burst` result in tests, matching this file's
+    /// `check`-fn convention (a bare `panic!` needs its own `#[allow]`, same
+    /// as `check` carries).
+    ///
+    /// NOT generic over the `Ok` type -- one non-generic function per return
+    /// shape, like `check_refresh_none` / `check_deferred_outcome` above,
+    /// rather than one `expect_io<T>` monomorphized per call site. A generic
+    /// helper here would give the coverage gate's instantiation-group
+    /// accounting a NEW multi-monomorphization signature (the same
+    /// scalar-merge artifact `tests/fixtures/coverage-unnameable-disposition.json`
+    /// already tracks one instance of) for no benefit -- these two callers
+    /// are the only ones this file has.
+    #[track_caller]
+    #[allow(clippy::panic)]
+    fn expect_tick(result: std::io::Result<LoopTick>, context: &str) -> LoopTick {
+        match result {
+            Ok(tick) => tick,
+            Err(error) => panic!("{context}: {error}"),
+        }
+    }
+
+    #[track_caller]
+    #[allow(clippy::panic)]
+    fn expect_more_input(result: std::io::Result<bool>, context: &str) -> bool {
+        match result {
+            Ok(more) => more,
+            Err(error) => panic!("{context}: {error}"),
+        }
+    }
+
     #[track_caller]
     fn check_refresh_none(result: std::io::Result<Option<Vec<ConsoleEvent>>>) {
         check(
@@ -3963,6 +4272,771 @@ mod tests {
         ));
         assert!(!effect_triggers_source_poll(&TuiRuntimeEffect::Render));
         assert!(!effect_triggers_source_poll(&TuiRuntimeEffect::Quit));
+    }
+
+    /// A fake "backing CLI" for `apply_tick_refresh`'s decision: it panics if
+    /// `refresh_events` is ever called, standing in for the local store read
+    /// (and, in the real `StoreBackedTuiRuntimeEffectSink`, the worker channel
+    /// behind it) that livespec-console-beads-fabro-mx9u.8's acceptance
+    /// criterion 2 forbids on the selection-change path.
+    struct PanicsOnRefresh;
+
+    impl TuiRuntimeEffectSink for PanicsOnRefresh {
+        fn handle_runtime_effect(
+            &mut self,
+            _effect: &TuiRuntimeEffect,
+        ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+            Ok(TuiRuntimeEffectSinkOutcome::Applied)
+        }
+    }
+
+    impl TuiLiveSession for PanicsOnRefresh {
+        #[allow(clippy::panic)]
+        fn refresh_events(
+            &mut self,
+            _request_poll: bool,
+        ) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
+            panic!(
+                "refresh_events must not be called on a pure navigation tick \
+                 (livespec-console-beads-fabro-mx9u.8, acceptance criterion 2)"
+            );
+        }
+    }
+
+    /// livespec-console-beads-fabro-mx9u.8, acceptance criterion 2: "The
+    /// selection-change path performs no backing-CLI invocation and no ledger
+    /// read." A `HandledInput` tick (one or more keys handled, none mutating --
+    /// exactly what a run of Attention `SelectNext`/`SelectPrevious` keystrokes
+    /// produces) must never reach the session's `refresh_events` at all.
+    #[test]
+    fn handled_input_tick_never_refreshes() {
+        let mut session = PanicsOnRefresh;
+
+        check_refresh_none(apply_tick_refresh(LoopTick::HandledInput, &mut session));
+    }
+
+    /// `Quit` also skips the refresh (the loop returns before it would
+    /// matter); pinning it down keeps the match exhaustive and honest.
+    #[test]
+    fn quit_tick_never_refreshes() {
+        let mut session = PanicsOnRefresh;
+
+        check_refresh_none(apply_tick_refresh(LoopTick::Quit, &mut session));
+    }
+
+    /// Sanity check that `PanicsOnRefresh` genuinely panics for the two ticks
+    /// that DO refresh. Without this, `handled_input_tick_never_refreshes`
+    /// above could pass vacuously if `apply_tick_refresh` stopped calling the
+    /// session for every tick, decision or no.
+    #[test]
+    #[should_panic(expected = "refresh_events must not be called")]
+    fn idle_tick_does_refresh_so_the_panic_fixture_above_is_a_real_check() {
+        let mut session = PanicsOnRefresh;
+        let _ = apply_tick_refresh(LoopTick::Idle, &mut session);
+    }
+
+    #[test]
+    #[should_panic(expected = "refresh_events must not be called")]
+    fn mutated_tick_does_refresh_so_the_panic_fixture_above_is_a_real_check() {
+        let mut session = PanicsOnRefresh;
+        let _ = apply_tick_refresh(LoopTick::Mutated, &mut session);
+    }
+
+    /// A scripted, in-memory [`InputSource`] for `drain_input_burst` tests --
+    /// the seam that makes burst coalescing
+    /// (livespec-console-beads-fabro-mx9u.9) testable without a real terminal.
+    /// `poll_now` reports more input while the queue is non-empty, so a test
+    /// controls exactly how much looks "already buffered" versus "arrives
+    /// later" by how many events it seeds up front.
+    struct ScriptedInputSource {
+        queued: std::collections::VecDeque<crossterm::event::Event>,
+    }
+
+    impl ScriptedInputSource {
+        fn new(events: impl IntoIterator<Item = crossterm::event::Event>) -> Self {
+            Self {
+                queued: events.into_iter().collect(),
+            }
+        }
+
+        fn of_keys(codes: impl IntoIterator<Item = KeyCode>) -> Self {
+            Self::new(
+                codes
+                    .into_iter()
+                    .map(|code| crossterm::event::Event::Key(key(code))),
+            )
+        }
+    }
+
+    impl InputSource for ScriptedInputSource {
+        fn poll_now(&mut self) -> std::io::Result<bool> {
+            Ok(!self.queued.is_empty())
+        }
+
+        fn read(&mut self) -> std::io::Result<crossterm::event::Event> {
+            Ok(self
+                .queued
+                .pop_front()
+                .unwrap_or(crossterm::event::Event::FocusLost))
+        }
+    }
+
+    /// A 40-row Attention list, one `blocked / needs-human` work-item snapshot
+    /// per row -- enough rows that a burst of moves never clamps at either
+    /// edge.
+    fn many_attention_rows(count: usize) -> Vec<ConsoleEvent> {
+        (0..count)
+            .map(|index| {
+                let work_item_id = format!("wi-{index:04}");
+                lane_event(
+                    &format!("evt_{index:04}"),
+                    &work_item_id,
+                    Lane::Blocked,
+                    Some(LaneReason::NeedsHuman),
+                    &format!("a{index:04}"),
+                    "blocked",
+                )
+            })
+            .collect()
+    }
+
+    fn content_focused_state(selection: usize) -> TuiInteractionState {
+        TuiInteractionState::new(selection, TuiOverlay::None).with_focus(FocusPane::Content)
+    }
+
+    /// livespec-console-beads-fabro-mx9u.9, acceptance criterion 1: "N buffered
+    /// movement keystrokes result in exactly one selection change of N steps
+    /// and one render." `drain_input_burst` never calls the CALLER's terminal
+    /// render (the loop draws once after it returns), so this proves the
+    /// state-transition half: five buffered `Down` keys move the selection by
+    /// five in ONE call, having applied each key (`handle_runtime_effect`
+    /// fires once per key -- bookkeeping only, never a store read) without
+    /// stopping to let the terminal loop redraw between them.
+    #[test]
+    fn a_burst_of_movement_keys_advances_the_selection_by_the_whole_burst_in_one_call() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        // `PanicsOnRefresh` (never a store/backing-CLI read) doubling as the
+        // burst's session proves `drain_input_burst` itself never reaches
+        // `refresh_events` -- the SAME property `apply_tick_refresh`'s tests
+        // prove for the tick-outcome decision, now proven end to end.
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::of_keys([
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Down,
+        ]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::HandledInput);
+        assert_eq!(state.selected_attention_index(), 5);
+    }
+
+    /// livespec-console-beads-fabro-mx9u.9, acceptance criterion 2: buffered
+    /// movement is coalesced and the buffer is bounded. A burst well past
+    /// [`MAX_COALESCED_MOVEMENT_KEYS`] still lands the selection at exactly
+    /// its own length (no overshoot from double-counting, no undershoot from
+    /// dropping a key) and does not hang the drain.
+    #[test]
+    fn a_flood_of_movement_keys_lands_on_its_own_final_position_with_no_overshoot() {
+        let flood = MAX_COALESCED_MOVEMENT_KEYS * 3;
+        let events = many_attention_rows(flood + 10);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = DeferredTuiRuntimeEffectSink;
+        let mut source = ScriptedInputSource::of_keys(std::iter::repeat_n(KeyCode::Down, flood));
+
+        // The bound means a big-enough flood takes more than one tick to fully
+        // drain -- keep calling until the source is empty, exactly as
+        // successive terminal-loop ticks would.
+        let mut ticks = 0_usize;
+        loop {
+            let tick = expect_tick(
+                drain_input_burst(
+                    &mut state,
+                    &projection,
+                    &events,
+                    "operator",
+                    &mut effects,
+                    &mut session,
+                    &mut source,
+                ),
+                "drain_input_burst does not fail against a scripted source",
+            );
+            assert_eq!(tick, LoopTick::HandledInput);
+            ticks += 1;
+            if !expect_more_input(source.poll_now(), "scripted poll_now never fails") {
+                break;
+            }
+        }
+
+        assert_eq!(state.selected_attention_index(), flood);
+        assert!(
+            ticks > 1,
+            "a flood past MAX_COALESCED_MOVEMENT_KEYS must take more than one tick to drain, proving the bound actually bit"
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.9, acceptance criterion 3: "Verb,
+    /// Enter and Escape keys are never coalesced away or reordered relative to
+    /// each other." A burst of Down, Down, then Escape (a verb-class key: it
+    /// resolves to `CloseOverlay`, not a coalesced navigation) applies all
+    /// three, in order, and stops the burst at the Escape rather than
+    /// swallowing or reordering it.
+    #[test]
+    fn a_verb_key_inside_a_burst_is_applied_in_order_and_ends_the_burst() {
+        let events = many_attention_rows(40);
+        let mut state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: String::new(),
+            },
+        );
+        let projection = console_application::project_tui_events(&events, Some(""));
+        let mut effects = Vec::new();
+        let mut session = DeferredTuiRuntimeEffectSink;
+        // In the Search overlay, Down/Up move the selection (as in Content
+        // focus) and Esc closes the overlay -- a verb relative to navigation.
+        let mut source = ScriptedInputSource::of_keys([
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Esc,
+            KeyCode::Down,
+        ]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        // The burst stops AT the Esc: it is not navigation, so it always gets
+        // its own frame instead of being buried inside a movement batch. The
+        // trailing Down is left buffered for the next tick.
+        assert_eq!(tick, LoopTick::HandledInput);
+        assert_eq!(state.overlay(), &TuiOverlay::None);
+        assert!(expect_more_input(
+            source.poll_now(),
+            "scripted poll_now never fails"
+        ));
+    }
+
+    /// A non-key terminal event (resize, mouse, focus) carries nothing to
+    /// coalesce: the burst ends without applying anything.
+    #[test]
+    fn a_non_key_event_ends_the_burst_with_nothing_applied() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::new([crossterm::event::Event::FocusLost]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::Idle);
+        assert_eq!(state.selected_attention_index(), 0);
+    }
+
+    /// A key-release event (not a press) is skipped rather than applied, and
+    /// the burst keeps draining past it.
+    #[test]
+    fn a_non_press_key_event_is_skipped_and_the_burst_keeps_draining() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::new([
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Down,
+                KeyModifiers::empty(),
+                crossterm::event::KeyEventKind::Release,
+            )),
+            crossterm::event::Event::Key(key(KeyCode::Down)),
+        ]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::HandledInput);
+        assert_eq!(state.selected_attention_index(), 1);
+    }
+
+    /// A key that maps to no interaction at all (`key_event_to_terminal_input`
+    /// returns `None`) is skipped, and the burst keeps draining past it too.
+    #[test]
+    fn an_unmapped_key_is_skipped_and_the_burst_keeps_draining() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::of_keys([KeyCode::Home, KeyCode::Down]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::HandledInput);
+        assert_eq!(state.selected_attention_index(), 1);
+    }
+
+    /// A non-press key with NOTHING queued behind it: the tick has nothing to
+    /// show for itself (no interaction was ever applied), so it reports
+    /// `Idle` -- the same as a genuine 250ms poll timeout, which is exactly
+    /// right: neither warrants skipping the store's normal-cadence refresh.
+    #[test]
+    fn a_lone_non_press_key_reports_idle() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::new([crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Down,
+                KeyModifiers::empty(),
+                crossterm::event::KeyEventKind::Release,
+            ),
+        )]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::Idle);
+        assert_eq!(state.selected_attention_index(), 0);
+    }
+
+    /// A lone unmapped key, same shape as the lone-non-press case above:
+    /// nothing queued behind it, nothing applied, `Idle`.
+    #[test]
+    fn a_lone_unmapped_key_reports_idle() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::of_keys([KeyCode::Home]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::Idle);
+        assert_eq!(state.selected_attention_index(), 0);
+    }
+
+    /// The operator's own quit keystroke (`q`), landing mid-burst-drain
+    /// exactly as it would from a real terminal: `drain_input_burst` returns
+    /// `Quit` immediately rather than continuing to drain.
+    #[test]
+    fn a_quit_key_ends_the_burst_with_quit() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = ScriptedInputSource::of_keys([KeyCode::Char('q')]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::Quit);
+    }
+
+    /// A ledger-mutating verb (confirming a staged factory drain) reports
+    /// `Mutated`, not `HandledInput` -- the terminal loop's cue to re-poll
+    /// sources at once rather than skip the refresh.
+    #[test]
+    fn a_mutating_verb_key_reports_mutated() {
+        let events = many_attention_rows(40);
+        let mut state = TuiInteractionState::new(
+            0,
+            TuiOverlay::FactoryDrainConfirm {
+                work_item_id: "console-staged-drain".to_owned(),
+                rank: "a0".to_owned(),
+            },
+        );
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = DeferredTuiRuntimeEffectSink;
+        let mut source = ScriptedInputSource::of_keys([KeyCode::Enter]);
+
+        let tick = expect_tick(
+            drain_input_burst(
+                &mut state,
+                &projection,
+                &events,
+                "operator",
+                &mut effects,
+                &mut session,
+                &mut source,
+            ),
+            "drain_input_burst does not fail against a scripted source",
+        );
+
+        assert_eq!(tick, LoopTick::Mutated);
+    }
+
+    #[test]
+    #[should_panic(expected = "boom")]
+    fn expect_tick_panics_on_error() {
+        expect_tick(Err(std::io::Error::other("boom")), "boom");
+    }
+
+    #[test]
+    #[should_panic(expected = "boom")]
+    fn expect_more_input_panics_on_error() {
+        expect_more_input(Err(std::io::Error::other("boom")), "boom");
+    }
+
+    /// An [`InputSource`] whose `read` always fails -- exercises
+    /// `drain_input_burst`'s `?` over `InputSource::read`. Ordinary error
+    /// handling on an injected dependency, not "genuinely unreachable" code
+    /// (CLAUDE.md's hidden-global heuristic): a fallible call on an injected
+    /// port is testable, so it is tested here.
+    struct AlwaysFailsRead;
+
+    impl InputSource for AlwaysFailsRead {
+        fn poll_now(&mut self) -> std::io::Result<bool> {
+            Ok(false)
+        }
+
+        fn read(&mut self) -> std::io::Result<crossterm::event::Event> {
+            Err(std::io::Error::other("scripted read failure"))
+        }
+    }
+
+    /// An [`InputSource`] that returns ONE seeded event from `read`, then
+    /// fails every subsequent `poll_now` call -- exercises `drain_input_burst`'s
+    /// three `?`s over `InputSource::poll_now` (after a non-press key, after
+    /// an unmapped key, and after a coalesced navigation move), by varying
+    /// which event is seeded.
+    struct FailsPollAfterOneEvent {
+        event: Option<crossterm::event::Event>,
+    }
+
+    impl FailsPollAfterOneEvent {
+        fn new(event: crossterm::event::Event) -> Self {
+            Self { event: Some(event) }
+        }
+    }
+
+    impl InputSource for FailsPollAfterOneEvent {
+        fn poll_now(&mut self) -> std::io::Result<bool> {
+            Err(std::io::Error::other("scripted poll_now failure"))
+        }
+
+        fn read(&mut self) -> std::io::Result<crossterm::event::Event> {
+            // Every caller seeds an event and the burst never reads twice
+            // before the SUBSEQUENT `poll_now` errors and ends it (see this
+            // type's own doc comment), so the fallback below is never
+            // actually reached -- a plain value rather than a closure, so it
+            // carries no SEPARATE instantiation group for the coverage gate
+            // to account for.
+            Ok(self
+                .event
+                .take()
+                .unwrap_or(crossterm::event::Event::FocusLost))
+        }
+    }
+
+    /// A session whose `handle_runtime_effect` always fails -- exercises
+    /// `drain_input_burst`'s `?` over `TuiRuntimeEffectSink::handle_runtime_effect`.
+    struct FailingSink;
+
+    impl TuiRuntimeEffectSink for FailingSink {
+        fn handle_runtime_effect(
+            &mut self,
+            _effect: &TuiRuntimeEffect,
+        ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+            Err(std::io::Error::other("scripted sink failure"))
+        }
+    }
+
+    impl TuiLiveSession for FailingSink {
+        fn refresh_events(
+            &mut self,
+            _request_poll: bool,
+        ) -> std::io::Result<Option<Vec<ConsoleEvent>>> {
+            Ok(None)
+        }
+    }
+
+    /// `AlwaysFailsRead::poll_now` and `FailingSink::refresh_events` are both
+    /// present only to satisfy their traits -- `drain_input_burst` never
+    /// reaches either (its own `read`/`handle_runtime_effect` failures
+    /// short-circuit first). Exercised directly rather than left untested.
+    #[test]
+    fn the_unreached_trait_methods_on_the_failure_fixtures_still_behave() {
+        let mut always_fails_read = AlwaysFailsRead;
+        assert!(!expect_more_input(
+            always_fails_read.poll_now(),
+            "AlwaysFailsRead::poll_now"
+        ));
+
+        let mut failing_sink = FailingSink;
+        assert!(
+            failing_sink
+                .refresh_events(false)
+                .is_ok_and(|events| events.is_none())
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.9: `drain_input_burst` propagates a
+    /// failed `InputSource::read` rather than swallowing it.
+    #[test]
+    fn drain_input_burst_propagates_a_read_failure() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = AlwaysFailsRead;
+
+        let result = drain_input_burst(
+            &mut state,
+            &projection,
+            &events,
+            "operator",
+            &mut effects,
+            &mut session,
+            &mut source,
+        );
+
+        assert!(result.is_err());
+    }
+
+    /// A failed `poll_now` after a non-press key propagates rather than being
+    /// swallowed.
+    #[test]
+    fn drain_input_burst_propagates_a_poll_failure_after_a_non_press_key() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source = FailsPollAfterOneEvent::new(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Down,
+                KeyModifiers::empty(),
+                crossterm::event::KeyEventKind::Release,
+            ),
+        ));
+
+        let result = drain_input_burst(
+            &mut state,
+            &projection,
+            &events,
+            "operator",
+            &mut effects,
+            &mut session,
+            &mut source,
+        );
+
+        assert!(result.is_err());
+    }
+
+    /// A failed `poll_now` after an unmapped key propagates rather than being
+    /// swallowed.
+    #[test]
+    fn drain_input_burst_propagates_a_poll_failure_after_an_unmapped_key() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source =
+            FailsPollAfterOneEvent::new(crossterm::event::Event::Key(key(KeyCode::Home)));
+
+        let result = drain_input_burst(
+            &mut state,
+            &projection,
+            &events,
+            "operator",
+            &mut effects,
+            &mut session,
+            &mut source,
+        );
+
+        assert!(result.is_err());
+    }
+
+    /// A failed `poll_now` checked after successfully coalescing one
+    /// navigation move propagates rather than being swallowed.
+    #[test]
+    fn drain_input_burst_propagates_a_poll_failure_after_a_coalesced_move() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = PanicsOnRefresh;
+        let mut source =
+            FailsPollAfterOneEvent::new(crossterm::event::Event::Key(key(KeyCode::Down)));
+
+        let result = drain_input_burst(
+            &mut state,
+            &projection,
+            &events,
+            "operator",
+            &mut effects,
+            &mut session,
+            &mut source,
+        );
+
+        assert!(result.is_err());
+        // The move itself landed before the poll failure was checked.
+        assert_eq!(state.selected_attention_index(), 1);
+    }
+
+    /// A failed `handle_runtime_effect` propagates rather than being
+    /// swallowed.
+    #[test]
+    fn drain_input_burst_propagates_a_sink_failure() {
+        let events = many_attention_rows(40);
+        let mut state = content_focused_state(0);
+        let projection = console_application::project_tui_events(&events, None);
+        let mut effects = Vec::new();
+        let mut session = FailingSink;
+        let mut source = ScriptedInputSource::of_keys([KeyCode::Down]);
+
+        let result = drain_input_burst(
+            &mut state,
+            &projection,
+            &events,
+            "operator",
+            &mut effects,
+            &mut session,
+            &mut source,
+        );
+
+        assert!(result.is_err());
+    }
+
+    /// `step_tui_runtime_with_model` against an already-built model produces
+    /// the SAME step `step_tui_runtime` does building its own -- it is the
+    /// cheap half `drain_input_burst` calls per key, not a different reducer.
+    #[test]
+    fn step_tui_runtime_with_model_matches_step_tui_runtime_over_the_same_state() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let events = demo_events();
+        let model = build_tui_model_for_state(&events, &state);
+
+        let via_model = step_tui_runtime_with_model(
+            &state,
+            &model,
+            &events,
+            TuiTerminalInput::Interaction(TuiInteraction::SelectNext),
+            "operator",
+        );
+        let via_events = step_tui_runtime(
+            &state,
+            &events,
+            TuiTerminalInput::Interaction(TuiInteraction::SelectNext),
+            "operator",
+        );
+
+        assert_eq!(via_model.state(), via_events.state());
+        assert_eq!(via_model.effect(), via_events.effect());
+    }
+
+    #[test]
+    fn is_navigation_interaction_is_true_only_for_attention_list_movement() {
+        assert!(is_navigation_interaction(&TuiTerminalInput::Interaction(
+            TuiInteraction::SelectNext
+        )));
+        assert!(is_navigation_interaction(&TuiTerminalInput::Interaction(
+            TuiInteraction::SelectPrevious
+        )));
+        assert!(!is_navigation_interaction(&TuiTerminalInput::Interaction(
+            TuiInteraction::CloseOverlay
+        )));
+        assert!(!is_navigation_interaction(&TuiTerminalInput::Confirm));
+        assert!(!is_navigation_interaction(&TuiTerminalInput::Quit));
     }
 
     #[test]
