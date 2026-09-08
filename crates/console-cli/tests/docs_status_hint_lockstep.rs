@@ -42,6 +42,12 @@ use console_application::{
 
 /// Where the hints are produced (`footer_hint` / `pane_footer_hint`).
 const HINT_SOURCE: &str = "crates/console-application/src/lib.rs";
+/// The row count the table's selected-work-item rows document.
+///
+/// Every such row describes a list the operator is MOVING a cursor through, so
+/// the documented navigation fragment is the multi-row one. The single-row list
+/// is a different context, and the table does not claim to cover it.
+const DOCUMENTED_LIST_ROWS: usize = 2;
 /// The doc carrying the Status-line table.
 const SETTINGS_DOC: &str = "docs/detailed-usage.md";
 
@@ -420,7 +426,7 @@ fn every_documented_selected_item_hint_equals_the_rendered_derivation() -> std::
         bound += 1;
         assert_eq!(
             hint,
-            selected_item_hint(&ctx),
+            selected_item_hint(&ctx, DOCUMENTED_LIST_ROWS),
             "the documented hint for context `{label}` must equal the rendered derivation"
         );
     }

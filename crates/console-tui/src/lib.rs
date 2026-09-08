@@ -8514,6 +8514,70 @@ mod tests {
         }
     }
 
+    /// Two work-item rows in one lane, so a drilled-in cursor has somewhere to
+    /// move. `done` is the lane that admits NO per-item lifecycle verb, which is
+    /// what makes it the case the movement hint used to be dropped in.
+    fn two_row_lane_events(lane: Lane) -> [ConsoleEvent; 2] {
+        [
+            lane_event("evt_row_a", "console-row-a", lane, None, "a0", lane.label()),
+            lane_event("evt_row_b", "console-row-b", lane, None, "a1", lane.label()),
+        ]
+    }
+
+    /// The Status band as the operator READS it, drilled into `lane`.
+    fn rendered_status_band(lane: Lane) -> String {
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_lane_focus(LaneFocus::Lane(lane))
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&two_row_lane_events(lane), &state);
+        assert_eq!(model.selected_list_row_count(), 2, "{lane:?} fixture");
+        let rendered = render_to_text(&model, 220, 40).unwrap_or_default();
+        rendered
+            .lines()
+            .find(|line| line.contains("esc lane list"))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_drilled_in_lane_with_no_per_item_action_still_hints_the_up_down_move() {
+        // The reported bug, at the render: the drilled-in `done` lane held 337
+        // rows, `Down` moved the selection and changed the detail, and the
+        // Status band never named the key. `done` admits no per-item verb, and
+        // the movement hint had been folded into the same arm that drops them.
+        let band = rendered_status_band(Lane::Done);
+        assert!(
+            band.contains("up/down move"),
+            "the done lane must name the move it performs: {band}"
+        );
+        assert!(band.contains("enter item") && band.contains("esc lane list"));
+        // Still honest in the other direction: no verb the lane cannot take.
+        assert!(!band.contains("s move-status"));
+        assert!(!band.contains("c accept"));
+    }
+
+    #[test]
+    fn a_drilled_in_lane_with_per_item_actions_keeps_the_move_and_its_verbs() {
+        // The control: the lane that DOES admit verbs is unchanged, so the fix
+        // added the movement hint to the verb-free lane rather than removing
+        // the verbs from this one.
+        let band = rendered_status_band(Lane::Ready);
+        for token in [
+            "up/down move",
+            "enter item",
+            "esc lane list",
+            "s move-status",
+            "g merge cap",
+            "f fix cap",
+            "n set-acceptance",
+        ] {
+            assert!(
+                band.contains(token),
+                "the ready lane must hint {token}: {band}"
+            );
+        }
+    }
+
     #[test]
     fn status_hint_stops_claiming_drill_where_enter_no_longer_drills() {
         // The reported bug: the Status line advertised "enter drill" inside a

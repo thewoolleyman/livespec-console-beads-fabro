@@ -775,24 +775,47 @@ pub fn global_status_hint() -> String {
     global_status_hint_tokens().join(" | ")
 }
 
+/// The NAVIGATION fragment of a selected work-item's Status-line hint.
+///
+/// Composed from the LIST the selection sits in — the surface it is hosted on
+/// and how many rows that list holds — and from nothing else. The lifecycle
+/// ACTION set is not an input: `up`/`down` move the cursor over the list
+/// whatever the selected item's state admits, so deriving the movement hint
+/// from the action set makes the Status line under-report a key that visibly
+/// works.
+///
+/// Measured 2026-09-08 at the real TUI: the drilled-in `done` lane held 337
+/// rows and hinted `enter item | esc lane list | ? help | q quit`, yet `Down`
+/// moved the selection and the detail changed. The `done` lane admits no
+/// per-item verb, and the movement hint had been folded into the same
+/// empty-token arm that drops the verbs.
+///
+/// `row_count` is the number of rows in that list, so a list holding at most
+/// one row still drops the fragment — there is nowhere to move to, which is the
+/// honest reading of the Status-line contract, and the same condition an empty
+/// lane already reported.
+const fn navigation_hint_prefix(surface: ActionSurface, row_count: usize) -> &'static str {
+    match (surface, row_count > 1) {
+        (ActionSurface::Attention, true) => "up/down move | enter open",
+        (ActionSurface::Attention, false) => "enter open",
+        (ActionSurface::LaneDrill, true) => "up/down move | enter item | esc lane list",
+        (ActionSurface::LaneDrill, false) => "enter item | esc lane list",
+    }
+}
+
 /// The Status-line hint for a selected work-item, derived from the registry.
 ///
-/// The navigation prefix is pane context; the per-item action tokens derive from
-/// [`available_hint_tokens`], and the global suffix derives from
-/// [`global_status_hint_tokens`]. A drilled-in lane whose selection admits no
-/// action renders without the up/down fragment, reproducing the pinned
-/// terminal-lane hint exactly.
+/// The navigation prefix comes from [`navigation_hint_prefix`] — the hosting
+/// surface and the `row_count` of the list the selection moves over — the
+/// per-item action tokens derive from [`available_hint_tokens`], and the global
+/// suffix derives from [`global_status_hint_tokens`]. The two derivations are
+/// independent on purpose: a lane that admits no per-item verb still names the
+/// up/down move, because the move still happens.
 #[must_use]
-pub fn selected_item_hint(ctx: &ActionContext) -> String {
+pub fn selected_item_hint(ctx: &ActionContext, row_count: usize) -> String {
     let tokens = available_hint_tokens(ctx);
     let suffix = global_status_hint();
-    let prefix = match ctx.surface {
-        ActionSurface::Attention => "up/down move | enter open",
-        ActionSurface::LaneDrill if tokens.is_empty() => {
-            return format!("enter item | esc lane list | {suffix}");
-        }
-        ActionSurface::LaneDrill => "up/down move | enter item | esc lane list",
-    };
+    let prefix = navigation_hint_prefix(ctx.surface, row_count);
     if tokens.is_empty() {
         return format!("{prefix} | {suffix}");
     }
@@ -1067,8 +1090,9 @@ mod tests {
 
     use super::{
         ACTION_REGISTRY, ActionContext, ActionStaging, ActionSurface, GlobalAction, KeyChord,
-        action_for_chord, action_for_id, action_offered_on_surface, global_action_for_chord,
-        global_status_hint_tokens, menu_actions, menu_tree,
+        action_for_chord, action_for_id, action_offered_on_surface, available_hint_tokens,
+        global_action_for_chord, global_status_hint_tokens, menu_actions, menu_tree,
+        selected_item_hint,
     };
     use crate::source_adapters::{AcceptancePolicy, AdmissionPolicy, Lane};
 
@@ -1317,6 +1341,98 @@ mod tests {
     }
 
     #[test]
+    fn the_navigation_hint_is_composed_from_the_list_not_from_the_action_set() {
+        // The reported defect, quantified: with the LIST held fixed, varying
+        // the lifecycle ACTION set must not change the navigation fragment.
+        // The `done` lane offers no per-item verb and the `ready` lane offers
+        // several, and both must name the same movement, because the cursor
+        // moves identically over both.
+        for (surface, prefix) in [
+            (ActionSurface::Attention, "up/down move | enter open"),
+            (
+                ActionSurface::LaneDrill,
+                "up/down move | enter item | esc lane list",
+            ),
+        ] {
+            let hint_for = |lane: Lane, handoff: bool| {
+                selected_item_hint(
+                    &ActionContext {
+                        lane,
+                        admission_policy: AdmissionPolicy::Manual,
+                        acceptance_policy: AcceptancePolicy::AiThenHuman,
+                        has_driver_handoff: handoff,
+                        awaits_scope_override: false,
+                        ready_work_item_count: 1,
+                        surface,
+                    },
+                    // The list is FIXED across every action set below.
+                    7,
+                )
+            };
+            let mut token_sets = Vec::new();
+            for lane in Lane::all() {
+                for handoff in [false, true] {
+                    let hint = hint_for(*lane, handoff);
+                    check(hint.starts_with(prefix), lane.label());
+                    token_sets.push(available_hint_tokens(&ActionContext {
+                        lane: *lane,
+                        admission_policy: AdmissionPolicy::Manual,
+                        acceptance_policy: AcceptancePolicy::AiThenHuman,
+                        has_driver_handoff: handoff,
+                        awaits_scope_override: false,
+                        ready_work_item_count: 1,
+                        surface,
+                    }));
+                }
+            }
+            // The action set really did vary -- otherwise the assertion above
+            // would hold vacuously.
+            assert!(token_sets.iter().any(Vec::is_empty));
+            assert!(token_sets.iter().any(|tokens| !tokens.is_empty()));
+        }
+    }
+
+    #[test]
+    fn the_navigation_hint_drops_the_move_where_the_list_cannot_move() {
+        // The other half of "composed from the list": a list of at most one row
+        // has nowhere to move to, so naming the key would be the same
+        // dishonesty inverted. The action set is held fixed here and the LIST
+        // varies -- the mirror of the test above.
+        for (surface, still, moving) in [
+            (
+                ActionSurface::LaneDrill,
+                "enter item | esc lane list",
+                "up/down move | enter item | esc lane list",
+            ),
+            (
+                ActionSurface::Attention,
+                "enter open",
+                "up/down move | enter open",
+            ),
+        ] {
+            let hint_for = |row_count: usize| {
+                selected_item_hint(
+                    &ActionContext {
+                        lane: Lane::Ready,
+                        admission_policy: AdmissionPolicy::Manual,
+                        acceptance_policy: AcceptancePolicy::AiThenHuman,
+                        has_driver_handoff: false,
+                        awaits_scope_override: false,
+                        ready_work_item_count: 1,
+                        surface,
+                    },
+                    row_count,
+                )
+            };
+            check(hint_for(0).starts_with(still), still);
+            check(hint_for(1).starts_with(still), still);
+            check(hint_for(2).starts_with(moving), moving);
+            // The verbs are unchanged across the three: only the fragment moved.
+            assert!(hint_for(1).contains("s move-status") && hint_for(2).contains("s move-status"));
+        }
+    }
+
+    #[test]
     fn surface_offering_is_identical_on_both_per_item_surfaces() {
         // The parity property, quantified over the WHOLE registry and over
         // every selection state each surface can present: the hosting view is
@@ -1483,8 +1599,11 @@ mod tests {
                 lane: Lane::Acceptance,
                 ..ready
             };
-            check(selected_item_hint(&ready).contains("d dispatch"), "ready");
-            let hidden = !selected_item_hint(&acceptance).contains("d dispatch");
+            check(
+                selected_item_hint(&ready, 2).contains("d dispatch"),
+                "ready",
+            );
+            let hidden = !selected_item_hint(&acceptance, 2).contains("d dispatch");
             check(hidden, "acceptance must not hint the dispatch key");
             let staged = found.and_then(|spec| stage_action(spec, &ready));
             check(staged == Some(StagedAction::FactoryDispatchItem), "staged");

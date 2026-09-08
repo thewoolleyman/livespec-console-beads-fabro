@@ -307,7 +307,7 @@ close, so it always describes the current context rather than a fixed summary.
 | Lanes, drilled into an active item | `up/down move \| enter item \| esc lane list \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| ? help \| q quit` |
 | Lanes, drilled into a blocked item | `up/down move \| enter item \| esc lane list \| s move-status \| ? help \| q quit` |
-| Lanes, drilled into a done item | `enter item \| esc lane list \| ? help \| q quit` |
+| Lanes, drilled into a done item | `up/down move \| enter item \| esc lane list \| ? help \| q quit` |
 | Lanes, drilled into an empty lane | `esc lane list \| ? help \| q quit` |
 | Settings | `up/down move \| enter/space edit row \| ? help \| q quit` |
 | Spec, Events, Repos | `up/down move \| left/right focus \| / search \| ? help \| q quit` |
@@ -323,10 +323,16 @@ close, so it always describes the current context rather than a fixed summary.
 valves act on a *selected work-item*, so they are absent on the lane overview
 (which selects a lane, not an item), in an empty drilled-in lane, and whenever
 Attention has no work-item-backed row selected — an empty inbox, **or a
-populated one sitting on a row that names no work-item**. `up`/`down` drop out
-too when there are no rows to move over. `Enter` opens a selected work-item's
-record from Attention or a drilled-in lane, so it is absent when there is no
-selected work-item.
+populated one sitting on a row that names no work-item**. `Enter` opens a
+selected work-item's record from Attention or a drilled-in lane, so it is absent
+when there is no selected work-item.
+
+**The movement hint comes from the list, not from what the item admits.**
+`up`/`down` render whenever the list holds more than one row, whatever verbs the
+selected item's lifecycle state offers — a drilled-in `done` lane advertises no
+valve and still names the move, because the cursor moves there exactly as it
+does in `ready`. They drop out only where there is nowhere to move: an empty
+list, or one holding a single row.
 
 Availability is derived from the selected item's full record, not its lane
 alone. `p approve` renders only while the item's **effective admission policy
