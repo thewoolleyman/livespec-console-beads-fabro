@@ -27,8 +27,10 @@ const STALE_PYRAMID_NODE: &str = "finding -> top-ranked chore work-item; never f
 const STALE_GHERKIN_STEP: &str =
     "And a chore work-item is filed at the top of the rank order in the";
 
-const fn checker() -> &'static str {
-    env!("CARGO_BIN_EXE_console-spec-check")
+fn checker() -> Result<PathBuf, String> {
+    std::env::var_os("CARGO_BIN_EXE_console-spec-check")
+        .map(PathBuf::from)
+        .ok_or_else(|| "CARGO_BIN_EXE_console-spec-check must be set by cargo test".to_string())
 }
 
 #[test]
@@ -139,7 +141,7 @@ fn write(path: &Path, content: &str) -> Result<(), String> {
 
 /// Run the shipped check in `root`, in its fenced-block staleness mode.
 fn gate(root: &Path) -> Result<Output, String> {
-    Command::new(checker())
+    Command::new(checker()?)
         .arg("--fenced-block-staleness")
         .current_dir(root)
         .output()
