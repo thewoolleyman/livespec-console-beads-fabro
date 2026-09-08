@@ -13,7 +13,9 @@
 //!   scenario H2 in the audience-appropriate target;
 //! - plus the scenario -> test enforcement dimension — every live scenario H2
 //!   must carry either a concrete test registration or an explicitly reasoned
-//!   pending top-of-pyramid test entry.
+//!   pending top-of-pyramid test entry;
+//! - and [`stale_fenced_blocks`], the diff-aware staleness detector for the
+//!   fenced blocks the clause extractor skips (see [`staleness`]).
 //!
 //! All functions are pure (no I/O, no process exit); the binary shim
 //! (`main.rs`) supplies the file reads, the severity lever, and the exit code.
@@ -34,6 +36,10 @@ use std::path::Path;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+pub mod staleness;
+
+pub use staleness::{StaleFencedBlock, stale_fenced_blocks};
 
 /// The contributor-facing spec file (its own clauses bind to its
 /// `## Scenarios` section, not to `scenarios.md`).
@@ -187,7 +193,7 @@ fn push_heading(stack: &mut Vec<String>, level: usize, title: String) {
 /// Whether a line carries a `MUST` / `SHOULD` rule keyword (case-sensitive,
 /// whole word). `MUST NOT` / `SHOULD NOT` are detected by their `MUST` /
 /// `SHOULD` prefix, so this is equivalent to the family regex alternation.
-fn has_rule_keyword(line: &str) -> bool {
+pub(crate) fn has_rule_keyword(line: &str) -> bool {
     contains_whole_word(line, "MUST") || contains_whole_word(line, "SHOULD")
 }
 
