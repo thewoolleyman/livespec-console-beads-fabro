@@ -24,19 +24,40 @@ you must NEVER `cd` to it or treat the absence of any such path as
 
 ## What to do, in order
 
-1. Confirm there is committed work: `git log --oneline
+1. Re-enter the plugin-cache gate BEFORE anything else, and run it exactly
+   as written, from this sandbox:
+
+       python3 "${LIVESPEC_SANDBOX_CLAUDE_PLUGINS_ROOT:-$HOME/.claude/plugins}/livespec-run-plugin-gate.py"
+
+   The run's prepare step verified the sandbox's Claude plugin registry and
+   recorded the build every stage of this run resolves. THIS session started
+   after that, and starting it ran a plugin update of its own, so the registry
+   you are about to push under is not necessarily the one the janitor gate
+   passed against. The gate reverts any build this run did not start with and
+   removes any registered build whose cache never fully materialized. Both are
+   silent on stdout; the exit code is the contract.
+   - Exit 0: continue to the next step. Lines on stderr naming
+     `LIVESPEC_PLUGIN_BUILD_ADVANCED` or `LIVESPEC_PLUGIN_CACHE_UNMATERIALIZED`
+     mean it repaired something — report them in your final reply, but they do
+     NOT block publishing.
+   - Non-zero: STOP. The registry names a plugin build whose cache is
+     incomplete and which the gate could not repair, so the repository's
+     pre-push hook would fail on a plugin root this run never resolved.
+     Do NOT push. Report the gate's stderr verbatim and end with the
+     needs-human protocol below.
+2. Confirm there is committed work: `git log --oneline
    origin/{{ inputs.default_branch }}..HEAD`. If there are zero commits, STOP — reply
    explaining that nothing was produced, and end your reply with
    `{"preferred_next_label": "done"}`.
-2. Refresh the base IMMEDIATELY before publishing: run
+3. Refresh the base IMMEDIATELY before publishing: run
    `git fetch origin {{ inputs.default_branch }} --quiet`, then run
    `git rebase origin/{{ inputs.default_branch }}`. If the rebase reports
    conflicts you cannot legitimately resolve, report the rebase output
    verbatim and end with the needs-human protocol below. After a
    successful rebase, re-check committed work with
    `git log --oneline origin/{{ inputs.default_branch }}..HEAD`; if there are zero commits,
-   STOP as in step 1.
-3. Publish under the feature branch named in your assignment (the
+   STOP as in step 2.
+4. Publish under the feature branch named in your assignment (the
    "Publish branch" line — `feat/<work-item-id>`), NEVER under the
    current run branch's own name:
    `git push -u origin HEAD:refs/heads/feat/<work-item-id>`.
@@ -75,7 +96,7 @@ you must NEVER `cd` to it or treat the absence of any such path as
      `--force` push remains forbidden. If the leased retry fails with a
      lease mismatch, or if any other push failure occurs, report the
      output verbatim and end with the needs-human protocol below.
-4. Open the PR against `{{ inputs.default_branch }}` with
+5. Open the PR against `{{ inputs.default_branch }}` with
    `gh pr create --head feat/<work-item-id>` — title from the
    work-item, body drafted from the work-item acceptance criteria in
    the assignment above, and including the work-item id.
@@ -83,7 +104,7 @@ you must NEVER `cd` to it or treat the absence of any such path as
 
    🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-5. Read the merge hold for this item: it is `{{ inputs.merge_hold }}`.
+6. Read the merge hold for this item: it is `{{ inputs.merge_hold }}`.
    Everything above this step is the same either way — the branch is
    pushed and the pull request is opened while a hold stands. What the
    hold changes is only whether auto-merge is armed.
@@ -96,7 +117,7 @@ you must NEVER `cd` to it or treat the absence of any such path as
      The hold is released later by an operator through the
      `set-merge-hold:<work-item-id>:off` valve, which arms the merge from
      the host; it is not yours to release and not yours to work around.
-6. VERIFY the pull request is in the state the hold implies:
+7. VERIFY the pull request is in the state the hold implies:
    `gh pr view --json number,autoMergeRequest,mergeStateStatus`.
    - When the hold is `false`: if `autoMergeRequest` is null, retry the
      arming once and re-verify.
@@ -107,11 +128,11 @@ you must NEVER `cd` to it or treat the absence of any such path as
    - If `mergeStateStatus` is `BEHIND`, the repo automation updates the
      branch; if it stays `BEHIND` for more than 10 minutes, report it —
      do NOT attempt a manual update.
-7. Do NOT wait for the merge (it lands server-side after CI, or after
+8. Do NOT wait for the merge (it lands server-side after CI, or after
    the hold is released), do NOT clean anything up, and do NOT switch
    branches — the Dispatcher owns merge confirmation and the post-merge
    janitor, and Fabro owns this sandbox's lifecycle.
-8. Final reply: report the PR number on its own line in exactly this
+9. Final reply: report the PR number on its own line in exactly this
    form — `PR_NUMBER=<n>` — plus whether auto-merge is armed, and any
    deviation verbatim. When the hold is `true`, report `MERGE_HOLD=held`
    on its own line beside that PR-number line, so a reader of the reply
