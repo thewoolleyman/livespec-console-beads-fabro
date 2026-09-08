@@ -514,9 +514,15 @@ fn drive_narrow_header_scroll() -> HarnessResult<()> {
     // Many Right presses saturate the scroll clamp, panning to the right edge:
     // the previously-clipped `attention:` field becomes visible, and the left
     // `fleet: livespec` field scrolls off the left (content beyond the width is
-    // reachable by scrolling).
+    // reachable by scrolling). 16 presses at the `HEADER_SCROLL_STEP` of 8
+    // columns each (128 columns) comfortably clears the full header's length
+    // now that it also carries the `build: <sha> (built <timestamp>)` segment
+    // (livespec-console-beads-fabro-mx9u.13) -- deliberately more than the
+    // arithmetic minimum, since the whole point of this scene is that it
+    // saturates rather than lands on an exact offset.
     console.send_keys(&[
-        "Right", "Right", "Right", "Right", "Right", "Right", "Right", "Right",
+        "Right", "Right", "Right", "Right", "Right", "Right", "Right", "Right", "Right", "Right",
+        "Right", "Right", "Right", "Right", "Right", "Right",
     ])?;
     let scrolled = console.wait_for_settled("attention:", render_timeout())?;
     assert!(
@@ -530,7 +536,8 @@ fn drive_narrow_header_scroll() -> HarnessResult<()> {
 
     // Scrolling left returns to the left edge (content reachable both directions).
     console.send_keys(&[
-        "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left",
+        "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left", "Left",
+        "Left", "Left", "Left", "Left", "Left",
     ])?;
     let back_left = console.wait_for_settled("fleet: livespec", render_timeout())?;
     assert!(
@@ -560,13 +567,13 @@ fn drive_narrow_header_scroll() -> HarnessResult<()> {
 
 /// Case 4: a wide-enough viewport needs no horizontal scroll.
 ///
-/// At the default wide width the whole header fits, so the scroll clamp is
-/// zero: focusing the pane shows every field at once (both the left `fleet` and
-/// the right `attention:`), and a Right press cannot pan past a header that is
+/// At `WIDE_HEADER_COLS` the whole header fits, so the scroll clamp is zero:
+/// focusing the pane shows every field at once (both the left `fleet` and the
+/// right `attention:`), and a Right press cannot pan past a header that is
 /// already fully visible.
 fn drive_wide_header_needs_no_scroll() -> HarnessResult<()> {
     let wide_repo = RepoFixture::new("e2e-top-wide", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    let wide = TmuxConsole::launch_sized(&wide_repo, support::DEFAULT_COLS, support::DEFAULT_ROWS)?;
+    let wide = TmuxConsole::launch_sized(&wide_repo, WIDE_HEADER_COLS, support::DEFAULT_ROWS)?;
     wide.wait_for_settled(&format!("repo: {}", wide_repo.tenant()), render_timeout())?;
     wide.send_keys(&["Tab", "Tab", "Tab"])?;
     let wide_focused = wide.wait_for_settled("LiveSpec Console [focus]", render_timeout())?;
@@ -805,6 +812,16 @@ fn hold_store_write_lock(path: &Path, ready: &std::sync::mpsc::Sender<()>, hold:
 /// enough that the header's `attention:` field is clipped off the right edge and
 /// the shrink-to-fit default drops the low-value `fleet: livespec` field.
 const NARROW_COLS: u16 = 56;
+
+/// The pane width for `drive_wide_header_needs_no_scroll`: wide enough that the
+/// FULL, un-degraded header line (every field, `fleet: livespec` through
+/// `attention: N`) fits with room to spare, so focusing the pane needs no
+/// horizontal scroll at all. Deliberately wider than `support::DEFAULT_COLS`
+/// (112) -- that pinned dogfood width is now just BELOW the full header's
+/// length once it also carries the `build: <sha> (built <timestamp>)` segment
+/// (livespec-console-beads-fabro-mx9u.13), which is exactly the case this scene
+/// exists to distinguish from a genuinely-wide viewport.
+const WIDE_HEADER_COLS: u16 = 200;
 
 /// Assert the modal Help window is inset by a 3-character border on every side
 /// of whatever viewport `tmux` gave the pane. `tmux` honors the pinned height

@@ -28,12 +28,15 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 /// The single source of truth for the per-item operator action set, from
 /// which hints, key bindings, and menus derive.
 pub mod action_registry;
+/// The running binary's build identity and its staleness against the repo.
+pub mod build_identity;
 /// The `doctor` diagnostic: console-health findings derived from the SAME
 /// in-process projection the header renders.
 pub mod doctor;
 /// Module containing source-adapters support.
 pub mod source_adapters;
 
+use build_identity::{BuildIdentity, BuildStaleness, build_staleness_segment};
 use source_adapters::{
     AcceptancePolicy, AdmissionPolicy, AttentionItemSnapshot, AttentionSourceRef, Lane, LaneReason,
     OrphanedFactoryRun, SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail,
@@ -1144,6 +1147,8 @@ pub struct TuiInteractionState {
     plugin_resolution: PluginResolution,
     transient_status: Option<String>,
     list_edge: Option<ListEdge>,
+    build_identity: Option<BuildIdentity>,
+    build_staleness: BuildStaleness,
 }
 
 impl TuiInteractionState {
@@ -1175,6 +1180,8 @@ impl TuiInteractionState {
             plugin_resolution: PluginResolution::unresolved(),
             transient_status: None,
             list_edge: None,
+            build_identity: None,
+            build_staleness: BuildStaleness::Unknown,
         }
     }
 
@@ -1210,6 +1217,8 @@ impl TuiInteractionState {
             plugin_resolution: PluginResolution::unresolved(),
             transient_status: None,
             list_edge: None,
+            build_identity: None,
+            build_staleness: BuildStaleness::Unknown,
         }
     }
 
@@ -1448,6 +1457,26 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the running binary's build identity replaced.
+    /// The composition root resolves it ONCE, from the binary's own
+    /// compile-time-embedded sha and build timestamp -- see
+    /// [`build_identity::BuildIdentity`].
+    pub fn with_build_identity(mut self, build_identity: Option<BuildIdentity>) -> Self {
+        self.build_identity = build_identity;
+        self
+    }
+
+    #[must_use]
+    /// Return this value with the build's observed staleness against the
+    /// repo's current HEAD replaced. The composition root resolves this ONCE
+    /// at startup, the same way it resolves [`Self::with_dispatcher_settings`]
+    /// -- see [`build_identity::observe_build_staleness`].
+    pub const fn with_build_staleness(mut self, build_staleness: BuildStaleness) -> Self {
+        self.build_staleness = build_staleness;
+        self
+    }
+
+    #[must_use]
     /// Return this value with the transient header status replaced.
     pub fn with_transient_status(mut self, transient_status: Option<String>) -> Self {
         self.transient_status = transient_status;
@@ -1611,6 +1640,19 @@ impl TuiInteractionState {
     /// Return the resolved orchestrator plugin summary displayed in Settings.
     pub const fn plugin_resolution(&self) -> &PluginResolution {
         &self.plugin_resolution
+    }
+
+    #[must_use]
+    /// Return the running binary's build identity, when the composition root
+    /// resolved one.
+    pub const fn build_identity(&self) -> Option<&BuildIdentity> {
+        self.build_identity.as_ref()
+    }
+
+    #[must_use]
+    /// Return the build's observed staleness against the repo's current HEAD.
+    pub const fn build_staleness(&self) -> BuildStaleness {
+        self.build_staleness
     }
 }
 
@@ -1953,6 +1995,8 @@ pub struct TuiScreenModel {
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
+    build_identity: Option<BuildIdentity>,
+    build_staleness: BuildStaleness,
 }
 
 impl TuiScreenModel {
@@ -2262,6 +2306,18 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Return the running binary's build identity, when one was resolved.
+    pub const fn build_identity(&self) -> Option<&BuildIdentity> {
+        self.build_identity.as_ref()
+    }
+
+    #[must_use]
+    /// Return the build's observed staleness against the repo's current HEAD.
+    pub const fn build_staleness(&self) -> BuildStaleness {
+        self.build_staleness
+    }
+
+    #[must_use]
     /// Compose the header to fit `width` display columns without ever truncating
     /// mid-field.
     ///
@@ -2287,6 +2343,7 @@ impl TuiScreenModel {
             self.factory_activity.as_deref(),
             self.transient_status.as_deref(),
             &self.unavailable_sources,
+            self.build_staleness,
             width,
         )
     }
@@ -4302,13 +4359,16 @@ pub fn render_tui_model(
         // The canonical, untruncated header. `header_line` keeps this display
         // order for wide terminals and sheds narrow-terminal fields by declared
         // information-value priority, not by this string's field positions.
+        // The build IDENTITY itself is not one of these fields -- it lives in
+        // the header pane's block title instead; see `fit_header_line`'s doc.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
             projection.attention_total,
             factory_activity_segment(projection.factory_activity.as_deref()),
             transient_status_segment(transient_status.as_deref()),
+            build_staleness_header_segment(state.build_staleness()),
             source_health_header_segment(&projection.unavailable_sources)
         ),
         unavailable_sources: projection.unavailable_sources.clone(),
@@ -4317,6 +4377,8 @@ pub fn render_tui_model(
         list_edge: state.list_edge(),
         command_outcome: projection.command_outcome.clone(),
         orphaned_factory_runs: projection.orphaned_factory_runs.clone(),
+        build_identity: state.build_identity().cloned(),
+        build_staleness: state.build_staleness(),
     }
 }
 
@@ -4531,6 +4593,11 @@ fn factory_activity_segment(activity: Option<&str>) -> String {
 
 fn transient_status_segment(status: Option<&str>) -> String {
     status.map_or_else(String::new, |value| format!(" | status: {value}"))
+}
+
+/// The canonical header's stale-build tell, or empty while current/unknown.
+fn build_staleness_header_segment(staleness: BuildStaleness) -> String {
+    build_staleness_segment(staleness).map_or_else(String::new, |tell| format!(" | {tell}"))
 }
 
 /// What a failed command's Status-line message says when its stored error
@@ -4826,12 +4893,75 @@ enum Shrink {
     DegradeSource,
 }
 
+/// Build the ORDERED shrink plan for [`fit_header_line`]: one op per
+/// over-budget step, least valuable first.
+///
+/// With TWO OR MORE unavailable sources, the names first elide to the
+/// intermediate `+N more` form -- a genuinely cheap step -- before any field
+/// yields, then low-priority static fields yield, then the source segment
+/// collapses to its bare count before higher-value state fields are
+/// considered. Field eviction itself comes from each field's declared
+/// priority (already reflected in `drop_order`'s order), not from where the
+/// field happens to sit in the header string.
+///
+/// With exactly ONE unavailable source there is no `+N more` -- the only two
+/// forms are the named one and the bare count -- so an unconditional first
+/// `DegradeSource` would jump straight from "named" to "gone", sacrificing
+/// the name even in cases where dropping a couple of low-priority fields
+/// alone would have made room to keep it (measured
+/// livespec-console-beads-fabro-mx9u.13, against a real single-unavailable-
+/// source header at the pinned 112-column budget: the unconditional-first
+/// degrade cost the name for no reason -- `fleet:`/`mode:` alone would have
+/// bought enough room). So for that case the (single) degrade step is tried
+/// LAST, after every field has had its chance, the same way the source
+/// COUNT is protected from EVER being dropped.
+fn header_shrink_plan(
+    drop_order: Vec<(usize, HeaderSegmentPriority)>,
+    source_form_count: usize,
+) -> Vec<Shrink> {
+    let (low_priority_drops, high_priority_drops): (Vec<_>, Vec<_>) = drop_order
+        .into_iter()
+        .partition(|(_index, priority)| *priority < HeaderSegmentPriority::StateCount);
+    let has_intermediate_source_abbreviation = source_form_count >= 3;
+    let mut plan = Vec::new();
+    if has_intermediate_source_abbreviation {
+        plan.push(Shrink::DegradeSource);
+    }
+    plan.extend(
+        low_priority_drops
+            .into_iter()
+            .map(|(index, _priority)| Shrink::DropField(index)),
+    );
+    plan.push(Shrink::DegradeSource);
+    plan.extend(
+        high_priority_drops
+            .into_iter()
+            .map(|(index, _priority)| Shrink::DropField(index)),
+    );
+    plan
+}
+
 /// Compose the width-fitted header. See [`TuiScreenModel::header_line`] for the
 /// degradation contract. This is the pure core: it composes the atomic fields in
 /// a fixed display order and, while the line is over `width`, applies the shrink
-/// plan one step at a time: eliding source names, then dropping fields by their
-/// declared information-value priority — re-measuring after each step and
-/// stopping as soon as it fits.
+/// plan (see [`header_shrink_plan`]) one step at a time — re-measuring after
+/// each step and stopping as soon as it fits.
+///
+/// The build IDENTITY itself is NOT one of these fields -- it lives in the
+/// header pane's block TITLE instead (see `console_tui::render_header`),
+/// which costs nothing from this content-line budget and is therefore always
+/// visible regardless of width or how many alerts are competing for room.
+/// Measured livespec-console-beads-fabro-mx9u.13: at the maintainer's real,
+/// busy 159-column header (a factory alert AND several unavailable sources
+/// beside a two-digit attention count), even a sha-only short form of the
+/// identity had no room left once every genuinely-content field had its
+/// say -- an operator checking which build is running is exactly as likely
+/// to do it during a busy moment as a quiet one, so a segment that only
+/// survives the quiet moments does not meet the bar. The STALE tell stays
+/// here, at `TransientState`, because it is a live anomaly on par with
+/// `factory:`/`status:`, not an identity fact -- see
+/// [`build_staleness_segment`].
+#[allow(clippy::too_many_arguments)]
 fn fit_header_line(
     repo: &str,
     view: &str,
@@ -4839,6 +4969,7 @@ fn fit_header_line(
     factory_activity: Option<&str>,
     transient_status: Option<&str>,
     unavailable_sources: &[String],
+    build_staleness: BuildStaleness,
     width: usize,
 ) -> String {
     // Fixed display order; `None` means the whole field was
@@ -4873,11 +5004,20 @@ fn fit_header_line(
             text: format!("status: {status}"),
             priority: HeaderSegmentPriority::TransientState,
         }),
+        // Same tier as `factory:`/`status:` above -- an active stale-build
+        // tell is exactly the kind of anomaly that class exists to protect,
+        // and shares its reasoning: an operator grading a dogfood pass
+        // against the wrong binary is at least as costly as a missed
+        // refusal. livespec-console-beads-fabro-mx9u.13.
+        build_staleness_segment(build_staleness).map(|tell| HeaderField {
+            text: tell,
+            priority: HeaderSegmentPriority::TransientState,
+        }),
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<HeaderField>; 7], source_idx: usize| -> String {
+    let compose = |fields: &[Option<HeaderField>; 8], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_ref().map(|field| field.text.as_str()))
@@ -4895,28 +5035,7 @@ fn fit_header_line(
         .filter_map(|(index, field)| field.as_ref().map(|field| (index, field.priority)))
         .collect::<Vec<_>>();
     drop_order.sort_by_key(|(index, priority)| (*priority, *index));
-
-    // One shrink op per over-budget step, least valuable first. The source names
-    // first elide to the intermediate `+N more` form, then low-priority static
-    // fields yield, then the source segment collapses to its bare count before
-    // higher-value state fields are considered. Field eviction itself comes from
-    // the declared priority above, not from where the field happens to sit in the
-    // header string.
-    let (low_priority_drops, high_priority_drops): (Vec<_>, Vec<_>) = drop_order
-        .into_iter()
-        .partition(|(_index, priority)| *priority < HeaderSegmentPriority::StateCount);
-    let mut plan = vec![Shrink::DegradeSource];
-    plan.extend(
-        low_priority_drops
-            .into_iter()
-            .map(|(index, _priority)| Shrink::DropField(index)),
-    );
-    plan.push(Shrink::DegradeSource);
-    plan.extend(
-        high_priority_drops
-            .into_iter()
-            .map(|(index, _priority)| Shrink::DropField(index)),
-    );
+    let plan = header_shrink_plan(drop_order, source_forms.len());
 
     let mut line = compose(&fields, source_idx);
     for op in &plan {
@@ -12219,6 +12338,8 @@ mod tests {
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
+            build_identity: None,
+            build_staleness: super::BuildStaleness::Unknown,
         };
 
         assert_eq!(model.selected_operator_action(), None);
@@ -12271,6 +12392,8 @@ mod tests {
             header: "LiveSpec Console".to_owned(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: vec![run.clone()],
+            build_identity: None,
+            build_staleness: super::BuildStaleness::Unknown,
         };
 
         assert_eq!(model.orphaned_factory_runs(), [run]);
@@ -17566,6 +17689,202 @@ mod tests {
         assert!(narrow.contains("status: Dispatch ready work unavailable"));
     }
 
+    // -----------------------------------------------------------------------
+    // Build identity in the chrome (livespec-console-beads-fabro-mx9u.13). A
+    // dogfood pass graded fixes that were not in the running binary because
+    // the header carried no version, sha, or build age; these pin the fix.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_model_carries_the_running_builds_sha_and_build_timestamp() {
+        // The rendered-text proof that the CHROME names the sha and build
+        // timestamp lives in console-tui (the header pane's block title --
+        // see `the_header_pane_title_names_the_running_builds_sha_and_build_timestamp`),
+        // since that is where the identity is rendered
+        // (livespec-console-beads-fabro-mx9u.13 review: it does NOT survive
+        // as a content-line field at the maintainer's own real, busy width).
+        // This is the model-layer half: the fact reaches `TuiScreenModel`
+        // intact, which is what that rendering reads from.
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_build_identity(Some(
+            super::BuildIdentity::new("1b69345", "2026-09-08T11:16:34Z"),
+        ));
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert_eq!(
+            model.build_identity(),
+            Some(&super::BuildIdentity::new(
+                "1b69345",
+                "2026-09-08T11:16:34Z"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_current_build_carries_no_stale_tell() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_build_identity(Some(super::BuildIdentity::new(
+                "e656104",
+                "2026-09-08T13:17:00Z",
+            )))
+            .with_build_staleness(super::BuildStaleness::Current);
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert!(!model.header().contains("STALE"));
+    }
+
+    #[test]
+    fn a_build_behind_head_carries_an_explicit_stale_tell_naming_how_far_behind() {
+        // The dogfood postmortem's own numbers: five merges landed between the
+        // maintainer's running build and origin/master.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_build_identity(Some(super::BuildIdentity::new(
+                "1b69345",
+                "2026-09-08T11:16:34Z",
+            )))
+            .with_build_staleness(super::BuildStaleness::Behind(5));
+        let model = build_tui_model_for_state(&[], &state);
+
+        check(
+            model.header().contains("build STALE: 5 commits behind"),
+            "header should carry an explicit stale-build tell naming how far behind",
+        );
+        assert_eq!(model.build_staleness(), super::BuildStaleness::Behind(5));
+    }
+
+    #[test]
+    fn an_unknown_staleness_asserts_nothing_either_way() {
+        // No repo was observed, or the comparison could not be made -- an
+        // unproven claim is silent rather than defaulting to either verdict.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_build_identity(Some(super::BuildIdentity::new("1b69345", "unknown")))
+            .with_build_staleness(super::BuildStaleness::Unknown);
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert!(!model.header().contains("STALE"));
+    }
+
+    #[test]
+    fn no_build_identity_carries_no_build_segment_at_all() {
+        // The default state (every other header test in this module) resolves
+        // no build identity, and must not grow a phantom `build:` segment.
+        let model = build_tui_model(&[], 0);
+        assert!(!model.header().contains("build:"));
+    }
+
+    #[test]
+    fn the_stale_build_tell_survives_narrow_widths_that_shed_static_context() {
+        // The tell shares `TransientState` priority with `factory:`/`status:`
+        // -- the same tier the 2026-09-08 inversion (mx9u.1) protects -- so it
+        // outlives `repo:`/`view:` under width pressure, the same way a
+        // factory refusal does.
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_build_identity(Some(super::BuildIdentity::new(
+                "1b69345",
+                "2026-09-08T11:16:34Z",
+            )))
+            .with_build_staleness(super::BuildStaleness::Behind(5));
+        let model = build_tui_model_for_state(&[], &state);
+
+        let wide = model.header_line(300);
+        assert_eq!(wide, model.header());
+        assert!(wide.contains("build STALE: 5 commits behind"));
+
+        let narrow = model.header_line(45);
+        assert!(narrow.chars().count() <= 45);
+        check(
+            narrow.contains("build STALE: 5 commits behind"),
+            &format!(
+                "the stale tell should outlive repo/view/plain-identity at a narrow width: \
+                 {narrow:?}"
+            ),
+        );
+        check(
+            !(narrow.contains(&format!("repo: {CONFIRM_REPO}")) & narrow.contains("view: Lanes")),
+            "a narrow header carrying the stale tell should have yielded a static field",
+        );
+    }
+
+    #[test]
+    fn a_stale_tell_wide_enough_to_matter_still_fits_the_dogfood_pinned_width() {
+        // Same 110-column arithmetic
+        // `header_line_fits_the_pinned_width_and_preserves_the_priority_fields`
+        // pins, with a stale build ALSO present: it must fit alongside the
+        // cockpit-blind source count, not merely alongside the ordinary fields.
+        let sources = ["dispatcher", "fabro", "github", "livespec", "orchestrator"];
+        let events: Vec<ConsoleEvent> = sources
+            .iter()
+            .map(|&source| {
+                ConsoleEvent::fixture(
+                    &format!("evt_{source}_not_observed"),
+                    EventType::SourceNotObservedFindingObserved,
+                    source,
+                )
+            })
+            .collect();
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_build_identity(Some(super::BuildIdentity::new(
+                "1b69345",
+                "2026-09-08T11:16:34Z",
+            )))
+            .with_build_staleness(super::BuildStaleness::Behind(5));
+        let model = build_tui_model_for_state(&events, &state);
+        let line = model.header_line(110);
+
+        assert!(line.chars().count() <= 110);
+        assert!(line.contains("sources: 5 unavailable"));
+        assert!(line.contains("build STALE: 5 commits behind"));
+    }
+
+    #[test]
+    fn the_build_identity_never_appears_in_the_content_line_regardless_of_width_or_crowding() {
+        // Measured against the maintainer's own live pane at a real
+        // 159-column width (livespec-console-beads-fabro-mx9u.13 review): a
+        // build-identity CONTENT-LINE field, even in a sha-only short form,
+        // still had no room once `factory:`/`sources:` alerts and a
+        // two-digit `attention:` count all competed for the same budget --
+        // exactly the moment an operator most wants to check the running
+        // build. So the identity does not live in this content line at all
+        // any more; it lives in the header pane's block TITLE instead (see
+        // `console_tui::render_header`), which costs nothing from this
+        // budget and is unconditionally visible. This test pins the
+        // NEGATIVE: no width, crowded or otherwise, ever renders `build:` in
+        // the content line, so nothing can silently regress it back in as a
+        // field here.
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_build_identity(Some(super::BuildIdentity::new(
+                "923a5a5",
+                "2026-09-08T23:27:15Z",
+            )))
+            .with_build_staleness(super::BuildStaleness::Current);
+        let events: Vec<ConsoleEvent> = ["dispatcher", "fabro", "github"]
+            .iter()
+            .map(|&source| {
+                ConsoleEvent::fixture(
+                    &format!("evt_{source}_not_observed"),
+                    EventType::SourceNotObservedFindingObserved,
+                    source,
+                )
+            })
+            .collect();
+        let model = build_tui_model_for_state(&events, &state);
+
+        for width in [40_usize, 100, 159, 300] {
+            let line = model.header_line(width);
+            check(
+                !line.contains("build:"),
+                &format!(
+                    "the content line must never carry the build identity at width {width}: \
+                     {line:?}"
+                ),
+            );
+        }
+        // The canonical (unfitted) header agrees.
+        assert!(!model.header().contains("build:"));
+    }
+
     #[test]
     fn a_status_within_the_budget_keeps_the_attention_count_in_the_pinned_header() {
         // livespec-console-beads-fabro-zbnnlv. A status is the LAST field the
@@ -20658,6 +20977,8 @@ mod tests {
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
+            build_identity: None,
+            build_staleness: super::BuildStaleness::Unknown,
         };
 
         assert_eq!(
@@ -20888,6 +21209,8 @@ mod tests {
             header: String::new(),
             action_failures: std::collections::BTreeMap::new(),
             orphaned_factory_runs: Vec::new(),
+            build_identity: None,
+            build_staleness: super::BuildStaleness::Unknown,
         };
 
         let overlay = super::open_command_modal(&model);
