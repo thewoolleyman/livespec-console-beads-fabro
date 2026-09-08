@@ -75,11 +75,23 @@ left-justified default.
 ### Views pane
 
 The navigation list. Six views in this order: **Attention**, **Spec**,
-**Lanes**, **Events**, **Repos**, **Settings**. The active view is marked with
-a leading `>`.
+**Lanes**, **Events**, **Repos**, **Settings**. Each row carries the digit that
+jumps straight to it, and the active view is marked with a leading `>`:
+
+```
+> 1 Attention
+  2 Spec
+  3 Lanes
+  4 Events
+  5 Repos
+  6 Settings
+```
 
 `↑`/`↓` move between views. `Enter` or `→` moves focus into the content pane.
-Changing view resets the Detail pane's scroll position.
+Pressing a view's digit selects it outright from any pane — you do not have to
+be on the Views pane, and you do not have to `Tab` (which cycles *focus*, and
+whose ring includes the header). Changing view resets the Detail pane's scroll
+position.
 
 ### Attention pane
 
@@ -291,26 +303,26 @@ close, so it always describes the current context rather than a fixed summary.
 
 | Context | Hint |
 |---|---|
-| Header focused | `left/right scroll \| esc/tab leave \| ? help \| q quit` |
-| Attention, backlog work-item selected | `up/down move \| enter open \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Attention, pending-approval work-item selected | `up/down move \| enter open \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Attention, acceptance work-item selected | `up/down move \| enter open \| s move-status \| c accept \| r reject \| ? help \| q quit` |
-| Attention, blocked work-item selected | `up/down move \| enter open \| s move-status \| ? help \| q quit` |
-| Attention, no work-item selected | `? help \| q quit` |
-| Lanes, lane overview | `up/down move \| enter drill \| ? help \| q quit` |
-| Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into a pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into a dispatcher-admitted pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into a ready item | `up/down move \| enter item \| esc lane list \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| d dispatch \| ? help \| q quit` |
-| Lanes, drilled into a factory-unsafe ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| d dispatch \| ? help \| q quit` |
-| Lanes, drilled into an active item | `up/down move \| enter item \| esc lane list \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| ? help \| q quit` |
-| Lanes, drilled into a blocked item | `up/down move \| enter item \| esc lane list \| s move-status \| ? help \| q quit` |
-| Lanes, drilled into a done item | `up/down move \| enter item \| esc lane list \| ? help \| q quit` |
-| Lanes, drilled into an empty lane | `esc lane list \| ? help \| q quit` |
-| Settings | `up/down move \| enter/space edit row \| ? help \| q quit` |
-| Spec, Events, Repos | `up/down move \| left/right focus \| / search \| ? help \| q quit` |
+| Header focused | `left/right scroll \| esc/tab leave \| 1-6 view \| ? help \| q quit` |
+| Attention, backlog work-item selected | `up/down move \| enter open \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Attention, pending-approval work-item selected | `up/down move \| enter open \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Attention, acceptance work-item selected | `up/down move \| enter open \| s move-status \| c accept \| r reject \| 1-6 view \| ? help \| q quit` |
+| Attention, blocked work-item selected | `up/down move \| enter open \| s move-status \| 1-6 view \| ? help \| q quit` |
+| Attention, no work-item selected | `1-6 view \| ? help \| q quit` |
+| Lanes, lane overview | `up/down move \| enter drill \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a dispatcher-admitted pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a ready item | `up/down move \| enter item \| esc lane list \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| d dispatch \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a factory-unsafe ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| d dispatch \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into an active item | `up/down move \| enter item \| esc lane list \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a blocked item | `up/down move \| enter item \| esc lane list \| s move-status \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into a done item | `up/down move \| enter item \| esc lane list \| 1-6 view \| ? help \| q quit` |
+| Lanes, drilled into an empty lane | `esc lane list \| 1-6 view \| ? help \| q quit` |
+| Settings | `up/down move \| enter/space edit row \| 1-6 view \| ? help \| q quit` |
+| Spec, Events, Repos | `up/down move \| left/right focus \| / search \| 1-6 view \| ? help \| q quit` |
 | Search open | `type to search \| esc cancel` |
 | Command palette open | `type a command \| esc cancel` |
 | Action invoker open | `up/down select \| enter stage \| esc cancel` |
@@ -392,6 +404,7 @@ its hints stay readable while the modal is open.
 | `:` | Open the command palette (`drain`, `actions`). |
 | `v` | Open the generated menu bar. |
 | `?` | Open the Help modal. |
+| `1`–`6` | Go straight to a view, in Views-pane order (`1` Attention, `2` Spec, `3` Lanes, `4` Events, `5` Repos, `6` Settings). Works from any pane, including the focused header; the digit is drawn beside each name in the Views pane. With search or the command palette open the digit is typed into the query instead. |
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward. Inert while an overlay is open. |
 
 ### Menu bar

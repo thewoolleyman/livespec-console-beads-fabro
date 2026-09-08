@@ -974,6 +974,11 @@ pub enum TuiInteraction {
     SelectNextView,
     /// Select previous view variant.
     SelectPreviousView,
+    /// Select the NAMED view outright — the direct view-switch keys (`1`..`6`),
+    /// which skip the walk that [`SelectNextView`](Self::SelectNextView) makes
+    /// one step at a time and the focus ring `Tab` cycles through the Header.
+    /// Idempotent on the view already active.
+    SelectView(TuiView),
     /// Type char variant.
     TypeChar(char),
     /// Backspace variant.
@@ -4855,6 +4860,26 @@ fn reanchor_displaced_attention(
 
 /// The state change one interaction makes, before [`reduce_tui_interaction`]
 /// stamps the list-edge cue on it.
+/// The state change one WHICH-VIEW-IS-ACTIVE interaction makes.
+///
+/// Three interactions share this concern and its one side effect: the stepwise
+/// walk the Views nav's `up`/`down` drive (clamped at the ends by
+/// [`move_view_up`] / [`move_view_down`]) and the aimed jump the direct
+/// view-switch digits make. All three reset the Detail pane's scroll, because
+/// the pane is about to show a DIFFERENT view's content and an inherited offset
+/// would open it part-scrolled.
+fn view_interaction_state(
+    state: &TuiInteractionState,
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
+    let view = match interaction {
+        TuiInteraction::SelectView(target) => target,
+        TuiInteraction::SelectNextView => move_view_down(state.active_view()),
+        _previous => move_view_up(state.active_view()),
+    };
+    state.clone().with_active_view(view).with_detail_scroll(0)
+}
+
 fn reduce_interaction_state(
     state: &TuiInteractionState,
     model: &TuiScreenModel,
@@ -4863,14 +4888,9 @@ fn reduce_interaction_state(
     match interaction {
         TuiInteraction::SelectNext => select_next(state, model),
         TuiInteraction::SelectPrevious => select_previous(state, model),
-        TuiInteraction::SelectNextView => state
-            .clone()
-            .with_active_view(move_view_down(state.active_view()))
-            .with_detail_scroll(0),
-        TuiInteraction::SelectPreviousView => state
-            .clone()
-            .with_active_view(move_view_up(state.active_view()))
-            .with_detail_scroll(0),
+        TuiInteraction::SelectNextView
+        | TuiInteraction::SelectPreviousView
+        | TuiInteraction::SelectView(_) => view_interaction_state(state, interaction),
         TuiInteraction::OpenSearch => state.clone().with_overlay(TuiOverlay::Search {
             query: String::new(),
         }),
@@ -10066,7 +10086,7 @@ mod tests {
         // pane, never the old single static string (Scenario 19 / TUI Contract).
         // This fixture's inbox is EMPTY ("attention: 0"), so the per-item valve
         // keys, record drill-in, and up/down navigation act on nothing.
-        assert_eq!(model.footer(), "? help | q quit");
+        assert_eq!(model.footer(), "1-6 view | ? help | q quit");
     }
 
     #[test]
@@ -10361,6 +10381,56 @@ mod tests {
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNextView);
 
         assert_eq!(state.active_view(), TuiView::Settings);
+    }
+
+    /// The direct view-switch reduction: the aimed jump the `1`..`6` keys make,
+    /// from EVERY starting view to every destination, including the no-op onto
+    /// the view already active.
+    ///
+    /// The stepwise walk above is a different question — it asks where ONE step
+    /// lands and where the walk clamps. This asks whether an aimed jump arrives,
+    /// which no amount of stepping proves.
+    #[test]
+    fn selecting_a_view_by_name_arrives_from_any_other_view() {
+        let events = fabro_gate_events();
+        for from in TuiView::all() {
+            for to in TuiView::all() {
+                // Built EAGERLY, and reported through `check`: a failure-only
+                // `assert_eq!` message is a region no passing run can execute,
+                // which the coverage gate reads as a genuine miss.
+                let jump = format!("{} -> {}", from.label(), to.label());
+                let start = TuiInteractionState::for_view(*from, 0, TuiOverlay::None);
+                let landed =
+                    reduce_tui_interaction(&start, &events, TuiInteraction::SelectView(*to));
+
+                check(landed.active_view() == *to, &jump);
+                check(
+                    build_tui_model_for_state(&events, &landed).active_view() == *to,
+                    &jump,
+                );
+                // No list edge is announced: an aimed jump moves no cursor over
+                // a list, so there is no refusal to cue.
+                check(landed.list_edge().is_none(), &jump);
+            }
+        }
+    }
+
+    /// A jump resets the Detail pane's scroll for the same reason a step does:
+    /// the pane is about to show a DIFFERENT view's content, and an inherited
+    /// offset would open it part-scrolled.
+    #[test]
+    fn selecting_a_view_by_name_resets_the_detail_scroll() {
+        let events = fabro_gate_events();
+        let start = TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None)
+            .with_detail_max_scroll(9)
+            .with_detail_scroll(4);
+        assert_eq!(start.detail_scroll(), 4);
+
+        let landed =
+            reduce_tui_interaction(&start, &events, TuiInteraction::SelectView(TuiView::Repos));
+
+        assert_eq!(landed.active_view(), TuiView::Repos);
+        assert_eq!(landed.detail_scroll(), 0);
     }
 
     /// The dogfooding session's FIRST keystroke: `Up` on the Views navigation
@@ -10786,7 +10856,7 @@ mod tests {
         .with_payload_json(payload_json.to_owned())
     }
 
-    const LANE_OVERVIEW_HINTS: &str = "up/down move | enter drill | ? help | q quit";
+    const LANE_OVERVIEW_HINTS: &str = "up/down move | enter drill | 1-6 view | ? help | q quit";
 
     #[test]
     fn the_status_line_reports_a_succeeded_command_beside_the_context_hints() {
@@ -16729,7 +16799,7 @@ mod tests {
         // the fitter still must not hand the renderer a row wider than the band
         // and let the clip it exists to prevent happen anyway.
         let fitted = fit_footer_line(&ready_item_hints(), 4);
-        assert_eq!(fitted, "+12 ");
+        assert_eq!(fitted, "+13 ");
     }
 
     #[test]
@@ -16995,7 +17065,7 @@ mod tests {
         );
         assert!(model_pane_footer_hint(&settings_view_model()).contains("enter/space edit row"));
         // The read-only nav views surface select + focus-move + search.
-        let read_only = "up/down move | left/right focus | / search | ? help | q quit";
+        let read_only = "up/down move | left/right focus | / search | 1-6 view | ? help | q quit";
         assert!(read_only.contains("left/right focus") && read_only.contains("search"));
         for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
             let model = view_model(view);
@@ -17512,7 +17582,10 @@ mod tests {
     fn overlay_footer_hint_offers_the_bare_navigation_fallback_for_no_overlay() {
         // The None arm is the harmless fallback for a caller that routed a
         // closed overlay here; production routes None to the pane hints first.
-        assert_eq!(overlay_footer_hint(&TuiOverlay::None), "? help | q quit");
+        assert_eq!(
+            overlay_footer_hint(&TuiOverlay::None),
+            "1-6 view | ? help | q quit"
+        );
     }
 
     #[test]
@@ -17781,7 +17854,10 @@ mod tests {
         // stand in for it here, and stopped once the inbox row started offering
         // the state-admitted move-status picker -- Scenario 31.)
         let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Done);
-        assert_eq!(hint, "up/down move | enter open | ? help | q quit");
+        assert_eq!(
+            hint,
+            "up/down move | enter open | 1-6 view | ? help | q quit"
+        );
     }
 
     #[test]
@@ -17793,7 +17869,7 @@ mod tests {
         let hint = item_hint(action_registry::ActionSurface::LaneDrill, Lane::Done);
         assert_eq!(
             hint,
-            "up/down move | enter item | esc lane list | ? help | q quit"
+            "up/down move | enter item | esc lane list | 1-6 view | ? help | q quit"
         );
         // The one-row lane is the only case that drops it: there is nowhere to
         // move to, so naming the key would be the same dishonesty inverted.
@@ -17802,7 +17878,7 @@ mod tests {
                 &test_item_ctx(action_registry::ActionSurface::LaneDrill, Lane::Done),
                 1,
             ),
-            "enter item | esc lane list | ? help | q quit"
+            "enter item | esc lane list | 1-6 view | ? help | q quit"
         );
     }
 
@@ -17863,85 +17939,85 @@ mod tests {
                 Attention,
                 Lane::Backlog,
                 true,
-                "up/down move | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::PendingApproval,
                 false,
-                "up/down move | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Ready,
                 false,
-                "up/down move | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | ? help | q quit",
+                "up/down move | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Active,
                 false,
-                "up/down move | enter open | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter open | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Acceptance,
                 false,
-                "up/down move | enter open | s move-status | c accept | r reject | ? help | q quit",
+                "up/down move | enter open | s move-status | c accept | r reject | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Blocked,
                 false,
-                "up/down move | enter open | s move-status | ? help | q quit",
+                "up/down move | enter open | s move-status | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Done,
                 false,
-                "up/down move | enter open | ? help | q quit",
+                "up/down move | enter open | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Backlog,
                 true,
-                "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::PendingApproval,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Ready,
                 true,
-                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | ? help | q quit",
+                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Ready,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Active,
                 false,
-                "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Acceptance,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | c accept | r reject | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | c accept | r reject | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Blocked,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
@@ -17949,7 +18025,7 @@ mod tests {
                 false,
                 // The terminal lane offers no verb and still names the move:
                 // the navigation fragment is the LIST's, not the verbs'.
-                "up/down move | enter item | esc lane list | ? help | q quit",
+                "up/down move | enter item | esc lane list | 1-6 view | ? help | q quit",
             ),
         ] {
             let ctx = action_registry::ActionContext {
@@ -17990,7 +18066,7 @@ mod tests {
         let hint = selected_item_hint(&auto, TEST_LIST_ROWS);
         assert_eq!(
             hint,
-            "up/down move | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit"
         );
         let approve = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &auto));
         assert_eq!(approve, Some(None));
@@ -18001,7 +18077,7 @@ mod tests {
         };
         assert_eq!(
             selected_item_hint(&drilled_auto, TEST_LIST_ROWS),
-            "up/down move | enter item | esc lane list | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit"
         );
 
         // The manual sibling keeps the valve offered and stageable.
@@ -18027,7 +18103,7 @@ mod tests {
         // advertising "enter drill" in both is the lie this surface fixes.
         // The lane OVERVIEW selects a LANE, not an item, so every per-item key
         // is inert there and none may be advertised.
-        let overview = "up/down move | enter drill | ? help | q quit".to_owned();
+        let overview = "up/down move | enter drill | 1-6 view | ? help | q quit".to_owned();
         assert!(overview.contains("enter drill"));
         for inert in ["move-status", "p approve", "c accept", "set-admission"] {
             assert!(!overview.contains(inert));
@@ -18040,7 +18116,7 @@ mod tests {
 
         // An EMPTY drilled-in lane selects nothing: `enter` opens nothing and
         // every per-item key is inert, so neither is advertised.
-        let empty = "esc lane list | ? help | q quit".to_owned();
+        let empty = "esc lane list | 1-6 view | ? help | q quit".to_owned();
         assert!(!empty.contains("enter item") && !empty.contains("enter drill"));
         assert!(!empty.contains("move-status") && !empty.contains("p approve"));
         // Nothing to move over either, so the navigation key goes too.
@@ -18048,7 +18124,7 @@ mod tests {
         assert!(empty.contains("esc lane list"));
 
         // Attention drops its per-item valves when the inbox is empty.
-        let attention_empty = "? help | q quit".to_owned();
+        let attention_empty = "1-6 view | ? help | q quit".to_owned();
         assert!(!attention_empty.contains("p approve"));
         assert!(!attention_empty.contains("enter open"));
         // The open modal owns the hint line and names its own keys.

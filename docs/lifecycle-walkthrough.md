@@ -94,7 +94,7 @@ The middle pane's title becomes `Attention [focus]`, and the Status line at the
 bottom changes to offer the per-item keys:
 
 ```
-up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit
+up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit
 ```
 
 Use `↑` / `↓` here if you have more than one item; the walkthrough acts on the
@@ -104,7 +104,7 @@ selected row.
 > rows (`valve:approve:<id>`, `valve:accept:<id>`) with rows that name no
 > work-item — plan threads, hygiene findings, spec-revise items. Only the
 > former can be driven, so the per-item keys are inert on the others and the
-> Status line shortens to `? help | q quit`. If the line above is not what you
+> Status line shortens to `1-6 view | ? help | q quit`. If the line above is not what you
 > see, you are on a row this walkthrough cannot act on: move to one whose
 > Detail pane shows a `Work item:` value. This is expected behavior, not a
 > stuck console.
