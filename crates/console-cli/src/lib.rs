@@ -3862,6 +3862,31 @@ mod tests {
         resolver_plugin_root_with_bin(base, name, "scripts/bin")
     }
 
+    /// Build a livespec-CORE plugin root in the FLATTENED installed-cache layout
+    /// (`<root>/scripts/bin/next.py`), the shape the Claude plugin installer
+    /// produces for core's SPEC-side ranking CLI. Core ships no orchestrator
+    /// scripts, so this deliberately writes `next.py` alone.
+    fn resolver_core_plugin_root(base: &Path, name: &str) -> PathBuf {
+        let root = base.join(name);
+        let bin = root.join("scripts/bin");
+        fs::create_dir_all(&bin).ok_test();
+        fs::write(bin.join("next.py"), "#!/usr/bin/env python3\n").ok_test();
+        root
+    }
+
+    /// Write an `installed_plugins.json` under the injected home holding one
+    /// record for `plugin_key` at `install_path`.
+    fn resolver_write_plugin_cache(home: &Path, plugin_key: &str, install_path: &str) {
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir).ok_test();
+        let cache = serde_json::json!({
+            "plugins": {
+                plugin_key: [{"installPath": install_path}]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
+    }
+
     fn resolver_inputs(
         env: BTreeMap<String, String>,
         current_dir: PathBuf,
@@ -10056,6 +10081,191 @@ mod tests {
 
         check(
             (resolution.programs().fabro()) == ("/custom/fabro"),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn backing_cli_resolution_resolves_livespec_from_the_installed_core_plugin() {
+        // The cockpit's documented launch path is the credential wrapper, whose
+        // scrubbed PATH carries no `livespec` binary, so the bare default could
+        // never spawn and the source read as permanently not-observed. With a
+        // livespec-CORE plugin install recorded under the injected home, the
+        // livespec source must resolve to the ABSOLUTE `next.py` that install
+        // ships — the same discovery rung `fabro` and the orchestrator plugin
+        // already have. Resolution reads only the injected home and never
+        // consults PATH, so the assertion holds whatever the ambient PATH is.
+        let temp = resolver_temp_root("livespec-core");
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        fs::create_dir_all(&repo).ok_test();
+        let core = resolver_core_plugin_root(&temp, "core-plugin");
+        resolver_write_plugin_cache(&home, "livespec@livespec", &core.display().to_string());
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            Some(home),
+        ))
+        .ok_test();
+
+        check(
+            (resolution.programs().livespec().program())
+                == (core.join("scripts/bin/next.py").display().to_string()),
+            "assert_eq failed",
+        );
+        // Core's `next.py` emits its JSON payload unconditionally and takes
+        // neither a `next` subcommand nor `--json`; it takes `--project-root`,
+        // which is passed the selected repo so the ranker reads THAT checkout's
+        // `SPECIFICATION/` rather than the console's working directory.
+        check(
+            (resolution.programs().livespec().args())
+                == (["--project-root".to_owned(), repo.display().to_string()]),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn backing_cli_resolution_keeps_bare_livespec_without_override_or_core_plugin() {
+        // No override and nothing discoverable: the bare `livespec` default and
+        // its `next --json` shape are kept unchanged, so a host that legitimately
+        // carries `livespec` on PATH sees no behavior change.
+        let temp = resolver_temp_root("livespec-bare");
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        fs::create_dir_all(&repo).ok_test();
+        resolver_write_plugin_cache(
+            &home,
+            "some-other-plugin@github",
+            &temp.join("other").display().to_string(),
+        );
+
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, Some(home)))
+                .ok_test();
+
+        check(
+            (resolution.programs().livespec().program()) == ("livespec"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn backing_cli_resolution_keeps_bare_livespec_when_core_record_ships_no_next_script() {
+        // A recorded livespec-core install whose root carries NEITHER plugin bin
+        // layout, and one that carries a bin directory without `next.py`, are both
+        // undiscoverable: keep the bare default rather than resolving to a path
+        // that cannot spawn.
+        let temp = resolver_temp_root("livespec-core-incomplete");
+        let repo = temp.join("repo-without-plugin");
+        fs::create_dir_all(&repo).ok_test();
+
+        let no_bin_home = temp.join("home-no-bin");
+        let no_bin_root = temp.join("core-plugin-no-bin");
+        fs::create_dir_all(&no_bin_root).ok_test();
+        resolver_write_plugin_cache(
+            &no_bin_home,
+            "livespec@livespec",
+            &no_bin_root.display().to_string(),
+        );
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo.clone(),
+            Some(no_bin_home),
+        ))
+        .ok_test();
+
+        check(
+            (resolution.programs().livespec().program()) == ("livespec"),
+            "assert_eq failed",
+        );
+
+        let no_script_home = temp.join("home-no-script");
+        let no_script_root = temp.join("core-plugin-no-script");
+        fs::create_dir_all(no_script_root.join("scripts/bin")).ok_test();
+        resolver_write_plugin_cache(
+            &no_script_home,
+            "livespec@livespec",
+            &no_script_root.display().to_string(),
+        );
+
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(
+            resolver_empty_env(),
+            repo,
+            Some(no_script_home),
+        ))
+        .ok_test();
+
+        check(
+            (resolution.programs().livespec().program()) == ("livespec"),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn backing_cli_resolution_fails_loudly_for_a_malformed_core_plugin_record() {
+        // A malformed livespec-core cache record is named, not swallowed: the
+        // livespec rung propagates the same loud failure the orchestrator rung
+        // already does, rather than degrading to a bare default that cannot
+        // spawn under the wrapper.
+        let temp = resolver_temp_root("livespec-core-malformed");
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        fs::create_dir_all(&repo).ok_test();
+        let cache_dir = home.join(".claude/plugins");
+        fs::create_dir_all(&cache_dir).ok_test();
+        let cache = serde_json::json!({
+            "plugins": {
+                "livespec@livespec": [{"version": "no-install-path"}]
+            }
+        });
+        fs::write(cache_dir.join("installed_plugins.json"), cache.to_string()).ok_test();
+
+        check(
+            format!(
+                "{:?}",
+                BackingCliResolution::resolve(&resolver_inputs(
+                    resolver_empty_env(),
+                    repo,
+                    Some(home)
+                ))
+            )
+            .contains("livespec@livespec[0] has no installPath"),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn backing_cli_resolution_livespec_env_override_wins_over_core_plugin_discovery() {
+        // An explicit LIVESPEC_CONSOLE_LIVESPEC_PROGRAM override still wins over
+        // the discovered core plugin, and keeps the documented `next --json`
+        // shape it has always carried.
+        let temp = resolver_temp_root("livespec-core-override");
+        let repo = temp.join("repo-without-plugin");
+        let home = temp.join("home");
+        fs::create_dir_all(&repo).ok_test();
+        let core = resolver_core_plugin_root(&temp, "core-plugin-overridden");
+        resolver_write_plugin_cache(&home, "livespec@livespec", &core.display().to_string());
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_LIVESPEC_PROGRAM".to_owned(),
+            "/custom/livespec".to_owned(),
+        );
+
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(env, repo, Some(home))).ok_test();
+
+        check(
+            (resolution.programs().livespec().program()) == ("/custom/livespec"),
+            "assert_eq failed",
+        );
+        check(
+            (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
             "assert_eq failed",
         );
     }

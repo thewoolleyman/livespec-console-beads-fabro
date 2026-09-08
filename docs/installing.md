@@ -87,6 +87,37 @@ Any source the console cannot reach degrades to a *not observed* finding
 rather than crashing, so the TUI still launches without a live tenant — it
 just shows empty panes, and the header names what is unavailable.
 
+### The `livespec` program under the wrapper
+
+`livespec` is the one backing program with no bare-name fallback that survives
+the credential wrapper: the wrapper's scrubbed `PATH`
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) contains no
+`livespec` binary, so a `livespec` reachable only from your interactive shell
+is *not* reachable from the console. The console resolves it in this order:
+
+1. **`LIVESPEC_CONSOLE_LIVESPEC_PROGRAM`**, when set — invoked as
+   `<prog> next --json`.
+2. **The livespec-core plugin's `next.py`**, when that plugin is installed —
+   discovered from `~/.claude/plugins/installed_plugins.json`, the same
+   discovery the orchestrator plugin root uses, and invoked with
+   `--project-root <repo-path>`. The orchestrator plugin's identically-named
+   `next.py` is never used: it ranks work-items, not spec-side actions.
+3. **A bare `livespec` on `PATH`** — the unchanged default, for a host that
+   genuinely ships one.
+
+So if you have neither the core plugin installed nor `livespec` in the
+wrapper's `PATH`, set the override explicitly — remember the `-- env` form,
+since the wrapper drops variables set in front of it:
+
+```bash
+/usr/local/bin/with-livespec-env.sh -- env \
+  LIVESPEC_CONSOLE_LIVESPEC_PROGRAM=/path/to/livespec \
+  livespec-console-beads-fabro serve
+```
+
+Without it, the livespec source reads *not observed* on every poll and the
+header reports it unavailable.
+
 ## Running against a different repository
 
 The console is not pinned to its own repository. Two independent settings

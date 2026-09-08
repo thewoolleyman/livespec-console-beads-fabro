@@ -64,7 +64,7 @@ resolved on `PATH`.
 | `LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM` | work-item listing | `list-work-items`, or the plugin's `list_work_items.py` |
 | `LIVESPEC_CONSOLE_DRIVE_PROGRAM` | `<prog> --repo <repo-path> --json` | `livespec-orchestrator-drive`, or the plugin's `drive.py` |
 | `LIVESPEC_CONSOLE_DRAIN_PROGRAM` | `<prog> loop --repo <repo-path>` | `livespec-dispatcher-drain`, or the plugin's `dispatcher.py` |
-| `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` | `<prog> next --json` | `livespec` — deliberately never resolved from the plugin directory |
+| `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` | `<prog> next --json` | `livespec`, auto-resolved to the livespec-**core** plugin's `next.py` when that plugin is installed — see [below](#resolving-the-livespec-program) |
 | `LIVESPEC_CONSOLE_FABRO_PROGRAM` | Fabro binary | `fabro`, auto-resolved to `~/.local/bin/fabro` then `~/.fabro/bin/fabro` when present |
 | `LIVESPEC_CONSOLE_GH_PROGRAM` | GitHub CLI | `gh` |
 
@@ -75,12 +75,34 @@ A program path ending in `.py` is invoked as `python3 <script>`, so its
 executable bit does not matter. Child processes get a null stdin, so a shelled
 CLI cannot steal the terminal out from under the TUI.
 
+#### Resolving the livespec program
+
+The livespec source observes the **spec-side** `livespec next` action, so it is
+never resolved from the orchestrator plugin — that plugin's identically-named
+`next.py` ranks work-items and its output is not a spec-next action. It
+resolves in this order:
+
+1. `LIVESPEC_CONSOLE_LIVESPEC_PROGRAM`, invoked as `<prog> next --json`.
+2. The `scripts/bin/next.py` shipped by an installed livespec-**core** plugin,
+   discovered from `~/.claude/plugins/installed_plugins.json` the same way the
+   orchestrator plugin root is. It is invoked as
+   `python3 <script> --project-root <repo-path>` — core's ranker emits its JSON
+   payload unconditionally and takes neither a `next` subcommand nor `--json`.
+3. The bare `livespec` command, resolved on `PATH`.
+
+Rung 3 does not survive the credential wrapper: the wrapper's scrubbed `PATH`
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) contains no
+`livespec`, so a host without the core plugin installed **must** set
+`LIVESPEC_CONSOLE_LIVESPEC_PROGRAM` or the livespec source reads *not observed*
+on every poll. See
+[Prerequisites](installing.md#prerequisites).
+
 ### Discovery and environment
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT` | Explicit orchestrator plugin root, used to resolve the backing programs above. | discovered — a repo-local `scripts/bin`, else the installed-plugin record under `~/.claude` |
-| `HOME` | Roots plugin-cache and Fabro discovery. | — |
+| `HOME` | Roots plugin-cache, livespec-core, and Fabro discovery. | — |
 
 The credential wrapper supplies `BEADS_DOLT_PASSWORD` for the tenant. The
 console never reads that secret itself; it runs under the wrapper, which
