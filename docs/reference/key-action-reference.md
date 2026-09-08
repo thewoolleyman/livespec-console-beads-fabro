@@ -24,7 +24,7 @@ The menu bar is generated from the registry's menu taxonomy. Open it with `v`; f
 | Work item > Policy dials > Set acceptance-rework cap | Set acceptance-rework cap | k | Available where the selected work-item accepts an acceptance-rework-cap override. | the registry valve-confirm flow |
 | Work item > Factory safety > Set workflow scope override | Set workflow scope override | none | Available for a ready work-item that is awaiting the workflow-scope override. | the registry valve-confirm flow |
 | Factory > Dispatch > Dispatch ready work | Dispatch ready work | none | Available when the board has at least one ready work-item. | the factory-drain command for ready work |
-| Factory > Dispatch > Dispatch selected item | Dispatch selected item | none | Available for a selected ready work-item, on either per-item surface. | selected-item factory dispatch confirmation |
+| Factory > Dispatch > Dispatch selected item | Dispatch selected item | d | Available for a selected ready work-item, on either per-item surface. | selected-item factory dispatch confirmation |
 | View > Search > Search | Search | / | Available globally from every view. | the registered global console action |
 | View > Command palette > Command palette | Command palette | : | Available globally from every view. | the registered global console action |
 | View > Menu bar > Menu bar | Menu bar | v | Available globally from every view; Left from the Views pane also opens it without a hotkey. | the registered global console action |

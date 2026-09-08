@@ -1200,8 +1200,17 @@ fn registry_action_input(
         action_registry::StagedAction::DriverHandoff => Some(TuiTerminalInput::Interaction(
             TuiInteraction::OpenDriverHandoff,
         )),
-        action_registry::StagedAction::FactoryDrain
-        | action_registry::StagedAction::FactoryDispatchItem => None,
+        // The ranked drain is keyless by registry declaration: no chord
+        // resolves to `dispatch-ready`, so the key path has nothing to offer
+        // it and the menu, palette and invoker remain its only routes.
+        action_registry::StagedAction::FactoryDrain => None,
+        // The per-item dispatch DOES carry a key (v047 gap-uqotpmdo), and it
+        // must open the SAME confirmation the `Factory > Dispatch` row opens
+        // rather than a second staging path — which is why this reduces to the
+        // interaction `menu_confirm_step` and `invoker_confirm_step` reduce to.
+        action_registry::StagedAction::FactoryDispatchItem => Some(TuiTerminalInput::Interaction(
+            TuiInteraction::OpenFactoryDispatchItemConfirm,
+        )),
         action_registry::StagedAction::Global(action) => Some(global_input(action)),
     }
 }
@@ -3245,7 +3254,7 @@ mod tests {
         effect_triggers_source_poll, elide_to_width, full_width_explainer_rect, global_help_lines,
         help_lines_for_view, help_outcome, key_event_to_terminal_input, menu_confirm_step,
         registry_action_input, registry_staging_explanation, render_command_explainer,
-        render_command_modal, render_detail, render_menu_overlay, render_model,
+        render_command_modal, render_detail, render_footer, render_menu_overlay, render_model,
         render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
         staged_action_step, step_tui_runtime, text_input,
     };
@@ -6802,6 +6811,133 @@ mod tests {
             spec.and_then(|spec| registry_action_input(&model, spec, 'd')),
             None
         );
+    }
+
+    /// The work-item every per-item dispatch-key test selects.
+    const DISPATCH_KEY_ITEM: &str = "console-dispatch-key";
+
+    /// A selected work-item in `lane`, reachable from BOTH per-item surfaces.
+    ///
+    /// The lane snapshot is what the drilled-in lane selects and what the
+    /// verb's availability reads. The needs-attention row is carried
+    /// explicitly because a `ready` item rests on no human step, so
+    /// `requires_attention` never folds it into the inbox on its own — the
+    /// inbox reaches it through an ingested needs-attention item whose source
+    /// reference names it, exactly as the driver-handoff fixture does.
+    fn dispatch_key_events(lane: Lane) -> Vec<ConsoleEvent> {
+        let item = AttentionItemSnapshot::new(
+            "attention-dispatch-key",
+            "human-valve",
+            "high",
+            "Hand-picked dispatch candidate",
+            AttentionSourceRef::new("console", Some(DISPATCH_KEY_ITEM), None),
+            AttentionHandoff::new("implement", None, &format!("implement:{DISPATCH_KEY_ITEM}")),
+        );
+        vec![
+            lane_event(
+                "evt_dispatch_key",
+                DISPATCH_KEY_ITEM,
+                lane,
+                None,
+                "a0",
+                lane.label(),
+            ),
+            ConsoleEvent::fixture(
+                "evt_dispatch_key_attention",
+                EventType::AttentionItemAppeared,
+                "needs-attention",
+            )
+            .with_payload_json(attention_item_payload_json(&item)),
+        ]
+    }
+
+    /// The state selecting that work-item on one per-item surface: the
+    /// needs-attention row when `attention`, else the drilled-in lane row.
+    fn dispatch_key_state(lane: Lane, attention: bool, overlay: TuiOverlay) -> TuiInteractionState {
+        if attention {
+            TuiInteractionState::new(0, overlay).with_focus(FocusPane::Content)
+        } else {
+            TuiInteractionState::for_view(TuiView::Lanes, 0, overlay)
+                .with_lane_focus(LaneFocus::Lane(lane))
+                .with_selected_lane_item_index(0)
+        }
+    }
+
+    #[test]
+    fn the_dispatch_key_stages_the_menu_rows_confirm_on_both_per_item_surfaces() {
+        // v047 gap-uqotpmdo / Scenario 28's "reachable by one key": `d` on a
+        // selected ready item stages the SAME confirmation
+        // `Factory > Dispatch > Dispatch selected item` stages. Asserted
+        // against the MENU PATH itself rather than against a copy of its
+        // expected overlay, so the accelerator cannot become a second encoding
+        // of invocation. Driven on BOTH per-item surfaces, because the hosting
+        // view is never an availability input (Scenario 31).
+        let position = menu_position_for("dispatch-selected-item");
+        assert!(position.is_some(), "missing menu action");
+        let (top, selected) = position.unwrap_or_default();
+        let events = dispatch_key_events(Lane::Ready);
+        for attention in [true, false] {
+            let state = dispatch_key_state(Lane::Ready, attention, TuiOverlay::None);
+            let model = build_tui_model_for_state(&events, &state);
+            let via_key = key_event_to_terminal_input(
+                chord_event(action_registry::KeyChord::plain('d')),
+                &model,
+            )
+            .map(|input| step_tui_runtime(&state, &events, input, "operator"));
+
+            let menu_state =
+                dispatch_key_state(Lane::Ready, attention, TuiOverlay::Menu { top, selected });
+            let via_menu =
+                step_tui_runtime(&menu_state, &events, TuiTerminalInput::Confirm, "operator");
+
+            // The menu row really does open the per-item confirmation, pinned
+            // to the selection -- stated first so a broken fixture fails as a
+            // fixture rather than as a spurious parity match.
+            assert_eq!(
+                via_menu.state().overlay(),
+                &TuiOverlay::FactoryDispatchItemConfirm {
+                    work_item_id: DISPATCH_KEY_ITEM.to_owned(),
+                }
+            );
+            let keyed = via_key.map(|step| step.state().overlay().clone());
+            check(
+                keyed == Some(via_menu.state().overlay().clone()),
+                "the dispatch key must stage the menu row's confirmation",
+            );
+        }
+    }
+
+    #[test]
+    fn the_status_line_names_the_dispatch_key_exactly_where_the_verb_applies() {
+        // The honesty half, at the RENDERED Status band: `d dispatch` is drawn
+        // where the verb is available and is absent -- with the key inert --
+        // where it is not, on either per-item surface. One derivation feeds
+        // both the hint and the key, so they cannot disagree.
+        let area = Rect::new(0, 0, 200, 3);
+        for attention in [true, false] {
+            for (lane, available) in [(Lane::Ready, true), (Lane::Acceptance, false)] {
+                let events = dispatch_key_events(lane);
+                let state = dispatch_key_state(lane, attention, TuiOverlay::None);
+                let model = build_tui_model_for_state(&events, &state);
+
+                let mut buffer = Buffer::empty(area);
+                render_footer(&model, area, &mut buffer);
+                let status = buffer_to_text(&buffer, area);
+                check(
+                    status.contains("d dispatch") == available,
+                    "the Status band must name the dispatch key exactly where it acts",
+                );
+
+                let input = key_event_to_terminal_input(
+                    chord_event(action_registry::KeyChord::plain('d')),
+                    &model,
+                );
+                check(
+                    input.is_some() == available,
+                    "the dispatch key must be inert exactly where its hint is absent",
+                );
+            }
+        }
     }
 
     #[test]

@@ -302,8 +302,8 @@ close, so it always describes the current context rather than a fixed summary.
 | Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into a pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into a dispatcher-admitted pending-approval item | `up/down move \| enter item \| esc lane list \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into a ready item | `up/down move \| enter item \| esc lane list \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
-| Lanes, drilled into a factory-unsafe ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| ? help \| q quit` |
+| Lanes, drilled into a ready item | `up/down move \| enter item \| esc lane list \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| d dispatch \| ? help \| q quit` |
+| Lanes, drilled into a factory-unsafe ready item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| d dispatch \| ? help \| q quit` |
 | Lanes, drilled into an active item | `up/down move \| enter item \| esc lane list \| n set-acceptance \| k rework cap \| ? help \| q quit` |
 | Lanes, drilled into an acceptance item | `up/down move \| enter item \| esc lane list \| s move-status \| c accept \| r reject \| ? help \| q quit` |
 | Lanes, drilled into a blocked item | `up/down move \| enter item \| esc lane list \| s move-status \| ? help \| q quit` |
@@ -456,6 +456,21 @@ Press `Enter` in the overlay to send the command to the terminal copy path;
 press `Esc` to cancel. The overlay wording is normative: it says
 `copy sent to terminal`, describing what the console attempted, and MUST NOT
 claim an unobservable result such as `Copied!`.
+
+### Per-item factory dispatch
+
+`d` dispatches the **selected work-item** — a hand-picked, single-item factory
+run rather than a ranked drain. It applies only to a `ready` item, and, like
+the driver handoff, which per-item surface the item is selected on — the
+needs-attention row or a drilled-in lane — is not an input. The Status line
+names `d dispatch` exactly where the verb applies and drops it everywhere
+else, where the key is inert.
+
+The key is an accelerator, not a second route: it opens the same confirmation
+**Factory > Dispatch > Dispatch selected item** opens, showing the work-item
+the run is pinned to. `Enter` confirms; `Esc` cancels. The ranked drain
+(**Dispatch ready work**) carries no key — reach it from the menu, from the
+palette's `drain`, or from the action invoker.
 
 ### The command palette
 

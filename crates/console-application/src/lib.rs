@@ -15817,7 +15817,7 @@ mod tests {
                 Attention,
                 Lane::Ready,
                 false,
-                "up/down move | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | ? help | q quit",
             ),
             (
                 Attention,
@@ -15859,13 +15859,13 @@ mod tests {
                 LaneDrill,
                 Lane::Ready,
                 true,
-                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Ready,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | ? help | q quit",
             ),
             (
                 LaneDrill,
