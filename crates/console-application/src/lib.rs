@@ -9476,6 +9476,55 @@ mod tests {
     }
 
     #[test]
+    fn lane_item_observation_confirmed_is_false_when_its_own_source_is_degraded() {
+        // The lane item's snapshot came from "orchestrator" (`lane_event`'s
+        // fixed source), and "orchestrator" is also the source whose MOST
+        // RECENT observation failed -- the not-observed finding is ordered
+        // after the snapshot, so it is the one that wins -- so the row's
+        // values are last-known, not current, and `observation_confirmed()`
+        // says so.
+        let events = [
+            lane_event("evt_ok", "console-1", Lane::Ready, None, "a0", "ready"),
+            ConsoleEvent::fixture(
+                "evt_orchestrator_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "orchestrator",
+            ),
+        ];
+
+        let board = project_lane_board(&events);
+
+        let item = &board
+            .column(Lane::Ready)
+            .map(super::LaneColumn::items)
+            .unwrap_or_default()[0];
+        assert!(!item.observation_confirmed());
+    }
+
+    #[test]
+    fn lane_item_observation_confirmed_is_true_when_a_different_source_is_degraded() {
+        // "github" degraded, not "orchestrator" -- the row's own backing
+        // source was observed this cycle, so its values are confirmed even
+        // though the header shows an unrelated source unavailable.
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_github_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "github",
+            ),
+            lane_event("evt_ok", "console-1", Lane::Ready, None, "a0", "ready"),
+        ];
+
+        let board = project_lane_board(&events);
+
+        let item = &board
+            .column(Lane::Ready)
+            .map(super::LaneColumn::items)
+            .unwrap_or_default()[0];
+        assert!(item.observation_confirmed());
+    }
+
+    #[test]
     fn tui_model_defaults_to_attention_with_required_navigation() {
         let model = build_tui_model(&[], 0);
 
