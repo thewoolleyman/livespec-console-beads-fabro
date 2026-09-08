@@ -1114,6 +1114,7 @@ impl ListEdge {
 pub struct TuiInteractionState {
     active_view: TuiView,
     selected_attention_index: usize,
+    selected_attention_id: Option<String>,
     lane_focus: LaneFocus,
     selected_lane_index: usize,
     selected_lane_item_index: usize,
@@ -1143,6 +1144,7 @@ impl TuiInteractionState {
         Self {
             active_view: TuiView::Attention,
             selected_attention_index,
+            selected_attention_id: None,
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             selected_lane_item_index: 0,
@@ -1176,6 +1178,7 @@ impl TuiInteractionState {
         Self {
             active_view,
             selected_attention_index,
+            selected_attention_id: None,
             lane_focus: LaneFocus::Overview,
             selected_lane_index: 0,
             selected_lane_item_index: 0,
@@ -1295,10 +1298,34 @@ impl TuiInteractionState {
         self
     }
 
+    /// Replace the Attention list's selected row WITHOUT an identity anchor.
+    ///
+    /// Used where only a position is known — a preview state, or a caller with
+    /// no row in hand. It CLEARS any previous anchor rather than leaving one
+    /// pointing at an item the new row is not, exactly as
+    /// [`Self::with_selected_lane_item_index`] does for the drilled-in lane.
     #[must_use]
-    /// Return the stored value.
-    pub const fn with_selected_attention_index(mut self, selected_attention_index: usize) -> Self {
+    pub fn with_selected_attention_index(mut self, selected_attention_index: usize) -> Self {
         self.selected_attention_index = selected_attention_index;
+        self.selected_attention_id = None;
+        self
+    }
+
+    /// Replace the Attention list's selected row with both the current position
+    /// and the attention-item identity that row represents.
+    ///
+    /// The position keeps keyboard movement simple; the id is the durable
+    /// selection anchor read on the next projection rebuild, so a source refresh
+    /// that re-ranks or re-groups the list follows the item the operator chose
+    /// instead of whatever later lands at the old row index.
+    #[must_use]
+    pub fn with_selected_attention(
+        mut self,
+        selected_attention_index: usize,
+        attention_id: &str,
+    ) -> Self {
+        self.selected_attention_index = selected_attention_index;
+        self.selected_attention_id = Some(attention_id.to_owned());
         self
     }
 
@@ -1491,6 +1518,14 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn selected_attention_index(&self) -> usize {
         self.selected_attention_index
+    }
+
+    #[must_use]
+    /// Return the selected attention-item id anchor, when operator movement has
+    /// established one. This — not the row index — is what the next projection
+    /// rebuild resolves the Attention cursor against.
+    pub fn selected_attention_id(&self) -> Option<&str> {
+        self.selected_attention_id.as_deref()
     }
 
     #[must_use]
@@ -3965,8 +4000,8 @@ pub fn build_tui_model_for_state(
         .map(|entry| entry.to_attention_item(events))
         .collect::<Vec<_>>();
     let attention_count = attention_items.len();
-    let selected_attention_index =
-        selected_index(attention_items.len(), state.selected_attention_index());
+    let (selected_attention_index, displaced_attention_id) =
+        selected_attention_for_state(&attention_entries, state);
     let detail = selected_attention_index.map(|index| attention_entries[index].to_detail(events));
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
@@ -3991,6 +4026,22 @@ pub fn build_tui_model_for_state(
         _ => None,
     };
     let factory_activity = factory_drain_activity(events);
+    // The Status line is ONE channel, and its rule is that the most recent thing
+    // to contradict the operator's expectation is what it says. A cursor that
+    // moved out from under them because the anchored row left the list is
+    // exactly that, so it outranks a status carried from an earlier keystroke.
+    // It does not stick: `reduce_tui_interaction` re-anchors the state on the
+    // operator's next interaction, which is their acknowledgement.
+    //
+    // A row that left because the OPERATOR narrowed the list is NOT news — the
+    // open search query is its own explanation — so the report is suppressed
+    // while one is filtering rather than firing on every typed character.
+    let transient_status = displaced_attention_id
+        .filter(|_displaced| search_query.is_none())
+        .map_or_else(
+            || state.transient_status.clone(),
+            |displaced| Some(displaced_attention_status(&displaced)),
+        );
     TuiScreenModel {
         active_view,
         navigation: TuiView::all().to_vec(),
@@ -4021,12 +4072,12 @@ pub fn build_tui_model_for_state(
             active_view.label(),
             attention_count,
             factory_activity_segment(factory_activity.as_deref()),
-            transient_status_segment(state.transient_status.as_deref()),
+            transient_status_segment(transient_status.as_deref()),
             source_health_header_segment(&unavailable_sources)
         ),
         unavailable_sources,
         factory_activity,
-        transient_status: state.transient_status.clone(),
+        transient_status,
         list_edge: state.list_edge(),
         command_outcome: project_command_outcome(events),
         orphaned_factory_runs: project_orphaned_factory_runs(events),
@@ -4055,6 +4106,44 @@ pub fn project_orphaned_factory_runs(events: &[ConsoleEvent]) -> Vec<OrphanedFac
         .next_back()
         .map(|snapshot| snapshot.orphaned_runs().to_vec())
         .unwrap_or_default()
+}
+
+/// Resolve the Attention list's cursor for this rebuild, by IDENTITY.
+///
+/// Returns the selected row and, when the anchored item is no longer listed,
+/// the id that vanished so the caller can say so.
+///
+/// The list is rebuilt from the event stream on EVERY source refresh and is
+/// rank-ordered, so a row's position is not stable between one frame and the
+/// next: another session moving an unrelated work-item re-ranks the list under
+/// the operator's cursor. Anchoring on the id makes the cursor follow the item
+/// the operator chose. When the anchor has left the list the stored row index is
+/// the fallback, clamped to the new length — the surviving row nearest where the
+/// item used to be, since the rows behind it have shifted up into its place.
+/// With no anchor at all (a fresh state, or a position-only caller) this is the
+/// pure positional behaviour it replaced.
+fn selected_attention_for_state(
+    entries: &[AttentionEntry],
+    state: &TuiInteractionState,
+) -> (Option<usize>, Option<String>) {
+    let fallback = selected_index(entries.len(), state.selected_attention_index());
+    let Some(anchor) = state.selected_attention_id() else {
+        return (fallback, None);
+    };
+    if let Some(index) = entries.iter().position(|entry| entry.row_id() == anchor) {
+        return (Some(index), None);
+    }
+    (fallback, Some(anchor.to_owned()))
+}
+
+/// The Status-line report for an Attention cursor displaced by a refresh.
+///
+/// Deliberately terse: a status wider than [`MAX_TRANSIENT_STATUS_CHARS`] costs
+/// the operator the ENTIRE header line (see the header-fitting bound), and the
+/// id it names is the widest part. The fixed text is short enough that a
+/// fleet-length work-item id stays well inside that budget.
+fn displaced_attention_status(displaced_id: &str) -> String {
+    format!("{displaced_id} left the list; cursor on nearest row")
 }
 
 fn selected_lane_item_for_state(
@@ -4667,7 +4756,37 @@ pub fn reduce_tui_interaction(
     // pressed against, and stamped on EVERY interaction's result: a cue never
     // outlives the keystroke that earned it.
     let list_edge = list_edge_reached(state, &model, interaction);
-    reduce_interaction_state(state, &model, interaction).with_list_edge(list_edge)
+    let next = reduce_interaction_state(state, &model, interaction).with_list_edge(list_edge);
+    reanchor_displaced_attention(next, &model)
+}
+
+/// Re-point an Attention anchor whose item has left the list at the row the
+/// cursor actually sits on.
+///
+/// The fallback row is a projection, not state, so a stale anchor would keep
+/// resolving to it — and keep re-announcing the same displacement on the Status
+/// line — on every later rebuild, overwriting whatever the operator's newest
+/// action reported. Any interaction is the operator's acknowledgement: they have
+/// seen the list as it now stands. An interaction that moved the cursor itself
+/// has already written a live anchor, so this is a no-op for it.
+fn reanchor_displaced_attention(
+    next: TuiInteractionState,
+    model: &TuiScreenModel,
+) -> TuiInteractionState {
+    let Some(anchor) = next.selected_attention_id() else {
+        return next;
+    };
+    if model
+        .attention_items()
+        .iter()
+        .any(|item| item.id() == anchor)
+    {
+        return next;
+    }
+    // The same landing the rebuild resolved, re-anchored the same way a keystroke
+    // anchors: an emptied list has no row to name, and drops the anchor instead.
+    let landed = current_attention_index(&next, model);
+    select_attention_at(&next, model, landed)
 }
 
 /// The state change one interaction makes, before [`reduce_tui_interaction`]
@@ -4849,7 +4968,7 @@ fn content_selection_cursor(state: &TuiInteractionState, model: &TuiScreenModel)
         )
     } else {
         (
-            state.selected_attention_index(),
+            current_attention_index(state, model),
             model.attention_items().len(),
         )
     }
@@ -5167,16 +5286,18 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
                 state.selected_setting_index(),
             ))
     } else {
-        state
-            .clone()
-            .with_selected_attention_index(move_selection_down(
+        select_attention_at(
+            state,
+            model,
+            move_selection_down(
                 model.attention_items().len(),
-                state.selected_attention_index(),
-            ))
-            // A different item is now selected, so its Detail pane shows
-            // different content: reset the scroll so the previous item's offset
-            // never carries over.
-            .with_detail_scroll(0)
+                current_attention_index(state, model),
+            ),
+        )
+        // A different item is now selected, so its Detail pane shows
+        // different content: reset the scroll so the previous item's offset
+        // never carries over.
+        .with_detail_scroll(0)
     }
 }
 
@@ -5198,12 +5319,39 @@ fn select_previous(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIn
             .clone()
             .with_selected_setting_index(move_selection_up(state.selected_setting_index()))
     } else {
-        state
-            .clone()
-            .with_selected_attention_index(move_selection_up(state.selected_attention_index()))
-            // Reset the Detail scroll for the newly-selected item (see select_next).
-            .with_detail_scroll(0)
+        select_attention_at(
+            state,
+            model,
+            move_selection_up(current_attention_index(state, model)),
+        )
+        // Reset the Detail scroll for the newly-selected item (see select_next).
+        .with_detail_scroll(0)
     }
+}
+
+/// Move the Attention cursor to `index` and re-anchor it on the item that row
+/// actually holds, so the next refresh follows the operator's choice rather than
+/// the position they left it at. A row that is not there (an empty list) leaves
+/// the position alone with no anchor to make up.
+fn select_attention_at(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    index: usize,
+) -> TuiInteractionState {
+    model.attention_items().get(index).map_or_else(
+        || state.clone().with_selected_attention_index(index),
+        |item| state.clone().with_selected_attention(index, item.id()),
+    )
+}
+
+/// The Attention row the operator is moving FROM: the position this rebuild
+/// resolved the anchor to, not the position the state was last written with.
+/// After a refresh that re-ranked the list the two differ, and moving from the
+/// stale one is the very jump this anchoring exists to stop.
+fn current_attention_index(state: &TuiInteractionState, model: &TuiScreenModel) -> usize {
+    model
+        .selected_attention_index()
+        .unwrap_or_else(|| state.selected_attention_index())
 }
 
 const fn current_lane_item_index(state: &TuiInteractionState, model: &TuiScreenModel) -> usize {
@@ -7737,6 +7885,17 @@ impl AttentionEntry {
                 None,
             ),
             Self::NeedsAttention(item) => attention_item_from_snapshot(item),
+        }
+    }
+
+    /// The row's stable identity — the same id [`Self::to_attention_item`] puts
+    /// on the projected [`AttentionItem`], read WITHOUT building the row (which
+    /// costs an event scan per entry). This is the Attention cursor's anchor
+    /// across refreshes.
+    fn row_id(&self) -> &str {
+        match self {
+            Self::WorkItem(entry) => entry.snapshot.work_item_id(),
+            Self::NeedsAttention(item) => item.id(),
         }
     }
 
@@ -12798,6 +12957,383 @@ mod tests {
             model.detail().map(super::AttentionDetail::actions),
             Some([OperatorAction::Registered("move")].as_slice())
         );
+    }
+
+    /// Three attention-requiring work-items, rank-ordered `console-1`,
+    /// `console-2`, `console-3`. The Attention list folds the LATEST snapshot per
+    /// work-item id, so appending another snapshot for one of them is exactly
+    /// what a source refresh does to this list.
+    fn churning_attention_events() -> Vec<ConsoleEvent> {
+        vec![
+            lane_event(
+                "evt_1",
+                "console-1",
+                Lane::PendingApproval,
+                None,
+                "a0",
+                "pending-approval",
+            ),
+            lane_event(
+                "evt_2",
+                "console-2",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a1",
+                "blocked",
+            ),
+            lane_event(
+                "evt_3",
+                "console-3",
+                Lane::Acceptance,
+                None,
+                "a2",
+                "acceptance",
+            ),
+        ]
+    }
+
+    /// The state with `console-2` — the middle row — chosen the way an operator
+    /// chooses it: by moving the cursor onto it.
+    fn attention_state_on_console_2() -> TuiInteractionState {
+        let events = churning_attention_events();
+        let state = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::SelectNext,
+        );
+        assert_eq!(state.selected_attention_index(), 1);
+        assert_eq!(state.selected_attention_id(), Some("console-2"));
+        state
+    }
+
+    #[test]
+    fn attention_selection_follows_its_item_across_a_reordering_refresh() {
+        // livespec-console-beads-fabro-pzbdbo.24. Dogfooded against the real TUI
+        // while other fleet sessions mutated the shared ledger: the list rebuilt
+        // and re-ranked on every source refresh, and a positionally-tracked
+        // cursor put a DIFFERENT item under the operator between choosing a row
+        // and pressing a key. Six of six attempts.
+        let state = attention_state_on_console_2();
+
+        // The refresh re-ranks `console-2` to the end of the list. Positionally,
+        // row 1 is now `console-3`; by identity the cursor follows `console-2`.
+        let mut refreshed = churning_attention_events();
+        refreshed.push(lane_event(
+            "evt_2_reranked",
+            "console-2",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            "a9",
+            "blocked",
+        ));
+        let model = build_tui_model_for_state(&refreshed, &state);
+
+        assert_eq!(
+            model
+                .attention_items()
+                .iter()
+                .map(AttentionItem::id)
+                .collect::<Vec<_>>(),
+            vec!["console-1", "console-3", "console-2"]
+        );
+        assert_eq!(model.selected_attention_index(), Some(2));
+        assert_eq!(
+            model.detail().map(AttentionDetail::work_item),
+            Some("console-2")
+        );
+        // Nothing was displaced, so the Status line has nothing to report.
+        check(
+            !model.header().contains("status: "),
+            "a cursor that followed its item has no departure to announce",
+        );
+    }
+
+    #[test]
+    fn attention_selection_follows_a_needs_attention_row_across_a_refresh() {
+        // The unified list carries TWO kinds of row. A needs-attention item's
+        // identity is its OWN id, not a work-item id, and it shifts position
+        // whenever the rank-ordered lane fold ahead of it gains or loses a row --
+        // which is precisely what another session's ledger write does.
+        let orchestrator = "livespec-orchestrator-beads-fabro";
+        let plan = AttentionItemSnapshot::new(
+            "plan:console-autonomous-mode",
+            "plan",
+            "medium",
+            "Review plan thread console-autonomous-mode.",
+            AttentionSourceRef::new(orchestrator, None, Some("plan/console-autonomous-mode/")),
+            AttentionHandoff::new("plan", None, "codex exec plan console-autonomous-mode"),
+        );
+        let prune = AttentionItemSnapshot::new(
+            "spec:prune-history:SPECIFICATION",
+            "spec",
+            "low",
+            "33 unpruned history versions; consider pruning",
+            AttentionSourceRef::new(orchestrator, None, Some("SPECIFICATION")),
+            AttentionHandoff::new("livespec-op", None, "codex exec livespec:prune-history"),
+        );
+        let events = vec![
+            attention_appeared("evt_plan", &plan),
+            attention_appeared("evt_prune", &prune),
+        ];
+        let state = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::SelectNext,
+        );
+        assert_eq!(
+            state.selected_attention_id(),
+            Some("spec:prune-history:SPECIFICATION")
+        );
+
+        // The refresh brings in a work-item, which sorts ahead of both
+        // needs-attention rows and pushes the selected one down.
+        let mut refreshed = events;
+        refreshed.push(lane_event(
+            "evt_wi",
+            "bd-ib-ss7rkr",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            "a0",
+            "blocked",
+        ));
+        let model = build_tui_model_for_state(&refreshed, &state);
+
+        assert_eq!(
+            model
+                .attention_items()
+                .iter()
+                .map(AttentionItem::id)
+                .collect::<Vec<_>>(),
+            vec![
+                "bd-ib-ss7rkr",
+                "plan:console-autonomous-mode",
+                "spec:prune-history:SPECIFICATION",
+            ]
+        );
+        assert_eq!(model.selected_attention_index(), Some(2));
+    }
+
+    #[test]
+    fn attention_movement_after_a_reordering_refresh_steps_from_the_item_not_the_old_row() {
+        // The other half of following the item: the NEXT keystroke must move
+        // relative to where the item now is. Stepping from the stale stored row
+        // would jump the cursor exactly as the positional bug did.
+        let state = attention_state_on_console_2();
+        let mut refreshed = churning_attention_events();
+        refreshed.push(lane_event(
+            "evt_2_reranked",
+            "console-2",
+            Lane::Blocked,
+            Some(LaneReason::NeedsHuman),
+            "a9",
+            "blocked",
+        ));
+
+        // `console-2` is last after the re-rank, so down is refused at the end
+        // rather than walking to row 2 from the stored row 1.
+        let down = reduce_tui_interaction(&state, &refreshed, TuiInteraction::SelectNext);
+        assert_eq!(down.selected_attention_id(), Some("console-2"));
+        assert_eq!(down.list_edge(), Some(ListEdge::Bottom));
+
+        // And up lands on `console-2`'s CURRENT neighbour, not row 0.
+        let up = reduce_tui_interaction(&state, &refreshed, TuiInteraction::SelectPrevious);
+        assert_eq!(up.selected_attention_id(), Some("console-3"));
+        assert_eq!(up.selected_attention_index(), 1);
+    }
+
+    #[test]
+    fn attention_selection_lands_on_the_nearest_row_and_says_so_when_its_item_leaves() {
+        // The item the operator was on is accepted by another session and stops
+        // needing attention. The cursor cannot follow it, so it takes the
+        // surviving row nearest where the item stood -- and the Status line names
+        // what moved, rather than silently handing the operator a neighbour.
+        let state = attention_state_on_console_2();
+        let mut refreshed = churning_attention_events();
+        refreshed.push(lane_event(
+            "evt_2_departed",
+            "console-2",
+            Lane::Active,
+            None,
+            "a1",
+            "active",
+        ));
+
+        let model = build_tui_model_for_state(&refreshed, &state);
+
+        assert_eq!(
+            model
+                .attention_items()
+                .iter()
+                .map(AttentionItem::id)
+                .collect::<Vec<_>>(),
+            vec!["console-1", "console-3"]
+        );
+        assert_eq!(model.selected_attention_index(), Some(1));
+        assert_eq!(
+            model.detail().map(AttentionDetail::work_item),
+            Some("console-3")
+        );
+        check(
+            model
+                .header()
+                .contains("status: console-2 left the list; cursor on nearest row"),
+            "the departure must reach the Status line the operator is reading",
+        );
+    }
+
+    #[test]
+    fn a_departure_report_outranks_a_carried_status_and_clears_on_the_next_keystroke() {
+        // ONE Status-line channel, most-recent-contradiction wins: a cursor moved
+        // out from under the operator outranks a status from an earlier
+        // keystroke. It must not then STICK -- a stale anchor that kept
+        // re-announcing would overwrite every later report forever.
+        let state =
+            attention_state_on_console_2().with_transient_status(Some("earlier report".to_owned()));
+        let mut refreshed = churning_attention_events();
+        refreshed.push(lane_event(
+            "evt_2_departed",
+            "console-2",
+            Lane::Active,
+            None,
+            "a1",
+            "active",
+        ));
+
+        let displaced = build_tui_model_for_state(&refreshed, &state);
+        check(
+            displaced
+                .header()
+                .contains("status: console-2 left the list"),
+            "the newer contradiction is what the one Status-line channel says",
+        );
+
+        // Any interaction is the operator's acknowledgement: it re-anchors on the
+        // row the cursor actually sits on, and the carried status is theirs again.
+        let acknowledged = reduce_tui_interaction(&state, &refreshed, TuiInteraction::FocusContent);
+        assert_eq!(acknowledged.selected_attention_id(), Some("console-3"));
+        assert_eq!(acknowledged.selected_attention_index(), 1);
+        check(
+            build_tui_model_for_state(&refreshed, &acknowledged)
+                .header()
+                .contains("status: earlier report"),
+            "a re-anchored cursor stops overwriting the operator's own report",
+        );
+    }
+
+    #[test]
+    fn an_emptied_attention_list_drops_the_anchor_rather_than_inventing_a_row() {
+        // Every attention row leaves at once. There is no surviving row to
+        // re-anchor on, so the anchor is dropped instead of naming an item that
+        // is not there.
+        let state = attention_state_on_console_2();
+        let mut emptied = churning_attention_events();
+        for (event_id, work_item_id) in [
+            ("evt_1_departed", "console-1"),
+            ("evt_2_departed", "console-2"),
+            ("evt_3_departed", "console-3"),
+        ] {
+            emptied.push(lane_event(
+                event_id,
+                work_item_id,
+                Lane::Active,
+                None,
+                "a0",
+                "active",
+            ));
+        }
+
+        let model = build_tui_model_for_state(&emptied, &state);
+        assert_eq!(model.selected_attention_index(), None);
+
+        let acknowledged = reduce_tui_interaction(&state, &emptied, TuiInteraction::FocusContent);
+        assert_eq!(acknowledged.selected_attention_id(), None);
+    }
+
+    #[test]
+    fn a_narrowing_search_moves_the_cursor_without_announcing_a_departure() {
+        // MUST-NOT-FLAG CONTROL. A row that leaves because the OPERATOR narrowed
+        // the list is not news -- their own open query is the explanation -- and
+        // reporting it would rewrite the Status line on every typed character.
+        let events = churning_attention_events();
+        let state = attention_state_on_console_2().with_overlay(TuiOverlay::Search {
+            query: "console-3".to_owned(),
+        });
+
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(
+            model
+                .attention_items()
+                .iter()
+                .map(AttentionItem::id)
+                .collect::<Vec<_>>(),
+            vec!["console-3"]
+        );
+        assert_eq!(model.selected_attention_index(), Some(0));
+        check(
+            !model.header().contains("status: "),
+            "a filtered-out row is explained by the operator's own query",
+        );
+    }
+
+    #[test]
+    fn a_position_only_attention_selection_carries_no_anchor() {
+        // The positional setter is still how a preview state or a caller with no
+        // row in hand selects. It must CLEAR a previous anchor rather than leave
+        // one pointing at an item the new row is not.
+        let anchored = attention_state_on_console_2();
+        let positional = anchored.with_selected_attention_index(0);
+
+        assert_eq!(positional.selected_attention_index(), 0);
+        assert_eq!(positional.selected_attention_id(), None);
+    }
+
+    #[test]
+    fn attention_selection_helper_falls_back_to_the_row_when_the_row_is_absent() {
+        let events = churning_attention_events();
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let selected = super::select_attention_at(&state, &model, 9);
+
+        assert_eq!(selected.selected_attention_index(), 9);
+        assert_eq!(selected.selected_attention_id(), None);
+    }
+
+    #[test]
+    fn drilled_in_lane_selection_follows_its_item_across_a_reordering_refresh() {
+        // The same identity-stable cursor in the other per-item surface. The lane
+        // list is rank-ordered from the same fold, so it churns the same way.
+        let events = drilldown_events();
+        let start = drilldown_state(Lane::PendingApproval, 0, TuiOverlay::None);
+        let on_second = reduce_tui_interaction(&start, &events, TuiInteraction::SelectNext);
+        assert_eq!(on_second.selected_lane_item_id(), Some("wi-b"));
+
+        // The refresh re-ranks `wi-b` ahead of `wi-a`, swapping the two rows.
+        let mut refreshed = events;
+        refreshed.push(lane_event(
+            "e2_reranked",
+            "wi-b",
+            Lane::PendingApproval,
+            None,
+            "0",
+            "pending-approval",
+        ));
+        let model = build_tui_model_for_state(&refreshed, &on_second);
+
+        assert_eq!(
+            model
+                .lane_board()
+                .column(Lane::PendingApproval)
+                .map(|column| column
+                    .items()
+                    .iter()
+                    .map(LaneWorkItem::work_item_id)
+                    .collect::<Vec<_>>()),
+            Some(vec!["wi-b", "wi-a"])
+        );
+        assert_eq!(model.selected_lane_item_index(), Some(0));
+        assert_eq!(model.missing_selected_lane_item_id(), None);
     }
 
     #[test]
