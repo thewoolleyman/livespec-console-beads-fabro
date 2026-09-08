@@ -451,13 +451,12 @@ check-plan-no-tombstone:
     uv run python -m livespec_dev_tooling.checks.plan_no_tombstone
 
 # Plan-record conformance (D6: plan_slug per epic, associated_work_item_id at
-# every plan-dir root, typed next_action on open epics). Ships in
-# livespec-dev-tooling >= v1.52; SELF-SKIPS unless
-# LIVESPEC_RUN_PLAN_RECORD_CONFORMANCE is set, so wiring it is safe before the
-# tenant is reconciled. Arm it only after an armed hand run is clean
-# (orchestrator bd-ib-xpszyi leg 3; console livespec-console-beads-fabro-pzbdbo.16).
+# every plan-dir root, typed next_action on open epics). ARMED 2026-09-08 after a
+# clean armed hand run on dev-tooling v1.58.6 (pzbdbo.16); the check still self-skips
+# where BEADS_DOLT_PASSWORD is absent (CI has no tenant secret), so it runs on the
+# host pre-push, the gate-upstream-deps shape. Do not disarm; fix findings.
 check-plan-record-conformance:
-    uv run python -m livespec_dev_tooling.checks.plan_record_conformance
+    LIVESPEC_RUN_PLAN_RECORD_CONFORMANCE=1 uv run python -m livespec_dev_tooling.checks.plan_record_conformance
 
 check-plan-anchor-declared:
     uv run python -m livespec_dev_tooling.checks.plan_anchor_declared
