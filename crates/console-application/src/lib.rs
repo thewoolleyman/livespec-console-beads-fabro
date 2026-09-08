@@ -15616,15 +15616,18 @@ mod tests {
     /// handoff, the lifecycle move, all five policy dials, `d dispatch`, and the
     /// globals). Derived from the registry so it cannot drift from what ships.
     fn ready_item_hints() -> String {
-        action_registry::selected_item_hint(&action_registry::ActionContext {
-            lane: Lane::Ready,
-            admission_policy: AdmissionPolicy::Manual,
-            acceptance_policy: AcceptancePolicy::AiThenHuman,
-            has_driver_handoff: true,
-            awaits_scope_override: false,
-            ready_work_item_count: 1,
-            surface: action_registry::ActionSurface::LaneDrill,
-        })
+        action_registry::selected_item_hint(
+            &action_registry::ActionContext {
+                lane: Lane::Ready,
+                admission_policy: AdmissionPolicy::Manual,
+                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                has_driver_handoff: true,
+                awaits_scope_override: false,
+                ready_work_item_count: 1,
+                surface: action_registry::ActionSurface::LaneDrill,
+            },
+            2,
+        )
     }
 
     #[test]
