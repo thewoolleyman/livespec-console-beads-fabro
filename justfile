@@ -232,6 +232,7 @@ check:
         check-deps
         check-arch
         check-behavior-coverage
+        check-spec-fenced-block-staleness
         check-completeness
         check-spec-governance-default-block
         check-charters
@@ -336,6 +337,24 @@ check-arch:
 # report-only runs.
 check-behavior-coverage:
     cargo run --quiet --package console-spec-check
+
+# Fenced-block staleness gate (livespec-console-beads-fabro-4jb3kl.6). The
+# clause extractor SKIPS fenced code blocks, so a mermaid diagram or a Gherkin
+# scenario carries no clause and no gap-id and the behavioral-coverage gate
+# above cannot see a contradiction inside one. Four of the defects found across
+# the five ratification-review rounds of the v048 amendment lived in fenced
+# blocks, each caught only by a reviewer sweeping every block by hand.
+#
+# This asks git what the working tree changed under SPECIFICATION/ since the
+# merge base with master, and reports any fenced block the change LEFT ALONE
+# that still carries a distinctive term from a normative line the change
+# removed. It is deliberately the same binary as check-behavior-coverage, in a
+# second mode, because it reads the same spec tree with the same fence rule --
+# but a separate `just check` target, so a failure names which gate failed.
+# Its severity lever LIVESPEC_SPEC_FENCED_BLOCK_STALENESS is independent of
+# LIVESPEC_BEHAVIOR_SCENARIO_LINK and defaults to `fail` the same way.
+check-spec-fenced-block-staleness:
+    cargo run --quiet --package console-spec-check -- --fenced-block-staleness
 
 # API-to-Settings-to-help-to-doc completeness gate: asserts every key the
 # orchestrator declares as API-configurable (its published config-manifest,

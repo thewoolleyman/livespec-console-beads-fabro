@@ -39,7 +39,10 @@ use sha2::{Digest, Sha256};
 
 pub mod staleness;
 
-pub use staleness::{StaleFencedBlock, stale_fenced_blocks};
+pub use staleness::{
+    SpecChange, StaleFencedBlock, is_spec_markdown, stale_fenced_blocks,
+    stale_fenced_blocks_in_changes,
+};
 
 /// The contributor-facing spec file (its own clauses bind to its
 /// `## Scenarios` section, not to `scenarios.md`).
@@ -48,6 +51,16 @@ pub const NFR_FILE: &str = "non-functional-requirements.md";
 /// The environment lever selecting the gate severity (`fail` default, `warn`
 /// to report only). Mirrors livespec's `LIVESPEC_BEHAVIOR_SCENARIO_LINK`.
 pub const SEVERITY_ENV: &str = "LIVESPEC_BEHAVIOR_SCENARIO_LINK";
+
+/// The environment lever selecting the fenced-block staleness severity.
+///
+/// Read through the same [`resolve_mode`] as [`SEVERITY_ENV`] and defaulting
+/// the same way (`fail`; only `warn` reports without blocking).
+///
+/// A lever of its own, rather than a second use of [`SEVERITY_ENV`], because
+/// the two gates fail for unrelated reasons: a spec amendment that must ship
+/// while one lane is noisy should not have to silence the other.
+pub const FENCED_BLOCK_STALENESS_ENV: &str = "LIVESPEC_SPEC_FENCED_BLOCK_STALENESS";
 
 /// The operator-facing clause-bearing spec files (their clauses bind to
 /// `scenarios.md`).
