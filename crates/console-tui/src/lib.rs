@@ -1427,15 +1427,24 @@ pub fn render_model(
         .split(area);
     let header_max_scroll = render_header(model, vertical[0], buffer);
     render_menu_bar(model, vertical[1], buffer);
-    let detail_max_scroll = render_body(model, vertical[2], buffer);
+    let body_area = vertical[2];
+    let detail_max_scroll = render_body(model, body_area, buffer);
     render_footer(model, vertical[3], buffer);
     let menu_area = Rect::new(
         area.x,
         vertical[1].y,
         area.width,
-        vertical[1].height.saturating_add(vertical[2].height),
+        vertical[1].height.saturating_add(body_area.height),
     );
-    let overlay_extents = render_overlay(model, area, menu_area, buffer);
+    let overlay_extents = render_overlay(
+        model,
+        OverlayAreas {
+            screen: area,
+            menu: menu_area,
+            body: body_area,
+        },
+        buffer,
+    );
     RenderScrollExtents {
         detail_max_scroll,
         header_max_scroll,
@@ -1523,6 +1532,16 @@ fn render_menu_bar_for_top(selected_top: Option<usize>, area: Rect, buffer: &mut
     Widget::render(Line::from(format!("Menu: {bar}")), bar_rect, buffer);
 }
 
+/// The `Views` navigation pane's fixed width, and so the column the CONTENT
+/// pane begins at in every view. Named because the Search overlay anchors to
+/// that edge ([`search_overlay_rect`]) and must not drift from the layout it is
+/// aligning with.
+const NAVIGATION_PANE_WIDTH: u16 = 18;
+
+/// The Search overlay's content rows: the query input, and the `N of M match`
+/// feedback beneath it.
+const SEARCH_OVERLAY_ROWS: u16 = 2;
+
 /// Render the body panes and return the Detail pane's maximum scroll offset
 /// (`0` for the Lanes view, which has no Detail pane).
 fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
@@ -1531,7 +1550,10 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize
     if model.active_view() == TuiView::Lanes {
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(18), Constraint::Min(3)])
+            .constraints([
+                Constraint::Length(NAVIGATION_PANE_WIDTH),
+                Constraint::Min(3),
+            ])
             .split(area);
         render_navigation(model, horizontal[0], buffer);
         render_lanes(model, horizontal[1], buffer);
@@ -1540,7 +1562,7 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(18),
+            Constraint::Length(NAVIGATION_PANE_WIDTH),
             Constraint::Percentage(38),
             Constraint::Percentage(62),
         ])
@@ -1840,16 +1862,33 @@ fn render_footer(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
+/// The rects an overlay may anchor itself to: the whole viewport, the menu bar
+/// band the generated menu drops out of, and the body band whose content pane
+/// the search filter aligns with.
+#[derive(Clone, Copy)]
+struct OverlayAreas {
+    screen: Rect,
+    menu: Rect,
+    body: Rect,
+}
+
 fn render_overlay(
     model: &TuiScreenModel,
-    area: Rect,
-    menu_area: Rect,
+    areas: OverlayAreas,
     buffer: &mut Buffer,
 ) -> OverlayScrollExtents {
+    let area = areas.screen;
+    let menu_area = areas.menu;
     match model.overlay() {
         TuiOverlay::None => OverlayScrollExtents::ZERO,
         TuiOverlay::Search { query } => {
-            render_prompt_overlay("Search", format!("/{query}"), area, buffer);
+            render_search_overlay(
+                query,
+                model.attention_items().len(),
+                model.attention_total(),
+                search_overlay_rect(areas.body),
+                buffer,
+            );
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::CommandPalette { query } => {
@@ -1891,11 +1930,11 @@ fn render_overlay(
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::FactoryDispatchItemConfirm { work_item_id } => {
-            render_factory_dispatch_item_confirm(work_item_id, overlay_rect(area), buffer);
+            render_factory_dispatch_item_confirm(work_item_id, area, buffer);
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::FactoryDrainConfirm { work_item_id, rank } => {
-            render_factory_drain_confirm(work_item_id, rank, overlay_rect(area), buffer);
+            render_factory_drain_confirm(work_item_id, rank, area, buffer);
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::ValveConfirm { valve, answer } => {
@@ -1910,7 +1949,7 @@ fn render_overlay(
                 model.selected_work_item_id().unwrap_or(""),
                 model.selected_work_item(),
                 answer,
-                overlay_rect(area),
+                area,
                 buffer,
             );
             OverlayScrollExtents::ZERO
@@ -1987,7 +2026,6 @@ fn render_valve_confirm(
     area: Rect,
     buffer: &mut Buffer,
 ) {
-    Clear.render(area, buffer);
     let mut lines = vec![
         Line::from(format!("{} work-item", valve.valve_label())),
         Line::from(format!("Target: {work_item}")),
@@ -2021,34 +2059,51 @@ fn render_valve_confirm(
         ));
     }
     lines.push(Line::from("Enter to confirm | Esc to cancel"));
-    Paragraph::new(lines)
-        .block(Block::new().borders(Borders::ALL).title("Valve"))
-        .render(area, buffer);
+    render_confirm_box("Valve", lines, area, buffer);
 }
 
 fn render_factory_dispatch_item_confirm(work_item_id: &str, area: Rect, buffer: &mut Buffer) {
-    Clear.render(area, buffer);
-    Paragraph::new(vec![
-        Line::from("Dispatch selected work-item"),
-        Line::from(format!("Target: {work_item_id}")),
-        Line::from("Uses Dispatcher loop --budget 1 --parallel 1 --item"),
-        Line::from("Enter to dispatch | Esc to cancel"),
-    ])
-    .block(Block::new().borders(Borders::ALL).title("Factory Dispatch"))
-    .render(area, buffer);
+    render_confirm_box(
+        "Factory Dispatch",
+        vec![
+            Line::from("Dispatch selected work-item"),
+            Line::from(format!("Target: {work_item_id}")),
+            Line::from("Uses Dispatcher loop --budget 1 --parallel 1 --item"),
+            Line::from("Enter to dispatch | Esc to cancel"),
+        ],
+        area,
+        buffer,
+    );
 }
 
 fn render_factory_drain_confirm(work_item_id: &str, rank: &str, area: Rect, buffer: &mut Buffer) {
-    Clear.render(area, buffer);
-    Paragraph::new(vec![
-        Line::from("Dispatch ready work"),
-        Line::from(format!("Target: {work_item_id}")),
-        Line::from(format!("Next drain rank: rank {rank}")),
-        Line::from("Uses Dispatcher loop --budget 1 --parallel 1"),
-        Line::from("Enter to dispatch | Esc to cancel"),
-    ])
-    .block(Block::new().borders(Borders::ALL).title("Factory Dispatch"))
-    .render(area, buffer);
+    render_confirm_box(
+        "Factory Dispatch",
+        vec![
+            Line::from("Dispatch ready work"),
+            Line::from(format!("Target: {work_item_id}")),
+            Line::from(format!("Next drain rank: rank {rank}")),
+            Line::from("Uses Dispatcher loop --budget 1 --parallel 1"),
+            Line::from("Enter to dispatch | Esc to cancel"),
+        ],
+        area,
+        buffer,
+    );
+}
+
+/// Draw a confirm dialog over `area`, sized to the lines it actually carries.
+///
+/// A confirm box is a DIALOG: a fixed fraction of the viewport left it with a
+/// tail of empty rows below its last line (four lines inside an eight-row box
+/// at 24 rows, dogfooded 2026-09-08), which reads as a pane that failed to
+/// paint rather than as a question waiting for an answer. Sizing to the content
+/// makes the border land right under the last line.
+fn render_confirm_box(title: &'static str, lines: Vec<Line<'_>>, area: Rect, buffer: &mut Buffer) {
+    let box_rect = confirm_rect(area, lines.len());
+    Clear.render(box_rect, buffer);
+    Paragraph::new(lines)
+        .block(Block::new().borders(Borders::ALL).title(title))
+        .render(box_rect, buffer);
 }
 
 fn set_acceptance_cannot_gate_in_flight(
@@ -2937,6 +2992,75 @@ fn overlay_rect(area: Rect) -> Rect {
         width,
         height,
     )
+}
+
+/// A confirm dialog's rect: the overlay's usual centred three-quarter width,
+/// but exactly as tall as `content_lines` plus its two border rows, clamped to
+/// the viewport so a tiny terminal still gets a drawable box.
+fn confirm_rect(area: Rect, content_lines: usize) -> Rect {
+    let width = (area.width.saturating_mul(3) / 4).max(1);
+    let wanted = u16::try_from(content_lines)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    let height = wanted.min(area.height).max(1);
+    Rect::new(
+        area.x + ((area.width - width) / 2),
+        area.y + (area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    )
+}
+
+/// The Search overlay's rect: anchored to the CONTENT pane's left edge, running
+/// to the viewport's right edge, and exactly [`SEARCH_OVERLAY_ROWS`] rows plus
+/// its two borders tall.
+///
+/// Both halves answer the same dogfooded complaint. The old centred
+/// three-quarter box opened seven columns INTO the content pane, so a column of
+/// half-cut list rows (`propo`, `Resol`, `Adopt`, `Repai`) stayed visible
+/// beside it and the region read as one that had failed to repaint; and it
+/// spanned a third of the viewport under a single input line, so a one-line
+/// filter looked like a pane with its contents missing. Starting at the content
+/// pane's edge and running to the right edge means every row the overlay
+/// occupies is fully the overlay's, with the navigation pane -- a different
+/// pane, legitimately still on screen -- untouched to its left.
+fn search_overlay_rect(body: Rect) -> Rect {
+    let left = body
+        .x
+        .saturating_add(NAVIGATION_PANE_WIDTH)
+        .min(body.right().saturating_sub(1));
+    Rect::new(
+        left,
+        body.y,
+        body.right().saturating_sub(left).max(1),
+        SEARCH_OVERLAY_ROWS
+            .saturating_add(2)
+            .min(body.height)
+            .max(1),
+    )
+}
+
+/// Render the Search overlay: the query being typed, and how much of the inbox
+/// it currently matches.
+///
+/// The `N of M match` row is the feedback the header used to carry by mistake.
+/// The header's `attention:` count is the inbox TOTAL (see
+/// `TuiScreenModel::attention_total`); the narrowing belongs here, beside the
+/// query that caused it, where the operator is already looking.
+fn render_search_overlay(
+    query: &str,
+    matches: usize,
+    total: usize,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    Clear.render(area, buffer);
+    Paragraph::new(vec![
+        Line::from(format!("/{query}")),
+        Line::from(format!("{matches} of {total} match")),
+    ])
+    .block(Block::new().borders(Borders::ALL).title("Search"))
+    .render(area, buffer);
 }
 
 fn full_width_explainer_rect(area: Rect) -> Rect {
