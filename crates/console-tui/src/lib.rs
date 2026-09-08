@@ -1826,12 +1826,13 @@ fn render_overlay(
             // newly-inserted sibling would otherwise slide a different
             // work-item under the same index and silently swap the record the
             // operator is reading.
+            let modal_rect = clear_modal_band(area, buffer);
             OverlayScrollExtents {
                 work_item_detail: render_work_item_detail(
                     model.work_item_by_id(work_item_id),
                     work_item_id,
                     model.action_failure_for(work_item_id),
-                    help_overlay_rect(area),
+                    modal_rect,
                     buffer,
                     *scroll,
                 ),
@@ -1842,16 +1843,13 @@ fn render_overlay(
             focus,
             selected_section,
             scroll,
-        } => OverlayScrollExtents {
-            work_item_detail: WorkItemDetailScrollExtents::ZERO,
-            help: render_help_overlay(
-                help_overlay_rect(area),
-                buffer,
-                *focus,
-                *selected_section,
-                *scroll,
-            ),
-        },
+        } => {
+            let modal_rect = clear_modal_band(area, buffer);
+            OverlayScrollExtents {
+                work_item_detail: WorkItemDetailScrollExtents::ZERO,
+                help: render_help_overlay(modal_rect, buffer, *focus, *selected_section, *scroll),
+            }
+        }
     }
 }
 
@@ -2235,6 +2233,25 @@ fn help_overlay_rect(area: Rect) -> Rect {
         width,
         height,
     )
+}
+
+/// Clear the full-width band of rows a near-full-screen modal covers, and return
+/// the modal's own inset rect.
+///
+/// A modal's own `Clear` reaches only [`help_overlay_rect`], so the
+/// [`HELP_MODAL_MARGIN`] columns BESIDE it kept whatever the main screen had
+/// already drawn there — the menu bar's `Men`, the Views pane's `┌Vi`, the Detail
+/// pane's `──┐` — which reads as the modal's border bleeding rather than as the
+/// frame the TUI Contract asks for (dogfooded 2026-09-08 at 200x55 and 120x40).
+/// Clearing the whole row band first makes that frame genuinely blank.
+///
+/// The band spans the modal's ROWS only, so the Header above it and the Status
+/// line below it stay on screen and tmux-capturable exactly as before — see the
+/// bottom-band note in [`render_model`].
+fn clear_modal_band(area: Rect, buffer: &mut Buffer) -> Rect {
+    let modal = help_overlay_rect(area);
+    Clear.render(Rect::new(area.x, modal.y, area.width, modal.height), buffer);
+    modal
 }
 
 /// Render the navigable, pane-specific modal Help overlay (Scenario 18 / B4): a
@@ -3221,7 +3238,7 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::{apply_sink_outcome, apply_worker_status};
+    use crate::{HELP_MODAL_MARGIN, apply_sink_outcome, apply_worker_status};
     #[cfg(test)]
     use console_application::source_adapters::LaneReason;
     use console_application::source_adapters::{
@@ -9523,6 +9540,93 @@ mod tests {
         let model = build_tui_model_for_state(&demo_events(), &state);
         let output = render_to_text(&model, 7, 7);
         assert!(output.is_ok(), "tiny render must not error: {output:?}");
+    }
+
+    /// Assert a near-full-screen modal's frame is genuinely blank: on every row
+    /// the modal occupies, nothing of the main screen survives to the LEFT of its
+    /// left border or to the RIGHT of its right border.
+    ///
+    /// `boxed_title` is the modal's top-left corner plus the start of its title
+    /// (`"┌Help"`), asserted AT the inset corner so the check cannot pass
+    /// vacuously against a render that drew no modal at all.
+    ///
+    /// The frame's geometry is derived from [`HELP_MODAL_MARGIN`] and the render
+    /// size rather than searched for, so a bleed-through character can never be
+    /// mistaken for the border it is bleeding past.
+    #[track_caller]
+    fn assert_modal_frame_is_clear(text: &str, boxed_title: &str, width: u16, height: u16) {
+        let margin = usize::from(HELP_MODAL_MARGIN);
+        let top = margin;
+        let bottom = usize::from(height) - margin - 1;
+        let left = margin;
+        let right = usize::from(width) - margin - 1;
+        let rows: Vec<Vec<char>> = text.lines().map(|line| line.chars().collect()).collect();
+        let top_row: String = rows[top].iter().skip(left).collect();
+        assert!(
+            top_row.starts_with(boxed_title),
+            "modal {boxed_title:?} did not draw its top border at the inset corner:\n{text}"
+        );
+        for (index, row) in rows.iter().enumerate().take(bottom + 1).skip(top) {
+            let rendered = row.iter().collect::<String>();
+            assert!(
+                row.iter().take(left).all(|ch| *ch == ' '),
+                "row {index} bleeds through the modal's left frame: {rendered:?}"
+            );
+            // `buffer_to_text` trims each row, so a blank right frame ends the row
+            // AT the modal's right border; anything past it is bleed-through.
+            assert_eq!(
+                row.len(),
+                right + 1,
+                "row {index} bleeds through the modal's right frame: {rendered:?}"
+            );
+        }
+    }
+
+    /// The two viewport sizes the overlay bleed-through was dogfooded at.
+    const MODAL_FRAME_VIEWPORTS: [(u16, u16); 2] = [(200, 55), (120, 40)];
+
+    #[test]
+    fn the_work_item_modal_clears_the_region_it_covers() {
+        // Dogfooded 2026-09-08: the modal drew over the main screen without
+        // clearing the 3-column frame beside it, so the menu bar's `Men` and the
+        // Views pane's `┌Vi` showed through its left edge and the Detail pane's
+        // `──┐` through its right. The frame must be blank.
+        let state = TuiInteractionState::for_view(
+            TuiView::Lanes,
+            0,
+            TuiOverlay::WorkItemDetail {
+                work_item_id: MODAL_ITEM.to_owned(),
+                scroll: 0,
+            },
+        )
+        .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+        .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&lane_render_events(), &state);
+
+        for (width, height) in MODAL_FRAME_VIEWPORTS {
+            let text = ok_render_text(render_to_text(&model, width, height));
+            assert_modal_frame_is_clear(&text, "┌Work item:", width, height);
+        }
+    }
+
+    #[test]
+    fn the_help_modal_clears_the_region_it_covers() {
+        // Same defect, same fix, on the Help modal: `Men┌Help─...┐` on its top
+        // border row and `┌Vi│  Global actions ...│──┐` on the row below it.
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Help {
+                focus: HelpFocus::Menu,
+                selected_section: 0,
+                scroll: 0,
+            },
+        );
+        let model = build_tui_model_for_state(&demo_events(), &state);
+
+        for (width, height) in MODAL_FRAME_VIEWPORTS {
+            let text = ok_render_text(render_to_text(&model, width, height));
+            assert_modal_frame_is_clear(&text, "┌Help", width, height);
+        }
     }
 
     #[test]
