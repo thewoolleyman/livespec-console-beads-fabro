@@ -658,6 +658,7 @@ pub struct WorkItemSnapshot {
     admission_policy: AdmissionPolicy,
     acceptance_policy: AcceptancePolicy,
     source_version: u64,
+    observation_epoch: u64,
     // Boxed so a snapshot stays pointer-sized in the descriptive half: the
     // record is far larger than the lifecycle fields, and `WorkItemSnapshot` is
     // carried by value inside enums and vectors all through the projections.
@@ -691,8 +692,46 @@ impl WorkItemSnapshot {
             admission_policy,
             acceptance_policy,
             source_version,
+            observation_epoch: FIRST_OBSERVATION_EPOCH,
             detail: Box::default(),
         })
+    }
+
+    #[must_use]
+    /// This snapshot observed at the given per-item observation epoch.
+    ///
+    /// The epoch counts how many times this work item has been observed in a
+    /// state DIFFERENT from the one before it. It exists because
+    /// [`Self::source_version`] is content-addressed, and a content-addressed
+    /// observation identity cannot express a RETURN to a state the item already
+    /// held: the event store appends `insert or ignore` on the event id, so an
+    /// item observed A, then B, then A again re-derives the FIRST observation's
+    /// id, is swallowed as a duplicate, and never reaches the
+    /// last-observation-wins lane projection — which then serves B for the life
+    /// of the store (`livespec-console-beads-fabro-v8un`; measured as `rank ~`
+    /// with no title and no readable `acceptance_policy`, all pinned by one
+    /// swallowed observation).
+    ///
+    /// Pairing the content hash with this epoch makes each TRANSITION its own
+    /// observation while leaving a re-observation of the CURRENT state at the
+    /// same epoch, so the id still collides and the append is still idempotent.
+    /// This is the same mechanism [`availability_transition`] already uses to
+    /// keep an observed → not-observed → observed cycle from collapsing its
+    /// availability markers; nothing about the rank or the record is re-encoded,
+    /// only the identity of the observation that carries them.
+    ///
+    /// Kept OFF [`Self::new`] for the same reason as [`Self::with_detail`]: the
+    /// constructor is at its argument limit, and every caller that observes an
+    /// item once stays correct by construction at the first epoch.
+    pub const fn with_observation_epoch(mut self, observation_epoch: u64) -> Self {
+        self.observation_epoch = observation_epoch;
+        self
+    }
+
+    #[must_use]
+    /// Return the per-item observation epoch. See [`Self::with_observation_epoch`].
+    pub const fn observation_epoch(&self) -> u64 {
+        self.observation_epoch
     }
 
     #[must_use]
@@ -775,6 +814,110 @@ impl WorkItemSnapshot {
 /// own fractional-indexing bottom key so a rank-less item sorts last.
 fn rank_bottom_sentinel() -> String {
     "~".to_owned()
+}
+
+/// The epoch a work item observed for the first time is recorded at.
+const FIRST_OBSERVATION_EPOCH: u64 = 1;
+
+/// Schema tag of the orchestrator source checkpoint, so a future shape change
+/// is recognised rather than misread.
+const WORK_ITEM_OBSERVATION_SCHEMA_VERSION: u64 = 1;
+
+/// One work item's last-observed content hash and its observation epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+struct WorkItemObservation {
+    version: u64,
+    epoch: u64,
+}
+
+/// The orchestrator source checkpoint: what the previous poll observed for each
+/// work item, and at which epoch.
+///
+/// This is the adapter's memory that makes a RE-ENTRY into a state an item
+/// already held observable (`livespec-console-beads-fabro-v8un`). See
+/// [`WorkItemSnapshot::with_observation_epoch`] for why a content hash alone
+/// cannot express one.
+///
+/// Entries for items ABSENT from the current observation are carried forward
+/// rather than dropped. Dropping them would restart a returning item at the
+/// first epoch, which is precisely the identity its first-ever observation
+/// already used — so an item that left the ledger and came back to an earlier
+/// state would be swallowed again, reintroducing the pinning this fixes for the
+/// one case it is hardest to notice. The set is bounded by the repo's own
+/// work-item ledger.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct WorkItemObservationLedger {
+    schema_version: u64,
+    items: BTreeMap<String, WorkItemObservation>,
+}
+
+impl WorkItemObservationLedger {
+    /// The ledger the previous checkpoint carries.
+    ///
+    /// A cold start, a legacy checkpoint (the pre-v8un bare content hash), an
+    /// unreadable one, or an unrecognised schema all yield an EMPTY ledger, so
+    /// every item is observed at the first epoch on the next poll. That is a
+    /// one-time re-append of the current state per item, which is exactly the
+    /// self-heal a store carrying a pinned row needs.
+    fn from_previous(previous_checkpoint: Option<&str>) -> Self {
+        previous_checkpoint
+            .and_then(|previous| serde_json::from_str::<Self>(previous).ok())
+            .filter(|ledger| ledger.schema_version == WORK_ITEM_OBSERVATION_SCHEMA_VERSION)
+            .unwrap_or_else(|| Self {
+                schema_version: WORK_ITEM_OBSERVATION_SCHEMA_VERSION,
+                items: BTreeMap::new(),
+            })
+    }
+
+    /// The epoch `version` is observed at for `work_item_id`: the recorded one
+    /// when the item is unchanged (so its event id still collides and the append
+    /// stays idempotent), the next one when it moved.
+    fn observe(&self, work_item_id: &str, version: u64) -> u64 {
+        self.items
+            .get(work_item_id)
+            .map_or(FIRST_OBSERVATION_EPOCH, |previous| {
+                if previous.version == version {
+                    previous.epoch
+                } else {
+                    previous.epoch.saturating_add(1)
+                }
+            })
+    }
+
+    /// Record `work_item_id` as observed at `version` / `epoch`.
+    fn record(&mut self, work_item_id: &str, version: u64, epoch: u64) {
+        let _replaced = self.items.insert(
+            work_item_id.to_owned(),
+            WorkItemObservation { version, epoch },
+        );
+    }
+
+    /// This ledger as the checkpoint text the next poll reads back.
+    ///
+    /// Built as a [`serde_json::Value`] rather than serialized through a derive,
+    /// so the round-trip is TOTAL and carries no failure arm no input can
+    /// reach -- the same reason [`attention_item_payload_json`] is written this
+    /// way.
+    fn to_checkpoint(&self) -> String {
+        let items: serde_json::Map<String, serde_json::Value> = self
+            .items
+            .iter()
+            .map(|(work_item_id, observation)| {
+                (
+                    work_item_id.clone(),
+                    serde_json::json!({
+                        "version": observation.version,
+                        "epoch": observation.epoch,
+                    }),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "schema_version": WORK_ITEM_OBSERVATION_SCHEMA_VERSION,
+            "items": serde_json::Value::Object(items),
+        })
+        .to_string()
+    }
 }
 
 /// The persisted JSON shape a work-item snapshot observation reads back as.
@@ -1541,10 +1684,11 @@ fn work_item_snapshot_event(snapshot: &WorkItemSnapshot) -> NormalizedSourceEven
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
             format!(
-                "evt:orchestrator:{}:{}:{}:snapshot",
+                "evt:orchestrator:{}:{}:{}:{}:snapshot",
                 snapshot.repo(),
                 snapshot.work_item_id(),
-                snapshot.source_version()
+                snapshot.source_version(),
+                snapshot.observation_epoch()
             ),
             1,
             "factory".to_owned(),
@@ -1554,10 +1698,11 @@ fn work_item_snapshot_event(snapshot: &WorkItemSnapshot) -> NormalizedSourceEven
             snapshot.source_version(),
         ),
         format!(
-            "orchestrator:{}:{}:{}:snapshot",
+            "orchestrator:{}:{}:{}:{}:snapshot",
             snapshot.repo(),
             snapshot.work_item_id(),
-            snapshot.source_version()
+            snapshot.source_version(),
+            snapshot.observation_epoch()
         ),
         SourcePayload::WorkItemSnapshot(snapshot.clone()),
     )
@@ -1900,6 +2045,7 @@ pub struct ObservedSource {
     source: SourceAdapterKind,
     repo: String,
     stdout: String,
+    previous_checkpoint: Option<String>,
 }
 
 impl ObservedSource {
@@ -1910,7 +2056,29 @@ impl ObservedSource {
             source,
             repo: repo.to_owned(),
             stdout: stdout.to_owned(),
+            previous_checkpoint: None,
         }
+    }
+
+    #[must_use]
+    /// This observation paired with the SOURCE checkpoint the previous poll of
+    /// the same adapter left behind, or `None` on a cold start.
+    ///
+    /// A normalizer that must distinguish a genuine state CHANGE from a
+    /// re-observation of the state it already reported needs the adapter's own
+    /// memory of the last observation, and the checkpoint is where that memory
+    /// already lives. Carried as a builder so the normalizers that are pure
+    /// functions of `stdout` are untouched and observe `None`.
+    pub fn with_previous_checkpoint(mut self, previous_checkpoint: Option<&str>) -> Self {
+        self.previous_checkpoint = previous_checkpoint.map(ToOwned::to_owned);
+        self
+    }
+
+    #[must_use]
+    /// Return the previous poll's source checkpoint. See
+    /// [`Self::with_previous_checkpoint`].
+    pub fn previous_checkpoint(&self) -> Option<&str> {
+        self.previous_checkpoint.as_deref()
     }
 
     #[must_use]
@@ -2061,7 +2229,15 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 if is_idle_payload(&stdout) {
                     return Ok(self.idle_poll(previous));
                 }
-                let observed = ObservedSource::new(self.source, &self.repo, &stdout);
+                // The previous SOURCE checkpoint (unwrapped from the
+                // availability envelope) is the adapter's memory of what it last
+                // observed. A normalizer that must tell a genuine state change
+                // from a re-observation of the state it already reported reads
+                // it; the rest observe it and ignore it.
+                let observed = ObservedSource::new(self.source, &self.repo, &stdout)
+                    .with_previous_checkpoint(
+                        AvailabilityCheckpoint::from_previous(previous).0.as_deref(),
+                    );
                 match (self.normalize)(&observed) {
                     Ok(parsed) if !parsed.events.is_empty() => {
                         let (checkpoint, _transition_epoch) = availability_transition(
@@ -2459,7 +2635,11 @@ pub fn parse_orchestrator_observation(
         return Err("no work-items observed".to_owned());
     }
     let mut events = Vec::new();
-    let mut versions = Vec::new();
+    // The adapter's memory of the previous poll, so an item RE-ENTERING a state
+    // it already held is observed as its own transition instead of colliding
+    // with the earlier observation's content-addressed id and being swallowed
+    // (`livespec-console-beads-fabro-v8un`).
+    let mut observations = WorkItemObservationLedger::from_previous(observed.previous_checkpoint());
     for value in values {
         // Fail soft: a single record the console cannot interpret (e.g. an
         // unknown `lane` value the orchestrator emits for a status-anchor row)
@@ -2520,6 +2700,8 @@ pub fn parse_orchestrator_observation(
             acceptance_policy.label(),
             &detail_digest,
         ]);
+        let observation_epoch = observations.observe(&item.id, version);
+        observations.record(&item.id, version, observation_epoch);
         let snapshot = WorkItemSnapshot::new(
             observed.repo(),
             &item.id,
@@ -2532,13 +2714,14 @@ pub fn parse_orchestrator_observation(
             version,
         )
         .map_err(|_error| "invalid work-item".to_owned())?
-        .with_detail(detail);
+        .with_detail(detail)
+        .with_observation_epoch(observation_epoch);
         events.extend(normalize_work_item_snapshot(&snapshot).events().to_vec());
-        versions.push(version.to_string());
     }
-    let checkpoint =
-        stable_version(&versions.iter().map(String::as_str).collect::<Vec<_>>()).to_string();
-    Ok(ParsedObservation::new(&checkpoint, events))
+    Ok(ParsedObservation::new(
+        &observations.to_checkpoint(),
+        events,
+    ))
 }
 
 /// Normalize real `gh pr list --json ...` output into a GitHub PR snapshot.
@@ -4306,7 +4489,7 @@ mod tests {
             vec![
                 "load:orchestrator:repo".to_owned(),
                 "poll:orchestrator:repo:7:3".to_owned(),
-                "append:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot:2026-06-24T00:00:00Z"
+                "append:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot:2026-06-24T00:00:00Z"
                     .to_owned(),
                 "save:orchestrator:repo:8".to_owned(),
             ]
@@ -4315,7 +4498,7 @@ mod tests {
         assert_eq!(
             event_log.appended,
             vec![
-                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
                     .to_owned()
             ]
         );
@@ -4385,7 +4568,7 @@ mod tests {
             Ok(0)
         );
         let expected_skipped = vec![
-            "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+            "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
                 .to_owned(),
         ];
         assert_eq!(
@@ -4399,7 +4582,7 @@ mod tests {
             vec![
                 "load:orchestrator:repo".to_owned(),
                 "poll:orchestrator:repo:7:3".to_owned(),
-                "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
                     .to_owned(),
                 "save:orchestrator:repo:8".to_owned(),
             ]
@@ -4451,7 +4634,7 @@ mod tests {
             vec![
                 "load:orchestrator:repo".to_owned(),
                 "poll:orchestrator:repo:7:3".to_owned(),
-                "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "append-failed:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
                     .to_owned(),
                 "append:evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-sibling:9:snapshot:2026-06-24T00:00:00Z"
                     .to_owned(),
@@ -4874,7 +5057,7 @@ mod tests {
         assert_eq!(&poll.events()[1], &work_item_completeness_event_fixture());
         assert_eq!(
             poll.events()[0].source_event_id(),
-            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
         );
         assert_eq!(
             poll.events()[0].payload(),
@@ -4893,6 +5076,7 @@ mod tests {
             admission_policy: AdmissionPolicy::Manual,
             acceptance_policy: AcceptancePolicy::AiThenHuman,
             source_version: 7,
+            observation_epoch: super::FIRST_OBSERVATION_EPOCH,
             detail: Box::default(),
         }
     }
@@ -4900,7 +5084,7 @@ mod tests {
     fn work_item_snapshot_event_fixture() -> NormalizedSourceEvent {
         NormalizedSourceEvent::new(
             console_domain::ConsoleEvent::new(
-                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+                "evt:orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
                     .to_owned(),
                 1,
                 "factory".to_owned(),
@@ -4909,7 +5093,7 @@ mod tests {
                 "repo:livespec-console-beads-fabro".to_owned(),
                 7,
             ),
-            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:snapshot"
+            "orchestrator:livespec-console-beads-fabro:livespec-console-beads-fabro-y45jhj:7:1:snapshot"
                 .to_owned(),
             SourcePayload::WorkItemSnapshot(work_item_snapshot_fixture()),
         )
@@ -5627,6 +5811,143 @@ mod tests {
         assert_eq!(
             only_snapshot(&original).source_version(),
             only_snapshot(&again).source_version()
+        );
+    }
+
+    /// The same record observed with the checkpoint the previous poll left.
+    fn reobserved(stdout: &str, previous_checkpoint: Option<&str>) -> ParsedObservation {
+        ok_parsed_observation(parse_orchestrator_observation(
+            &observed_for(
+                SourceAdapterKind::Orchestrator,
+                "livespec-console-beads-fabro",
+                stdout,
+            )
+            .with_previous_checkpoint(previous_checkpoint),
+        ))
+    }
+
+    /// The snapshot event id the poll emitted, which is what the event store
+    /// dedups on.
+    fn only_snapshot_event_id(parsed: &ParsedObservation) -> String {
+        parsed
+            .events
+            .iter()
+            .filter(|event| matches!(event.payload(), SourcePayload::WorkItemSnapshot(_)))
+            .map(|event| event.event().event_id().to_owned())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// `livespec-console-beads-fabro-v8un`. A content-addressed observation
+    /// identity cannot express a RETURN to a state an item already held: the
+    /// store appends `insert or ignore` on the event id, so the re-entry
+    /// collides with the earlier observation, is swallowed, and the
+    /// last-observation-wins lane projection serves the state in between
+    /// forever. The per-item epoch makes each transition its own observation.
+    #[test]
+    fn a_re_entered_state_is_its_own_observation_while_an_unchanged_one_is_not() {
+        let edited = FULL_RECORD_STDOUT.replace("line one\\nline two", "an edited body");
+
+        let first = reobserved(FULL_RECORD_STDOUT, None);
+        assert_eq!(only_snapshot(&first).observation_epoch(), 1);
+
+        // A genuine change advances the epoch.
+        let changed = reobserved(&edited, Some(&first.checkpoint));
+        assert_eq!(only_snapshot(&changed).observation_epoch(), 2);
+
+        // THE RE-ENTRY. The same content as the FIRST observation, and it must
+        // be a DIFFERENT event id -- otherwise it never lands.
+        let returned = reobserved(FULL_RECORD_STDOUT, Some(&changed.checkpoint));
+        assert_eq!(only_snapshot(&returned).observation_epoch(), 3);
+        // The content hash is unchanged -- nothing about the record is
+        // re-encoded -- while the observation identity differs, which is the
+        // whole of the fix.
+        assert_eq!(
+            only_snapshot(&returned).source_version(),
+            only_snapshot(&first).source_version()
+        );
+        assert_ne!(
+            only_snapshot_event_id(&returned),
+            only_snapshot_event_id(&first)
+        );
+
+        // Re-observing the CURRENT state holds its epoch, so the id still
+        // collides and the append stays idempotent -- the property that keeps
+        // the fix from turning every poll into a fresh append.
+        let again = reobserved(FULL_RECORD_STDOUT, Some(&returned.checkpoint));
+        assert_eq!(only_snapshot(&again).observation_epoch(), 3);
+        assert_eq!(
+            only_snapshot_event_id(&again),
+            only_snapshot_event_id(&returned)
+        );
+    }
+
+    /// A checkpoint the ledger cannot read is a cold start, not a crash: every
+    /// item is observed at the first epoch again. That covers the pre-v8un bare
+    /// content hash, so upgrading a store re-appends each item's CURRENT state
+    /// once -- which is exactly the self-heal a pinned row needs.
+    #[test]
+    fn an_unreadable_or_legacy_checkpoint_restarts_the_observation_ledger() {
+        // A cold start, the pre-v8un bare content hash, a checkpoint that is
+        // not JSON at all, and one carrying an unrecognised schema.
+        for previous in [
+            None,
+            Some("4815162342"),
+            Some("not json at all"),
+            Some(r#"{"schema_version":99,"items":{}}"#),
+        ] {
+            let parsed = reobserved(FULL_RECORD_STDOUT, previous);
+            assert_eq!(only_snapshot(&parsed).observation_epoch(), 1);
+        }
+    }
+
+    /// An item ABSENT from this observation keeps its entry. Dropping it would
+    /// restart a returning item at the first epoch -- the identity its own
+    /// first observation already used -- so an item that left the ledger and
+    /// came back to an earlier state would be swallowed all over again.
+    #[test]
+    fn an_absent_item_keeps_its_observation_entry() {
+        let edited = FULL_RECORD_STDOUT.replace("line one\\nline two", "an edited body");
+        let other = FULL_RECORD_STDOUT.replace(
+            "livespec-console-beads-fabro-full",
+            "livespec-console-beads-fabro-other",
+        );
+
+        // The item is observed, changes, and then drops out of the ledger.
+        let first = reobserved(FULL_RECORD_STDOUT, None);
+        let changed = reobserved(&edited, Some(&first.checkpoint));
+        let without = reobserved(&other, Some(&changed.checkpoint));
+        assert!(
+            without
+                .checkpoint
+                .contains("livespec-console-beads-fabro-full")
+        );
+
+        // It comes back at the state it held FIRST. Had the entry been dropped
+        // while it was absent, this would restart at epoch 1 -- the identity its
+        // own first observation already used -- and be swallowed as a duplicate.
+        let returned = reobserved(FULL_RECORD_STDOUT, Some(&without.checkpoint));
+        assert_eq!(only_snapshot(&returned).observation_epoch(), 3);
+        assert_ne!(
+            only_snapshot_event_id(&returned),
+            only_snapshot_event_id(&first)
+        );
+    }
+
+    /// The adapter hands its previous SOURCE checkpoint to the normalizer, and
+    /// an observation built without one reports none.
+    #[test]
+    fn an_observation_carries_the_previous_source_checkpoint() {
+        let bare = observed_for(
+            SourceAdapterKind::Orchestrator,
+            "livespec-console-beads-fabro",
+            "[]",
+        );
+        assert_eq!(bare.previous_checkpoint(), None);
+        assert_eq!(
+            bare.with_previous_checkpoint(Some("prior"))
+                .previous_checkpoint(),
+            Some("prior")
         );
     }
 
