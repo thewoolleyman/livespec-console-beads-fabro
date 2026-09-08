@@ -487,11 +487,23 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         availability: |ctx| ctx.ready_work_item_count > 0,
         staging: ActionStaging::FactoryDrain,
     },
+    // The ONE factory entry that carries a key. Ratified in v047
+    // (contracts.md, gap-uqotpmdo; Scenario 28's per-item dispatch launcher
+    // clause, "reachable by one key"): the verb the factory exists for
+    // must not be the single per-item verb an operator can reach only through
+    // the menu bar or the palette, while approve, accept and reject each have
+    // one. `d` is ADDITIONAL, not a replacement -- the `Factory > Dispatch`
+    // row is unchanged, so Scenario 27's menu-primary premise still holds --
+    // and it needs no staging path of its own: the generic hotkey handler
+    // stages `FactoryDispatchItem` through the same `stage_action` derivation
+    // the menu row uses, so the hint-honesty machinery (Scenario 25)
+    // suppresses `d dispatch` and inerts the key on exactly the selections
+    // this predicate refuses.
     ActionSpec {
         id: "dispatch-selected-item",
         label: "Dispatch selected item",
-        hint_token: "",
-        hotkeys: &[],
+        hint_token: "d dispatch",
+        hotkeys: &[KeyChord::plain('d')],
         menu_path: &["Factory", "Dispatch"],
         parameter: None,
         availability_summary: "Available for a selected ready work-item, on either per-item surface.",
@@ -1443,6 +1455,42 @@ mod tests {
         });
 
         assert_eq!(availability, Some((true, false)));
+    }
+
+    #[test]
+    fn the_per_item_dispatch_key_hints_and_stages_only_where_the_verb_applies() {
+        // v047 gap-uqotpmdo / Scenario 28's "reachable by one key", at the
+        // registry: `d` resolves to the per-item dispatch verb, and its hint
+        // and its staging ride the SAME availability derivation, so the key is
+        // inert exactly where the hint is suppressed -- on EITHER per-item
+        // surface, because the hosting view is never an availability input.
+        use super::{StagedAction, selected_item_hint, stage_action};
+        let found = action_for_chord(KeyChord::plain('d'));
+        assert_eq!(found.map(|spec| spec.id), Some("dispatch-selected-item"));
+        assert_eq!(found.map(|spec| spec.hint_token), Some("d dispatch"));
+
+        for surface in [ActionSurface::Attention, ActionSurface::LaneDrill] {
+            let ready = ActionContext {
+                lane: Lane::Ready,
+                admission_policy: AdmissionPolicy::Manual,
+                acceptance_policy: AcceptancePolicy::AiThenHuman,
+                has_driver_handoff: false,
+                awaits_scope_override: false,
+                ready_work_item_count: 1,
+                surface,
+            };
+            let acceptance = ActionContext {
+                lane: Lane::Acceptance,
+                ..ready
+            };
+            check(selected_item_hint(&ready).contains("d dispatch"), "ready");
+            let hidden = !selected_item_hint(&acceptance).contains("d dispatch");
+            check(hidden, "acceptance must not hint the dispatch key");
+            let staged = found.and_then(|spec| stage_action(spec, &ready));
+            check(staged == Some(StagedAction::FactoryDispatchItem), "staged");
+            let inert = found.and_then(|spec| stage_action(spec, &acceptance));
+            check(inert.is_none(), "acceptance must leave the key inert");
+        }
     }
 
     #[test]
