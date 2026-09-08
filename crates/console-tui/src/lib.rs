@@ -17,6 +17,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+use console_application::build_identity::build_identity_segment;
+#[cfg(all(not(test), not(coverage)))]
+use console_application::build_identity::{BuildIdentity, BuildStaleness};
 use console_application::source_adapters::{Lane, OrphanedFactoryRun};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
@@ -92,11 +95,14 @@ pub fn run_interactive_tui(
         selected_repo,
         dispatcher_settings,
         PluginResolution::unresolved(),
+        None,
+        BuildStaleness::Unknown,
         &mut effect_sink,
     )
 }
 
 #[cfg(all(not(test), not(coverage)))]
+#[allow(clippy::too_many_arguments)]
 /// Run interactive tui with a live session and return deferred effects.
 ///
 /// The `session` both applies the operator's effects and re-projects the latest
@@ -108,6 +114,8 @@ pub fn run_interactive_tui_with_effect_sink(
     selected_repo: &str,
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: PluginResolution,
+    build_identity: Option<BuildIdentity>,
+    build_staleness: BuildStaleness,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
@@ -131,6 +139,8 @@ pub fn run_interactive_tui_with_effect_sink(
         selected_repo,
         dispatcher_settings,
         plugin_resolution,
+        build_identity,
+        build_staleness,
         session,
     );
     let raw_mode_result = disable_raw_mode();
@@ -143,6 +153,7 @@ pub fn run_interactive_tui_with_effect_sink(
 }
 
 #[cfg(all(not(test), not(coverage)))]
+#[allow(clippy::too_many_arguments)]
 fn run_terminal_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     events: &[ConsoleEvent],
@@ -150,12 +161,16 @@ fn run_terminal_loop(
     selected_repo: &str,
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: PluginResolution,
+    build_identity: Option<BuildIdentity>,
+    build_staleness: BuildStaleness,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
         .with_selected_repo(selected_repo.to_owned())
         .with_dispatcher_settings(dispatcher_settings)
-        .with_plugin_resolution(plugin_resolution);
+        .with_plugin_resolution(plugin_resolution)
+        .with_build_identity(build_identity)
+        .with_build_staleness(build_staleness);
     // The event log is OWNED and re-projected every iteration (Bug B fix): each
     // projection reduces over the LATEST events, not a snapshot frozen at
     // startup, so the board and detail panes stay live.
@@ -1732,6 +1747,40 @@ pub fn render_model(
     }
 }
 
+/// The Header pane's block title: `LiveSpec Console`, the `[focus]` marker
+/// when focused, and the running build's identity when one is known.
+///
+/// livespec-console-beads-fabro-mx9u.13: the identity lives HERE, in the
+/// title, rather than as a content-line field. Measured against the
+/// maintainer's own real, busy 159-column header (a factory alert AND
+/// several unavailable sources beside a two-digit attention count): even a
+/// sha-only short form of the identity had no room left in the content line
+/// once every genuinely-content field had its say, and an operator checking
+/// which build is running is exactly as likely to do it during a busy
+/// moment as a quiet one. The title costs nothing from that content-line
+/// budget and is unconditionally visible, on every pane draw, focused or
+/// blurred alike -- so it is the one place the identity is GUARANTEED to
+/// show. The stale-build tell stays a content-line field (`TransientState`
+/// priority, alongside `factory:`/`status:`): it is a live anomaly the
+/// existing shed ladder already protects, not an identity fact.
+///
+/// The `[focus]` marker is applied to the BARE name FIRST, and the (longer,
+/// unbounded-length) build segment appended after -- not the other way
+/// round. `ratatui` truncates a title that overflows the border from the
+/// RIGHT, so if the marker sat after the build segment a merely-narrow
+/// viewport could truncate it away entirely, and the operator would lose
+/// the one signal that says which pane `up`/`down` currently drive. Measured
+/// while dogfooding this fix at `NARROW_COLS` (56): with the marker last,
+/// the captured title read `LiveSpec Console — build e893bf2 (built
+/// 2026-09-09T00:` with `[focus]` gone.
+fn header_pane_title(model: &TuiScreenModel, focused: bool) -> String {
+    let base = focus_title("LiveSpec Console", focused);
+    model.build_identity().map_or_else(
+        || base.clone(),
+        |identity| format!("{base} — {}", build_identity_segment(identity)),
+    )
+}
+
 /// Render the top Header pane and return its maximum horizontal scroll offset
 /// (`0` unless the pane is focused AND the full header overflows the pane's inner
 /// width).
@@ -1742,12 +1791,12 @@ pub fn render_model(
 /// "sources unavailable" tell always survives. A FOCUSED header instead renders
 /// the FULL, un-degraded header line panned by the pane's horizontal scroll
 /// offset, so content clipped at the current width is reachable by scrolling
-/// left/right; its block title carries the `[focus]` marker every other focused
-/// pane uses.
+/// left/right; its block title (see [`header_pane_title`]) carries the
+/// `[focus]` marker every other focused pane uses.
 fn render_header(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
     let inner_width = usize::from(area.width.saturating_sub(2));
     let focused = model.focus() == FocusPane::Header;
-    let title = focus_title("LiveSpec Console", focused);
+    let title = header_pane_title(model, focused);
     if !focused {
         Paragraph::new(model.header_line(inner_width))
             .block(Block::new().borders(Borders::ALL).title(title))
@@ -2844,7 +2893,12 @@ fn help_section_lines(section: usize) -> Vec<Line<'static>> {
 fn header_help_lines() -> Vec<Line<'static>> {
     vec![
         Line::from("Header -- the top status line: fleet / mode / repo / view / attention,"),
-        Line::from("plus a source-health tell when any backing source is unavailable."),
+        Line::from("plus a source-health tell when backing sources are down."),
+        Line::from(""),
+        Line::from("The pane's OWN title, `LiveSpec Console — build <sha> (built"),
+        Line::from("<timestamp>)`, names the RUNNING BINARY's compiled-in commit --"),
+        Line::from("always visible, unlike a status-line field. A"),
+        Line::from("`build STALE: N commits behind` tell appears once it trails HEAD."),
         Line::from(""),
         Line::from("On a narrow viewport the blurred header shrinks to fit, dropping its"),
         Line::from("low-value fields; focus it to read the FULL line and scroll it sideways."),
@@ -5292,6 +5346,125 @@ mod tests {
     }
 
     #[test]
+    fn the_header_pane_title_names_the_running_builds_sha_and_build_timestamp() {
+        // livespec-console-beads-fabro-mx9u.13, acceptance criterion 1: the
+        // chrome names the running build's sha AND build timestamp. The
+        // TITLE is where it lives (not a content-line field -- see
+        // `header_pane_title`'s doc), so this is the rendered-text
+        // proof for that placement, blurred and focused alike (the title is
+        // set on both branches of `render_header`).
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_build_identity(Some(
+            console_application::build_identity::BuildIdentity::new(
+                "923a5a5",
+                "2026-09-08T23:27:15Z",
+            ),
+        ));
+        let blurred = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 12)
+            .unwrap_or_default();
+        assert!(
+            blurred.contains("LiveSpec Console — build 923a5a5 (built 2026-09-08T23:27:15Z)"),
+            "{blurred}"
+        );
+
+        let focused = render_to_text(
+            &build_tui_model_for_state(&demo_events(), &state.with_focus(FocusPane::Header)),
+            100,
+            12,
+        )
+        .unwrap_or_default();
+        assert!(
+            focused
+                .contains("LiveSpec Console [focus] — build 923a5a5 (built 2026-09-08T23:27:15Z)"),
+            "{focused}"
+        );
+    }
+
+    #[test]
+    fn the_header_pane_title_falls_back_to_the_bare_name_with_no_build_identity() {
+        // Every other test in this module builds a state without
+        // `.with_build_identity`, so this pins the default explicitly rather
+        // than leaving it implicit.
+        let state = TuiInteractionState::new(0, TuiOverlay::None);
+        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 12)
+            .unwrap_or_default();
+        assert!(frame.contains("LiveSpec Console"), "{frame}");
+        assert!(!frame.contains("build "), "{frame}");
+    }
+
+    #[test]
+    fn the_header_pane_title_survives_a_crowded_content_line_that_sheds_everything_else() {
+        // livespec-console-beads-fabro-mx9u.13 review: the maintainer's own
+        // real, busy header (a factory alert AND several unavailable
+        // sources beside a two-digit attention count) left no room for the
+        // build identity as a content-line field, even in a short form --
+        // which is exactly why it moved to the title. This proves the
+        // title survives that SAME crowded shape, since it costs nothing
+        // from the content-line budget the crowding exhausts.
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_dispatcher_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "dispatcher",
+            ),
+            ConsoleEvent::fixture(
+                "evt_fabro_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "fabro",
+            ),
+            ConsoleEvent::fixture(
+                "evt_github_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "github",
+            ),
+            ConsoleEvent::fixture(
+                "evt_dispatch_item_not_wired",
+                EventType::FactoryDispatchItemNotWired,
+                "factory",
+            ),
+        ];
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("livespec-console-beads-fabro".to_owned())
+            .with_build_identity(Some(
+                console_application::build_identity::BuildIdentity::new(
+                    "923a5a5",
+                    "2026-09-08T23:27:15Z",
+                ),
+            ));
+        let frame = render_to_text(&build_tui_model_for_state(&events, &state), 159, 12)
+            .unwrap_or_default();
+        assert!(
+            frame.contains("LiveSpec Console — build 923a5a5 (built 2026-09-08T23:27:15Z)"),
+            "the title should survive even a crowded content line: {frame}"
+        );
+    }
+
+    #[test]
+    fn the_focus_marker_in_the_header_title_survives_truncation_at_a_narrow_width() {
+        // Regression: `ratatui` truncates a block title that overflows the
+        // border from the RIGHT. When the `[focus]` marker was appended
+        // AFTER the (longer, unbounded-length) build segment, a merely-
+        // narrow real pane (caught live at `NARROW_COLS` = 56 in
+        // `tmux_tui_e2e_top_pane_focus_hscroll`) truncated the marker away
+        // entirely: the captured title read `LiveSpec Console — build
+        // e893bf2 (built 2026-09-09T00:` with no `[focus]` anywhere. The
+        // fix orders the marker right after the bare name (see
+        // `header_pane_title`'s doc); this pins that a focused header at
+        // that same narrow width still shows the marker regardless of how
+        // long the build segment is.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Header)
+            .with_build_identity(Some(
+                console_application::build_identity::BuildIdentity::new(
+                    "e893bf2",
+                    "2026-09-09T00:18:37Z",
+                ),
+            ));
+        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 56, 12)
+            .unwrap_or_default();
+        assert!(frame.contains("LiveSpec Console [focus]"), "{frame}");
+    }
+
+    #[test]
     fn render_model_reports_the_header_scroll_extent_only_when_focused_and_clipped() {
         // The render measures the focused header's overflow and returns it so the
         // loop can feed it back: positive when a focused header overflows, zero
@@ -5356,6 +5529,25 @@ mod tests {
             .unwrap_or_default();
         assert!(frame.contains("Header"));
         assert!(frame.contains("scroll the focused header"));
+    }
+
+    #[test]
+    fn help_overlay_names_where_the_build_tell_lives_and_what_stale_means() {
+        // livespec-console-beads-fabro-mx9u.13, acceptance criterion 4: `?`
+        // Help must name where the build tell lives and what its stale form
+        // means, not merely leave an operator to infer it from the header.
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_overlay(TuiOverlay::Help {
+                focus: HelpFocus::Menu,
+                selected_section: header_help_section(),
+                scroll: 0,
+            })
+            .with_focus(FocusPane::Header);
+        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 24)
+            .unwrap_or_default();
+        assert!(frame.contains("LiveSpec Console — build <sha> (built"));
+        assert!(frame.contains("build STALE: N commits behind"));
+        assert!(frame.contains("RUNNING BINARY's compiled-in"));
     }
 
     /// Drive one key through the full input -> reduce -> state loop, returning the

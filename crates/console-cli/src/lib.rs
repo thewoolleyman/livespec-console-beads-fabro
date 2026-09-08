@@ -70,6 +70,8 @@ use console_tui::{
 };
 
 mod backing_cli;
+/// The running binary's build identity, embedded at compile time.
+pub mod build_identity;
 mod source_poller;
 
 pub use backing_cli::{

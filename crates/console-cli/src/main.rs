@@ -23,6 +23,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 #[cfg(all(not(test), not(coverage)))]
+use console_application::build_identity::{BuildStaleness, observe_build_staleness};
+#[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
@@ -331,10 +333,21 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         .unwrap_or(DispatcherSettingsRead::NotObserved);
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let invoker = console_invoker(args);
+    // Resolved ONCE at startup, like `dispatcher_settings` above: the running
+    // binary's build does not change mid-session, so nothing justifies
+    // re-shelling `git` per frame or per poll cadence.
+    // livespec-console-beads-fabro-mx9u.13.
+    let build_staleness = observe_build_staleness(
+        &probe,
+        repo_path.as_str(),
+        livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
+    );
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo.clone(),
         dispatcher_settings,
         plugin_resolution: plugin_resolution_for_tui(resolution.plugin_resolution()),
+        build_identity: livespec_console_beads_fabro::build_identity::embedded_build_identity(),
+        build_staleness,
     };
     // Move the SLOW CLI-shelling source polls onto a background thread so the UI
     // thread never blocks on them (dropped keystrokes were the move-doesn't-land
@@ -939,6 +952,8 @@ struct InteractiveTuiRunner {
     selected_repo: String,
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: TuiPluginResolution,
+    build_identity: console_application::build_identity::BuildIdentity,
+    build_staleness: BuildStaleness,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -955,6 +970,8 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             &self.selected_repo,
             self.dispatcher_settings.clone(),
             self.plugin_resolution.clone(),
+            Some(self.build_identity.clone()),
+            self.build_staleness,
             session,
         )
         .map_err(ConsoleRuntimeError::tui_runtime_io_failed)
