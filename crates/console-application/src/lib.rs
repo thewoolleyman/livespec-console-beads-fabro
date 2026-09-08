@@ -4065,29 +4065,89 @@ fn execution_state_for_snapshot(
         .unwrap_or(LaneExecutionState::Claimed)
 }
 
-#[must_use]
-/// Build tui model from the supplied inputs.
-pub fn build_tui_model(events: &[ConsoleEvent], requested_selection: usize) -> TuiScreenModel {
-    let state = TuiInteractionState::new(requested_selection, TuiOverlay::None);
-    build_tui_model_for_state(events, &state)
+/// The event-log-derived projection behind a [`TuiScreenModel`].
+///
+/// Everything here depends only on the event log and the active search query
+/// -- NOT on the interaction state's cursor, scroll offsets, focus, or overlay
+/// -- so it is safe to build ONCE and reuse across every render of the SAME
+/// log and query. That reuse is the whole fix for
+/// livespec-console-beads-fabro-mx9u.8 ("moving between attention items is
+/// very laggy"): before this type existed, [`build_tui_model_for_state`]
+/// re-derived all of this from scratch (several full scans of the event log)
+/// on EVERY call, and the terminal loop called it several times per single
+/// keystroke. Worse, the needs-attention account/valve-command lookups
+/// RE-MATERIALIZED the whole needs-attention surface once per attention-list
+/// ROW -- `O(rows * events)` work on one build alone, on an inbox of a few
+/// hundred events and a couple hundred rows easily hundreds of milliseconds
+/// (see `advertised_account`'s history).
+///
+/// [`project_tui_events`] performs each full scan exactly once. [`render_tui_model`]
+/// (or the state-typed [`build_tui_model_for_state`] convenience wrapper)
+/// turns a projection plus the current interaction state into a frame,
+/// touching the raw event log only for the ONE selected row's detail (an
+/// unavoidable per-selection cost, not a per-row one) and for the active
+/// view's own summary rows.
+#[derive(Debug, Clone)]
+pub struct TuiProjection {
+    search_query: Option<String>,
+    unavailable_sources: Vec<String>,
+    attention_entries: Vec<AttentionEntry>,
+    attention_items: Vec<AttentionItem>,
+    attention_total: usize,
+    lane_board: LaneBoard,
+    factory_activity: Option<String>,
+    action_failures: BTreeMap<String, ActionFailure>,
+    command_outcome: Option<String>,
+    orphaned_factory_runs: Vec<OrphanedFactoryRun>,
+    needs_attention_by_work_item: NeedsAttentionByWorkItem,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Counts calls to [`project_tui_events`] -- the EXPENSIVE, event-log-scanning
+    /// half of the model build. `#[cfg(test)]`-only and thread-local (the
+    /// standard test harness gives each `#[test]` its own OS thread) so tests
+    /// running in parallel never see each other's counts.
+    static TUI_PROJECTION_BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Counts calls to [`render_tui_model`] -- the CHEAP half, safe to call once
+    /// per keystroke against a projection built once for the whole burst.
+    static TUI_RENDER_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+/// Test-only counters for [`project_tui_events`] / [`render_tui_model`] calls,
+/// asserting the "one projection, many renders" property
+/// livespec-console-beads-fabro-mx9u.8's acceptance criteria name directly.
+pub(crate) fn reset_tui_projection_counters() {
+    TUI_PROJECTION_BUILD_COUNT.with(|count| count.set(0));
+    TUI_RENDER_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+/// Return the `(project_tui_events calls, render_tui_model calls)` recorded
+/// since the last [`reset_tui_projection_counters`].
+pub(crate) fn tui_projection_counters() -> (usize, usize) {
+    (
+        TUI_PROJECTION_BUILD_COUNT.with(std::cell::Cell::get),
+        TUI_RENDER_COUNT.with(std::cell::Cell::get),
+    )
 }
 
 #[must_use]
-/// Build tui model for state from the supplied inputs.
-pub fn build_tui_model_for_state(
-    events: &[ConsoleEvent],
-    state: &TuiInteractionState,
-) -> TuiScreenModel {
-    let search_query = search_query(state.overlay());
+/// Build the event-log-derived projection for `events`, filtered by
+/// `search_query`. See [`TuiProjection`] for why this is split from
+/// [`render_tui_model`] and what calling it once buys.
+pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -> TuiProjection {
+    #[cfg(test)]
+    TUI_PROJECTION_BUILD_COUNT.with(|count| count.set(count.get() + 1));
     let unavailable_sources = unavailable_sources(events);
-    let attention_entries = unified_attention_entries(events, search_query);
+    let needs_attention_items = materialize_attention_items(events);
+    let needs_attention_by_work_item = group_needs_attention_by_work_item(&needs_attention_items);
+    let attention_entries = unified_attention_entries(events, search_query, &needs_attention_items);
     let attention_items = attention_entries
         .iter()
-        .map(|entry| entry.to_attention_item(events))
+        .map(|entry| entry.to_attention_item(&needs_attention_by_work_item))
         .collect::<Vec<_>>();
-    let attention_count = attention_items.len();
-    let (selected_attention_index, displaced_attention_id) =
-        selected_attention_for_state(&attention_entries, state);
     // The header's `attention:` count is the INBOX TOTAL, never the filtered
     // match count. A search narrows what the list SHOWS, not how much work is
     // waiting, and a header that followed the filter turned the one number
@@ -4099,23 +4159,64 @@ pub fn build_tui_model_for_state(
     // Any active search overlay -- even one whose query is still empty --
     // recomputes the unfiltered pass, rather than special-casing the empty
     // string: `attention_item_matches` / `attention_snapshot_matches` already
-    // treat an empty query as matching everything, so `attention_count` (the
-    // filtered pass) and the unfiltered recompute agree on the empty-query
-    // count regardless. A guard here that tried to skip the recompute for
-    // "nothing to narrow yet" would be redundant with that agreement, not an
-    // optimization -- it can only ever produce a mutation-testing survivor
-    // with no observable effect (measured 2026-09-08, PR #1096 check-mutants:
-    // `!query.is_empty()` replaced with `true` survived because both sides
-    // compute the same count). With no active overlay at all, there is no
-    // query to narrow by, so the filtered and unfiltered lists are the same
-    // list.
-    let attention_total = search_query.map_or(attention_count, |_query| {
-        unified_attention_entries(events, None).len()
+    // treat an empty query as matching everything, so the filtered pass and
+    // the unfiltered recompute agree on the empty-query count regardless. A
+    // guard here that tried to skip the recompute for "nothing to narrow yet"
+    // would be redundant with that agreement, not an optimization -- it can
+    // only ever produce a mutation-testing survivor with no observable effect
+    // (measured 2026-09-08, PR #1096 check-mutants: `!query.is_empty()`
+    // replaced with `true` survived because both sides compute the same
+    // count). With no active overlay at all, there is no query to narrow by,
+    // so the filtered and unfiltered lists are the same list.
+    //
+    // Computed HERE (cached with the rest of the projection) rather than per
+    // render: it depends only on `events` and whether search is active, the
+    // same granularity `project_tui_events`'s own cache key already uses, so
+    // recomputing it per render would defeat the "one projection, many
+    // renders" property this whole type exists for. It reuses
+    // `needs_attention_items`, already materialized above, rather than
+    // re-scanning the event log for it a second time.
+    let attention_total = search_query.map_or(attention_items.len(), |_query| {
+        unified_attention_entries(events, None, &needs_attention_items).len()
     });
-    let detail = selected_attention_index.map(|index| attention_entries[index].to_detail(events));
+    TuiProjection {
+        search_query: search_query.map(str::to_owned),
+        unavailable_sources,
+        attention_entries,
+        attention_items,
+        attention_total,
+        lane_board: project_lane_board(events),
+        factory_activity: factory_drain_activity(events),
+        action_failures: project_action_failures(events),
+        command_outcome: project_command_outcome(events),
+        orphaned_factory_runs: project_orphaned_factory_runs(events),
+        needs_attention_by_work_item,
+    }
+}
+
+#[must_use]
+/// Render `state` against an already-built `projection`.
+///
+/// Touches the raw event log only for the one selected row's detail and for
+/// the active view's own summary rows -- see [`TuiProjection`]. This is the
+/// per-keystroke fast path: it never re-scans the event log for anything the
+/// projection already carries.
+pub fn render_tui_model(
+    projection: &TuiProjection,
+    events: &[ConsoleEvent],
+    state: &TuiInteractionState,
+) -> TuiScreenModel {
+    #[cfg(test)]
+    TUI_RENDER_COUNT.with(|count| count.set(count.get() + 1));
+    let (selected_attention_index, displaced_attention_id) =
+        selected_attention_for_state(&projection.attention_entries, state);
+    let detail = selected_attention_index.map(|index| {
+        projection.attention_entries[index]
+            .to_detail(events, &projection.needs_attention_by_work_item)
+    });
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
-    let lane_board = project_lane_board(events);
+    let lane_board = projection.lane_board.clone();
     let lane_focus = state.lane_focus();
     let selected_lane_index = match (active_view, lane_focus) {
         (TuiView::Lanes, LaneFocus::Overview) => {
@@ -4135,7 +4236,6 @@ pub fn build_tui_model_for_state(
         ),
         _ => None,
     };
-    let factory_activity = factory_drain_activity(events);
     // The Status line is ONE channel, and its rule is that the most recent thing
     // to contradict the operator's expectation is what it says. A cursor that
     // moved out from under them because the anchored row left the list is
@@ -4147,7 +4247,7 @@ pub fn build_tui_model_for_state(
     // open search query is its own explanation — so the report is suppressed
     // while one is filtering rather than firing on every typed character.
     let transient_status = displaced_attention_id
-        .filter(|_displaced| search_query.is_none())
+        .filter(|_displaced| projection.search_query.is_none())
         .map_or_else(
             || state.transient_status.clone(),
             |displaced| Some(displaced_attention_status(&displaced)),
@@ -4155,8 +4255,8 @@ pub fn build_tui_model_for_state(
     TuiScreenModel {
         active_view,
         navigation: TuiView::all().to_vec(),
-        attention_items,
-        attention_total,
+        attention_items: projection.attention_items.clone(),
+        attention_total: projection.attention_total,
         selected_attention_index,
         detail,
         view_items: view_summary_items(active_view, events),
@@ -4174,7 +4274,7 @@ pub fn build_tui_model_for_state(
         dispatcher_settings: state.dispatcher_settings().clone(),
         dispatcher_setting_write: state.dispatcher_setting_write().clone(),
         plugin_resolution: state.plugin_resolution().clone(),
-        action_failures: project_action_failures(events),
+        action_failures: projection.action_failures.clone(),
         // The canonical, untruncated header. `header_line` keeps this display
         // order for wide terminals and sheds narrow-terminal fields by declared
         // information-value priority, not by this string's field positions.
@@ -4182,18 +4282,41 @@ pub fn build_tui_model_for_state(
             "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
-            attention_total,
-            factory_activity_segment(factory_activity.as_deref()),
+            projection.attention_total,
+            factory_activity_segment(projection.factory_activity.as_deref()),
             transient_status_segment(transient_status.as_deref()),
-            source_health_header_segment(&unavailable_sources)
+            source_health_header_segment(&projection.unavailable_sources)
         ),
-        unavailable_sources,
-        factory_activity,
+        unavailable_sources: projection.unavailable_sources.clone(),
+        factory_activity: projection.factory_activity.clone(),
         transient_status,
         list_edge: state.list_edge(),
-        command_outcome: project_command_outcome(events),
-        orphaned_factory_runs: project_orphaned_factory_runs(events),
+        command_outcome: projection.command_outcome.clone(),
+        orphaned_factory_runs: projection.orphaned_factory_runs.clone(),
     }
+}
+
+#[must_use]
+/// Build tui model from the supplied inputs.
+pub fn build_tui_model(events: &[ConsoleEvent], requested_selection: usize) -> TuiScreenModel {
+    let state = TuiInteractionState::new(requested_selection, TuiOverlay::None);
+    build_tui_model_for_state(events, &state)
+}
+
+#[must_use]
+/// Build tui model for state from the supplied inputs.
+///
+/// A convenience wrapper over [`project_tui_events`] + [`render_tui_model`] for
+/// callers that render exactly once and have no reason to cache the
+/// projection (most tests, and any one-shot preview). The terminal loop's
+/// per-keystroke hot path calls the two halves directly instead, so it can
+/// reuse ONE projection across many renders -- see [`TuiProjection`].
+pub fn build_tui_model_for_state(
+    events: &[ConsoleEvent],
+    state: &TuiInteractionState,
+) -> TuiScreenModel {
+    let projection = project_tui_events(events, search_query(state.overlay()));
+    render_tui_model(&projection, events, state)
 }
 
 #[must_use]
@@ -4858,18 +4981,42 @@ const fn view_has_detail_pane(active_view: TuiView) -> bool {
 
 #[must_use]
 /// Return the reduce tui interaction value.
+///
+/// Builds its own model from `events` and `state` before reducing -- the
+/// convenience form for a caller that has no already-built model to reuse
+/// (most tests, and any one-shot caller). The terminal loop's hot path calls
+/// [`reduce_tui_interaction_with_model`] directly against its cached model
+/// instead, so a run of navigation keystrokes never re-scans the event log at
+/// all (livespec-console-beads-fabro-mx9u.8): before the split, THIS function
+/// was the fourth full projection build hiding inside one keystroke's path,
+/// on top of the three the terminal loop's own draw/interpret/redraw already
+/// performed.
 pub fn reduce_tui_interaction(
     state: &TuiInteractionState,
     events: &[ConsoleEvent],
     interaction: TuiInteraction,
 ) -> TuiInteractionState {
     let model = build_tui_model_for_state(events, state);
+    reduce_tui_interaction_with_model(state, &model, interaction)
+}
+
+#[must_use]
+/// The cheap half of [`reduce_tui_interaction`].
+///
+/// Reduces `interaction` against an ALREADY-BUILT `model` rather than deriving
+/// one from the raw event log. See [`TuiProjection`] and
+/// [`reduce_tui_interaction`] for why this split exists.
+pub fn reduce_tui_interaction_with_model(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
     // Derived BEFORE the move is applied, from the selection the keystroke was
     // pressed against, and stamped on EVERY interaction's result: a cue never
     // outlives the keystroke that earned it.
-    let list_edge = list_edge_reached(state, &model, interaction);
-    let next = reduce_interaction_state(state, &model, interaction).with_list_edge(list_edge);
-    reanchor_displaced_attention(next, &model)
+    let list_edge = list_edge_reached(state, model, interaction);
+    let next = reduce_interaction_state(state, model, interaction).with_list_edge(list_edge);
+    reanchor_displaced_attention(next, model)
 }
 
 /// Re-point an Attention anchor whose item has left the list at the row the
@@ -8264,14 +8411,14 @@ impl AttentionEntry {
     /// `Blocked: needs-human` with nothing to decide on. The row NEVER truncates
     /// it here -- eliding to fit belongs to the renderer, which alone knows the
     /// pane's width, and the whole text always survives into the detail.
-    fn to_attention_item(&self, events: &[ConsoleEvent]) -> AttentionItem {
+    fn to_attention_item(&self, needs_attention: &NeedsAttentionByWorkItem) -> AttentionItem {
         match self {
             Self::WorkItem(entry) => AttentionItem::new(
                 entry.snapshot.work_item_id().to_owned(),
                 Some(entry.snapshot.work_item_id().to_owned()),
                 attention_row_title(
                     &attention_title(&entry.snapshot),
-                    advertised_account(events, entry.snapshot.work_item_id()).as_deref(),
+                    advertised_account(needs_attention, entry.snapshot.work_item_id()).as_deref(),
                 ),
                 entry.event.source().to_owned(),
                 entry.snapshot.repo().to_owned(),
@@ -8295,9 +8442,13 @@ impl AttentionEntry {
     /// The detail-pane projection: the rich fabro / timeline / valve detail for a
     /// work-item, or the composed repo + subject + operator-handoff detail for a
     /// needs-attention item.
-    fn to_detail(&self, events: &[ConsoleEvent]) -> AttentionDetail {
+    fn to_detail(
+        &self,
+        events: &[ConsoleEvent],
+        needs_attention: &NeedsAttentionByWorkItem,
+    ) -> AttentionDetail {
         match self {
-            Self::WorkItem(entry) => build_attention_detail(entry, events),
+            Self::WorkItem(entry) => build_attention_detail(entry, events, needs_attention),
             Self::NeedsAttention(item) => build_needs_attention_detail(item, events),
         }
     }
@@ -8313,6 +8464,7 @@ impl AttentionEntry {
 fn unified_attention_entries(
     events: &[ConsoleEvent],
     search_query: Option<&str>,
+    needs_attention_items: &[AttentionItemSnapshot],
 ) -> Vec<AttentionEntry> {
     let work_items = attention_snapshots_matching(events, search_query);
     let claimed_work_item_ids: BTreeSet<&str> = work_items
@@ -8324,8 +8476,12 @@ fn unified_attention_entries(
         .cloned()
         .map(AttentionEntry::WorkItem)
         .collect();
-    for item in materialize_attention_items(events) {
-        if !attention_item_matches(&item, search_query) {
+    // Takes the ALREADY-materialized needs-attention surface rather than
+    // re-materializing it: the caller ([`project_tui_events`]) built it once for
+    // the whole projection, and re-scanning the event log here (as this used to)
+    // is exactly the per-projection-build cost mx9u.8 exists to remove.
+    for item in needs_attention_items {
+        if !attention_item_matches(item, search_query) {
             continue;
         }
         if item
@@ -8335,7 +8491,7 @@ fn unified_attention_entries(
         {
             continue;
         }
-        entries.push(AttentionEntry::NeedsAttention(item));
+        entries.push(AttentionEntry::NeedsAttention(item.clone()));
     }
     entries
 }
@@ -8532,6 +8688,17 @@ fn attention_title(snapshot: &WorkItemSnapshot) -> String {
         (Lane::Blocked, Some(reason)) => format!("Blocked: {}", reason.label()),
         (lane, _) => lane.label().to_owned(),
     }
+}
+
+#[must_use]
+/// The active search query implied by `overlay`, if any.
+///
+/// The same read [`build_tui_model_for_state`] uses to filter the Attention
+/// list. Exposed so a caller that caches a [`TuiProjection`] across renders
+/// (the terminal loop's hot path) can compute the SAME cache key without
+/// duplicating this match.
+pub fn tui_search_query(overlay: &TuiOverlay) -> Option<&str> {
+    search_query(overlay)
 }
 
 fn search_query(overlay: &TuiOverlay) -> Option<&str> {
@@ -8942,7 +9109,11 @@ fn clamp_action_index(detail: Option<&AttentionDetail>, requested_index: usize) 
 /// observation and then formatted into a `fabro attach` handoff, which the
 /// needs-human redesign left pointing at a run that no longer exists
 /// (`SPECIFICATION/contracts.md`).
-fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) -> AttentionDetail {
+fn build_attention_detail(
+    entry: &AttentionSnapshot,
+    events: &[ConsoleEvent],
+    needs_attention: &NeedsAttentionByWorkItem,
+) -> AttentionDetail {
     let event = &entry.event;
     let detail = entry.snapshot.detail();
     let actions = attention_detail_actions(entry);
@@ -8954,12 +9125,42 @@ fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) ->
             .clone()
             .unwrap_or_else(|| "-".to_owned()),
         detail.dispatch_factory.clone(),
-        advertised_valve_commands(events, entry.snapshot.work_item_id()),
+        advertised_valve_commands(needs_attention, entry.snapshot.work_item_id()),
         latest_timeline(events, event.stream_id(), 3),
         actions,
     )
-    .with_account(advertised_account(events, entry.snapshot.work_item_id()))
+    .with_account(advertised_account(
+        needs_attention,
+        entry.snapshot.work_item_id(),
+    ))
     .with_answer_comments(human_answer_comments(detail))
+}
+
+/// The needs-attention surface, materialized once and grouped by the
+/// `work_item_id` it references, in the SAME relative order
+/// [`materialize_attention_items`] returned (first-match-wins, matching what
+/// `advertised_account`'s old `.find()` and `advertised_valve_commands`'s old
+/// `.filter()` read directly off the event log).
+///
+/// This is the index behind both lookups below. Building it is `O(events)`,
+/// once; before it existed, EVERY attention-list row re-materialized the whole
+/// needs-attention surface (another full event-log scan, JSON-decoding
+/// included) just to read its own account/valve-commands -- `O(rows * events)`
+/// on a build, and the dominant cost behind
+/// livespec-console-beads-fabro-mx9u.8's measured per-keystroke lag.
+type NeedsAttentionByWorkItem = BTreeMap<String, Vec<AttentionItemSnapshot>>;
+
+fn group_needs_attention_by_work_item(items: &[AttentionItemSnapshot]) -> NeedsAttentionByWorkItem {
+    let mut grouped: NeedsAttentionByWorkItem = BTreeMap::new();
+    for item in items {
+        if let Some(work_item_id) = item.source_ref().work_item() {
+            grouped
+                .entry(work_item_id.to_owned())
+                .or_default()
+                .push(item.clone());
+        }
+    }
+    grouped
 }
 
 /// The ACCOUNT the ingested needs-attention projection carries for
@@ -8971,10 +9172,13 @@ fn build_attention_detail(entry: &AttentionSnapshot, events: &[ConsoleEvent]) ->
 /// the account the orchestrator composed would never reach the surface. `None`
 /// when the projection advertises no row for the item -- an honest absence, not
 /// a locally-composed stand-in.
-fn advertised_account(events: &[ConsoleEvent], work_item_id: &str) -> Option<String> {
-    materialize_attention_items(events)
-        .into_iter()
-        .find(|item| item.source_ref().work_item() == Some(work_item_id))
+fn advertised_account(
+    needs_attention: &NeedsAttentionByWorkItem,
+    work_item_id: &str,
+) -> Option<String> {
+    needs_attention
+        .get(work_item_id)
+        .and_then(|items| items.first())
         .map(|item| item.summary().to_owned())
 }
 
@@ -8987,10 +9191,14 @@ fn advertised_account(events: &[ConsoleEvent], work_item_id: &str) -> Option<Str
 /// not get its own list entry. Reading the projection back here is what keeps
 /// that valve reachable: without it the dedupe silently swallowed the only
 /// pressable thing the orchestrator advertised for the item.
-fn advertised_valve_commands(events: &[ConsoleEvent], work_item_id: &str) -> Vec<String> {
-    materialize_attention_items(events)
+fn advertised_valve_commands(
+    needs_attention: &NeedsAttentionByWorkItem,
+    work_item_id: &str,
+) -> Vec<String> {
+    needs_attention
+        .get(work_item_id)
         .into_iter()
-        .filter(|item| item.source_ref().work_item() == Some(work_item_id))
+        .flatten()
         .map(|item| item.handoff().command().to_owned())
         .collect()
 }
@@ -11626,6 +11834,19 @@ mod tests {
         assert_eq!(state.selected_attention_index(), 0);
     }
 
+    /// `tui_search_query` is the public wrapper a caching caller (the
+    /// terminal loop's hot path) uses to compute its cache key without
+    /// duplicating the private `search_query` match -- it must read exactly
+    /// the same thing `search_query` itself does.
+    #[test]
+    fn tui_search_query_matches_search_query_for_every_overlay_shape() {
+        let search = TuiOverlay::Search {
+            query: "drain".to_owned(),
+        };
+        assert_eq!(super::tui_search_query(&search), Some("drain"));
+        assert_eq!(super::tui_search_query(&TuiOverlay::None), None);
+    }
+
     #[test]
     fn tui_search_overlay_filters_attention_items() {
         let events = fabro_gate_events();
@@ -12952,15 +13173,85 @@ mod tests {
             attention_appeared("evt_other", &other),
             attention_appeared("evt_pathless", &pathless),
         ];
+        let needs_attention =
+            super::group_needs_attention_by_work_item(&super::materialize_attention_items(&events));
 
         assert_eq!(
-            super::advertised_valve_commands(&events, "console-blocked"),
+            super::advertised_valve_commands(&needs_attention, "console-blocked"),
             Vec::<String>::new()
         );
         assert_eq!(
-            super::advertised_valve_commands(&events, "console-other"),
+            super::advertised_valve_commands(&needs_attention, "console-other"),
             vec!["drive resolve-blocked:console-other:ready".to_owned()]
         );
+    }
+
+    /// A 200-row Attention list, one `blocked / needs-human` work-item
+    /// snapshot per row -- the shape livespec-console-beads-fabro-mx9u.8's
+    /// acceptance criteria measure against ("200 attention rows").
+    fn many_attention_rows(count: usize) -> Vec<ConsoleEvent> {
+        (0..count)
+            .map(|index| {
+                let work_item_id = format!("wi-{index:04}");
+                needs_human_lane_event(&format!("evt_{index:04}"), &work_item_id, None)
+            })
+            .collect()
+    }
+
+    /// livespec-console-beads-fabro-mx9u.8, acceptance criterion 3: "The
+    /// detail pane for the newly selected row is rendered from the
+    /// already-projected model, not re-derived per keystroke ... (expected:
+    /// one projection, ten renders)."
+    ///
+    /// Before the `TuiProjection` split this asserts, EVERY keystroke's
+    /// selection change re-scanned the whole 200-row event log from scratch
+    /// (several times over, between the terminal loop's draw / key-interpret
+    /// / `reduce_tui_interaction` steps) -- this test proves the fast path
+    /// now shares ONE projection across a whole run of moves, exactly as the
+    /// terminal loop's own cache does.
+    #[test]
+    fn ten_consecutive_moves_share_one_projection() {
+        super::reset_tui_projection_counters();
+        let events = many_attention_rows(200);
+        let projection = super::project_tui_events(&events, None);
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        for _ in 0..10 {
+            let model = super::render_tui_model(&projection, &events, &state);
+            state = super::reduce_tui_interaction_with_model(
+                &state,
+                &model,
+                TuiInteraction::SelectNext,
+            );
+        }
+
+        assert_eq!(super::tui_projection_counters(), (1, 10));
+        assert_eq!(state.selected_attention_index(), 10);
+    }
+
+    /// The same "one projection, ten renders" property, but through the
+    /// state-typed public API ([`build_tui_model_for_state`]) a one-shot
+    /// caller uses. It builds a FRESH projection every call by design (it has
+    /// no cache to reuse across calls) -- this pins that down so the split
+    /// above is never mistaken for `build_tui_model_for_state` itself having
+    /// become cheap to call in a loop.
+    #[test]
+    fn build_tui_model_for_state_builds_a_fresh_projection_every_call() {
+        super::reset_tui_projection_counters();
+        let events = many_attention_rows(200);
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        for _ in 0..10 {
+            let model = super::build_tui_model_for_state(&events, &state);
+            state = super::reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+            let _ = model;
+        }
+
+        // `build_tui_model_for_state` (10 calls) plus `reduce_tui_interaction`'s
+        // own internal build (10 calls) each build a projection -- a caller
+        // that wants to SHARE one across a run must use
+        // `project_tui_events`/`render_tui_model` directly, as the terminal
+        // loop's hot path does.
+        let (projections, _renders) = super::tui_projection_counters();
+        assert_eq!(projections, 20);
     }
 
     #[test]
