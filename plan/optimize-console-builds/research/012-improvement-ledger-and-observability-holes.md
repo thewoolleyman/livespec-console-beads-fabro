@@ -122,9 +122,9 @@ job's delta in §1.1 is substrate **plus** the levers in §1.5.
 | 4 | Fuzz-capable sandbox image (g++, nightly, cargo-fuzz baked) | `gqmtwa.1` (#974) | check-fuzz wall P50, image-only window n=8 | 316 s | 282 s | −10.8 % | [81HePYWZh36](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/81HePYWZh36) |
 | 5 | Warmed ASAN `target/` generation (reflink seed + keyed mtime restore) | `ydlant` (#982) | build.check-fuzz.compile P50, n=21 | 78 s | 4 s | −94.9 % | [hBdGTVBtYWv](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/hBdGTVBtYWv) |
 | 6 | Rows 4 + 5 together, end to end | `gqmtwa.1`+`ydlant` | check-fuzz wall P50, n=211 | 403 s | 223 s | −44.7 % | [oqWHXpG1xiL](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/oqWHXpG1xiL) |
-| 7 | Drop the per-job `mise trust` steps | `gqmtwa.2` (#974) | the mise setup step, mean seconds per job | 3.2 s/job (51 s across 16 jobs) | 2.4 s/job (38 s across 16 jobs) | −25.5 % of that step; **−13 s per run** | **HOLE H7** — not in Honeycomb; read by hand from the forge API, one run each side (34018240842 → 34034390394) |
+| 7 | Drop the per-job `mise trust` steps | `gqmtwa.2` (#974) | the mise setup step, mean seconds per job | 3.2 s/job (51 s across 16 jobs) | 2.4 s/job (38 s across 16 jobs) | −25.5 % of that step; **−13 s per run** | **HOLE H7** — not in Honeycomb; read by hand from the forge API, one run each side (34018240842 → 34034390394); a second, independently chosen after-run (34025074857) gives the same 38 s |
 | 8 | Per-PR concurrency group (cancel superseded runs) | `s3kwxt` (#936) | share of genuinely-superseded PR runs that were cancelled | 1 of 2 (50 %) | 2 of 2 (100 %) | **n = 2 per side — not acceptance-grade** | **HOLE H1** — not in Honeycomb; derived by hand from forge run timestamps |
-| 9 | tmux e2e harness readiness + ceilings | `pis7qu` | check-e2e-tmux failure rate | *(blank)* | *(blank)* | **not measured** | **HOLE H1** — job outcome is absent from telemetry, so a flake rate cannot be computed at all |
+| 9 | tmux e2e harness readiness + ceilings | `pis7qu` (#938) | check-e2e-tmux job failure rate | 1 of 12 (8.3 %) | 0 of 12 (0 %) | −8.3 pp, **n = 12 per side** | **HOLE H1** — not in Honeycomb; sampled by hand from the forge API around the 2026-09-02T10:03Z merge, and twelve runs a side cannot separate a fixed flake from a quiet pool |
 | 9b | same item, duration side | `pis7qu` | check-e2e-tmux wall P50, n=211 | 256 s | 135 s | −47.3 % | [oqWHXpG1xiL](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/oqWHXpG1xiL) |
 | 10 | Warmed dev/test `target/` generation | `z2siyn` → `ydlant` bullet 1 | — | — | — | — | **dropped by measurement**, not deferred: `research/009` bounded the remaining headroom at ≤ 20 s/job once sccache took nextest compile to 20 s |
 
@@ -273,15 +273,14 @@ Counted by **work item that shipped a change**, not by table row.
 
 | Disposition | Count | Items |
 |---|---|---|
-| AFTER measured **in Honeycomb** | 8 | `zzfntv`, `wki5zf`, `gqmtwa.1`, `ydlant`, `qxjdan`, `di6fn5`, `vhtfpe`, `pis7qu` (duration half only) |
-| AFTER measured, but **outside Honeycomb** (forge API or `du`) | 2 | `gqmtwa.2` (forge step timestamps), `uybgug` (disk `du`) |
+| AFTER measured **in Honeycomb** | 8 | `zzfntv`, `wki5zf`, `gqmtwa.1`, `ydlant`, `qxjdan`, `di6fn5`, `vhtfpe`, `pis7qu` (duration half) |
+| AFTER measured, but **outside Honeycomb** (forge API or `du`) | 3 | `gqmtwa.2` (forge step timestamps), `uybgug` (disk `du`), `pis7qu` flake half (forge job conclusions, n = 12/side) |
 | AFTER **not acceptance-grade** | 1 | `s3kwxt` (n = 2 superseded runs per side, by hand) |
-| AFTER **absent entirely** | 1 | `pis7qu` flake-rate half |
 | Shipped no production change by design | 1 | `z2siyn` (spike; its go/no-go became `ydlant`) |
 
 | Charter requirement | State |
 |---|---|
-| Req 1 — every optimization proven by a Honeycomb before→after | **met for 8 of 11** shipping items; three read from outside Honeycomb or not at all |
+| Req 1 — every optimization proven by a Honeycomb before→after | **met for 8 of 11** shipping items; three are measured only outside Honeycomb, by hand, on samples too small to accept on |
 | Req 2 — bounded, age-based eviction on every tier | policies **shipped** on all five tiers; **observation missing on all five** (H5) |
 | Req 3 — final report + human approval | met: `research/011`, approved 2026-09-06, amended 2026-09-08 |
 
