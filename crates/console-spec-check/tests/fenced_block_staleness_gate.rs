@@ -27,10 +27,26 @@ const STALE_PYRAMID_NODE: &str = "finding -> top-ranked chore work-item; never f
 const STALE_GHERKIN_STEP: &str =
     "And a chore work-item is filed at the top of the rank order in the";
 
+/// Resolves `CARGO_BIN_EXE_console-spec-check` at COMPILE time via
+/// `option_env!` first, then falls back to the process environment. Cargo
+/// defines the variable while compiling this package's integration tests but
+/// does not export it to the running test process under plain `cargo test`;
+/// a runtime-only lookup therefore always failed there. `option_env!` compiles
+/// to `None` in contexts that never set it (e.g. `cargo clippy --all-targets`),
+/// so the runtime fallback still covers those.
 fn checker() -> Result<PathBuf, String> {
-    std::env::var_os("CARGO_BIN_EXE_console-spec-check")
-        .map(PathBuf::from)
-        .ok_or_else(|| "CARGO_BIN_EXE_console-spec-check must be set by cargo test".to_string())
+    option_env!("CARGO_BIN_EXE_console-spec-check").map_or_else(
+        || {
+            std::env::var("CARGO_BIN_EXE_console-spec-check")
+                .map(PathBuf::from)
+                .map_err(|_| {
+                    "CARGO_BIN_EXE_console-spec-check is neither compiled in nor set in the \
+                 environment; run this suite through cargo test or cargo nextest"
+                        .to_string()
+                })
+        },
+        |path| Ok(PathBuf::from(path)),
+    )
 }
 
 #[test]
