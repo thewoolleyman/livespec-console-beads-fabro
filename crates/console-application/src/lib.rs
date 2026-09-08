@@ -1949,7 +1949,7 @@ pub struct TuiScreenModel {
     factory_activity: Option<String>,
     transient_status: Option<String>,
     list_edge: Option<ListEdge>,
-    command_outcome: Option<String>,
+    command_outcome: Option<CommandOutcome>,
     header: String,
     action_failures: BTreeMap<String, ActionFailure>,
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
@@ -2315,10 +2315,10 @@ impl TuiScreenModel {
             || self.context_footer_hint(),
             |edge| Cow::Owned(format!("{} | {}", edge.cue(), self.context_footer_hint())),
         );
-        let Some(outcome) = self.command_outcome.as_deref() else {
+        let Some(outcome) = self.command_outcome.as_ref() else {
             return hints;
         };
-        Cow::Owned(format!("{hints} | {outcome}"))
+        Cow::Owned(format!("{hints} | {}", outcome.full))
     }
 
     #[must_use]
@@ -2365,14 +2365,15 @@ impl TuiScreenModel {
     /// That under-reports available actions, which the Status-line honesty
     /// contract forbids.
     ///
-    /// So the hints degrade the way the header does: whole segments are shed by
-    /// declared [`HintPriority`](action_registry::HintPriority) — navigation,
-    /// then policy dials, then the globals, and the per-item verbs last — and
-    /// the count of everything shed is carried in an explicit `+N more` marker.
-    /// At a width wide enough for everything this returns [`footer`](Self::footer)
-    /// unchanged.
+    /// So the hints degrade the way the header does: the last command's verdict
+    /// abbreviates to its short form first, then whole segments are shed by
+    /// declared [`HintPriority`](action_registry::HintPriority) — policy dials,
+    /// then the per-item verbs, then that verdict, then navigation, and the
+    /// globals last — and everything shed is carried in an explicit
+    /// `+N more: ?` marker that names the key which reopens it. At a width wide
+    /// enough for everything this returns [`footer`](Self::footer) unchanged.
     pub fn footer_line(&self, width: usize) -> String {
-        fit_footer_line(&self.footer(), width)
+        fit_footer_line(&self.footer(), width, self.command_outcome.as_ref())
     }
 
     /// The availability context for the selected work-item, or `None` when no
@@ -4100,7 +4101,7 @@ pub struct TuiProjection {
     lane_board: LaneBoard,
     factory_activity: Option<String>,
     action_failures: BTreeMap<String, ActionFailure>,
-    command_outcome: Option<String>,
+    command_outcome: Option<CommandOutcome>,
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
     needs_attention_by_work_item: NeedsAttentionByWorkItem,
 }
@@ -4541,6 +4542,29 @@ fn transient_status_segment(status: Option<&str>) -> String {
 /// nothing to add.
 const OUTCOME_CAUSE_ABSENT: &str = "cause not reported";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One command's terminal verdict in BOTH the forms the Status band can draw.
+///
+/// A band with room draws [`full`](Self::full) -- which command, how it ended,
+/// and the cause the store recorded. A band without room draws
+/// [`short`](Self::short) instead of dropping the verdict outright, because a
+/// verdict is the one Status-line segment nothing else can restore: the Help
+/// roster lists actions, and the stream retires the verdict the moment the next
+/// command starts. Measured 2026-09-08 at 105 columns, before the short form
+/// existed: `last command: dispatch item failed — cause not reported` was 55
+/// columns of a 105-column band, so the fitter shed it whole and the operator
+/// was left with no sign that the dispatch they had just pressed had failed.
+///
+/// The short form keeps the two facts that survive abbreviation -- WHICH
+/// command and HOW it ended -- and drops the cause, which the operator reads by
+/// widening the pane. Both forms are composed together by
+/// [`command_outcome_notice`] from the same inputs, so they cannot disagree
+/// about what happened.
+struct CommandOutcome {
+    full: String,
+    short: String,
+}
+
 /// The transient operator-feedback slot: the terminal outcome of the operator's
 /// LAST command, rendered for the Status line.
 ///
@@ -4559,7 +4583,7 @@ const OUTCOME_CAUSE_ABSENT: &str = "cause not reported";
 /// the command it belongs to. A timer would have needed a clock in a pure
 /// projection and would have hidden the outcome from an operator who looked
 /// away for a moment; the stream already carries the only boundary that matters.
-fn project_command_outcome(events: &[ConsoleEvent]) -> Option<String> {
+fn project_command_outcome(events: &[ConsoleEvent]) -> Option<CommandOutcome> {
     events
         .iter()
         .rev()
@@ -4620,17 +4644,30 @@ fn project_command_outcome(events: &[ConsoleEvent]) -> Option<String> {
 }
 
 /// One command's Status-line message: which command, how it ended, and the
-/// cause when one is carried.
-fn command_outcome_notice(command: &str, outcome: &str, cause: Option<String>) -> String {
-    cause.map_or_else(
+/// cause when one is carried, beside the short form a narrow band draws.
+///
+/// The short form names the command by its FIRST word -- `dispatch item`
+/// becomes `dispatch` -- and drops the cause, so
+/// `last command: dispatch item failed — cause not reported` shortens to
+/// `last: dispatch failed`. A one-word command name (`drain`) and an action id
+/// (`approve:lcbf-k0w`) carry no space and so are named whole.
+fn command_outcome_notice(command: &str, outcome: &str, cause: Option<String>) -> CommandOutcome {
+    let full = cause.map_or_else(
         || format!("last command: {command} {outcome}"),
         |cause| format!("last command: {command} {outcome} — {cause}"),
-    )
+    );
+    let head = command
+        .split_once(' ')
+        .map_or(command, |(head, _rest)| head);
+    CommandOutcome {
+        full,
+        short: format!("last: {head} {outcome}"),
+    }
 }
 
 /// A failed command's Status-line message: the cause its stored error payload
 /// carries, or an explicit statement that the payload carries none.
-fn failed_command_notice(command: &str, payload_json: &str) -> String {
+fn failed_command_notice(command: &str, payload_json: &str) -> CommandOutcome {
     command_outcome_notice(
         command,
         "failed",
@@ -4910,8 +4947,25 @@ fn hint_display_width(line: &str) -> usize {
     line.chars().count()
 }
 
-/// The hint row with the `kept` segments joined back together and the count of
-/// everything shed carried as an explicit `+N more` marker.
+/// The key the overflow marker names as the door to everything the band could
+/// not draw.
+///
+/// Pinned to the registry's `open-help` accelerator by
+/// `the_overflow_marker_names_the_registrys_help_key`, so the marker can never
+/// name a key Help has stopped being bound to.
+const HINT_OVERFLOW_KEY: &str = "?";
+
+/// The hint row with the `kept` segments joined back together and everything
+/// shed carried as an explicit `+N more: ?` marker.
+///
+/// The marker NAMES the key that reopens what it counted rather than only
+/// counting it. `+5 more` told an operator that five hints existed and nothing
+/// about how to read them, so at exactly the widths where the roster was most
+/// needed the overflow was a dead end; `?` opens Help on the focused pane's own
+/// section, which is where those hints are listed. That door is also what lets
+/// the per-item verbs yield ahead of navigation and the last command's verdict
+/// in [`HintPriority`](action_registry::HintPriority) — a shed verb is one
+/// keystroke from being read, and neither of the other two is.
 ///
 /// Callers shed at least one segment before composing, so the marker is
 /// unconditional here; a row that fits is returned by [`fit_footer_line`]
@@ -4924,16 +4978,43 @@ fn compose_footer_line(segments: &[&str], kept: &[bool]) -> String {
         .filter(|(_segment, keep)| **keep)
         .map(|(segment, _keep)| (*segment).to_owned())
         .collect::<Vec<_>>();
-    parts.push(format!("+{shed} more"));
+    parts.push(format!("+{shed} more: {HINT_OVERFLOW_KEY}"));
     parts.join(HINT_SEPARATOR)
 }
 
+/// The declared priority of one Status-line segment.
+///
+/// [`action_registry::hint_priority`] is derived from the registry and reads an
+/// unregistered segment as a navigation cue, which is right for the list-edge
+/// cue and wrong for the one other unregistered segment the row can carry: the
+/// last command's verdict. That segment is composed by
+/// [`TuiScreenModel::footer`], not by an action, so the fitter is where it is
+/// recognised. It is matched in its SHORT form alone because
+/// [`fit_footer_line`] abbreviates the verdict before it sheds anything, so by
+/// the time a segment is ranked the row can only carry the short form.
+fn footer_segment_priority(
+    segment: &str,
+    outcome: Option<&CommandOutcome>,
+) -> action_registry::HintPriority {
+    if outcome.is_some_and(|outcome| segment == outcome.short) {
+        action_registry::HintPriority::Outcome
+    } else {
+        action_registry::hint_priority(segment)
+    }
+}
+
 /// Compose the width-fitted Status line. See [`TuiScreenModel::footer_line`] for
-/// the degradation contract. This is the pure core: each hint segment is atomic
-/// — kept or shed whole, never mid-truncated — and while the row is over `width`
-/// it sheds one more segment, lowest declared priority first and right-to-left
-/// within a priority, re-measuring after each step and stopping as soon as it
-/// fits.
+/// the degradation contract. This is the pure core: the last command's verdict
+/// ABBREVIATES to its short form first, and then each remaining segment is
+/// atomic — kept or shed whole, never mid-truncated — so while the row is over
+/// `width` it sheds one more segment, lowest declared priority first and
+/// right-to-left within a priority, re-measuring after each step and stopping as
+/// soon as it fits.
+///
+/// The verdict abbreviates BEFORE anything is shed because the two facts its
+/// short form keeps -- which command, how it ended -- are worth more than the
+/// dial its 34 saved columns would otherwise have bought, and because a verdict
+/// is the one segment the overflow marker's door cannot reopen.
 ///
 /// Right-to-left within a priority keeps the LEFTMOST segment of a class
 /// longest, which is what preserves the list-edge cue ahead of the navigation
@@ -4941,15 +5022,22 @@ fn compose_footer_line(segments: &[&str], kept: &[bool]) -> String {
 ///
 /// The final `take(width)` is the degenerate tail: a band too narrow even for
 /// the bare marker still must not return a row wider than the space on offer.
-fn fit_footer_line(hints: &str, width: usize) -> String {
+fn fit_footer_line(hints: &str, width: usize, outcome: Option<&CommandOutcome>) -> String {
     if hint_display_width(hints) <= width {
         return hints.to_owned();
     }
-    let segments = hints.split(HINT_SEPARATOR).collect::<Vec<_>>();
+    let row = outcome.map_or_else(
+        || hints.to_owned(),
+        |outcome| hints.replace(outcome.full.as_str(), &outcome.short),
+    );
+    if hint_display_width(&row) <= width {
+        return row;
+    }
+    let segments = row.split(HINT_SEPARATOR).collect::<Vec<_>>();
     let mut shed_order = (0..segments.len()).collect::<Vec<_>>();
     shed_order.sort_by_key(|index| {
         (
-            action_registry::hint_priority(segments[*index]),
+            footer_segment_priority(segments[*index], outcome),
             Reverse(*index),
         )
     });
@@ -9572,22 +9660,23 @@ mod tests {
     };
     use super::{
         ActionFailure, ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
-        AutonomousAudit, AutonomousDecisionsPort, ConfigCommandOutcome,
+        AutonomousAudit, AutonomousDecisionsPort, CommandOutcome, ConfigCommandOutcome,
         DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettingWriteState,
         DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead,
         FactoryDispatchItemPort, FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest,
         FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        FocusPane, HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HelpFocus,
+        FocusPane, HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HINT_OVERFLOW_KEY, HelpFocus,
         JournalAutonomousDecisionsPort, LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge,
         MAX_TRANSIENT_STATUS_CHARS, OUTCOME_CAUSE_ABSENT, OperatorAction, OperatorActionOutcome,
         OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
         OverrideInt, PendingValve, PluginResolution, RejectMode, SettingRow, SettingRowStatus,
         TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
-        build_tui_model, build_tui_model_for_state, command_palette_query_opens_action_invoker,
-        dispatcher_setting_rows, dispatcher_setting_write_settled, drilldown_item_count,
-        factory_dispatch_item_command, fit_footer_line, fold_dispatcher_setting_reread,
+        build_tui_model, build_tui_model_for_state, command_outcome_notice,
+        command_palette_query_opens_action_invoker, dispatcher_setting_rows,
+        dispatcher_setting_write_settled, drilldown_item_count, factory_dispatch_item_command,
+        fit_footer_line, fold_dispatcher_setting_reread,
         handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
         handle_factory_drain_command, handle_work_item_accept_command,
         handle_work_item_approve_command, handle_work_item_move_command,
@@ -17125,48 +17214,161 @@ mod tests {
         )
     }
 
+    /// The policy dials the drilled ready lane offers -- the class the
+    /// 2026-09-08 dogfood passes measured surviving while the way back out of
+    /// the lane and the last command's verdict were already gone.
+    const READY_LANE_DIALS: [&str; 4] = [
+        "g merge cap",
+        "f fix cap",
+        "n set-acceptance",
+        "k rework cap",
+    ];
+
+    /// How the operator moves over the lane, opens a row, and leaves it again.
+    const READY_LANE_WAY_AROUND: [&str; 3] = ["up/down move", "enter item", "esc lane list"];
+
+    /// The dogfooded verdict, in the shape `FactoryDispatchItemFailed` composes
+    /// when the stored error payload names no cause: the 55-column message that
+    /// used to be shed whole from a 105-column band.
+    fn dispatch_failed_outcome() -> CommandOutcome {
+        command_outcome_notice(
+            "dispatch item",
+            "failed",
+            Some(OUTCOME_CAUSE_ABSENT.to_owned()),
+        )
+    }
+
     #[test]
     fn a_narrow_status_band_declares_the_hints_it_could_not_draw() {
         // The measured defect (2026-09-08, a 105-column pane): the band ran out
         // of room mid-row and simply STOPPED, so an operator could not tell an
-        // unavailable verb from an undrawn one. Whatever is shed is now COUNTED.
+        // unavailable verb from an undrawn one. Whatever is shed is now COUNTED
+        // -- and named with the key that reopens it.
         let hints = ready_item_hints();
         assert!(hint_display_width(&hints) > 98);
 
-        let fitted = fit_footer_line(&hints, 98);
+        let fitted = fit_footer_line(&hints, 98, None);
         assert!(hint_display_width(&fitted) <= 98);
         check(
-            fitted.ends_with(" more") && fitted.contains('+'),
-            "a band too narrow for every hint must say how many it dropped",
+            fitted.ends_with(&format!(" more: {HINT_OVERFLOW_KEY}")) && fitted.contains('+'),
+            "a band too narrow for every hint must say how many it dropped and where to read them",
         );
     }
 
     #[test]
-    fn the_status_band_sheds_navigation_before_the_verbs_the_selection_admits() {
-        // Priority, not position. `d dispatch` sits at the RIGHT-HAND end of the
-        // registry's canonical hint order, so plain clipping took it first --
-        // exactly the action the factory exists for. Navigation keys are
-        // conventional and discoverable by pressing them; an available verb is
-        // not, so the verbs outlive them.
-        let fitted = fit_footer_line(&ready_item_hints(), 98);
+    fn the_overflow_marker_names_the_registrys_help_key() {
+        // The marker is a DOOR, so the key it names has to be the key that
+        // actually opens Help. Pinned against the registry rather than against
+        // a second copy of the character, so rebinding Help moves both.
+        let bound =
+            action_registry::action_for_id("open-help").map(action_registry::accelerator_display);
+        check(
+            bound.as_deref() == Some(HINT_OVERFLOW_KEY),
+            "the overflow marker must name the key the registry binds Help to",
+        );
+    }
 
+    #[test]
+    fn the_status_band_sheds_the_policy_dials_before_the_way_back_out() {
+        // livespec-console-beads-fabro-mx9u.1. The ranking used to shed
+        // navigation FIRST, so at 98 columns the drilled ready lane drew four
+        // rarely-used dials while `esc lane list` -- the only way back out of
+        // the lane -- was gone. A dial is a configuration override an operator
+        // reaches for occasionally; the way out is how they undo the drill-in.
+        let fitted = fit_footer_line(&ready_item_hints(), 98, None);
+
+        for token in READY_LANE_WAY_AROUND {
+            check(
+                fitted.contains(token),
+                "the way around the lane must survive the width squeeze",
+            );
+        }
+        for dial in READY_LANE_DIALS {
+            check(
+                !fitted.contains(dial),
+                "and the policy dials must be what yielded to make room for it",
+            );
+        }
+    }
+
+    #[test]
+    fn no_width_draws_a_policy_dial_while_the_way_back_out_is_missing() {
+        // The ordering stated as the property it is, over every width the band
+        // can be given rather than the two the dogfood passes happened to
+        // measure: a dial is never on screen unless all three navigation keys
+        // already are.
+        let hints = ready_item_hints();
+        for width in 1..=hint_display_width(&hints) {
+            let fitted = fit_footer_line(&hints, width, None);
+            let drew_a_dial = READY_LANE_DIALS.iter().any(|dial| fitted.contains(dial));
+            let drew_the_way_out = READY_LANE_WAY_AROUND
+                .iter()
+                .all(|token| fitted.contains(token));
+            check(
+                !drew_a_dial || drew_the_way_out,
+                "a dial must never outlive the way back out of the lane",
+            );
+        }
+    }
+
+    #[test]
+    fn the_last_commands_verdict_shortens_before_a_single_hint_is_shed() {
+        // 34 of the verdict's 55 columns are the command's full name and the
+        // cause; the two facts an operator cannot reconstruct are WHICH command
+        // and HOW it ended. Giving those up to keep one more dial was the trade
+        // the old fitter made, because it could only shed segments whole.
+        let outcome = dispatch_failed_outcome();
+        let hints = ready_item_hints();
+        let row = format!("{hints} | {}", outcome.full);
+
+        let fitted = fit_footer_line(&row, 200, Some(&outcome));
+
+        assert_eq!(fitted, format!("{hints} | last: dispatch failed"));
         check(
-            fitted.contains("d dispatch"),
-            "the verb the pane exists for must survive the width squeeze",
+            !fitted.contains(" more: "),
+            "abbreviating the verdict alone must be enough at this width, with nothing shed",
         );
+    }
+
+    #[test]
+    fn the_last_commands_verdict_outlives_every_dial_and_every_verb() {
+        // The 105-column pane the report measured. The verdict is the one
+        // segment the overflow marker's door cannot reopen -- Help lists
+        // actions, and the event stream retires the verdict the moment the next
+        // command starts -- so it yields only once every dial and every verb
+        // already has.
+        let outcome = dispatch_failed_outcome();
+        let hints = ready_item_hints();
+        let fitted = fit_footer_line(&format!("{hints} | {}", outcome.full), 105, Some(&outcome));
+
+        assert!(hint_display_width(&fitted) <= 105);
         check(
-            !fitted.contains("up/down move"),
-            "and the navigation keys must be what yielded to make room for it",
+            fitted.contains("last: dispatch failed"),
+            "the verdict of the command just run must still be readable at 105 columns",
         );
+        for gone in READY_LANE_DIALS
+            .into_iter()
+            .chain(["d dispatch", "h handoff"])
+        {
+            check(
+                !fitted.contains(gone),
+                "and it must have outlived every dial and every verb to get there",
+            );
+        }
     }
 
     #[test]
     fn a_status_band_wide_enough_carries_the_hint_row_untouched() {
         // The no-regression half: given room, the fitter is the identity, so
-        // every hint the context owns renders exactly as it does today.
+        // every hint the context owns renders exactly as it does today -- and
+        // the verdict keeps its cause rather than being abbreviated for nothing.
         let hints = ready_item_hints();
-        assert_eq!(fit_footer_line(&hints, 300), hints);
+        assert_eq!(fit_footer_line(&hints, 300, None), hints);
         assert!(!hints.contains(" more"));
+
+        let outcome = dispatch_failed_outcome();
+        let row = format!("{hints} | {}", outcome.full);
+        assert_eq!(fit_footer_line(&row, 300, Some(&outcome)), row);
     }
 
     #[test]
@@ -17174,7 +17376,7 @@ mod tests {
         // The degenerate tail. Nothing useful can be said in four columns, but
         // the fitter still must not hand the renderer a row wider than the band
         // and let the clip it exists to prevent happen anyway.
-        let fitted = fit_footer_line(&ready_item_hints(), 4);
+        let fitted = fit_footer_line(&ready_item_hints(), 4, None);
         assert_eq!(fitted, "+13 ");
     }
 

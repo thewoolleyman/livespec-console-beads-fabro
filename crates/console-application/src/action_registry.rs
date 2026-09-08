@@ -962,33 +962,73 @@ pub fn selected_item_hint(ctx: &ActionContext, row_count: usize) -> String {
 /// action is ranked the moment it is registered rather than the moment somebody
 /// remembers to rank it — the same single-derivation rule that keeps hidden
 /// hints and inert keys from diverging.
+///
+/// The ladder was INVERTED on 2026-09-08 (`livespec-console-beads-fabro-mx9u.1`,
+/// from the Fable UX review of the dogfood passes). It had put the verbs last
+/// because "an operator cannot discover an available verb by guessing", and the
+/// measured consequence was that at 105 columns the drilled ready lane drew
+/// four rarely-used policy dials while the way BACK OUT of the lane (`esc lane
+/// list`) and the verdict of the command just run were the first things gone.
+/// Two facts settle it. The overflow marker now NAMES the key that reopens what
+/// it counted (`+N more: ?`), so a shed verb is one keystroke from being read,
+/// not lost — which is exactly the discoverability the old ranking was buying.
+/// And nothing behind that door tells the operator where they are, how to
+/// leave, or how their last command ended: navigation is not in the Help
+/// roster's per-item action list, and a transient verdict is gone the moment
+/// the next command starts.
 pub enum HintPriority {
-    /// Pane navigation and transient context: where `up`/`down`, `enter` and
-    /// `esc` go, plus the list-edge cue. Shed first — these keys are
-    /// conventional, they are discoverable by pressing them, and none of them
-    /// acts on the selected work-item.
-    Navigation,
     /// A `Policy dials` action: an override the operator SETS on the selection.
-    /// Real per-item work, but configuration rather than a lifecycle move, so
-    /// it yields ahead of the verbs.
+    /// Real per-item work, but configuration rather than a lifecycle move, and
+    /// the class the dogfood passes measured as rarely used, so it yields first.
     PolicyDial,
-    /// The always-live globals (`? help`, `q quit`). `? help` outranks the
-    /// dials because it opens the roster listing every hint an overflow marker
-    /// has counted but could not draw.
-    Global,
     /// A per-item VERB the selection currently admits: dispatch, the lifecycle
-    /// valves, the driver handoff. Shed LAST — an operator cannot discover an
-    /// available verb by guessing, so silently dropping one under-reports what
-    /// the console can do, which is the defect this ranking exists to prevent.
+    /// valves, the driver handoff. Recoverable behind the overflow marker's
+    /// named key, so it yields ahead of the things that marker cannot restore.
     Verb,
+    /// The last command's terminal verdict. Not a registered action — the
+    /// Status band's fitter classifies it, since it is composed by
+    /// `TuiScreenModel::footer` rather than derived from [`ACTION_REGISTRY`].
+    /// It outranks the verbs because the Help roster can replay a verb and
+    /// cannot replay a verdict, and it is ABBREVIATED before it is shed.
+    Outcome,
+    /// Pane navigation and transient context: where `up`/`down`, `enter` and
+    /// `esc` go, plus the list-edge cue. `esc lane list` is the way back out of
+    /// a drilled-in lane, and an operator who cannot see it has no undo for the
+    /// drill-in; the Help roster lists per-item ACTIONS, not this.
+    Navigation,
+    /// The always-live globals (`? help`, `q quit`). Shed LAST because `? help`
+    /// is the door the overflow marker names: drop it and the marker points at
+    /// a key the band no longer advertises.
+    Global,
 }
 
 /// The [`HintPriority`] of one ` | `-delimited Status-line hint segment.
 ///
 /// A segment matching no registered action's hint token is pane navigation or a
-/// transient cue, which is exactly the class that yields first.
+/// transient cue, and is ranked with the navigation keys. Two segments this
+/// default gets WRONG are checked first: the command-outcome verdict, which is
+/// why the Status band's fitter classifies that one itself rather than asking
+/// here, and the collapsed view-switch range (`1-6 view`) from
+/// [`view_switch_hint_token`] — it stands for six REGISTERED actions
+/// collapsed into one token by [`global_status_hint_tokens`], not a raw
+/// navigation cue, so it is ranked with [`HintPriority::Verb`] rather than
+/// falling through to the Navigation default. `Navigation`'s whole
+/// justification (see its variant doc) is that it is absent from the Help
+/// roster's per-item action list; the six view-switch actions this token
+/// stands for are each a registered action WITH a menu row, so they are
+/// exactly as recoverable behind the overflow marker's `?` door as any other
+/// verb.
+///
+/// Measured 2026-09-08 once `mx9u.5`'s view-switch keys landed beside this
+/// item's inverted shed ladder: at the report's own 105-column pane, the
+/// Navigation default held the range through every dial and verb PLUS the
+/// verdict, leaving no room for the verdict to survive shedding all of them —
+/// the acceptance criterion this item exists to guarantee.
 #[must_use]
 pub fn hint_priority(segment: &str) -> HintPriority {
+    if view_switch_hint_token(&view_switch_digits()).as_deref() == Some(segment) {
+        return HintPriority::Verb;
+    }
     ACTION_REGISTRY
         .iter()
         .find(|spec| !spec.hint_token.is_empty() && spec.hint_token == segment)

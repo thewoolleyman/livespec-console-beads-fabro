@@ -8385,39 +8385,135 @@ mod tests {
         }
     }
 
+    /// The dogfooded drilled-ready-lane screen with a terminal outcome PENDING:
+    /// the operator has pressed `d`, the dispatch has come back failed with a
+    /// payload naming no cause, and they are looking at the band that has to
+    /// tell them so.
+    fn dispatch_failed_events() -> Vec<ConsoleEvent> {
+        let mut events = dispatch_key_events(Lane::Ready);
+        events.push(
+            ConsoleEvent::fixture(
+                "evt_dispatch_key_failed",
+                EventType::FactoryDispatchItemFailed,
+                "console:factory-command-handler",
+            )
+            .with_payload_json("{}".to_owned()),
+        );
+        events
+    }
+
+    /// The Status band as the operator reads it, drawn into a `width`-column
+    /// pane. The band measures the room INSIDE its own borders, so this is the
+    /// rendered text, not the model string.
+    fn status_band_drawn_at(model: &TuiScreenModel, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 3);
+        let mut buffer = Buffer::empty(area);
+        render_footer(model, area, &mut buffer);
+        buffer_to_text(&buffer, area)
+    }
+
     #[test]
-    fn the_narrow_status_band_marks_its_overflow_and_keeps_the_dispatch_verb() {
+    fn the_narrow_status_band_marks_its_overflow_and_keeps_the_way_back_out() {
         // livespec-console-beads-fabro-pzbdbo.26, dogfooded in a 105-column
-        // pane: a ready row was selected, the Status band ended before reaching
-        // `d dispatch`, and NOTHING on screen said a hint had been dropped --
-        // widening to 240 columns was the only way to find out. At the RENDERED
-        // band, the honesty rule is that an available action is never silently
-        // hidden.
+        // pane: a ready row was selected, the Status band ended mid-row, and
+        // NOTHING on screen said a hint had been dropped -- widening to 240
+        // columns was the only way to find out. Its follow-up, mx9u.1, is which
+        // hints the band keeps when it cannot keep them all: the shed count is
+        // now a DOOR, so the rarely-used policy dials yield first and `esc lane
+        // list` -- the only way back out of the drilled-in lane -- stays.
         let events = dispatch_key_events(Lane::Ready);
         let state = dispatch_key_state(Lane::Ready, false, TuiOverlay::None);
         let model = build_tui_model_for_state(&events, &state);
 
         // The premise: this row genuinely cannot fit inside a 100-column band
         // (98 columns inside its borders), so this is the truncating case.
-        let narrow = Rect::new(0, 0, 100, 3);
         assert!(model.footer().chars().count() > 98);
 
-        let mut buffer = Buffer::empty(narrow);
-        render_footer(&model, narrow, &mut buffer);
-        let status = buffer_to_text(&buffer, narrow);
+        let status = status_band_drawn_at(&model, 100);
         let fitted = model.footer_line(98);
 
         check(
-            status.contains(&fitted) && fitted.ends_with(" more"),
-            "the band must draw the fitted row and declare the hints it dropped",
+            status.contains(&fitted) && fitted.ends_with(" more: ?"),
+            "the band must draw the fitted row and name the key that reopens what it dropped",
         );
         check(
-            status.contains("d dispatch"),
-            "the dispatch verb must survive where the selection admits it",
+            status.contains("esc lane list"),
+            "the way back out of the lane must survive the width squeeze",
         );
         check(
-            !status.contains("up/down move"),
-            "and navigation must be what yielded to make room for it",
+            !status.contains("g merge cap") && !status.contains("k rework cap"),
+            "and the policy dials must be what yielded to make room for it",
+        );
+    }
+
+    #[test]
+    fn the_narrow_status_band_still_reports_how_the_last_command_ended() {
+        // The measured 105-column row, with a dispatch that had just failed:
+        // `last command: dispatch item failed — cause not reported` is 55 of
+        // those columns, so the band shed it whole and the operator was left
+        // with no sign at all that the key they had just pressed had failed.
+        // It now ABBREVIATES instead, and yields only after every dial has.
+        let events = dispatch_failed_events();
+        let state = dispatch_key_state(Lane::Ready, false, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+        assert!(
+            model
+                .footer()
+                .contains("last command: dispatch item failed")
+        );
+
+        let status = status_band_drawn_at(&model, 107);
+
+        check(
+            status.contains("last: dispatch failed"),
+            "a 105-column band must still say which command failed",
+        );
+        for dial in [
+            "g merge cap",
+            "f fix cap",
+            "n set-acceptance",
+            "k rework cap",
+        ] {
+            check(
+                !status.contains(dial),
+                "and every policy dial must have been dropped before it",
+            );
+        }
+    }
+
+    #[test]
+    fn the_overflow_marker_is_a_door_onto_the_focused_panes_help_section() {
+        // `+N more` counted what the band could not draw and said nothing about
+        // how to read it, which made the overflow a dead end at exactly the
+        // widths where the roster was most needed. The marker now names `?`,
+        // and `?` opens Help on the section for the pane the operator is in --
+        // so the count is a door, and the key it names is the key that works.
+        let events = dispatch_failed_events();
+        let state = dispatch_key_state(Lane::Ready, false, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let status = status_band_drawn_at(&model, 107);
+        let marker = status
+            .lines()
+            .find_map(|line| line.split(" | ").find(|segment| segment.starts_with('+')))
+            .unwrap_or_default()
+            .trim_end_matches(['│', ' ']);
+        assert_eq!(marker, "+6 more: ?", "{status}");
+
+        // The key the marker names is bound, and it opens Help on THIS pane's
+        // section rather than on the global roster.
+        assert_eq!(
+            key_event_to_terminal_input(chord_event(action_registry::KeyChord::plain('?')), &model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::OpenHelp))
+        );
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenHelp);
+        assert_eq!(
+            opened.overlay(),
+            &TuiOverlay::Help {
+                focus: HelpFocus::Menu,
+                selected_section: help_section_for_view(TuiView::Lanes),
+                scroll: 0,
+            }
         );
     }
 
