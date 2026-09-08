@@ -141,7 +141,13 @@ still ended its turn on a "still outstanding" list).
    with Escape, and the mutating keys h s p c r m g f n k are never pressed
    unless the pass is explicitly a mutation test. Never kill the pane at the
    end of a pass. A subagent's wait loop must not key on
-   `pane_current_command` matching the binary name (it never does).
+   `pane_current_command` matching the binary name (it never does). Every
+   dogfood pass ends by writing the `tui-ux-report` comment defined in
+   `plan/retire-overseer-and-redesign-control-plane-around-console/research/tui-ux-rubric.md`
+   on the work item it exercised (maintainer ruling 2026-09-08); when that
+   item closes, a Fable-model agent turns the report into items under the
+   TUI UX improvements epic (label `track:tui-ux`), which are dispatched as
+   filed and reported on at least every two hours.
 
 ## Repository scope
 
