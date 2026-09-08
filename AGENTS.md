@@ -166,6 +166,19 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
   unblocks on it. No "reaction" prose, no per-follow-up commentary, nothing the
   maintainer has to sift or guess from. Everything else belongs on the ledger
   items, not in the handoff.
+- **Never spend the frontier model's tokens on mechanical work — delegate it
+  to a cheap subagent.** (Maintainer ruling 2026-09-08, given as an
+  interruption while the plan session was about to run a commit/push/PR
+  sequence itself.) The plan session decides, writes the words that carry
+  judgment (commit messages, handoff bodies, rulings, PR descriptions), and
+  verifies outcomes. Everything mechanical — commit, push, PR open, auto-merge
+  arming, merge waits, primary refresh, worktree and branch cleanup, ledger
+  reads and bulk updates, log scans, CI polling, registry edits — goes to an
+  Agent with `model: haiku` (or `sonnet` when hook failures need reading),
+  with the exact commands, the expected end state, and a one-line reporting
+  rule. Run independent delegations in parallel. The plan session reads the
+  agent's report and verifies the end state with one cheap check, never by
+  redoing the work.
 - **Don't stop to ask what you should just do.** Execute the agreed plan and the
   obvious next steps yourself; reserve questions for genuinely maintainer-owned
   choices you cannot resolve from the request, the code, or sensible defaults —
