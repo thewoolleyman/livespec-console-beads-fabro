@@ -102,7 +102,7 @@ impl SourceAdapterKind {
 pub fn event_source_roster_help_lines() -> Vec<String> {
     SourceAdapterKind::all()
         .iter()
-        .map(|kind| format!("  {:<15}{}", kind.source_name(), kind.observes()))
+        .map(|kind| format!("  {:<17}{}", kind.source_name(), kind.observes()))
         .collect()
 }
 
@@ -5321,7 +5321,7 @@ mod tests {
         let lines = event_source_roster_help_lines();
         assert_eq!(lines.len(), SourceAdapterKind::all().len());
         for kind in SourceAdapterKind::all() {
-            let expected = format!("  {:<15}{}", kind.source_name(), kind.observes());
+            let expected = format!("  {:<17}{}", kind.source_name(), kind.observes());
             check(
                 lines.contains(&expected),
                 &format!(
