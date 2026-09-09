@@ -7,7 +7,8 @@
 #![forbid(unsafe_code)]
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -528,6 +529,130 @@ fn summary(text: &str) -> String {
 impl CommandOutput {
     fn combined(&self) -> String {
         format!("{}{}", self.stdout, self.stderr)
+    }
+}
+
+/// The `cargo nextest run` argument vector for `scope`, MINUS the leading
+/// `cargo` program name.
+///
+/// This is the SINGLE source of truth for how this checker runs the test
+/// suite. It exists as a pure, unit-testable function — rather than being
+/// inlined into [`ProcessRunner::cargo_test`] — specifically so
+/// `tests/nextest_runner_parity.rs` can assert its `TestScope::Workspace`
+/// output matches the `justfile`'s `check-nextest` recipe byte-for-byte. That
+/// parity is the fix for livespec-console-beads-fabro-pzbdbo.36: this checker
+/// (run by the commit-msg hook) and `just check` / CI used to run the
+/// workspace suite under two DIFFERENT runners (plain `cargo test` here,
+/// `cargo nextest run` there), which do not agree on what environment they
+/// hand a test process — see `PORTED_FROM_UPSTREAM`'s sibling doc comment on
+/// [`ProcessRunner`] for the concrete divergence this caused. Making both
+/// layers call this one function (directly here, and via the parity test's
+/// comparison against the justfile text) is preferred over teaching each
+/// layer the invocation separately, which is how they drifted apart the
+/// first time.
+#[must_use]
+pub fn nextest_command_args(scope: &TestScope) -> Vec<String> {
+    let mut args = vec![
+        "nextest".to_owned(),
+        "run".to_owned(),
+        "--workspace".to_owned(),
+        "--all-features".to_owned(),
+    ];
+    if let TestScope::Integration { package, target } = scope {
+        args.push("--package".to_owned());
+        args.push(package.clone());
+        args.push("--test".to_owned());
+        args.push(target.clone());
+    }
+    args
+}
+
+/// Real [`Runner`] used by the `console-red-green-replay-check` binary (the
+/// commit-msg hook) and by regression tests that need to run genuine `cargo`
+/// / `git` processes.
+///
+/// Runs the test suite under **`cargo nextest run`** — the SAME runner the
+/// `just check` aggregate's `check-nextest` recipe uses — via
+/// [`nextest_command_args`], never plain `cargo test`. Before this fix the
+/// commit-msg hook ran plain `cargo test` while `just check` (and CI) ran
+/// `cargo nextest run`; the two disagree about what environment they hand a
+/// test process (concretely: whether `CARGO_BIN_EXE_*` is exported to the
+/// running test, not just baked in at compile time), which let a test that
+/// passed under nextest and failed under `cargo test` pass CI while blocking
+/// every commit through this hook. See
+/// `tests/cargo_bin_exe_runtime_divergence.rs` for a reproduction and
+/// `tests/nextest_runner_parity.rs` for the regression guard against this
+/// drifting apart again. See also CLAUDE.md's Red-Green-Replay section.
+pub struct ProcessRunner {
+    /// `None` runs in the calling process's current directory (the normal
+    /// case: the commit-msg hook always runs from the repository root).
+    /// `Some` is for tests that must run against an isolated fixture package
+    /// instead of this repository's own workspace.
+    workdir: Option<PathBuf>,
+}
+
+impl Default for ProcessRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProcessRunner {
+    /// Runs in the calling process's current directory.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { workdir: None }
+    }
+
+    /// Runs in `workdir` instead of the calling process's current directory.
+    #[must_use]
+    pub fn with_workdir(workdir: &Path) -> Self {
+        Self {
+            workdir: Some(workdir.to_path_buf()),
+        }
+    }
+}
+
+impl Runner for ProcessRunner {
+    // `Path::new(".")` inside `unwrap_or` is cheap (no allocation, no I/O),
+    // so clippy's perf-motivated `or_fun_call` does not apply here; the
+    // point of eager evaluation is coverage-region shape, not performance —
+    // `if let Some(workdir) = &self.workdir { command.current_dir(workdir); }`
+    // left the coverage-region gate (`just check-coverage`, the MERGED
+    // reachable-region view) unable to see the branch's gap region as
+    // executed even though the branch runs on every call this crate makes.
+    #[allow(clippy::or_fun_call)]
+    fn git(&self, args: &[&str]) -> Result<CommandOutput, String> {
+        let mut command = Command::new("git");
+        command.args(args);
+        // `None` falls back to `.`, which is a no-op — a bare `Command`
+        // already inherits the calling process's current directory — so
+        // this needs no branch at all. See the `or_fun_call` note above.
+        command.current_dir(self.workdir.as_deref().unwrap_or(Path::new(".")));
+        let output = command
+            .output()
+            .map_err(|err| format!("git {}: {err}", args.join(" ")))?;
+        Ok(CommandOutput {
+            code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    #[allow(clippy::or_fun_call)]
+    fn cargo_test(&self, scope: TestScope) -> Result<CommandOutput, String> {
+        let args = nextest_command_args(&scope);
+        let mut command = Command::new("cargo");
+        command.args(&args);
+        command.current_dir(self.workdir.as_deref().unwrap_or(Path::new(".")));
+        let output = command
+            .output()
+            .map_err(|err| format!("cargo {}: {err}", args.join(" ")))?;
+        Ok(CommandOutput {
+            code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 }
 
@@ -1347,5 +1472,112 @@ mod tests {
         );
         assert_eq!(integration_scope("crates/console-cli/tests/flow"), None);
         let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn nextest_command_args_covers_workspace_and_integration_scopes() {
+        assert_eq!(
+            nextest_command_args(&TestScope::Workspace),
+            vec!["nextest", "run", "--workspace", "--all-features"]
+        );
+        assert_eq!(
+            nextest_command_args(&TestScope::Integration {
+                package: "console-red-green-replay-check".to_owned(),
+                target: "trailer_block_parity".to_owned(),
+            }),
+            vec![
+                "nextest",
+                "run",
+                "--workspace",
+                "--all-features",
+                "--package",
+                "console-red-green-replay-check",
+                "--test",
+                "trailer_block_parity",
+            ]
+        );
+    }
+
+    #[test]
+    fn process_runner_default_and_new_both_run_in_the_current_directory() {
+        assert!(ProcessRunner::default().workdir.is_none());
+        assert!(ProcessRunner::new().workdir.is_none());
+        assert_eq!(
+            ProcessRunner::with_workdir(Path::new(".")).workdir,
+            Some(PathBuf::from("."))
+        );
+    }
+
+    #[test]
+    // Eager `unwrap_or` below (not `_else`): its fallback is constructed on
+    // every call, Ok or Err, so this line carries no branch that only runs
+    // when the (already-asserted-impossible) Err arm is taken — matching the
+    // `check()` helper's eager-argument style used throughout this file. The
+    // fallback is cheap (a two-field struct literal, no I/O), so clippy's
+    // perf-motivated `or_fun_call` does not apply.
+    #[allow(clippy::or_fun_call)]
+    fn process_runner_git_runs_a_real_git_process_in_the_configured_workdir() {
+        let result = ProcessRunner::with_workdir(Path::new(".")).git(&["--version"]);
+        check(result.is_ok(), &format!("git --version: {result:?}"));
+        let output = result.unwrap_or(CommandOutput::failure("did not run"));
+        check(
+            output.code == 0,
+            &format!("git --version exit code: {output:?}"),
+        );
+        check(
+            output.stdout.contains("git version"),
+            &format!("git --version stdout: {}", output.stdout),
+        );
+    }
+
+    #[test]
+    fn process_runner_git_reports_a_spawn_failure() {
+        let result = ProcessRunner::with_workdir(Path::new(
+            "/console-red-green-replay-check-nonexistent-workdir",
+        ))
+        .git(&["--version"]);
+        assert!(result.is_err_and(|err| err.starts_with("git --version:")));
+    }
+
+    /// This is the same fixture `tests/cargo_bin_exe_runtime_divergence.rs`
+    /// uses to prove `ProcessRunner` agrees with CI/nextest, not plain
+    /// `cargo test`. Reusing it here (instead of running the real workspace
+    /// suite) is what makes `cargo_test`'s happy path cheap enough to run as
+    /// a `--lib` coverage unit test.
+    fn cargo_bin_exe_divergence_fixture_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cargo-bin-exe-divergence")
+    }
+
+    #[test]
+    // See the `or_fun_call` note on
+    // process_runner_git_runs_a_real_git_process_in_the_configured_workdir.
+    #[allow(clippy::or_fun_call)]
+    fn process_runner_cargo_test_runs_real_nextest_against_the_divergence_fixture() {
+        let fixture = cargo_bin_exe_divergence_fixture_dir();
+        check(
+            fixture.join("Cargo.toml").is_file(),
+            &format!("fixture manifest missing at {}", fixture.display()),
+        );
+        let result = ProcessRunner::with_workdir(&fixture).cargo_test(TestScope::Integration {
+            package: "cargo-bin-exe-divergence-fixture".to_owned(),
+            target: "runtime_only".to_owned(),
+        });
+        check(result.is_ok(), &format!("cargo nextest run: {result:?}"));
+        // See the eager-`unwrap_or` note in
+        // process_runner_git_runs_a_real_git_process_in_the_configured_workdir.
+        let output = result.unwrap_or(CommandOutput::failure("did not run"));
+        check(
+            output.code == 0,
+            &format!("nextest passes the fixture: {output:?}"),
+        );
+    }
+
+    #[test]
+    fn process_runner_cargo_test_reports_a_spawn_failure() {
+        let result = ProcessRunner::with_workdir(Path::new(
+            "/console-red-green-replay-check-nonexistent-workdir",
+        ))
+        .cargo_test(TestScope::Workspace);
+        assert!(result.is_err_and(|err| err.starts_with("cargo nextest run")));
     }
 }

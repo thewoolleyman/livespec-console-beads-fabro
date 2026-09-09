@@ -1,0 +1,23 @@
+# Standalone fixture crate for
+# crates/console-red-green-replay-check/tests/cargo_bin_exe_runtime_divergence.rs.
+#
+# NOT a workspace member (livespec-console-beads-fabro-pzbdbo.36): its whole
+# purpose is to reproduce, on demand, the exact historical divergence between
+# `cargo test` and `cargo nextest run` — an integration test that resolves
+# `CARGO_BIN_EXE_*` via a RUNTIME-only `std::env::var_os` read. Cargo defines
+# that variable for an integration test only at COMPILE time; nextest also
+# exports it to the running test PROCESS, but plain `cargo test` does not. The
+# empty `[workspace]` table below makes this directory its own workspace root
+# so `cargo`/`cargo nextest` invoked with `--manifest-path` here never walk up
+# into the real workspace (which does not list this fixture as a member).
+[workspace]
+
+[package]
+name = "cargo-bin-exe-divergence-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "cargo-bin-exe-divergence-fixture"
+path = "src/main.rs"
