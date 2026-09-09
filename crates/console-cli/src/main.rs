@@ -950,15 +950,21 @@ impl SourceProbe for SystemSourceProbe {
                 } else {
                     // Captured and folded into the not-observed reason rather
                     // than discarded (livespec-console-beads-fabro-pzbdbo.29
-                    // AC3) -- this is the ONLY place `output.stderr` is ever
-                    // read, so a failure with real diagnostic text on stderr
-                    // used to vanish into the bare "source command exited
-                    // non-zero" string with nothing an operator could act on.
+                    // AC3; extended to stdout by mx9u.27) -- this is the ONLY
+                    // place `output.stderr`/`output.stdout` are read on a
+                    // failed run, so a failure with real diagnostic text on
+                    // either stream used to vanish into the bare "source
+                    // command exited non-zero" string with nothing an
+                    // operator could act on. At least one source is suspected
+                    // of reporting its diagnostic on stdout while still
+                    // exiting non-zero, so stdout is captured here too rather
+                    // than discarded just because the exit was a failure.
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
                     let diagnostic = livespec_console_beads_fabro::describe_command_failure(
                         &output.status.to_string(),
                         &stderr,
+                        &stdout,
                         &env,
                     );
                     SourceProbeOutcome::observed_failed(&stdout, &diagnostic)
