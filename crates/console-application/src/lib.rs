@@ -2089,6 +2089,7 @@ pub struct TuiScreenModel {
     dispatcher_setting_write: DispatcherSettingWriteState,
     plugin_resolution: PluginResolution,
     unavailable_sources: Vec<String>,
+    observed_source_names: Vec<String>,
     factory_activity: Option<String>,
     transient_status: Option<String>,
     list_edge: Option<ListEdge>,
@@ -2414,6 +2415,17 @@ impl TuiScreenModel {
     /// every source was observed.
     pub fn unavailable_sources(&self) -> &[String] {
         &self.unavailable_sources
+    }
+
+    #[must_use]
+    /// Every distinct backing-source name this build has EVER observed,
+    /// healthy or degraded, sorted for a stable order. Fed to the "Event
+    /// sources" sub-view's navigation-only skeleton: a NAME-ONLY existence
+    /// claim, never a health claim, so an empty result means this build has
+    /// not yet observed any source at all -- not that every source is
+    /// healthy (a healthy source still appears here).
+    pub fn observed_source_names(&self) -> &[String] {
+        &self.observed_source_names
     }
 
     #[must_use]
@@ -4289,6 +4301,7 @@ fn execution_state_for_snapshot(
 pub struct TuiProjection {
     search_query: Option<String>,
     unavailable_sources: Vec<String>,
+    observed_source_names: Vec<String>,
     attention_entries: Vec<AttentionEntry>,
     attention_items: Vec<AttentionItem>,
     attention_total: usize,
@@ -4310,6 +4323,14 @@ impl TuiProjection {
     pub fn unavailable_sources(&self) -> &[String] {
         &self.unavailable_sources
     }
+
+    // `observed_source_names` has no `TuiProjection`-level accessor: unlike
+    // `unavailable_sources` (which `doctor` reads through this same type),
+    // nothing outside `render_tui_model` consumes the projection's copy today
+    // -- it flows straight to `TuiScreenModel` as a private field. Add one
+    // when a second consumer needs it (the roster item,
+    // `livespec-console-beads-fabro-mx9u.20.2`, is the likely first), rather
+    // than carrying an unused, untested accessor now.
 
     #[must_use]
     /// The needs-attention inbox total, exactly as
@@ -4358,7 +4379,12 @@ pub(crate) fn tui_projection_counters() -> (usize, usize) {
 pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -> TuiProjection {
     #[cfg(test)]
     TUI_PROJECTION_BUILD_COUNT.with(|count| count.set(count.get() + 1));
-    let unavailable_sources = unavailable_sources(events);
+    // Folded ONCE and shared: `unavailable_sources` and `observed_source_names`
+    // are two views over the same per-source tally, not two independent event-
+    // log scans.
+    let source_tally = source_observation_tally(events);
+    let unavailable_sources = unavailable_sources_from_tally(&source_tally);
+    let observed_source_names = source_tally.into_keys().collect::<Vec<_>>();
     let needs_attention_items = materialize_attention_items(events);
     let needs_attention_by_work_item = group_needs_attention_by_work_item(&needs_attention_items);
     let attention_entries = unified_attention_entries(events, search_query, &needs_attention_items);
@@ -4400,6 +4426,7 @@ pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -
     TuiProjection {
         search_query: search_query.map(str::to_owned),
         unavailable_sources,
+        observed_source_names,
         attention_entries,
         attention_items,
         attention_total,
@@ -4484,7 +4511,7 @@ pub fn render_tui_model(
         view_items: view_summary_items(
             active_view,
             events_focus,
-            &projection.unavailable_sources,
+            &projection.observed_source_names,
             events,
         ),
         lane_board,
@@ -4520,6 +4547,7 @@ pub fn render_tui_model(
             source_health_header_segment(&projection.unavailable_sources)
         ),
         unavailable_sources: projection.unavailable_sources.clone(),
+        observed_source_names: projection.observed_source_names.clone(),
         factory_activity: projection.factory_activity.clone(),
         transient_status,
         list_edge: state.list_edge(),
@@ -4682,40 +4710,60 @@ pub(crate) const fn is_positive_source_observation(event_type: EventType) -> boo
     )
 }
 
+/// Fold the event log into a per-source `(name -> currently degraded?)` tally,
+/// in `global_seq` order: a [`EventType::SourceNotObservedFindingObserved`]
+/// marks its source degraded, and any LATER positive observation of that same
+/// source -- a snapshot event or the observed-and-idle
+/// [`EventType::SourceObservedFindingObserved`] marker -- clears it. Every
+/// source that has EVER reported EITHER kind of event becomes a key, healthy
+/// or not, so the map doubles as the source-existence registry
+/// ([`TuiProjection::observed_source_names`] reads every key) and the
+/// unavailability tally ([`unavailable_sources_from_tally`] filters it).
+fn source_observation_tally(events: &[ConsoleEvent]) -> BTreeMap<String, bool> {
+    let mut tally: BTreeMap<String, bool> = BTreeMap::new();
+    for event in events {
+        if *event.event_type() == EventType::SourceNotObservedFindingObserved {
+            tally.insert(event.source().to_owned(), true);
+            continue;
+        }
+        if is_positive_source_observation(*event.event_type()) {
+            // A positive observation clears any prior not-observed finding for
+            // this source, and (`or_insert`) ADMITS a never-degraded source to
+            // the registry too -- unlike the not-observed arm above, silently
+            // skipping this one would leave every consistently-healthy source
+            // invisible to `observed_source_names`, which is exactly the "no
+            // event sources observed yet" defect measured on the real store
+            // 2026-09-09 (mx9u.20.1 review): six sources were polling
+            // successfully and the roster still claimed none existed.
+            tally
+                .entry(event.source().to_owned())
+                .and_modify(|degraded| *degraded = false)
+                .or_insert(false);
+        }
+    }
+    tally
+}
+
 /// The distinct backing-source names whose MOST RECENT observation was a
 /// not-observed finding, sorted for a stable header order.
 ///
-/// The tally reflects the LATEST poll outcome per source, not any historical
-/// failure: folding the event log in `global_seq` order, a
-/// [`EventType::SourceNotObservedFindingObserved`] marks its source unavailable,
-/// and any LATER positive observation of that same source -- a snapshot event or
-/// the observed-and-idle [`EventType::SourceObservedFindingObserved`] marker --
-/// clears it. So a source that degraded on an earlier cycle but was observed
+/// So a source that degraded on an earlier cycle but was observed
 /// successfully on a later one no longer counts, and a transient failure is
 /// never branded permanently. A source counts only while its most recent
 /// observation was not-observed, so the operator can distinguish a cockpit-blind
 /// screen from an idle factory.
 fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
-    let mut unavailable: BTreeMap<String, bool> = BTreeMap::new();
-    for event in events {
-        if *event.event_type() == EventType::SourceNotObservedFindingObserved {
-            unavailable.insert(event.source().to_owned(), true);
-            continue;
-        }
-        if is_positive_source_observation(*event.event_type()) {
-            // A positive observation from a backing source clears any prior
-            // not-observed finding for it. `and_modify` (never `insert`) keeps
-            // a never-degraded source out of the map entirely, so only
-            // genuinely degraded-then-recovered sources are tracked and
-            // cleared.
-            unavailable
-                .entry(event.source().to_owned())
-                .and_modify(|degraded| *degraded = false);
-        }
-    }
-    unavailable
-        .into_iter()
-        .filter_map(|(source, degraded)| degraded.then_some(source))
+    unavailable_sources_from_tally(&source_observation_tally(events))
+}
+
+/// The degraded-only half of [`unavailable_sources`], taking an
+/// ALREADY-FOLDED tally so [`project_tui_events`] can share one fold with
+/// [`observed_source_names`] rather than scanning the event log twice.
+fn unavailable_sources_from_tally(tally: &BTreeMap<String, bool>) -> Vec<String> {
+    tally
+        .iter()
+        .filter(|&(_source, degraded)| *degraded)
+        .map(|(source, _degraded)| source.clone())
         .collect()
 }
 
@@ -9676,12 +9724,12 @@ fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
 fn view_summary_items(
     active_view: TuiView,
     events_focus: EventsFocus,
-    unavailable_sources: &[String],
+    observed_sources: &[String],
     events: &[ConsoleEvent],
 ) -> Vec<ViewSummaryItem> {
     match active_view {
         TuiView::Spec => spec_view_items(events),
-        TuiView::Events => events_container_items(events_focus, unavailable_sources, events),
+        TuiView::Events => events_container_items(events_focus, observed_sources, events),
         TuiView::Repos => repos_view_items(events),
         // The Attention, Lanes, and Settings views render their own projections
         // (the attention list / detail, the lane board, the dispatcher-settings
@@ -9703,7 +9751,7 @@ fn view_summary_items(
 /// does not carry.
 fn events_container_items(
     events_focus: EventsFocus,
-    unavailable_sources: &[String],
+    observed_sources: &[String],
     events: &[ConsoleEvent],
 ) -> Vec<ViewSummaryItem> {
     match events_focus {
@@ -9712,26 +9760,28 @@ fn events_container_items(
             .map(|sub_view| ViewSummaryItem::new(sub_view.label().to_owned(), String::new()))
             .collect(),
         EventsFocus::StoredEvents => events_view_items(events),
-        EventsFocus::EventSources => event_sources_skeleton_items(unavailable_sources),
+        EventsFocus::EventSources => event_sources_skeleton_items(observed_sources),
     }
 }
 
 /// The "Event sources" sub-view's empty/skeleton state: a plain name-only row
-/// per source this build has observed as unavailable, from the SAME
-/// projection the header's `sources: N unavailable` segment and `doctor` read
-/// (`TuiProjection::unavailable_sources`) -- never a second encoding of source
-/// health. A healthy source currently has no positive "observed present"
-/// signal to list it by, so the roster is a skeleton, not the full per-source
-/// line (health, last status/cause, last successful read) the sibling item
-/// builds.
-fn event_sources_skeleton_items(unavailable_sources: &[String]) -> Vec<ViewSummaryItem> {
-    if unavailable_sources.is_empty() {
+/// per source this build has EVER observed reporting, healthy or degraded,
+/// from the SAME name-only registry `TuiProjection::observed_source_names`
+/// exposes -- never a second encoding of source identity, and NEVER derived
+/// from `unavailable_sources`, whose empty case means "nothing is currently
+/// down" and would misrender here as "no sources exist" (measured on the real
+/// store 2026-09-09, mx9u.20.1 review: six sources polling successfully,
+/// this sub-view claiming none had ever been observed). A healthy source
+/// still emits a positive observation event, so it still appears here; only a
+/// build that has observed NO source at all renders the placeholder.
+fn event_sources_skeleton_items(observed_sources: &[String]) -> Vec<ViewSummaryItem> {
+    if observed_sources.is_empty() {
         return vec![ViewSummaryItem::new(
-            "No event sources observed yet".to_owned(),
+            "No sources have reported any events yet".to_owned(),
             String::new(),
         )];
     }
-    unavailable_sources
+    observed_sources
         .iter()
         .map(|source| ViewSummaryItem::new(source.clone(), String::new()))
         .collect()
@@ -12373,9 +12423,10 @@ mod tests {
     fn tui_events_drill_into_event_sources_and_return_to_overview() {
         // AC2 + AC4, exercising the SECOND sub-view (`EventSources`), which the
         // "Stored events" fixtures above never reach: drilling from the
-        // overview's second row opens "Event sources" fed from the SAME
-        // `unavailable_sources` projection the header segment reads, and
-        // `ReturnToEventsOverview` (Esc's reducer target) restores the picker.
+        // overview's second row opens "Event sources" fed from the
+        // `observed_source_names` projection (name-only existence, NOT the
+        // `unavailable_sources` health tally), and `ReturnToEventsOverview`
+        // (Esc's reducer target) restores the picker.
         let events = [
             ConsoleEvent::fixture(
                 "evt_dispatcher_down",
@@ -12401,6 +12452,9 @@ mod tests {
             .map(super::ViewSummaryItem::title)
             .collect();
         assert_eq!(titles, ["dispatcher", "livespec"]);
+        assert_eq!(model.observed_source_names(), ["dispatcher", "livespec"]);
+        // Both happen to be unavailable in THIS fixture, but the sub-view is
+        // fed by existence, not health -- see the healthy-source test below.
         assert_eq!(model.unavailable_sources(), ["dispatcher", "livespec"]);
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::ReturnToEventsOverview);
@@ -12410,11 +12464,40 @@ mod tests {
     }
 
     #[test]
+    fn tui_event_sources_sub_view_names_a_healthy_source_not_only_unavailable_ones() {
+        // THE REGRESSION this guards: measured on the real store 2026-09-09
+        // (mx9u.20.1 review) with six sources polling successfully, this
+        // sub-view was fed from `unavailable_sources` (empty, since nothing was
+        // down) and rendered "No event sources observed yet" -- false, and
+        // false in exactly the direction the fix order this item belongs to
+        // exists to end (mx9u.22/mx9u.24/mx9u.14/mx9u.17: unknown or stale
+        // state presented as fact). A source that has only ever reported
+        // POSITIVE observations -- never degraded -- must still be named here.
+        let events = [ConsoleEvent::fixture(
+            "evt_github_ok",
+            EventType::GithubPullRequestSnapshotObserved,
+            "github",
+        )];
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources);
+        let model = build_tui_model_for_state(&events, &state);
+
+        // Confirms the fixture actually exercises "healthy", not "unavailable":
+        assert!(model.unavailable_sources().is_empty());
+        assert_eq!(model.observed_source_names(), ["github"]);
+        assert_eq!(model.view_items().len(), 1);
+        assert_eq!(model.view_items()[0].title(), "github");
+        assert!(!model.view_items()[0].title().contains("observed yet"));
+    }
+
+    #[test]
     fn tui_event_sources_sub_view_states_an_empty_projection() {
-        // No source has ever been observed unavailable: the skeleton says so
-        // plainly rather than rendering an empty list (AC5 of the parent
-        // epic's roster item still owns the full per-source line; this is the
-        // navigation model's own empty state).
+        // No source has EVER reported an event -- healthy or degraded -- so
+        // the skeleton says so plainly rather than rendering an empty list
+        // (AC5 of the parent epic's roster item still owns the full per-source
+        // line; this is the navigation model's own empty state). Genuinely
+        // empty events, not merely "nothing currently unavailable": see the
+        // healthy-source test above for why those two are NOT interchangeable.
         let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
             .with_events_focus(EventsFocus::EventSources);
         let model = build_tui_model_for_state(&[], &state);
@@ -12422,7 +12505,7 @@ mod tests {
         assert_eq!(model.view_items().len(), 1);
         assert_eq!(
             model.view_items()[0].title(),
-            "No event sources observed yet"
+            "No sources have reported any events yet"
         );
     }
 
@@ -12694,6 +12777,7 @@ mod tests {
             dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
+            observed_source_names: Vec::new(),
             factory_activity: None,
             transient_status: None,
             list_edge: None,
@@ -12750,6 +12834,7 @@ mod tests {
             dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: Vec::new(),
+            observed_source_names: Vec::new(),
             factory_activity: None,
             transient_status: None,
             list_edge: None,
@@ -21364,6 +21449,7 @@ mod tests {
             dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
+            observed_source_names: vec![],
             factory_activity: None,
             transient_status: None,
             list_edge: None,
@@ -21598,6 +21684,7 @@ mod tests {
             dispatcher_setting_write: DispatcherSettingWriteState::Idle,
             plugin_resolution: PluginResolution::unresolved(),
             unavailable_sources: vec![],
+            observed_source_names: vec![],
             factory_activity: None,
             transient_status: None,
             list_edge: None,
