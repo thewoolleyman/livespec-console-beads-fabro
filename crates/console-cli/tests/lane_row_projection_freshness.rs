@@ -26,8 +26,18 @@ use console_application::source_adapters::{
     PullSourcePort, SourceAdapterKind, SourceObservationPlan, SourceProbe, SourceProbeOutcome,
     parse_orchestrator_observation,
 };
+use console_application::writer_identity::WriterIdentity;
 use console_eventstore::SqliteEventStore;
 use livespec_console_beads_fabro::{ConsoleRuntimeError, NeedsAttentionIngest, refresh_sources};
+
+fn test_writer_identity() -> WriterIdentity {
+    WriterIdentity::new(
+        4242,
+        "/opt/console/test-binary",
+        "/data/projects/repo",
+        "test1234",
+    )
+}
 
 const REPO: &str = "livespec-console-beads-fabro";
 
@@ -144,6 +154,7 @@ fn a_re_observed_prior_state_refreshes_the_ready_row_instead_of_pinning_it()
         "2026-09-08T00:00:01Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert_eq!(ready_row(&store)?, Some(good_row()));
 
@@ -155,6 +166,7 @@ fn a_re_observed_prior_state_refreshes_the_ready_row_instead_of_pinning_it()
         "2026-09-08T00:00:02Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert_eq!(ready_row(&store)?, Some(degraded_row()));
 
@@ -168,6 +180,7 @@ fn a_re_observed_prior_state_refreshes_the_ready_row_instead_of_pinning_it()
         "2026-09-08T00:00:03Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert_eq!(ready_row(&store)?, Some(good_row()));
 
@@ -179,6 +192,7 @@ fn a_re_observed_prior_state_refreshes_the_ready_row_instead_of_pinning_it()
         "2026-09-08T00:00:04Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert_eq!(ready_row(&store)?, Some(good_row()));
     assert_eq!(

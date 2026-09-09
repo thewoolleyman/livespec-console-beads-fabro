@@ -28,8 +28,18 @@ use console_application::source_adapters::{
     SourceAdapterKind, SourceObservationPlan, SourceProbe, SourceProbeOutcome,
     parse_orchestrator_observation,
 };
+use console_application::writer_identity::WriterIdentity;
 use console_eventstore::SqliteEventStore;
 use livespec_console_beads_fabro::{ConsoleRuntimeError, NeedsAttentionIngest, refresh_sources};
+
+fn test_writer_identity() -> WriterIdentity {
+    WriterIdentity::new(
+        4242,
+        "/opt/console/test-binary",
+        "/data/projects/repo",
+        "test1234",
+    )
+}
 
 const REPO: &str = "livespec-console-beads-fabro";
 
@@ -113,6 +123,7 @@ fn unavailable_tally_clears_when_a_recovered_read_dedupes_to_no_new_data_event()
         "2026-09-08T00:00:01Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert!(
         build_tui_model(&store.list_console_events()?, 0)
@@ -127,6 +138,7 @@ fn unavailable_tally_clears_when_a_recovered_read_dedupes_to_no_new_data_event()
         "2026-09-08T00:00:02Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert_eq!(
         build_tui_model(&store.list_console_events()?, 0).unavailable_sources(),
@@ -144,6 +156,7 @@ fn unavailable_tally_clears_when_a_recovered_read_dedupes_to_no_new_data_event()
         "2026-09-08T00:00:03Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     assert!(
         build_tui_model(&store.list_console_events()?, 0)

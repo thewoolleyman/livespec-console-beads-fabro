@@ -13,6 +13,10 @@ publish = false
 [dependencies]
 console-domain = { path = "../console-domain" }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
+time = { version = "0.3.37", default-features = false, features = [
+  "parsing",
+  "std",
+] }
 
 [dev-dependencies]
 console-application = { path = "../console-application" }

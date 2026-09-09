@@ -42,11 +42,14 @@
 //! livespec-console-beads-fabro-mx9u.17; this module is the CLI/doctor half
 //! only.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use console_domain::{ConsoleEvent, EventType};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::source_adapters::materialize_attention_items;
+use crate::writer_identity::{WriterIdentity, count_by_writer_key, writer_label};
 use crate::{is_positive_source_observation, project_tui_events};
 
 /// One diagnostic finding: a human-readable line naming a condition `doctor`
@@ -117,11 +120,14 @@ impl DoctorReport {
 /// something NEW happened to land (livespec-console-beads-fabro-mx9u.25).
 /// Passed in already-filtered rather than read here: `console-application`
 /// may depend on nothing but `console-domain`, so the checkpoint store itself
-/// is out of reach from this projection.
+/// is out of reach from this projection. `events_with_metadata` is the
+/// store's `metadata_json`- and `observed_at`-paired read, used ONLY by the
+/// multi-writer check below (`livespec-console-beads-fabro-mx9u.23` AC2).
 pub fn build_doctor_report(
     events: &[ConsoleEvent],
     events_with_observed_at: &[(ConsoleEvent, String)],
     checkpoint_last_success: &[(String, String)],
+    events_with_metadata: &[(ConsoleEvent, String, String)],
 ) -> DoctorReport {
     let projection = project_tui_events(events, None);
     let last_success =
@@ -132,6 +138,8 @@ pub fn build_doctor_report(
         .iter()
         .map(|source| unavailable_source_finding(events, source, last_success.get(source)))
         .collect();
+
+    findings.extend(multi_writer_findings(events_with_metadata));
 
     let attention_total = projection.attention_total();
     let needs_attention_count = materialize_attention_items(events).len();
@@ -225,18 +233,114 @@ fn last_successful_observed_at(
     last_success
 }
 
+/// Whether `event_type` is a source AVAILABILITY marker -- the same two
+/// [`crate::source_adapters::is_availability_marker_payload`] protects,
+/// expressed over [`EventType`] since this check never re-parses
+/// `payload_json`.
+const fn is_availability_marker_event_type(event_type: EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::SourceNotObservedFindingObserved | EventType::SourceObservedFindingObserved
+    )
+}
+
+/// How close together (in wall-clock time) two availability markers from
+/// DIFFERENT writers must land to count as "within one hour" for AC2.
+const MULTI_WRITER_WINDOW_SECONDS: i64 = 3600;
+
+/// AC2 (`livespec-console-beads-fabro-mx9u.23`): a finding when the store's
+/// availability markers were written by more than one distinct writer
+/// (build sha, exe path) within one hour of each other -- generalizing the
+/// item's own postmortem evidence (a second console process writing
+/// unattributable markers for roughly eleven hours) into a standing check.
+///
+/// A marker whose `metadata_json` carries no parseable writer identity (a
+/// bare `{}`, or a marker predating this instrumentation) is EXCLUDED from
+/// consideration entirely, never guessed at: attributing an unidentifiable
+/// marker to some assumed writer would itself be the kind of unproven claim
+/// this codebase's silence-by-design convention refuses to make (see
+/// [`crate::build_identity::BuildStaleness::Unknown`] for the same
+/// principle applied to build staleness). A store with a single writer --
+/// the overwhelmingly common case -- produces no finding: every marker's
+/// writer key collapses to one, and `flagged_keys` stays empty.
+fn multi_writer_findings(
+    events_with_metadata: &[(ConsoleEvent, String, String)],
+) -> Vec<DoctorFinding> {
+    let mut markers: Vec<(WriterIdentity, OffsetDateTime)> = events_with_metadata
+        .iter()
+        .filter(|(event, _metadata_json, _observed_at)| {
+            is_availability_marker_event_type(*event.event_type())
+        })
+        .filter_map(|(_event, metadata_json, observed_at)| {
+            let identity = WriterIdentity::from_metadata_json(metadata_json)?;
+            let timestamp = OffsetDateTime::parse(observed_at, &Rfc3339).ok()?;
+            Some((identity, timestamp))
+        })
+        .collect();
+    markers.sort_by_key(|(_identity, timestamp)| *timestamp);
+
+    // A sliding window over the CHRONOLOGICALLY sorted markers: `start` is
+    // the first marker still within `MULTI_WRITER_WINDOW_SECONDS` of
+    // `markers[end]`. Any window that ever holds more than one distinct
+    // writer key flags every writer in that window -- not just the pair that
+    // first triggered it, so a third writer sharing the same busy hour is
+    // named too.
+    let window = time::Duration::seconds(MULTI_WRITER_WINDOW_SECONDS);
+    let mut flagged_keys: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut start = 0usize;
+    for end in 0..markers.len() {
+        while markers[end].1 - markers[start].1 > window {
+            start += 1;
+        }
+        let distinct_keys: BTreeSet<_> = markers[start..=end]
+            .iter()
+            .map(|(identity, _timestamp)| identity.writer_key())
+            .collect();
+        if distinct_keys.len() > 1 {
+            flagged_keys.extend(distinct_keys);
+        }
+    }
+    if flagged_keys.is_empty() {
+        return Vec::new();
+    }
+
+    let identities: Vec<WriterIdentity> = markers
+        .into_iter()
+        .map(|(identity, _timestamp)| identity)
+        .collect();
+    let mut relevant: Vec<((String, String), usize)> = count_by_writer_key(&identities)
+        .into_iter()
+        .filter(|(key, _count)| flagged_keys.contains(key))
+        .collect();
+    relevant.sort();
+
+    let writer_list = relevant
+        .iter()
+        .map(|((build_sha, exe_path), count)| {
+            let noun = if *count == 1 { "marker" } else { "markers" };
+            format!("{} ({count} {noun})", writer_label(build_sha, exe_path))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![DoctorFinding::new(format!(
+        "{} distinct writers wrote availability markers within one hour: {writer_list}",
+        flagged_keys.len()
+    ))]
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::manual_assert, clippy::panic)]
 
     use console_domain::{ConsoleEvent, EventType};
 
-    use super::{DoctorFinding, build_doctor_report};
+    use super::{DoctorFinding, build_doctor_report, multi_writer_findings};
     use crate::build_tui_model;
     use crate::source_adapters::{
         AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, NotObservedFinding,
         SourceAdapterKind, attention_item_payload_json, not_observed_finding_payload_json,
     };
+    use crate::writer_identity::WriterIdentity;
 
     #[track_caller]
     fn check(condition: bool, context: &str) {
@@ -324,7 +428,7 @@ mod tests {
         let events = [attention_worthy_work_item_event(
             "livespec-console-beads-fabro-a1",
         )];
-        let report = build_doctor_report(&events, &[], &[]);
+        let report = build_doctor_report(&events, &[], &[], &[]);
 
         // The single attention-worthy work item has no needs-attention
         // counterpart, so console (1) and source (0) genuinely disagree here
@@ -339,7 +443,7 @@ mod tests {
             attention_worthy_work_item_event("livespec-console-beads-fabro-a1"),
             needs_attention_item_event("livespec-console-beads-fabro-a1"),
         ];
-        let report = build_doctor_report(&events, &[], &[]);
+        let report = build_doctor_report(&events, &[], &[], &[]);
         check(
             !report.has_findings(),
             "expected no findings on a healthy fixture",
@@ -403,7 +507,7 @@ mod tests {
             not_observed_event(SourceAdapterKind::Dispatcher, "dispatcher binary not found"),
             not_observed_event(SourceAdapterKind::GitHub, "gh: command not found"),
         ];
-        let report = build_doctor_report(&events, &[], &[]);
+        let report = build_doctor_report(&events, &[], &[], &[]);
 
         let messages = finding_messages(report.findings());
         check(
@@ -419,7 +523,7 @@ mod tests {
             "expected a finding naming github and its reason",
         );
 
-        let clean_report = build_doctor_report(&[], &[], &[]);
+        let clean_report = build_doctor_report(&[], &[], &[], &[]);
         check(
             !clean_report.has_findings(),
             "expected no findings when every source is available",
@@ -439,7 +543,7 @@ mod tests {
             // survive past, not the not-observed event's own time.
             (events[0].clone(), "2026-09-08T14:00:00Z".to_owned()),
         ];
-        let report = build_doctor_report(&events, &events_with_observed_at, &[]);
+        let report = build_doctor_report(&events, &events_with_observed_at, &[], &[]);
 
         let messages = finding_messages(report.findings());
         check(
@@ -588,6 +692,7 @@ mod tests {
                 ),
             ],
             &[], // cycle 2's checkpoint excluded: it is not a successful poll.
+            &[],
         );
 
         let messages = finding_messages(report.findings());
@@ -609,13 +714,14 @@ mod tests {
             )],
             &[],
             &[],
+            &[],
         );
         check(
             unhealthy.has_findings(),
             "expected findings to gate a non-zero exit",
         );
 
-        let healthy = build_doctor_report(&[], &[], &[]);
+        let healthy = build_doctor_report(&[], &[], &[], &[]);
         check(
             !healthy.has_findings(),
             "expected no findings to gate a zero exit",
@@ -631,7 +737,7 @@ mod tests {
             attention_worthy_work_item_event("livespec-console-beads-fabro-a2"),
             needs_attention_item_event("livespec-console-beads-fabro-a1"),
         ];
-        let report = build_doctor_report(&events, &[], &[]);
+        let report = build_doctor_report(&events, &[], &[], &[]);
 
         check(
             report.attention_line() == "2 (source reports 1)",
@@ -648,7 +754,7 @@ mod tests {
             attention_worthy_work_item_event("livespec-console-beads-fabro-a1"),
             needs_attention_item_event("livespec-console-beads-fabro-a1"),
         ];
-        let agreeing = build_doctor_report(&agreeing_events, &[], &[]);
+        let agreeing = build_doctor_report(&agreeing_events, &[], &[], &[]);
         check(
             agreeing.attention_line() == "1",
             "expected a bare count when the two agree",
@@ -666,7 +772,7 @@ mod tests {
         ];
 
         let model = build_tui_model(&events, 0);
-        let report = build_doctor_report(&events, &[], &[]);
+        let report = build_doctor_report(&events, &[], &[], &[]);
 
         let mut doctor_sources: Vec<&str> = report
             .findings()
@@ -707,6 +813,191 @@ mod tests {
         check(
             header_attention_number == model.attention_total(),
             "expected doctor's attention number to match the header's attention_total exactly",
+        );
+    }
+
+    fn availability_marker(
+        event_id: &str,
+        source: SourceAdapterKind,
+        metadata_json: &str,
+        observed_at: &str,
+    ) -> (ConsoleEvent, String, String) {
+        (
+            ConsoleEvent::fixture(
+                event_id,
+                EventType::SourceNotObservedFindingObserved,
+                source.source_name(),
+            ),
+            metadata_json.to_owned(),
+            observed_at.to_owned(),
+        )
+    }
+
+    fn identity_metadata_json(pid: u32, exe_path: &str, build_sha: &str) -> String {
+        WriterIdentity::new(pid, exe_path, "/data/projects/repo", build_sha).to_metadata_json()
+    }
+
+    #[test]
+    fn ac2_a_single_writers_markers_produce_no_finding() {
+        let same_writer = identity_metadata_json(111, "/opt/console", "abc1234");
+        let events_with_metadata = [
+            availability_marker(
+                "evt_1",
+                SourceAdapterKind::LiveSpec,
+                &same_writer,
+                "2026-09-08T14:00:00Z",
+            ),
+            // Hours later, still the SAME writer -- no amount of elapsed
+            // time between a writer's OWN markers should ever flag it.
+            availability_marker(
+                "evt_2",
+                SourceAdapterKind::LiveSpec,
+                &same_writer,
+                "2026-09-08T20:00:00Z",
+            ),
+        ];
+
+        assert_eq!(multi_writer_findings(&events_with_metadata), Vec::new());
+    }
+
+    #[test]
+    fn ac2_two_distinct_writers_within_one_hour_are_named_with_their_counts() {
+        let writer_a = identity_metadata_json(111, "/opt/console-old", "abc1234");
+        let writer_b = identity_metadata_json(222, "/opt/console-new", "9999999");
+        let events_with_metadata = [
+            availability_marker(
+                "evt_1",
+                SourceAdapterKind::LiveSpec,
+                &writer_a,
+                "2026-09-08T14:00:00Z",
+            ),
+            availability_marker(
+                "evt_2",
+                SourceAdapterKind::LiveSpec,
+                &writer_b,
+                "2026-09-08T14:00:00Z",
+            ),
+            availability_marker(
+                "evt_3",
+                SourceAdapterKind::LiveSpec,
+                &writer_b,
+                "2026-09-08T14:30:00Z",
+            ),
+        ];
+
+        let findings = multi_writer_findings(&events_with_metadata);
+
+        check(findings.len() == 1, "expected exactly one finding");
+        let message = findings[0].message();
+        check(
+            message.contains("2 distinct writers"),
+            "expected the finding to name the writer count",
+        );
+        check(
+            message.contains("build abc1234 at /opt/console-old (1 marker)"),
+            "expected writer A named with its own marker count",
+        );
+        check(
+            message.contains("build 9999999 at /opt/console-new (2 markers)"),
+            "expected writer B named with its own marker count",
+        );
+    }
+
+    #[test]
+    fn ac2_two_distinct_writers_more_than_one_hour_apart_produce_no_finding() {
+        // The windowing itself: two writers existing at different TIMES in
+        // the store's history (an ordinary rebuild-and-redeploy, not a
+        // concurrent double-write) must not be flagged as if they raced.
+        let writer_a = identity_metadata_json(111, "/opt/console-old", "abc1234");
+        let writer_b = identity_metadata_json(222, "/opt/console-new", "9999999");
+        let events_with_metadata = [
+            availability_marker(
+                "evt_1",
+                SourceAdapterKind::LiveSpec,
+                &writer_a,
+                "2026-09-08T10:00:00Z",
+            ),
+            availability_marker(
+                "evt_2",
+                SourceAdapterKind::LiveSpec,
+                &writer_b,
+                "2026-09-08T14:00:00Z",
+            ),
+        ];
+
+        assert_eq!(multi_writer_findings(&events_with_metadata), Vec::new());
+    }
+
+    #[test]
+    fn ac2_a_marker_with_no_parseable_identity_is_excluded_not_guessed() {
+        // A legacy/pre-instrumentation marker (bare `{}`) sitting beside a
+        // single real writer must not be treated as a SECOND writer -- it
+        // carries no identity to compare, so it is simply excluded.
+        let writer_a = identity_metadata_json(111, "/opt/console", "abc1234");
+        let events_with_metadata = [
+            availability_marker(
+                "evt_1",
+                SourceAdapterKind::LiveSpec,
+                "{}",
+                "2026-09-08T14:00:00Z",
+            ),
+            availability_marker(
+                "evt_2",
+                SourceAdapterKind::LiveSpec,
+                &writer_a,
+                "2026-09-08T14:05:00Z",
+            ),
+        ];
+
+        assert_eq!(multi_writer_findings(&events_with_metadata), Vec::new());
+    }
+
+    #[test]
+    fn ac2_a_marker_with_an_unparseable_timestamp_is_excluded_not_guessed() {
+        // A marker with a fully-identified writer but a corrupt `observed_at`
+        // cannot be placed in the one-hour window at all, so it is excluded
+        // on the SAME terms as an unparseable identity -- never guessed at.
+        let writer_a = identity_metadata_json(111, "/opt/console", "abc1234");
+        let events_with_metadata = [availability_marker(
+            "evt_1",
+            SourceAdapterKind::LiveSpec,
+            &writer_a,
+            "not-a-timestamp",
+        )];
+
+        assert_eq!(multi_writer_findings(&events_with_metadata), Vec::new());
+    }
+
+    #[test]
+    fn ac2_reaches_the_public_build_doctor_report_api() {
+        let writer_a = identity_metadata_json(111, "/opt/console-old", "abc1234");
+        let writer_b = identity_metadata_json(222, "/opt/console-new", "9999999");
+        let events_with_metadata = [
+            availability_marker(
+                "evt_1",
+                SourceAdapterKind::LiveSpec,
+                &writer_a,
+                "2026-09-08T14:00:00Z",
+            ),
+            availability_marker(
+                "evt_2",
+                SourceAdapterKind::LiveSpec,
+                &writer_b,
+                "2026-09-08T14:00:05Z",
+            ),
+        ];
+
+        let report = build_doctor_report(&[], &[], &[], &events_with_metadata);
+
+        check(
+            report.has_findings(),
+            "expected the multi-writer finding to reach build_doctor_report's public API",
+        );
+        check(
+            finding_messages(report.findings())
+                .iter()
+                .any(|message| message.contains("distinct writers wrote availability markers")),
+            "expected the multi-writer message specifically",
         );
     }
 }

@@ -35,6 +35,10 @@ use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
 #[cfg(all(not(test), not(coverage)))]
+use console_application::writer_identity::{
+    SharedWriterLeaseStatus, WriterIdentity, WriterLeaseStatus,
+};
+#[cfg(all(not(test), not(coverage)))]
 use console_application::{
     DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
     DispatcherOrchestratorActionPort, DispatcherSettingsPort, DispatcherSettingsRead,
@@ -42,8 +46,8 @@ use console_application::{
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_eventstore::{
-    STORE_OPEN_ATTEMPTS, SqliteEventStore, open_retry_backoff, open_tolerating_contention,
-    render_open_failure,
+    STORE_OPEN_ATTEMPTS, SqliteEventStore, WriterLeaseIdentity, open_retry_backoff,
+    open_tolerating_contention, render_open_failure,
 };
 #[cfg(all(not(test), not(coverage)))]
 use livespec_console_beads_fabro::{
@@ -305,6 +309,34 @@ fn open_lane_store(lane: ConsoleLane, path: &Path) -> Option<SqliteEventStore> {
 /// The loop, the bound, and the rendered failure live in `console_eventstore`
 /// where they are tested against scripted failures; this composition root holds
 /// only the two effects that cannot be: the real open and the real sleep.
+/// This process's own writer identity, read ONCE and reused for the life of
+/// the session (pid, exe path, and cwd are all process-lifetime facts, and
+/// the build sha is a compile-time constant) — see
+/// `console_application::writer_identity::WriterIdentity` for what it is
+/// used for and why (`livespec-console-beads-fabro-mx9u.23`).
+///
+/// `current_exe`/`current_dir` degrade to `"unknown"` on failure rather than
+/// propagating: an unreadable exe path or cwd must never block the session
+/// from starting, and a marker stamped `"unknown"` is still strictly more
+/// informative than the pre-mx9u.23 state of naming no writer at all.
+#[cfg(all(not(test), not(coverage)))]
+fn current_writer_identity() -> WriterIdentity {
+    let exe_path = std::env::current_exe().map_or_else(
+        |_error| "unknown".to_owned(),
+        |path| path.display().to_string(),
+    );
+    let cwd = std::env::current_dir().map_or_else(
+        |_error| "unknown".to_owned(),
+        |path| path.display().to_string(),
+    );
+    WriterIdentity::new(
+        std::process::id(),
+        exe_path,
+        cwd,
+        livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
+    )
+}
+
 #[cfg(all(not(test), not(coverage)))]
 fn open_console_store(path: &Path) -> Result<SqliteEventStore, String> {
     open_tolerating_contention(
@@ -346,6 +378,21 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         .unwrap_or(DispatcherSettingsRead::NotObserved);
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let invoker = console_invoker(args);
+    // This process's identity, stamped onto every availability marker this
+    // session writes and used to acquire/renew the store's writer lease
+    // (livespec-console-beads-fabro-mx9u.23). Read ONCE and shared with the
+    // poller thread below: both are the SAME process, so both must present
+    // the SAME identity to the lease or they would look like competing
+    // writers to each other.
+    let writer_identity = current_writer_identity();
+    // The LIVE cell the background poller keeps current, mirroring
+    // `build_staleness_cell` below exactly: the poller is the only place the
+    // store's writer lease is actually contended for (`refresh_sources`), so
+    // it is also the only place that can know whether this session still
+    // holds it (livespec-console-beads-fabro-mx9u.23 AC3). Starts `Writable`
+    // -- the overwhelmingly common case, and the only sane guess before the
+    // first poll has even run.
+    let writer_lease_status_cell = SharedWriterLeaseStatus::new();
     // A ONE-TIME synchronous probe so the FIRST frame already carries a real
     // staleness reading rather than an `Unknown` placeholder until the
     // poller's first cycle. A local `git` read, not a slow backing CLI, so it
@@ -379,6 +426,7 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         build_staleness: build_staleness_cell.get(),
         build_staleness_cell: build_staleness_cell.clone(),
         first_ingest_pending: Arc::clone(&first_ingest_pending),
+        writer_lease_status_cell: writer_lease_status_cell.clone(),
     };
     // Move the SLOW CLI-shelling source polls onto a background thread so the UI
     // thread never blocks on them (dropped keystrokes were the move-doesn't-land
@@ -402,8 +450,16 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // ledger-mutating effect, and the channel doubles as the shutdown signal.
     let (poll_tx, poll_rx) = std::sync::mpsc::channel::<PollMessage>();
     let poller_first_ingest_pending = Arc::clone(&first_ingest_pending);
+    let poller_writer_identity = writer_identity;
+    let poller_writer_lease_status = writer_lease_status_cell;
     let poller = std::thread::spawn(move || {
-        poller_loop(&poll_rx, build_staleness_cell, poller_first_ingest_pending);
+        poller_loop(
+            &poll_rx,
+            build_staleness_cell,
+            poller_first_ingest_pending,
+            &poller_writer_identity,
+            poller_writer_lease_status,
+        );
     });
     let requester = ChannelPollRequester {
         tx: poll_tx.clone(),
@@ -512,6 +568,8 @@ fn poller_loop(
     poll_rx: &Receiver<PollMessage>,
     build_staleness: SharedBuildStaleness,
     first_ingest_pending: Arc<AtomicBool>,
+    writer_identity: &WriterIdentity,
+    writer_lease_status: SharedWriterLeaseStatus,
 ) {
     let resolution = match BackingCliResolution::from_environment() {
         Ok(resolution) => resolution,
@@ -564,6 +622,8 @@ fn poller_loop(
         repo_path: repo_path.as_str(),
         build_staleness,
         first_ingest_pending,
+        writer_identity,
+        writer_lease_status,
     };
     // The PACING lives in the library (`source_poller`), where it is testable;
     // this thread supplies only the effects — the CLI-shelling poll, the
@@ -594,6 +654,13 @@ struct ChannelSourcePollHost<'a> {
     /// (livespec-console-beads-fabro-pzbdbo.27). Unlike `build_staleness` this
     /// is a one-shot latch, not a value re-set every cycle.
     first_ingest_pending: Arc<AtomicBool>,
+    /// This process's identity, stamped onto every marker this poll writes
+    /// and used to acquire/renew the store's writer lease
+    /// (livespec-console-beads-fabro-mx9u.23).
+    writer_identity: &'a WriterIdentity,
+    /// Shared with the render thread — mirrors `build_staleness` above,
+    /// updated every cycle with what this poll's lease acquisition decided.
+    writer_lease_status: SharedWriterLeaseStatus,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -616,6 +683,7 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
                 &observed_at,
                 self.sources,
                 self.needs_attention,
+                self.writer_identity,
             );
         }
         // Cleared unconditionally, success or failure: an ATTEMPTED first
@@ -626,6 +694,41 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
         // is a redundant write on every later sweep, which costs nothing over
         // an `if` that checks first.
         self.first_ingest_pending.store(false, Ordering::Relaxed);
+        // Re-derive the header's writer-lease status from whatever
+        // `refresh_sources` just decided, by reading the row back — a
+        // separate, cheap indexed read rather than widening
+        // `refresh_sources`'s return type for every one of its many other
+        // callers (livespec-console-beads-fabro-mx9u.23 AC3). A read failure
+        // degrades to `Writable` silently: this tell is a courtesy, not the
+        // enforcement — the enforcement already happened (or didn't) inside
+        // `refresh_sources` above regardless of whether this readback
+        // succeeds.
+        let status = self.store.read_writer_lease().ok().flatten().map_or(
+            WriterLeaseStatus::Writable,
+            |(holder, _renewed_at)| {
+                if holder
+                    == WriterLeaseIdentity::new(
+                        self.writer_identity.pid(),
+                        self.writer_identity.exe_path(),
+                        self.writer_identity.build_sha(),
+                    )
+                {
+                    WriterLeaseStatus::Writable
+                } else {
+                    WriterLeaseStatus::ReadOnly(WriterIdentity::new(
+                        holder.pid(),
+                        holder.exe_path(),
+                        // The lease row carries no `cwd` (see
+                        // `WriterLeaseIdentity`'s own doc for why) -- the
+                        // header tell never needed it, so it is rendered
+                        // empty rather than fabricated.
+                        String::new(),
+                        holder.build_sha(),
+                    ))
+                }
+            },
+        );
+        self.writer_lease_status.set(status);
     }
 
     fn wait(&mut self, timeout: Duration) -> SourcePollWake {
@@ -1080,6 +1183,9 @@ struct InteractiveTuiRunner {
     /// The SAME handle the poller thread flips `false` once its first sweep
     /// completes (livespec-console-beads-fabro-pzbdbo.27).
     first_ingest_pending: Arc<AtomicBool>,
+    /// The LIVE cell the background poller keeps current with this store's
+    /// writer-lease status (livespec-console-beads-fabro-mx9u.23 AC3).
+    writer_lease_status_cell: SharedWriterLeaseStatus,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -1094,6 +1200,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             inner: session,
             build_staleness: self.build_staleness_cell.clone(),
             first_ingest_pending: Arc::clone(&self.first_ingest_pending),
+            writer_lease_status: self.writer_lease_status_cell.clone(),
         };
         console_tui::run_interactive_tui_with_effect_sink(
             events,
@@ -1126,6 +1233,7 @@ struct PollerAwareSession<'a> {
     inner: &'a mut dyn console_tui::TuiLiveSession,
     build_staleness: SharedBuildStaleness,
     first_ingest_pending: Arc<AtomicBool>,
+    writer_lease_status: SharedWriterLeaseStatus,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -1168,6 +1276,14 @@ impl console_tui::TuiLiveSession for PollerAwareSession<'_> {
         // thread flips once its first sweep completes
         // (livespec-console-beads-fabro-pzbdbo.27).
         self.first_ingest_pending.load(Ordering::Relaxed)
+    }
+
+    fn take_writer_lease_status(&mut self) -> Option<WriterLeaseStatus> {
+        // Same shape as `take_build_staleness` immediately above -- a cheap,
+        // non-blocking `Mutex` read of whatever the poller's own
+        // `acquire_or_renew_writer_lease` call last decided
+        // (livespec-console-beads-fabro-mx9u.23 AC3).
+        Some(self.writer_lease_status.get())
     }
 }
 

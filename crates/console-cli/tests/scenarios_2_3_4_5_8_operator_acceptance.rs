@@ -1,3 +1,4 @@
+use console_application::writer_identity::WriterIdentity;
 use console_application::{
     ApplicationError, AutonomousAudit, AutonomousDecisionsPort, FactoryDrainPort,
     FactoryDrainPortOutcome, FactoryDrainRequest, OrchestratorActionOutcome,
@@ -31,6 +32,15 @@ struct NoopCommandRequester;
 
 impl PendingCommandRequester for NoopCommandRequester {
     fn request_pending_command_handling(&self) {}
+}
+
+fn test_writer_identity() -> WriterIdentity {
+    WriterIdentity::new(
+        4242,
+        "/opt/console/test-binary",
+        "/data/projects/repo",
+        "test1234",
+    )
 }
 
 #[test]
@@ -145,6 +155,7 @@ fn scenario_5_tui_first_workflow_presents_a_pre_seeded_store_and_dispatches_oper
         "2026-07-07T23:59:59Z",
         &sources,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     let mut runner = CommandingTuiRunner::default();
     let mut port = CompletingDrainPort::default();
