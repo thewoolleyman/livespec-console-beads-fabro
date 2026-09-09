@@ -2634,6 +2634,25 @@ pub fn source_observed_event(
     )
 }
 
+/// Whether `payload` is a source AVAILABILITY marker.
+///
+/// The not-observed finding or the positive observed-idle marker, as
+/// opposed to a data-bearing snapshot (a work-item, an attention item, a
+/// Fabro run, ...).
+///
+/// `livespec-console-beads-fabro-mx9u.23` (AC1): only these two markers carry
+/// the writer-identity stamp, because they are the ones whose PROVENANCE
+/// mattered enough to cost eleven hours of an unattributable second writer.
+/// A data-bearing snapshot's correctness never depended on which process
+/// observed it.
+#[must_use]
+pub const fn is_availability_marker_payload(payload: &SourcePayload) -> bool {
+    matches!(
+        payload,
+        SourcePayload::NotObservedFinding(_) | SourcePayload::ObservedIdle
+    )
+}
+
 // --- Real source normalizers ------------------------------------------------
 //
 // Each normalizer interprets the raw payload from one source's stable CLI/file

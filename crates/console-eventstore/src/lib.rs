@@ -25,6 +25,8 @@ use std::time::Duration;
 
 use console_domain::{CommandEnvelope, ConsoleEvent, EventType};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 const SCHEMA: &str = r"
 create table if not exists events (
@@ -76,6 +78,22 @@ create table if not exists checkpoints (
   adapter_id text primary key,
   checkpoint_json text not null,
   advanced_at text not null
+);
+
+-- Single-row lease naming the ONE process currently writing to this store.
+-- `id` is pinned to 1 by the check constraint, so `insert ... on conflict`
+-- always targets the same row rather than accumulating one per writer.
+-- See `acquire_or_renew_writer_lease` (livespec-console-beads-fabro-mx9u.23):
+-- a second console process polling this store degrades to read-only rather
+-- than writing availability markers nobody can attribute, unless the row's
+-- `renewed_at` has gone stale (its holder's process died without releasing
+-- it), in which case a new writer reclaims it.
+create table if not exists writer_lease (
+  id integer primary key check (id = 1),
+  pid integer not null,
+  exe_path text not null,
+  build_sha text not null,
+  renewed_at text not null
 );
 ";
 
@@ -894,6 +912,40 @@ impl SqliteEventStore {
         Ok(events)
     }
 
+    /// List console events from the backing store, each paired with the
+    /// store's own persisted `metadata_json` and `observed_at`, in the same
+    /// `global_seq` order as [`Self::list_console_events`].
+    ///
+    /// A separate read for the same reason [`Self::list_console_events_with_observed_at`]
+    /// is one: the domain envelope carries no metadata column, and threading
+    /// it through every projection for the one diagnostic that needs it
+    /// (`doctor`'s multi-writer check, `livespec-console-beads-fabro-mx9u.23`
+    /// AC2) would touch far more call sites than the fact is used by.
+    pub fn list_console_events_with_metadata_and_observed_at(
+        &self,
+    ) -> EventStoreResult<Vec<(ConsoleEvent, String, String)>> {
+        let sql = r"
+            select event_id, schema_version, context, type, source, stream_id, stream_seq,
+                   payload_json, metadata_json, observed_at
+            from events
+            order by global_seq
+        ";
+        let mut statement = self.connection.prepare(sql)?;
+        // `raw_query` binds nothing and returns rows infallibly for this
+        // parameterless statement, so it avoids a permanently-unreachable `?`
+        // arm that `query([])` would introduce; step and row-decode errors
+        // still surface through `rows.next()?` below.
+        let mut rows = statement.raw_query();
+        let mut events = Vec::new();
+        while let Some(row) = rows.next()? {
+            let event = console_event_from_row(row)?;
+            let metadata_json: String = row.get(8)?;
+            let observed_at: String = row.get(9)?;
+            events.push((event, metadata_json, observed_at));
+        }
+        Ok(events)
+    }
+
     /// List commands from the backing store.
     pub fn list_commands(&self) -> EventStoreResult<Vec<StoredCommand>> {
         let sql = r"
@@ -1097,6 +1149,234 @@ impl SqliteEventStore {
         }
         Ok(checkpoints)
     }
+    /// Read the store's current writer lease, if one has ever been taken.
+    ///
+    /// Read-only -- never mints, renews, or reclaims a lease; that is
+    /// [`Self::acquire_or_renew_writer_lease`]'s job. Exposed separately so a
+    /// caller that only wants to KNOW who currently holds the lease (to
+    /// render a read-only banner, say) never has to pass its own identity
+    /// through a call that could mutate the row.
+    pub fn read_writer_lease(&self) -> EventStoreResult<Option<(WriterLeaseIdentity, String)>> {
+        let row = query_writer_lease_row(&self.connection)?;
+        Ok(row.map(|(pid, exe_path, build_sha, renewed_at)| {
+            (
+                WriterLeaseIdentity::new(lease_pid_from_row(pid), exe_path, build_sha),
+                renewed_at,
+            )
+        }))
+    }
+
+    /// Acquire, renew, or (when stale) reclaim the store's single writer
+    /// lease for `identity`.
+    ///
+    /// `livespec-console-beads-fabro-mx9u.23`: a second console process
+    /// wrote availability markers into this same store for roughly eleven
+    /// hours alongside a first one, and nothing in the store could name
+    /// either. This is the gate that prevents it: only the current lease
+    /// holder (or a fresh acquirer, or a reclaimer of a STALE lease) may
+    /// write, so at most one process's markers land per store at a time.
+    ///
+    /// The row is keyed on `(pid, exe_path, build_sha)`, NOT on a database
+    /// connection -- the live TUI opens several connections from the SAME
+    /// process (the UI thread, the source poller, each command lane), and
+    /// every one of them must renew cleanly rather than see each other as a
+    /// competing writer.
+    ///
+    /// Staleness is a pure TTL check against `renewed_at`, never a liveness
+    /// guess (AC4): this process has no reliable, portable way to ask
+    /// whether another host's pid is still alive (a reused pid would lie),
+    /// so a lease that has not been renewed within `ttl_seconds` of `now` is
+    /// simply treated as abandoned and reclaimed. This is what stops a
+    /// writer whose process is gone from locking the store forever.
+    pub fn acquire_or_renew_writer_lease(
+        &mut self,
+        identity: &WriterLeaseIdentity,
+        now: &str,
+        ttl_seconds: i64,
+    ) -> EventStoreResult<WriterLeaseOutcome> {
+        let transaction = self.connection.transaction()?;
+        let existing = query_writer_lease_row(&transaction)?;
+        let outcome = match existing {
+            None => WriterLeaseOutcome::AcquiredFresh,
+            Some((pid, exe_path, build_sha, _renewed_at))
+                if pid == i64::from(identity.pid)
+                    && exe_path == identity.exe_path
+                    && build_sha == identity.build_sha =>
+            {
+                WriterLeaseOutcome::Renewed
+            }
+            Some((pid, exe_path, build_sha, renewed_at)) => {
+                let holder = WriterLeaseIdentity::new(lease_pid_from_row(pid), exe_path, build_sha);
+                if lease_is_stale(&renewed_at, now, ttl_seconds) {
+                    WriterLeaseOutcome::AcquiredFromStale(holder)
+                } else {
+                    WriterLeaseOutcome::HeldByOther(holder)
+                }
+            }
+        };
+        // A lease HELD BY ANOTHER, still-fresh writer is the one outcome that
+        // must not touch the row: writing here would be this same "second
+        // writer" defect, just moved one layer down.
+        if !matches!(outcome, WriterLeaseOutcome::HeldByOther(_)) {
+            transaction.execute(
+                r"
+                insert into writer_lease (id, pid, exe_path, build_sha, renewed_at)
+                values (1, ?1, ?2, ?3, ?4)
+                on conflict(id) do update set
+                  pid = excluded.pid,
+                  exe_path = excluded.exe_path,
+                  build_sha = excluded.build_sha,
+                  renewed_at = excluded.renewed_at
+                ",
+                params![
+                    i64::from(identity.pid),
+                    identity.exe_path,
+                    identity.build_sha,
+                    now,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(outcome)
+    }
+}
+
+/// A lease row's `pid` column, widened back down from the `i64` `SQLite`
+/// storage type. A `pid` that no longer fits `u32` cannot be a real OS
+/// process id on any host this console runs on; `0` is not a valid pid
+/// either, so it reads as plainly synthetic in a rendered finding rather than
+/// silently aliasing a real process.
+fn lease_pid_from_row(pid: i64) -> u32 {
+    u32::try_from(pid).unwrap_or(0)
+}
+
+/// The raw `writer_lease` row, if one exists -- shared by
+/// [`SqliteEventStore::read_writer_lease`] and
+/// [`SqliteEventStore::acquire_or_renew_writer_lease`] (the latter reads
+/// through its own transaction, which derefs to a `Connection`), so the
+/// four-column decode's fallible `row.get` calls exist as ONE region each
+/// rather than duplicated per caller.
+fn query_writer_lease_row(
+    connection: &Connection,
+) -> EventStoreResult<Option<(i64, String, String, String)>> {
+    Ok(connection
+        .query_row(
+            "select pid, exe_path, build_sha, renewed_at from writer_lease where id = 1",
+            [],
+            |row| {
+                let pid: i64 = row.get(0)?;
+                let exe_path: String = row.get(1)?;
+                let build_sha: String = row.get(2)?;
+                let renewed_at: String = row.get(3)?;
+                Ok((pid, exe_path, build_sha, renewed_at))
+            },
+        )
+        .optional()?)
+}
+
+/// Identity of the process claiming (or holding) a store's writer lease:
+/// which OS process, which binary, and which commit it was built from.
+///
+/// Deliberately narrower than a marker's full writer-identity stamp (no
+/// `cwd`): the lease exists to answer "is a live process already writing
+/// here", and a process's pid/exe/build are what make that comparison
+/// meaningful across its several store connections. `console-eventstore`
+/// cannot depend on `console-application`'s richer `WriterIdentity` (the
+/// dependency runs the other way), so this is its own small value type; the
+/// composition root that holds both converts between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterLeaseIdentity {
+    pid: u32,
+    exe_path: String,
+    build_sha: String,
+}
+
+impl WriterLeaseIdentity {
+    #[must_use]
+    /// Construct a new value from its required fields.
+    pub fn new(pid: u32, exe_path: impl Into<String>, build_sha: impl Into<String>) -> Self {
+        Self {
+            pid,
+            exe_path: exe_path.into(),
+            build_sha: build_sha.into(),
+        }
+    }
+
+    #[must_use]
+    /// Return the OS process id.
+    pub const fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    #[must_use]
+    /// Return the executable path.
+    pub fn exe_path(&self) -> &str {
+        &self.exe_path
+    }
+
+    #[must_use]
+    /// Return the build sha.
+    pub fn build_sha(&self) -> &str {
+        &self.build_sha
+    }
+}
+
+/// Outcome of [`SqliteEventStore::acquire_or_renew_writer_lease`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriterLeaseOutcome {
+    /// No lease existed yet; the calling identity now holds it.
+    AcquiredFresh,
+    /// The calling identity already held the lease; its expiry was extended.
+    Renewed,
+    /// A DIFFERENT identity held the lease, but had not renewed it within the
+    /// TTL — reclaimed as abandoned. Carries the abandoned holder's identity
+    /// so the takeover can be reported.
+    AcquiredFromStale(WriterLeaseIdentity),
+    /// A DIFFERENT identity holds the lease and has renewed it within the
+    /// TTL. The caller must degrade to READ-ONLY: no availability markers,
+    /// no ingest events. Carries the current holder's identity.
+    HeldByOther(WriterLeaseIdentity),
+}
+
+impl WriterLeaseOutcome {
+    #[must_use]
+    /// Whether this outcome authorizes the caller to write to the store.
+    /// `false` only for [`Self::HeldByOther`].
+    pub const fn is_writable(&self) -> bool {
+        !matches!(self, Self::HeldByOther(_))
+    }
+
+    #[must_use]
+    /// The OTHER writer's identity, when this outcome names one — the
+    /// current holder for [`Self::HeldByOther`], or the abandoned holder for
+    /// [`Self::AcquiredFromStale`]. `None` for [`Self::AcquiredFresh`] and
+    /// [`Self::Renewed`], which name no other writer at all.
+    pub const fn other_writer(&self) -> Option<&WriterLeaseIdentity> {
+        match self {
+            Self::AcquiredFromStale(other) | Self::HeldByOther(other) => Some(other),
+            Self::AcquiredFresh | Self::Renewed => None,
+        }
+    }
+}
+
+/// Whether a lease last renewed at `renewed_at` counts as STALE (abandoned)
+/// as of `now`, given `ttl_seconds`.
+///
+/// A pure TTL comparison, deliberately never a process-liveness check (AC4,
+/// livespec-console-beads-fabro-mx9u.23) — see
+/// [`SqliteEventStore::acquire_or_renew_writer_lease`]'s doc for why. Either
+/// timestamp failing to parse as RFC 3339 is treated as STALE rather than
+/// fresh: an unparseable `renewed_at` can never be proven current, and this
+/// lease must never become permanently un-reclaimable over a corrupt or
+/// pre-instrumentation row.
+fn lease_is_stale(renewed_at: &str, now: &str, ttl_seconds: i64) -> bool {
+    let Ok(renewed) = OffsetDateTime::parse(renewed_at, &Rfc3339) else {
+        return true;
+    };
+    let Ok(now) = OffsetDateTime::parse(now, &Rfc3339) else {
+        return true;
+    };
+    (now - renewed).whole_seconds() >= ttl_seconds
 }
 
 fn initialize_connection(connection: &Connection, busy_timeout: Duration) -> EventStoreResult<()> {
@@ -1311,8 +1591,8 @@ mod tests {
     use super::{
         AppendStatus, CommandAppend, CommandAppendStatus, CommandStatusUpdateOutcome, EventAppend,
         EventStoreError, EventStoreResult, STORE_OPEN_ATTEMPTS, STREAM_POSITION_INDEX,
-        SqliteEventStore, StoredCommand, open_retry_backoff, open_tolerating_contention,
-        render_open_failure, sequence_from_rowid,
+        SqliteEventStore, StoredCommand, WriterLeaseIdentity, WriterLeaseOutcome,
+        open_retry_backoff, open_tolerating_contention, render_open_failure, sequence_from_rowid,
     };
     use console_application::{
         build_tui_model,
@@ -1675,6 +1955,70 @@ mod tests {
     }
 
     #[test]
+    fn list_console_events_with_metadata_and_observed_at_pairs_each_event_with_both_stamps() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let first = EventAppend::new(
+            ConsoleEvent::fixture(
+                "evt_meta_1",
+                EventType::SourceNotObservedFindingObserved,
+                "livespec",
+            ),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            "2026-09-08T14:00:00Z".to_owned(),
+            "2026-09-08T14:00:01Z".to_owned(),
+            None,
+            "corr_meta_1".to_owned(),
+            Some("source-meta-1".to_owned()),
+            "{}".to_owned(),
+            r#"{"writer_pid":111}"#.to_owned(),
+        );
+        let second = EventAppend::new(
+            ConsoleEvent::fixture(
+                "evt_meta_2",
+                EventType::SourceObservedFindingObserved,
+                "livespec",
+            ),
+            "repo:livespec-console-beads-fabro".to_owned(),
+            "2026-09-08T14:00:02Z".to_owned(),
+            "2026-09-08T14:00:03Z".to_owned(),
+            None,
+            "corr_meta_2".to_owned(),
+            Some("source-meta-2".to_owned()),
+            "{}".to_owned(),
+            "{}".to_owned(),
+        );
+
+        ok_append_outcome(store.append_event(&first));
+        ok_append_outcome(store.append_event(&second));
+        let events = ok_console_events_with_metadata_and_observed_at(
+            store.list_console_events_with_metadata_and_observed_at(),
+        );
+
+        check(events.len() == 2, "eventstore test assertion");
+        check(
+            events[0].0.event_id() == "evt_meta_1",
+            "eventstore test assertion",
+        );
+        check(
+            events[0].1 == r#"{"writer_pid":111}"#,
+            "eventstore test assertion",
+        );
+        check(
+            events[0].2 == "2026-09-08T14:00:01Z",
+            "eventstore test assertion",
+        );
+        check(
+            events[1].0.event_id() == "evt_meta_2",
+            "eventstore test assertion",
+        );
+        check(events[1].1 == "{}", "eventstore test assertion");
+        check(
+            events[1].2 == "2026-09-08T14:00:03Z",
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
     fn list_console_events_attaches_persisted_payload_json() {
         let mut store = ok_store(SqliteEventStore::open_in_memory());
         let payload = r#"{"repo":"console","work_item_id":"console-1","lane":"ready"}"#;
@@ -1876,6 +2220,41 @@ mod tests {
     }
 
     #[test]
+    fn list_console_events_with_metadata_and_observed_at_rejects_unknown_event_type() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+
+        let inserted = ok_execute_count(store.connection.execute(
+            r"
+            insert into events (
+              event_id,
+              context,
+              aggregate_id,
+              stream_id,
+              stream_seq,
+              type,
+              schema_version,
+              occurred_at,
+              observed_at,
+              correlation_id,
+              source,
+              payload_json,
+              metadata_json
+            ) values ('evt_bad', 'factory', 'repo:livespec', 'repo:livespec', 1,
+              'unknown.event', 1, '2026-06-23T00:00:00Z',
+              '2026-06-23T00:00:01Z', 'corr_1', 'test', '{}', '{}')
+            ",
+            [],
+        ));
+        check(inserted == 1, "eventstore test assertion");
+
+        let error = err_console_events_with_metadata_and_observed_at(
+            store.list_console_events_with_metadata_and_observed_at(),
+        );
+
+        check_unknown_event_type(error, "unknown.event");
+    }
+
+    #[test]
     fn list_console_events_with_observed_at_reports_blob_observed_at_column_decode_failure() {
         let store = ok_store(SqliteEventStore::open_in_memory());
         // A BLOB in the observed_at column fails the `row.get::<_, String>(8)`
@@ -1893,6 +2272,46 @@ mod tests {
 
         check_sqlite_error(err_console_events_with_observed_at(
             store.list_console_events_with_observed_at(),
+        ));
+    }
+
+    #[test]
+    fn list_console_events_with_metadata_and_observed_at_reports_blob_metadata_column_decode_failure()
+     {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // A BLOB in the metadata_json column fails the `row.get::<_, String>(8)`
+        // decode -- the FIRST of the two columns this method reads beyond the
+        // eight `console_event_from_row` already covers.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json, metadata_json, observed_at); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', 'src', \
+             'st', 1, '{}', x'01', '2026-06-23T00:00:00Z');",
+        ));
+
+        check_sqlite_error(err_console_events_with_metadata_and_observed_at(
+            store.list_console_events_with_metadata_and_observed_at(),
+        ));
+    }
+
+    #[test]
+    fn list_console_events_with_metadata_and_observed_at_reports_blob_observed_at_column_decode_failure()
+     {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        // A BLOB in the observed_at column fails the `row.get::<_, String>(9)`
+        // decode -- the SECOND of the two columns this method reads beyond
+        // the eight `console_event_from_row` already covers.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json, metadata_json, observed_at); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', 'src', \
+             'st', 1, '{}', '{}', x'01');",
+        ));
+
+        check_sqlite_error(err_console_events_with_metadata_and_observed_at(
+            store.list_console_events_with_metadata_and_observed_at(),
         ));
     }
 
@@ -3087,6 +3506,9 @@ mod tests {
             store.list_console_events_with_observed_at(),
         ));
         check_sqlite_error(err_checkpoints(store.list_checkpoints()));
+        check_sqlite_error(err_console_events_with_metadata_and_observed_at(
+            store.list_console_events_with_metadata_and_observed_at(),
+        ));
         let _ignored = std::fs::remove_dir_all(&dir);
     }
 
@@ -3287,6 +3709,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "ok_console_events_with_metadata_and_observed_at failed")]
+    fn ok_console_events_with_metadata_and_observed_at_panics() {
+        ok_console_events_with_metadata_and_observed_at(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
     #[should_panic(expected = "ok_command_append_outcome failed")]
     fn ok_command_append_outcome_panics() {
         ok_command_append_outcome(Err(EventStoreError::InvalidSequence));
@@ -3399,6 +3827,24 @@ mod tests {
     #[should_panic(expected = "err_console_events_with_observed_at failed")]
     fn err_console_events_with_observed_at_panics() {
         err_console_events_with_observed_at(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_console_events_with_metadata_and_observed_at failed")]
+    fn err_console_events_with_metadata_and_observed_at_panics() {
+        err_console_events_with_metadata_and_observed_at(Ok(Vec::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_lease_outcome failed")]
+    fn err_lease_outcome_panics() {
+        err_lease_outcome(Ok(WriterLeaseOutcome::AcquiredFresh));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_lease_row failed")]
+    fn err_lease_row_panics() {
+        err_lease_row(Ok(None));
     }
 
     #[test]
@@ -3607,6 +4053,18 @@ mod tests {
     }
 
     #[track_caller]
+    fn ok_console_events_with_metadata_and_observed_at(
+        result: EventStoreResult<Vec<(ConsoleEvent, String, String)>>,
+    ) -> Vec<(ConsoleEvent, String, String)> {
+        match result {
+            Ok(value) => value,
+            Err(error) => {
+                panic!("ok_console_events_with_metadata_and_observed_at failed: {error:?}")
+            }
+        }
+    }
+
+    #[track_caller]
     fn ok_command_append_outcome(
         result: EventStoreResult<super::CommandAppendOutcome>,
     ) -> super::CommandAppendOutcome {
@@ -3790,6 +4248,16 @@ mod tests {
     ) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_console_events_with_observed_at failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_console_events_with_metadata_and_observed_at(
+        result: EventStoreResult<Vec<(ConsoleEvent, String, String)>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_console_events_with_metadata_and_observed_at failed"),
             Err(error) => error,
         }
     }
@@ -4152,5 +4620,391 @@ mod tests {
             "corr_1".to_owned(),
             "{}".to_owned(),
         )
+    }
+
+    const LEASE_TTL_SECONDS: i64 = 30;
+
+    fn identity(pid: u32, exe_path: &str, build_sha: &str) -> WriterLeaseIdentity {
+        WriterLeaseIdentity::new(pid, exe_path, build_sha)
+    }
+
+    #[track_caller]
+    fn ok_lease_outcome(result: EventStoreResult<WriterLeaseOutcome>) -> WriterLeaseOutcome {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_lease_outcome failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn ok_lease_row(
+        result: EventStoreResult<Option<(WriterLeaseIdentity, String)>>,
+    ) -> Option<(WriterLeaseIdentity, String)> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_lease_row failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn err_lease_outcome(result: EventStoreResult<WriterLeaseOutcome>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_lease_outcome failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_lease_row(
+        result: EventStoreResult<Option<(WriterLeaseIdentity, String)>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_lease_row failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn writer_lease_identity_exposes_every_field() {
+        let holder = identity(4242, "/opt/console/bin", "deadbee");
+        assert_eq!(holder.pid(), 4242);
+        assert_eq!(holder.exe_path(), "/opt/console/bin");
+        assert_eq!(holder.build_sha(), "deadbee");
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_lease_outcome failed")]
+    fn ok_lease_outcome_panics() {
+        ok_lease_outcome(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_lease_row failed")]
+    fn ok_lease_row_panics() {
+        ok_lease_row(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
+    fn an_unclaimed_store_grants_the_lease_fresh() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(111, "/opt/console", "abc1234"),
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::AcquiredFresh);
+        assert!(outcome.is_writable());
+        assert_eq!(outcome.other_writer(), None);
+        assert_eq!(
+            ok_lease_row(store.read_writer_lease()),
+            Some((
+                identity(111, "/opt/console", "abc1234"),
+                "2026-09-08T14:00:00Z".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_same_process_renews_its_own_lease_across_several_connections() {
+        // The live TUI opens several connections FROM ONE process (the UI
+        // thread, the source poller, each command lane) -- all of them must
+        // renew cleanly rather than see each other as a competing writer.
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let me = identity(222, "/opt/console", "def5678");
+        ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &me,
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &me,
+            "2026-09-08T14:00:05Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::Renewed);
+        assert!(outcome.is_writable());
+        assert_eq!(
+            ok_lease_row(store.read_writer_lease()),
+            Some((me, "2026-09-08T14:00:05Z".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_second_live_writer_is_held_off_and_told_who_holds_it() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let first = identity(111, "/opt/console-a", "abc1234");
+        let second = identity(222, "/opt/console-b", "9999999");
+        ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &first,
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        // The second writer polls moments later -- well inside the TTL, so
+        // the first writer's lease is still fresh.
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &second,
+            "2026-09-08T14:00:05Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::HeldByOther(first.clone()));
+        assert!(!outcome.is_writable());
+        assert_eq!(outcome.other_writer(), Some(&first));
+        // The held-off attempt must not have touched the row.
+        assert_eq!(
+            ok_lease_row(store.read_writer_lease()),
+            Some((first, "2026-09-08T14:00:00Z".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_stale_lease_is_reclaimed_by_a_new_writer_after_the_prior_holder_dies_without_releasing_it()
+    {
+        // AC4: the lease must never be a liveness guess. This proves takeover
+        // WITHOUT the prior holder ever calling anything -- it just stops
+        // renewing, exactly as a killed or crashed process would.
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let dead = identity(111, "/opt/console-old-build", "abc1234");
+        ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &dead,
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        // `dead` never renews again -- no release, no graceful shutdown, just
+        // silence, matching the measured mx9u.23 scenario exactly.
+        let new_writer = identity(333, "/opt/console-new-build", "fedcba9");
+        let now_past_ttl = "2026-09-08T14:00:31Z"; // 31s later > 30s TTL
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &new_writer,
+            now_past_ttl,
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::AcquiredFromStale(dead.clone()));
+        assert!(outcome.is_writable());
+        assert_eq!(outcome.other_writer(), Some(&dead));
+        // The takeover actually landed in the row.
+        assert_eq!(
+            ok_lease_row(store.read_writer_lease()),
+            Some((new_writer.clone(), now_past_ttl.to_owned()))
+        );
+
+        // And the new writer now renews cleanly on its own later polls.
+        let renewed = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &new_writer,
+            "2026-09-08T14:00:33Z",
+            LEASE_TTL_SECONDS,
+        ));
+        assert_eq!(renewed, WriterLeaseOutcome::Renewed);
+    }
+
+    #[test]
+    fn a_lease_exactly_at_the_ttl_boundary_is_stale() {
+        // `>=` at the boundary: a lease unrenewed for EXACTLY the TTL is
+        // reclaimable, not one second later -- the boundary is inclusive so a
+        // caller who computes the TTL from the same poller cadence this
+        // reclaims against never straddles an off-by-one.
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let dead = identity(111, "/opt/console-old-build", "abc1234");
+        ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &dead,
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(222, "/opt/console-new", "fedcba9"),
+            "2026-09-08T14:00:30Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::AcquiredFromStale(dead));
+    }
+
+    #[test]
+    fn an_unparseable_lease_timestamp_reclaims_rather_than_locking_forever() {
+        // A corrupt or pre-instrumentation `renewed_at` can never be PROVEN
+        // fresh, so it must not be able to hold the store hostage either.
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let dead = identity(111, "/opt/console-old-build", "abc1234");
+        ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &dead,
+            "not-a-timestamp",
+            LEASE_TTL_SECONDS,
+        ));
+
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(222, "/opt/console-new", "fedcba9"),
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::AcquiredFromStale(dead));
+    }
+
+    #[test]
+    fn an_unparseable_now_also_reclaims_rather_than_locking_forever() {
+        // The OTHER half of `lease_is_stale`'s two parse attempts: a valid
+        // `renewed_at` but an unparseable `now` must reclaim exactly like the
+        // reverse (the test above) -- neither side of the comparison being
+        // provably fresh is what matters, not which one failed to parse.
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        let dead = identity(111, "/opt/console-old-build", "abc1234");
+        ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &dead,
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        let outcome = ok_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(222, "/opt/console-new", "fedcba9"),
+            "not-a-timestamp",
+            LEASE_TTL_SECONDS,
+        ));
+
+        assert_eq!(outcome, WriterLeaseOutcome::AcquiredFromStale(dead));
+    }
+
+    #[test]
+    fn reading_the_lease_of_a_store_that_never_took_one_is_none() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+
+        assert_eq!(ok_lease_row(store.read_writer_lease()), None);
+    }
+
+    /// Seed a `writer_lease` row where `blob_column` (0-based: `pid`,
+    /// `exe_path`, `build_sha`, `renewed_at`) holds a BLOB instead of its
+    /// declared type, so `query_writer_lease_row`'s decode fails at exactly
+    /// that column.
+    fn seed_writer_lease_with_corrupt_column(store: &SqliteEventStore, blob_column: usize) {
+        let mut values = [
+            "1".to_owned(),
+            "'/opt/console'".to_owned(),
+            "'abc1234'".to_owned(),
+            "'2026-09-08T14:00:00Z'".to_owned(),
+        ];
+        values[blob_column] = "x'01'".to_owned();
+        let sql = format!(
+            "insert into writer_lease (id, pid, exe_path, build_sha, renewed_at) \
+             values (1, {}, {}, {}, {})",
+            values[0], values[1], values[2], values[3]
+        );
+        ok_sqlite_unit(store.connection.execute_batch(&sql));
+    }
+
+    #[test]
+    fn read_writer_lease_reports_a_corrupt_pid_column() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        seed_writer_lease_with_corrupt_column(&store, 0);
+
+        check_sqlite_error(err_lease_row(store.read_writer_lease()));
+    }
+
+    #[test]
+    fn read_writer_lease_reports_a_corrupt_exe_path_column() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        seed_writer_lease_with_corrupt_column(&store, 1);
+
+        check_sqlite_error(err_lease_row(store.read_writer_lease()));
+    }
+
+    #[test]
+    fn read_writer_lease_reports_a_corrupt_build_sha_column() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        seed_writer_lease_with_corrupt_column(&store, 2);
+
+        check_sqlite_error(err_lease_row(store.read_writer_lease()));
+    }
+
+    #[test]
+    fn read_writer_lease_reports_a_corrupt_renewed_at_column() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        seed_writer_lease_with_corrupt_column(&store, 3);
+
+        check_sqlite_error(err_lease_row(store.read_writer_lease()));
+    }
+
+    #[test]
+    fn acquire_or_renew_writer_lease_reports_transaction_start_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("begin immediate"));
+
+        let error = err_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(111, "/opt/console", "abc1234"),
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        check_sqlite_error(error);
+        ok_sqlite_unit(store.connection.execute_batch("rollback"));
+    }
+
+    #[test]
+    fn acquire_or_renew_writer_lease_reports_insert_sqlite_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // A CHECK constraint that the SELECT never trips (an empty table has
+        // no rows to check) but every INSERT of a real, positive pid does --
+        // isolating the INSERT's own failure from the lookup's.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table writer_lease; \
+             create table writer_lease (\
+               id integer primary key check (id = 1), \
+               pid integer not null, \
+               exe_path text not null, \
+               build_sha text not null, \
+               renewed_at text not null, \
+               check (pid < 0)\
+             );",
+        ));
+
+        let error = err_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(111, "/opt/console", "abc1234"),
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn acquire_or_renew_writer_lease_reports_commit_failure() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+        // Same deferred-foreign-key technique `append_event_reports_commit_failure`
+        // uses: the insert defers the check and the failure surfaces only at
+        // `transaction.commit()`.
+        ok_sqlite_unit(store.connection.execute_batch(
+            "drop table writer_lease; \
+             create table parent(id integer primary key); \
+             create table writer_lease (\
+               id integer primary key check (id = 1), \
+               pid integer not null, \
+               exe_path text not null, \
+               build_sha text not null, \
+               renewed_at text not null, \
+               foreign key(pid) references parent(id) deferrable initially deferred\
+             );",
+        ));
+
+        let error = err_lease_outcome(store.acquire_or_renew_writer_lease(
+            &identity(111, "/opt/console", "abc1234"),
+            "2026-09-08T14:00:00Z",
+            LEASE_TTL_SECONDS,
+        ));
+
+        check_sqlite_error(error);
+    }
+
+    #[test]
+    fn acquired_fresh_and_renewed_name_no_other_writer() {
+        assert_eq!(WriterLeaseOutcome::AcquiredFresh.other_writer(), None);
+        assert_eq!(WriterLeaseOutcome::Renewed.other_writer(), None);
+        assert!(WriterLeaseOutcome::AcquiredFresh.is_writable());
+        assert!(WriterLeaseOutcome::Renewed.is_writable());
     }
 }

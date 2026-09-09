@@ -35,6 +35,11 @@ pub mod build_identity;
 pub mod doctor;
 /// Module containing source-adapters support.
 pub mod source_adapters;
+/// The identity of a marker's writer process.
+///
+/// Pid, exe path, cwd, build sha, and the JSON encoding for the marker's
+/// `metadata_json` column.
+pub mod writer_identity;
 
 use build_identity::{BuildIdentity, BuildStaleness, build_staleness_segment};
 use source_adapters::{
@@ -45,6 +50,7 @@ use source_adapters::{
     materialize_attention_items, reconcile_runs_snapshot_from_payload_json,
     work_item_snapshot_from_payload_json,
 };
+use writer_identity::{WriterLeaseStatus, writer_lease_status_segment};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Whether an `active` lane item has an observed run signal behind it.
@@ -1229,6 +1235,7 @@ pub struct TuiInteractionState {
     // once that sweep completes, so the header's `event sources: loading`
     // tell never outlives the condition it names.
     startup_ingest_pending: bool,
+    writer_lease_status: WriterLeaseStatus,
 }
 
 impl TuiInteractionState {
@@ -1265,6 +1272,7 @@ impl TuiInteractionState {
             build_identity: None,
             build_staleness: BuildStaleness::Unknown,
             startup_ingest_pending: false,
+            writer_lease_status: WriterLeaseStatus::Writable,
         }
     }
 
@@ -1305,6 +1313,7 @@ impl TuiInteractionState {
             build_identity: None,
             build_staleness: BuildStaleness::Unknown,
             startup_ingest_pending: false,
+            writer_lease_status: WriterLeaseStatus::Writable,
         }
     }
 
@@ -1594,6 +1603,16 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the store's writer-lease status replaced. The
+    /// background poller re-reads this every cycle, same cadence as
+    /// [`Self::with_build_staleness`] (`livespec-console-beads-fabro-mx9u.23`
+    /// AC3).
+    pub fn with_writer_lease_status(mut self, writer_lease_status: WriterLeaseStatus) -> Self {
+        self.writer_lease_status = writer_lease_status;
+        self
+    }
+
+    #[must_use]
     /// Return this value with the transient header status replaced.
     pub fn with_transient_status(mut self, transient_status: Option<String>) -> Self {
         self.transient_status = transient_status;
@@ -1790,6 +1809,12 @@ impl TuiInteractionState {
     /// in flight. See [`Self::with_startup_ingest_pending`].
     pub const fn startup_ingest_pending(&self) -> bool {
         self.startup_ingest_pending
+    }
+
+    #[must_use]
+    /// Return the store's writer-lease status.
+    pub const fn writer_lease_status(&self) -> &WriterLeaseStatus {
+        &self.writer_lease_status
     }
 }
 
@@ -2138,6 +2163,7 @@ pub struct TuiScreenModel {
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
     startup_ingest_pending: bool,
+    writer_lease_status: WriterLeaseStatus,
 }
 
 impl TuiScreenModel {
@@ -2499,6 +2525,12 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Return the store's writer-lease status.
+    pub const fn writer_lease_status(&self) -> &WriterLeaseStatus {
+        &self.writer_lease_status
+    }
+
+    #[must_use]
     /// Compose the header to fit `width` display columns without ever truncating
     /// mid-field.
     ///
@@ -2526,6 +2558,7 @@ impl TuiScreenModel {
             &self.unavailable_sources,
             self.build_staleness,
             self.startup_ingest_pending,
+            &self.writer_lease_status,
             width,
         )
     }
@@ -4593,15 +4626,16 @@ pub fn render_tui_model(
         // The build IDENTITY itself is not one of these fields -- it lives in
         // the header pane's block title instead; see `fit_header_line`'s doc.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
             projection.attention_total,
             factory_activity_segment(projection.factory_activity.as_deref()),
             transient_status_segment(transient_status.as_deref()),
             build_staleness_header_segment(state.build_staleness()),
-            source_health_header_segment(&projection.unavailable_sources),
-            startup_ingest_header_segment(state.startup_ingest_pending())
+            startup_ingest_header_segment(state.startup_ingest_pending()),
+            writer_lease_status_header_segment(state.writer_lease_status()),
+            source_health_header_segment(&projection.unavailable_sources)
         ),
         unavailable_sources: projection.unavailable_sources.clone(),
         observed_source_names: projection.observed_source_names.clone(),
@@ -4613,6 +4647,7 @@ pub fn render_tui_model(
         build_identity: state.build_identity().cloned(),
         build_staleness: state.build_staleness(),
         startup_ingest_pending: state.startup_ingest_pending(),
+        writer_lease_status: state.writer_lease_status().clone(),
     }
 }
 
@@ -4873,6 +4908,11 @@ fn transient_status_segment(status: Option<&str>) -> String {
 /// The canonical header's stale-build tell, or empty while current/unknown.
 fn build_staleness_header_segment(staleness: BuildStaleness) -> String {
     build_staleness_segment(staleness).map_or_else(String::new, |tell| format!(" | {tell}"))
+}
+
+/// The canonical header's read-only-observer tell, or empty while writable.
+fn writer_lease_status_header_segment(status: &WriterLeaseStatus) -> String {
+    writer_lease_status_segment(status).map_or_else(String::new, |tell| format!(" | {tell}"))
 }
 
 /// What a failed command's Status-line message says when its stored error
@@ -5246,6 +5286,7 @@ fn fit_header_line(
     unavailable_sources: &[String],
     build_staleness: BuildStaleness,
     startup_ingest_pending: bool,
+    writer_lease_status: &WriterLeaseStatus,
     width: usize,
 ) -> String {
     // Fixed display order; `None` means the whole field was
@@ -5300,11 +5341,19 @@ fn fit_header_line(
             text: STARTUP_INGEST_LOADING_TELL.to_owned(),
             priority: HeaderSegmentPriority::TransientState,
         }),
+        // Same tier again, and arguably the most urgent of the three: a
+        // read-only observer is not merely watching a stale build, it is
+        // watching a store it cannot itself affect at all
+        // (livespec-console-beads-fabro-mx9u.23 AC3).
+        writer_lease_status_segment(writer_lease_status).map(|tell| HeaderField {
+            text: tell,
+            priority: HeaderSegmentPriority::TransientState,
+        }),
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<HeaderField>; 9], source_idx: usize| -> String {
+    let compose = |fields: &[Option<HeaderField>; 10], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_ref().map(|field| field.text.as_str()))
@@ -13234,6 +13283,7 @@ mod tests {
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
             startup_ingest_pending: false,
+            writer_lease_status: super::WriterLeaseStatus::Writable,
         };
 
         assert_eq!(model.selected_operator_action(), None);
@@ -13292,6 +13342,7 @@ mod tests {
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
             startup_ingest_pending: false,
+            writer_lease_status: super::WriterLeaseStatus::Writable,
         };
 
         assert_eq!(model.orphaned_factory_runs(), [run]);
@@ -18827,6 +18878,28 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_writer_lease_status_carries_the_holder_onto_the_model() {
+        // livespec-console-beads-fabro-mx9u.23 AC3: the header segment
+        // proves the STRING; this proves the field the segment is built
+        // from also lands on the model itself, exactly like `build_staleness`
+        // above.
+        let holder = super::writer_identity::WriterIdentity::new(
+            999,
+            "/opt/other-console",
+            "/repo",
+            "9999999",
+        );
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_writer_lease_status(super::WriterLeaseStatus::ReadOnly(holder.clone()));
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert_eq!(
+            model.writer_lease_status(),
+            &super::WriterLeaseStatus::ReadOnly(holder)
+        );
+    }
+
+    #[test]
     fn an_unknown_staleness_asserts_nothing_either_way() {
         // No repo was observed, or the comparison could not be made -- an
         // unproven claim is silent rather than defaulting to either verdict.
@@ -22080,6 +22153,7 @@ mod tests {
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
             startup_ingest_pending: false,
+            writer_lease_status: super::WriterLeaseStatus::Writable,
         };
 
         assert_eq!(
@@ -22316,6 +22390,7 @@ mod tests {
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
             startup_ingest_pending: false,
+            writer_lease_status: super::WriterLeaseStatus::Writable,
         };
 
         let overlay = super::open_command_modal(&model);

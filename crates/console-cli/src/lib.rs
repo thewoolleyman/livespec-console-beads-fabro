@@ -53,18 +53,19 @@ use console_application::{
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
         diff_needs_attention, disambiguate_normalized_source_event,
         dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
-        materialize_attention_items, not_observed_event, not_observed_finding_payload_json,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_orchestrator_observation,
+        is_availability_marker_payload, materialize_attention_items, not_observed_event,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
         parse_reconcile_runs_observation, reconcile_runs_snapshot_payload_json, run_adapter_poll,
         source_observed_event, work_item_snapshot_payload_json,
     },
+    writer_identity::WriterIdentity,
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 use console_eventstore::{
     AppendOutcome, AppendStatus, CommandAppend, CommandAppendOutcome, CommandAppendStatus,
     CommandStatusUpdateOutcome, EventAppend, EventStoreError, EventStoreResult, SqliteEventStore,
-    StoredCommand,
+    StoredCommand, WriterLeaseIdentity, WriterLeaseOutcome,
 };
 use console_tui::{
     TuiLiveSession, TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome,
@@ -774,6 +775,18 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
     // poller behind it has nothing to wait for.
 }
 
+/// How long a store's writer lease may go unrenewed before a new writer may
+/// reclaim it as abandoned (`livespec-console-beads-fabro-mx9u.23` AC4).
+///
+/// A generous multiple (15x) of the poller's own cadence
+/// (`POLLER_CADENCE`, 2s, in the binary's composition root): a live writer
+/// renews every cycle and so stays comfortably inside this window even
+/// under a slow or momentarily contended poll, while a writer whose process
+/// actually died is reclaimed within 30s -- fast enough that the CLAUDE.md
+/// "rebuild and recreate the TUI pane" restart flow this item exists for
+/// never has to wait long for the new binary to take over.
+pub const WRITER_LEASE_TTL_SECONDS: i64 = 30;
+
 /// The two SLOW source polls.
 ///
 /// Backfill the source adapters (Lanes / `work_item.*` events) then diff-ingest
@@ -785,14 +798,37 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
 /// this synchronously via [`ingest_and_reflect`], since it has no frame to draw
 /// before the read completes. Returns the source-adapter ingestion summaries the
 /// caller tallies into its own outcome.
+///
+/// Gated on `identity` holding the store's writer lease
+/// (`livespec-console-beads-fabro-mx9u.23` AC3): a process that does NOT
+/// currently hold it (another live writer already does) degrades to
+/// READ-ONLY for this poll -- no availability markers, no ingest events at
+/// all -- rather than repeating the measured eleven-hour double-write. The
+/// lease acquisition itself renews cleanly for the SAME identity across
+/// every call, so the normal case (one process, polling on its own cadence)
+/// never sees a difference.
 pub fn refresh_sources(
     store: &mut SqliteEventStore,
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
     needs_attention: &NeedsAttentionIngest<'_>,
+    identity: &WriterIdentity,
 ) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
-    let ingestion = backfill_source_adapters(store, observed_at, sources)?;
-    match ingest_needs_attention(store, needs_attention, observed_at) {
+    let lease_identity =
+        WriterLeaseIdentity::new(identity.pid(), identity.exe_path(), identity.build_sha());
+    let lease = store.acquire_or_renew_writer_lease(
+        &lease_identity,
+        observed_at,
+        WRITER_LEASE_TTL_SECONDS,
+    )?;
+    // Another live process holding the lease degrades this poll to
+    // READ-ONLY: no source adapters run at all, not even to have their
+    // output discarded.
+    if matches!(lease, WriterLeaseOutcome::HeldByOther(_)) {
+        return Ok(Vec::new());
+    }
+    let ingestion = backfill_source_adapters(store, observed_at, sources, identity)?;
+    match ingest_needs_attention_with_identity(store, needs_attention, observed_at, identity) {
         Ok(_attention_ingested) => {}
         // `AttentionResolveDuplicate` is the one ingest failure this path
         // MUST NOT die on: this runs on the interactive TUI's off-thread
@@ -832,8 +868,9 @@ pub fn ingest_and_reflect(
     sources: &[SourceAdapterRef<'_>],
     needs_attention: &NeedsAttentionIngest<'_>,
     decisions_port: &dyn AutonomousDecisionsPort,
+    identity: &WriterIdentity,
 ) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
-    let ingestion = refresh_sources(store, observed_at, sources, needs_attention)?;
+    let ingestion = refresh_sources(store, observed_at, sources, needs_attention, identity)?;
     let _reflected = observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
     Ok(ingestion)
 }
@@ -1636,7 +1673,12 @@ pub fn backfill_source_report(
     sources: &[SourceAdapterRef<'_>],
     needs_attention: &NeedsAttentionIngest<'_>,
 ) -> ConsoleRuntimeResult<String> {
-    let summaries = backfill_source_adapters(store, observed_at, sources)?;
+    // This is a one-shot diagnostic CLI command, not the sustained TUI
+    // poller mx9u.23's writer lease targets -- it stamps its markers with
+    // the sentinel identity rather than threading a real one through this
+    // command's own call sites.
+    let summaries =
+        backfill_source_adapters(store, observed_at, sources, &WriterIdentity::unknown())?;
     let event_count: usize = summaries
         .iter()
         .map(AdapterIngestionSummary::appended_event_count)
@@ -1669,12 +1711,13 @@ fn backfill_source_adapters(
     store: &mut SqliteEventStore,
     observed_at: &str,
     sources: &[SourceAdapterRef<'_>],
+    identity: &WriterIdentity,
 ) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
     let shared = SharedSqliteStore::new(store);
     let mut summaries = Vec::new();
     for &(adapter_id, source) in sources {
         let mut checkpoints = SqliteCheckpointPort::new(shared.clone(), observed_at);
-        let mut event_log = SqliteSourceEventLog::new(shared.clone());
+        let mut event_log = SqliteSourceEventLog::new(shared.clone(), identity);
         summaries.push(run_adapter_poll(
             adapter_id,
             1,
@@ -2032,6 +2075,28 @@ pub fn ingest_needs_attention(
     needs_attention: &NeedsAttentionIngest<'_>,
     observed_at: &str,
 ) -> ConsoleRuntimeResult<usize> {
+    ingest_needs_attention_with_identity(
+        store,
+        needs_attention,
+        observed_at,
+        &WriterIdentity::unknown(),
+    )
+}
+
+/// Like [`ingest_needs_attention`], but writer-identified.
+///
+/// Stamps every availability marker it writes with `identity` rather than
+/// the sentinel [`WriterIdentity::unknown`] (`livespec-console-beads-fabro-mx9u.23`
+/// AC1). The real ingestion path (`refresh_sources`) calls this; the bare
+/// [`ingest_needs_attention`] stays in place so its many existing
+/// behavioral tests, which have nothing to do with writer identity, need no
+/// changes.
+pub fn ingest_needs_attention_with_identity(
+    store: &mut dyn FactoryCommandStore,
+    needs_attention: &NeedsAttentionIngest<'_>,
+    observed_at: &str,
+    identity: &WriterIdentity,
+) -> ConsoleRuntimeResult<usize> {
     let existing = store.list_console_events()?;
     let prior: Vec<_> = materialize_attention_items(&existing)
         .into_iter()
@@ -2046,7 +2111,8 @@ pub fn ingest_needs_attention(
                     &needs_attention.repo,
                     needs_attention_availability_marker_count(&existing) + 1,
                 );
-                let append = event_append_from_normalized_source_event(&marker, observed_at);
+                let append =
+                    event_append_from_normalized_source_event(&marker, observed_at, identity);
                 store.append_event(&append)?;
             }
             items
@@ -2059,7 +2125,8 @@ pub fn ingest_needs_attention(
                     &reason,
                     needs_attention_availability_marker_count(&existing) + 1,
                 );
-                let append = event_append_from_normalized_source_event(&marker, observed_at);
+                let append =
+                    event_append_from_normalized_source_event(&marker, observed_at, identity);
                 store.append_event(&append)?;
             }
             return Ok(0);
@@ -2068,7 +2135,7 @@ pub fn ingest_needs_attention(
     let events = diff_needs_attention(&needs_attention.repo, &prior, &next);
     let mut inserted = 0;
     for event in &events {
-        let append = event_append_from_normalized_source_event(event, observed_at);
+        let append = event_append_from_normalized_source_event(event, observed_at, identity);
         let outcome = store.append_event(&append)?;
         if outcome.status() == AppendStatus::Inserted {
             inserted += 1;
@@ -2100,7 +2167,7 @@ pub fn ingest_needs_attention(
         // back into `prior` needed), so this path carries no defensive
         // "can't happen" branch.
         let retry = disambiguate_normalized_source_event(event, observed_at);
-        let retry_append = event_append_from_normalized_source_event(&retry, observed_at);
+        let retry_append = event_append_from_normalized_source_event(&retry, observed_at, identity);
         let retry_outcome = store.append_event(&retry_append)?;
         if retry_outcome.status() == AppendStatus::Inserted {
             inserted += 1;
@@ -2313,8 +2380,14 @@ pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<DoctorRunResu
     let events = store.list_console_events()?;
     let events_with_observed_at = store.list_console_events_with_observed_at()?;
     let checkpoint_last_success = checkpoint_source_last_success(store)?;
+    let events_with_metadata = store.list_console_events_with_metadata_and_observed_at()?;
     let commands = store.list_commands()?;
-    let report = build_doctor_report(&events, &events_with_observed_at, &checkpoint_last_success);
+    let report = build_doctor_report(
+        &events,
+        &events_with_observed_at,
+        &checkpoint_last_success,
+        &events_with_metadata,
+    );
     let has_findings = report.has_findings();
 
     let mut lines = Vec::new();
@@ -2384,8 +2457,20 @@ pub fn serve_report_with_dispatch_port(
     // fix): like the interactive launch, the headless report must reflect the
     // CURRENT ledger, not a first-run snapshot. Checkpointed/idempotent re-ingest
     // (Scenario 3) keeps this safe on a non-empty log.
-    let ingestion =
-        ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
+    //
+    // Like `backfill_source_report`, this is a one-shot headless report, not
+    // the sustained TUI poller mx9u.23's writer lease targets -- it still
+    // takes part in the lease (through `refresh_sources`), just under the
+    // sentinel identity rather than a real one threaded through this
+    // command's own call sites.
+    let ingestion = ingest_and_reflect(
+        store,
+        observed_at,
+        sources,
+        needs_attention,
+        decisions_port,
+        &WriterIdentity::unknown(),
+    )?;
     let backfill_event_count: usize = ingestion
         .iter()
         .map(AdapterIngestionSummary::appended_event_count)
@@ -3692,6 +3777,7 @@ fn event_append_from_console_event(event: &ConsoleEvent, observed_at: &str) -> E
 fn event_append_from_normalized_source_event(
     normalized: &NormalizedSourceEvent,
     observed_at: &str,
+    identity: &WriterIdentity,
 ) -> EventAppend {
     let event = normalized.event();
     EventAppend::new(
@@ -3703,8 +3789,22 @@ fn event_append_from_normalized_source_event(
         format!("corr_{}", event.event_id()),
         Some(normalized.source_event_id().to_owned()),
         normalized_payload_json(normalized.payload()),
-        "{}".to_owned(),
+        availability_marker_metadata_json(normalized.payload(), identity),
     )
+}
+
+/// The persisted `metadata_json` for a normalized observation.
+///
+/// Only a source AVAILABILITY marker (the not-observed finding or the
+/// positive observed-idle marker) carries the writer-identity stamp
+/// (`livespec-console-beads-fabro-mx9u.23` AC1) -- every other payload
+/// persists `{}`, matching every other event this store has ever written.
+fn availability_marker_metadata_json(payload: &SourcePayload, identity: &WriterIdentity) -> String {
+    if is_availability_marker_payload(payload) {
+        identity.to_metadata_json()
+    } else {
+        "{}".to_owned()
+    }
 }
 
 /// The persisted `payload_json` for a normalized observation. Work-item
@@ -3810,11 +3910,12 @@ impl SourceCheckpointPort for SqliteCheckpointPort<'_> {
 
 struct SqliteSourceEventLog<'a> {
     shared: SharedSqliteStore<'a>,
+    identity: &'a WriterIdentity,
 }
 
 impl<'a> SqliteSourceEventLog<'a> {
-    const fn new(shared: SharedSqliteStore<'a>) -> Self {
-        Self { shared }
+    const fn new(shared: SharedSqliteStore<'a>, identity: &'a WriterIdentity) -> Self {
+        Self { shared, identity }
     }
 }
 
@@ -3824,7 +3925,7 @@ impl SourceEventAppendPort for SqliteSourceEventLog<'_> {
         event: &NormalizedSourceEvent,
         observed_at: &str,
     ) -> Result<(), AdapterError> {
-        let append = event_append_from_normalized_source_event(event, observed_at);
+        let append = event_append_from_normalized_source_event(event, observed_at, self.identity);
         self.shared
             .store
             .borrow_mut()
@@ -3962,10 +4063,10 @@ mod tests {
     #![allow(clippy::manual_assert, clippy::option_if_let_else, clippy::panic)]
 
     use crate::{
-        DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, checkpoint_load_failed,
-        checkpoint_save_failed, checkpoint_source_last_success, effect_may_persist_command,
-        effect_sink_io_error, resolve_console_invoker, sink_outcome_for_persist_error,
-        tolerate_transient_refresh,
+        DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, WriterIdentity,
+        checkpoint_load_failed, checkpoint_save_failed, checkpoint_source_last_success,
+        effect_may_persist_command, effect_sink_io_error, resolve_console_invoker,
+        sink_outcome_for_persist_error, tolerate_transient_refresh,
     };
 
     use std::cell::RefCell;
@@ -4246,6 +4347,20 @@ mod tests {
         sources
     }
 
+    /// A stand-in process identity for tests that must pass one but do not
+    /// care about its content -- most of `refresh_sources`,
+    /// `run_store_backed_tui_session`, and their callers' many existing
+    /// behavioral tests. Tests that DO care (mx9u.23's own) construct their
+    /// own distinguishable identities instead.
+    fn test_writer_identity() -> WriterIdentity {
+        WriterIdentity::new(
+            4242,
+            "/opt/console/test-binary",
+            "/data/projects/repo",
+            "test1234",
+        )
+    }
+
     fn scripted_source_refs(sources: &[(String, ScriptedSource)]) -> Vec<SourceAdapterRef<'_>> {
         sources
             .iter()
@@ -4435,6 +4550,7 @@ mod tests {
             .append_event(&event_append_from_normalized_source_event(
                 &dispatcher_source_event(COLLIDING_EVENT_ID, "sev:dispatcher:console:seeded", 1),
                 "2026-06-23T00:00:00Z",
+                &test_writer_identity(),
             ))
             .ok_test();
         let na_port = empty_needs_attention_port();
@@ -4705,7 +4821,8 @@ mod tests {
 
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         let shared = SharedSqliteStore::new(&mut store);
-        let mut event_log = SqliteSourceEventLog::new(shared);
+        let identity = test_writer_identity();
+        let mut event_log = SqliteSourceEventLog::new(shared, &identity);
         check(
             (event_log.append_normalized_event(&event, "2026-06-24T00:00:00Z")) == (Ok(())),
             "assert_eq failed",
@@ -5473,6 +5590,7 @@ mod tests {
             "2026-06-23T00:00:01Z",
             &sources,
             &needs_attention,
+            &test_writer_identity(),
         )
         .ok_test();
         let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
@@ -5585,6 +5703,7 @@ mod tests {
             "2026-08-17T23:49:59Z",
             &sources,
             &needs_attention,
+            &test_writer_identity(),
         )
         .ok_test();
         let calls = Rc::new(std::cell::Cell::new(0));
@@ -5643,6 +5762,7 @@ mod tests {
             "2026-07-12T23:59:59Z",
             &sources,
             &needs_attention,
+            &test_writer_identity(),
         )
         .ok_test();
 
@@ -5697,6 +5817,7 @@ mod tests {
             "2026-07-12T23:59:59Z",
             &sources,
             &needs_attention,
+            &test_writer_identity(),
         )
         .ok_test();
 
@@ -5743,6 +5864,7 @@ mod tests {
             "2026-06-23T00:00:01Z",
             &sources,
             &needs_attention,
+            &test_writer_identity(),
         )
         .ok_test();
         let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
@@ -5873,7 +5995,14 @@ mod tests {
         let (at1, at2) = ("2026-07-17T00:00:00Z", "2026-07-17T00:00:01Z");
 
         // First poll → item in the Ready lane.
-        refresh_sources(&mut store, at1, &sources, &needs_attention).ok_test();
+        refresh_sources(
+            &mut store,
+            at1,
+            &sources,
+            &needs_attention,
+            &test_writer_identity(),
+        )
+        .ok_test();
         let first = store.list_console_events().ok_test();
         check(
             (lane_work_item_ids(&first, Lane::Ready)) == (["wi-live"]),
@@ -5886,7 +6015,14 @@ mod tests {
 
         // A subsequent poll (poll 2, higher version) → the SAME item now projects
         // to the Backlog lane, with no restart.
-        refresh_sources(&mut store, at2, &sources, &needs_attention).ok_test();
+        refresh_sources(
+            &mut store,
+            at2,
+            &sources,
+            &needs_attention,
+            &test_writer_identity(),
+        )
+        .ok_test();
         let second = store.list_console_events().ok_test();
         check(
             (lane_work_item_ids(&second, Lane::Backlog)) == (["wi-live"]),
@@ -5895,6 +6031,56 @@ mod tests {
         check(
             lane_work_item_ids(&second, Lane::Ready).is_empty(),
             "assert failed",
+        );
+    }
+
+    #[test]
+    fn refresh_sources_degrades_to_read_only_when_another_writer_holds_the_lease() {
+        // livespec-console-beads-fabro-mx9u.23 AC3: a SECOND identity polling
+        // the SAME store, moments after a first one already acquired the
+        // lease, must write NOTHING at all -- not even its own source's
+        // ingestion, which `refresh_sources` skips entirely rather than
+        // running and then discarding.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let source = sequenced_work_item_source(&[("wi-live", Lane::Ready, "ready", 1)]);
+        let sources: Vec<SourceAdapterRef<'_>> =
+            vec![("orchestrator:livespec-console-beads-fabro", &source)];
+        let na_port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        let first_identity = test_writer_identity();
+        let second_identity = WriterIdentity::new(
+            9999,
+            "/opt/console/other-build",
+            "/data/projects/repo",
+            "z9z9z9z",
+        );
+
+        refresh_sources(
+            &mut store,
+            "2026-09-08T14:00:00Z",
+            &sources,
+            &needs_attention,
+            &first_identity,
+        )
+        .ok_test();
+        let after_first = store.list_console_events().ok_test().len();
+
+        let held_off = refresh_sources(
+            &mut store,
+            "2026-09-08T14:00:01Z",
+            &sources,
+            &needs_attention,
+            &second_identity,
+        )
+        .ok_test();
+
+        check(
+            held_off.is_empty(),
+            "expected an empty ingestion summary while held off",
+        );
+        check(
+            store.list_console_events().ok_test().len() == after_first,
+            "expected the read-only poll to append NOTHING to the store",
         );
     }
 
@@ -6041,7 +6227,14 @@ mod tests {
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         let seed_at = "2026-07-17T00:00:00Z";
-        refresh_sources(&mut store, seed_at, &sources, &needs_attention).ok_test();
+        refresh_sources(
+            &mut store,
+            seed_at,
+            &sources,
+            &needs_attention,
+            &test_writer_identity(),
+        )
+        .ok_test();
 
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -7048,7 +7241,14 @@ mod tests {
             vec![("orchestrator:livespec-console-beads-fabro", &source)];
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
-        refresh_sources(store, "2026-07-19T00:00:00Z", &sources, &needs_attention).ok_test();
+        refresh_sources(
+            store,
+            "2026-07-19T00:00:00Z",
+            &sources,
+            &needs_attention,
+            &test_writer_identity(),
+        )
+        .ok_test();
     }
 
     /// Drive `count` dispatch-menu gestures through a store-backed sink and
@@ -7263,6 +7463,7 @@ mod tests {
             "2026-06-23T00:00:01Z",
             &sources,
             &needs_attention,
+            &test_writer_identity(),
         )
         .ok_test();
         let mut runner = ErroringTuiSessionRunner;
@@ -11637,8 +11838,13 @@ mod tests {
             .map(|(adapter_id, adapter)| (adapter_id.as_str(), adapter as &dyn PullSourcePort))
             .collect();
         let mut store = SqliteEventStore::open_in_memory().ok_test();
-        let summaries =
-            backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &refs).ok_test();
+        let summaries = backfill_source_adapters(
+            &mut store,
+            "2026-06-25T00:00:00Z",
+            &refs,
+            &test_writer_identity(),
+        )
+        .ok_test();
 
         check((summaries.len()) == (6), "assert_eq failed");
         check(
@@ -11742,8 +11948,13 @@ mod tests {
             .collect();
         let mut store = SqliteEventStore::open_in_memory().ok_test();
 
-        let _summaries =
-            backfill_source_adapters(&mut store, "2026-09-01T00:00:00Z", &refs).ok_test();
+        let _summaries = backfill_source_adapters(
+            &mut store,
+            "2026-09-01T00:00:00Z",
+            &refs,
+            &test_writer_identity(),
+        )
+        .ok_test();
         let events = load_tui_events_from_store(&store).ok_test();
         let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
         let model = build_tui_model_for_state(&events, &state);
@@ -11956,7 +12167,13 @@ mod tests {
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let mut store = SqliteEventStore::open_in_memory().ok_test();
-        backfill_source_adapters(&mut store, "2026-06-25T00:00:00Z", &sources).ok_test();
+        backfill_source_adapters(
+            &mut store,
+            "2026-06-25T00:00:00Z",
+            &sources,
+            &test_writer_identity(),
+        )
+        .ok_test();
 
         // The lane board rebuilds purely from the persisted snapshot payloads:
         // the seeded work-item is emitted as blocked:needs-human at rank "a1".
@@ -12308,6 +12525,31 @@ mod tests {
     }
 
     #[test]
+    fn doctor_report_propagates_a_list_console_events_with_metadata_and_observed_at_error() {
+        let (path, store) = file_store("doctor-missing-metadata-column");
+        // A table missing `metadata_json` lets `list_console_events` and
+        // `list_console_events_with_observed_at` both succeed (neither
+        // selects that column) while
+        // `list_console_events_with_metadata_and_observed_at` fails to
+        // prepare its own query -- exercising `doctor_report`'s propagation
+        // of THIS specific store read's error
+        // (livespec-console-beads-fabro-mx9u.23 AC2).
+        corrupt_store(
+            &path,
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json, observed_at); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', \
+             'src', 'st', 1, '{}', '2026-09-08T00:00:00Z');",
+        );
+
+        let error = err_eventstore_doctor(doctor_report(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
     fn real_store_snapshot_and_doctor_propagate_missing_command_table_errors() {
         for command in ["snapshot", "doctor"] {
             let (path, store) = file_store(&format!("read-missing-commands-{command}"));
@@ -12374,6 +12616,30 @@ mod tests {
             "2026-07-07T00:00:00Z",
             &[],
             &needs_attention,
+            &test_writer_identity(),
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_refresh_sources_reports_writer_lease_table_errors() {
+        // The `?` on `acquire_or_renew_writer_lease` itself
+        // (livespec-console-beads-fabro-mx9u.23): a store that cannot even
+        // read/write its lease row must fail the poll honestly rather than
+        // silently proceeding as though it held the lease.
+        let (path, mut store) = file_store("refresh-missing-writer-lease");
+        let port = empty_needs_attention_port();
+        let needs_attention = NeedsAttentionIngest::new(&port, "livespec-console-beads-fabro");
+        corrupt_store(&path, "drop table writer_lease");
+
+        let error = err_runtime_summaries(refresh_sources(
+            &mut store,
+            "2026-07-07T00:00:00Z",
+            &[],
+            &needs_attention,
+            &test_writer_identity(),
         ));
 
         check_runtime_event_store_error(error);
@@ -12796,6 +13062,7 @@ mod tests {
                 "livespec-console-beads-fabro",
             ),
             &decisions,
+            &test_writer_identity(),
         ));
 
         check_runtime_event_store_error(error);
@@ -12822,6 +13089,7 @@ mod tests {
             "2026-08-23T00:00:00Z",
             &[("dispatcher:console", &source)],
             &NeedsAttentionIngest::new(&empty_needs_attention_port(), "console"),
+            &test_writer_identity(),
         ));
         check_runtime_adapter_error(source_error);
         cleanup_store(&source_path);
@@ -15261,7 +15529,7 @@ mod tests {
             .append_event(&duplicate_collision_append(&retry_event, "t3-preoccupy"))
             .ok_test();
 
-        let outcome = refresh_sources(&mut store, "t4", &[], &na_empty);
+        let outcome = refresh_sources(&mut store, "t4", &[], &na_empty, &test_writer_identity());
         check(
             outcome.is_ok(),
             "refresh_sources must downgrade AttentionResolveDuplicate to a diagnostic, never \
@@ -15974,7 +16242,14 @@ mod tests {
         // non-trivial `needs_attention_port` (the attention-item fixtures
         // several failure-injection scenarios target) see it in the store
         // exactly as the old synchronous ingest left it.
-        refresh_sources(store, "2026-08-22T23:59:59Z", &sources, &needs_attention).ok_test();
+        refresh_sources(
+            store,
+            "2026-08-22T23:59:59Z",
+            &sources,
+            &needs_attention,
+            &test_writer_identity(),
+        )
+        .ok_test();
         let poll_requester = poll_requester();
         let command_requester = command_requester();
         run_store_backed_tui_session(

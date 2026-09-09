@@ -139,6 +139,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "time",
 ]
 
 [[package]]
@@ -182,6 +183,7 @@ dependencies = [
  "console-application",
  "console-domain",
  "rusqlite",
+ "time",
 ]
 
 [[package]]

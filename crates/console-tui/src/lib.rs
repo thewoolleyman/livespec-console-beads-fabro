@@ -23,6 +23,7 @@ use console_application::build_identity::{BuildStaleness, build_identity_segment
 use console_application::source_adapters::{
     Lane, OrphanedFactoryRun, event_source_roster_help_lines,
 };
+use console_application::writer_identity::WriterLeaseStatus;
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, EventsFocus,
     FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus,
@@ -246,6 +247,10 @@ fn run_terminal_loop(
         // rather than lingering a tick behind it (livespec-console-beads-
         // fabro-pzbdbo.27).
         apply_startup_ingest_pending(&mut state, session.first_ingest_in_progress());
+        // Re-read the background-observed writer-lease status every tick, same
+        // as the build staleness above: a non-blocking `Mutex` read, never IO
+        // on this thread (livespec-console-beads-fabro-mx9u.23 AC3).
+        apply_writer_lease_status(&mut state, session.take_writer_lease_status());
         // Whether -- and how -- this tick's outcome warrants a store refresh.
         // `LoopTick::HandledInput` (one or more keys handled, none mutating)
         // skips it entirely: no store read, no backing-CLI call on the
@@ -647,6 +652,20 @@ fn apply_startup_ingest_pending(state: &mut TuiInteractionState, pending: bool) 
     *state = state.clone().with_startup_ingest_pending(pending);
 }
 
+/// Fold a freshly observed [`WriterLeaseStatus`] into the loop's state.
+///
+/// Mirrors [`apply_build_staleness`] exactly: `None` means the session has no
+/// live poller behind it (the legacy entry point, and every test double that
+/// does not override the trait's default), in which case the state keeps
+/// whatever it was seeded with and this is a no-op
+/// (`livespec-console-beads-fabro-mx9u.23` AC3).
+#[cfg(any(test, not(coverage)))]
+fn apply_writer_lease_status(state: &mut TuiInteractionState, fresh: Option<WriterLeaseStatus>) {
+    if let Some(status) = fresh {
+        *state = state.clone().with_writer_lease_status(status);
+    }
+}
+
 /// Fold a fresh effective-policy read into the loop's state.
 ///
 /// Split out of the terminal-bound loop for the same reason `apply_sink_outcome`
@@ -813,6 +832,21 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// for the legacy `run_interactive_tui` entry point and every test double
     /// that has no probe to report.
     fn take_build_staleness(&mut self) -> Option<BuildStaleness> {
+        None
+    }
+
+    /// Read the latest background-observed [`WriterLeaseStatus`], if this
+    /// session has a live poller behind it.
+    ///
+    /// `livespec-console-beads-fabro-mx9u.23` AC3: the background poller is
+    /// the only place the store's writer lease is actually contended for
+    /// (`refresh_sources`), so it is also the only place that can know
+    /// whether this process still holds it. Read the same way and on the
+    /// same cadence as [`Self::take_build_staleness`] -- a non-blocking
+    /// `Mutex` lock, never IO on this thread. Defaults to `None` -- unchanged
+    /// state -- for the legacy entry point and every test double with no
+    /// lease to report.
+    fn take_writer_lease_status(&mut self) -> Option<WriterLeaseStatus> {
         None
     }
 
@@ -4069,7 +4103,7 @@ mod tests {
     use crate::{
         ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, apply_build_staleness,
         apply_dispatcher_settings_reread, apply_sink_outcome, apply_startup_ingest_pending,
-        apply_worker_status,
+        apply_worker_status, apply_writer_lease_status,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -4081,6 +4115,7 @@ mod tests {
         attention_item_payload_json, dispatcher_journal_payload_json,
         not_observed_finding_payload_json, reconcile_runs_snapshot_payload_json,
     };
+    use console_application::writer_identity::{WriterIdentity, WriterLeaseStatus};
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
         DispatcherSettingsRead, EventsFocus, FocusPane, HelpFocus, LaneFocus, LaneWorkItem,
@@ -4371,6 +4406,43 @@ mod tests {
     }
 
     #[test]
+    fn a_freshly_observed_read_only_status_reaches_the_rendered_header() {
+        // livespec-console-beads-fabro-mx9u.23 AC3: a session left running
+        // learns it lost the writer lease WITHOUT a restart, exactly the same
+        // shape as the build-staleness tell above.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("writer-lease-test".to_owned())
+            .with_writer_lease_status(WriterLeaseStatus::Writable);
+
+        let holder =
+            WriterIdentity::new(999, "/opt/other-console", "/data/projects/repo", "9999999");
+        apply_writer_lease_status(&mut state, Some(WriterLeaseStatus::ReadOnly(holder)));
+
+        assert!(!state.writer_lease_status().is_writable());
+        let rendered =
+            render_to_text(&build_tui_model_for_state(&[], &state), 200, 40).unwrap_or_default();
+        assert!(
+            rendered.contains("READ-ONLY: store owned by build 9999999 at /opt/other-console"),
+            "the header must name the OTHER writer, not just say read-only: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_absent_writer_lease_probe_leaves_the_state_alone() {
+        // MUST-NOT-FLAG CONTROL: `None` is what every session with no live
+        // poller behind it reports (the legacy entry point, and any test
+        // double that has not overridden `take_writer_lease_status`) -- this
+        // stays silent-by-construction rather than manufacturing a claim.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("writer-lease-test".to_owned())
+            .with_writer_lease_status(WriterLeaseStatus::Writable);
+
+        apply_writer_lease_status(&mut state, None);
+
+        assert!(state.writer_lease_status().is_writable());
+    }
+
+    #[test]
     fn a_session_with_no_worker_behind_it_reports_no_worker_status() {
         // The trait default. A legacy no-store session has no command worker, so
         // it must report nothing rather than inventing a failure — the same
@@ -4408,6 +4480,21 @@ mod tests {
         check(
             !session.first_ingest_in_progress(),
             "a session with no poller behind it reports no first ingest pending",
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_poller_behind_it_reports_no_writer_lease_status() {
+        // The trait default (livespec-console-beads-fabro-mx9u.23 AC3), same
+        // shape as the build-staleness default above: the legacy no-store
+        // session has no background poller to read a lease decision from, so
+        // it must leave the loop's seeded state alone rather than
+        // manufacturing one.
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_writer_lease_status().is_none(),
+            "a session with no poller behind it reports no writer lease status",
         );
     }
 
