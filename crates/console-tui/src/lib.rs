@@ -242,9 +242,9 @@ fn run_terminal_loop(
         apply_build_staleness(&mut state, session.take_build_staleness());
         // Same cadence: a cheap, non-blocking check of whether the session's
         // first background ingest is still in flight, so the header's
-        // `sources: loading` tell clears the moment that sweep lands rather
-        // than lingering a tick behind it (livespec-console-beads-fabro-
-        // pzbdbo.27).
+        // `event sources: loading` tell clears the moment that sweep lands
+        // rather than lingering a tick behind it (livespec-console-beads-
+        // fabro-pzbdbo.27).
         apply_startup_ingest_pending(&mut state, session.first_ingest_in_progress());
         // Whether -- and how -- this tick's outcome warrants a store refresh.
         // `LoopTick::HandledInput` (one or more keys handled, none mutating)
@@ -3615,7 +3615,7 @@ fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
 /// function can tell apart from the other, deliberately: both mean the
 /// still-loading condition no longer holds.
 const ATTENTION_LOADING_PLACEHOLDER: &str =
-    "Loading… waiting for the first source poll to complete";
+    "Loading… waiting for the first event source poll to complete";
 
 fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     let inner_width = usize::from(area.width.saturating_sub(2));

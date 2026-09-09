@@ -603,8 +603,8 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
             );
         }
         // Cleared unconditionally, success or failure: an ATTEMPTED first
-        // sweep is what the header's `sources: loading` tell promises to wait
-        // for, not a SUCCESSFUL one -- a source that genuinely fails becomes
+        // sweep is what the header's `event sources: loading` tell promises
+        // to wait for, not a SUCCESSFUL one -- a source that genuinely fails becomes
         // `unavailable` from here on, which is real information, not a stuck
         // loading state (livespec-console-beads-fabro-pzbdbo.27). A `store`
         // is a redundant write on every later sweep, which costs nothing over
