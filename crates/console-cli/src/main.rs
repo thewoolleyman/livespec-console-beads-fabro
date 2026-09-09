@@ -164,8 +164,21 @@ fn run_store_backed_command(
     )
     .map_err(|error| format!("{error:?}"))?;
     let sources = source_refs(&adapters);
-    let needs_attention_port =
-        ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
+    // `--repo-name` pins the orchestrator's needs-attention surface to the
+    // SAME (git-aware) repo identity this console just resolved for itself,
+    // rather than letting it default to its own `project_root.name` --
+    // `Path.cwd()`'s plain basename, taken from THIS probe's cwd
+    // (`resolution.selected_repo_path()`). Without it, a probe run with a
+    // linked worktree as that path had needs-attention stamp the worktree's
+    // branch-leaf name into every emitted item's `source_ref.repo`, minting
+    // exactly the phantom second "repo" `resolve_console_repo` fixes for the
+    // console's OWN identity (livespec-console-beads-fabro-mx9u.21 AC3) --
+    // but via the PAYLOAD, a path that fix does not touch.
+    let needs_attention_port = ProbeNeedsAttentionPort::new(
+        &probe,
+        resolution.programs().needs_attention(),
+        &["--json", "--repo-name", repo.as_str()],
+    );
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
@@ -535,8 +548,11 @@ fn poller_loop(
         }
     };
     let sources = source_refs(&adapters);
-    let needs_attention_port =
-        ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
+    let needs_attention_port = ProbeNeedsAttentionPort::new(
+        &probe,
+        resolution.programs().needs_attention(),
+        &["--json", "--repo-name", repo.as_str()],
+    );
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let repo_path = resolution.drive_repo_arg();
     let mut host = ChannelSourcePollHost {
@@ -1021,19 +1037,30 @@ impl SourceProbe for SystemSourceProbe {
 
 /// The observed tenant repo the cockpit is watching.
 ///
-/// Derived from the process working directory's basename so it matches the
-/// `source_ref.repo` the orchestrator's `needs-attention` surface composes (which
-/// uses its own `project_root.name`); launched from the orchestrator cwd this
-/// resolves to the true observed tenant instead of the console's own name. The
-/// `LIVESPEC_CONSOLE_REPO` override still wins. See
+/// Derived (git-aware) from the SAME directory the backing programs are run
+/// against -- `LIVESPEC_CONSOLE_REPO_PATH` when set, else the process working
+/// directory, the same resolution `BackingCliResolution::selected_repo_path`
+/// applies -- so it matches the `source_ref.repo` the orchestrator's `needs-attention`
+/// surface composes (which runs with THAT directory as its cwd and names its
+/// own `project_root.name`). Consulting `LIVESPEC_CONSOLE_REPO_PATH` here, not
+/// just the raw process cwd, is the fix for the measured defect
+/// (`livespec-console-beads-fabro-mx9u.21`): a console launched with
+/// `LIVESPEC_CONSOLE_REPO_PATH` pointing at the real checkout, but from a
+/// DIFFERENT cwd (a linked worktree), used to record the cwd's name instead of
+/// the checkout `LIVESPEC_CONSOLE_REPO_PATH` actually named. The
+/// `LIVESPEC_CONSOLE_REPO` id override still wins over both. See
 /// [`livespec_console_beads_fabro::resolve_console_repo`].
 #[cfg(all(not(test), not(coverage)))]
 fn console_repo() -> String {
     let env_override = std::env::var("LIVESPEC_CONSOLE_REPO").ok();
-    let current_dir = std::env::current_dir().ok();
+    let repo_path_override = std::env::var("LIVESPEC_CONSOLE_REPO_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    let identity_dir = repo_path_override.or_else(|| std::env::current_dir().ok());
     livespec_console_beads_fabro::resolve_console_repo(
         env_override.as_deref(),
-        current_dir.as_deref(),
+        identity_dir.as_deref(),
     )
 }
 

@@ -9913,14 +9913,26 @@ fn repos_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
     let fleet_scoped_events = fleet_streams.len();
     fleet_streams.sort_unstable();
     fleet_streams.dedup();
-    let unattributable = events
+    let unattributable_events = events
         .iter()
         .filter(|event| repo_id(event).is_none() && !fleet_scoped(event.stream_id()))
-        .count();
-    let mut items = vec![ViewSummaryItem::new(
-        format!("Repos observed: {}", repos.len()),
-        repos.join(", "),
-    )];
+        .collect::<Vec<_>>();
+    let unattributable = unattributable_events.len();
+    // AC5 (livespec-console-beads-fabro-mx9u.21): "observed" is easy to misread
+    // as a configured roster or a filesystem scan of known repos. It is
+    // neither -- stated here, on the view itself, rather than left for the
+    // operator to infer from a number that can never explain its own ceiling.
+    let mut items = vec![
+        ViewSummaryItem::new(
+            "What \"observed\" means".to_owned(),
+            "The distinct repos the EVENT LOG is attributed to -- not a \
+             configured roster, and not repos discovered on disk. A repo with \
+             no events in this store does not appear, however many repos \
+             exist in the fleet."
+                .to_owned(),
+        ),
+        ViewSummaryItem::new(format!("Repos observed: {}", repos.len()), repos.join(", ")),
+    ];
     // NOT SILENT either. A fleet stream belongs to no repository, but that is a
     // reason to attribute it correctly rather than to drop it: an operator who
     // knows the store holds drain commands and sees them in no row learns that
@@ -9937,16 +9949,93 @@ fn repos_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
     // turn "Repos observed: 1" into a number that quietly excludes a fifth of
     // the store, which is the same reassuring-but-partial signal this projection
     // just stopped producing in the other direction.
+    //
+    // NOT JUST A COUNT either (livespec-console-beads-fabro-mx9u.21): measured
+    // on the real store, 390 such events were five DIFFERENT event families,
+    // all console-originated command/action streams that legitimately carry no
+    // repo (`command.accepted`, `attention_item.resolved`,
+    // `work_item.action.*`, `config.*`, `factory.*`). A bare count cannot tell
+    // the operator whether that is a real attribution hole or the console's
+    // own bookkeeping, so the row also names the families.
     if unattributable > 0 {
+        let breakdown = unattributable_family_breakdown(&unattributable_events)
+            .into_iter()
+            .map(|(family, count)| format!("{family} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         items.push(ViewSummaryItem::new(
             format!("Events with no derivable repo: {unattributable}"),
-            "Their stream key does not carry one. Every event is expected to \
-             stream under `{context}:{repo}`; these carry a bare id instead, so \
-             the repo cannot be recovered from the key and is NOT guessed."
-                .to_owned(),
+            format!(
+                "Their stream key does not carry one. Every event is expected \
+                 to stream under `{{context}}:{{repo}}`; these carry a bare id \
+                 instead, so the repo cannot be recovered from the key and is \
+                 NOT guessed. By event family: {breakdown}."
+            ),
         ));
     }
     items
+}
+
+/// Group unattributable events by event-type FAMILY: the segment of
+/// [`EventType::contract_name`] before its first `.`. Sibling event types that
+/// share a family collapse into ONE row, labelled by their longest common
+/// dotted prefix plus a wildcard (`work_item.action.started` and
+/// `work_item.action.completed` collapse to `work_item.action.*`,
+/// `factory.drain.completed` and `factory.dispatch_item_requested` collapse
+/// only as far as `factory.*`); a family with only ONE participating event
+/// type is named exactly instead (`command.accepted`), so a small,
+/// distinctive family is not obscured behind a wildcard that would otherwise
+/// read the same as a large, heterogeneous one. Sorted by descending count
+/// (ties broken alphabetically) so the bulk of the bucket reads first.
+/// One event-type contract name paired with how many unattributable events
+/// carried it.
+type ContractCount<'a> = (&'a str, usize);
+
+fn unattributable_family_breakdown(events: &[&ConsoleEvent]) -> Vec<(String, usize)> {
+    let mut per_contract: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for event in events {
+        *per_contract
+            .entry(event.event_type().contract_name())
+            .or_insert(0) += 1;
+    }
+    // The HEAD member is a required field, not an `Option` or a `Vec` element
+    // reached by indexing -- a family group is only ever created (`or_insert_with`
+    // below) together with its first member, so "a family with no members" is
+    // unrepresentable rather than merely unexpected. That is what lets the fold
+    // below skip an empty-group branch no caller can ever actually take.
+    let mut per_family: BTreeMap<&str, (ContractCount<'_>, Vec<ContractCount<'_>>)> =
+        BTreeMap::new();
+    for (contract, count) in &per_contract {
+        let family = contract.split('.').next().unwrap_or(contract);
+        per_family
+            .entry(family)
+            .and_modify(|(_head, rest)| rest.push((contract, *count)))
+            .or_insert_with(|| ((contract, *count), Vec::new()));
+    }
+    let mut breakdown = per_family
+        .into_values()
+        .map(|((head_contract, head_count), rest)| {
+            let total = head_count + rest.iter().map(|(_contract, count)| count).sum::<usize>();
+            let label = if rest.is_empty() {
+                head_contract.to_owned()
+            } else {
+                let mut prefix = head_contract.split('.').collect::<Vec<_>>();
+                for (contract, _count) in &rest {
+                    let segments = contract.split('.').collect::<Vec<_>>();
+                    let shared = prefix
+                        .iter()
+                        .zip(segments.iter())
+                        .take_while(|(left, right)| left == right)
+                        .count();
+                    prefix.truncate(shared);
+                }
+                format!("{}.*", prefix.join("."))
+            };
+            (label, total)
+        })
+        .collect::<Vec<_>>();
+    breakdown.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    breakdown
 }
 
 fn latest_event_summary(event: &ConsoleEvent) -> String {
@@ -12299,13 +12388,17 @@ mod tests {
         let events = view_summary_events();
 
         // Each non-attention view's lead row carries its operational count as the
-        // whole title; the Spec and Events count rows carry NO baked-in
-        // explanatory detail (B5 -- operational content only), while the Repos
-        // row's detail is the live repo roster (operational, retained).
-        for (view, expected_title, expected_detail) in [
-            (TuiView::Spec, "LiveSpec next snapshots: 1", ""),
+        // whole title; the Spec count row carries NO baked-in explanatory
+        // detail (B5 -- operational content only). The Repos view is the one
+        // exception, opening with a fixed row stating what "observed" means
+        // (mx9u.21 AC5) before its live repo roster. Events is covered below
+        // instead of in this loop: it is now a container (mx9u.20.1) whose
+        // pre-container "Stored events" row only reappears once drilled in.
+        for (view, row_index, expected_title, expected_detail) in [
+            (TuiView::Spec, 0, "LiveSpec next snapshots: 1", ""),
             (
                 TuiView::Repos,
+                1,
                 "Repos observed: 2",
                 "livespec-console-beads-fabro, other-repo",
             ),
@@ -12314,8 +12407,8 @@ mod tests {
             let model = build_tui_model_for_state(&events, &state);
 
             assert_eq!(model.active_view(), view);
-            assert_eq!(model.view_items()[0].title(), expected_title);
-            assert_eq!(model.view_items()[0].detail(), expected_detail);
+            assert_eq!(model.view_items()[row_index].title(), expected_title);
+            assert_eq!(model.view_items()[row_index].detail(), expected_detail);
         }
 
         // Events is a container: its own overview lists the two sub-view names
@@ -14661,6 +14754,148 @@ mod tests {
         check(
             !rendered.contains("no derivable repo"),
             "a fleet stream is attributed, not unattributable",
+        );
+    }
+
+    #[test]
+    fn every_event_is_classified_into_exactly_one_of_the_three_repos_view_buckets() {
+        // AC6 (livespec-console-beads-fabro-mx9u.21): the view cannot silently
+        // drop a category. `repo_id` and `fleet_scoped` are the classification
+        // ITSELF (`repos_view_items` is built entirely from them), so this
+        // asserts the partition at the level where it is actually decided,
+        // over a fixture deliberately mixing every observed stream shape --
+        // including TWO events for the SAME repo, so a bucket's EVENT count
+        // cannot be confused with the "Repos observed" DISTINCT-NAME count.
+        let events = [
+            ConsoleEvent::new(
+                "evt_repo_1".to_owned(),
+                1,
+                "repo".to_owned(),
+                EventType::LivespecReviseRequired,
+                "livespec".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_repo_2".to_owned(),
+                1,
+                "repo".to_owned(),
+                EventType::LivespecReviseRequired,
+                "livespec".to_owned(),
+                "repo:livespec-console-beads-fabro".to_owned(),
+                2,
+            ),
+            ConsoleEvent::new(
+                "evt_fleet".to_owned(),
+                1,
+                "console".to_owned(),
+                EventType::FactoryDrainRequested,
+                "console:factory-command-handler".to_owned(),
+                "fleet:livespec".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_cmd".to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                EventType::CommandAccepted,
+                "livespec".to_owned(),
+                "bd-ib-aaa".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_action".to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                EventType::WorkItemActionFailed,
+                "livespec".to_owned(),
+                "bd-ib-bbb".to_owned(),
+                1,
+            ),
+        ];
+
+        let repo_attributed = events
+            .iter()
+            .filter(|event| super::repo_id(event).is_some());
+        let fleet_scoped = events
+            .iter()
+            .filter(|event| super::fleet_scoped(event.stream_id()));
+        let unattributable = events.iter().filter(|event| {
+            super::repo_id(event).is_none() && !super::fleet_scoped(event.stream_id())
+        });
+
+        // Mutually exclusive: no event is double-counted...
+        check(
+            repo_attributed.clone().count()
+                + fleet_scoped.clone().count()
+                + unattributable.clone().count()
+                == events.len(),
+            "the three buckets must partition the fixture without overlap or gaps",
+        );
+        // ...and exhaustive: every event actually lands somewhere, pinned by
+        // this fixture's known composition (2 repo-attributed, 1 fleet, 2
+        // unattributable) rather than by the arithmetic identity alone, which
+        // an accidentally-empty bucket would still satisfy.
+        check(repo_attributed.count() == 2, "two events share one repo");
+        check(fleet_scoped.count() == 1, "one event is fleet-scoped");
+        check(
+            unattributable.count() == 2,
+            "two events carry no derivable repo",
+        );
+    }
+
+    #[test]
+    fn unattributable_family_breakdown_collapses_siblings_to_their_common_prefix() {
+        // `just check-coverage` measures `cargo llvm-cov --lib` only, so the
+        // multi-member collapse branch and its longest-common-prefix walk --
+        // exercised by `tests/repos_view_fleet_scope.rs`'s
+        // the_unattributable_row_names_the_event_families_not_only_a_count --
+        // still read as UNCOVERED production code there; this inline
+        // counterpart closes that gate. THREE sibling types (not two) so the
+        // prefix walk's loop actually iterates more than once. TWO
+        // single-member families sharing the SAME count (`command.accepted`
+        // and `attention_item.resolved`, both 1) so the final `sort_by`'s
+        // primary key ties and its `then_with` alphabetical tie-break
+        // actually runs -- distinct counts alone never reach it.
+        fn colonless(event_id: &str, event_type: EventType, stream_id: &str) -> ConsoleEvent {
+            ConsoleEvent::new(
+                event_id.to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                event_type,
+                "livespec".to_owned(),
+                stream_id.to_owned(),
+                1,
+            )
+        }
+        let events = [
+            colonless("evt_started", EventType::WorkItemActionStarted, "bd-ib-aaa"),
+            colonless(
+                "evt_completed",
+                EventType::WorkItemActionCompleted,
+                "bd-ib-bbb",
+            ),
+            colonless("evt_failed", EventType::WorkItemActionFailed, "bd-ib-ccc"),
+            colonless("evt_cmd", EventType::CommandAccepted, "bd-ib-ddd"),
+            colonless(
+                "evt_resolved",
+                EventType::AttentionItemResolved,
+                "bd-ib-eee",
+            ),
+        ];
+        let refs = events.iter().collect::<Vec<_>>();
+
+        let breakdown = super::unattributable_family_breakdown(&refs);
+
+        check(
+            breakdown
+                == [
+                    ("work_item.action.*".to_owned(), 3),
+                    ("attention_item.resolved".to_owned(), 1),
+                    ("command.accepted".to_owned(), 1),
+                ],
+            "three sibling work_item.action.* types collapse into one wildcard row \
+             ahead of the two tied single-member rows, which tie-break alphabetically",
         );
     }
 

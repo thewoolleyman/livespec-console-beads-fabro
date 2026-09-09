@@ -60,7 +60,7 @@ resolved on `PATH`.
 
 | Variable | Invoked as | Default |
 |---|---|---|
-| `LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM` | `<prog> --json` | `needs-attention`, or the plugin's `needs_attention.py` |
+| `LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM` | `<prog> --json --repo-name <repo>` | `needs-attention`, or the plugin's `needs_attention.py` |
 | `LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM` | work-item listing | `list-work-items`, or the plugin's `list_work_items.py` |
 | `LIVESPEC_CONSOLE_DRIVE_PROGRAM` | `<prog> --repo <repo-path> --json` | `livespec-orchestrator-drive`, or the plugin's `drive.py` |
 | `LIVESPEC_CONSOLE_DRAIN_PROGRAM` | `<prog> loop --repo <repo-path>` | `livespec-dispatcher-drain`, or the plugin's `dispatcher.py` |

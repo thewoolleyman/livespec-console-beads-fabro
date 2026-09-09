@@ -1858,8 +1858,14 @@ pub fn live_source_adapters_with_programs<'a>(
 /// (`livespec-orch-beads-fabro`, capped at 32 chars) and would mismatch the full
 /// repo name (`livespec-orchestrator-beads-fabro`) the upstream surface stamps.
 ///
-/// A non-empty `LIVESPEC_CONSOLE_REPO` override wins; when the working directory
-/// yields no usable basename, fall back to the console's own package name.
+/// A non-empty `LIVESPEC_CONSOLE_REPO` override wins. Otherwise the basename is
+/// resolved GIT-AWARE (see [`git_repository_name`]) rather than as a plain path
+/// segment: `current_dir` may be a LINKED WORKTREE
+/// (`~/.worktrees/<repo>/<branch>`, this repo's own convention), whose plain
+/// basename is the branch's leaf directory, not the repository
+/// (`livespec-console-beads-fabro-mx9u.21`). When the working directory yields
+/// no usable name at all -- git-aware or plain -- fall back to the console's own
+/// package name.
 #[must_use]
 pub fn resolve_console_repo(env_override: Option<&str>, current_dir: Option<&Path>) -> String {
     if let Some(trimmed) = env_override
@@ -1869,14 +1875,68 @@ pub fn resolve_console_repo(env_override: Option<&str>, current_dir: Option<&Pat
         return trimmed.to_owned();
     }
     current_dir
-        .and_then(Path::file_name)
+        .and_then(|dir| git_repository_name(dir).or_else(|| plain_basename(dir)))
+        .unwrap_or_else(|| "livespec-console-beads-fabro".to_owned())
+}
+
+/// The plain path-segment basename of `dir`, trimmed, with an empty result
+/// treated as absent. The pre-git-aware behaviour of [`resolve_console_repo`],
+/// kept as the fallback for a `dir` outside any git working tree.
+fn plain_basename(dir: &Path) -> Option<String> {
+    dir.file_name()
         .and_then(std::ffi::OsStr::to_str)
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map_or_else(
-            || "livespec-console-beads-fabro".to_owned(),
-            ToOwned::to_owned,
-        )
+        .map(ToOwned::to_owned)
+}
+
+/// The name of the git repository that owns `dir`, or `None` when `dir` is not
+/// inside a git working tree (or `git` itself could not be run).
+///
+/// Same pattern as `console-fork-drift-check::absolute_root`: `git rev-parse
+/// --path-format=absolute --git-common-dir` resolves a LINKED WORKTREE straight
+/// to the PRIMARY checkout's `.git` directory, and resolves to the checkout's
+/// own `.git` directory when `dir` already IS the primary checkout -- so this
+/// returns the same name in both cases, collapsing a worktree and its primary
+/// checkout to one repository identity instead of minting a second one.
+fn git_repository_name(dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    repo_name_from_git_common_dir_output(output.status.success(), &output.stdout)
+}
+
+/// The pure decision over a `git rev-parse --git-common-dir` invocation's
+/// outcome: the repository name (the PARENT directory of the reported `.git`
+/// path), or `None` when the command itself reported failure.
+///
+/// Split out from [`git_repository_name`] so every branch is exercised with
+/// SYNTHETIC bytes rather than depending on a real `git` process's behaviour
+/// -- a hidden global whose exact success/failure shape and stdout encoding
+/// can differ by host and CI environment -- to land in exactly the right
+/// state. Two of these branches are not known to be reachable from any real
+/// `git` build on this host (the lossy-decode and the missing-parent
+/// fallback), but they are still real, observable behaviour of THIS
+/// function, and this split is what makes them testable at all.
+fn repo_name_from_git_common_dir_output(success: bool, stdout: &[u8]) -> Option<String> {
+    if !success {
+        return None;
+    }
+    // Lossy, not `String::from_utf8(..).ok()?`: `--path-format=absolute`
+    // guarantees a real filesystem path, and this only ever reads its PARENT
+    // directory's name back out, so a byte sequence git itself would refuse
+    // to treat as a path is not a case worth failing the whole resolution
+    // over -- lossy-decoding it and continuing degrades gracefully instead.
+    let common_dir = String::from_utf8_lossy(stdout).into_owned();
+    // `git rev-parse --path-format=absolute --git-common-dir` always names a
+    // `.git` (or `.git/worktrees/<id>`) path nested at least two segments
+    // below the filesystem root, so `.parent()` is never actually `None` for
+    // real git output; the fallback exists only so a change in git's own
+    // output shape degrades instead of panicking.
+    let common_dir_path = Path::new(common_dir.trim());
+    plain_basename(common_dir_path.parent().unwrap_or(common_dir_path))
 }
 
 /// The needs-attention snapshot-source port paired with the console repo.
@@ -3975,10 +4035,10 @@ mod tests {
         load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
-        refresh_sources, render_tui_preview, resolve_console_repo, run, run_command_lane,
-        run_store_backed_tui_session, run_with_store, serve_report, serve_report_after_ingest,
-        serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
-        tolerate_shutdown_contention, tolerate_startup_contention,
+        refresh_sources, render_tui_preview, repo_name_from_git_common_dir_output,
+        resolve_console_repo, run, run_command_lane, run_store_backed_tui_session, run_with_store,
+        serve_report, serve_report_after_ingest, serve_report_with_dispatch_port, snapshot_report,
+        source_polls_from_seed, tolerate_shutdown_contention, tolerate_startup_contention,
         tui_session_outcome_from_final_events, work_item_command_from_stored,
     };
 
@@ -4021,6 +4081,67 @@ mod tests {
         check(
             (resolve_console_repo(None, None)) == ("livespec-console-beads-fabro"),
             "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn resolve_console_repo_falls_back_when_git_cannot_even_spawn() {
+        // A NONEXISTENT directory (as opposed to `/`, used above, which exists
+        // but is not a git repo) makes `Command::current_dir` fail before git
+        // ever runs -- `.output()` itself returns `Err`, not a non-zero exit
+        // -- so this exercises `git_repository_name`'s spawn-failure arm
+        // specifically, distinct from its "ran, but not a repo" arm.
+        let missing = Path::new("/definitely/does/not/exist/mx9u21-fixture-repo-name");
+        check(
+            (resolve_console_repo(None, Some(missing))) == ("mx9u21-fixture-repo-name"),
+            "a cwd git cannot even spawn into must still fall back to the plain basename",
+        );
+    }
+
+    #[test]
+    fn repo_name_from_git_common_dir_output_reports_none_on_a_failed_command() {
+        // A real `git rev-parse` failure (non-zero exit, `dir` is not a git
+        // working tree) -- stdout is irrelevant once `success` is false.
+        check(
+            repo_name_from_git_common_dir_output(false, b"whatever\n").is_none(),
+            "a failed git invocation must resolve to no repository name",
+        );
+    }
+
+    #[test]
+    fn repo_name_from_git_common_dir_output_takes_the_git_common_dirs_parent_name() {
+        check(
+            repo_name_from_git_common_dir_output(
+                true,
+                b"/data/projects/livespec-console-beads-fabro/.git\n",
+            ) == Some("livespec-console-beads-fabro".to_owned()),
+            "the repository name is the parent of the reported .git directory",
+        );
+    }
+
+    #[test]
+    fn repo_name_from_git_common_dir_output_degrades_lossily_on_invalid_utf8() {
+        // 0xFF is never a valid UTF-8 byte on its own. Real git output over a
+        // normal filesystem path never contains one, but this function must
+        // not fail closed (returning no name at all) just because SOME byte
+        // sequence would be theoretically possible -- it degrades instead,
+        // per its own doc comment.
+        let stdout = b"/tmp/\xffrepo/.git\n";
+        check(
+            repo_name_from_git_common_dir_output(true, stdout) == Some("\u{fffd}repo".to_owned()),
+            "invalid UTF-8 lossy-decodes (replacement character) rather than failing closed",
+        );
+    }
+
+    #[test]
+    fn repo_name_from_git_common_dir_output_falls_back_when_the_path_has_no_parent() {
+        // A `--git-common-dir` of exactly `/` has no parent directory at all --
+        // not real git output (git always reports a nested `.git` path), but a
+        // change in git's own output shape must degrade rather than panic.
+        check(
+            repo_name_from_git_common_dir_output(true, b"/\n").is_none(),
+            "a git-common-dir with no parent falls back rather than panicking, \
+             and the fallback itself (the root path) has no basename either",
         );
     }
 
@@ -11699,6 +11820,71 @@ mod tests {
         check(
             rendered.contains("Fleet-scoped events: 1"),
             "the rendered pane must surface the fleet events on their own row",
+        );
+    }
+
+    #[test]
+    fn the_repos_pane_collapses_sibling_unattributable_families_to_a_wildcard() {
+        // Coverage note, not just a rendering assertion: console-application is
+        // recompiled into THIS binary as a workspace dependency, a SEPARATE
+        // llvm-cov instantiation group from console-application's own `--lib`
+        // test binary. `unattributable_family_breakdown`'s multi-member
+        // collapse branch, AND its final `sort_by`'s primary key AND its
+        // `then_with` tie-break (only reached when two rows carry the SAME
+        // count -- distinct counts alone never invoke it), must be exercised
+        // HERE too, or that group's scalar-merged coverage reports them
+        // missed in this instance even though console-application's own
+        // tests cover them in theirs (`check-coverage`'s documented
+        // cross-binary merge artifact).
+        let events = [
+            ConsoleEvent::new(
+                "evt_action_started".to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                EventType::WorkItemActionStarted,
+                "livespec".to_owned(),
+                "bd-ib-aaa".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_action_completed".to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                EventType::WorkItemActionCompleted,
+                "livespec".to_owned(),
+                "bd-ib-bbb".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_cmd".to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                EventType::CommandAccepted,
+                "livespec".to_owned(),
+                "bd-ib-ccc".to_owned(),
+                1,
+            ),
+            ConsoleEvent::new(
+                "evt_resolved".to_owned(),
+                1,
+                "orchestrator".to_owned(),
+                EventType::AttentionItemResolved,
+                "livespec".to_owned(),
+                "bd-ib-ddd".to_owned(),
+                1,
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Repos, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let rendered = render_tui_preview(&model, 200, 40);
+
+        check(
+            rendered.contains("work_item.action.*")
+                && rendered.contains("command.accepted")
+                && rendered.contains("attention_item.resolved"),
+            "sibling work_item.action.* types must collapse to one wildcard row, \
+             alongside the two tied single-member rows",
         );
     }
 
