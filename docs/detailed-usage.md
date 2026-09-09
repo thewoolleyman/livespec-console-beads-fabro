@@ -77,6 +77,11 @@ clamped at both ends. This is how you read content that a narrow viewport
 clipped. On blur the scroll resets, so the header always returns to its
 left-justified default.
 
+**`Enter` on the focused header opens the drill-down.** It jumps straight to
+`Events` → `Event sources` — the per-source roster naming each source's
+health and, for an unavailable one, the verbatim reason it last failed — so
+the `event sources: N unavailable (…)` tell is never a dead end.
+
 ### Views pane
 
 The navigation list. Six views in this order: **Attention**, **Spec**,
@@ -268,17 +273,39 @@ drilled-in lane selection, and is inert in the Attention view.
 
 ### Events pane
 
+`Events` is a container for two sub-views, reached from its own overview
+picker (`enter` drills in, `esc` returns to the picker):
+
+**Stored events** — the event log's own summary:
+
 ```
 Stored events: <count>
 Latest event    <type> from <source> on <stream_id>
 ```
 
-The latest-event row reads `none` when the store is empty.
+The latest-event row reads `none` when the store is empty. The event log is
+the canonical source for projections. Every pane in the console is derived
+from it, which is why the projections can be rebuilt from the log alone, and
+why `backfill` and `snapshot` are meaningful operations — see
+[CLI options](cli-options.md).
 
-The event log is the canonical source for projections. Every pane in the
-console is derived from it, which is why the projections can be rebuilt from
-the log alone, and why `backfill` and `snapshot` are meaningful operations —
-see [CLI options](cli-options.md).
+**Event sources** — one line per **event source** (see [Header
+pane](#header-pane)) this build has ever observed reporting, healthy or
+degraded:
+
+```
+<source> — healthy
+<source> — unavailable
+```
+
+with, for an unavailable source, the verbatim reason its latest poll failed
+(the same reason `doctor` reports for the same source) in the Detail pane.
+This is the drill-down for the header's `event sources: N unavailable (…)`
+tell — reach it directly by focusing the header and pressing `enter`, or by
+drilling into it from this container's own overview. A build that has
+observed no source at all (healthy or degraded) shows a placeholder row
+instead of an empty list, so "nothing observed yet" is never confused with
+"nothing is currently down".
 
 ### Repos pane
 
@@ -329,7 +356,7 @@ close, so it always describes the current context rather than a fixed summary.
 
 | Context | Hint |
 |---|---|
-| Header focused | `left/right scroll \| esc/tab leave \| 1-6 view \| ? help \| q quit` |
+| Header focused | `enter event sources \| left/right scroll \| esc/tab leave \| 1-6 view \| ? help \| q quit` |
 | Attention, backlog work-item selected | `up/down move \| enter open \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
 | Attention, pending-approval work-item selected | `up/down move \| enter open \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
 | Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
