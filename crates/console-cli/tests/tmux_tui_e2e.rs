@@ -30,6 +30,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use console_application::STARTUP_INGEST_LOADING_TELL;
 use console_domain::EventType;
 use console_eventstore::SqliteEventStore;
 use livespec_console_beads_fabro::{lane_diagnostics_path, lane_failures_in};
@@ -849,12 +850,12 @@ fn tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers() -> HarnessResu
     // FAILED, not that this session has not asked it yet).
     let first_capture = console.capture()?;
     assert!(
-        first_capture.contains("sources: loading"),
+        first_capture.contains(STARTUP_INGEST_LOADING_TELL),
         "the first frame must name that a source is still loading:\n{first_capture}"
     );
 
     // Convergence: once the slow source finally answers, the tell clears.
-    let settled = wait_until_absent(&console, "sources: loading", render_timeout())?;
+    let settled = wait_until_absent(&console, STARTUP_INGEST_LOADING_TELL, render_timeout())?;
     assert!(
         settled.contains("view: Attention"),
         "the console must still be alive and rendering once the slow source \

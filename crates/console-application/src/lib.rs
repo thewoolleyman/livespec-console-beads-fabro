@@ -1155,8 +1155,8 @@ pub struct TuiInteractionState {
     // seeds this `true` for an interactive launch (livespec-console-beads-fabro-
     // pzbdbo.27 -- the first frame now draws from whatever the store already
     // holds, BEFORE the background poller's first sweep lands) and clears it
-    // once that sweep completes, so the header's `sources: loading` tell never
-    // outlives the condition it names.
+    // once that sweep completes, so the header's `event sources: loading`
+    // tell never outlives the condition it names.
     startup_ingest_pending: bool,
 }
 
@@ -4645,7 +4645,7 @@ fn source_health_header_segment(unavailable_sources: &[String]) -> String {
 /// Exported so a consumer that needs to recognize the tell (a rendered-text
 /// test, or the e2e tmux harness's own settling logic, which must not mistake
 /// a still-loading frame for a converged one) never hand-copies the literal.
-pub const STARTUP_INGEST_LOADING_TELL: &str = "sources: loading";
+pub const STARTUP_INGEST_LOADING_TELL: &str = "event sources: loading";
 
 /// The header's startup-ingest tell: while the session's first background
 /// source sweep has not yet landed, the frame is drawn from whatever the store
@@ -9877,12 +9877,12 @@ mod tests {
         JournalAutonomousDecisionsPort, LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge,
         MAX_TRANSIENT_STATUS_CHARS, OUTCOME_CAUSE_ABSENT, OperatorAction, OperatorActionOutcome,
         OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
-        OverrideInt, PendingValve, PluginResolution, RejectMode, SettingRow, SettingRowStatus,
-        TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
-        build_tui_model, build_tui_model_for_state, command_outcome_notice,
-        command_palette_query_opens_action_invoker, dispatcher_setting_rows,
-        dispatcher_setting_write_settled, drilldown_item_count, factory_dispatch_item_command,
-        fit_footer_line, fold_dispatcher_setting_reread,
+        OverrideInt, PendingValve, PluginResolution, RejectMode, STARTUP_INGEST_LOADING_TELL,
+        SettingRow, SettingRowStatus, TuiInteraction, TuiInteractionState, TuiOverlay,
+        TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
+        command_outcome_notice, command_palette_query_opens_action_invoker,
+        dispatcher_setting_rows, dispatcher_setting_write_settled, drilldown_item_count,
+        factory_dispatch_item_command, fit_footer_line, fold_dispatcher_setting_reread,
         handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
         handle_factory_drain_command, handle_work_item_accept_command,
         handle_work_item_approve_command, handle_work_item_move_command,
@@ -17672,7 +17672,7 @@ mod tests {
         let state = TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(true);
         let model = build_tui_model_for_state(&[], &state);
 
-        assert!(model.header().contains("sources: loading"));
+        assert!(model.header().contains(STARTUP_INGEST_LOADING_TELL));
         // A width wide enough for everything renders the same content as the
         // canonical header -- the fitted and unfitted forms must agree.
         assert_eq!(model.header_line(300), model.header());
@@ -17687,7 +17687,7 @@ mod tests {
             TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(false);
         let model = build_tui_model_for_state(&[], &state);
 
-        assert!(!model.header().contains("sources: loading"));
+        assert!(!model.header().contains(STARTUP_INGEST_LOADING_TELL));
     }
 
     #[test]
