@@ -17672,6 +17672,7 @@ mod tests {
         let state = TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(true);
         let model = build_tui_model_for_state(&[], &state);
 
+        assert!(model.startup_ingest_pending());
         assert!(model.header().contains(STARTUP_INGEST_LOADING_TELL));
         // A width wide enough for everything renders the same content as the
         // canonical header -- the fitted and unfitted forms must agree.
@@ -17687,6 +17688,7 @@ mod tests {
             TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(false);
         let model = build_tui_model_for_state(&[], &state);
 
+        assert!(!model.startup_ingest_pending());
         assert!(!model.header().contains(STARTUP_INGEST_LOADING_TELL));
     }
 
