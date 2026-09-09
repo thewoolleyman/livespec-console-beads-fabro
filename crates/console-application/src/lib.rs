@@ -12417,6 +12417,50 @@ mod tests {
 
         let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPrevious);
         assert_eq!(state.selected_events_index(), 0);
+        // Kills the `TuiScreenModel::selected_events_index -> 1` constant
+        // mutant (check-mutants, PR #1155 review): every assertion above
+        // happens to want `1`, which a hardcoded `1` satisfies just as well as
+        // the real accessor. This is the one case in this test where the
+        // correct answer is `0`.
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(model.selected_events_index(), 0);
+    }
+
+    #[test]
+    fn render_tui_model_clamps_an_out_of_range_selected_events_index() {
+        // Mirrors the lane overview's own out-of-range clamp
+        // (`tui_lanes_overview_clamps_the_selected_lane_at_the_last_lane`).
+        // `render_tui_model`'s `.min(EventsFocus::all().len() - 1)` is normally
+        // unreachable through the reducer (`move_selection_down` already keeps
+        // the raw state in bounds), so nothing else in this suite ever hands it
+        // an out-of-range index -- which is exactly why `check-mutants` found
+        // the arithmetic here untested: swapping the `- 1` for `+ 1` or `/ 1`
+        // widens the clamp bound to 3 or 2 and this test never notices unless
+        // it feeds a raw index the reducer itself would never produce.
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_selected_events_index(5);
+        let model = build_tui_model_for_state(&fabro_gate_events(), &state);
+
+        assert_eq!(model.selected_events_index(), 1);
+    }
+
+    #[test]
+    fn drill_into_events_sub_view_clamps_an_out_of_range_selected_index() {
+        // The sibling clamp inside `drill_into_events_sub_view`: an
+        // out-of-range `selected_events_index` (never produced by the reducer,
+        // see the test above) must still resolve to the LAST sub-view rather
+        // than indexing `EventsFocus::all()` out of bounds. A `+ 1` or `/ 1`
+        // mutant on this clamp's `- 1` widens the bound past the 2-element
+        // slice's length and this call panics, which the mutant tester reads
+        // as CAUGHT.
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_selected_events_index(5);
+        let events = fabro_gate_events();
+
+        let drilled =
+            reduce_tui_interaction(&state, &events, TuiInteraction::DrillIntoEventsSubView);
+
+        assert_eq!(drilled.events_focus(), EventsFocus::EventSources);
     }
 
     #[test]
