@@ -5332,6 +5332,58 @@ mod tests {
     }
 
     #[test]
+    fn observes_names_what_each_source_kind_reads_in_specific_terms() {
+        // Pinned against FIXED literals, deliberately not recomputed via
+        // `observes()` itself: `event_source_roster_help_lines_names_and_
+        // describes_every_source` above builds its expected string by calling
+        // `kind.observes()`, so a mutant that collapses every arm to the same
+        // constant (e.g. `""` or `"xyzzy"`) changes both sides of that
+        // comparison identically and survives. This test asserts each arm's
+        // actual operator-facing content, so a collapsed-to-one-constant
+        // mutant fails every check below but the first.
+        check(
+            SourceAdapterKind::Orchestrator
+                .observes()
+                .contains("work-item roster"),
+            "orchestrator should observe the work-item roster",
+        );
+        check(
+            SourceAdapterKind::Dispatcher
+                .observes()
+                .contains("dispatch journal"),
+            "dispatcher should observe the fabro dispatch journal",
+        );
+        check(
+            SourceAdapterKind::Fabro.observes().contains("run records"),
+            "fabro should observe fabro's own run records",
+        );
+        check(
+            SourceAdapterKind::GitHub
+                .observes()
+                .contains("pull-request"),
+            "github should observe GitHub pull-request status",
+        );
+        check(
+            SourceAdapterKind::LiveSpec
+                .observes()
+                .contains("livespec CLI"),
+            "livespec should observe the livespec CLI's status",
+        );
+        check(
+            SourceAdapterKind::NeedsAttention
+                .observes()
+                .contains("needs-attention gather"),
+            "needs-attention should observe the orchestrator's needs-attention gather",
+        );
+        check(
+            SourceAdapterKind::Reconciler
+                .observes()
+                .contains("run reconciler"),
+            "reconcile-runs should observe the orchestrator's run reconciler",
+        );
+    }
+
+    #[test]
     fn work_item_snapshot_validates_source_identity() {
         let snapshot = WorkItemSnapshot::new(
             " repo ",
