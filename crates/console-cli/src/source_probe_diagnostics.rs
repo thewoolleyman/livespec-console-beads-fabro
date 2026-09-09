@@ -1,5 +1,6 @@
 //! Diagnostic text for a failed source-command probe
-//! (`livespec-console-beads-fabro-pzbdbo.29` AC3).
+//! (`livespec-console-beads-fabro-pzbdbo.29` AC3,
+//! `livespec-console-beads-fabro-mx9u.27`).
 //!
 //! `SystemSourceProbe::run_command` (the binary's composition root, `#[cfg]`-
 //! excluded from test/coverage builds because it spawns a real subprocess)
@@ -9,31 +10,42 @@
 //! piece of text that would explain WHY a command-based source (livespec,
 //! reconcile-runs, github, orchestrator, fabro) went unreachable, and with it
 //! discarded there was nothing left to diagnose a real, live failure with.
+//! pzbdbo.29 AC3 fixed that for stderr; mx9u.27 found the other half of the
+//! same bug -- at least one source (reconcile-runs) is suspected of reporting
+//! its diagnostic on STDOUT while still exiting non-zero, and the probe threw
+//! stdout away unconditionally on that path. `describe_command_failure` now
+//! carries both streams, each independently labelled so a reader (and any
+//! later automated triage) can tell which stream said what.
 //!
-//! This module holds the two decisions that turn a captured stderr into a
+//! This module holds the decisions that turn captured stderr/stdout into a
 //! safe, bounded, informative reason, as pure text transforms over injected
 //! inputs -- so they are testable even though the process spawn that feeds
 //! them is not:
 //!
 //! * **Bounding it.** `source.not_observed_finding_observed` writes this text
 //!   to the event store on EVERY failed poll of a command-based source, so an
-//!   unbounded copy of stderr would let one pathological CLI (a stack trace, a
-//!   runaway debug dump) balloon the store forever.
+//!   unbounded copy of stderr or stdout would let one pathological CLI (a
+//!   stack trace, a runaway debug dump) balloon the store forever. Each
+//!   stream is bounded independently, to the same limit.
 //! * **Redacting it.** These commands run inside this repo's 1Password
 //!   credential wrapper (CLAUDE.md "Beads runtime prerequisites"), which
 //!   injects real secrets -- a shared work-items store password among them --
 //!   into the shelled command's own environment. A crashing CLI can plausibly
 //!   echo its environment back (a Python traceback's locals, a `set -x`
-//!   trace, a connection-string error), and that text is exactly what this
-//!   module writes into a stored, permanent event payload.
+//!   trace, a connection-string error) on EITHER stream, and that text is
+//!   exactly what this module writes into a stored, permanent event payload.
+//!   Both streams go through the identical redaction path -- stdout is at
+//!   least as likely as stderr to echo a connection string.
 
 use std::collections::BTreeMap;
 
-/// Stderr text longer than this is truncated before it is folded into a
-/// stored not-observed reason. 4096 bytes comfortably holds many lines of a
-/// normal CLI failure (a Python traceback's last few frames, a one-line
-/// "command not found") while still bounding a flood -- generous for the
-/// diagnostic, small next to the rest of the event payload it rides in.
+/// Stderr or stdout text longer than this is truncated before it is folded
+/// into a stored not-observed reason. 4096 bytes comfortably holds many
+/// lines of a normal CLI failure (a Python traceback's last few frames, a
+/// one-line "command not found") while still bounding a flood -- generous
+/// for the diagnostic, small next to the rest of the event payload it rides
+/// in. Applied independently to each stream, so a failure with both a noisy
+/// stderr and a noisy stdout can carry up to 4096 bytes of each.
 const STDERR_DIAGNOSTIC_LIMIT_BYTES: usize = 4096;
 
 /// Env var names treated as secret-shaped, matched as a case-insensitive
@@ -91,26 +103,52 @@ pub fn bounded_diagnostic_text(text: &str) -> String {
     )
 }
 
+/// Redact then bound one captured stream, ready to fold into a diagnostic
+/// reason (or to be skipped, if it comes back empty). Shared by stderr and
+/// stdout so both go through the identical path (AC2) -- there is exactly
+/// one place that decides what "safe to store" means for captured process
+/// output.
+fn redact_and_bound(text: &str, env: &BTreeMap<String, String>) -> String {
+    let redacted = redact_secret_env_values(text.trim(), env);
+    bounded_diagnostic_text(&redacted)
+}
+
 /// The not-observed reason for a source command that ran and exited non-zero.
 ///
 /// Composes an exit-status summary (`status_display`, e.g. `exit status: 1`
-/// or the platform's signal-death rendering) with whatever stderr the command
-/// produced, redacted then bounded. Never empty -- a command that exits
-/// non-zero with no stderr still reports the exit status, which is strictly
-/// more than the bare `"source command exited non-zero"` reason this text
-/// replaces.
+/// or the platform's signal-death rendering) with whatever stderr and stdout
+/// the command produced, each redacted then bounded independently and
+/// labelled so the two are distinguishable
+/// (`livespec-console-beads-fabro-mx9u.27` AC1). A stream that comes back
+/// empty (after trimming, redaction, and bounding) contributes no labelled
+/// section at all -- AC3, so an empty stream never pads the reason with
+/// `stdout: ` or `stderr: ` and nothing after it. Never empty overall -- a
+/// command that exits non-zero with both streams empty still reports the
+/// exit status, which is strictly more than the bare `"source command
+/// exited non-zero"` reason this text replaces.
 #[must_use]
 pub fn describe_command_failure(
     status_display: &str,
     stderr: &str,
+    stdout: &str,
     env: &BTreeMap<String, String>,
 ) -> String {
-    let redacted = redact_secret_env_values(stderr.trim(), env);
-    let bounded = bounded_diagnostic_text(&redacted);
-    if bounded.is_empty() {
+    let bounded_stderr = redact_and_bound(stderr, env);
+    let bounded_stdout = redact_and_bound(stdout, env);
+    let mut sections = Vec::new();
+    if !bounded_stderr.is_empty() {
+        sections.push(format!("stderr: {bounded_stderr}"));
+    }
+    if !bounded_stdout.is_empty() {
+        sections.push(format!("stdout: {bounded_stdout}"));
+    }
+    if sections.is_empty() {
         format!("source command exited non-zero ({status_display})")
     } else {
-        format!("source command exited non-zero ({status_display}): {bounded}")
+        format!(
+            "source command exited non-zero ({status_display}): {}",
+            sections.join(" | ")
+        )
     }
 }
 
@@ -129,32 +167,116 @@ mod tests {
     #[test]
     fn carries_stderr_and_exit_status() {
         let reason =
-            describe_command_failure("exit status: 1", "boom: no such file", &BTreeMap::new());
+            describe_command_failure("exit status: 1", "boom: no such file", "", &BTreeMap::new());
         assert_eq!(
             reason,
-            "source command exited non-zero (exit status: 1): boom: no such file"
+            "source command exited non-zero (exit status: 1): stderr: boom: no such file"
         );
     }
 
     #[test]
-    fn falls_back_to_the_bare_exit_status_when_stderr_is_blank() {
-        let reason = describe_command_failure("exit status: 2", "   ", &BTreeMap::new());
+    fn falls_back_to_the_bare_exit_status_when_both_streams_are_blank() {
+        let reason = describe_command_failure("exit status: 2", "   ", "  ", &BTreeMap::new());
         assert_eq!(reason, "source command exited non-zero (exit status: 2)");
     }
 
     #[test]
     fn distinguishes_a_signal_death_from_a_plain_exit_code() {
-        let exit = describe_command_failure("exit status: 1", "", &BTreeMap::new());
-        let signal = describe_command_failure("signal: 9 (SIGKILL)", "", &BTreeMap::new());
+        let exit = describe_command_failure("exit status: 1", "", "", &BTreeMap::new());
+        let signal = describe_command_failure("signal: 9 (SIGKILL)", "", "", &BTreeMap::new());
         assert_ne!(exit, signal);
         assert!(signal.contains("signal: 9"));
+    }
+
+    /// AC4: the four-way matrix over which streams are non-empty on a
+    /// non-zero exit -- stdout only, stderr only, both, and neither. Neither
+    /// is covered by `falls_back_to_the_bare_exit_status_when_both_streams_are_blank`
+    /// above; the other three are asserted together here so the labelling and
+    /// ordering (stderr before stdout) are pinned in one place.
+    #[test]
+    fn labels_stdout_and_stderr_distinguishably_across_the_presence_matrix() {
+        let stderr_only =
+            describe_command_failure("exit status: 1", "stderr line", "", &BTreeMap::new());
+        assert_eq!(
+            stderr_only,
+            "source command exited non-zero (exit status: 1): stderr: stderr line"
+        );
+
+        let stdout_only = describe_command_failure(
+            "exit status: 1",
+            "",
+            r#"{"errors": ["survey failed"]}"#,
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            stdout_only,
+            "source command exited non-zero (exit status: 1): stdout: {\"errors\": [\"survey failed\"]}"
+        );
+
+        let both = describe_command_failure(
+            "exit status: 1",
+            "stderr line",
+            r#"{"errors": ["survey failed"]}"#,
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            both,
+            "source command exited non-zero (exit status: 1): stderr: stderr line | stdout: {\"errors\": [\"survey failed\"]}"
+        );
+    }
+
+    #[test]
+    fn a_present_stdout_never_gets_padded_by_an_empty_stderr_section() {
+        let reason = describe_command_failure(
+            "exit status: 1",
+            "",
+            "diagnostic on stdout",
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            reason,
+            "source command exited non-zero (exit status: 1): stdout: diagnostic on stdout"
+        );
+        assert!(!reason.contains("stderr:"));
+    }
+
+    #[test]
+    fn a_present_stderr_never_gets_padded_by_an_empty_stdout_section() {
+        let reason = describe_command_failure(
+            "exit status: 1",
+            "diagnostic on stderr",
+            "",
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            reason,
+            "source command exited non-zero (exit status: 1): stderr: diagnostic on stderr"
+        );
+        assert!(!reason.contains("stdout:"));
     }
 
     #[test]
     fn redacts_a_secret_shaped_env_var_value_found_verbatim_in_stderr() {
         let env = env_with(&[("SOME_STORE_PASSWORD", "hunter2-supersecret")]);
-        let reason =
-            describe_command_failure("exit status: 1", "auth failed: hunter2-supersecret", &env);
+        let reason = describe_command_failure(
+            "exit status: 1",
+            "auth failed: hunter2-supersecret",
+            "",
+            &env,
+        );
+        assert!(!reason.contains("hunter2-supersecret"));
+        assert!(reason.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redacts_a_secret_shaped_env_var_value_found_verbatim_in_stdout() {
+        let env = env_with(&[("SOME_STORE_PASSWORD", "hunter2-supersecret")]);
+        let reason = describe_command_failure(
+            "exit status: 1",
+            "",
+            "connection string: hunter2-supersecret",
+            &env,
+        );
         assert!(!reason.contains("hunter2-supersecret"));
         assert!(reason.contains("[REDACTED]"));
     }
@@ -176,7 +298,7 @@ mod tests {
     #[test]
     fn does_not_redact_short_env_values() {
         let env = env_with(&[("SOME_TOKEN", "abc")]);
-        let reason = describe_command_failure("exit status: 1", "flag abc invalid", &env);
+        let reason = describe_command_failure("exit status: 1", "flag abc invalid", "", &env);
         assert!(reason.contains("abc"));
     }
 
@@ -186,6 +308,7 @@ mod tests {
         let reason = describe_command_failure(
             "exit status: 1",
             "cannot find /data/projects/console-repo",
+            "",
             &env,
         );
         assert!(reason.contains("/data/projects/console-repo"));
