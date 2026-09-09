@@ -690,6 +690,32 @@ the path rule surfaced). Keep the
 specification cohesive; do not import orchestrator-only concerns except through
 explicit contracts.
 
+**The accepted Red→Green shape is a SINGLE COMMIT AMENDED from Red to Green.**
+A two-commit Red/Green pair is refused, by design, and no sequence of
+hook-written trailers can rescue it — do not try, and do not "fix" the checker
+to accept one. Why: `commit_violates` requires any commit touching a
+product-impl path to carry, IN ITS OWN MESSAGE, both `TDD-Red-Test-File-Checksum:`
+and `TDD-Green-Verified-At:`, or else `TDD-Suite-Green-Captured-At:`. But
+`handle_green` reads the Red trailers from HEAD to verify the checksum and
+re-run the Red test, then writes ONLY `TDD-Green-Verified-At` and
+`TDD-Green-Parent-Reflog` into the new message — it never copies the Red
+checksum forward. So in a split, the Red commit stages only a `tests/` file (and
+is exempt, touching no product-impl path) while the Green commit stages the fix
+and carries only the Green token; `check-red-green-replay` then refuses the
+range with `red-green-replay-range-missing-trailers`. Under `git commit --amend`,
+HEAD at amend time IS the Red commit, so `handle_green` appends the Green
+trailers to the message being amended and one commit ends up carrying both. The
+trailer name `TDD-Green-Parent-Reflog` corroborates that this is the intended
+design: it records the pre-amend HEAD, which is recoverable only via reflog
+precisely because Red was amended away. The amend is therefore the codified
+mechanism of the ritual, and per the decision-authority section above its
+adoption IS its authorization — it is not a destructive act needing a gate.
+Crates whose tests are an inline `#[cfg(test)] mod` in `src/` cannot stage a
+separable Red at all and land test+fix as one `SuiteGreen` commit instead, as
+described above. Ruled 2026-09-09 (`livespec-console-beads-fabro-pzbdbo.35`):
+the documented contract and the enforced contract now agree, and split-pair
+acceptance is explicitly NOT being built.
+
 **Both layers run the test suite under the SAME runner: `cargo nextest run`.**
 Before livespec-console-beads-fabro-pzbdbo.36, the commit-msg hook ran plain
 `cargo test` while `just check`'s `check-nextest` recipe (and therefore CI) ran
