@@ -14,6 +14,8 @@
 #![forbid(unsafe_code)]
 
 #[cfg(all(not(test), not(coverage)))]
+use std::collections::BTreeMap;
+#[cfg(all(not(test), not(coverage)))]
 use std::io::IsTerminal;
 #[cfg(all(not(test), not(coverage)))]
 use std::path::{Path, PathBuf};
@@ -33,6 +35,10 @@ use console_application::build_identity::{
 #[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
+};
+#[cfg(all(not(test), not(coverage)))]
+use console_application::source_staleness::{
+    SharedSourceLastSuccess, SharedSourceStaleness, SourceStaleness,
 };
 #[cfg(all(not(test), not(coverage)))]
 use console_application::writer_identity::{
@@ -56,7 +62,7 @@ use livespec_console_beads_fabro::{
     SourcePollHost, SourcePollRequester, SourcePollWake, TuiSessionRunner, append_lane_diagnostic,
     bounded_operator_status, lane_diagnostics_path, lane_open_failure_line,
     lane_startup_failure_line, resolve_console_invoker, run_command_lane,
-    run_paced_source_poll_loop,
+    run_paced_source_poll_loop, source_last_success_snapshot, source_staleness_snapshot,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -425,6 +431,19 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // one-shot true->false latch with no VALUE to carry, unlike a staleness
     // reading that keeps changing all session long.
     let first_ingest_pending = Arc::new(AtomicBool::new(true));
+    // No synchronous pre-first-frame probe here, unlike `build_staleness_cell`
+    // above: computing this needs the SAME two `SQLite` reads the poller's
+    // first sweep is about to perform anyway (livespec-console-beads-fabro-
+    // mx9u.17), so a second, redundant read here would buy nothing. The cell
+    // starts `AllObserved` (no rider) for the brief pre-first-sweep window,
+    // which the header's own `event sources: loading` tell already covers
+    // honestly.
+    let source_staleness_cell = SharedSourceStaleness::new();
+    // Same reasoning as `source_staleness_cell` above -- the Event sources
+    // roster's stale-since column shares the SAME poller-computed fact,
+    // unsummarized (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's
+    // roster).
+    let source_last_success_cell = SharedSourceLastSuccess::new();
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo,
         dispatcher_settings,
@@ -432,6 +451,10 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         build_identity: livespec_console_beads_fabro::build_identity::embedded_build_identity(),
         build_staleness: build_staleness_cell.get(),
         build_staleness_cell: build_staleness_cell.clone(),
+        source_staleness: source_staleness_cell.get(),
+        source_staleness_cell: source_staleness_cell.clone(),
+        source_last_success: source_last_success_cell.get(),
+        source_last_success_cell: source_last_success_cell.clone(),
         first_ingest_pending: Arc::clone(&first_ingest_pending),
         writer_lease_status_cell: writer_lease_status_cell.clone(),
     };
@@ -463,6 +486,8 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         poller_loop(
             &poll_rx,
             build_staleness_cell,
+            source_staleness_cell,
+            source_last_success_cell,
             poller_first_ingest_pending,
             &poller_writer_identity,
             poller_writer_lease_status,
@@ -574,6 +599,8 @@ fn hostname() -> String {
 fn poller_loop(
     poll_rx: &Receiver<PollMessage>,
     build_staleness: SharedBuildStaleness,
+    source_staleness: SharedSourceStaleness,
+    source_last_success: SharedSourceLastSuccess,
     first_ingest_pending: Arc<AtomicBool>,
     writer_identity: &WriterIdentity,
     writer_lease_status: SharedWriterLeaseStatus,
@@ -628,6 +655,8 @@ fn poller_loop(
         probe: &probe,
         repo_path: repo_path.as_str(),
         build_staleness,
+        source_staleness,
+        source_last_success,
         first_ingest_pending,
         writer_identity,
         writer_lease_status,
@@ -656,6 +685,15 @@ struct ChannelSourcePollHost<'a> {
     /// Shared with the render thread — see [`SharedBuildStaleness`] for why
     /// the re-probe lives on THIS cadence rather than a per-render one.
     build_staleness: SharedBuildStaleness,
+    /// Shared with the render thread, same reasoning as `build_staleness`
+    /// above: the header's stale-since rider (livespec-console-beads-fabro-
+    /// mx9u.17) needs two `SQLite` reads beyond the cheap event re-list the
+    /// render thread already does, so it is recomputed HERE, every sweep.
+    source_staleness: SharedSourceStaleness,
+    /// Shared with the render thread: the Event sources roster's stale-since
+    /// COLUMN (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster) --
+    /// the SAME fact as `source_staleness` above, unsummarized.
+    source_last_success: SharedSourceLastSuccess,
     /// Shared with the render thread: flipped `false` the moment this thread
     /// completes its FIRST sweep, whether or not that sweep found anything
     /// (livespec-console-beads-fabro-pzbdbo.27). Unlike `build_staleness` this
@@ -692,6 +730,19 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
                 self.needs_attention,
                 self.writer_identity,
             );
+        }
+        // Re-derive the header's stale-since rider from whatever the store now
+        // holds, every sweep -- livespec-console-beads-fabro-mx9u.17. A read
+        // failure (a transient store hiccup, same family as the refresh above)
+        // must never crash the poller either; it simply leaves the cell at
+        // whatever it last held for one more cycle.
+        if let Ok(staleness) = source_staleness_snapshot(self.store) {
+            self.source_staleness.set(staleness);
+        }
+        // Same reasoning, for the Event sources roster's stale-since column
+        // (pzbdbo.29's roster) -- the SAME fact, unsummarized.
+        if let Ok(last_success) = source_last_success_snapshot(self.store) {
+            self.source_last_success.set(last_success);
         }
         // Cleared unconditionally, success or failure: an ATTEMPTED first
         // sweep is what the header's `event sources: loading` tell promises
@@ -1187,6 +1238,23 @@ struct InteractiveTuiRunner {
     /// the first reads through here instead
     /// (livespec-console-beads-fabro-mx9u.26).
     build_staleness_cell: SharedBuildStaleness,
+    /// The FIRST frame's stale-since rider -- a plain snapshot, used only to
+    /// seed [`console_tui::TuiInteractionState`] before the loop's first tick
+    /// (livespec-console-beads-fabro-mx9u.17).
+    source_staleness: SourceStaleness,
+    /// The LIVE cell the background poller keeps current; every tick after
+    /// the first reads through here instead, same handoff as
+    /// `build_staleness_cell` above.
+    source_staleness_cell: SharedSourceStaleness,
+    /// The FIRST frame's per-source last-successful-read map -- a plain
+    /// snapshot, used only to seed [`console_tui::TuiInteractionState`]
+    /// before the loop's first tick (livespec-console-beads-fabro-mx9u.17,
+    /// pzbdbo.29's roster).
+    source_last_success: BTreeMap<String, String>,
+    /// The LIVE cell the background poller keeps current; every tick after
+    /// the first reads through here instead, same handoff as
+    /// `source_staleness_cell` above.
+    source_last_success_cell: SharedSourceLastSuccess,
     /// The SAME handle the poller thread flips `false` once its first sweep
     /// completes (livespec-console-beads-fabro-pzbdbo.27).
     first_ingest_pending: Arc<AtomicBool>,
@@ -1206,6 +1274,8 @@ impl TuiSessionRunner for InteractiveTuiRunner {
         let mut live_session = PollerAwareSession {
             inner: session,
             build_staleness: self.build_staleness_cell.clone(),
+            source_staleness: self.source_staleness_cell.clone(),
+            source_last_success: self.source_last_success_cell.clone(),
             first_ingest_pending: Arc::clone(&self.first_ingest_pending),
             writer_lease_status: self.writer_lease_status_cell.clone(),
         };
@@ -1217,6 +1287,8 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             self.plugin_resolution.clone(),
             Some(self.build_identity.clone()),
             self.build_staleness,
+            self.source_staleness.clone(),
+            self.source_last_success.clone(),
             &mut live_session,
         )
         .map_err(ConsoleRuntimeError::tui_runtime_io_failed)
@@ -1239,6 +1311,8 @@ impl TuiSessionRunner for InteractiveTuiRunner {
 struct PollerAwareSession<'a> {
     inner: &'a mut dyn console_tui::TuiLiveSession,
     build_staleness: SharedBuildStaleness,
+    source_staleness: SharedSourceStaleness,
+    source_last_success: SharedSourceLastSuccess,
     first_ingest_pending: Arc<AtomicBool>,
     writer_lease_status: SharedWriterLeaseStatus,
 }
@@ -1276,6 +1350,19 @@ impl console_tui::TuiLiveSession for PollerAwareSession<'_> {
         // at `Unknown`) -- so the render loop applies it every tick, same cost
         // as reapplying an unchanged field.
         Some(self.build_staleness.get())
+    }
+
+    fn take_source_staleness(&mut self) -> Option<SourceStaleness> {
+        // A cheap, non-blocking `Mutex` read of whatever the background poller
+        // last wrote, same shape as `take_build_staleness` above
+        // (livespec-console-beads-fabro-mx9u.17).
+        Some(self.source_staleness.get())
+    }
+
+    fn take_source_last_success(&mut self) -> Option<BTreeMap<String, String>> {
+        // Same shape again, for the Event sources roster's stale-since column
+        // (pzbdbo.29's roster).
+        Some(self.source_last_success.get())
     }
 
     fn first_ingest_in_progress(&self) -> bool {

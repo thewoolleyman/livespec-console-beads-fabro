@@ -38,9 +38,14 @@
 //! the latter with no named cause.
 //!
 //! Out of scope here, by design: marking a STALE projection in the TUI's own
-//! presentation (the header segment, list rows) is
+//! presentation (the header segment, the Event sources roster) is
 //! livespec-console-beads-fabro-mx9u.17; this module is the CLI/doctor half
-//! only.
+//! only. It now SHARES its last-successful-read derivation
+//! ([`last_successful_observed_at`]) with that presentation, via
+//! [`crate::source_staleness`], so the two can never disagree about when a
+//! source last succeeded -- but the rendering itself, and the vocabulary
+//! decisions that go with it, live entirely in [`crate::source_staleness`]
+//! and `console-tui`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -206,11 +211,13 @@ pub(crate) fn latest_not_observed_reason(events: &[ConsoleEvent], source: &str) 
 }
 
 /// For every source, the latest timestamp EITHER angle can affirm as a
-/// successful read: the `observed_at` of its most recent positive event
-/// observation ([`is_positive_source_observation`]), or the `advanced_at` of
-/// its most recent successful checkpoint poll (`checkpoint_last_success`,
-/// already filtered by the composition root to polls that actually reached
-/// the source) -- whichever is later.
+/// successful read -- whichever is later.
+///
+/// The `observed_at` of its most recent positive event observation
+/// ([`is_positive_source_observation`]), or the `advanced_at` of its most
+/// recent successful checkpoint poll (`checkpoint_last_success`, already
+/// filtered by the composition root to polls that actually reached the
+/// source).
 ///
 /// The two angles cover each other's blind spot. A steady-state healthy
 /// source polls successfully every cycle but appends no new event once its
@@ -222,7 +229,15 @@ pub(crate) fn latest_not_observed_reason(events: &[ConsoleEvent], source: &str) 
 /// NOT-successful, checkpoint every cycle -- excluded from
 /// `checkpoint_last_success` by construction -- so its last real success
 /// stays pinned to whichever angle recorded it before the failure started.
-fn last_successful_observed_at(
+///
+/// `pub` (not `pub(crate)`): livespec-console-beads-fabro-mx9u.17 reuses this
+/// EXACT derivation, from the composition root (`console-cli`, a different
+/// crate), to date the header's own stale-since rider
+/// ([`crate::source_staleness::oldest_unavailable_since`]) -- so the header
+/// can never disagree with `doctor` about WHEN a source last succeeded, only
+/// about how much of that fact it has room to show.
+#[must_use]
+pub fn last_successful_observed_at(
     events_with_observed_at: &[(ConsoleEvent, String)],
     checkpoint_last_success: &[(String, String)],
 ) -> BTreeMap<String, String> {

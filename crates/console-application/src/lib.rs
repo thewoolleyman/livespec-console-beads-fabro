@@ -35,6 +35,7 @@ pub mod build_identity;
 pub mod doctor;
 /// Module containing source-adapters support.
 pub mod source_adapters;
+pub mod source_staleness;
 /// The identity of a marker's writer process.
 ///
 /// Pid, exe path, cwd, build sha, and the JSON encoding for the marker's
@@ -50,6 +51,7 @@ use source_adapters::{
     materialize_attention_items, reconcile_runs_snapshot_from_payload_json,
     work_item_snapshot_from_payload_json,
 };
+use source_staleness::{SourceStaleness, source_staleness_header_segment};
 use writer_identity::{WriterLeaseStatus, writer_lease_status_segment};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1226,6 +1228,22 @@ pub struct TuiInteractionState {
     list_edge: Option<ListEdge>,
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
+    // The header's stale-since rider (livespec-console-beads-fabro-mx9u.17):
+    // whether the picture the console renders from a currently-unavailable
+    // event source is current or STALE, and since when. Seeded
+    // `AllObserved` (no rider) for every existing caller, exactly like
+    // `build_staleness` seeds `Unknown` -- a session with no live probe
+    // behind it renders as though nothing is stale, never a fabricated
+    // claim either way.
+    source_staleness: SourceStaleness,
+    // Per-source last-successful-read, for the Event sources roster's
+    // stale-since COLUMN (livespec-console-beads-fabro-mx9u.17, the sibling
+    // of `source_staleness` above: that field is the header's ONE collapsed
+    // fact; this map is the SAME derivation's full per-source detail, kept
+    // separately so the roster row a source belongs to reads ITS OWN
+    // timestamp rather than the worst-case across every unavailable source).
+    // Empty by construction for every existing caller.
+    source_last_success: BTreeMap<String, String>,
     // Whether the session's FIRST background source ingest is still in flight.
     // `false` by construction (every existing caller), so a session with no
     // opinion on the matter renders exactly as before. The composition root
@@ -1271,6 +1289,8 @@ impl TuiInteractionState {
             list_edge: None,
             build_identity: None,
             build_staleness: BuildStaleness::Unknown,
+            source_staleness: SourceStaleness::AllObserved,
+            source_last_success: BTreeMap::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
         }
@@ -1312,6 +1332,8 @@ impl TuiInteractionState {
             list_edge: None,
             build_identity: None,
             build_staleness: BuildStaleness::Unknown,
+            source_staleness: SourceStaleness::AllObserved,
+            source_last_success: BTreeMap::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
         }
@@ -1592,6 +1614,31 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the header's stale-since rider replaced
+    /// (livespec-console-beads-fabro-mx9u.17). The composition root re-probes
+    /// this on the background source poller's own cadence, the same handoff
+    /// [`Self::with_build_staleness`] uses -- see
+    /// [`source_staleness::SharedSourceStaleness`].
+    pub fn with_source_staleness(mut self, source_staleness: SourceStaleness) -> Self {
+        self.source_staleness = source_staleness;
+        self
+    }
+
+    #[must_use]
+    /// Return this value with the per-source last-successful-read map
+    /// replaced (livespec-console-beads-fabro-mx9u.17), for the Event
+    /// sources roster's stale-since column. Re-probed on the SAME cadence and
+    /// via the SAME handoff as [`Self::with_source_staleness`] -- see
+    /// [`source_staleness::SharedSourceLastSuccess`].
+    pub fn with_source_last_success(
+        mut self,
+        source_last_success: BTreeMap<String, String>,
+    ) -> Self {
+        self.source_last_success = source_last_success;
+        self
+    }
+
+    #[must_use]
     /// Return this value with whether the session's first background source
     /// ingest is still in flight replaced. The composition root re-checks this
     /// every tick (a cheap atomic read, never a store or CLI call) and folds the
@@ -1802,6 +1849,20 @@ impl TuiInteractionState {
     /// Return the build's observed staleness against the repo's current HEAD.
     pub const fn build_staleness(&self) -> BuildStaleness {
         self.build_staleness
+    }
+
+    #[must_use]
+    /// Return the header's stale-since rider. See
+    /// [`Self::with_source_staleness`].
+    pub const fn source_staleness(&self) -> &SourceStaleness {
+        &self.source_staleness
+    }
+
+    #[must_use]
+    /// Return the per-source last-successful-read map. See
+    /// [`Self::with_source_last_success`].
+    pub const fn source_last_success(&self) -> &BTreeMap<String, String> {
+        &self.source_last_success
     }
 
     #[must_use]
@@ -2162,6 +2223,7 @@ pub struct TuiScreenModel {
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
+    source_staleness: SourceStaleness,
     startup_ingest_pending: bool,
     writer_lease_status: WriterLeaseStatus,
 }
@@ -2512,6 +2574,14 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Return the header's stale-since rider: whether the picture rendered
+    /// from a currently-unavailable event source is current or STALE, and
+    /// since when (livespec-console-beads-fabro-mx9u.17).
+    pub const fn source_staleness(&self) -> &SourceStaleness {
+        &self.source_staleness
+    }
+
+    #[must_use]
     /// Whether the session's FIRST background source ingest is still in
     /// flight -- `true` only for the brief window between the first frame
     /// drawing from whatever the store already held and the background
@@ -2557,6 +2627,7 @@ impl TuiScreenModel {
             self.transient_status.as_deref(),
             &self.unavailable_sources,
             self.build_staleness,
+            &self.source_staleness,
             self.startup_ingest_pending,
             &self.writer_lease_status,
             width,
@@ -4602,6 +4673,7 @@ pub fn render_tui_model(
             &projection.observed_source_names,
             &projection.unavailable_sources,
             events,
+            state.source_last_success(),
         ),
         lane_board,
         lane_focus,
@@ -4626,16 +4698,17 @@ pub fn render_tui_model(
         // The build IDENTITY itself is not one of these fields -- it lives in
         // the header pane's block title instead; see `fit_header_line`'s doc.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
             projection.attention_total,
             factory_activity_segment(projection.factory_activity.as_deref()),
             transient_status_segment(transient_status.as_deref()),
             build_staleness_header_segment(state.build_staleness()),
-            startup_ingest_header_segment(state.startup_ingest_pending()),
+            source_health_header_segment(&projection.unavailable_sources),
+            source_staleness_header_wide_segment(state.source_staleness()),
             writer_lease_status_header_segment(state.writer_lease_status()),
-            source_health_header_segment(&projection.unavailable_sources)
+            startup_ingest_header_segment(state.startup_ingest_pending())
         ),
         unavailable_sources: projection.unavailable_sources.clone(),
         observed_source_names: projection.observed_source_names.clone(),
@@ -4646,6 +4719,7 @@ pub fn render_tui_model(
         orphaned_factory_runs: projection.orphaned_factory_runs.clone(),
         build_identity: state.build_identity().cloned(),
         build_staleness: state.build_staleness(),
+        source_staleness: state.source_staleness().clone(),
         startup_ingest_pending: state.startup_ingest_pending(),
         writer_lease_status: state.writer_lease_status().clone(),
     }
@@ -4913,6 +4987,12 @@ fn build_staleness_header_segment(staleness: BuildStaleness) -> String {
 /// The canonical header's read-only-observer tell, or empty while writable.
 fn writer_lease_status_header_segment(status: &WriterLeaseStatus) -> String {
     writer_lease_status_segment(status).map_or_else(String::new, |tell| format!(" | {tell}"))
+}
+
+/// The canonical header's stale-since rider (livespec-console-beads-fabro-
+/// mx9u.17), or empty while every event source is currently observed.
+fn source_staleness_header_wide_segment(staleness: &SourceStaleness) -> String {
+    source_staleness_header_segment(staleness).map_or_else(String::new, |tell| format!(" | {tell}"))
 }
 
 /// What a failed command's Status-line message says when its stored error
@@ -5285,6 +5365,7 @@ fn fit_header_line(
     transient_status: Option<&str>,
     unavailable_sources: &[String],
     build_staleness: BuildStaleness,
+    source_staleness: &SourceStaleness,
     startup_ingest_pending: bool,
     writer_lease_status: &WriterLeaseStatus,
     width: usize,
@@ -5349,11 +5430,32 @@ fn fit_header_line(
             text: tell,
             priority: HeaderSegmentPriority::TransientState,
         }),
+        // `StaticContext`, deliberately BELOW `TransientState`: the
+        // header_shrink_plan's single unconditional `DegradeSource` step (the
+        // one that would sacrifice the ONE unavailable source's NAME for its
+        // bare count) runs immediately after every `StaticContext` field is
+        // already gone but BEFORE any `TransientState` field is even
+        // considered (livespec-console-beads-fabro-mx9u.13's own protected
+        // guarantee: a single named source survives at the 112-column
+        // dogfood width, pinned by
+        // `tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned`).
+        // Ranking this rider `TransientState` regressed exactly that: it
+        // competed for the SAME budget as the name and lost it. At
+        // `StaticContext` the rider yields BEFORE the name does, so the base
+        // "N unavailable (name)" fact -- which already tells the operator the
+        // data is not current -- is never sacrificed for the richer "since
+        // when" detail this rider adds; the rider itself still survives
+        // comfortably in the wider "crowded" scenarios AC3 targets (105/159
+        // columns), where there is room for both.
+        source_staleness_header_segment(source_staleness).map(|tell| HeaderField {
+            text: tell,
+            priority: HeaderSegmentPriority::StaticContext,
+        }),
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<HeaderField>; 10], source_idx: usize| -> String {
+    let compose = |fields: &[Option<HeaderField>; 11], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_ref().map(|field| field.text.as_str()))
@@ -9887,12 +9989,17 @@ fn view_summary_items(
     observed_sources: &[String],
     unavailable_sources: &[String],
     events: &[ConsoleEvent],
+    source_last_success: &BTreeMap<String, String>,
 ) -> Vec<ViewSummaryItem> {
     match active_view {
         TuiView::Spec => spec_view_items(events),
-        TuiView::Events => {
-            events_container_items(events_focus, observed_sources, unavailable_sources, events)
-        }
+        TuiView::Events => events_container_items(
+            events_focus,
+            observed_sources,
+            unavailable_sources,
+            events,
+            source_last_success,
+        ),
         TuiView::Repos => repos_view_items(events),
         // The Attention, Lanes, and Settings views render their own projections
         // (the attention list / detail, the lane board, the dispatcher-settings
@@ -9917,6 +10024,7 @@ fn events_container_items(
     observed_sources: &[String],
     unavailable_sources: &[String],
     events: &[ConsoleEvent],
+    source_last_success: &BTreeMap<String, String>,
 ) -> Vec<ViewSummaryItem> {
     match events_focus {
         EventsFocus::Overview => EventsFocus::all()
@@ -9924,9 +10032,12 @@ fn events_container_items(
             .map(|sub_view| ViewSummaryItem::new(sub_view.label().to_owned(), String::new()))
             .collect(),
         EventsFocus::StoredEvents => events_view_items(events),
-        EventsFocus::EventSources => {
-            event_sources_roster_items(observed_sources, unavailable_sources, events)
-        }
+        EventsFocus::EventSources => event_sources_roster_items(
+            observed_sources,
+            unavailable_sources,
+            events,
+            source_last_success,
+        ),
     }
 }
 
@@ -9952,25 +10063,28 @@ fn events_container_items(
 /// doctor's own fallback rather than inventing a second "unknown" phrasing
 /// for the identical condition.
 ///
-/// Deliberately NOT shown here: a last-successful-read / stale-since
-/// timestamp. `doctor` computes that fact by combining the store's raw
-/// `observed_at` column with the checkpoint store's per-source `advanced_at`
-/// (mx9u.25) -- both reads the interactive TUI's live loop has no path to
-/// today, since `ConsoleEvent` itself carries no timestamp and the render
-/// loop's `events` never leaves `console-cli`'s composition root with one
-/// attached. Threading that live-refreshed fact into the render loop (the
-/// `SharedBuildStaleness`-style cell the header's own build-staleness tell
-/// uses) is the scoped job of mx9u.17, which the epic names as the item that
-/// turns stale-since into a COLUMN on this exact roster -- so this function
-/// says nothing about a fact it cannot yet source honestly, rather than
-/// rendering a placeholder or a guess. A per-row action surface is deferred
-/// the same way (the epic permits this explicitly): [`EventSourceHealthRow`]
-/// is a real record, not a formatted string, so a sibling item extends it in
-/// place instead of re-deriving the roster.
+/// An unavailable row's last-successful-read / stale-since fact
+/// (livespec-console-beads-fabro-mx9u.17) is now a column too, from
+/// `source_last_success` -- the composition root's per-source
+/// `(source, last-successful-read)` map, computed on the background source
+/// poller's own cadence via `console_cli::source_last_success_snapshot` (the
+/// SAME derivation `doctor` uses, so the roster and `doctor` can never report
+/// two different timestamps for the same source) and handed to the render
+/// loop through a `SharedBuildStaleness`-style cell
+/// ([`source_staleness::SharedSourceLastSuccess`]). A healthy row shows
+/// nothing further -- "healthy" already says the picture is current -- so
+/// this is additive to an unavailable row's existing reason line, never a
+/// second encoding of health.
+///
+/// A per-row action surface is still deferred (the epic permits this
+/// explicitly): [`EventSourceHealthRow`] is a real record, not a formatted
+/// string, so a sibling item extends it in place instead of re-deriving the
+/// roster.
 fn event_sources_roster_items(
     observed_sources: &[String],
     unavailable_sources: &[String],
     events: &[ConsoleEvent],
+    source_last_success: &BTreeMap<String, String>,
 ) -> Vec<ViewSummaryItem> {
     if observed_sources.is_empty() {
         return vec![ViewSummaryItem::new(
@@ -9980,36 +10094,60 @@ fn event_sources_roster_items(
     }
     observed_sources
         .iter()
-        .map(|source| EventSourceHealthRow::new(source, unavailable_sources, events).into())
+        .map(|source| {
+            EventSourceHealthRow::new(source, unavailable_sources, events, source_last_success)
+                .into()
+        })
         .collect()
 }
 
 /// One row of the Event sources roster: a source's identity, its current
-/// health, and -- for an unavailable source -- the verbatim reason its latest
-/// poll failed. A real record with named fields rather than a formatted
-/// string, so a sibling item (a stale-since timestamp, a diagnose/fix action)
+/// health, -- for an unavailable source -- the verbatim reason its latest
+/// poll failed, and its own last-successful-read fact
+/// (livespec-console-beads-fabro-mx9u.17). A real record with named fields
+/// rather than a formatted string, so a sibling item (a diagnose/fix action)
 /// can add a column without re-deriving anything this type already knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EventSourceHealthRow {
     source: String,
     unavailable: bool,
     reason: Option<String>,
+    // `None` for a healthy row (nothing to add to "healthy" -- B5); for an
+    // unavailable row, its OWN last-successful-read fact.
+    // `SourceStaleness::AllObserved` is never constructed here, since a
+    // single row's staleness is never "every source is observed".
+    stale_since: Option<SourceStaleness>,
 }
 
 impl EventSourceHealthRow {
     /// Build one row from the SAME facts the header and `doctor` read:
-    /// `unavailable_sources` for health, and [`doctor::latest_not_observed_reason`]
-    /// over `events` for an unavailable source's cause.
-    fn new(source: &str, unavailable_sources: &[String], events: &[ConsoleEvent]) -> Self {
+    /// `unavailable_sources` for health, [`doctor::latest_not_observed_reason`]
+    /// over `events` for an unavailable source's cause, and
+    /// `source_last_success` (keyed by source, from
+    /// [`doctor::last_successful_observed_at`]) for its own stale-since fact.
+    fn new(
+        source: &str,
+        unavailable_sources: &[String],
+        events: &[ConsoleEvent],
+        source_last_success: &BTreeMap<String, String>,
+    ) -> Self {
         let unavailable = unavailable_sources.iter().any(|name| name == source);
         let reason = unavailable.then(|| {
             doctor::latest_not_observed_reason(events, source)
                 .unwrap_or_else(|| doctor::NO_REASON_RECORDED.to_owned())
         });
+        let stale_since = unavailable.then(|| {
+            source_last_success
+                .get(source)
+                .map_or(SourceStaleness::NeverObserved, |since| {
+                    SourceStaleness::Since(since.clone())
+                })
+        });
         Self {
             source: source.to_owned(),
             unavailable,
             reason,
+            stale_since,
         }
     }
 }
@@ -10019,10 +10157,11 @@ impl From<EventSourceHealthRow> for ViewSummaryItem {
     /// Content pane's list, which renders `title()` alone (see
     /// `console-tui::render_summary`) -- so "each source as a line, and its
     /// associated health" (the maintainer's own words) does not require
-    /// opening the Detail pane. The verbatim cause, when there is one, is the
-    /// detail: a healthy row has nothing further to say (B5 -- pane bodies
-    /// carry operational content only, no explanatory prose for a fact that
-    /// is already fully stated by "healthy").
+    /// opening the Detail pane. The verbatim cause and the stale-since fact,
+    /// when there are any, are the detail: a healthy row has nothing further
+    /// to say (B5 -- pane bodies carry operational content only, no
+    /// explanatory prose for a fact that is already fully stated by
+    /// "healthy").
     fn from(row: EventSourceHealthRow) -> Self {
         let health = if row.unavailable {
             "unavailable"
@@ -10030,8 +10169,36 @@ impl From<EventSourceHealthRow> for ViewSummaryItem {
             "healthy"
         };
         let title = format!("{} — {health}", row.source);
-        let detail = row.reason.unwrap_or_default();
-        Self::new(title, detail)
+        // Joined rather than conditionally separated: `reason` and
+        // `stale_since` are always BOTH `Some` or BOTH `None` together (see
+        // `EventSourceHealthRow::new`), so there is no reachable case where
+        // one is present and empty while the other still needs a leading
+        // separator -- `join` states that invariant instead of branching on
+        // it.
+        let detail_lines: Vec<String> = [
+            row.reason,
+            row.stale_since.as_ref().map(roster_stale_since_line),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        Self::new(title, detail_lines.join("\n"))
+    }
+}
+
+/// The Event sources roster's stale-since detail line for one row, in the
+/// SAME words `doctor`'s own finding uses ("last successful read: ...") --
+/// livespec-console-beads-fabro-mx9u.17.
+///
+/// `SourceStaleness::AllObserved` never reaches this row-scoped call (see
+/// [`EventSourceHealthRow`]'s own `stale_since` field doc); it still renders
+/// honestly (an empty line) rather than panicking, so a future caller cannot
+/// turn a wiring mistake into a crash.
+fn roster_stale_since_line(stale_since: &SourceStaleness) -> String {
+    match stale_since {
+        SourceStaleness::AllObserved => String::new(),
+        SourceStaleness::NeverObserved => "last successful read: never observed".to_owned(),
+        SourceStaleness::Since(since) => format!("last successful read: {since}"),
     }
 }
 
@@ -12873,9 +13040,13 @@ mod tests {
         // AC1: each row names the source, its health, and -- for the
         // unavailable one -- the verbatim not-observed reason.
         assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        // livespec-console-beads-fabro-mx9u.17: the stale-since column, on the
+        // SAME line pair `doctor`'s own finding uses. No `source_last_success`
+        // entry exists in this fixture, so this is honestly "never observed",
+        // not a fabricated timestamp.
         assert_eq!(
             model.view_items()[0].detail(),
-            "dispatcher binary not found"
+            "dispatcher binary not found\nlast successful read: never observed"
         );
         assert_eq!(model.observed_source_names(), ["dispatcher", "livespec"]);
         // Both happen to be unavailable in THIS fixture, but the sub-view is
@@ -12936,7 +13107,13 @@ mod tests {
         let model = build_tui_model_for_state(&events, &state);
 
         assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
-        assert_eq!(model.view_items()[0].detail(), doctor::NO_REASON_RECORDED);
+        assert_eq!(
+            model.view_items()[0].detail(),
+            format!(
+                "{}\nlast successful read: never observed",
+                doctor::NO_REASON_RECORDED
+            )
+        );
     }
 
     #[test]
@@ -12985,23 +13162,74 @@ mod tests {
         let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
             .with_events_focus(EventsFocus::EventSources);
         let model = build_tui_model_for_state(&events, &state);
-        let report = doctor::build_doctor_report(&events, &[], &[]);
+        let report = doctor::build_doctor_report(&events, &[], &[], &[]);
 
         // Both angles are asserted against the KNOWN reason text (not merely
         // against each other), so a test that vacuously found nothing on
         // either side would fail loudly rather than reporting a false
         // agreement.
-        let roster_reason = model
+        let roster_detail = model
             .view_items()
             .iter()
             .find(|item| item.title() == "dispatcher — unavailable")
             .map_or_else(String::new, |item| item.detail().to_owned());
+        // livespec-console-beads-fabro-mx9u.17: the detail is now TWO lines --
+        // the reason, then the stale-since column -- so each is checked
+        // against doctor's own finding separately rather than as one blunt
+        // substring match.
+        let mut roster_lines = roster_detail.lines();
+        let roster_reason = roster_lines.next().unwrap_or_default();
+        let roster_stale_since = roster_lines.next().unwrap_or_default();
         assert_eq!(roster_reason, "dispatcher binary not found");
-        let doctor_agrees = report
-            .findings()
-            .iter()
-            .any(|finding| finding.message().contains(&roster_reason));
+        assert_eq!(roster_stale_since, "last successful read: never observed");
+        let doctor_agrees = report.findings().iter().any(|finding| {
+            finding.message().contains(roster_reason)
+                && finding.message().contains(roster_stale_since)
+        });
         assert!(doctor_agrees);
+    }
+
+    #[test]
+    fn tui_event_sources_roster_names_a_known_last_successful_read() {
+        // livespec-console-beads-fabro-mx9u.17: the roster column, over the
+        // OTHER angle from the "never observed" cases above -- a source with
+        // a KNOWN last-successful-read, fed via
+        // `TuiInteractionState::with_source_last_success` exactly as the
+        // composition root's poller feeds it.
+        let events = [ConsoleEvent::fixture(
+            "evt_dispatcher_not_observed",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )
+        .with_payload_json(
+            r#"{"reason":"dispatcher binary not found","repo":"livespec-console-beads-fabro"}"#
+                .to_owned(),
+        )];
+        let mut last_success = std::collections::BTreeMap::new();
+        last_success.insert("dispatcher".to_owned(), "2026-09-08T14:05:14Z".to_owned());
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources)
+            .with_source_last_success(last_success);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        assert_eq!(
+            model.view_items()[0].detail(),
+            "dispatcher binary not found\nlast successful read: 2026-09-08T14:05:14Z"
+        );
+    }
+
+    #[test]
+    fn roster_stale_since_line_renders_honestly_for_a_variant_it_never_actually_receives() {
+        // `EventSourceHealthRow::new` never constructs
+        // `Some(SourceStaleness::AllObserved)` for a row (see its `stale_since`
+        // field doc), so this arm is unreached through the public roster path
+        // -- direct unit test of the defensive fallback instead, proving a
+        // future wiring mistake renders as an empty line rather than a panic.
+        assert_eq!(
+            super::roster_stale_since_line(&super::SourceStaleness::AllObserved),
+            ""
+        );
     }
 
     #[test]
@@ -13282,6 +13510,7 @@ mod tests {
             orphaned_factory_runs: Vec::new(),
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            source_staleness: super::SourceStaleness::AllObserved,
             startup_ingest_pending: false,
             writer_lease_status: super::WriterLeaseStatus::Writable,
         };
@@ -13341,6 +13570,7 @@ mod tests {
             orphaned_factory_runs: vec![run.clone()],
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            source_staleness: super::SourceStaleness::AllObserved,
             startup_ingest_pending: false,
             writer_lease_status: super::WriterLeaseStatus::Writable,
         };
@@ -19034,6 +19264,52 @@ mod tests {
     }
 
     #[test]
+    fn the_model_exposes_the_source_staleness_it_was_built_from() {
+        // livespec-console-beads-fabro-mx9u.17: the accessor `render_tui_model`
+        // populates from `state.source_staleness()`, exercised at the MODEL
+        // layer (not merely the interaction-state layer `apply_source_staleness`'s
+        // own tests already cover in `console-tui`).
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_source_staleness(
+            super::SourceStaleness::Since("2026-09-08T14:05:14Z".to_owned()),
+        );
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert_eq!(
+            model.source_staleness(),
+            &super::SourceStaleness::Since("2026-09-08T14:05:14Z".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_stale_since_rider_reaches_both_the_canonical_and_fitted_header() {
+        // livespec-console-beads-fabro-mx9u.17: unlike the build-staleness
+        // tell above, this rider's `HeaderField` sits at `StaticContext`
+        // priority (see `fit_header_line`'s own comment for why: it yields
+        // BEFORE the source-health tell's single-source NAME does, so it
+        // never regresses the 112-column guarantee
+        // `tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned`
+        // pins) -- so it is checked at a width wide enough that nothing needs
+        // to yield at all, proving the field is actually WIRED rather than
+        // merely declared.
+        let events = [ConsoleEvent::fixture(
+            "evt_dispatcher_not_observed",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )];
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_source_staleness(
+            super::SourceStaleness::Since("2026-09-08T14:05:14Z".to_owned()),
+        );
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert!(model.header().contains("STALE since 2026-09-08T14:05:14Z"));
+        assert!(
+            model
+                .header_line(300)
+                .contains("STALE since 2026-09-08T14:05:14Z")
+        );
+    }
+
+    #[test]
     fn a_status_within_the_budget_keeps_the_attention_count_in_the_pinned_header() {
         // livespec-console-beads-fabro-zbnnlv. A status is the LAST field the
         // fitter drops, so an over-long one evicts every other field on its way
@@ -22152,6 +22428,7 @@ mod tests {
             orphaned_factory_runs: Vec::new(),
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            source_staleness: super::SourceStaleness::AllObserved,
             startup_ingest_pending: false,
             writer_lease_status: super::WriterLeaseStatus::Writable,
         };
@@ -22389,6 +22666,7 @@ mod tests {
             orphaned_factory_runs: Vec::new(),
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            source_staleness: super::SourceStaleness::AllObserved,
             startup_ingest_pending: false,
             writer_lease_status: super::WriterLeaseStatus::Writable,
         };
