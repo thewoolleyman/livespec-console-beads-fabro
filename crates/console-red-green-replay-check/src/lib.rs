@@ -1491,6 +1491,37 @@ mod tests {
         );
     }
 
+    /// A root commit (no parent) carrying a fabricated attestation must fail
+    /// CLOSED -- a named error, not a panic and not a silent pass. `<sha>^`
+    /// does not resolve for a root commit, so `ProcessRunner`'s real
+    /// `git diff-tree | git patch-id` pipe reports the same shape it reports
+    /// for any unresolvable revision: `git patch-id`'s OWN exit code (0) for
+    /// the empty input `git diff-tree` produced, which `diff_identity`
+    /// already turns into `red-green-replay-patch-id-empty`. Verified
+    /// against the real compiled binary on an actual root commit before
+    /// writing this unit test.
+    #[test]
+    fn commit_violates_fails_closed_on_a_root_commit_rather_than_panicking() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "feat: init with a claim\n\n",
+                    "TDD-Suite-Green-Captured-At: now\n",
+                    "TDD-Verified-Patch-Id: sha-does-not-matter\n",
+                )),
+                // `<root-sha>^` cannot resolve, so the real pipe reports
+                // patch-id's own 0 exit for the empty diff it received.
+                CommandOutput::success(""),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            commit_violates(&runner, "root-sha")
+                .is_err_and(|err| err.contains("red-green-replay-patch-id-empty"))
+        );
+    }
+
     /// AC3: `git commit --amend --no-edit` with nothing newly staged short-
     /// circuits `check_commit_msg` to `Decision::Pass`, which leaves the
     /// message file -- and its `TDD-Verified-Patch-Id` -- untouched. That is
