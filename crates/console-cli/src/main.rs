@@ -202,6 +202,12 @@ fn run_store_backed_command(
     );
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let filtered_args = strip_invoker_args(args);
+    // `serve` reaches this path exactly when it has no TTY attached (piped
+    // stdout, a detached/headless launch) -- precisely the process shape
+    // mx9u.23 measured as the unattributable eleven-hour writer, so it
+    // carries the SAME real identity the interactive TUI path does rather
+    // than the sentinel `backfill`/other one-shot reports use.
+    let identity = current_writer_identity();
     Ok(
         livespec_console_beads_fabro::run_with_store_and_dispatch_port(
             &filtered_args,
@@ -213,6 +219,7 @@ fn run_store_backed_command(
             &mut drive,
             &decisions,
             &needs_attention,
+            &identity,
         ),
     )
 }
