@@ -177,6 +177,40 @@ CLOSURE, not the merge. The state that leaves behind is an unclosed item behind
 an already-merged PR, which is quieter and more misleading than a stuck PR would
 be. Close it by hand after verifying acceptance against the merged code.
 
+### The POST-MERGE JANITOR fails two ways AFTER the merge — settle by hand, do NOT reconcile
+
+The hand-close above is not a rare edge. The post-merge JANITOR runs on the
+LOCAL host (a fresh detached checkout, then `mise exec -- just check`), so it
+fails for host reasons unrelated to the merged code, AFTER the merge already
+landed at the journal's `pr-merge-sha-recording` stage. Measured 2026-09-08,
+both on `-4jb3kl`:
+
+- **Host OOM.** The janitor's `just check` is cargo builds — the memory hog on
+  this host. A load spike OOM-kills the local `drive.py` mid-janitor (the
+  journal reaches `janitor-checkout-*`, then the task dies with "running low on
+  memory"). The merge already landed; the kill costs only the local
+  close-on-merge step.
+- **A host-local `check-fork-drift` resolution artifact.** The janitor's fresh
+  checkout resolves the installed orchestrator build from
+  `installed_plugins.json` by projectPath; when that row is stale, missing, or
+  points at a build whose `.fabro` prose differs from the committed pin (e.g.
+  mid fork-rollback the row was pruned or left pointing at the rolled-out build),
+  `check-fork-drift` reddens even though master CI — which resolves correctly —
+  is green. The merge is sound; only the local janitor is not.
+
+DISCRIMINATOR (keep it distinct from the four traps above): the journal
+`pr-merge-sha-recording` row carries a non-null merge_sha AND `gh pr view <n>`
+reads MERGED AND the PR's own CI was green (auto-merge required it) ⇒ merged and
+sound, settle BY HAND (`bd close <id> --reason` citing the PR and the merge_sha).
+A CONCLUDED-red master CI (not a merely queued one) ⇒ a real regression, do NOT
+close.
+
+Do NOT rely on `reconcile-merged` to settle these. Measured 2026-09-08 on
+`-4jb3kl.2`: it did not converge within 180s on two attempts, consistent with it
+re-running the same failing/slow local post-merge verification. Hand-close on the
+merge evidence is the reliable settle, and it avoids re-running the memory-heavy
+`just check` that OOM'd the janitor in the first place.
+
 ### The stale-plugin refusal is the one shape that strands nothing
 
 `ERROR: dispatcher plugin build is stale; executing build <X> predates latest
