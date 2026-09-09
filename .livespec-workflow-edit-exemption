@@ -1,2 +1,2 @@
-work_item=livespec-console-beads-fabro-h389
-reason=Adds .github/workflows/release-lane-watch.yml, this repo's shim onto livespec-dev-tooling reusable-release-lane-watch.yml (pinned v1.80.0), watching release-binary.yml (this repo's binary-publish lane — a no-release-object lane Signal 9 structurally cannot see) so the shared watcher reconciles this repo's durable release-lane-red issue that livespec Signal 9 Shape C reads. No secrets:inherit. Fan-out of livespec plan carrier livespec-n33rwg.5; maintainer authorized the approval:workflow-edit label on h389; no product code changes.
+work_item=livespec-console-beads-fabro-mx9u.18
+reason=Adds a dedicated check-real-store-smoke CI job (modelled on check-e2e-tmux) and wires it into ci-green/export-telemetry needs, because mx9u.11's startup regression against a real seeded store merged with 20 green CI checks: the janitor-only gate mx9u.15 added cannot stop the next one pre-merge, only report it after the fact.
