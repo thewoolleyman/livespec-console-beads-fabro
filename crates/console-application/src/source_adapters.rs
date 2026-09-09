@@ -2279,31 +2279,49 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                         // source was previously branded unavailable, that
                         // silent dedup would leave it branded forever --
                         // violating this adapter's own contract that a
-                        // transient failure is never permanent. So a
-                        // transition OUT of not-observed also emits the same
-                        // positive marker the idle path uses; its
-                        // content-addressed id is fresh for this transition
-                        // epoch, so it lands (and dedupes on ITS OWN terms)
-                        // regardless of what the data events do.
-                        let previously_not_observed = matches!(
-                            AvailabilityCheckpoint::from_previous(previous)
-                                .1
-                                .map(|checkpoint| checkpoint.availability),
-                            Some(AvailabilityState::NotObserved)
-                        );
+                        // transient failure is never permanent. So every
+                        // data-bearing Observed poll ALSO emits the same
+                        // positive marker the idle path already emits on
+                        // EVERY idle poll (`idle_poll`, above) --
+                        // unconditionally, not gated on this adapter's own
+                        // locally-cached belief that a not-observed ->
+                        // observed transition just happened.
+                        //
+                        // That gate used to read the PREVIOUS checkpoint's own
+                        // `availability` field, which is only this adapter's
+                        // local memory of its own past transitions -- and
+                        // memory that can already be wrong: a checkpoint
+                        // written before this marker even existed, or written
+                        // by a prior poll that itself hit this same bug, both
+                        // read `observed` while the durable event log's
+                        // newest entry for this source is still a stale
+                        // not-observed finding. On such a checkpoint the gate
+                        // never fires again, because the local memory never
+                        // disagrees with itself -- exactly the measured
+                        // livespec-console-beads-fabro-mx9u.24 defect: a
+                        // source branded unavailable stayed branded forever
+                        // once its checkpoint drifted out of sync with the
+                        // stale marker still sitting newest in the log.
+                        //
+                        // The marker's id is content-addressed on the
+                        // transition epoch (`source_observed_event`), so
+                        // unconditional emission is free once healthy: the
+                        // first poll after any drift lands the missing marker
+                        // (a fresh id, since it was never actually inserted),
+                        // and every later poll re-emits the identical id,
+                        // which the store dedupes to a no-op -- the same
+                        // idempotence `idle_poll` already relies on.
                         let (checkpoint, transition_epoch) = availability_transition(
                             previous,
                             AvailabilityState::Observed,
                             &parsed.checkpoint,
                         );
                         let mut events = parsed.events;
-                        if previously_not_observed {
-                            events.push(source_observed_event(
-                                self.source,
-                                &self.repo,
-                                transition_epoch,
-                            ));
-                        }
+                        events.push(source_observed_event(
+                            self.source,
+                            &self.repo,
+                            transition_epoch,
+                        ));
                         AdapterPoll::new(&checkpoint, events)
                     }
                     Ok(_empty) => {
@@ -4031,27 +4049,28 @@ mod tests {
     use console_domain::{ConsoleEvent, EventType};
 
     use super::{
-        AcceptancePolicy, AdapterError, AdapterIngestionSummary, AdapterPoll, AdapterPollRequest,
-        AdapterResult, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
-        AttentionSourceRef, CompletenessFinding, DispatcherJournalEntry, DispatcherJournalKind,
-        FabroRunSnapshot, FabroRunState, GithubPullRequestSnapshot, GithubPullRequestState, Lane,
-        LaneReason, LivespecNextAction, LivespecNextSnapshot, NeedsAttentionReadOutcome,
-        NeedsAttentionSnapshotPort, NormalizedSourceEvent, NotObservedFinding, ObservedSource,
-        ObservedSourceAdapter, OrphanedFactoryRun, ParsedObservation, ProbeNeedsAttentionPort,
-        PullSourcePort, ReconcileRunsSnapshot, SourceAdapterKind, SourceCheckpointPort,
-        SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
-        SourceProbeOutcome, UNKNOWN_STATUS_KIND, WorkItemDetail, WorkItemSnapshot,
-        attention_item_snapshot_from_payload_json, diff_needs_attention,
-        dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
-        fabro_run_snapshot_payload_json, materialize_attention_items,
-        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
-        normalize_work_item_snapshot, not_observed_finding_payload_json,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        parse_reconcile_runs_observation, parse_reconcile_runs_snapshot,
-        reconcile_runs_snapshot_from_payload_json, reconcile_runs_snapshot_payload_json,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        AVAILABILITY_CHECKPOINT_SCHEMA_VERSION, AcceptancePolicy, AdapterError,
+        AdapterIngestionSummary, AdapterPoll, AdapterPollRequest, AdapterResult, AdmissionPolicy,
+        AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, CompletenessFinding,
+        DispatcherJournalEntry, DispatcherJournalKind, FabroRunSnapshot, FabroRunState,
+        GithubPullRequestSnapshot, GithubPullRequestState, Lane, LaneReason, LivespecNextAction,
+        LivespecNextSnapshot, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
+        NormalizedSourceEvent, NotObservedFinding, ObservedSource, ObservedSourceAdapter,
+        OrphanedFactoryRun, ParsedObservation, ProbeNeedsAttentionPort, PullSourcePort,
+        ReconcileRunsSnapshot, SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort,
+        SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome, UNKNOWN_STATUS_KIND,
+        WorkItemDetail, WorkItemSnapshot, attention_item_snapshot_from_payload_json,
+        diff_needs_attention, dispatcher_journal_from_payload_json,
+        dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
+        materialize_attention_items, normalize_dispatcher_journal_entry,
+        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
+        normalize_livespec_next_snapshot, normalize_work_item_snapshot, not_observed_event,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
+        parse_orchestrator_observation, parse_reconcile_runs_observation,
+        parse_reconcile_runs_snapshot, reconcile_runs_snapshot_from_payload_json,
+        reconcile_runs_snapshot_payload_json, run_adapter_poll,
+        work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -4366,10 +4385,20 @@ mod tests {
             availability_checkpoint_field(poll.checkpoint(), "source_checkpoint").as_deref(),
             Some("ck-observed")
         );
-        assert_eq!(poll.events().len(), 2);
+        // The parsed snapshot pair PLUS the unconditional recovery marker
+        // (livespec-console-beads-fabro-mx9u.24): a data-bearing Observed
+        // poll always mints it, not only when this adapter's own checkpoint
+        // believes a not-observed -> observed transition just happened. It
+        // is a genuinely fresh, never-before-seen id on this cold start, so
+        // it lands rather than deduping away.
+        assert_eq!(poll.events().len(), 3);
         assert_eq!(
             poll.events()[0].event().event_type(),
             &EventType::WorkItemSnapshotObserved
+        );
+        assert_eq!(
+            poll.events()[2].event().event_type(),
+            &EventType::SourceObservedFindingObserved
         );
         assert_eq!(
             probe.calls.borrow().as_slice(),
@@ -4661,13 +4690,88 @@ mod tests {
 
         // The marker's epoch is the transition's own fresh epoch (down was
         // epoch 1, so recovering into observed is epoch 2) -- never the down
-        // poll's epoch, and never unconditionally minted on every poll.
+        // poll's epoch. (Unconditional re-emission on later, already-healthy
+        // polls is covered by
+        // `checkpoint_drift_recovers_when_log_still_reads_not_observed`,
+        // below: it costs nothing once landed, because the id is stable and
+        // the store dedupes it -- livespec-console-beads-fabro-mx9u.24.)
         assert_eq!(availability_checkpoint_epoch(down.checkpoint()), Some(1));
         assert_eq!(
             availability_checkpoint_epoch(recovered.checkpoint()),
             Some(2)
         );
         assert!(marker.source_event_id().ends_with(":observed_idle:2"));
+    }
+
+    #[test]
+    fn checkpoint_drift_recovers_when_log_still_reads_not_observed() {
+        // Reproduces the measured mx9u.24 defect on the real store: the
+        // CHECKPOINT already reads `observed` -- as it does the moment ANY
+        // Observed poll lands under the current schema, including the very
+        // first poll after upgrading from a pre-mx9u.22 legacy checkpoint,
+        // whose format carries no availability history to disagree with --
+        // while the header's own tally (a fold over the durable EVENT LOG,
+        // never the checkpoint) still reads the source as unavailable,
+        // because its newest recorded event is a stale not-observed finding
+        // that a since-recovered, now-healthy source never displaced. A
+        // healthy poll reporting the exact data already on record dedupes
+        // its own events away, so nothing short of the unconditional
+        // recovery marker (this item's fix) can ever clear it.
+        let stale_finding = not_observed_event(
+            SourceAdapterKind::Orchestrator,
+            "console",
+            "orchestrator not found",
+            1,
+        );
+        let mut events: Vec<ConsoleEvent> = vec![stale_finding.event().clone()];
+        assert_eq!(
+            crate::unavailable_sources(&events),
+            vec!["orchestrator".to_owned()]
+        );
+
+        // The checkpoint disagrees with that stale finding: it already reads
+        // `observed`, exactly as a checkpoint drifted out of sync with the
+        // log (or freshly upgraded from a pre-mx9u.22 legacy format) would.
+        let drifted_checkpoint = serde_json::json!({
+            "schema_version": AVAILABILITY_CHECKPOINT_SCHEMA_VERSION,
+            "source_checkpoint": "ck-observed",
+            "availability": "observed",
+            "transition_epoch": 1,
+        })
+        .to_string();
+
+        // The source is genuinely healthy now and reports the SAME data
+        // already on record -- a real recovery whose own events dedupe away
+        // to nothing.
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+        let request = ok_adapter_poll_request(AdapterPollRequest::new(
+            "orchestrator:console",
+            Some(&drifted_checkpoint),
+            1,
+        ));
+
+        let poll = ok_adapter_poll(adapter.poll(&request));
+
+        // Only the recovery marker is genuinely new landed content: the data
+        // snapshot's id already exists in `events` (content-addressed on the
+        // same repo/work-item/version), so it dedupes there rather than
+        // duplicating -- mirroring exactly what the real event store would
+        // do on append. Extending (rather than finding-then-pushing) keeps
+        // the assertion below meaningful without a branch on an `Option`
+        // that a data-bearing Observed poll can never actually leave empty.
+        let before = events.len();
+        events.extend(
+            poll.events()
+                .iter()
+                .filter(|event| {
+                    *event.event().event_type() == EventType::SourceObservedFindingObserved
+                })
+                .map(|event| event.event().clone()),
+        );
+        assert_eq!(events.len(), before + 1);
+
+        assert!(crate::unavailable_sources(&events).is_empty());
     }
 
     #[test]
