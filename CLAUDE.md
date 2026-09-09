@@ -690,6 +690,43 @@ the path rule surfaced). Keep the
 specification cohesive; do not import orchestrator-only concerns except through
 explicit contracts.
 
+**Both layers run the test suite under the SAME runner: `cargo nextest run`.**
+Before livespec-console-beads-fabro-pzbdbo.36, the commit-msg hook ran plain
+`cargo test` while `just check`'s `check-nextest` recipe (and therefore CI) ran
+`cargo nextest run` — two runners that do not agree about what environment
+they hand a test process (concretely: nextest exports `CARGO_BIN_EXE_*` to the
+running test process, plain `cargo test` does not). That let a test pass CI
+while blocking every commit through the hook, for three commits, before anyone
+noticed — a gate that could not observe the failure mode blocking every commit
+is the whole reason this item exists. The fix made both layers call one
+function, `nextest_command_args` in
+`crates/console-red-green-replay-check/src/lib.rs` — the commit-msg hook via
+`ProcessRunner` (also defined there; `console-red-green-replay-check/src/main.rs`
+only constructs it), `just check-nextest` via a hand-matched invocation —
+rather than teaching each layer the invocation separately, which is how they
+drifted apart the first time. Two regression tests guard the two failure
+directions:
+- `crates/console-red-green-replay-check/tests/nextest_runner_parity.rs` reads
+  the `justfile`'s `check-nextest` recipe text and asserts it matches
+  `nextest_command_args(&TestScope::Workspace)` byte-for-byte, naming both
+  sides explicitly on mismatch — this is what catches the two layers drifting
+  apart again.
+- `crates/console-red-green-replay-check/tests/cargo_bin_exe_runtime_divergence.rs`
+  runs real `cargo test` and `cargo nextest run` against a standalone fixture
+  crate (`tests/fixtures/cargo-bin-exe-divergence/`) that reproduces the exact
+  historical divergence, then asserts `ProcessRunner` agrees with nextest/CI,
+  not with plain `cargo test`.
+- `console-arch-check`'s `check_cargo_bin_exe_compile_time_resolution` flags
+  ANY integration test (repo-wide, not just product crates) that reads a
+  `CARGO_BIN_EXE_*` variable via a runtime-only `std::env::var`/`var_os` with
+  no `option_env!` compile-time capture in the same file — the specific
+  anti-pattern that caused the divergence, caught by `just check-arch` on push
+  independent of which runner(s) are in play at commit time.
+
+When a hook refusal does not reproduce under `just check`/CI (or vice versa),
+this is the first thing to re-verify — read `nextest_runner_parity.rs`'s
+current pass/fail state before assuming a NEW divergence class.
+
 
 ## `git stash` is repo-wide, so it corrupts concurrent worktrees
 

@@ -117,6 +117,7 @@ fn run_checks(root: &Path) -> Vec<String> {
     }
     findings.extend(check_zero_beads_knowledge(root));
     findings.extend(check_tmux_socket_scoping(root));
+    findings.extend(check_cargo_bin_exe_compile_time_resolution(root));
     findings.extend(check_workspace_rust_version_matches_toolchain(root));
     findings.extend(check_fabro_image_rust_toolchain(root));
     findings.extend(check_first_party_python_import_supply(root));
@@ -2277,6 +2278,170 @@ impl<'ast> Visit<'ast> for UnwrapExpectVisitor<'_> {
     }
 }
 
+/// Rule: an integration test must not resolve `CARGO_BIN_EXE_*` via a
+/// RUNTIME-only `std::env::var`/`var_os` read.
+///
+/// Cargo defines `CARGO_BIN_EXE_<bin>` for an integration test only at
+/// COMPILE time. `cargo nextest run` additionally exports it to the running
+/// test PROCESS, but plain `cargo test` does not — so a runtime-only read
+/// silently disagrees between the two runners. That is the exact historical
+/// bug (livespec-console-beads-fabro-pzbdbo.36): a test using this pattern
+/// passed CI (which runs nextest) while blocking every commit through the
+/// then-`cargo test`-based commit-msg hook, for three commits, before anyone
+/// noticed. That hook now runs nextest too (see `ProcessRunner` in
+/// `console-red-green-replay-check`), closing the operational symptom; this
+/// rule closes the underlying anti-pattern so a future occurrence is caught
+/// by `just check-arch` ON PUSH, regardless of which runner(s) are in play at
+/// commit time. The correct pattern resolves `option_env!` first and falls
+/// back to the runtime read only when that is `None` — see
+/// `console-cli/tests/support/mod.rs::resolve_binary` or
+/// `console-nightly-soak/tests/ssh_ingress.rs::soak_command`.
+fn check_cargo_bin_exe_compile_time_resolution(root: &Path) -> Vec<String> {
+    let (paths, mut findings) = rust_files_for_tmux_scan(root);
+    if paths.is_empty() {
+        findings.push(format!(
+            "CARGO_BIN_EXE_ compile-time-resolution scan found no Rust files under {} — the \
+             scan root moved or the walk is broken; refusing to pass without having read \
+             anything",
+            root.display()
+        ));
+        return findings;
+    }
+    for path in paths {
+        if !is_integration_test_file(&path) {
+            continue;
+        }
+        let display = path.display().to_string();
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                findings.push(format!("could not read {display}: {error}"));
+                continue;
+            }
+        };
+        let file = match syn::parse_file(&source) {
+            Ok(file) => file,
+            Err(error) => {
+                findings.push(format!("could not parse {display}: {error}"));
+                continue;
+            }
+        };
+        findings.extend(check_cargo_bin_exe_compile_time_resolution_source(
+            &display, &file,
+        ));
+    }
+    findings
+}
+
+/// An integration-test file: a path with a `tests` directory component NOT
+/// immediately followed by a `fixtures` component.
+///
+/// The `tests/fixtures/...` convention (already used for JSON fixtures at the
+/// repository root) holds literal test DATA, including at least one
+/// deliberately-bad Rust fixture that exercises this exact anti-pattern ON
+/// PURPOSE
+/// (`crates/console-red-green-replay-check/tests/fixtures/cargo-bin-exe-divergence/`).
+/// Scanning it here would flag the fixture instead of real integration tests.
+fn is_integration_test_file(path: &Path) -> bool {
+    let components: Vec<_> = path
+        .components()
+        .map(std::path::Component::as_os_str)
+        .collect();
+    let under_test_fixtures = components
+        .windows(2)
+        .any(|window| window[0] == "tests" && window[1] == "fixtures");
+    !under_test_fixtures && components.iter().any(|part| *part == "tests")
+}
+
+fn env_var_method(segments: &[String]) -> Option<&'static str> {
+    if !segments.iter().any(|segment| segment == "env") {
+        return None;
+    }
+    match segments.last().map(String::as_str) {
+        Some("var") => Some("var"),
+        Some("var_os") => Some("var_os"),
+        _ => None,
+    }
+}
+
+fn check_cargo_bin_exe_compile_time_resolution_source(
+    display: &str,
+    file: &syn::File,
+) -> Vec<String> {
+    let mut visitor = CargoBinExeVisitor {
+        compile_time: BTreeSet::new(),
+        runtime_reads: Vec::new(),
+    };
+    visitor.visit_file(file);
+    let CargoBinExeVisitor {
+        compile_time,
+        runtime_reads,
+    } = visitor;
+    runtime_reads
+        .into_iter()
+        .filter(|(name, _method)| !compile_time.contains(name))
+        .map(|(name, method)| {
+            format!(
+                "{display}: reads {name} via std::env::{method} at RUNTIME with no matching \
+                 option_env!(\"{name}\") compile-time capture in this file — cargo defines \
+                 CARGO_BIN_EXE_* for an integration test only at compile time; `cargo nextest \
+                 run` also exports it to the running test process, but plain `cargo test` does \
+                 not, so this disagrees between the two runners \
+                 (livespec-console-beads-fabro-pzbdbo.36); resolve option_env!(\"{name}\") \
+                 first and fall back to the runtime read only when that is None — see \
+                 console-cli/tests/support/mod.rs::resolve_binary or \
+                 console-nightly-soak/tests/ssh_ingress.rs::soak_command"
+            )
+        })
+        .collect()
+}
+
+struct CargoBinExeVisitor {
+    /// `CARGO_BIN_EXE_*` names captured via `option_env!(...)` anywhere in
+    /// the file.
+    compile_time: BTreeSet<String>,
+    /// `(name, "var" | "var_os")` for every RUNTIME `std::env::var`/`var_os`
+    /// read of a `CARGO_BIN_EXE_*` name.
+    runtime_reads: Vec<(String, &'static str)>,
+}
+
+impl<'ast> Visit<'ast> for CargoBinExeVisitor {
+    fn visit_expr_macro(&mut self, node: &'ast syn::ExprMacro) {
+        if node.mac.path.is_ident("option_env")
+            && let Ok(literal) = node.mac.parse_body::<syn::LitStr>()
+        {
+            let value = literal.value();
+            if value.starts_with("CARGO_BIN_EXE_") {
+                self.compile_time.insert(value);
+            }
+        }
+        syn::visit::visit_expr_macro(self, node);
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*node.func {
+            let segments: Vec<String> = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            if let Some(method) = env_var_method(&segments)
+                && let Some(syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(literal),
+                    ..
+                })) = node.args.first()
+            {
+                let value = literal.value();
+                if value.starts_with("CARGO_BIN_EXE_") {
+                    self.runtime_reads.push((value, method));
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+}
+
 /// Rule: no key handler stages an operator action around the action registry.
 ///
 /// In `console-tui` production code the ONLY function that may construct the
@@ -2527,12 +2692,13 @@ mod tests {
     use super::{
         CrateNode, ObservedRustToolchain, check_adapter_isolation,
         check_backing_cli_default_tokens, check_beads_native_source_paths,
-        check_crate_graph_non_vacuity, check_fabro_image_rust_toolchain_with_probe,
-        check_forbid_unsafe, check_layering, check_registry_bypass,
-        check_source_rule_crate_coverage_for_names, check_tmux_socket_scoping,
-        check_tmux_socket_scoping_source, check_type_placement, check_unwrap_expect,
-        check_workspace_rust_version_matches_toolchain, check_zero_beads_source_paths, curl_argv,
-        fabro_python_rust_image, observed_rust_toolchain,
+        check_cargo_bin_exe_compile_time_resolution_source, check_crate_graph_non_vacuity,
+        check_fabro_image_rust_toolchain_with_probe, check_forbid_unsafe, check_layering,
+        check_registry_bypass, check_source_rule_crate_coverage_for_names,
+        check_tmux_socket_scoping, check_tmux_socket_scoping_source, check_type_placement,
+        check_unwrap_expect, check_workspace_rust_version_matches_toolchain,
+        check_zero_beads_source_paths, curl_argv, fabro_python_rust_image,
+        is_integration_test_file, observed_rust_toolchain,
         observed_rust_toolchain_from_image_config, rust_files_for_tmux_scan,
     };
 
@@ -2736,6 +2902,62 @@ mod tests {
             "#[cfg(test)] mod tests { fn t() { let value = source().unwrap(); } }",
         )?;
         assert!(check_unwrap_expect(&file, "x.rs").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_only_cargo_bin_exe_read_is_flagged() -> Result<(), syn::Error> {
+        // The historical bug (livespec-console-beads-fabro-pzbdbo.36),
+        // reproduced verbatim: a runtime std::env::var_os read of
+        // CARGO_BIN_EXE_* with no compile-time option_env! capture anywhere
+        // in the file.
+        let file = syn::parse_file(
+            "fn checker() -> Option<String> { \
+                 std::env::var_os(\"CARGO_BIN_EXE_console-spec-check\") \
+                     .map(|v| v.to_string_lossy().into_owned()) \
+             }",
+        )?;
+        let findings = check_cargo_bin_exe_compile_time_resolution_source("x.rs", &file);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("CARGO_BIN_EXE_console-spec-check"));
+        assert!(findings[0].contains("var_os"));
+        assert!(findings[0].contains("option_env"));
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_bin_exe_read_with_a_compile_time_fallback_is_not_flagged() -> Result<(), syn::Error> {
+        // The FIXED pattern (matching console-cli/tests/support/mod.rs and
+        // console-nightly-soak/tests/ssh_ingress.rs): option_env! resolved
+        // first, with the runtime read only as a fallback.
+        let file = syn::parse_file(
+            "fn checker() -> Result<String, String> { \
+                 option_env!(\"CARGO_BIN_EXE_console-spec-check\").map_or_else( \
+                     || std::env::var(\"CARGO_BIN_EXE_console-spec-check\") \
+                         .map_err(|_| \"missing\".to_owned()), \
+                     |path| Ok(path.to_owned()), \
+                 ) \
+             }",
+        )?;
+        assert!(check_cargo_bin_exe_compile_time_resolution_source("x.rs", &file).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_bin_exe_read_in_the_fixtures_directory_is_not_scanned() {
+        assert!(!is_integration_test_file(Path::new(
+            "crates/console-red-green-replay-check/tests/fixtures/cargo-bin-exe-divergence/\
+             tests/runtime_only.rs"
+        )));
+        assert!(is_integration_test_file(Path::new(
+            "crates/console-cli/tests/support/mod.rs"
+        )));
+    }
+
+    #[test]
+    fn env_var_reads_unrelated_to_cargo_bin_exe_are_not_flagged() -> Result<(), syn::Error> {
+        let file = syn::parse_file("fn checker() { let _ = std::env::var_os(\"PATH\"); }")?;
+        assert!(check_cargo_bin_exe_compile_time_resolution_source("x.rs", &file).is_empty());
         Ok(())
     }
 
