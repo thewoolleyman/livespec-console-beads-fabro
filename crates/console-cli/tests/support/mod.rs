@@ -1139,6 +1139,28 @@ impl TmuxConsole {
         extra_env: &[(&str, &str)],
         allowed_unavailable: &[&str],
     ) -> HarnessResult<Self> {
+        let console = Self::launch_with_env_unchecked(repo, extra_env)?;
+        console.assert_source_health(allowed_unavailable)?;
+        Ok(console)
+    }
+
+    /// Like [`Self::launch_with_env`], but WITHOUT the automatic
+    /// [`Self::assert_source_health`] check.
+    ///
+    /// That check waits for a SETTLED frame first
+    /// (`wait_for_settled("", ...)`), which -- since
+    /// livespec-console-beads-fabro-pzbdbo.27 -- never settles while the
+    /// startup-ingest tell is present. That is exactly right for every OTHER
+    /// scene (a settled frame is a converged one), and exactly wrong for a
+    /// scene whose whole point is to inspect the console BEFORE convergence,
+    /// which would otherwise have the health check silently absorb the fast
+    /// first-paint window it exists to measure. Use this entry point for
+    /// those scenes, and call [`Self::assert_source_health`] explicitly once
+    /// they have waited for convergence themselves.
+    pub fn launch_with_env_unchecked(
+        repo: &RepoFixture,
+        extra_env: &[(&str, &str)],
+    ) -> HarnessResult<Self> {
         // Claimed BEFORE anything is spawned, so a queued test contributes no
         // load of its own while it waits its turn.
         let slot = ConsoleSlot::acquire()?;
@@ -1212,7 +1234,6 @@ impl TmuxConsole {
         // starvation (settle clocks that used to start at launch).
         let ready_context = format!(" in tmux session {}", console.session);
         poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
-        console.assert_source_health(allowed_unavailable)?;
         Ok(console)
     }
 }
