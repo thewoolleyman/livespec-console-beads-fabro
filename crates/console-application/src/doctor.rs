@@ -291,19 +291,22 @@ fn multi_writer_findings(
         .collect();
     markers.sort_by_key(|(_identity, timestamp)| *timestamp);
 
-    // A sliding window over the CHRONOLOGICALLY sorted markers: `start` is
-    // the first marker still within `MULTI_WRITER_WINDOW_SECONDS` of
-    // `markers[end]`. Any window that ever holds more than one distinct
-    // writer key flags every writer in that window -- not just the pair that
-    // first triggered it, so a third writer sharing the same busy hour is
-    // named too.
+    // A sliding window over the CHRONOLOGICALLY sorted markers: for each
+    // `end`, `start` is the first marker still within
+    // `MULTI_WRITER_WINDOW_SECONDS` of `markers[end]`. `partition_point`
+    // finds it in one shot rather than a hand-rolled two-pointer advance:
+    // as `i` increases, `markers[end].1 - markers[i].1` only ever shrinks
+    // (the markers are sorted ascending), so "more than `window` before
+    // `end`" is true for a PREFIX of indices and false for the rest --
+    // exactly the monotonic split `partition_point` requires. Any window
+    // that ever holds more than one distinct writer key flags every writer
+    // in that window -- not just the pair that first triggered it, so a
+    // third writer sharing the same busy hour is named too.
     let window = time::Duration::seconds(MULTI_WRITER_WINDOW_SECONDS);
     let mut flagged_keys: BTreeSet<(String, String)> = BTreeSet::new();
-    let mut start = 0usize;
     for end in 0..markers.len() {
-        while markers[end].1 - markers[start].1 > window {
-            start += 1;
-        }
+        let start =
+            markers.partition_point(|(_identity, timestamp)| markers[end].1 - *timestamp > window);
         let distinct_keys: BTreeSet<_> = markers[start..=end]
             .iter()
             .map(|(identity, _timestamp)| identity.writer_key())
@@ -938,6 +941,37 @@ mod tests {
         ];
 
         assert_eq!(multi_writer_findings(&events_with_metadata), Vec::new());
+    }
+
+    #[test]
+    fn ac2_two_distinct_writers_exactly_one_hour_apart_are_still_within_the_window() {
+        // The window boundary itself: markers exactly
+        // `MULTI_WRITER_WINDOW_SECONDS` apart are STILL "within one hour of
+        // each other" (an inclusive boundary, `>` not `>=`) -- distinct from
+        // the more-than-one-hour case just above, which must NOT flag.
+        let writer_a = identity_metadata_json(111, "/opt/console-old", "abc1234");
+        let writer_b = identity_metadata_json(222, "/opt/console-new", "9999999");
+        let events_with_metadata = [
+            availability_marker(
+                "evt_1",
+                SourceAdapterKind::LiveSpec,
+                &writer_a,
+                "2026-09-08T13:00:00Z",
+            ),
+            availability_marker(
+                "evt_2",
+                SourceAdapterKind::LiveSpec,
+                &writer_b,
+                "2026-09-08T14:00:00Z",
+            ),
+        ];
+
+        let findings = multi_writer_findings(&events_with_metadata);
+
+        check(
+            findings.len() == 1,
+            "expected the exact-boundary pair to still be flagged as within one hour",
+        );
     }
 
     #[test]
