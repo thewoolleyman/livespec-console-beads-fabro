@@ -3581,7 +3581,7 @@ impl LaneWorkItem {
     /// `false` means every value on this row -- `rank`, the title, the policies
     /// -- is LAST-KNOWN rather than current: the console could not read the
     /// source this cycle and is serving what it last saw. It is the same fact
-    /// the header's `sources: N unavailable` tally reports, carried down to the
+    /// the header's `event sources: N unavailable` tally reports, carried down to the
     /// row so the surface can qualify the values instead of presenting them as
     /// confirmed (`livespec-console-beads-fabro-v8un`, operator rider [2]).
     ///
@@ -4579,15 +4579,15 @@ fn unavailable_sources(events: &[ConsoleEvent]) -> Vec<String> {
 }
 
 /// The header's source-health segment: an empty string when every source was
-/// observed (no phantom count on a true-empty screen), else ` | sources: N
-/// unavailable (name, ...)` counting and attributing the degraded sources so a
-/// false-empty is never indistinguishable from a true-empty.
+/// observed (no phantom count on a true-empty screen), else ` | event sources:
+/// N unavailable (name, ...)` counting and attributing the degraded sources so
+/// a false-empty is never indistinguishable from a true-empty.
 fn source_health_header_segment(unavailable_sources: &[String]) -> String {
     if unavailable_sources.is_empty() {
         String::new()
     } else {
         format!(
-            " | sources: {} unavailable ({})",
+            " | event sources: {} unavailable ({})",
             unavailable_sources.len(),
             unavailable_sources.join(", ")
         )
@@ -4826,18 +4826,18 @@ fn source_health_segment_forms(unavailable_sources: &[String]) -> Vec<String> {
     }
     let count = unavailable_sources.len();
     let mut forms = vec![format!(
-        " | sources: {count} unavailable ({})",
+        " | event sources: {count} unavailable ({})",
         unavailable_sources.join(", ")
     )];
     // The `+N more` form only makes sense once at least one name is elided.
     if count >= 2 {
         forms.push(format!(
-            " | sources: {count} unavailable ({}, +{} more)",
+            " | event sources: {count} unavailable ({}, +{} more)",
             unavailable_sources[0],
             count - 1
         ));
     }
-    forms.push(format!(" | sources: {count} unavailable"));
+    forms.push(format!(" | event sources: {count} unavailable"));
     forms
 }
 
@@ -17171,7 +17171,7 @@ mod tests {
         assert!(
             blind
                 .header()
-                .contains("sources: 2 unavailable (github, orchestrator)")
+                .contains("event sources: 2 unavailable (github, orchestrator)")
         );
     }
 
@@ -17182,7 +17182,7 @@ mod tests {
         let idle = build_tui_model(&[], 0);
         assert!(idle.unavailable_sources().is_empty());
         assert!(!idle.header().contains("unavailable"));
-        assert!(!idle.header().contains("sources:"));
+        assert!(!idle.header().contains("event sources:"));
     }
 
     #[test]
@@ -17523,7 +17523,7 @@ mod tests {
         assert!(line.contains("view: Attention"));
         assert!(line.contains("attention: 0"));
         // The count survives even when the names cannot: how-many is the tell.
-        assert!(line.contains("sources: 5 unavailable"));
+        assert!(line.contains("event sources: 5 unavailable"));
     }
 
     #[test]
@@ -17533,16 +17533,24 @@ mod tests {
         let model = blind_model("-", &["fabro", "github"]);
         let line = model.header_line(300);
         assert_eq!(line, model.header());
-        assert!(line.contains("sources: 2 unavailable (fabro, github)"));
+        assert!(line.contains("event sources: 2 unavailable (fabro, github)"));
     }
 
     #[test]
     fn header_line_elides_source_names_before_dropping_priority_fields() {
         // At an intermediate width the names abbreviate to a `+N more` marker
         // while the priority fields stay whole -- never a mid-field truncation.
+        //
+        // Width is 118, not the round 112 this test used before the
+        // "sources" -> "event sources" rename (livespec-console-beads-fabro-
+        // mx9u.19, maintainer ruling 2026-09-09): "event " costs 6 more
+        // columns in EVERY source-health form, so the same qualitative
+        // shrink shape (fleet/mode dropped, repo/view/attention kept) now
+        // needs 6 more columns of room to reproduce -- the behavior under
+        // test, not this literal number, is what the acceptance criterion is.
         let model = blind_model(CONFIRM_REPO, &["alpha", "bravo", "charlie"]);
-        let line = model.header_line(112);
-        assert!(line.chars().count() <= 112);
+        let line = model.header_line(118);
+        assert!(line.chars().count() <= 118);
         assert!(line.contains("+2 more"));
         check(
             line.contains(&format!("repo: {CONFIRM_REPO}")),
@@ -17558,7 +17566,7 @@ mod tests {
         // source names are shed first.
         let model = blind_model(CONFIRM_REPO, &["fabro", "github", "orchestrator"]);
         let line = model.header_line(60);
-        assert!(line.contains("sources: 3 unavailable"));
+        assert!(line.contains("event sources: 3 unavailable"));
     }
 
     #[test]
@@ -17568,7 +17576,7 @@ mod tests {
         for width in [40_usize, 80, 110, 300] {
             let line = model.header_line(width);
             assert!(!line.contains("unavailable"));
-            assert!(!line.contains("sources:"));
+            assert!(!line.contains("event sources:"));
         }
         assert!(model.header_line(300).contains("repo: -"));
     }
@@ -17580,11 +17588,11 @@ mod tests {
         // the bare count degrades under width pressure.
         let model = blind_model("-", &["orchestrator"]);
         let wide = model.header_line(300);
-        assert!(wide.contains("sources: 1 unavailable (orchestrator)"));
+        assert!(wide.contains("event sources: 1 unavailable (orchestrator)"));
         assert!(!wide.contains("more"));
         // Under width pressure the lone-name form collapses straight to the count.
         let narrow = model.header_line(40);
-        assert!(narrow.contains("sources: 1 unavailable"));
+        assert!(narrow.contains("event sources: 1 unavailable"));
         assert!(!narrow.contains("(orchestrator)"));
     }
 
@@ -17598,7 +17606,7 @@ mod tests {
     fn rendered_header_segments(line: &str) -> Vec<RenderedHeaderSegmentKind> {
         line.split(" | ")
             .map(|segment| {
-                if segment.starts_with("factory:") || segment.starts_with("sources:") {
+                if segment.starts_with("factory:") || segment.starts_with("event sources:") {
                     RenderedHeaderSegmentKind::Transient
                 } else if segment.starts_with("attention:") {
                     RenderedHeaderSegmentKind::State
@@ -17838,7 +17846,7 @@ mod tests {
         let line = model.header_line(110);
 
         assert!(line.chars().count() <= 110);
-        assert!(line.contains("sources: 5 unavailable"));
+        assert!(line.contains("event sources: 5 unavailable"));
         assert!(line.contains("build STALE: 5 commits behind"));
     }
 
@@ -17847,7 +17855,7 @@ mod tests {
         // Measured against the maintainer's own live pane at a real
         // 159-column width (livespec-console-beads-fabro-mx9u.13 review): a
         // build-identity CONTENT-LINE field, even in a sha-only short form,
-        // still had no room once `factory:`/`sources:` alerts and a
+        // still had no room once `factory:`/`event sources:` alerts and a
         // two-digit `attention:` count all competed for the same budget --
         // exactly the moment an operator most wants to check the running
         // build. So the identity does not live in this content line at all

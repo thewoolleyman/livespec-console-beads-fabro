@@ -4979,7 +4979,7 @@ mod tests {
         check(
             output
                 .message()
-                .contains("source unavailable: dispatcher (dispatcher binary not found)"),
+                .contains("event source unavailable: dispatcher (dispatcher binary not found)"),
             "expected the unavailable-source finding in doctor's output",
         );
         check(
@@ -7108,7 +7108,7 @@ mod tests {
         check(
             model
                 .header()
-                .contains("sources: 1 unavailable (needs-attention)"),
+                .contains("event sources: 1 unavailable (needs-attention)"),
             "assert failed",
         );
 

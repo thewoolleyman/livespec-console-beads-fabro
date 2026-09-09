@@ -45,20 +45,25 @@ The header renders a single status line:
 fleet: livespec | mode: tui | repo: <repo> | view: <view> | attention: <N>
 ```
 
-with a `sources: <N> unavailable (…)` segment appended whenever a backing
-source could not be observed, so a blind cockpit is never mistaken for an idle
-factory. A source appears there only while its **most recent** observation
-failed; as soon as it is observed again it drops off, and a source that has
-never failed never appears. When nothing is unavailable the segment is absent
-entirely — there is no phantom `sources: 0`.
+with an `event sources: <N> unavailable (…)` segment appended whenever a
+backing **event source** — an external program the console polls each cycle
+and records what it says as events, holding no truth of its own — could not
+be observed, so a blind cockpit is never mistaken for an idle factory. An
+event source appears there only while its **most recent** observation failed;
+as soon as it is observed again it drops off, and a source that has never
+failed never appears. This is a latest-state tally, not a history: a source
+that degraded on an earlier cycle but was observed successfully on a later
+one no longer counts, even when that later poll's data dedupes away. When
+nothing is unavailable the segment is absent entirely — there is no phantom
+`event sources: 0`.
 
 On a narrow terminal the line degrades one step at a time, re-measuring after
 each, and stopping as soon as it fits:
 
 1. drop `mode: tui`
 2. drop `fleet: livespec`
-3. shorten the sources segment to `(<first>, +N more)`
-4. shorten it further to a bare `sources: N unavailable`
+3. shorten the event-sources segment to `(<first>, +N more)`
+4. shorten it further to a bare `event sources: N unavailable`
 5. drop `view: <view>`
 6. drop `attention: <N>`
 
@@ -281,7 +286,15 @@ see [CLI options](cli-options.md).
 Repos observed: <count>
 ```
 
-with the sorted, de-duplicated repo ids in the Detail pane.
+with the sorted, de-duplicated repo ids in the Detail pane. `Repos observed`
+is **not** a configured roster — it is the count of distinct repos the event
+log carries events for, derived from each event's stream key. That is a
+different axis from the header's `event sources` tally: `event sources`
+counts external programs the console polls, `Repos observed` counts
+repositories mentioned in the log. Two companion rows appear only when
+non-zero, so the count can never quietly mislead: `Fleet-scoped events`
+(events attributed to the whole fleet rather than one repo) and `Events with
+no derivable repo` (events whose stream key carries no repo at all).
 
 ### Settings pane
 

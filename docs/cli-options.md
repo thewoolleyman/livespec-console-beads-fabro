@@ -110,7 +110,7 @@ injects it per command.
 
 ## Refresh cadence
 
-The console polls its backing sources on a background thread every 2 seconds,
+The console polls its backing event sources on a background thread every 2 seconds,
 and re-polls on demand immediately after any action that mutates the ledger,
 so a valve you press is reflected without waiting for the next tick. Keyboard
 input is polled every 250 ms.

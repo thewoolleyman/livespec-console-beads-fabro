@@ -152,10 +152,10 @@ it. See [below](#passing-environment-variables-through-the-credential-wrapper).
 The console runs each backing CLI **with its working directory set to the
 selected repository**, so the Beads tenant and the orchestrator plugin root
 resolve against that repository rather than against your shell's current
-directory. Both invocations above observe the same sources — verified against
+directory. Both invocations above observe the same event sources — verified against
 `/data/projects/livespec-orchestrator-beads-fabro` from a directory outside
 any git repository: identical event, backfill, and attention counts either
-way, with zero sources reported *not observed*.
+way, with zero event sources reported *not observed*.
 
 ### Passing environment variables through the credential wrapper
 

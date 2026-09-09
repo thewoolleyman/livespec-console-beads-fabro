@@ -20,7 +20,9 @@
 #[cfg(all(not(test), not(coverage)))]
 use console_application::build_identity::BuildIdentity;
 use console_application::build_identity::{BuildStaleness, build_identity_segment};
-use console_application::source_adapters::{Lane, OrphanedFactoryRun};
+use console_application::source_adapters::{
+    Lane, OrphanedFactoryRun, event_source_roster_help_lines,
+};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
     HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus, LaneWorkItem,
@@ -2934,10 +2936,39 @@ fn help_section_lines(section: usize) -> Vec<Line<'static>> {
 
 /// The top/header pane's help section: what the pane shows plus the keys usable
 /// while it is focused. Kept in lock-step with the key handler and Scenario 20.
+///
+/// Defines the console's core vocabulary (livespec-console-beads-fabro-mx9u.19,
+/// extending a maintainer ruling of 2026-09-09): what an EVENT SOURCE is, what
+/// it means for one to be unavailable, and that the tally is latest-state, not
+/// historical. The event-source roster is derived from
+/// [`console_application::source_adapters::event_source_roster_help_lines`],
+/// itself folded over [`console_application::source_adapters::SourceAdapterKind::all`]
+/// -- the same enum the header's own tally and `doctor` read -- so an added
+/// source cannot silently drop out of what Help tells the operator.
 fn header_help_lines() -> Vec<Line<'static>> {
-    vec![
+    let mut lines = vec![
         Line::from("Header -- the top status line: fleet / mode / repo / view / attention,"),
-        Line::from("plus a source-health tell when backing sources are down."),
+        Line::from("plus an event-source health tell when a backing source is down."),
+        Line::from(""),
+        Line::from("The console holds no truth of its own. Each poll cycle it shells out to"),
+        Line::from("external programs -- EVENT SOURCES -- and records what they say as"),
+        Line::from("events; every screen the console renders is built from that recorded"),
+        Line::from("log, never from a fresh read of anything else. An event source is one"),
+        Line::from("of those external programs."),
+        Line::from(""),
+        Line::from("`event sources: N unavailable` means N of those programs did not answer"),
+        Line::from("on the LATEST poll cycle, so anything the console derives from them is"),
+        Line::from("STALE, not current -- treat it as a snapshot from before the source"),
+        Line::from("went quiet, not as a live read. This is a LATEST-STATE tally, not a"),
+        Line::from("history: a source clears from it the moment a LATER poll observes it"),
+        Line::from("successfully, even if that poll's own data dedupes away and nothing"),
+        Line::from("else on screen moves -- so \"unavailable right now\" and \"broke once"),
+        Line::from("earlier today\" are never the same reading."),
+        Line::from(""),
+        Line::from("The event sources, and what each observes:"),
+    ];
+    lines.extend(event_source_roster_help_lines().into_iter().map(Line::from));
+    lines.extend(vec![
         Line::from(""),
         Line::from("The pane's OWN title, `LiveSpec Console — build <sha> (built"),
         Line::from("<timestamp>)`, names the RUNNING BINARY's compiled-in commit --"),
@@ -2952,7 +2983,8 @@ fn header_help_lines() -> Vec<Line<'static>> {
         Line::from("                 content clipped at the current width"),
         Line::from("esc              leave the header (returns to the Views nav)"),
         Line::from("On blur the header snaps back to its left-justified default."),
-    ]
+    ]);
+    lines
 }
 
 /// The `Global actions` section: the navigation and command keys available from
@@ -3086,6 +3118,18 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
         TuiView::Repos => vec![
             Line::from("Repos -- the fleet repo roster (read-only): the repos the console"),
             Line::from("observes, with the selected repo's detail on the right."),
+            Line::from(""),
+            Line::from("\"Repos observed: N\" is NOT a configured roster -- it is the count of"),
+            Line::from("distinct repos the EVENT LOG carries events for, derived from each"),
+            Line::from("event's stream key. A repo the console has never logged an event for"),
+            Line::from("is not counted, however real it is; this is a different axis from the"),
+            Line::from("header's `event sources: N unavailable` (which counts external"),
+            Line::from("programs polled, not repos mentioned in the log)."),
+            Line::from(""),
+            Line::from("The companion rows exist so that count can never quietly mislead:"),
+            Line::from("\"Fleet-scoped events\" is events attributed to the whole fleet rather"),
+            Line::from("than one repo; \"Events with no derivable repo\" is events whose stream"),
+            Line::from("key carries no repo at all. Neither row appears when it would be zero."),
             Line::from(""),
             Line::from("up / down    move the Content selection, or scroll the Detail pane"),
             Line::from("left / right move focus; left from Views opens the menu bar"),
@@ -3904,7 +3948,7 @@ mod tests {
     use console_application::source_adapters::{
         AcceptancePolicy, AdapterResult, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane,
-        OrphanedFactoryRun, ReconcileRunsSnapshot, attention_item_payload_json,
+        OrphanedFactoryRun, ReconcileRunsSnapshot, SourceAdapterKind, attention_item_payload_json,
         dispatcher_journal_payload_json, reconcile_runs_snapshot_payload_json,
     };
     use console_application::{
@@ -3930,12 +3974,12 @@ mod tests {
         buffer_to_text, command_explainer_confirm_step, command_explainer_lines,
         command_explanation_for_action, detail_lines, drain_input_burst,
         effect_triggers_source_poll, elide_to_width, full_width_explainer_rect, global_help_lines,
-        help_lines_for_view, help_outcome, is_navigation_interaction, key_event_to_terminal_input,
-        menu_confirm_step, registry_action_input, registry_staging_explanation,
-        render_command_explainer, render_command_modal, render_detail, render_footer,
-        render_menu_overlay, render_model, render_summary_detail, render_to_text,
-        render_work_item_detail, settings_detail_lines, staged_action_step, step_tui_runtime,
-        step_tui_runtime_with_model, text_input,
+        header_help_lines, help_lines_for_view, help_outcome, is_navigation_interaction,
+        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
+        registry_staging_explanation, render_command_explainer, render_command_modal,
+        render_detail, render_footer, render_menu_overlay, render_model, render_summary_detail,
+        render_to_text, render_work_item_detail, settings_detail_lines, staged_action_step,
+        step_tui_runtime, step_tui_runtime_with_model, text_input,
     };
 
     macro_rules! assert {
@@ -5624,6 +5668,15 @@ mod tests {
     fn help_overlay_renders_the_header_pane_section() {
         // `?` on the focused header opens Help auto-focused to the header section,
         // which lists a "Header" menu row and renders the header pane's help body.
+        //
+        // Viewport height is 80, not the round 24 this test used before the
+        // event-source vocabulary was added to this section
+        // (livespec-console-beads-fabro-mx9u.19): the section grew by the
+        // event-source definitions and the roster
+        // (`event_source_roster_help_lines`), so an unscrolled 24-row frame
+        // no longer reaches text this far down the section. What is under
+        // test is that the text IS there at `scroll: 0`, not a specific
+        // terminal height, and the real Help modal scrolls regardless.
         let state = TuiInteractionState::new(0, TuiOverlay::None)
             .with_overlay(TuiOverlay::Help {
                 focus: HelpFocus::Menu,
@@ -5631,7 +5684,7 @@ mod tests {
                 scroll: 0,
             })
             .with_focus(FocusPane::Header);
-        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 24)
+        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 80)
             .unwrap_or_default();
         assert!(frame.contains("Header"));
         assert!(frame.contains("scroll the focused header"));
@@ -5642,6 +5695,9 @@ mod tests {
         // livespec-console-beads-fabro-mx9u.13, acceptance criterion 4: `?`
         // Help must name where the build tell lives and what its stale form
         // means, not merely leave an operator to infer it from the header.
+        //
+        // Viewport height bumped for the same reason as the sibling test
+        // above: the section grew with the mx9u.19 event-source vocabulary.
         let state = TuiInteractionState::new(0, TuiOverlay::None)
             .with_overlay(TuiOverlay::Help {
                 focus: HelpFocus::Menu,
@@ -5649,7 +5705,7 @@ mod tests {
                 scroll: 0,
             })
             .with_focus(FocusPane::Header);
-        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 24)
+        let frame = render_to_text(&build_tui_model_for_state(&demo_events(), &state), 100, 80)
             .unwrap_or_default();
         assert!(frame.contains("LiveSpec Console — build <sha> (built"));
         assert!(frame.contains("build STALE: N commits behind"));
@@ -6511,7 +6567,7 @@ mod tests {
         assert_eq!(
             narrow
                 .as_ref()
-                .map(|rendered| rendered.contains("sources: 3 unavailable")),
+                .map(|rendered| rendered.contains("event sources: 3 unavailable")),
             Ok(true)
         );
 
@@ -6519,7 +6575,7 @@ mod tests {
         let wide = render_to_text(&blind, 160, 24);
         assert_eq!(
             wide.as_ref()
-                .map(|rendered| rendered.contains("sources: 3 unavailable")),
+                .map(|rendered| rendered.contains("event sources: 3 unavailable")),
             Ok(true)
         );
         assert_eq!(
@@ -10569,6 +10625,84 @@ mod tests {
             .join("\n");
         assert!(text.contains("open the selected work-item's record"));
         assert!(text.contains("description"));
+    }
+
+    /// Renders [`header_help_lines`] to one joined string, the same shape every
+    /// other help-section assertion in this module checks.
+    fn header_help_text() -> String {
+        header_help_lines()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn header_help_defines_what_an_event_source_is_and_what_unavailable_means() {
+        // AC1 of livespec-console-beads-fabro-mx9u.19: the operator-facing
+        // definition, leading with the event-sourcing framing the maintainer
+        // ruling of 2026-09-09 found clarifying (the console observes external
+        // programs and records what they say; it holds no truth of its own).
+        let text = header_help_text();
+        assert!(text.contains("EVENT SOURCES"));
+        assert!(text.contains("holds no truth of its own"));
+        assert!(text.contains("shells out to"));
+        assert!(text.contains("STALE, not current"));
+    }
+
+    #[test]
+    fn header_help_states_the_tally_is_latest_state_and_clears_on_recovery() {
+        // AC3: the property that distinguishes "broken now" from "broke once
+        // today" -- a later successful poll clears a source even when that
+        // poll's own data dedupes away.
+        let text = header_help_text();
+        assert!(text.contains("LATEST-STATE"));
+        assert!(text.contains("clears"));
+        assert!(text.contains("dedupes away"));
+    }
+
+    #[test]
+    fn header_help_roster_matches_the_source_roster_the_code_can_emit() {
+        // AC2: the enumerated list cannot drift out of date silently -- it is
+        // asserted against the SAME `SourceAdapterKind::all()` ground truth
+        // `event_source_roster_help_lines` folds over, so an added-but-
+        // undocumented source fails this test rather than shipping silently.
+        let text = header_help_text();
+        for kind in SourceAdapterKind::all() {
+            check(
+                text.contains(kind.source_name()),
+                &format!(
+                    "expected the header Help text to name source {:?}",
+                    kind.source_name()
+                ),
+            );
+            check(
+                text.contains(kind.observes()),
+                &format!(
+                    "expected the header Help text to describe source {:?}",
+                    kind.source_name()
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn the_repos_help_section_defines_repos_observed_against_event_sources() {
+        // AC4: "Repos observed" is defined as a distinct log-derived count, NOT
+        // a configured roster, and distinguished from the header's event-source
+        // tally so the two axes an operator otherwise conflates ("things the
+        // console watches") are told apart. The companion rows' purpose is
+        // stated too, not left for the operator to infer.
+        let text = help_lines_for_view(TuiView::Repos)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("NOT a configured roster"));
+        assert!(text.contains("event's stream key"));
+        assert!(text.contains("event sources"));
+        assert!(text.contains("Fleet-scoped events"));
+        assert!(text.contains("Events with no derivable repo"));
     }
 
     #[test]
