@@ -283,18 +283,31 @@ see [CLI options](cli-options.md).
 ### Repos pane
 
 ```
+What "observed" means
 Repos observed: <count>
+Fleet-scoped events: <count>
+Events with no derivable repo: <count>
 ```
 
-with the sorted, de-duplicated repo ids in the Detail pane. `Repos observed`
-is **not** a configured roster — it is the count of distinct repos the event
-log carries events for, derived from each event's stream key. That is a
-different axis from the header's `event sources` tally: `event sources`
-counts external programs the console polls, `Repos observed` counts
-repositories mentioned in the log. Two companion rows appear only when
-non-zero, so the count can never quietly mislead: `Fleet-scoped events`
-(events attributed to the whole fleet rather than one repo) and `Events with
-no derivable repo` (events whose stream key carries no repo at all).
+"Observed" is a projection over the stored event log, not a configured roster
+and not a scan of repos on disk: a repo with no events in the store simply
+does not appear, however many repos exist in the fleet. The first row states
+this on screen.
+
+`Repos observed` counts the DISTINCT repos the event log is attributed to,
+with the sorted, de-duplicated repo ids in the Detail pane, derived from
+each event's stream key. That is a different axis from the header's `event
+sources` tally: `event sources` counts external programs the console polls,
+`Repos observed` counts repositories mentioned in the log. `Fleet-scoped
+events` and `Events with no derivable repo` only appear when the store holds
+events of that kind, so the count can never quietly mislead, and together
+with the repo count they partition every stored event: each event is
+attributed to exactly one repo, is fleet-scoped (state of the product family
+as a whole, not any one repository), or carries no derivable repo at all.
+The last row's detail names the contributing event FAMILIES (for example
+`command.accepted`, `work_item.action.*`) rather than only a count, so an
+operator can tell console's own command/action bookkeeping — which
+legitimately carries no repo — from a genuine attribution gap.
 
 ### Settings pane
 

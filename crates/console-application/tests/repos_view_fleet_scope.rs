@@ -114,3 +114,89 @@ fn a_store_with_no_fleet_stream_carries_no_fleet_row() {
     assert!(rendered.contains("Repos observed: 1"), "{rendered}");
     assert!(!rendered.contains("Fleet-scoped events"), "{rendered}");
 }
+
+/// A colonless event of the given type, the shape `command.accepted` and
+/// `attention_item.resolved` actually stream under in a real store: a bare
+/// work-item / command id, with no `{context}:` prefix at all.
+fn colonless_event(
+    event_id: &str,
+    event_type: EventType,
+    stream_id: &str,
+    stream_seq: u64,
+) -> ConsoleEvent {
+    ConsoleEvent::new(
+        event_id.to_owned(),
+        1,
+        "orchestrator".to_owned(),
+        event_type,
+        "livespec".to_owned(),
+        stream_id.to_owned(),
+        stream_seq,
+    )
+}
+
+#[test]
+fn the_unattributable_row_names_the_event_families_not_only_a_count() {
+    // livespec-console-beads-fabro-mx9u.21: measured on the real store, 390
+    // unattributable events were five DIFFERENT event families
+    // (command.accepted, attention_item.resolved, work_item.action.*,
+    // config.*, factory.*), and the view said only "Events with no derivable
+    // repo: 390" -- honest about the count, silent about the composition, so
+    // the operator could not tell a real attribution hole from console's own
+    // command/action streams (which legitimately carry no repo).
+    let events = [
+        colonless_event("evt_cmd_1", EventType::CommandAccepted, "bd-ib-aaa", 1),
+        colonless_event("evt_cmd_2", EventType::CommandAccepted, "bd-ib-bbb", 1),
+        colonless_event(
+            "evt_action_started",
+            EventType::WorkItemActionStarted,
+            "bd-ib-ccc",
+            1,
+        ),
+        colonless_event(
+            "evt_action_completed",
+            EventType::WorkItemActionCompleted,
+            "bd-ib-ddd",
+            1,
+        ),
+        colonless_event(
+            "evt_config",
+            EventType::ConfigDispatcherSettingChanged,
+            "auto_admission",
+            1,
+        ),
+    ];
+
+    let rendered = repos_view_text(&events);
+
+    assert!(
+        rendered.contains("Events with no derivable repo: 5"),
+        "{rendered}"
+    );
+    // A family with exactly one participating event type is named exactly...
+    assert!(rendered.contains("command.accepted 2"), "{rendered}");
+    assert!(
+        rendered.contains("config.dispatcher_setting.changed 1"),
+        "{rendered}"
+    );
+    // ...one with several collapses to a wildcard so the row stays readable.
+    assert!(rendered.contains("work_item.action.* 2"), "{rendered}");
+}
+
+#[test]
+fn the_repos_view_states_what_observed_means() {
+    // AC5: "observed" is a projection over the event log, not a configured
+    // roster and not a filesystem scan -- stated on the view itself so the
+    // maintainer's "why aren't ALL repos observed?" has an answer on screen.
+    let events = [event("evt_repo", "repo:livespec-console-beads-fabro", 1)];
+
+    let rendered = repos_view_text(&events);
+    let lowered = rendered.to_lowercase();
+
+    assert!(
+        lowered.contains("not a configured roster")
+            && lowered.contains("not")
+            && lowered.contains("disk"),
+        "{rendered}"
+    );
+}
