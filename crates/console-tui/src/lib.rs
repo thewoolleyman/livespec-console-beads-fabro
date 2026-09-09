@@ -3927,12 +3927,16 @@ fn render_summary_detail(
 }
 
 /// The Detail-pane lines for a summary view: one `title` line per projection
-/// row, followed by a `detail` line only when the row carries operational
-/// detail (a repo list, the latest-event summary); a row whose operational
-/// content is fully carried by its title contributes the title line alone, with
-/// no trailing `:` and no empty detail line. A single placeholder renders when
-/// there are no rows. A standalone builder so the scroll behavior can be
-/// exercised over its length.
+/// row, followed by ONE `Line` per `\n`-separated fragment of the row's
+/// `detail` (livespec-console-beads-fabro-mx9u.17: the Event sources roster's
+/// reason and its stale-since column are two such fragments, each its own
+/// line rather than run together on the ONE `Line` ratatui would otherwise
+/// render an embedded `\n` as an invisible character inside) -- only when the
+/// row carries operational detail at all (a repo list, the latest-event
+/// summary). A row whose operational content is fully carried by its title
+/// contributes the title line alone, with no trailing `:` and no empty detail
+/// line. A single placeholder renders when there are no rows. A standalone
+/// builder so the scroll behavior can be exercised over its length.
 fn summary_detail_lines(items: &[ViewSummaryItem]) -> Vec<Line<'static>> {
     if items.is_empty() {
         return vec![Line::from("No projection rows")];
@@ -3943,10 +3947,13 @@ fn summary_detail_lines(items: &[ViewSummaryItem]) -> Vec<Line<'static>> {
             if item.detail().is_empty() {
                 vec![Line::from(item.title().to_owned())]
             } else {
-                vec![
-                    Line::from(format!("{}:", item.title())),
-                    Line::from(item.detail().to_owned()),
-                ]
+                std::iter::once(Line::from(format!("{}:", item.title())))
+                    .chain(
+                        item.detail()
+                            .split('\n')
+                            .map(|fragment| Line::from(fragment.to_owned())),
+                    )
+                    .collect()
             }
         })
         .collect()
