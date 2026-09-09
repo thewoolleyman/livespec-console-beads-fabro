@@ -166,22 +166,25 @@ implement_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high
 fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 review_fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
-# ACP adapter for the PR node. Defaults to a MODEL-un-pinned Claude adapter —
-# no ANTHROPIC_MODEL prefix, unlike the implementer and review nodes — so a bare
-# `fabro run` of this config still works. Its PACKAGE version is pinned like
-# every other Claude adapter here, by the sandbox image; see the version-less
-# rationale in the adapter-defaults block above. That bare-`fabro run` property
-# is also why these defaults do NOT use `npx --no-install`: outside the family
-# sandbox image there is no baked global, and the download is the intended
-# fallback rather than a failure. The Dispatcher always overrides this input
-# via `fabro run --input pr_adapter=...` with the Codex adapter rendered from
-# the target repo's `dispatcher.codex_models.pr` tier (built-in default
-# `gpt-5.4-mini` at `high`).
+# ACP adapter for the PR node. This is the SINGLE SOURCE of the publish
+# node's fleet default (contracts.md section "Codex ACP node model pins",
+# v107): a Claude adapter pinned to Claude Haiku 4.5 at high effort. Haiku is
+# the cheap model this scripted `git`/`gh` node warrants, it is model-agnostic
+# (no OpenAI/Codex catalog exposure), and pinning it — rather than leaving the
+# model un-set — avoids the silent-smaller-model trap older claude-agent-acp
+# builds had. Its PACKAGE version is pinned by the sandbox image; see the
+# version-less rationale in the adapter-defaults block above. That bare-`fabro
+# run` property is also why these defaults do NOT use `npx --no-install`:
+# outside the family sandbox image there is no baked global, and the download
+# is the intended fallback rather than a failure.
 #
-# It exists as a SEPARATE input from the implementer adapters so the publish
-# node's model moves independently of theirs. The pr prompt is a fixed
-# `git`/`gh` recipe, so it does not need the implementer tier.
-pr_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
+# The Dispatcher overrides this input via `fabro run --input pr_adapter=...`
+# ONLY when the target repo explicitly configures `dispatcher.codex_models.pr`
+# (routing the publish node to a Codex model) or `dispatcher.acp_nodes.pr`
+# (any adapter); absent that, this default stands. It exists as a SEPARATE
+# input from the implementer adapters so the publish node's model moves
+# independently of theirs.
+pr_adapter = "ANTHROPIC_MODEL=claude-haiku-4-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
 # ACP adapter for the REVIEW node (Slice A / bd-ib-egms32) — the Claude
 # subscription, pinned to Opus 4.8 + high thinking. The model CANNOT be set
