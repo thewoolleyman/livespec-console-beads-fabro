@@ -17,9 +17,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use console_application::build_identity::build_identity_segment;
 #[cfg(all(not(test), not(coverage)))]
-use console_application::build_identity::{BuildIdentity, BuildStaleness};
+use console_application::build_identity::BuildIdentity;
+use console_application::build_identity::{BuildStaleness, build_identity_segment};
 use console_application::source_adapters::{Lane, OrphanedFactoryRun};
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
@@ -224,6 +224,14 @@ fn run_terminal_loop(
         // non-blocking in-memory channel read, never a store or backing-CLI
         // call, so it stays unconditional even on the fast navigation path.
         apply_worker_status(&mut state, session.take_worker_status());
+        // Re-read the background-probed build staleness every tick, same as the
+        // worker status above: a non-blocking in-memory read (a `Mutex` lock
+        // around a `Copy` enum), never a `git` shell-out on this thread. The
+        // shell-out itself runs off-thread on the source poller's cadence --
+        // see `console_application::build_identity::SharedBuildStaleness` for
+        // why that cadence, not this tick, is where the IO belongs
+        // (livespec-console-beads-fabro-mx9u.26).
+        apply_build_staleness(&mut state, session.take_build_staleness());
         // Whether -- and how -- this tick's outcome warrants a store refresh.
         // `LoopTick::HandledInput` (one or more keys handled, none mutating)
         // skips it entirely: no store read, no backing-CLI call on the
@@ -594,6 +602,23 @@ fn apply_worker_status(state: &mut TuiInteractionState, status: Option<String>) 
     }
 }
 
+/// Fold a freshly re-probed [`BuildStaleness`] into the loop's state.
+///
+/// Split out of the terminal-bound loop for the same reason `apply_worker_status`
+/// was: the loop around it is excluded from tests and coverage. `None` means
+/// the session behind `TuiLiveSession` has no live probe at all (the legacy
+/// `run_interactive_tui` entry point, and every test double that does not
+/// override the trait's default) -- in that case the state keeps whatever
+/// [`TuiInteractionState::with_build_staleness`] was seeded with at launch and
+/// this is a no-op, exactly like a worker status nobody sent.
+/// `livespec-console-beads-fabro-mx9u.26`.
+#[cfg(any(test, not(coverage)))]
+fn apply_build_staleness(state: &mut TuiInteractionState, fresh: Option<BuildStaleness>) {
+    if let Some(staleness) = fresh {
+        *state = state.clone().with_build_staleness(staleness);
+    }
+}
+
 /// Fold a fresh effective-policy read into the loop's state.
 ///
 /// Split out of the terminal-bound loop for the same reason `apply_sink_outcome`
@@ -741,6 +766,25 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// render loop's tick is unaffected. Defaults to `None` for sessions with no
     /// worker behind them.
     fn take_worker_status(&mut self) -> Option<String> {
+        None
+    }
+
+    /// Read the latest background-probed [`BuildStaleness`], if this session
+    /// has a live probe behind it.
+    ///
+    /// `livespec-console-beads-fabro-mx9u.26`: staleness is a function of the
+    /// build sha (fixed for the process) AND the repo's HEAD (not fixed), so a
+    /// value read once at launch goes stale itself the moment HEAD moves. This
+    /// is the render loop's read side of that fix -- called every tick, same
+    /// as [`Self::take_worker_status`], and just as cheap: the real
+    /// implementation is a non-blocking `Mutex` lock around a `Copy` enum,
+    /// never a `git` shell-out. The shell-out that keeps the value fresh runs
+    /// off this thread, on the background source poller's own cadence (see
+    /// `console_application::build_identity::SharedBuildStaleness` for why
+    /// that cadence is the right one). Defaults to `None` -- unchanged state --
+    /// for the legacy `run_interactive_tui` entry point and every test double
+    /// that has no probe to report.
+    fn take_build_staleness(&mut self) -> Option<BuildStaleness> {
         None
     }
 
@@ -3851,8 +3895,8 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 #[cfg(test)]
 mod tests {
     use crate::{
-        HELP_MODAL_MARGIN, apply_dispatcher_settings_reread, apply_sink_outcome,
-        apply_worker_status,
+        HELP_MODAL_MARGIN, apply_build_staleness, apply_dispatcher_settings_reread,
+        apply_sink_outcome, apply_worker_status,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -4085,6 +4129,54 @@ mod tests {
     }
 
     #[test]
+    fn a_freshly_probed_staleness_replaces_the_state_the_operator_sees() {
+        // livespec-console-beads-fabro-mx9u.26 AC1/AC3: a session left running
+        // learns it has fallen behind, and the count is ACCURATE as it changes
+        // -- 1 behind, then 5 -- without a restart. This is the render loop's
+        // fold: the background poller's fresh read replaces whatever the state
+        // carried before, on every tick that reports one.
+        let base = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("build-staleness-test".to_owned())
+            .with_build_staleness(super::BuildStaleness::Behind(1));
+
+        let mut one_behind = base.clone();
+        apply_build_staleness(&mut one_behind, Some(super::BuildStaleness::Behind(1)));
+        assert_eq!(
+            one_behind.build_staleness(),
+            super::BuildStaleness::Behind(1)
+        );
+
+        let mut five_behind = base;
+        apply_build_staleness(&mut five_behind, Some(super::BuildStaleness::Behind(5)));
+        assert_eq!(
+            five_behind.build_staleness(),
+            super::BuildStaleness::Behind(5)
+        );
+        let rendered = render_to_text(&build_tui_model_for_state(&[], &five_behind), 200, 40)
+            .unwrap_or_default();
+        assert!(
+            rendered.contains("build STALE: 5 commits behind"),
+            "a widening gap must reach the rendered tell without a restart: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_absent_staleness_probe_leaves_the_state_alone() {
+        // MUST-NOT-FLAG CONTROL, same shape as `a_quiet_worker_leaves_the_operator_s_view_alone`:
+        // `None` is what every session with no live probe behind it reports
+        // (the legacy `run_interactive_tui` entry point, and any test double
+        // that has not overridden `take_build_staleness`) -- AC4 requires this
+        // stays silent-by-construction rather than manufacturing a claim.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("build-staleness-test".to_owned())
+            .with_build_staleness(super::BuildStaleness::Current);
+
+        apply_build_staleness(&mut state, None);
+
+        assert_eq!(state.build_staleness(), super::BuildStaleness::Current);
+    }
+
+    #[test]
     fn a_session_with_no_worker_behind_it_reports_no_worker_status() {
         // The trait default. A legacy no-store session has no command worker, so
         // it must report nothing rather than inventing a failure — the same
@@ -4094,6 +4186,20 @@ mod tests {
         check(
             session.take_worker_status().is_none(),
             "a session with no worker behind it reports no worker status",
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_probe_behind_it_reports_no_build_staleness() {
+        // The trait default (livespec-console-beads-fabro-mx9u.26). The legacy
+        // no-store session has no background poller to read from, so it must
+        // leave the loop's seeded state alone rather than manufacturing a
+        // reading — same reasoning as the worker-status default above.
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_build_staleness().is_none(),
+            "a session with no probe behind it reports no build staleness",
         );
     }
 
