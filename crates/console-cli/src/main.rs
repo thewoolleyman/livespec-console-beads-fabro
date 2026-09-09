@@ -18,6 +18,10 @@ use std::io::IsTerminal;
 #[cfg(all(not(test), not(coverage)))]
 use std::path::{Path, PathBuf};
 #[cfg(all(not(test), not(coverage)))]
+use std::sync::Arc;
+#[cfg(all(not(test), not(coverage)))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(all(not(test), not(coverage)))]
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 #[cfg(all(not(test), not(coverage)))]
 use std::time::{Duration, Instant};
@@ -308,17 +312,11 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let resolution = BackingCliResolution::from_environment().map_err(|error| error.to_string())?;
     let probe = SystemSourceProbe::new(resolution.selected_repo_path());
     let journal_path = resolution.dispatcher_journal_path();
-    let adapters = livespec_console_beads_fabro::live_source_adapters_with_programs(
-        &probe,
-        &repo,
-        resolution.programs(),
-        &journal_path,
-    )
-    .map_err(|error| format!("{error:?}"))?;
-    let sources = source_refs(&adapters);
-    let needs_attention_port =
-        ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
-    let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    // No source adapters or needs-attention port are resolved here: this
+    // function no longer runs a synchronous source ingest before the first
+    // frame (livespec-console-beads-fabro-pzbdbo.27) -- the poller thread
+    // below re-resolves its OWN adapters and probe and performs every sweep,
+    // starting with the first.
     let repo_path = resolution.drive_repo_arg();
     let mut drain = DispatcherFactoryDrainPort::new(
         &probe,
@@ -336,26 +334,38 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let invoker = console_invoker(args);
     // A ONE-TIME synchronous probe so the FIRST frame already carries a real
-    // staleness reading (matching the `ingest_and_reflect` startup ingest just
-    // above) rather than rendering nothing for the ~2s until the poller's
-    // first cycle. Everything AFTER the first frame is the poller's job, on
-    // its own cadence: see `SharedBuildStaleness` and the poller-thread spawn
-    // below (livespec-console-beads-fabro-mx9u.26 — a build's sha is fixed for
-    // the session, but the repo's HEAD is not, so this can no longer be a
-    // one-shot startup read the way `dispatcher_settings` above still is).
+    // staleness reading rather than an `Unknown` placeholder until the
+    // poller's first cycle. A local `git` read, not a slow backing CLI, so it
+    // costs nothing worth avoiding on the pre-first-frame path -- unlike the
+    // source ingest, which now runs entirely on the poller (livespec-console-
+    // beads-fabro-pzbdbo.27). Everything AFTER the first frame is the
+    // poller's job, on its own cadence: see `SharedBuildStaleness` and the
+    // poller-thread spawn below (livespec-console-beads-fabro-mx9u.26 — a
+    // build's sha is fixed for the session, but the repo's HEAD is not, so
+    // this can no longer be a one-shot startup read the way
+    // `dispatcher_settings` above still is).
     let build_staleness_cell = SharedBuildStaleness::new();
     build_staleness_cell.set(observe_build_staleness(
         &probe,
         repo_path.as_str(),
         livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
     ));
+    // Starts `true`: nothing has polled a single source yet this run. The
+    // poller thread (spawned below) flips this to `false` once its first sweep
+    // completes, whether that sweep found anything or not
+    // (livespec-console-beads-fabro-pzbdbo.27). A plain `Arc<AtomicBool>`
+    // rather than a `SharedBuildStaleness`-style richer cell: this is a
+    // one-shot true->false latch with no VALUE to carry, unlike a staleness
+    // reading that keeps changing all session long.
+    let first_ingest_pending = Arc::new(AtomicBool::new(true));
     let mut runner = InteractiveTuiRunner {
-        selected_repo: repo.clone(),
+        selected_repo: repo,
         dispatcher_settings,
         plugin_resolution: plugin_resolution_for_tui(resolution.plugin_resolution()),
         build_identity: livespec_console_beads_fabro::build_identity::embedded_build_identity(),
         build_staleness: build_staleness_cell.get(),
         build_staleness_cell: build_staleness_cell.clone(),
+        first_ingest_pending: Arc::clone(&first_ingest_pending),
     };
     // Move the SLOW CLI-shelling source polls onto a background thread so the UI
     // thread never blocks on them (dropped keystrokes were the move-doesn't-land
@@ -378,7 +388,10 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // it end the session (livespec-console-beads-fabro-ddfbcx.1). The UI thread pings it (via `ChannelPollRequester`) after a
     // ledger-mutating effect, and the channel doubles as the shutdown signal.
     let (poll_tx, poll_rx) = std::sync::mpsc::channel::<PollMessage>();
-    let poller = std::thread::spawn(move || poller_loop(&poll_rx, build_staleness_cell));
+    let poller_first_ingest_pending = Arc::clone(&first_ingest_pending);
+    let poller = std::thread::spawn(move || {
+        poller_loop(&poll_rx, build_staleness_cell, poller_first_ingest_pending);
+    });
     let requester = ChannelPollRequester {
         tx: poll_tx.clone(),
     };
@@ -401,11 +414,9 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         &observed_at,
         invoker.principal(),
         &mut runner,
-        &sources,
         &mut drain,
         &mut drive,
         &decisions,
-        &needs_attention,
         &requester,
         &command_requester,
     );
@@ -484,7 +495,11 @@ fn hostname() -> String {
 /// `console_application::build_identity::SharedBuildStaleness` for the full
 /// cadence rationale.
 #[cfg(all(not(test), not(coverage)))]
-fn poller_loop(poll_rx: &Receiver<PollMessage>, build_staleness: SharedBuildStaleness) {
+fn poller_loop(
+    poll_rx: &Receiver<PollMessage>,
+    build_staleness: SharedBuildStaleness,
+    first_ingest_pending: Arc<AtomicBool>,
+) {
     let resolution = match BackingCliResolution::from_environment() {
         Ok(resolution) => resolution,
         Err(error) => {
@@ -532,6 +547,7 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>, build_staleness: SharedBuildStal
         probe: &probe,
         repo_path: repo_path.as_str(),
         build_staleness,
+        first_ingest_pending,
     };
     // The PACING lives in the library (`source_poller`), where it is testable;
     // this thread supplies only the effects — the CLI-shelling poll, the
@@ -557,6 +573,11 @@ struct ChannelSourcePollHost<'a> {
     /// Shared with the render thread — see [`SharedBuildStaleness`] for why
     /// the re-probe lives on THIS cadence rather than a per-render one.
     build_staleness: SharedBuildStaleness,
+    /// Shared with the render thread: flipped `false` the moment this thread
+    /// completes its FIRST sweep, whether or not that sweep found anything
+    /// (livespec-console-beads-fabro-pzbdbo.27). Unlike `build_staleness` this
+    /// is a one-shot latch, not a value re-set every cycle.
+    first_ingest_pending: Arc<AtomicBool>,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -581,6 +602,14 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
                 self.needs_attention,
             );
         }
+        // Cleared unconditionally, success or failure: an ATTEMPTED first
+        // sweep is what the header's `sources: loading` tell promises to wait
+        // for, not a SUCCESSFUL one -- a source that genuinely fails becomes
+        // `unavailable` from here on, which is real information, not a stuck
+        // loading state (livespec-console-beads-fabro-pzbdbo.27). A `store`
+        // is a redundant write on every later sweep, which costs nothing over
+        // an `if` that checks first.
+        self.first_ingest_pending.store(false, Ordering::Relaxed);
     }
 
     fn wait(&mut self, timeout: Duration) -> SourcePollWake {
@@ -1021,6 +1050,9 @@ struct InteractiveTuiRunner {
     /// the first reads through here instead
     /// (livespec-console-beads-fabro-mx9u.26).
     build_staleness_cell: SharedBuildStaleness,
+    /// The SAME handle the poller thread flips `false` once its first sweep
+    /// completes (livespec-console-beads-fabro-pzbdbo.27).
+    first_ingest_pending: Arc<AtomicBool>,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -1031,9 +1063,10 @@ impl TuiSessionRunner for InteractiveTuiRunner {
         requested_by: &str,
         session: &mut dyn console_tui::TuiLiveSession,
     ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
-        let mut live_session = BuildStalenessAwareSession {
+        let mut live_session = PollerAwareSession {
             inner: session,
             build_staleness: self.build_staleness_cell.clone(),
+            first_ingest_pending: Arc::clone(&self.first_ingest_pending),
         };
         console_tui::run_interactive_tui_with_effect_sink(
             events,
@@ -1049,24 +1082,27 @@ impl TuiSessionRunner for InteractiveTuiRunner {
     }
 }
 
-/// Wraps the real [`console_tui::TuiLiveSession`] with the ONE method it does
-/// not itself know how to answer: the live build-staleness read.
+/// Wraps the real [`console_tui::TuiLiveSession`] with the methods it does not
+/// itself know how to answer: the live build-staleness read and whether the
+/// background poller's first source sweep has landed.
 ///
 /// `StoreBackedTuiRuntimeEffectSink` (the concrete `session` this wraps) is
 /// constructed inside the library's `run_store_backed_tui_session`, which has
-/// no reason to know about a background poller's shared cell — that wiring is
+/// no reason to know about a background poller's shared state — that wiring is
 /// a composition-root concern, so it stays here rather than growing that
 /// function's already-long parameter list for every command lane that never
 /// runs a live TUI. Every other method delegates straight through to `inner`,
-/// unchanged (livespec-console-beads-fabro-mx9u.26).
+/// unchanged (livespec-console-beads-fabro-mx9u.26,
+/// livespec-console-beads-fabro-pzbdbo.27).
 #[cfg(all(not(test), not(coverage)))]
-struct BuildStalenessAwareSession<'a> {
+struct PollerAwareSession<'a> {
     inner: &'a mut dyn console_tui::TuiLiveSession,
     build_staleness: SharedBuildStaleness,
+    first_ingest_pending: Arc<AtomicBool>,
 }
 
 #[cfg(all(not(test), not(coverage)))]
-impl console_tui::TuiRuntimeEffectSink for BuildStalenessAwareSession<'_> {
+impl console_tui::TuiRuntimeEffectSink for PollerAwareSession<'_> {
     fn handle_runtime_effect(
         &mut self,
         effect: &console_tui::TuiRuntimeEffect,
@@ -1076,7 +1112,7 @@ impl console_tui::TuiRuntimeEffectSink for BuildStalenessAwareSession<'_> {
 }
 
 #[cfg(all(not(test), not(coverage)))]
-impl console_tui::TuiLiveSession for BuildStalenessAwareSession<'_> {
+impl console_tui::TuiLiveSession for PollerAwareSession<'_> {
     fn refresh_events(
         &mut self,
         request_poll: bool,
@@ -1093,12 +1129,18 @@ impl console_tui::TuiLiveSession for BuildStalenessAwareSession<'_> {
     }
 
     fn take_build_staleness(&mut self) -> Option<BuildStaleness> {
-        // The ONE non-passthrough method: a cheap, non-blocking `Mutex` read
-        // of whatever the background poller last wrote. Always `Some` -- the
-        // cell always holds a value (starting at `Unknown`) -- so the render
-        // loop applies it every tick, same cost as reapplying an unchanged
-        // field.
+        // A cheap, non-blocking `Mutex` read of whatever the background poller
+        // last wrote. Always `Some` -- the cell always holds a value (starting
+        // at `Unknown`) -- so the render loop applies it every tick, same cost
+        // as reapplying an unchanged field.
         Some(self.build_staleness.get())
+    }
+
+    fn first_ingest_in_progress(&self) -> bool {
+        // A cheap, non-blocking atomic read of the SAME handle the poller
+        // thread flips once its first sweep completes
+        // (livespec-console-beads-fabro-pzbdbo.27).
+        self.first_ingest_pending.load(Ordering::Relaxed)
     }
 }
 

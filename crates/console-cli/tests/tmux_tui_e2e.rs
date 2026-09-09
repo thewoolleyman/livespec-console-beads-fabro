@@ -35,7 +35,7 @@ use console_eventstore::SqliteEventStore;
 use livespec_console_beads_fabro::{lane_diagnostics_path, lane_failures_in};
 use support::attention_rows::{PathBackedAttentionFixture, ROW_SUMMARY};
 use support::lifecycle::{ITEM_ID, LifecycleFixture};
-use support::{HarnessResult, RepoFixture, TmuxConsole, render_timeout};
+use support::{HarnessResult, RepoFixture, TmuxConsole, render_timeout, slow_source_sleep};
 
 // The render/settle ceiling now lives in the harness as `support::render_timeout()`
 // — a generous default widenable via `LIVESPEC_CONSOLE_E2E_RENDER_TIMEOUT_SECS`,
@@ -781,6 +781,112 @@ fn tmux_tui_e2e_first_frame_survives_a_store_open_held_past_the_busy_timeout() -
         .map_err(|_| "the peer thread panicked".to_owned())?;
     let _ignored = std::fs::remove_dir_all(&scratch);
     Ok(())
+}
+
+/// livespec-console-beads-fabro-pzbdbo.27 AC3: the first frame paints WITHOUT
+/// waiting for a genuinely slow source, and it says so.
+///
+/// # The defect this reproduces
+///
+/// Measured 2026-09-08 (dogfood pass, real backing CLIs): 50-70 SECONDS of a
+/// completely blank pane before anything painted at all -- the interactive
+/// launch used to run the full source ingest (six backing CLIs plus the
+/// needs-attention snapshot) SYNCHRONOUSLY before drawing a single frame. A
+/// blank pane that long is indistinguishable from a hung process.
+///
+/// # How it is reproduced deterministically
+///
+/// The harness's fixture CLIs are all instant stub scripts, so this scenario
+/// cannot arise from them as shipped -- ONE source (`needs-attention`) is
+/// repointed at a stub that sleeps [`support::slow_source_sleep`] before
+/// answering, long enough that a launch which still blocked the first frame
+/// on ingest would obviously miss the assertion below.
+///
+/// # Why elapsed-time-to-launch is the assertion
+///
+/// [`TmuxConsole::launch_with_env`] itself blocks on the harness's own
+/// first-paint readiness gate (`poll_ready` over a non-blank capture) before
+/// returning, so the call returning AT ALL is proof a frame painted; the
+/// elapsed-time bound proves it painted long before the slow source could
+/// possibly have answered, which is the whole point -- a session that
+/// happened to paint before the ceiling for some OTHER reason would still
+/// need this bound to rule out "got lucky, still blocking really".
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers() -> HarnessResult<()> {
+    let repo = RepoFixture::new(
+        "e2e-slow-source",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    );
+    let scratch = std::env::temp_dir().join(format!("lc-e2e-slow-source-{}", std::process::id()));
+    let _ignored = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch)
+        .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
+    let slow_sleep = slow_source_sleep();
+    let stub = write_slow_needs_attention_stub(&scratch, slow_sleep)?;
+    let program_env = stub.display().to_string();
+    let extra_env = [(
+        "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM",
+        program_env.as_str(),
+    )];
+
+    let started = Instant::now();
+    let console = TmuxConsole::launch_with_env(&repo, &extra_env)?;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < slow_sleep,
+        "the first frame must paint WITHOUT waiting for the slow source to \
+         answer: painted after {elapsed:?}, the source alone sleeps \
+         {slow_sleep:?} -- a launch that still blocks the first frame \
+         on ingest would exceed this bound"
+    );
+
+    // Captured immediately after that first paint (t well under slow_sleep):
+    // the source has not answered yet, so the header must say so rather than
+    // presenting an unqualified screen (AC1/AC2 -- "loading", never silently
+    // empty and never "unavailable", which means a source was polled and
+    // FAILED, not that this session has not asked it yet).
+    let first_capture = console.capture()?;
+    assert!(
+        first_capture.contains("sources: loading"),
+        "the first frame must name that a source is still loading:\n{first_capture}"
+    );
+
+    // Convergence: once the slow source finally answers, the tell clears.
+    let settled = wait_until_absent(&console, "sources: loading", render_timeout())?;
+    assert!(
+        settled.contains("view: Attention"),
+        "the console must still be alive and rendering once the slow source \
+         answers:\n{settled}"
+    );
+
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
+    let _ignored = std::fs::remove_dir_all(&scratch);
+    Ok(())
+}
+
+/// Write a needs-attention stub that sleeps `sleep` before emitting the
+/// genuinely-idle envelope (`{"attention": []}` — see
+/// `support::write_needs_attention_idle_stub`, which this mirrors apart from
+/// the sleep).
+fn write_slow_needs_attention_stub(scratch: &Path, sleep: Duration) -> HarnessResult<PathBuf> {
+    let stub = scratch.join("stub-slow-needs-attention.sh");
+    let body = format!(
+        "#!/usr/bin/env bash\nsleep {}\nprintf '{{\"attention\": []}}\\n'\nexit 0\n",
+        sleep.as_secs()
+    );
+    std::fs::write(&stub, body)
+        .map_err(|error| format!("write stub {} failed: {error}", stub.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&stub, permissions)
+            .map_err(|error| format!("chmod {} failed: {error}", stub.display()))?;
+    }
+    Ok(stub)
 }
 
 /// Take the store database's write lock, announce it on `ready`, hold it for

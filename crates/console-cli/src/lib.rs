@@ -762,15 +762,29 @@ impl TuiLiveSession for StoreBackedTuiRuntimeEffectSink<'_> {
                 .unwrap_or(DispatcherSettingsRead::NotObserved),
         ))
     }
+
+    // `first_ingest_in_progress` is NOT overridden here: whether the
+    // background poller's first sweep has landed is composition-root state
+    // this library type has no reason to know about (it does not even know a
+    // poller exists) -- see `main.rs`'s `PollerAwareSession`, which wraps this
+    // sink with the ONE method it cannot itself answer, the same way
+    // `BuildStalenessAwareSession` already did for the live build-staleness
+    // read (livespec-console-beads-fabro-mx9u.26). The trait default (`false`)
+    // is exactly right for every OTHER caller of this sink: a session with no
+    // poller behind it has nothing to wait for.
 }
 
 /// The two SLOW source polls.
 ///
 /// Backfill the source adapters (Lanes / `work_item.*` events) then diff-ingest
 /// the needs-attention snapshot (the Attention list). Each shells a CLI, so this
-/// runs OFF the UI thread on the poller (and once synchronously at startup as
-/// part of [`ingest_and_reflect`]). Returns the source-adapter ingestion
-/// summaries the startup path tallies into its `TuiSessionOutcome`.
+/// runs OFF the UI thread on the poller. The interactive TUI's FIRST sweep runs
+/// here too, on that same off-thread poller, rather than synchronously before
+/// the first frame draws (livespec-console-beads-fabro-pzbdbo.27 -- see
+/// [`run_store_backed_tui_session`]); the headless `serve` report still calls
+/// this synchronously via [`ingest_and_reflect`], since it has no frame to draw
+/// before the read completes. Returns the source-adapter ingestion summaries the
+/// caller tallies into its own outcome.
 pub fn refresh_sources(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -781,10 +795,9 @@ pub fn refresh_sources(
     match ingest_needs_attention(store, needs_attention, observed_at) {
         Ok(_attention_ingested) => {}
         // `AttentionResolveDuplicate` is the one ingest failure this path
-        // MUST NOT die on: this is the SYNCHRONOUS pre-first-frame ingest the
-        // interactive TUI runs at launch (`run_store_backed_tui_session`), and
-        // the off-thread poller's re-poll on this same function (both reach
-        // here — the poller already discards this Result entirely). The
+        // MUST NOT die on: this runs on the interactive TUI's off-thread
+        // poller (which discards this whole `Result`) and, synchronously, on
+        // the headless `serve` report's own call. The
         // common trigger (an id re-resolving with content it already carried
         // through an earlier resolution) is idempotent and never reaches this
         // arm (see `ingest_needs_attention`'s `already_retired` check); what
@@ -799,16 +812,20 @@ pub fn refresh_sources(
     Ok(ingestion)
 }
 
-/// The full launch ingest/reflect sequence.
+/// The full ingest/reflect sequence: the two slow source polls
+/// ([`refresh_sources`]) plus the cheap local-journal auto-disposition
+/// reflection.
 ///
-/// The two slow source polls ([`refresh_sources`]) plus the cheap local-journal
-/// auto-disposition reflection. Run ONCE synchronously at startup (Bug A — the
-/// first frame reduces over the CURRENT ledger) and by the headless serve. During
-/// the running session the two cadences split: the slow polls run off-thread on
-/// the poller (via [`refresh_sources`]) while the reflection runs on the UI thread
-/// every frame (the sink's `refresh_events`). Reflect runs AFTER the ingests so a
-/// reflection wins over a lagging needs-attention surface still showing a resolved
-/// item. Returns the source-adapter ingestion summaries the startup path tallies.
+/// Run ONCE synchronously by the HEADLESS `serve` report, which has no frame to
+/// draw before its read completes and must reduce over the CURRENT ledger
+/// (Bug A). The interactive TUI no longer calls this synchronously
+/// (livespec-console-beads-fabro-pzbdbo.27): its first sweep runs on the
+/// off-thread poller like every later one, via [`refresh_sources`] directly,
+/// while the reflection runs on the UI thread every frame (the sink's
+/// `refresh_events`) exactly as it always has. Reflect runs AFTER the ingests
+/// so a reflection wins over a lagging needs-attention surface still showing a
+/// resolved item. Returns the source-adapter ingestion summaries the caller
+/// tallies.
 pub fn ingest_and_reflect(
     store: &mut SqliteEventStore,
     observed_at: &str,
@@ -885,7 +902,15 @@ impl TuiSessionOutcome {
     }
 
     #[must_use]
-    /// Return the stored value.
+    /// How many events the session's own pre-first-frame ingest appended.
+    ///
+    /// Always `0` for the interactive TUI session since
+    /// livespec-console-beads-fabro-pzbdbo.27: that path no longer runs a
+    /// synchronous ingest before the first frame, so there is nothing here to
+    /// tally -- the background poller performs the real ingest instead, off
+    /// this session's counters entirely. Still meaningful for the headless
+    /// `serve` report, which keeps its own synchronous
+    /// [`ingest_and_reflect`] call.
     pub const fn backfilled_event_count(&self) -> usize {
         self.backfilled_events
     }
@@ -922,39 +947,61 @@ impl TuiSessionOutcome {
 }
 
 /// Run store backed tui session and return its outcome.
+///
+/// # The first frame draws BEFORE the first ingest (livespec-console-beads-fabro-pzbdbo.27)
+///
+/// This used to run the full ingest/reflect sequence (six backing CLIs plus the
+/// needs-attention snapshot) SYNCHRONOUSLY before the UI loop started at all --
+/// the fix for Bug A (the first frame must reduce over the CURRENT ledger, not a
+/// snapshot frozen at the first-ever run), landed by blocking on exactly the
+/// slow polls Bug A was worried about. Measured 2026-09-08: 50-70 SECONDS of a
+/// completely blank pane before anything painted, indistinguishable from a hung
+/// process or a broken launch.
+///
+/// The fix keeps Bug A's property (a running session always reduces over the
+/// current ledger -- the poller re-ingests on its own cadence throughout) while
+/// dropping the block: this path now only re-lists whatever the store ALREADY
+/// holds (a previous session's history, or nothing on a fresh install) plus the
+/// cheap local-journal reflection, and the first REAL sweep runs on the
+/// background poller exactly like every later one (see the binary's
+/// `poller_loop`).
+///
+/// Whether that first sweep has landed yet is composition-root state (a handle
+/// shared with the poller thread) that this library function has no reason to
+/// know about -- exactly like the LIVE build-staleness read
+/// (livespec-console-beads-fabro-mx9u.26) already did not grow this signature.
+/// `runner` (via [`TuiSessionRunner::run_tui`]) is where the binary wraps its
+/// `session` with that composition-root-only awareness before handing it to the
+/// interactive loop.
 #[allow(clippy::too_many_arguments)]
 pub fn run_store_backed_tui_session(
     store: &mut SqliteEventStore,
     observed_at: &str,
     requested_by: &str,
     runner: &mut dyn TuiSessionRunner,
-    sources: &[SourceAdapterRef<'_>],
     factory_port: &mut dyn FactoryDrainPort,
     work_item_port: &mut dyn OrchestratorActionPort,
     decisions_port: &dyn AutonomousDecisionsPort,
-    needs_attention: &NeedsAttentionIngest<'_>,
     poll_requester: &dyn SourcePollRequester,
     command_requester: &dyn PendingCommandRequester,
 ) -> ConsoleRuntimeResult<TuiSessionOutcome> {
-    // Run the full ingest/reflect sequence once on launch (Bug A fix): the first
-    // frame must reduce over the CURRENT ledger, not a snapshot frozen at the
-    // first-ever run. This ONE synchronous ingest happens before the UI loop
-    // starts; ongoing polling then runs on the off-thread poller (see the
-    // binary's `poller_loop`), so the UI thread never blocks on a source poll.
-    //
-    // BOTH steps below are STORE WORK on the pre-first-frame path, and both used
-    // a bare `?` that ended the session before the operator saw anything
-    // (livespec-console-beads-fabro-bss4rq). CI run 33060628908 timed out waiting
-    // for the FIRST frame carrying
-    // `EventStore(Sqlite(SqliteFailure(.. DatabaseBusy ..)))` — the `EventStore(`
-    // wrapper is the Debug of `ConsoleRuntimeError`, which only this path
-    // produces; the store OPEN renders a bare `Sqlite(..)` with no wrapper.
+    // The ONLY store work on the pre-first-frame path now: the cheap
+    // local-journal reflection (never a slow CLI) and a plain re-list of
+    // whatever the store already holds. Both used a bare `?` before this
+    // degraded to a retry loop -- that history (livespec-console-beads-fabro-
+    // bss4rq, CI run 33060628908 timing out on a `SQLITE_BUSY` before the first
+    // frame) is why this still runs under `tolerate_startup_contention` even
+    // though neither step shells a CLI: a momentary write-lock contention on a
+    // busy store is still reachable on a plain read.
     let readout = tolerate_startup_contention(STARTUP_STORE_ATTEMPTS, &mut || {
-        let ingestion =
-            ingest_and_reflect(store, observed_at, sources, needs_attention, decisions_port)?;
+        let _reflected =
+            observe_and_reflect_autonomous_decisions(store, observed_at, decisions_port)?;
         let presented_events = store.list_console_events()?;
         Ok(StartupReadout {
-            ingestion,
+            // No synchronous ingest ran here, so there is nothing to tally --
+            // see `TuiSessionOutcome::backfilled_event_count`'s doc for what
+            // this now honestly reports.
+            ingestion: Vec::new(),
             presented_events,
         })
     })?;
@@ -5289,26 +5336,36 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_tui_session_backfills_runs_tui_and_handles_factory_command() {
+    // livespec-console-beads-fabro-pzbdbo.27: renamed from "...backfills..." --
+    // this function no longer performs the source backfill itself (that moved
+    // to the background poller); the `refresh_sources` call below stands in
+    // for that poller sweep, run BEFORE the session so the store already
+    // holds its events by the time the first frame draws.
+    fn store_backed_tui_session_runs_tui_over_a_pre_seeded_store_and_handles_factory_command() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
-        let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        refresh_sources(
+            &mut store,
+            "2026-06-23T00:00:01Z",
+            &sources,
+            &needs_attention,
+        )
+        .ok_test();
+        let mut runner = ScriptedTuiSessionRunner::new(vec![factory_drain_effect()]);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-06-23T00:00:02Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &command_requester(),
         );
@@ -5316,11 +5373,14 @@ mod tests {
 
         let outcome = outcome.ok_test();
         check(
-            (outcome) == (TuiSessionOutcome::new(8, 8, 1, 1, 11, 0)),
+            (outcome) == (TuiSessionOutcome::new(0, 8, 1, 1, 11, 0)),
             "assert_eq failed",
         );
+        // `0`: nothing was backfilled BY THIS CALL -- the pre-seed above
+        // already put the 8 events in the store, standing in for the poller's
+        // prior sweep.
         check(
-            (outcome.backfilled_event_count()) == (8),
+            (outcome.backfilled_event_count()) == (0),
             "assert_eq failed",
         );
         check((outcome.presented_event_count()) == (8), "assert_eq failed");
@@ -5345,21 +5405,15 @@ mod tests {
         let mut runner = ScriptedTuiSessionRunner::new(vec![dispatcher_setting_set_effect()]);
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
-        let scripted = scripted_source_list();
-        let sources = scripted_source_refs(&scripted);
-        let na_port = empty_needs_attention_port();
-        let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-07-11T00:00:02Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &command_requester(),
         );
@@ -5399,14 +5453,23 @@ mod tests {
     #[test]
     fn store_backed_tui_session_services_input_after_queued_drain_before_port_runs() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
-        let calls = Rc::new(std::cell::Cell::new(0));
-        let mut runner = DrainThenInputTuiSessionRunner::new(Rc::clone(&calls));
-        let mut factory_port = CountingFactoryDrainPort::new(Rc::clone(&calls));
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list_with_ready_work();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        // Stands in for the poller's prior sweep, so the ready-work event this
+        // test's interaction depends on is already in the store.
+        refresh_sources(
+            &mut store,
+            "2026-08-17T23:49:59Z",
+            &sources,
+            &needs_attention,
+        )
+        .ok_test();
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let mut runner = DrainThenInputTuiSessionRunner::new(Rc::clone(&calls));
+        let mut factory_port = CountingFactoryDrainPort::new(Rc::clone(&calls));
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let commands = async_command_requester();
 
         let outcome = run_store_backed_tui_session(
@@ -5414,11 +5477,9 @@ mod tests {
             "2026-08-17T23:50:00Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &commands,
         );
@@ -5454,17 +5515,24 @@ mod tests {
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
+        // Stands in for the poller's prior sweep, so the needs-attention item
+        // this test's valve targets is already in the store.
+        refresh_sources(
+            &mut store,
+            "2026-07-12T23:59:59Z",
+            &sources,
+            &needs_attention,
+        )
+        .ok_test();
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-07-13T00:00:00Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &command_requester(),
         );
@@ -5501,17 +5569,24 @@ mod tests {
         )]);
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
         append_work_item_lane(&mut store, "console-pending", "pending-approval", 1, TS0);
+        // Stands in for the poller's prior sweep, so the needs-attention item
+        // this test's valve targets is already in the store.
+        refresh_sources(
+            &mut store,
+            "2026-07-12T23:59:59Z",
+            &sources,
+            &needs_attention,
+        )
+        .ok_test();
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-07-13T00:00:00Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &command_requester(),
         );
@@ -5523,39 +5598,53 @@ mod tests {
     }
 
     #[test]
-    fn store_backed_tui_session_reingests_sources_over_existing_events() {
-        // Bug A fix: the interactive launch re-ingests the source adapters on
-        // EVERY run, not only when the log is empty, so the Lanes projection
-        // reduces over the CURRENT ledger rather than a first-run snapshot. The
-        // store starts with the 2 demo events; the scripted seed adds its 6
-        // source events on top (idempotent per Scenario 3), so 8 events are
-        // presented to the runner and left in the store.
+    // Bug A fix, re-stated for the new architecture
+    // (livespec-console-beads-fabro-pzbdbo.27): the Lanes projection must
+    // still reduce over the CURRENT ledger, not a first-run snapshot -- but
+    // that property now lives in whatever ALREADY landed in the store before
+    // this call (the background poller's sweep, simulated here by an explicit
+    // `refresh_sources`), since this function no longer re-ingests sources
+    // itself. The store starts with the 2 demo events; the scripted sweep
+    // adds its 6 source events on top (idempotent per Scenario 3), so 8
+    // events are presented to the runner -- proving the first frame reflects
+    // BOTH, not only the demo events it happened to be seeded with.
+    fn store_backed_tui_session_renders_over_a_store_the_poller_already_populated() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
         append_demo_events_to_store(&mut store, "2026-06-23T00:00:00Z").ok_test();
-        let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        // Stands in for the background poller's sweep, which now runs BEFORE
+        // the session ever sees the store rather than inside it.
+        refresh_sources(
+            &mut store,
+            "2026-06-23T00:00:01Z",
+            &sources,
+            &needs_attention,
+        )
+        .ok_test();
+        let mut runner = ScriptedTuiSessionRunner::new(vec![TuiRuntimeEffect::Quit]);
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-06-23T00:00:02Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &command_requester(),
         );
 
+        // `0` backfilled: this call performs no ingest of its own -- everything
+        // it presents was ALREADY in the store from the `refresh_sources` call
+        // above, standing in for the poller's prior sweep.
         check(
-            (outcome.ok_test()) == (TuiSessionOutcome::new(6, 8, 0, 0, 8, 0)),
+            (outcome.ok_test()) == (TuiSessionOutcome::new(0, 8, 0, 0, 8, 0)),
             "assert_eq failed",
         );
         check((runner.observed_event_count()) == (8), "assert_eq failed");
@@ -7042,24 +7131,31 @@ mod tests {
     #[test]
     fn store_backed_tui_session_reports_runner_errors() {
         let mut store = SqliteEventStore::open_in_memory().ok_test();
-        let mut runner = ErroringTuiSessionRunner;
-        let mut factory_port = SimulatedFactoryDrainPort;
-        let mut work_item_port = SimulatedWorkItemActionPort::default();
         let scripted = scripted_source_list();
         let sources = scripted_source_refs(&scripted);
         let na_port = empty_needs_attention_port();
         let needs_attention = NeedsAttentionIngest::new(&na_port, "livespec-console-beads-fabro");
+        // Stands in for the poller's prior sweep, so the store already holds
+        // the 6 events this test asserts survive a runner failure.
+        refresh_sources(
+            &mut store,
+            "2026-06-23T00:00:01Z",
+            &sources,
+            &needs_attention,
+        )
+        .ok_test();
+        let mut runner = ErroringTuiSessionRunner;
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
 
         let outcome = run_store_backed_tui_session(
             &mut store,
             "2026-06-23T00:00:02Z",
             "operator",
             &mut runner,
-            &sources,
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
             &poll_requester(),
             &command_requester(),
         );
@@ -12183,13 +12279,12 @@ mod tests {
     }
 
     #[test]
-    fn real_store_tui_session_reports_startup_ingest_store_errors() {
+    // Renamed from "...startup_ingest_store_errors" (livespec-console-beads-
+    // fabro-pzbdbo.27): this path no longer runs an ingest before the first
+    // frame, but it still re-lists the store's current events, and THAT read
+    // still fails honestly against a broken store.
+    fn real_store_tui_session_reports_a_broken_store_before_the_first_frame() {
         let (path, mut store) = file_store("tui-session-missing-events");
-        let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
-            "wi-approve",
-            "Pending approval",
-        )]);
-        let needs_attention = NeedsAttentionIngest::new(&port, "livespec-console-beads-fabro");
         let mut runner = ScriptedTuiSessionRunner::new(Vec::new());
         let mut factory_port = SimulatedFactoryDrainPort;
         let mut work_item_port = SimulatedWorkItemActionPort::default();
@@ -12202,11 +12297,51 @@ mod tests {
             "2026-07-07T00:00:00Z",
             "operator",
             &mut runner,
-            &[],
             &mut factory_port,
             &mut work_item_port,
             &empty_decisions_port(),
-            &needs_attention,
+            &poll_requester,
+            &command_requester,
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    // livespec-console-beads-fabro-pzbdbo.27: the CHEAP local-journal
+    // reflection still runs on this pre-first-frame path (it is not the
+    // synchronous ingest the fix removed -- see `run_store_backed_tui_session`'s
+    // doc), and it can still fail honestly against a broken store, exactly as
+    // `real_store_reflection_reports_missing_command_and_event_table_errors`
+    // already covers for the standalone function. This test exercises that
+    // SAME failure reached THROUGH the session, not just the bare function.
+    fn real_store_tui_session_reports_a_reflection_failure_before_the_first_frame() {
+        let (path, mut store) = file_store("tui-session-reflection-failure");
+        corrupt_store(&path, "drop table commands");
+        let audit = AutonomousAudit::new(
+            vec![ok_decision(AutonomousDecision::from_auto_disposition(
+                "wi-1",
+                "auto-approve",
+                vec!["auto_approve_ready".to_owned()],
+            ))],
+            Vec::new(),
+        );
+        let decisions = SimulatedDecisionsPort::returning(audit);
+        let mut runner = ScriptedTuiSessionRunner::new(Vec::new());
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let poll_requester = poll_requester();
+        let command_requester = command_requester();
+
+        let error = err_runtime_tui_outcome(run_store_backed_tui_session(
+            &mut store,
+            "2026-07-07T00:00:00Z",
+            "operator",
+            &mut runner,
+            &mut factory_port,
+            &mut work_item_port,
+            &decisions,
             &poll_requester,
             &command_requester,
         ));
@@ -15649,6 +15784,11 @@ mod tests {
         let sources = scripted_source_refs(&empty_sources);
         let needs_attention =
             NeedsAttentionIngest::new(needs_attention_port, "livespec-console-beads-fabro");
+        // Stands in for the poller's prior sweep, so callers passing a
+        // non-trivial `needs_attention_port` (the attention-item fixtures
+        // several failure-injection scenarios target) see it in the store
+        // exactly as the old synchronous ingest left it.
+        refresh_sources(store, "2026-08-22T23:59:59Z", &sources, &needs_attention).ok_test();
         let poll_requester = poll_requester();
         let command_requester = command_requester();
         run_store_backed_tui_session(
@@ -15656,11 +15796,9 @@ mod tests {
             "2026-08-23T00:00:00Z",
             "operator",
             runner,
-            &sources,
             factory_port,
             work_item_port,
             decisions_port,
-            &needs_attention,
             &poll_requester,
             &command_requester,
         )

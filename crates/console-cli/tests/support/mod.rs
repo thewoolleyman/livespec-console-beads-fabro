@@ -83,6 +83,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use console_application::STARTUP_INGEST_LOADING_TELL;
+
 /// Default pinned pane width used by the operator cockpit E2E scenarios.
 pub const DEFAULT_COLS: u16 = 112;
 /// Default pinned pane height used by the operator cockpit E2E scenarios.
@@ -288,6 +290,33 @@ pub fn ready_timeout() -> Duration {
     )
 }
 
+/// BASE duration the deliberately-slow-source scenario
+/// ([`tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers`]) sleeps
+/// before answering, and the base bound its first-frame assertion must beat.
+///
+/// Generous rather than tight: the property under test is "the first frame
+/// paints well before a genuinely slow source answers", not a numeric SLA, and
+/// a real-CLI cold start (subprocess spawns for six backing CLIs) can itself
+/// take several seconds on THIS host under the load `just check`'s own
+/// parallel compilation puts on it -- measured 17.8s and 20.1s on two separate
+/// runs, well above a naive few-second guess. A generous base kept the
+/// property meaningful without chasing the host's noise floor.
+const DEFAULT_SLOW_SOURCE_SLEEP_SECS: u64 = 30;
+
+/// The slow-source sleep, widenable via
+/// `LIVESPEC_CONSOLE_E2E_SLOW_SOURCE_SLEEP_SECS` and scaled by the measured
+/// host load like every other ceiling here -- see [`DEFAULT_SLOW_SOURCE_SLEEP_SECS`].
+#[must_use]
+pub fn slow_source_sleep() -> Duration {
+    scaled_timeout(
+        env_timeout(
+            "LIVESPEC_CONSOLE_E2E_SLOW_SOURCE_SLEEP_SECS",
+            DEFAULT_SLOW_SOURCE_SLEEP_SECS,
+        ),
+        host_load_scale_permille(),
+    )
+}
+
 /// The `SQLite` busy timeout the harness arms in the console under test.
 ///
 /// Derived from the harness's OWN first-frame budget rather than picked: the
@@ -421,6 +450,19 @@ where
 /// message and may be empty. Extracted from [`TmuxConsole::wait_for_settled`] so
 /// the polling logic is unit-testable against a scripted capture source without a
 /// real tmux pane.
+///
+/// A frame still naming the startup-ingest tell
+/// ([`STARTUP_INGEST_LOADING_TELL`]) never counts as settled, UNLESS `needle`
+/// is that tell itself (a caller deliberately asserting on the loading state).
+/// Since the fix for livespec-console-beads-fabro-pzbdbo.27 the first frame
+/// draws before the background poller's first sweep lands, so a still-loading
+/// screen repaints byte-identically tick after tick while genuinely
+/// unconverged -- without this guard it satisfies the two-identical-captures
+/// rule on data that has not arrived yet. Measured 2026-09-09: several
+/// existing scenes settled on the loading placeholder and asserted against
+/// data that had not landed, and one scene's session quit before the
+/// (instant, stubbed) source poll ever got to run at all, leaving its store
+/// with ZERO events.
 pub fn poll_settled<F>(
     mut capture: F,
     needle: &str,
@@ -434,7 +476,9 @@ where
     let mut previous: Option<String> = None;
     loop {
         let frame = capture()?;
-        if frame.contains(needle) && previous.as_deref() == Some(frame.as_str()) {
+        let still_loading =
+            needle != STARTUP_INGEST_LOADING_TELL && frame.contains(STARTUP_INGEST_LOADING_TELL);
+        if !still_loading && frame.contains(needle) && previous.as_deref() == Some(frame.as_str()) {
             return Ok(frame);
         }
         if Instant::now() >= deadline {
