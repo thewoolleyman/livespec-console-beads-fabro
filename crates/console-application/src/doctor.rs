@@ -487,6 +487,24 @@ mod tests {
                 == Some("2026-09-08T12:00:00Z"),
             "expected the later event timestamp to survive an older checkpoint reading",
         );
+
+        // The two angles are EXACTLY equal -- the realistic case of a source
+        // that both produced a new event AND advanced its checkpoint in the
+        // SAME poll cycle, since `backfill_source_adapters` stamps both from
+        // the one `observed_at` for that cycle. Either angle's value is
+        // byte-identical here, so the result must equal that shared value.
+        let checkpoint_equal = [(
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            "2026-09-08T12:00:00Z".to_owned(),
+        )];
+        let equal = super::last_successful_observed_at(&events_with_observed_at, &checkpoint_equal);
+        check(
+            equal
+                .get(SourceAdapterKind::Dispatcher.source_name())
+                .map(String::as_str)
+                == Some("2026-09-08T12:00:00Z"),
+            "expected an equal checkpoint reading to leave the shared timestamp unchanged",
+        );
     }
 
     #[test]
