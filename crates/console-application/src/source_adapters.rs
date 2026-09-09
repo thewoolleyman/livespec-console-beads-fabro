@@ -2380,7 +2380,19 @@ pub fn not_observed_finding_payload_json(finding: &NotObservedFinding) -> String
     serde_json::Value::Object(object).to_string()
 }
 
-fn not_observed_event(
+/// The `source.not_observed_finding_observed` marker for a source that could
+/// not be read this poll.
+///
+/// Exposed beyond [`ObservedSourceAdapter`] so a source with its own
+/// diff-at-ingest path (the needs-attention snapshot; see
+/// `console-cli`'s `ingest_needs_attention`) can report an unavailable read
+/// through the SAME mechanism every `ObservedSourceAdapter`-backed source
+/// uses, rather than inventing a parallel one. `unavailable_sources` in
+/// `console-application`'s `lib.rs` keys off this event's type and `source`
+/// field; a source that never emits it can never appear in the header's
+/// unavailable-sources tally (livespec-console-beads-fabro-mx9u.12).
+#[must_use]
+pub fn not_observed_event(
     source: SourceAdapterKind,
     repo: &str,
     reason: &str,
@@ -2409,14 +2421,23 @@ fn not_observed_event(
 }
 
 /// The positive `source.observed_finding_observed` marker for an
-/// observed-and-idle poll. Its identity is stable within one observed epoch, so
-/// repeated idle polls deduplicate to one stored fact; after an intervening
-/// not-observed transition the next observed marker receives a fresh epoch and
-/// lands at a higher `global_seq`, letting the latest-per-source projection
-/// clear the source. The observed source and repo travel on the event envelope
-/// (`source`, `stream_id`), so the marker payload carries no data of its own --
-/// it persists as `{}`.
-fn source_observed_event(
+/// observed-and-idle poll.
+///
+/// Its identity is stable within one observed epoch, so repeated idle polls
+/// deduplicate to one stored fact; after an intervening not-observed
+/// transition the next observed marker receives a fresh epoch and lands at a
+/// higher `global_seq`, letting the latest-per-source projection clear the
+/// source. The observed source and repo travel on the event envelope
+/// (`source`, `stream_id`), so the marker payload carries no data of its own
+/// -- it persists as `{}`.
+///
+/// Exposed beyond [`ObservedSourceAdapter`] for the same reason as
+/// [`not_observed_event`]: a diff-at-ingest source that reports its own
+/// unavailability clears it through this same positive marker, so a
+/// successful read after a failure is indistinguishable, at the tally, from
+/// one any other source reports.
+#[must_use]
+pub fn source_observed_event(
     source: SourceAdapterKind,
     repo: &str,
     transition_epoch: u64,

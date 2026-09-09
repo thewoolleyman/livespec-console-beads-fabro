@@ -52,11 +52,11 @@ use console_application::{
         SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
         diff_needs_attention, disambiguate_normalized_source_event,
         dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
-        materialize_attention_items, not_observed_finding_payload_json,
+        materialize_attention_items, not_observed_event, not_observed_finding_payload_json,
         parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
         parse_livespec_observation, parse_orchestrator_observation,
         parse_reconcile_runs_observation, reconcile_runs_snapshot_payload_json, run_adapter_poll,
-        work_item_snapshot_payload_json,
+        source_observed_event, work_item_snapshot_payload_json,
     },
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -1846,14 +1846,73 @@ impl<'a> NeedsAttentionIngest<'a> {
     }
 }
 
+/// Whether the needs-attention source's MOST RECENT recorded poll (by the
+/// last `source.not_observed_finding_observed` /
+/// `source.observed_finding_observed` marker in `existing`) was observed or
+/// not-observed. `None` means the source has never yet recorded either
+/// marker — a cold start, or a run predating this instrumentation — which
+/// this ingest treats the same as a recorded `Observed`: nothing to clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NeedsAttentionAvailability {
+    Observed,
+    NotObserved,
+}
+
+fn needs_attention_availability_marker(event: &ConsoleEvent) -> Option<NeedsAttentionAvailability> {
+    if event.source() != SourceAdapterKind::NeedsAttention.source_name() {
+        return None;
+    }
+    match event.event_type() {
+        EventType::SourceNotObservedFindingObserved => {
+            Some(NeedsAttentionAvailability::NotObserved)
+        }
+        EventType::SourceObservedFindingObserved => Some(NeedsAttentionAvailability::Observed),
+        _ => None,
+    }
+}
+
+/// The needs-attention source's last recorded availability marker, or `None`
+/// if it has never recorded one. `existing` is the store's events in
+/// insertion (`global_seq`) order, matching `unavailable_sources`' own fold
+/// order, so the LAST matching marker is authoritative.
+fn needs_attention_previous_availability(
+    existing: &[ConsoleEvent],
+) -> Option<NeedsAttentionAvailability> {
+    existing
+        .iter()
+        .rev()
+        .find_map(needs_attention_availability_marker)
+}
+
+/// How many availability markers the needs-attention source has already
+/// recorded, used to mint a fresh `transition_epoch` for the next one — the
+/// same scheme [`ObservedSourceAdapter`]'s own `availability_transition`
+/// uses so a genuine flip (recovered, then degraded again) gets a distinct
+/// event id instead of colliding with an earlier marker's content-derived
+/// one.
+fn needs_attention_availability_marker_count(existing: &[ConsoleEvent]) -> u64 {
+    existing
+        .iter()
+        .filter(|event| needs_attention_availability_marker(event).is_some())
+        .count() as u64
+}
+
 /// Diff-at-ingest for the product needs-attention snapshot.
 ///
 /// Rebuilds the prior ingested snapshot from the console's own
 /// `attention_item.*` stream, reads the current snapshot through the port, diffs
 /// them by stable id, and appends the resulting `attention_item.appeared` /
-/// `.changed` / `.resolved` events. An unavailable read appends nothing — a
-/// failed read must NOT resolve the whole inbox. Returns the count of
-/// newly-inserted attention events.
+/// `.changed` / `.resolved` events. An unavailable read appends nothing to the
+/// inbox — a failed read must NOT resolve the whole inbox — but it DOES record
+/// an honest `source.not_observed_finding_observed` marker (mirroring every
+/// other `ObservedSourceAdapter`-backed source) so the read failure is visible
+/// in the header's unavailable-sources tally and to `doctor`
+/// (livespec-console-beads-fabro-mx9u.12); a later successful read after a
+/// recorded failure emits the matching positive
+/// `source.observed_finding_observed` marker, clearing the source from the
+/// tally. Returns the count of newly-inserted attention events (never counts
+/// the availability marker itself, which is a source-health fact, not an
+/// attention item).
 pub fn ingest_needs_attention(
     store: &mut dyn FactoryCommandStore,
     needs_attention: &NeedsAttentionIngest<'_>,
@@ -1864,9 +1923,33 @@ pub fn ingest_needs_attention(
         .into_iter()
         .filter(|item| item.source_ref().repo() == needs_attention.repo)
         .collect();
+    let previous_availability = needs_attention_previous_availability(&existing);
     let next = match needs_attention.port.read_snapshot() {
-        NeedsAttentionReadOutcome::Observed(items) => items,
-        NeedsAttentionReadOutcome::Unavailable(_reason) => return Ok(0),
+        NeedsAttentionReadOutcome::Observed(items) => {
+            if previous_availability == Some(NeedsAttentionAvailability::NotObserved) {
+                let marker = source_observed_event(
+                    SourceAdapterKind::NeedsAttention,
+                    &needs_attention.repo,
+                    needs_attention_availability_marker_count(&existing) + 1,
+                );
+                let append = event_append_from_normalized_source_event(&marker, observed_at);
+                store.append_event(&append)?;
+            }
+            items
+        }
+        NeedsAttentionReadOutcome::Unavailable(reason) => {
+            if previous_availability != Some(NeedsAttentionAvailability::NotObserved) {
+                let marker = not_observed_event(
+                    SourceAdapterKind::NeedsAttention,
+                    &needs_attention.repo,
+                    &reason,
+                    needs_attention_availability_marker_count(&existing) + 1,
+                );
+                let append = event_append_from_normalized_source_event(&marker, observed_at);
+                store.append_event(&append)?;
+            }
+            return Ok(0);
+        }
     };
     let events = diff_needs_attention(&needs_attention.repo, &prior, &next);
     let mut inserted = 0;
@@ -6966,6 +7049,217 @@ mod tests {
         check(
             (project_attention(&store.list_console_events().ok_test()).len()) == (1),
             "assert_eq failed",
+        );
+    }
+
+    /// AC1 (livespec-console-beads-fabro-mx9u.12): an Unavailable
+    /// needs-attention read -- a failing backing CLI -- emits a
+    /// `source.not_observed_finding_observed` finding for the
+    /// `needs-attention` source, naming the reason, even though it inserts
+    /// zero attention events.
+    #[test]
+    fn ingest_needs_attention_unavailable_read_emits_a_not_observed_finding() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+        check(
+            (ingest_needs_attention(&mut store, &ingest, "2026-09-08T00:00:00Z").ok_test()) == (0),
+            "assert_eq failed",
+        );
+
+        let events = store.list_console_events().ok_test();
+        let finding_reason = events
+            .iter()
+            .find(|event| {
+                event.event_type() == &EventType::SourceNotObservedFindingObserved
+                    && event.source() == "needs-attention"
+            })
+            .map(ConsoleEvent::payload_json)
+            .map(|payload| payload.contains("needs-attention: binary missing"));
+        check(
+            (finding_reason) == (Some(true)),
+            "expected a not-observed finding for the needs-attention source, naming the reason",
+        );
+    }
+
+    /// AC2 (livespec-console-beads-fabro-mx9u.12): once that finding lands,
+    /// the header's unavailable-sources tally -- the SAME projection the TUI
+    /// and `doctor` both read -- names `needs-attention` alongside any other
+    /// degraded source, rather than the source being structurally invisible.
+    #[test]
+    fn ingest_needs_attention_unavailable_source_appears_in_the_header_tally() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &ingest, "2026-09-08T00:00:00Z").ok_test();
+
+        let events = store.list_console_events().ok_test();
+        let model = build_tui_model(&events, 0);
+        check(
+            (model.unavailable_sources()) == (["needs-attention".to_owned()]),
+            "assert_eq failed",
+        );
+        check(
+            model
+                .header()
+                .contains("sources: 1 unavailable (needs-attention)"),
+            "assert failed",
+        );
+
+        // Repeated failures against an already-recorded not-observed state must
+        // not keep appending markers -- the tally is driven by the LATEST
+        // observation per source, not a growing event log.
+        ingest_needs_attention(&mut store, &ingest, "2026-09-08T00:01:00Z").ok_test();
+        let marker_count = store
+            .list_console_events()
+            .ok_test()
+            .iter()
+            .filter(|event| {
+                event.event_type() == &EventType::SourceNotObservedFindingObserved
+                    && event.source() == "needs-attention"
+            })
+            .count();
+        check((marker_count) == (1), "assert_eq failed");
+    }
+
+    /// AC3 (livespec-console-beads-fabro-mx9u.12): a successful read after a
+    /// recorded failure emits the matching `source.observed_finding_observed`
+    /// marker, which clears the source from the header's tally.
+    #[test]
+    fn ingest_needs_attention_recovering_after_failure_clears_the_tally() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest_down = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &ingest_down, "2026-09-08T00:00:00Z").ok_test();
+        check(
+            (build_tui_model(&store.list_console_events().ok_test(), 0).unavailable_sources())
+                == (["needs-attention".to_owned()]),
+            "assert_eq failed",
+        );
+
+        let recovered = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let ingest_recovered =
+            NeedsAttentionIngest::new(&recovered, "livespec-console-beads-fabro");
+        check(
+            (ingest_needs_attention(&mut store, &ingest_recovered, "2026-09-08T00:02:00Z")
+                .ok_test())
+                == (1),
+            "assert_eq failed",
+        );
+
+        let events = store.list_console_events().ok_test();
+        check(
+            events.iter().any(|event| {
+                event.event_type() == &EventType::SourceObservedFindingObserved
+                    && event.source() == "needs-attention"
+            }),
+            "assert failed",
+        );
+        let model = build_tui_model(&events, 0);
+        check(model.unavailable_sources().is_empty(), "assert failed");
+        check(!model.header().contains("unavailable"), "assert failed");
+
+        // A THIRD poll, still observed: the scan now finds the just-recorded
+        // observed marker (not the earlier not-observed one) as the source's
+        // last-recorded state, so no further marker is appended -- exactly one
+        // observed-and-recovered marker stands for the whole recovered run.
+        ingest_needs_attention(&mut store, &ingest_recovered, "2026-09-08T00:03:00Z").ok_test();
+        let observed_marker_count = store
+            .list_console_events()
+            .ok_test()
+            .iter()
+            .filter(|event| {
+                event.event_type() == &EventType::SourceObservedFindingObserved
+                    && event.source() == "needs-attention"
+            })
+            .count();
+        check((observed_marker_count) == (1), "assert_eq failed");
+    }
+
+    /// The availability scan MUST distinguish the needs-attention source's OWN
+    /// markers from another source's -- a not-observed finding already sitting
+    /// in the event log for a different source (`github`, say) must not be
+    /// mistaken for the needs-attention source's own last-recorded state, and
+    /// must not stop it from recording its own.
+    #[test]
+    fn ingest_needs_attention_availability_scan_ignores_other_sources_markers() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let other_source_marker = ConsoleEvent::fixture(
+            "evt_github_not_observed",
+            EventType::SourceNotObservedFindingObserved,
+            "github",
+        );
+        store
+            .append_event(&event_append_from_console_event(
+                &other_source_marker,
+                "2026-09-08T00:00:00Z",
+            ))
+            .ok_test();
+
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &ingest, "2026-09-08T00:00:01Z").ok_test();
+
+        let events = store.list_console_events().ok_test();
+        let model = build_tui_model(&events, 0);
+        check(
+            (model.unavailable_sources()) == (["github".to_owned(), "needs-attention".to_owned()]),
+            "assert_eq failed",
+        );
+    }
+
+    /// The Unavailable branch's `store.append_event(&append)?` for the
+    /// not-observed marker propagates a genuine store fault rather than
+    /// silently swallowing it.
+    #[test]
+    fn ingest_needs_attention_propagates_an_append_error_from_the_not_observed_marker() {
+        let mut store = ScriptedFactoryCommandStore::new(ScriptedStoreMode::AppendCommand);
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+
+        let outcome = ingest_needs_attention(&mut store, &ingest, "2026-09-08T00:00:00Z");
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
+        );
+    }
+
+    /// The Observed branch's recovery-marker `store.append_event(&append)?`
+    /// propagates a genuine store fault rather than silently swallowing it.
+    /// Reuses [`DuplicateOnResolveStore`]'s `fail_observed_marker` flag (see
+    /// its own doc comment) instead of a new decorator, so this test adds no
+    /// delegate-method surface of its own to keep covered.
+    #[test]
+    fn ingest_needs_attention_propagates_an_append_error_from_the_observed_marker() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        // Seed a prior not-observed marker so the next read is a recovery.
+        let down = ScriptedNeedsAttentionPort::unavailable("needs-attention: binary missing");
+        let ingest_down = NeedsAttentionIngest::new(&down, "livespec-console-beads-fabro");
+        ingest_needs_attention(&mut store, &ingest_down, "2026-09-08T00:00:00Z").ok_test();
+
+        let mut failing = DuplicateOnResolveStore {
+            inner: &mut store,
+            resolved_attempts: std::cell::Cell::new(0),
+            fail_retry_with_fault: false,
+            fail_observed_marker: true,
+        };
+        let recovered = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
+            "wi-approve",
+            "Pending approval",
+        )]);
+        let ingest_recovered =
+            NeedsAttentionIngest::new(&recovered, "livespec-console-beads-fabro");
+
+        let outcome =
+            ingest_needs_attention(&mut failing, &ingest_recovered, "2026-09-08T00:02:00Z");
+
+        check(
+            format!("{outcome:?}").contains("InvalidSequence"),
+            "assert failed",
         );
     }
 
@@ -14073,6 +14367,13 @@ mod tests {
         inner: &'a mut SqliteEventStore,
         resolved_attempts: std::cell::Cell<usize>,
         fail_retry_with_fault: bool,
+        /// When set, fails a `source.observed_finding_observed` append with a
+        /// real store error instead of delegating it -- proves the needs-
+        /// attention recovery marker's own `store.append_event(&append)?`
+        /// (livespec-console-beads-fabro-mx9u.12) propagates a genuine fault.
+        /// Reuses this decorator (rather than a new one) so the coverage this
+        /// struct's OTHER delegate methods already earn is not duplicated.
+        fail_observed_marker: bool,
     }
 
     impl FactoryCommandStore for DuplicateOnResolveStore<'_> {
@@ -14092,6 +14393,11 @@ mod tests {
         }
 
         fn append_event(&mut self, append: &EventAppend) -> EventStoreResult<AppendOutcome> {
+            if self.fail_observed_marker
+                && append.event().event_type() == &EventType::SourceObservedFindingObserved
+            {
+                return Err(EventStoreError::InvalidSequence);
+            }
             if append.event().event_type() == &EventType::AttentionItemResolved {
                 let attempt = self.resolved_attempts.get() + 1;
                 self.resolved_attempts.set(attempt);
@@ -14172,6 +14478,7 @@ mod tests {
             inner: &mut store,
             resolved_attempts: std::cell::Cell::new(0),
             fail_retry_with_fault: true,
+            fail_observed_marker: false,
         };
         let resolve_port = empty_needs_attention_port();
         let resolve_needs_attention =
@@ -14203,6 +14510,7 @@ mod tests {
             inner: &mut store,
             resolved_attempts: std::cell::Cell::new(0),
             fail_retry_with_fault: false,
+            fail_observed_marker: false,
         };
         let resolve_port = empty_needs_attention_port();
         let resolve_needs_attention =
