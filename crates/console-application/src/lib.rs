@@ -3037,10 +3037,12 @@ impl FactoryDrainPort for DispatcherFactoryDrainPort<'_> {
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } => FactoryDrainPortOutcome::completed(dispatched_item_count(&stdout)),
             SourceProbeOutcome::Observed {
                 success: false,
                 stdout,
+                ..
             } => {
                 let diagnostic = stdout.trim();
                 if diagnostic.is_empty() {
@@ -3095,10 +3097,12 @@ impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort<'_> {
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } if dispatched_item_count(&stdout) > 0 => FactoryDispatchItemPortOutcome::completed(),
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } => {
                 let diagnostic = stdout.trim();
                 if diagnostic.is_empty() {
@@ -3112,6 +3116,7 @@ impl FactoryDispatchItemPort for DispatcherFactoryDispatchItemPort<'_> {
             SourceProbeOutcome::Observed {
                 success: false,
                 stdout,
+                ..
             } => {
                 let diagnostic = stdout.trim();
                 if diagnostic.is_empty() {
@@ -3378,6 +3383,7 @@ impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
             SourceProbeOutcome::Observed {
                 success: false,
                 stdout,
+                ..
             } => {
                 // The refusal payload only exists HERE — discarding it was the
                 // presentation half of the silent-valve defect. A blank stdout
@@ -3406,6 +3412,7 @@ impl OrchestratorActionPort for DispatcherOrchestratorActionPort<'_> {
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } => OrchestratorActionReading::observed(stdout),
             SourceProbeOutcome::Observed { success: false, .. } => {
                 OrchestratorActionReading::failed()
@@ -8427,6 +8434,7 @@ impl AutonomousDecisionsPort for JournalAutonomousDecisionsPort<'_> {
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } => read_autonomous_decisions_from_journal(&stdout),
             SourceProbeOutcome::Observed { success: false, .. }
             | SourceProbeOutcome::Unavailable { .. } => AutonomousAudit::default(),
@@ -15523,10 +15531,7 @@ mod tests {
         // The governed drive argv: `--answer <answer>` rides immediately behind
         // the action it answers, and an answer-less action's argv is unchanged.
         let probe = ArgRecordingProbe {
-            outcome: SourceProbeOutcome::Observed {
-                stdout: String::new(),
-                success: true,
-            },
+            outcome: SourceProbeOutcome::observed("", true),
             observed_args: std::cell::RefCell::new(Vec::new()),
         };
         let mut port = drive_over(&probe);

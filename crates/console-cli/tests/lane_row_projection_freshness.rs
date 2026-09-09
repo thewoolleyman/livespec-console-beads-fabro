@@ -54,15 +54,7 @@ impl SourceProbe for SequencedProbe {
     fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
         let index = self.cursor.get().min(self.stdouts.len().saturating_sub(1));
         self.cursor.set(index.saturating_add(1));
-        SourceProbeOutcome::Observed {
-            stdout: self
-                .stdouts
-                .get(index)
-                .copied()
-                .unwrap_or_default()
-                .to_owned(),
-            success: true,
-        }
+        SourceProbeOutcome::observed(self.stdouts.get(index).copied().unwrap_or_default(), true)
     }
 
     fn read_file(&self, _path: &str) -> SourceProbeOutcome {

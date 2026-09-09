@@ -73,6 +73,7 @@ mod backing_cli;
 /// The running binary's build identity, embedded at compile time.
 pub mod build_identity;
 mod source_poller;
+mod source_probe_diagnostics;
 
 pub use backing_cli::{
     BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
@@ -80,6 +81,9 @@ pub use backing_cli::{
     resolve_console_invoker,
 };
 pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
+pub use source_probe_diagnostics::{
+    bounded_diagnostic_text, describe_command_failure, redact_secret_env_values,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Represents run output data used by the console.
