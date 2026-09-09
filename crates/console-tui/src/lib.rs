@@ -1436,7 +1436,8 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 /// overview), opens the selected work-item's detail modal (Attention or a
 /// drilled-in lane), edits the selected Settings row, or opens the command modal
 /// only through explicit interactions that have actions to offer; on the Detail
-/// pane it is inert.
+/// pane it is inert; on the focused Header pane it opens the "Event sources"
+/// roster directly (pzbdbo.29 AC2).
 fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
     match model.focus() {
         FocusPane::Nav => Some(TuiTerminalInput::Interaction(TuiInteraction::FocusContent)),
@@ -1480,9 +1481,14 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
             }
             None
         }
-        // Enter is inert on the Detail pane and the focused Header pane (the
-        // header scrolls, it does not open).
-        FocusPane::Detail | FocusPane::Header => None,
+        // Enter is inert on the Detail pane.
+        FocusPane::Detail => None,
+        // On the focused Header pane, Enter opens the "Event sources" roster
+        // directly (livespec-console-beads-fabro-pzbdbo.29 AC2) -- the
+        // header's own drill-down for the source-health tell it renders.
+        FocusPane::Header => Some(TuiTerminalInput::Interaction(
+            TuiInteraction::OpenEventSourcesFromHeader,
+        )),
     }
 }
 
@@ -3042,6 +3048,8 @@ fn header_help_lines() -> Vec<Line<'static>> {
         Line::from("low-value fields; focus it to read the FULL line and scroll it sideways."),
         Line::from(""),
         Line::from("tab / shift-tab  cycle focus onto (and off) the header, like any pane"),
+        Line::from("enter            open the Event sources roster (Events > Event sources),"),
+        Line::from("                 the drill-down for the event-source health tell above"),
         Line::from("left / right     scroll the focused header horizontally to reveal"),
         Line::from("                 content clipped at the current width"),
         Line::from("esc              leave the header (returns to the Views nav)"),
@@ -4069,8 +4077,9 @@ mod tests {
     use console_application::source_adapters::{
         AcceptancePolicy, AdapterResult, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane,
-        OrphanedFactoryRun, ReconcileRunsSnapshot, SourceAdapterKind, attention_item_payload_json,
-        dispatcher_journal_payload_json, reconcile_runs_snapshot_payload_json,
+        NotObservedFinding, OrphanedFactoryRun, ReconcileRunsSnapshot, SourceAdapterKind,
+        attention_item_payload_json, dispatcher_journal_payload_json,
+        not_observed_finding_payload_json, reconcile_runs_snapshot_payload_json,
     };
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
@@ -5558,8 +5567,9 @@ mod tests {
     #[test]
     fn keymap_maps_header_pane_focus_scroll_leave_and_inert_keys() {
         // On the focused top/header pane: left/right scroll it horizontally,
-        // up/down are inert, Enter is inert, and Esc leaves the header (returning
-        // to the Views nav). Tab is the ring cycle, tested separately.
+        // up/down are inert, Enter opens the Event sources roster
+        // (pzbdbo.29 AC2), and Esc leaves the header (returning to the Views
+        // nav). Tab is the ring cycle, tested separately.
         let model = attention_model_in(TuiOverlay::None, FocusPane::Header);
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
@@ -5580,7 +5590,9 @@ mod tests {
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Enter), &model),
-            None
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenEventSourcesFromHeader
+            ))
         );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Esc), &model),
@@ -6924,6 +6936,74 @@ mod tests {
                 .map(|rendered| rendered.contains("The event log is the canonical source")),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn render_to_text_event_sources_roster_shows_health_and_verbatim_cause() {
+        // AC1: "A Sources surface ... lists every backing source with its
+        // ... status, and the verbatim reason text for an unavailable one",
+        // over a mix of healthy and unavailable sources (epic mx9u.20 AC2).
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_dispatcher_down",
+                EventType::SourceNotObservedFindingObserved,
+                "dispatcher",
+            )
+            .with_payload_json(not_observed_finding_payload_json(
+                &NotObservedFinding::new(
+                    "livespec-console-beads-fabro",
+                    SourceAdapterKind::Dispatcher,
+                    "dispatcher binary not found",
+                ),
+            )),
+            ConsoleEvent::fixture(
+                "evt_github_ok",
+                EventType::GithubPullRequestSnapshotObserved,
+                "github",
+            ),
+        ];
+        let overview = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_selected_events_index(1);
+        let state =
+            reduce_tui_interaction(&overview, &events, TuiInteraction::DrillIntoEventsSubView);
+        let model = build_tui_model_for_state(&events, &state);
+
+        let output = render_to_text(&model, 96, 24).unwrap_or_default();
+
+        // Each source's health is on the visible LIST row itself (the
+        // Content pane draws `item.title()` alone) -- "each source as a
+        // line, and its associated health" per the maintainer's own words --
+        // not hidden behind opening the Detail pane.
+        assert!(output.contains("dispatcher — unavailable"), "{output}");
+        assert!(output.contains("github — healthy"), "{output}");
+        // The verbatim reason surfaces in the Detail pane.
+        assert!(output.contains("dispatcher binary not found"), "{output}");
+    }
+
+    #[test]
+    fn render_to_text_header_enter_reaches_the_event_sources_roster() {
+        // pzbdbo.29 AC2, at the rendered-frame layer: focusing the header
+        // (where the source-health tell lives) and pressing Enter lands the
+        // operator on the "Event sources" roster, not merely a state change
+        // nothing on screen reflects.
+        let events = [ConsoleEvent::fixture(
+            "evt_dispatcher_down",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )];
+        let header_focused =
+            TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Header);
+
+        let opened = reduce_tui_interaction(
+            &header_focused,
+            &events,
+            TuiInteraction::OpenEventSourcesFromHeader,
+        );
+        let model = build_tui_model_for_state(&events, &opened);
+
+        let output = render_to_text(&model, 96, 24).unwrap_or_default();
+        assert!(output.contains("Events > Event sources"), "{output}");
+        assert!(output.contains("dispatcher — unavailable"), "{output}");
     }
 
     #[test]

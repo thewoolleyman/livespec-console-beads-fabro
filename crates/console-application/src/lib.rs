@@ -1082,6 +1082,15 @@ pub enum TuiInteraction {
     /// the Header pane holds focus), back toward its left-justified default.
     /// Saturates at the left edge (offset `0`).
     ScrollHeaderLeft,
+    /// Open the "Event sources" roster directly from the focused Header pane
+    /// (the `Enter` key while the Header pane holds focus) --
+    /// livespec-console-beads-fabro-pzbdbo.29 AC2: the header's
+    /// `event sources: N unavailable (...)` tell has a drill-down, reachable
+    /// without first navigating the Views nav to `Events`. Switches the
+    /// active view to `Events`, drills straight into its `EventSources`
+    /// sub-view (bypassing the container's own overview picker), and moves
+    /// focus to the Content pane so the roster is what the operator lands on.
+    OpenEventSourcesFromHeader,
     /// Scroll the focused Detail pane's content down one line (the `down` key
     /// while the Detail pane holds focus), revealing content clipped below.
     ScrollDetailDown,
@@ -2657,9 +2666,11 @@ impl TuiScreenModel {
 }
 
 /// The Status-line shortcut hints shown while the Header pane holds focus with no
-/// overlay open: the horizontal-scroll and leave keys that act on the focused
-/// header. Non-empty and context-specific, like every other focused-pane hint.
-const HEADER_FOOTER_PREFIX: &str = "left/right scroll | esc/tab leave";
+/// overlay open: the drill-down, horizontal-scroll, and leave keys that act on
+/// the focused header. Non-empty and context-specific, like every other
+/// focused-pane hint. `enter event sources` names
+/// [`TuiInteraction::OpenEventSourcesFromHeader`] (pzbdbo.29 AC2).
+const HEADER_FOOTER_PREFIX: &str = "enter event sources | left/right scroll | esc/tab leave";
 
 fn with_global_status_hint(prefix: &str) -> String {
     format!("{prefix} | {}", action_registry::global_status_hint())
@@ -4556,6 +4567,7 @@ pub fn render_tui_model(
             active_view,
             events_focus,
             &projection.observed_source_names,
+            &projection.unavailable_sources,
             events,
         ),
         lane_board,
@@ -5659,6 +5671,7 @@ fn reduce_interaction_state(
         TuiInteraction::ScrollHeaderLeft => state
             .clone()
             .with_header_scroll(state.header_scroll().saturating_sub(HEADER_SCROLL_STEP)),
+        TuiInteraction::OpenEventSourcesFromHeader => open_event_sources_from_header(state),
         TuiInteraction::ScrollDetailDown => {
             // Clamp to the render-measured wrapped max scroll (the largest offset
             // that keeps the pane's last wrapped row visible), NOT a width-agnostic
@@ -6208,6 +6221,25 @@ fn drill_into_events_sub_view(state: &TuiInteractionState) -> TuiInteractionStat
         .selected_events_index()
         .min(EventsFocus::all().len() - 1)];
     state.clone().with_events_focus(sub_view)
+}
+
+/// Jump straight from the focused Header pane to the `Events` container's
+/// `EventSources` sub-view (livespec-console-beads-fabro-pzbdbo.29 AC2).
+///
+/// Unlike [`drill_into_events_sub_view`] (which drills the CURRENTLY SELECTED
+/// overview row), this always targets `EventSources` specifically: the
+/// header's tell is about SOURCE health, so `Enter` on it names the one
+/// sub-view that answers it, regardless of which row the overview picker last
+/// had selected. `with_focus` already resets the header's own scroll offset
+/// on blur, so leaving the header this way leaves it snapped back to its
+/// left-justified default the next time it is focused, same as `Esc`/`Tab`.
+fn open_event_sources_from_header(state: &TuiInteractionState) -> TuiInteractionState {
+    state
+        .clone()
+        .with_active_view(TuiView::Events)
+        .with_events_focus(EventsFocus::EventSources)
+        .with_focus(FocusPane::Content)
+        .with_detail_scroll(0)
 }
 
 fn select_lane_item_at(
@@ -9804,11 +9836,14 @@ fn view_summary_items(
     active_view: TuiView,
     events_focus: EventsFocus,
     observed_sources: &[String],
+    unavailable_sources: &[String],
     events: &[ConsoleEvent],
 ) -> Vec<ViewSummaryItem> {
     match active_view {
         TuiView::Spec => spec_view_items(events),
-        TuiView::Events => events_container_items(events_focus, observed_sources, events),
+        TuiView::Events => {
+            events_container_items(events_focus, observed_sources, unavailable_sources, events)
+        }
         TuiView::Repos => repos_view_items(events),
         // The Attention, Lanes, and Settings views render their own projections
         // (the attention list / detail, the lane board, the dispatcher-settings
@@ -9821,16 +9856,17 @@ fn view_summary_items(
 ///
 /// `Overview` lists the two sub-views by name -- the container's own picker
 /// home. `StoredEvents` is EXACTLY [`events_view_items`], the pre-container
-/// Events content, unchanged (AC3). `EventSources` is an empty/skeleton state
-/// only: the real per-source roster (health, cause, last-successful-read, and
-/// per-row actions) is a sibling item
-/// (`livespec-console-beads-fabro-pzbdbo.29`,
-/// `livespec-console-beads-fabro-mx9u.20.2`); this renders just the source
-/// names so the sub-view is not empty of structure, without claiming detail it
-/// does not carry.
+/// Events content, unchanged (AC3). `EventSources` is the real per-source
+/// roster (livespec-console-beads-fabro-pzbdbo.29); per-source event COUNTS
+/// and a stale-since timestamp column remain sibling items
+/// (`livespec-console-beads-fabro-mx9u.20.2`,
+/// `livespec-console-beads-fabro-mx9u.17`) -- see
+/// [`event_sources_roster_items`] for exactly what this roster does and does
+/// not yet know.
 fn events_container_items(
     events_focus: EventsFocus,
     observed_sources: &[String],
+    unavailable_sources: &[String],
     events: &[ConsoleEvent],
 ) -> Vec<ViewSummaryItem> {
     match events_focus {
@@ -9839,21 +9875,54 @@ fn events_container_items(
             .map(|sub_view| ViewSummaryItem::new(sub_view.label().to_owned(), String::new()))
             .collect(),
         EventsFocus::StoredEvents => events_view_items(events),
-        EventsFocus::EventSources => event_sources_skeleton_items(observed_sources),
+        EventsFocus::EventSources => {
+            event_sources_roster_items(observed_sources, unavailable_sources, events)
+        }
     }
 }
 
-/// The "Event sources" sub-view's empty/skeleton state: a plain name-only row
-/// per source this build has EVER observed reporting, healthy or degraded,
-/// from the SAME name-only registry `TuiProjection::observed_source_names`
-/// exposes -- never a second encoding of source identity, and NEVER derived
-/// from `unavailable_sources`, whose empty case means "nothing is currently
-/// down" and would misrender here as "no sources exist" (measured on the real
-/// store 2026-09-09, mx9u.20.1 review: six sources polling successfully,
-/// this sub-view claiming none had ever been observed). A healthy source
-/// still emits a positive observation event, so it still appears here; only a
-/// build that has observed NO source at all renders the placeholder.
-fn event_sources_skeleton_items(observed_sources: &[String]) -> Vec<ViewSummaryItem> {
+/// The "Event sources" sub-view's real content: one line per source this
+/// build has EVER observed reporting, healthy or degraded, from the SAME
+/// name-only registry `TuiProjection::observed_source_names` exposes -- never
+/// a second encoding of source identity. Health is read from
+/// `unavailable_sources`, the SAME tally the header's `event sources: N
+/// unavailable (...)` segment renders, so this roster can never disagree with
+/// the header about which sources are down. Genuinely NEVER derived from
+/// `unavailable_sources` for EXISTENCE, though: its empty case means "nothing
+/// is currently down", not "no sources exist", and would misrender the
+/// all-healthy case as the empty placeholder below (measured on the real
+/// store 2026-09-09, mx9u.20.1 review: six sources polling successfully, the
+/// pre-roster skeleton claiming none had ever been observed).
+///
+/// Each unavailable row's cause is the VERBATIM `reason` text from its latest
+/// `source.not_observed_finding_observed` event, via
+/// [`doctor::latest_not_observed_reason`] -- the exact function `doctor`
+/// itself calls for the same fact, so the roster and `doctor` can never
+/// report two different reasons for the same failure. Falls back to
+/// [`doctor::NO_REASON_RECORDED`] on a malformed or pre-AC3 payload, matching
+/// doctor's own fallback rather than inventing a second "unknown" phrasing
+/// for the identical condition.
+///
+/// Deliberately NOT shown here: a last-successful-read / stale-since
+/// timestamp. `doctor` computes that fact by combining the store's raw
+/// `observed_at` column with the checkpoint store's per-source `advanced_at`
+/// (mx9u.25) -- both reads the interactive TUI's live loop has no path to
+/// today, since `ConsoleEvent` itself carries no timestamp and the render
+/// loop's `events` never leaves `console-cli`'s composition root with one
+/// attached. Threading that live-refreshed fact into the render loop (the
+/// `SharedBuildStaleness`-style cell the header's own build-staleness tell
+/// uses) is the scoped job of mx9u.17, which the epic names as the item that
+/// turns stale-since into a COLUMN on this exact roster -- so this function
+/// says nothing about a fact it cannot yet source honestly, rather than
+/// rendering a placeholder or a guess. A per-row action surface is deferred
+/// the same way (the epic permits this explicitly): [`EventSourceHealthRow`]
+/// is a real record, not a formatted string, so a sibling item extends it in
+/// place instead of re-deriving the roster.
+fn event_sources_roster_items(
+    observed_sources: &[String],
+    unavailable_sources: &[String],
+    events: &[ConsoleEvent],
+) -> Vec<ViewSummaryItem> {
     if observed_sources.is_empty() {
         return vec![ViewSummaryItem::new(
             "No sources have reported any events yet".to_owned(),
@@ -9862,8 +9931,59 @@ fn event_sources_skeleton_items(observed_sources: &[String]) -> Vec<ViewSummaryI
     }
     observed_sources
         .iter()
-        .map(|source| ViewSummaryItem::new(source.clone(), String::new()))
+        .map(|source| EventSourceHealthRow::new(source, unavailable_sources, events).into())
         .collect()
+}
+
+/// One row of the Event sources roster: a source's identity, its current
+/// health, and -- for an unavailable source -- the verbatim reason its latest
+/// poll failed. A real record with named fields rather than a formatted
+/// string, so a sibling item (a stale-since timestamp, a diagnose/fix action)
+/// can add a column without re-deriving anything this type already knows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventSourceHealthRow {
+    source: String,
+    unavailable: bool,
+    reason: Option<String>,
+}
+
+impl EventSourceHealthRow {
+    /// Build one row from the SAME facts the header and `doctor` read:
+    /// `unavailable_sources` for health, and [`doctor::latest_not_observed_reason`]
+    /// over `events` for an unavailable source's cause.
+    fn new(source: &str, unavailable_sources: &[String], events: &[ConsoleEvent]) -> Self {
+        let unavailable = unavailable_sources.iter().any(|name| name == source);
+        let reason = unavailable.then(|| {
+            doctor::latest_not_observed_reason(events, source)
+                .unwrap_or_else(|| doctor::NO_REASON_RECORDED.to_owned())
+        });
+        Self {
+            source: source.to_owned(),
+            unavailable,
+            reason,
+        }
+    }
+}
+
+impl From<EventSourceHealthRow> for ViewSummaryItem {
+    /// The row's title carries the name AND health together -- visible in the
+    /// Content pane's list, which renders `title()` alone (see
+    /// `console-tui::render_summary`) -- so "each source as a line, and its
+    /// associated health" (the maintainer's own words) does not require
+    /// opening the Detail pane. The verbatim cause, when there is one, is the
+    /// detail: a healthy row has nothing further to say (B5 -- pane bodies
+    /// carry operational content only, no explanatory prose for a fact that
+    /// is already fully stated by "healthy").
+    fn from(row: EventSourceHealthRow) -> Self {
+        let health = if row.unavailable {
+            "unavailable"
+        } else {
+            "healthy"
+        };
+        let title = format!("{} — {health}", row.source);
+        let detail = row.reason.unwrap_or_default();
+        Self::new(title, detail)
+    }
 }
 
 fn spec_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
@@ -10227,13 +10347,15 @@ mod tests {
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
     use proptest::proptest;
 
+    use super::doctor;
     use super::failure_cause;
     use super::source_adapters::{
         AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
-        SourceProbe, SourceProbeOutcome, WorkItemComment, WorkItemDetail, WorkItemSnapshot,
-        attention_item_payload_json, attention_resolved_payload_json,
-        dispatcher_journal_payload_json,
+        NotObservedFinding, SourceAdapterKind, SourceProbe, SourceProbeOutcome, WorkItemComment,
+        WorkItemDetail, WorkItemSnapshot, attention_item_payload_json,
+        attention_resolved_payload_json, dispatcher_journal_payload_json,
+        not_observed_finding_payload_json,
     };
     use super::{
         ActionFailure, ApplicationError, AttentionDetail, AttentionEvent, AttentionItem,
@@ -11687,6 +11809,35 @@ mod tests {
     }
 
     #[test]
+    fn open_event_sources_from_header_reaches_the_roster_and_leaves_the_header() {
+        // pzbdbo.29 AC2: "focusing the header and pressing Enter ... opens
+        // that surface" -- asserted at the model layer, mirroring the
+        // ScrollHeader tests above. Starting from a NON-Events view proves
+        // this is a genuine jump, not a no-op that happened to already be on
+        // Events.
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_focus(FocusPane::Header)
+            .with_header_scroll(HEADER_SCROLL_STEP);
+
+        let opened =
+            reduce_tui_interaction(&state, &events, TuiInteraction::OpenEventSourcesFromHeader);
+
+        assert_eq!(opened.active_view(), TuiView::Events);
+        assert_eq!(opened.events_focus(), EventsFocus::EventSources);
+        // The header is left, not merely scrolled -- so the operator lands ON
+        // the roster (Content pane), matching what "opens that surface" means.
+        assert_eq!(opened.focus(), FocusPane::Content);
+        // Leaving the header pane through the normal `with_focus` seam resets
+        // its scroll, same as Esc/Tab (Scenario 20 case 3).
+        assert_eq!(opened.header_scroll(), 0);
+
+        let model = build_tui_model_for_state(&events, &opened);
+        assert_eq!(model.active_view(), TuiView::Events);
+        assert_eq!(model.events_focus(), EventsFocus::EventSources);
+    }
+
+    #[test]
     fn blur_resets_the_header_scroll_but_focusing_the_header_preserves_it() {
         // Scenario 20 case 3: `with_focus` is the single seam that snaps the
         // header back to its left-justified default on blur — a focus change to
@@ -12640,15 +12791,23 @@ mod tests {
         // AC2 + AC4, exercising the SECOND sub-view (`EventSources`), which the
         // "Stored events" fixtures above never reach: drilling from the
         // overview's second row opens "Event sources" fed from the
-        // `observed_source_names` projection (name-only existence, NOT the
-        // `unavailable_sources` health tally), and `ReturnToEventsOverview`
+        // `observed_source_names` projection (name-only existence) for WHICH
+        // rows appear, and the `unavailable_sources` health tally for each
+        // row's own health -- see pzbdbo.29 AC1. `ReturnToEventsOverview`
         // (Esc's reducer target) restores the picker.
         let events = [
             ConsoleEvent::fixture(
                 "evt_dispatcher_down",
                 EventType::SourceNotObservedFindingObserved,
                 "dispatcher",
-            ),
+            )
+            .with_payload_json(not_observed_finding_payload_json(
+                &NotObservedFinding::new(
+                    "livespec-console-beads-fabro",
+                    SourceAdapterKind::Dispatcher,
+                    "dispatcher binary not found",
+                ),
+            )),
             ConsoleEvent::fixture(
                 "evt_livespec_down",
                 EventType::SourceNotObservedFindingObserved,
@@ -12662,12 +12821,13 @@ mod tests {
 
         assert_eq!(state.events_focus(), EventsFocus::EventSources);
         assert_eq!(model.events_focus(), EventsFocus::EventSources);
-        let titles: Vec<&str> = model
-            .view_items()
-            .iter()
-            .map(super::ViewSummaryItem::title)
-            .collect();
-        assert_eq!(titles, ["dispatcher", "livespec"]);
+        // AC1: each row names the source, its health, and -- for the
+        // unavailable one -- the verbatim not-observed reason.
+        assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        assert_eq!(
+            model.view_items()[0].detail(),
+            "dispatcher binary not found"
+        );
         assert_eq!(model.observed_source_names(), ["dispatcher", "livespec"]);
         // Both happen to be unavailable in THIS fixture, but the sub-view is
         // fed by existence, not health -- see the healthy-source test below.
@@ -12688,7 +12848,8 @@ mod tests {
         // false in exactly the direction the fix order this item belongs to
         // exists to end (mx9u.22/mx9u.24/mx9u.14/mx9u.17: unknown or stale
         // state presented as fact). A source that has only ever reported
-        // POSITIVE observations -- never degraded -- must still be named here.
+        // POSITIVE observations -- never degraded -- must still be named here,
+        // and its row must say HEALTHY rather than leaving health unstated.
         let events = [ConsoleEvent::fixture(
             "evt_github_ok",
             EventType::GithubPullRequestSnapshotObserved,
@@ -12702,18 +12863,40 @@ mod tests {
         assert!(model.unavailable_sources().is_empty());
         assert_eq!(model.observed_source_names(), ["github"]);
         assert_eq!(model.view_items().len(), 1);
-        assert_eq!(model.view_items()[0].title(), "github");
+        assert_eq!(model.view_items()[0].title(), "github — healthy");
         assert!(!model.view_items()[0].title().contains("observed yet"));
+        // A healthy row has nothing further to state (B5): no reason to show.
+        assert_eq!(model.view_items()[0].detail(), "");
+    }
+
+    #[test]
+    fn tui_event_sources_sub_view_falls_back_when_a_not_observed_payload_carries_no_reason() {
+        // AC1's "verbatim reason text for an unavailable one" must never be an
+        // empty detail line: a malformed or pre-AC3 not-observed payload falls
+        // back to the SAME wording doctor's own `unavailable_source_finding`
+        // uses (`doctor::NO_REASON_RECORDED`), so the roster and doctor never
+        // invent two different "unknown" phrasings for one condition.
+        let events = [ConsoleEvent::fixture(
+            "evt_bad_payload",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )
+        .with_payload_json("not json".to_owned())];
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        assert_eq!(model.view_items()[0].detail(), doctor::NO_REASON_RECORDED);
     }
 
     #[test]
     fn tui_event_sources_sub_view_states_an_empty_projection() {
         // No source has EVER reported an event -- healthy or degraded -- so
-        // the skeleton says so plainly rather than rendering an empty list
-        // (AC5 of the parent epic's roster item still owns the full per-source
-        // line; this is the navigation model's own empty state). Genuinely
-        // empty events, not merely "nothing currently unavailable": see the
-        // healthy-source test above for why those two are NOT interchangeable.
+        // the roster says so plainly rather than rendering an empty list.
+        // Genuinely empty events, not merely "nothing currently unavailable":
+        // see the healthy-source test above for why those two are NOT
+        // interchangeable.
         let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
             .with_events_focus(EventsFocus::EventSources);
         let model = build_tui_model_for_state(&[], &state);
@@ -12723,6 +12906,53 @@ mod tests {
             model.view_items()[0].title(),
             "No sources have reported any events yet"
         );
+    }
+
+    #[test]
+    fn tui_event_sources_roster_agrees_with_doctor_over_one_fixture() {
+        // Epic AC3 (mx9u.20): the roster reads from the SAME projection the
+        // header and `doctor` do, so it can never name a different reason for
+        // an unavailable source than `doctor` reports over the identical
+        // event log.
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_dispatcher_down",
+                EventType::SourceNotObservedFindingObserved,
+                "dispatcher",
+            )
+            .with_payload_json(not_observed_finding_payload_json(
+                &NotObservedFinding::new(
+                    "livespec-console-beads-fabro",
+                    SourceAdapterKind::Dispatcher,
+                    "dispatcher binary not found",
+                ),
+            )),
+            ConsoleEvent::fixture(
+                "evt_github_ok",
+                EventType::GithubPullRequestSnapshotObserved,
+                "github",
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources);
+        let model = build_tui_model_for_state(&events, &state);
+        let report = doctor::build_doctor_report(&events, &[], &[]);
+
+        // Both angles are asserted against the KNOWN reason text (not merely
+        // against each other), so a test that vacuously found nothing on
+        // either side would fail loudly rather than reporting a false
+        // agreement.
+        let roster_reason = model
+            .view_items()
+            .iter()
+            .find(|item| item.title() == "dispatcher — unavailable")
+            .map_or_else(String::new, |item| item.detail().to_owned());
+        assert_eq!(roster_reason, "dispatcher binary not found");
+        let doctor_agrees = report
+            .findings()
+            .iter()
+            .any(|finding| finding.message().contains(&roster_reason));
+        assert!(doctor_agrees);
     }
 
     #[test]

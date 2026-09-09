@@ -151,6 +151,12 @@ pub fn build_doctor_report(
     }
 }
 
+/// The fallback text for an unavailable source whose not-observed payload
+/// carries no `reason` field (a malformed or pre-AC3 event). `pub(crate)` so
+/// the TUI roster falls back to the SAME words doctor does, rather than
+/// inventing its own "unknown" phrasing for the identical condition.
+pub(crate) const NO_REASON_RECORDED: &str = "no reason recorded";
+
 /// The finding for one currently-unavailable `source`: its last-recorded
 /// not-observed reason, and the timestamp of its last successful read (from
 /// `last_success`, keyed by source), so the operator sees both WHY it is down
@@ -161,8 +167,8 @@ fn unavailable_source_finding(
     source: &str,
     last_success: Option<&String>,
 ) -> DoctorFinding {
-    let reason = latest_not_observed_reason(events, source)
-        .unwrap_or_else(|| "no reason recorded".to_owned());
+    let reason =
+        latest_not_observed_reason(events, source).unwrap_or_else(|| NO_REASON_RECORDED.to_owned());
     let since = last_success.map_or_else(|| "never observed".to_owned(), Clone::clone);
     DoctorFinding::new(format!(
         "event source unavailable: {source} ({reason}) -- its projections are STALE, not current; \
@@ -173,7 +179,13 @@ fn unavailable_source_finding(
 /// The `reason` field from the most recent
 /// [`EventType::SourceNotObservedFindingObserved`] for `source`, or `None`
 /// when no such event exists or its payload does not carry one.
-fn latest_not_observed_reason(events: &[ConsoleEvent], source: &str) -> Option<String> {
+///
+/// `pub(crate)` so the TUI's Event sources roster
+/// (`livespec-console-beads-fabro-pzbdbo.29`) can render the SAME reason text
+/// this module's own [`unavailable_source_finding`] does, rather than a
+/// second lookup that could drift from it -- the roster's per-source cause is
+/// this function's return value, formatted, never re-derived.
+pub(crate) fn latest_not_observed_reason(events: &[ConsoleEvent], source: &str) -> Option<String> {
     let event = events.iter().rev().find(|event| {
         *event.event_type() == EventType::SourceNotObservedFindingObserved
             && event.source() == source
