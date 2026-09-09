@@ -123,7 +123,10 @@ pub fn build_staleness_segment(staleness: BuildStaleness) -> Option<String> {
 /// reports.
 #[must_use]
 pub fn build_staleness_from_rev_list_count(outcome: &SourceProbeOutcome) -> BuildStaleness {
-    let SourceProbeOutcome::Observed { stdout, success } = outcome else {
+    let SourceProbeOutcome::Observed {
+        stdout, success, ..
+    } = outcome
+    else {
         return BuildStaleness::Unknown;
     };
     if !success {

@@ -422,10 +422,7 @@ impl SourceProbe for ArgRecordingProbe {
         self.calls
             .borrow_mut()
             .push(args.iter().map(|arg| (*arg).to_owned()).collect());
-        SourceProbeOutcome::Observed {
-            stdout: String::new(),
-            success: true,
-        }
+        SourceProbeOutcome::observed("", true)
     }
 
     fn read_file(&self, _path: &str) -> SourceProbeOutcome {

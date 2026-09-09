@@ -1960,6 +1960,12 @@ pub enum SourceProbeOutcome {
         stdout: String,
         /// Whether the probe reported the source observation as successful.
         success: bool,
+        /// Diagnostic detail for a FAILED observation (`success: false`) —
+        /// the command's stderr and exit-status summary, bounded and secret-
+        /// redacted by the probe. `None` for a successful observation, or
+        /// when the probe has no detail beyond the bare exit code (e.g. a
+        /// fixture built with [`Self::observed`]).
+        diagnostic: Option<String>,
     },
     /// Unavailable variant.
     Unavailable {
@@ -1970,11 +1976,25 @@ pub enum SourceProbeOutcome {
 
 impl SourceProbeOutcome {
     #[must_use]
-    /// Return the observed value.
+    /// Return the observed value, with no additional failure diagnostic.
     pub fn observed(stdout: &str, success: bool) -> Self {
         Self::Observed {
             stdout: stdout.to_owned(),
             success,
+            diagnostic: None,
+        }
+    }
+
+    #[must_use]
+    /// Return a FAILED observed value carrying the command's stderr/exit-status
+    /// diagnostic (the console-cli binary crate's `describe_command_failure`
+    /// builds this text for the real probe). A blank `diagnostic` is treated
+    /// the same as [`Self::observed`] -- there is nothing to add.
+    pub fn observed_failed(stdout: &str, diagnostic: &str) -> Self {
+        Self::Observed {
+            stdout: stdout.to_owned(),
+            success: false,
+            diagnostic: (!diagnostic.trim().is_empty()).then(|| diagnostic.to_owned()),
         }
     }
 
@@ -2247,6 +2267,7 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } => {
                 // A SUCCESSFUL observation of an EMPTY source is NOT an
                 // unavailability: the source was reached and simply holds nothing
@@ -2330,8 +2351,22 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                     Err(reason) => Ok(self.not_observed_poll(previous, &reason)),
                 }
             }
-            SourceProbeOutcome::Observed { success: false, .. } => {
-                Ok(self.not_observed_poll(previous, "source command exited non-zero"))
+            SourceProbeOutcome::Observed {
+                success: false,
+                diagnostic,
+                ..
+            } => {
+                // A failed command with no diagnostic is a fixture built with
+                // `SourceProbeOutcome::observed(_, false)` (every existing
+                // test) rather than the real probe's `observed_failed` -- the
+                // legacy bare reason still applies there. The real probe
+                // (`SystemSourceProbe::run_command`, console-cli) always
+                // supplies one: the command's exit-status summary, plus its
+                // stderr when it wrote any
+                // (livespec-console-beads-fabro-pzbdbo.29 AC3).
+                let reason =
+                    diagnostic.unwrap_or_else(|| "source command exited non-zero".to_owned());
+                Ok(self.not_observed_poll(previous, &reason))
             }
             SourceProbeOutcome::Unavailable { reason } => {
                 Ok(self.not_observed_poll(previous, &reason))
@@ -3654,6 +3689,7 @@ impl NeedsAttentionSnapshotPort for ProbeNeedsAttentionPort<'_> {
             SourceProbeOutcome::Observed {
                 stdout,
                 success: true,
+                ..
             } => match parse_needs_attention_snapshot(&stdout) {
                 Ok(items) => NeedsAttentionReadOutcome::Observed(items),
                 Err(reason) => NeedsAttentionReadOutcome::Unavailable(reason),
@@ -4516,6 +4552,41 @@ mod tests {
     #[test]
     fn observed_source_adapter_emits_not_observed_on_non_zero_exit() {
         let probe = StubProbe::command(SourceProbeOutcome::observed("ignored", false));
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        assert_not_observed(&poll, "source command exited non-zero");
+    }
+
+    /// AC3 (`livespec-console-beads-fabro-pzbdbo.29`): a source command that
+    /// exits non-zero WITH stderr output must recorded a reason carrying that
+    /// stderr and the exit status -- never the bare, undiagnosable
+    /// `"source command exited non-zero"` string the case above still
+    /// legitimately produces for a probe with no diagnostic to give (every
+    /// OTHER test in this suite, which predates this item).
+    #[test]
+    fn observed_source_adapter_carries_the_probes_diagnostic_into_the_not_observed_reason() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed_failed(
+            "",
+            "source command exited non-zero (exit status: 1): livespec: connection refused",
+        ));
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        assert_not_observed(
+            &poll,
+            "source command exited non-zero (exit status: 1): livespec: connection refused",
+        );
+    }
+
+    /// A blank diagnostic (an `observed_failed` call with nothing to add) must
+    /// fall back to the same bare reason a plain `observed(_, false)` fixture
+    /// produces, rather than emitting an empty or malformed reason string.
+    #[test]
+    fn observed_source_adapter_falls_back_to_the_bare_reason_when_the_diagnostic_is_blank() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed_failed("", "   "));
         let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
 
         let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
