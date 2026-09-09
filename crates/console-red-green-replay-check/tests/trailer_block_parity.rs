@@ -73,6 +73,12 @@ impl Runner for FakeRunner {
         self.scopes.borrow_mut().push(scope);
         Ok(CommandOutput::success("test result: ok. 1 passed\n"))
     }
+
+    fn patch_id(&self, _base: &str, _target: &str) -> Result<CommandOutput, String> {
+        Ok(CommandOutput::success(
+            "0123456789abcdef0123456789abcdef01234567 0000000000000000000000000000000000000000\n",
+        ))
+    }
 }
 
 /// A commit-message file the checker may rewrite in place.
