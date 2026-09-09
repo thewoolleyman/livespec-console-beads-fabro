@@ -236,6 +236,24 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // from loading any family credential, so the claim was substrate-false and
     // contradicted the owning repo:
     // 261 normative clauses, 22/150/22/67.
+    // The v050 nightly-soak-adopted-by-orchestrator-normalization revision
+    // (proxy -4jb3kl.1 released; orchestrator bd-ib-3nlq ratified the
+    // Dispatcher ledger-normalization adoption+rank primitive) retracts the
+    // shadow-ledger negative this file's v048 note above records ("nothing
+    // adopts a ci-soak-finding item into backlog or ranks it ... a known
+    // gap that this specification does NOT close") and replaces it with a
+    // CONSUME clause: the filed item still lands at beads `open`, outside
+    // the lifecycle and unranked AT THE FILING STEP, but the orchestrator's
+    // own ledger normalization adopts every such row into `backlog` and
+    // assigns it a real rank -- an orchestrator primitive this
+    // specification cites and consumes rather than asserts. Net delta is
+    // exactly zero: both retained MUST lines ("What the filing MUST
+    // guarantee ..." and "A nightly finding MUST NOT be filed into
+    // `ready` ...") keep their original line-wrap byte-for-byte, so their
+    // gap-ids are unchanged and nothing in tests/heading-coverage.json's
+    // Contributor-Scenario-C clause list needed retiring or minting; the
+    // retracted and added prose lands entirely on non-keyword lines:
+    // 261 normative clauses, 22/150/22/67.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
