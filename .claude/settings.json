@@ -41,7 +41,7 @@
       "source": {
         "source": "github",
         "repo": "thewoolleyman/livespec-orchestrator-beads-fabro",
-        "ref": "v0.144.1"
+        "ref": "v0.144.2"
       }
     },
     "livespec-overseer": {
