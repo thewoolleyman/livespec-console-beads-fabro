@@ -22,6 +22,8 @@
 #     survivor and MEASURABLY DOES NOT: cargo-mutants never generates a
 #     match-arm deletion there, so there is nothing to exclude.
 #   - coverage_fixture_* is the one real EQUIVALENT case; see below.
+#   - last_successful_observed_at's `>` -> `>=` (mx9u.25, PR #1158) is a
+#     second EQUIVALENT case; see below.
 exclude_re = [
   # EQUIVALENT, and the reason is structural rather than a judgement call.
   # `TuiScreenModel::coverage_fixture_with_detail` is `#[cfg(coverage)]` — a
@@ -39,4 +41,31 @@ exclude_re = [
   # it to all of `console-application` to quiet an unrelated survivor — that
   # would silently cover real product logic.
   "coverage_fixture",
+
+  # EQUIVALENT, proven mathematically, not just observed to survive.
+  # `doctor::last_successful_observed_at` merges an event-derived and a
+  # checkpoint-derived timestamp per source by keeping the later of the two:
+  # `if advanced_at > existing { existing.clone_from(advanced_at); }`. `>`
+  # and `>=` differ ONLY when `advanced_at == existing` (String's Ord is a
+  # total order: `>=` true and `>` false implies `==` true). In that case
+  # `>` leaves `existing` unchanged and `>=` overwrites it with a value that
+  # is BYTE-IDENTICAL to what was already there — the resulting map is
+  # identical either way, so no assertion on `last_successful_observed_at`'s
+  # return value, or on any `DoctorReport` built from it, can ever tell the
+  # two operators apart.
+  #
+  # This is not a hypothetical: the equal-timestamp case is the REALISTIC
+  # one (a source that both appends a new event AND advances its checkpoint
+  # in the same poll cycle gets the SAME `observed_at` stamped into both,
+  # since `backfill_source_adapters` passes one shared `observed_at` to both
+  # the event log and `SqliteCheckpointPort`), so a dedicated regression
+  # test for it was added
+  # (`last_successful_observed_at_prefers_the_later_of_the_event_and_checkpoint_timestamps`'s
+  # equal-timestamp case) to pin the intended behaviour. Confirmed empirically
+  # that this test does NOT catch the mutant (`cargo mutants --in-diff ...
+  # -F "replace > with >= in last_successful_observed_at"` still reports
+  # MISSED with it in place) — exactly as the equivalence proof above
+  # predicts, since the two operators cannot be told apart by any observable
+  # outcome.
+  "replace > with >= in last_successful_observed_at",
 ]
