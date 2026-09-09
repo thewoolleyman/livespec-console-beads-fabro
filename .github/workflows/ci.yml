@@ -459,6 +459,66 @@ jobs:
       - name: just check-e2e-tmux
         run: just check-e2e-tmux
 
+  # Real-store smoke gate (livespec-console-beads-fabro-mx9u.18), same SHAPE
+  # as `check-e2e-tmux` above (real pty, its own runner slot) but a DIFFERENT
+  # starting condition: it opens the release binary against a store SEEDED
+  # FROM REAL CAPTURED EVENT HISTORY
+  # (`crates/console-cli/tests/fixtures/real_store_smoke/`) instead of an
+  # empty one. `check-e2e-tmux` always starts empty, so it could not see
+  # `livespec-console-beads-fabro-mx9u.11`'s regression: `dd50c09` merged
+  # with 20 green CI checks and then crashed against the maintainer's real
+  # store shortly after startup (`AttentionResolveDuplicate` on an
+  # already-claimed identity). `check-real-store-smoke` (the `just` target,
+  # livespec-console-beads-fabro-mx9u.15) closed that blind spot, but only in
+  # the post-merge janitor — a gate absent from CI cannot stop the regression
+  # it was built for; this job is what makes it MERGE-BLOCKING (see
+  # `ci-green.needs` and `export-telemetry.needs` below).
+  #
+  # Timeout: 20 minutes. `MAX_TIMEOUT` in
+  # `crates/console-cli/tests/support/mod.rs` clamps any single first-frame
+  # wait at 4 minutes regardless of host load; this gate runs two tmux-driven
+  # `#[ignore]`d tests that each wait on that ceiling, so 8 minutes covers the
+  # worst case even if both hit it serially. Measured time-to-first-frame
+  # today is 50-70 seconds (livespec-console-beads-fabro-pzbdbo.27, not yet
+  # fixed), well inside that ceiling in the common case. The remaining 12
+  # minutes budgets checkout, `mise install`, provisioning `tmux`, and the
+  # release build (the same `cargo build --release --package
+  # livespec-console-beads-fabro` `check-e2e-tmux` performs above) — margin
+  # without leaving a hung process to run out GitHub's 360-minute default.
+  check-real-store-smoke:
+    name: check-real-store-smoke
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    container:
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.69.1
+    env:
+      MISE_DATA_DIR: /root/.local/share/mise
+      MISE_NOT_FOUND_AUTO_INSTALL: "0"
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Trust the workspace for git under hosted routing (baked container runs
+      # git as ROOT over a uid-1001 checkout → "dubious ownership" exit 128).
+      # See the `check` job for the full rationale. No-op on the self-hosted lane.
+      - name: Trust workspace for git (hosted container root-vs-checkout uid)
+        run: git config --global --add safe.directory '*'
+
+      - name: mise install (baked tools — a near-no-op)
+        run: mise install
+
+      - name: Provision tmux (harness dependency, absent from the base image)
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends tmux
+          fi
+          tmux -V
+
+      - name: just check-real-store-smoke
+        run: just check-real-store-smoke
+
   # Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Scoped by
   # --in-diff to the code the PR actually touches: a FULL sweep of these two
   # packages is 1456 mutants and at least 46 minutes (measured; that is a
@@ -609,12 +669,23 @@ jobs:
   # "needs every check-bearing job" is an INVARIANT TO MAINTAIN, not a
   # property that holds automatically — it was false for the whole span
   # `check-e2e-tmux` sat advisory, and this comment asserted it anyway.
-  # This workflow defines exactly FIVE check-bearing jobs and all five
-  # are listed. Adding a sixth without adding it here silently reopens
-  # the gap.
+  # This workflow defines exactly SIX check-bearing jobs and all six
+  # are listed (`check-real-store-smoke` added by
+  # livespec-console-beads-fabro-mx9u.18, for the same reason
+  # `check-e2e-tmux` is here: a gate absent from `ci-green.needs` cannot
+  # block a merge). Adding a seventh without adding it here silently
+  # reopens the gap.
   ci-green:
     name: ci-green
-    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants, check-fuzz]
+    needs:
+      [
+        check,
+        check-doctor-static,
+        check-e2e-tmux,
+        check-real-store-smoke,
+        check-mutants,
+        check-fuzz,
+      ]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -628,7 +699,15 @@ jobs:
   # check-bearing job so this runs last, after each job's timing is final.
   export-telemetry:
     name: export-telemetry
-    needs: [check, check-doctor-static, check-e2e-tmux, check-mutants, check-fuzz]
+    needs:
+      [
+        check,
+        check-doctor-static,
+        check-e2e-tmux,
+        check-real-store-smoke,
+        check-mutants,
+        check-fuzz,
+      ]
     # PR runs now emit per-job telemetry too (fail-soft, via EXPORT_FAIL_SOFT
     # below) so optimization work can see before/after deltas on the PR, not
     # only after merge; push(master) keeps the closed-loop fail-loud contract.

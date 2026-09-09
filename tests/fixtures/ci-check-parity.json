@@ -65,11 +65,6 @@
       "name": "check-plan-record-conformance",
       "present_in_ci": false,
       "reason": "Plan-record conformance (dev-tooling >= 1.52) reads this tenant's beads ledger, which CI cannot reach (no tenant secret in CI), and it self-skips unless LIVESPEC_RUN_PLAN_RECORD_CONFORMANCE is set; it runs armed by hand under the credential wrapper and, once the tenant is clean, in the host-side aggregate (orchestrator plan arm-plan-record-conformance, console item livespec-console-beads-fabro-pzbdbo.16)."
-    },
-    {
-      "name": "check-real-store-smoke",
-      "present_in_ci": false,
-      "reason": "Real-store smoke gate (livespec-console-beads-fabro-mx9u.15), the same shape as check-e2e-tmux: builds the release binary and drives it through a real tmux pane, so it belongs in its OWN dedicated CI job (mirroring check-e2e-tmux's job at .github/workflows/ci.yml) rather than the check matrix. This factory slice may not edit .github/workflows/ to add that job. It runs today in the lefthook pre-push aggregate and the post-merge janitor via `just check`; adding the dedicated CI job is follow-on work for a session authorized to edit workflow files."
     }
   ]
 }
