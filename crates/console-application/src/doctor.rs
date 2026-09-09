@@ -17,17 +17,23 @@
 //! same event classification ([`crate::is_positive_source_observation`])
 //! `unavailable_sources` uses to decide a source is down in the first place.
 //!
-//! Out of scope here, by design:
-//! - The `needs-attention` source itself can never appear in
-//!   [`crate::TuiProjection::unavailable_sources`] -- nothing in the ingest
-//!   path emits a not-observed/observed marker for it
-//!   (livespec-console-beads-fabro-mx9u.12). The attention-disagreement
-//!   finding below reports the NUMBERS honestly without asserting that gap
-//!   is staleness; closing mx9u.12 is what would let a future pass attribute
-//!   it.
-//! - Marking a STALE projection in the TUI's own presentation (the header
-//!   segment, list rows) is livespec-console-beads-fabro-mx9u.17; this module
-//!   is the CLI/doctor half only.
+//! Since livespec-console-beads-fabro-mx9u.12, `ingest_needs_attention`
+//! emits the same `source.not_observed_finding_observed` /
+//! `source.observed_finding_observed` markers every other
+//! [`crate::source_adapters::ObservedSourceAdapter`]-backed source does, so
+//! the `needs-attention` source itself CAN now appear in
+//! [`crate::TuiProjection::unavailable_sources`] and gets its own
+//! `unavailable_source_finding` line here like any other source. That closes
+//! the attribution gap the attention-disagreement finding below could not
+//! close on its own: when the needs-attention read is failing, the operator
+//! now sees BOTH "source unavailable: needs-attention (...)" (why) and the
+//! attention-count disagreement (its effect on the inbox), rather than only
+//! the latter with no named cause.
+//!
+//! Out of scope here, by design: marking a STALE projection in the TUI's own
+//! presentation (the header segment, list rows) is
+//! livespec-console-beads-fabro-mx9u.17; this module is the CLI/doctor half
+//! only.
 
 use std::collections::BTreeMap;
 

@@ -553,7 +553,15 @@ impl TmuxConsole {
         // A `gh` stub on the front of PATH (see `write_launcher`) keeps the run
         // hermetic: no live network, no real github event.
         write_named_stub(&scratch, "gh")?;
-        let launcher = write_launcher(&scratch, &binary, repo, &store_path, &stub)?;
+        let needs_attention_stub = write_needs_attention_idle_stub(&scratch)?;
+        let launcher = write_launcher(
+            &scratch,
+            &binary,
+            repo,
+            &store_path,
+            &stub,
+            &needs_attention_stub,
+        )?;
 
         let session = format!("lc_e2e_{unique}");
         // A DEDICATED per-test tmux socket (never the maintainer-owned default
@@ -770,12 +778,41 @@ fn resolve_binary() -> HarnessResult<PathBuf> {
 }
 
 /// Write a fast `{}`-emitting stub named `name` into the scratch dir and return
-/// its path. The stub prints an empty JSON object and exits 0, so any backing CLI
-/// pointed at it resolves instantly with no Beads/Dolt backend and no credential
-/// wrapper — turning that source into a deterministic not-observed finding.
+/// its path.
+///
+/// The stub prints an empty JSON object and exits 0, so any backing CLI
+/// pointed at it resolves instantly with no Beads/Dolt backend and no
+/// credential wrapper. For the six `ObservedSourceAdapter`-backed sources
+/// (orchestrator, dispatcher, fabro, github, livespec, reconcile-runs) a bare
+/// `{}` is a REACHABLE-but-empty envelope (`is_idle_payload` treats it, `[]`,
+/// and `null` alike as observed-and-idle before any normalizer runs), so this
+/// is the shared idle default for those. It does NOT work for
+/// `needs-attention` -- see [`write_needs_attention_idle_stub`], which every
+/// launcher points that one source at instead.
 fn write_named_stub(scratch: &Path, name: &str) -> HarnessResult<PathBuf> {
     let stub = scratch.join(name);
     let body = "#!/usr/bin/env bash\nprintf '{}\\n'\nexit 0\n";
+    std::fs::write(&stub, body)
+        .map_err(|error| format!("write stub {} failed: {error}", stub.display()))?;
+    make_executable(&stub)?;
+    Ok(stub)
+}
+
+/// Write the needs-attention source's own idle stub and return its path.
+///
+/// Unlike the six `ObservedSourceAdapter`-backed sources, the needs-attention
+/// adapter has no envelope-level idle gate of its own: its parser
+/// (`parse_needs_attention_snapshot`) requires a JSON object carrying an
+/// `attention` array, so the generic bare-`{}` stub [`write_named_stub`]
+/// writes is UNINTERPRETABLE to it and degrades to a not-observed finding
+/// rather than idle -- a degradation livespec-console-beads-fabro-mx9u.12
+/// made newly OBSERVABLE (before it, this failed silently, so the harness
+/// never noticed every scene was quietly running with needs-attention
+/// "down"). This stub emits the genuinely-idle envelope: an empty
+/// `attention` array.
+fn write_needs_attention_idle_stub(scratch: &Path) -> HarnessResult<PathBuf> {
+    let stub = scratch.join("stub-needs-attention.sh");
+    let body = "#!/usr/bin/env bash\nprintf '{\"attention\": []}\\n'\nexit 0\n";
     std::fs::write(&stub, body)
         .map_err(|error| format!("write stub {} failed: {error}", stub.display()))?;
     make_executable(&stub)?;
@@ -795,15 +832,22 @@ fn write_named_stub(scratch: &Path, name: &str) -> HarnessResult<PathBuf> {
 /// (interactive TUI), then keeps the pane alive so a captured error survives
 /// inspection. The harness's `Drop` kills the session long before the keep-alive
 /// elapses.
+///
+/// `needs_attention_stub` is a SEPARATE path from `stub`: needs-attention has
+/// no envelope-level idle gate of its own, so it needs the dedicated
+/// `{"attention": []}` envelope [`write_needs_attention_idle_stub`] writes,
+/// not the generic bare-`{}` stub the other six sources share.
 fn write_launcher(
     scratch: &Path,
     binary: &Path,
     repo: &RepoFixture,
     store_path: &Path,
     stub: &Path,
+    needs_attention_stub: &Path,
 ) -> HarnessResult<PathBuf> {
     let launcher = scratch.join("launch.sh");
     let stub = shell_quote(&stub.display().to_string());
+    let needs_attention_stub = shell_quote(&needs_attention_stub.display().to_string());
     let body = format!(
         "#!/usr/bin/env bash\n\
          cd {repo_path} || exit 97\n\
@@ -817,7 +861,7 @@ fn write_launcher(
          export LIVESPEC_CONSOLE_FABRO_PROGRAM={stub}\n\
          export LIVESPEC_CONSOLE_DRAIN_PROGRAM={stub}\n\
          export LIVESPEC_CONSOLE_DRIVE_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={needs_attention_stub}\n\
          export LIVESPEC_CONSOLE_GH_PROGRAM={stub}\n\
          {binary} serve\n\
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
@@ -886,8 +930,16 @@ impl TmuxConsole {
 
         let stub = write_named_stub(&scratch, "stub-backing-cli.sh")?;
         write_named_stub(&scratch, "gh")?;
-        let launcher =
-            write_launcher_with_env(&scratch, &binary, repo, &store_path, &stub, extra_env)?;
+        let needs_attention_stub = write_needs_attention_idle_stub(&scratch)?;
+        let launcher = write_launcher_with_env(
+            &scratch,
+            &binary,
+            repo,
+            &store_path,
+            &stub,
+            &needs_attention_stub,
+            extra_env,
+        )?;
 
         let session = format!("lc_e2e_{unique}");
         let socket = session.clone();
@@ -939,17 +991,25 @@ impl TmuxConsole {
 /// That ordering covers the raised store busy timeout too: it is exported with
 /// the defaults, so a scenario that needs a different budget — or a different
 /// store path — can still say so and be obeyed.
+///
+/// `needs_attention_stub` is separate from `stub` for the same reason it is
+/// in [`write_launcher`]: needs-attention has no envelope-level idle gate, so
+/// its default must be the dedicated `{"attention": []}` stub, not the
+/// generic bare-`{}` one. A caller's `extra_env` override still wins over
+/// EITHER default (it is appended last).
 fn write_launcher_with_env(
     scratch: &Path,
     binary: &Path,
     repo: &RepoFixture,
     store_path: &Path,
     stub: &Path,
+    needs_attention_stub: &Path,
     extra_env: &[(&str, &str)],
 ) -> HarnessResult<PathBuf> {
     use std::fmt::Write as _;
     let launcher = scratch.join("launch.sh");
     let stub = shell_quote(&stub.display().to_string());
+    let needs_attention_stub = shell_quote(&needs_attention_stub.display().to_string());
     let mut extra = String::new();
     for (key, value) in extra_env {
         // Writing to a String is infallible; the Result is discarded.
@@ -968,7 +1028,7 @@ fn write_launcher_with_env(
          export LIVESPEC_CONSOLE_FABRO_PROGRAM={stub}\n\
          export LIVESPEC_CONSOLE_DRAIN_PROGRAM={stub}\n\
          export LIVESPEC_CONSOLE_DRIVE_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={stub}\n\
+         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={needs_attention_stub}\n\
          export LIVESPEC_CONSOLE_GH_PROGRAM={stub}\n\
          {extra}\
          {binary} serve\n\
@@ -1095,8 +1155,16 @@ impl TmuxConsole {
 
         let stub = write_named_stub(&scratch, "stub-backing-cli.sh")?;
         write_named_stub(&scratch, "gh")?;
-        let launcher =
-            write_launcher_with_env(&scratch, &binary, repo, &store_path, &stub, extra_env)?;
+        let needs_attention_stub = write_needs_attention_idle_stub(&scratch)?;
+        let launcher = write_launcher_with_env(
+            &scratch,
+            &binary,
+            repo,
+            &store_path,
+            &stub,
+            &needs_attention_stub,
+            extra_env,
+        )?;
 
         let session = format!("lc_rss_{unique}");
         let socket = session.clone();
