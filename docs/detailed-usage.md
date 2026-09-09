@@ -440,7 +440,7 @@ the Factory menu.
 | Focus | `↑`/`↓` | `←` | `→` | `Enter` | `Esc` |
 |---|---|---|---|---|---|
 | Views | previous / next view | — | focus content | focus content | — |
-| content | move the selection | drilled lane → overview, else focus Views | focus Detail | in Lanes: drill into a lane, or open the selected item's record once inside one; in Attention: open the selected row's work-item record; in Settings: edit the row; elsewhere: inert | as `←` |
+| content | move the selection | drilled lane or Events sub-view → its overview, else focus Views | focus Detail | in Lanes: drill into a lane, or open the selected item's record once inside one; in Events: drill into the selected sub-view (Stored events / Event sources); in Attention: open the selected row's work-item record; in Settings: edit the row; elsewhere: inert | as `←` |
 | Detail | scroll | focus content | — | — | focus content |
 | header | — | scroll left | scroll right | — | focus Views |
 

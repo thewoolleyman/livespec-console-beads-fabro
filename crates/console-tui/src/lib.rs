@@ -24,11 +24,11 @@ use console_application::source_adapters::{
     Lane, OrphanedFactoryRun, event_source_roster_help_lines,
 };
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, FocusPane,
-    HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus, LaneWorkItem,
-    OperatorAction, OperatorActionOutcome, PendingValve, PluginResolution, SettingRow,
-    TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView,
-    ViewSummaryItem, action_registry, build_tui_model_for_state, dispatcher_setting_rows,
+    ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, EventsFocus,
+    FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus,
+    LaneWorkItem, OperatorAction, OperatorActionOutcome, PendingValve, PluginResolution,
+    SettingRow, TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
+    TuiView, ViewSummaryItem, action_registry, build_tui_model_for_state, dispatcher_setting_rows,
     header_help_section, reduce_tui_interaction, resolve_command_palette_action,
     resolve_dispatcher_setting_edit, resolve_valve_action, validate_operator_action,
 };
@@ -1457,6 +1457,17 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                     }),
                 };
             }
+            if model.active_view() == TuiView::Events {
+                return match model.events_focus() {
+                    EventsFocus::Overview => Some(TuiTerminalInput::Interaction(
+                        TuiInteraction::DrillIntoEventsSubView,
+                    )),
+                    // Neither sub-view has a per-row action surface yet (that is
+                    // deferred, not excluded -- see the epic's constraint), so
+                    // Enter is inert once drilled in.
+                    EventsFocus::StoredEvents | EventsFocus::EventSources => None,
+                };
+            }
             if model.active_view() == TuiView::Attention {
                 return model.selected_work_item_id().map(|_work_item_id| {
                     TuiTerminalInput::Interaction(TuiInteraction::OpenWorkItemDetail)
@@ -1477,8 +1488,9 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 
 /// Esc: close an open overlay first; with no overlay open, step focus back one
 /// pane toward the nav — the Detail pane returns to Content, the Content pane
-/// returns a drilled-in lane to its overview (else focus to the Views nav); on
-/// the nav (leftmost) it is the inert close-overlay.
+/// returns a drilled-in lane (or a drilled-in `Events` sub-view) to its
+/// overview (else focus to the Views nav); on the nav (leftmost) it is the
+/// inert close-overlay.
 fn esc_interaction(model: &TuiScreenModel) -> TuiInteraction {
     if model.overlay().is_open() {
         return TuiInteraction::CloseOverlay;
@@ -1494,11 +1506,15 @@ fn esc_interaction(model: &TuiScreenModel) -> TuiInteraction {
 }
 
 /// The Content-pane "step back" interaction shared by Esc and Left: a drilled-in
-/// lane returns to its overview first, otherwise focus returns to the Views nav.
+/// lane or `Events` sub-view returns to its own overview first, otherwise
+/// focus returns to the Views nav.
 fn content_back_interaction(model: &TuiScreenModel) -> TuiInteraction {
     if model.active_view() == TuiView::Lanes && matches!(model.lane_focus(), LaneFocus::Lane(_lane))
     {
         return TuiInteraction::ReturnToLaneOverview;
+    }
+    if model.active_view() == TuiView::Events && model.events_focus() != EventsFocus::Overview {
+        return TuiInteraction::ReturnToEventsOverview;
     }
     TuiInteraction::FocusNav
 }
@@ -3156,10 +3172,14 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
         ))
         .collect(),
         TuiView::Events => vec![
-            Line::from("Events -- the console event timeline (read-only): the observed"),
-            Line::from("source events for the selected repo."),
+            Line::from("Events -- a container for two sub-views: Stored events (the observed"),
+            Line::from("source events, read-only, exactly as before) and Event sources (the"),
+            Line::from("per-source roster)."),
             Line::from(""),
-            Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+            Line::from("up / down    move the sub-view selection; inside a drilled-in"),
+            Line::from("             sub-view, scroll the Detail pane"),
+            Line::from("enter        drill into the selected sub-view"),
+            Line::from("esc          return a drilled-in sub-view to the container list"),
             Line::from("left / right move focus; left from Views opens the menu bar"),
         ],
         TuiView::Repos => vec![
@@ -3667,16 +3687,49 @@ fn render_vertical_scrollbar(area: Rect, buffer: &mut Buffer, content_len: usize
 }
 
 fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
-    let items = model
-        .view_items()
-        .iter()
-        .map(|item| ListItem::new(format!("  {}", item.title())));
-    let title = focus_title(model.active_view().label(), content_focused(model));
+    let selected = summary_selected_index(model);
+    let items = model.view_items().iter().enumerate().map(|(index, item)| {
+        let marker = if Some(index) == selected { ">" } else { " " };
+        ListItem::new(format!("{marker} {}", item.title()))
+    });
+    let title = focus_title(&summary_pane_title(model), content_focused(model));
     Widget::render(
         List::new(items).block(Block::new().borders(Borders::ALL).title(title)),
         area,
         buffer,
     );
+}
+
+/// The row the Content pane highlights while rendering a summary view.
+///
+/// Only the `Events` container's own overview has a real per-row selection
+/// today (its "Stored events" / "Event sources" picker); `Spec`, `Repos`, and
+/// a drilled-in `Events` sub-view render their rows exactly as before this
+/// container existed -- an unmarked static list (AC3: no behaviour change to
+/// "Stored events").
+fn summary_selected_index(model: &TuiScreenModel) -> Option<usize> {
+    (model.active_view() == TuiView::Events && model.events_focus() == EventsFocus::Overview)
+        .then(|| model.selected_events_index())
+}
+
+/// The Content pane's block title for a summary view: a breadcrumb
+/// (`Events > Stored events`) once the `Events` container is drilled into a
+/// sub-view, else the plain view label every other summary view has always
+/// shown.
+fn summary_pane_title(model: &TuiScreenModel) -> String {
+    if model.active_view() == TuiView::Events {
+        return match model.events_focus() {
+            EventsFocus::Overview => TuiView::Events.label().to_owned(),
+            EventsFocus::StoredEvents | EventsFocus::EventSources => {
+                format!(
+                    "{} > {}",
+                    TuiView::Events.label(),
+                    model.events_focus().label()
+                )
+            }
+        };
+    }
+    model.active_view().label().to_owned()
 }
 
 /// The elision indicator a row appends when it cannot hold its whole label, so
@@ -4021,11 +4074,12 @@ mod tests {
     };
     use console_application::{
         AttentionDetail, AttentionItem, DispatcherOverride, DispatcherSettings,
-        DispatcherSettingsRead, FocusPane, HelpFocus, LaneFocus, LaneWorkItem, OperatorAction,
-        OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve, PluginResolution,
-        RejectMode, TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-        TuiView, action_registry, build_tui_model, build_tui_model_for_state, header_help_section,
-        help_section_for_view, reduce_tui_interaction,
+        DispatcherSettingsRead, EventsFocus, FocusPane, HelpFocus, LaneFocus, LaneWorkItem,
+        OperatorAction, OperatorActionOutcome, OverrideBool, OverrideInt, PendingValve,
+        PluginResolution, RejectMode, TimelineEntry, TuiInteraction, TuiInteractionState,
+        TuiOverlay, TuiScreenModel, TuiView, action_registry, build_tui_model,
+        build_tui_model_for_state, header_help_section, help_section_for_view,
+        reduce_tui_interaction,
     };
 
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -5406,7 +5460,7 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Right), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusDetail))
         );
-        for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
+        for view in [TuiView::Spec, TuiView::Repos] {
             let model = build_tui_model_for_state(
                 &demo_events(),
                 &TuiInteractionState::for_view(view, 0, TuiOverlay::None)
@@ -5417,6 +5471,34 @@ mod tests {
                 None
             );
         }
+        // Events is a container: on its own overview Enter drills into the
+        // selected sub-view, exactly as the Lanes overview's Enter drills into
+        // a lane; only a DRILLED-IN sub-view leaves Enter inert (no per-row
+        // action surface yet).
+        let events_overview = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+                .with_focus(FocusPane::Content),
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &events_overview),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::DrillIntoEventsSubView
+            ))
+        );
+        let events_drilled = build_tui_model_for_state(
+            &demo_events(),
+            &reduce_tui_interaction(
+                &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+                    .with_focus(FocusPane::Content),
+                &demo_events(),
+                TuiInteraction::DrillIntoEventsSubView,
+            ),
+        );
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &events_drilled),
+            None
+        );
         assert_eq!(
             key_event_to_terminal_input(key(KeyCode::Left), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
@@ -6789,8 +6871,29 @@ mod tests {
     }
 
     #[test]
-    fn render_to_text_draws_non_attention_view_summary() {
+    fn render_to_text_events_container_presents_its_two_sub_views_first() {
+        // AC2: selecting Events presents its two sub-views -- the container's
+        // own picker home -- before either is drilled into.
         let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&factory_events(), &state);
+
+        let output = render_to_text(&model, 96, 24).unwrap_or_default();
+
+        assert!(output.contains("> 4 Events"), "{output}");
+        assert!(output.contains("Stored events"), "{output}");
+        assert!(output.contains("Event sources"), "{output}");
+    }
+
+    #[test]
+    fn render_to_text_draws_non_attention_view_summary() {
+        // AC3: drilled into "Stored events", the sub-view renders EXACTLY what
+        // the pre-container Events view rendered -- no behaviour change.
+        let overview = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        let state = reduce_tui_interaction(
+            &overview,
+            &factory_events(),
+            TuiInteraction::DrillIntoEventsSubView,
+        );
         let model = build_tui_model_for_state(&factory_events(), &state);
 
         let output = render_to_text(&model, 96, 24);
@@ -9604,6 +9707,48 @@ mod tests {
         build_tui_model_for_state(&lane_render_events(), &state)
     }
 
+    /// An Events-view model in the given sub-view focus + overlay with the
+    /// Content pane focused, where the container overview/drill flow lives.
+    /// Mirrors [`lanes_model_content`].
+    fn events_model_content(events_focus: EventsFocus, overlay: TuiOverlay) -> TuiScreenModel {
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, overlay)
+            .with_events_focus(events_focus)
+            .with_focus(FocusPane::Content);
+        build_tui_model_for_state(&demo_events(), &state)
+    }
+
+    #[test]
+    fn keymap_routes_esc_from_a_drilled_in_events_sub_view_to_the_container_overview() {
+        // AC4: Escape from a sub-view returns to the CONTAINER, not out of the
+        // view entirely. Mirrors the Lanes half of
+        // `keymap_routes_enter_and_esc_through_the_lane_sub_view`.
+        let overview = events_model_content(EventsFocus::Overview, TuiOverlay::None);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &overview),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::FocusNav))
+        );
+
+        for sub_view in [EventsFocus::StoredEvents, EventsFocus::EventSources] {
+            let drilled = events_model_content(sub_view, TuiOverlay::None);
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Esc), &drilled),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::ReturnToEventsOverview
+                )),
+                "{sub_view:?}"
+            );
+            // Left mirrors Esc's step-back here exactly as it does for a
+            // drilled-in lane.
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Left), &drilled),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::ReturnToEventsOverview
+                )),
+                "{sub_view:?}"
+            );
+        }
+    }
+
     /// A small board fixture: two ready items and one blocked (needs-human).
     /// A single needs-attention row that names a PATH and no work-item.
     ///
@@ -11781,13 +11926,19 @@ mod tests {
         let lanes = build_tui_model_for_state(&events, &opened);
         let lanes_text = render_to_text(&lanes, 120, 40).unwrap_or_default();
         assert!(lanes_text.contains("lane board"), "{lanes_text}");
-        assert!(!lanes_text.contains("event timeline"), "{lanes_text}");
+        assert!(
+            !lanes_text.contains("container for two sub-views"),
+            "{lanes_text}"
+        );
 
         let next = reduce_tui_interaction(&opened, &events, TuiInteraction::HelpSelectNextSection);
         let events_model = build_tui_model_for_state(&events, &next);
         let events_text = render_to_text(&events_model, 120, 40).unwrap_or_default();
         assert!(events_text.contains("> Events"), "{events_text}");
-        assert!(events_text.contains("event timeline"), "{events_text}");
+        assert!(
+            events_text.contains("container for two sub-views"),
+            "{events_text}"
+        );
         assert!(!events_text.contains("lane board"), "{events_text}");
     }
 
@@ -11847,7 +11998,7 @@ mod tests {
             (TuiView::Attention, "merged, ranked needs-attention"),
             (TuiView::Spec, "spec-side status"),
             (TuiView::Lanes, "work-item lane board"),
-            (TuiView::Events, "console event timeline"),
+            (TuiView::Events, "container for two sub-views"),
             (TuiView::Repos, "fleet repo roster"),
             (TuiView::Settings, "dispatcher-settings surface"),
         ];
