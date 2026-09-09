@@ -152,9 +152,10 @@ digraph ImplementWorkItem {
     // max_retries=1 + retry_target: same bn4 retry discipline as the
     // implement node (transient -> one auto-retry; deterministic ->
     // park via the Blocked edge). The retry_target is structurally
-    // unreachable here — the only edge into exit is `pr -> exit`, taken
-    // when pr did NOT fail — it exists to satisfy fabro's
-    // goal_gate_has_retry lint alongside the real node-retry budget.
+    // unreachable here — the only path into exit is
+    // `pr -> verify_pr -> exit`, and verify_pr only reaches exit when pr
+    // did NOT fail — it exists to satisfy fabro's goal_gate_has_retry
+    // lint alongside the real node-retry budget.
     //
     // Runs on `pr_adapter`, NOT an implementer adapter: this node
     // executes a fixed `git`/`gh` publish recipe (@prompts/pr.md) with no design
@@ -174,6 +175,50 @@ digraph ImplementWorkItem {
         goal_gate=true
         retry_target="pr"
         prompt="@prompts/pr.md"
+    ]
+
+    // Publish breaker (bd-ib-32xd, the bd-ib-loks tail): the pr node is an
+    // ACP node, and an ACP turn that ERRORS can still be reported by the
+    // pinned fabro build as outcome=succeeded — measured 2026-09-08/09,
+    // when an unsupported pr-tier model slug drew an HTTP 400, the turn
+    // died, the node reported succeeded, the run took pr -> exit and
+    // finished GREEN, and no branch and no PR existed. The Dispatcher then
+    // reported a generic "no PR found for branch", which reads as a defect
+    // in the WORK ITEM rather than in the pr stage. This node is the
+    // symmetric counterpart of implement -> implementation_diff ->
+    // dead_implementer, one stage later: it asserts the pr stage's OWN
+    // postcondition before the run is allowed to reach exit, so a publish
+    // that never happened fails LOUD instead of green.
+    //
+    // WHAT IT ASSERTS, and why it is this rather than a name lookup. The
+    // publish branch is `feat/<work-item-id>`, and that id reaches the
+    // sandbox only through the rendered run goal — there is no workflow
+    // input carrying it (`CONTRACT_INPUT_NAMES` is a closed set and the pr
+    // prompt reads the branch out of the goal text), so a script node
+    // cannot spell the branch name. It therefore asks the question the
+    // name was only ever a proxy for: does origin carry a `feat/*` head
+    // that CONTAINS THIS RUN'S WORK? That is strictly stronger than a name
+    // lookup, which a re-dispatch would satisfy against the STALE branch a
+    // previous run of the same item published.
+    //
+    // Ancestry rather than sha equality is load-bearing: fabro commits a
+    // stage checkpoint after a node completes, so HEAD moves past the sha
+    // the pr node pushed and an equality test would fail every healthy
+    // run. A ref whose objects are not local (another item's in-flight
+    // branch) makes merge-base fail, which is a non-hit rather than an
+    // error — hence the discarded stderr on that one call only.
+    //
+    // The two failures are told apart deliberately. Only a REACHABLE
+    // origin that carries no such branch is LIVESPEC_PR_NOT_CREATED; an
+    // ls-remote that could not answer at all exits with its own status
+    // under a distinct sentinel, because "we could not look" must never be
+    // reported as "the publish did not happen". Both fail closed, and both
+    // route to needs_human via the edge below.
+    verify_pr [
+        label="Check pr stage published a branch"
+        shape=parallelogram
+        timeout="1800s"
+        script="refs=$(git ls-remote --heads origin); status=$?; if test \"$status\" -ne 0; then echo 'LIVESPEC_PR_NOT_CREATED_CHECK_FAILED: git ls-remote origin failed, so the pr stage could not be proven to have published; failing closed before exit' >&2; exit \"$status\"; fi; hits=$(echo \"$refs\" | grep 'refs/heads/feat/' | cut -f1 | while read sha; do git merge-base --is-ancestor \"$sha\" HEAD 2>/dev/null && echo hit; done); if test -n \"$hits\"; then exit 0; fi; echo 'LIVESPEC_PR_NOT_CREATED: pr stage completed but no publish branch containing this run HEAD exists on origin, so no PR was created; likely a pr-adapter or model-refusal failure; see the pr stage output' >&2; exit 1"
     ]
 
     // Review gate (Slice A / bd-ib-egms32): a Claude Opus 4.8 /
@@ -406,6 +451,14 @@ digraph ImplementWorkItem {
 
     // A failed pr stage (hook rejection, gh failure — structured
     // needs-human ending per prompts/pr.md) terminates at needs_human too.
+    // A pr stage that reports success is NOT trusted on its own word: it
+    // routes through the publish breaker, which is the only node with an
+    // edge into exit. An unpublished "success" therefore lands at
+    // needs_human, carrying the LIVESPEC_PR_NOT_CREATED sentinel the
+    // Dispatcher journals from the failed fabro-run stage detail, rather
+    // than finishing the run green with nothing published.
     pr -> needs_human [label="Blocked", condition="outcome=failed"]
-    pr -> exit
+    pr -> verify_pr [label="published?", condition="outcome=succeeded"]
+    verify_pr -> exit [label="published", condition="outcome=succeeded"]
+    verify_pr -> needs_human [label="Blocked", condition="outcome=failed"]
 }
