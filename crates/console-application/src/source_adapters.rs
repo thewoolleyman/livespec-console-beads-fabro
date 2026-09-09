@@ -2272,12 +2272,39 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                     // envelope-level gate above -- it reached the source.
                     Ok(parsed) if parsed.is_idle() => Ok(self.idle_poll(previous)),
                     Ok(parsed) if !parsed.events.is_empty() => {
-                        let (checkpoint, _transition_epoch) = availability_transition(
+                        // A data-bearing observation's events are
+                        // content-addressed: when the recovered read reports
+                        // exactly the state the store already holds, they
+                        // dedupe away as duplicates and NOTHING lands. If the
+                        // source was previously branded unavailable, that
+                        // silent dedup would leave it branded forever --
+                        // violating this adapter's own contract that a
+                        // transient failure is never permanent. So a
+                        // transition OUT of not-observed also emits the same
+                        // positive marker the idle path uses; its
+                        // content-addressed id is fresh for this transition
+                        // epoch, so it lands (and dedupes on ITS OWN terms)
+                        // regardless of what the data events do.
+                        let previously_not_observed = matches!(
+                            AvailabilityCheckpoint::from_previous(previous)
+                                .1
+                                .map(|checkpoint| checkpoint.availability),
+                            Some(AvailabilityState::NotObserved)
+                        );
+                        let (checkpoint, transition_epoch) = availability_transition(
                             previous,
                             AvailabilityState::Observed,
                             &parsed.checkpoint,
                         );
-                        AdapterPoll::new(&checkpoint, parsed.events)
+                        let mut events = parsed.events;
+                        if previously_not_observed {
+                            events.push(source_observed_event(
+                                self.source,
+                                &self.repo,
+                                transition_epoch,
+                            ));
+                        }
+                        AdapterPoll::new(&checkpoint, events)
                     }
                     Ok(_empty) => {
                         Ok(self.not_observed_poll(previous, "source produced no records"))
@@ -4586,6 +4613,61 @@ mod tests {
             poll.events()[0].event().event_type(),
             &EventType::WorkItemSnapshotObserved
         );
+    }
+
+    #[test]
+    fn data_bearing_recovery_after_not_observed_also_emits_the_observed_marker() {
+        // Reported defect (livespec-console-beads-fabro-mx9u.22): the
+        // data-bearing success branch computed the not-observed -> observed
+        // transition and then DISCARDED it, emitting only the parsed data
+        // events. Because those events are content-addressed, a source that
+        // recovers by reporting exactly the state the store already holds
+        // dedupes its recovery away to nothing, and stays branded unavailable
+        // forever. The fix: a transition out of not-observed also emits the
+        // same positive `source.observed_finding_observed` marker the idle
+        // path already relies on, with a FRESH transition epoch so it never
+        // dedupes against an earlier marker.
+        let down_probe =
+            StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
+        let down_adapter = ok_observed_source_adapter(orchestrator_command_adapter(&down_probe));
+        let down = ok_adapter_poll(down_adapter.poll(&ok_adapter_poll_request(cold_request())));
+        assert_not_observed(&down, "orchestrator not found");
+
+        let recovered_probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        let recovered_adapter =
+            ok_observed_source_adapter(orchestrator_command_adapter(&recovered_probe));
+        let recovered = ok_adapter_poll(recovered_adapter.poll(&request_after(down.checkpoint())));
+
+        // Both the data snapshot (and its completeness-finding companion) AND
+        // the recovery marker land -- the marker is ADDITIONAL to the data,
+        // never a replacement for it. `normalize_work_item_snapshot` always
+        // orders its pair snapshot-then-completeness-finding, so the marker
+        // this branch appends lands last, at a known index.
+        assert_eq!(recovered.events().len(), 3);
+        assert_eq!(
+            recovered.events()[0].event().event_type(),
+            &EventType::WorkItemSnapshotObserved
+        );
+        assert_eq!(
+            recovered.events()[1].event().event_type(),
+            &EventType::SourceCompletenessFindingObserved
+        );
+        let marker = &recovered.events()[2];
+        assert_eq!(
+            marker.event().event_type(),
+            &EventType::SourceObservedFindingObserved
+        );
+        assert_eq!(marker.payload(), &SourcePayload::ObservedIdle);
+
+        // The marker's epoch is the transition's own fresh epoch (down was
+        // epoch 1, so recovering into observed is epoch 2) -- never the down
+        // poll's epoch, and never unconditionally minted on every poll.
+        assert_eq!(availability_checkpoint_epoch(down.checkpoint()), Some(1));
+        assert_eq!(
+            availability_checkpoint_epoch(recovered.checkpoint()),
+            Some(2)
+        );
+        assert!(marker.source_event_id().ends_with(":observed_idle:2"));
     }
 
     #[test]
