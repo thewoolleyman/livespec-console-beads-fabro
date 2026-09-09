@@ -35,6 +35,7 @@ pub mod build_identity;
 pub mod doctor;
 /// Module containing source-adapters support.
 pub mod source_adapters;
+pub mod source_event_counts;
 pub mod source_staleness;
 /// The identity of a marker's writer process.
 ///
@@ -51,6 +52,7 @@ use source_adapters::{
     materialize_attention_items, reconcile_runs_snapshot_from_payload_json,
     work_item_snapshot_from_payload_json,
 };
+use source_event_counts::SourceEventCounts;
 use source_staleness::{SourceStaleness, source_staleness_header_segment};
 use writer_identity::{WriterLeaseStatus, writer_lease_status_segment};
 
@@ -1244,6 +1246,13 @@ pub struct TuiInteractionState {
     // timestamp rather than the worst-case across every unavailable source).
     // Empty by construction for every existing caller.
     source_last_success: BTreeMap<String, String>,
+    // Per-source event counts by type, for the Event sources roster
+    // (livespec-console-beads-fabro-mx9u.20.2). Empty by construction for
+    // every existing caller -- the composition root re-probes this on the
+    // background source poller's own cadence, the same handoff
+    // `source_last_success` uses. Absence of a source's key here reads as
+    // "not yet counted", never as a fabricated zero.
+    source_event_counts: BTreeMap<String, SourceEventCounts>,
     // Whether the session's FIRST background source ingest is still in flight.
     // `false` by construction (every existing caller), so a session with no
     // opinion on the matter renders exactly as before. The composition root
@@ -1291,6 +1300,7 @@ impl TuiInteractionState {
             build_staleness: BuildStaleness::Unknown,
             source_staleness: SourceStaleness::AllObserved,
             source_last_success: BTreeMap::new(),
+            source_event_counts: BTreeMap::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
         }
@@ -1334,6 +1344,7 @@ impl TuiInteractionState {
             build_staleness: BuildStaleness::Unknown,
             source_staleness: SourceStaleness::AllObserved,
             source_last_success: BTreeMap::new(),
+            source_event_counts: BTreeMap::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
         }
@@ -1639,6 +1650,20 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the per-source event-counts map replaced
+    /// (livespec-console-beads-fabro-mx9u.20.2), for the Event sources
+    /// roster's per-source counts-by-type detail. Re-probed on the SAME
+    /// cadence and via the SAME handoff as [`Self::with_source_last_success`]
+    /// -- see [`source_event_counts::SharedSourceEventCounts`].
+    pub fn with_source_event_counts(
+        mut self,
+        source_event_counts: BTreeMap<String, SourceEventCounts>,
+    ) -> Self {
+        self.source_event_counts = source_event_counts;
+        self
+    }
+
+    #[must_use]
     /// Return this value with whether the session's first background source
     /// ingest is still in flight replaced. The composition root re-checks this
     /// every tick (a cheap atomic read, never a store or CLI call) and folds the
@@ -1863,6 +1888,13 @@ impl TuiInteractionState {
     /// [`Self::with_source_last_success`].
     pub const fn source_last_success(&self) -> &BTreeMap<String, String> {
         &self.source_last_success
+    }
+
+    #[must_use]
+    /// Return the per-source event-counts map. See
+    /// [`Self::with_source_event_counts`].
+    pub const fn source_event_counts(&self) -> &BTreeMap<String, SourceEventCounts> {
+        &self.source_event_counts
     }
 
     #[must_use]
@@ -4674,6 +4706,7 @@ pub fn render_tui_model(
             &projection.unavailable_sources,
             events,
             state.source_last_success(),
+            state.source_event_counts(),
         ),
         lane_board,
         lane_focus,
@@ -9990,6 +10023,7 @@ fn view_summary_items(
     unavailable_sources: &[String],
     events: &[ConsoleEvent],
     source_last_success: &BTreeMap<String, String>,
+    source_event_counts: &BTreeMap<String, SourceEventCounts>,
 ) -> Vec<ViewSummaryItem> {
     match active_view {
         TuiView::Spec => spec_view_items(events),
@@ -9999,6 +10033,7 @@ fn view_summary_items(
             unavailable_sources,
             events,
             source_last_success,
+            source_event_counts,
         ),
         TuiView::Repos => repos_view_items(events),
         // The Attention, Lanes, and Settings views render their own projections
@@ -10013,18 +10048,18 @@ fn view_summary_items(
 /// `Overview` lists the two sub-views by name -- the container's own picker
 /// home. `StoredEvents` is EXACTLY [`events_view_items`], the pre-container
 /// Events content, unchanged (AC3). `EventSources` is the real per-source
-/// roster (livespec-console-beads-fabro-pzbdbo.29); per-source event COUNTS
-/// and a stale-since timestamp column remain sibling items
-/// (`livespec-console-beads-fabro-mx9u.20.2`,
-/// `livespec-console-beads-fabro-mx9u.17`) -- see
-/// [`event_sources_roster_items`] for exactly what this roster does and does
-/// not yet know.
+/// roster (livespec-console-beads-fabro-pzbdbo.29), now carrying both a
+/// stale-since column (`livespec-console-beads-fabro-mx9u.17`) and
+/// per-source event COUNTS by type (`livespec-console-beads-fabro-mx9u.20.2`)
+/// -- see [`event_sources_roster_items`] for exactly what this roster does
+/// and does not yet know.
 fn events_container_items(
     events_focus: EventsFocus,
     observed_sources: &[String],
     unavailable_sources: &[String],
     events: &[ConsoleEvent],
     source_last_success: &BTreeMap<String, String>,
+    source_event_counts: &BTreeMap<String, SourceEventCounts>,
 ) -> Vec<ViewSummaryItem> {
     match events_focus {
         EventsFocus::Overview => EventsFocus::all()
@@ -10037,6 +10072,7 @@ fn events_container_items(
             unavailable_sources,
             events,
             source_last_success,
+            source_event_counts,
         ),
     }
 }
@@ -10085,6 +10121,7 @@ fn event_sources_roster_items(
     unavailable_sources: &[String],
     events: &[ConsoleEvent],
     source_last_success: &BTreeMap<String, String>,
+    source_event_counts: &BTreeMap<String, SourceEventCounts>,
 ) -> Vec<ViewSummaryItem> {
     if observed_sources.is_empty() {
         return vec![ViewSummaryItem::new(
@@ -10095,16 +10132,24 @@ fn event_sources_roster_items(
     observed_sources
         .iter()
         .map(|source| {
-            EventSourceHealthRow::new(source, unavailable_sources, events, source_last_success)
-                .into()
+            EventSourceHealthRow::new(
+                source,
+                unavailable_sources,
+                events,
+                source_last_success,
+                source_event_counts,
+            )
+            .into()
         })
         .collect()
 }
 
 /// One row of the Event sources roster: a source's identity, its current
 /// health, -- for an unavailable source -- the verbatim reason its latest
-/// poll failed, and its own last-successful-read fact
-/// (livespec-console-beads-fabro-mx9u.17). A real record with named fields
+/// poll failed and its own last-successful-read fact
+/// (livespec-console-beads-fabro-mx9u.17), and -- for every row, healthy or
+/// not -- its own event counts by type
+/// (livespec-console-beads-fabro-mx9u.20.2). A real record with named fields
 /// rather than a formatted string, so a sibling item (a diagnose/fix action)
 /// can add a column without re-deriving anything this type already knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10117,19 +10162,31 @@ struct EventSourceHealthRow {
     // `SourceStaleness::AllObserved` is never constructed here, since a
     // single row's staleness is never "every source is observed".
     stale_since: Option<SourceStaleness>,
+    // `None` means "not yet counted" (no entry in the poller's aggregate
+    // yet, e.g. before its first sweep completes) -- distinct from a `Some`
+    // holding an honest `0`. Never collapsed to a default zero: AC5's whole
+    // theme (mx9u.14, mx9u.17, mx9u.22, mx9u.24) is refusing to present
+    // unknown as known. Unlike `reason`/`stale_since`, present for a
+    // healthy row too -- the composition is worth seeing even when nothing
+    // is currently down.
+    event_counts: Option<SourceEventCounts>,
 }
 
 impl EventSourceHealthRow {
     /// Build one row from the SAME facts the header and `doctor` read:
     /// `unavailable_sources` for health, [`doctor::latest_not_observed_reason`]
-    /// over `events` for an unavailable source's cause, and
+    /// over `events` for an unavailable source's cause,
     /// `source_last_success` (keyed by source, from
-    /// [`doctor::last_successful_observed_at`]) for its own stale-since fact.
+    /// [`doctor::last_successful_observed_at`]) for its own stale-since fact,
+    /// and `source_event_counts` (keyed by source, from
+    /// [`source_event_counts::source_event_counts`]) for its own
+    /// counts-by-type detail.
     fn new(
         source: &str,
         unavailable_sources: &[String],
         events: &[ConsoleEvent],
         source_last_success: &BTreeMap<String, String>,
+        source_event_counts: &BTreeMap<String, SourceEventCounts>,
     ) -> Self {
         let unavailable = unavailable_sources.iter().any(|name| name == source);
         let reason = unavailable.then(|| {
@@ -10143,11 +10200,13 @@ impl EventSourceHealthRow {
                     SourceStaleness::Since(since.clone())
                 })
         });
+        let event_counts = source_event_counts.get(source).copied();
         Self {
             source: source.to_owned(),
             unavailable,
             reason,
             stale_since,
+            event_counts,
         }
     }
 }
@@ -10158,9 +10217,12 @@ impl From<EventSourceHealthRow> for ViewSummaryItem {
     /// `console-tui::render_summary`) -- so "each source as a line, and its
     /// associated health" (the maintainer's own words) does not require
     /// opening the Detail pane. The verbatim cause and the stale-since fact,
-    /// when there are any, are the detail: a healthy row has nothing further
-    /// to say (B5 -- pane bodies carry operational content only, no
-    /// explanatory prose for a fact that is already fully stated by
+    /// when there are any, plus the event-counts line
+    /// (livespec-console-beads-fabro-mx9u.20.2, always present) are the
+    /// detail: a healthy row still gets the counts line -- the composition is
+    /// worth seeing even for a currently-healthy source -- but nothing
+    /// further beyond it (B5 -- pane bodies carry operational content only,
+    /// no explanatory prose for a fact that is already fully stated by
     /// "healthy").
     fn from(row: EventSourceHealthRow) -> Self {
         let health = if row.unavailable {
@@ -10174,16 +10236,41 @@ impl From<EventSourceHealthRow> for ViewSummaryItem {
         // `EventSourceHealthRow::new`), so there is no reachable case where
         // one is present and empty while the other still needs a leading
         // separator -- `join` states that invariant instead of branching on
-        // it.
-        let detail_lines: Vec<String> = [
+        // it. The event-counts line is pushed unconditionally afterward: it
+        // is the one fact every row carries regardless of health.
+        let mut detail_lines: Vec<String> = [
             row.reason,
             row.stale_since.as_ref().map(roster_stale_since_line),
         ]
         .into_iter()
         .flatten()
         .collect();
+        detail_lines.push(event_counts_line(row.event_counts.as_ref()));
         Self::new(title, detail_lines.join("\n"))
     }
+}
+
+/// The Event sources roster's per-source event-counts line
+/// (livespec-console-beads-fabro-mx9u.20.2): AC1's counts-by-type detail,
+/// with AC3's not-observed SHARE stated as a percentage so a source
+/// dominated by its own failure markers is apparent without the operator
+/// doing arithmetic -- raw counts side by side do not satisfy that alone.
+///
+/// `None` -- no entry yet in the poller-computed aggregate, e.g. before its
+/// first sweep completes -- renders honestly as "not yet counted" rather
+/// than a fabricated zero (the "do not present unknown as known" theme this
+/// whole phase is built on: mx9u.14, mx9u.17, mx9u.22, mx9u.24 all refuse
+/// the same shortcut).
+fn event_counts_line(counts: Option<&SourceEventCounts>) -> String {
+    let Some(counts) = counts else {
+        return "event counts: not yet counted".to_owned();
+    };
+    format!(
+        "event counts: {} observed, {} not-observed ({}% not-observed)",
+        counts.observed,
+        counts.not_observed,
+        counts.not_observed_percent()
+    )
 }
 
 /// The Event sources roster's stale-since detail line for one row, in the
@@ -13043,10 +13130,13 @@ mod tests {
         // livespec-console-beads-fabro-mx9u.17: the stale-since column, on the
         // SAME line pair `doctor`'s own finding uses. No `source_last_success`
         // entry exists in this fixture, so this is honestly "never observed",
-        // not a fabricated timestamp.
+        // not a fabricated timestamp. livespec-console-beads-fabro-mx9u.20.2:
+        // the event-counts line, on a fresh state with no
+        // `source_event_counts` fed in yet -- honestly "not yet counted"
+        // rather than a fabricated zero.
         assert_eq!(
             model.view_items()[0].detail(),
-            "dispatcher binary not found\nlast successful read: never observed"
+            "dispatcher binary not found\nlast successful read: never observed\nevent counts: not yet counted"
         );
         assert_eq!(model.observed_source_names(), ["dispatcher", "livespec"]);
         // Both happen to be unavailable in THIS fixture, but the sub-view is
@@ -13085,8 +13175,14 @@ mod tests {
         assert_eq!(model.view_items().len(), 1);
         assert_eq!(model.view_items()[0].title(), "github — healthy");
         assert!(!model.view_items()[0].title().contains("observed yet"));
-        // A healthy row has nothing further to state (B5): no reason to show.
-        assert_eq!(model.view_items()[0].detail(), "");
+        // A healthy row has no REASON to show (B5), but it still gets the
+        // event-counts line (livespec-console-beads-fabro-mx9u.20.2) -- the
+        // store's composition is worth seeing for a healthy source too, not
+        // only an unavailable one.
+        assert_eq!(
+            model.view_items()[0].detail(),
+            "event counts: not yet counted"
+        );
     }
 
     #[test]
@@ -13110,7 +13206,7 @@ mod tests {
         assert_eq!(
             model.view_items()[0].detail(),
             format!(
-                "{}\nlast successful read: never observed",
+                "{}\nlast successful read: never observed\nevent counts: not yet counted",
                 doctor::NO_REASON_RECORDED
             )
         );
@@ -13215,7 +13311,40 @@ mod tests {
         assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
         assert_eq!(
             model.view_items()[0].detail(),
-            "dispatcher binary not found\nlast successful read: 2026-09-08T14:05:14Z"
+            "dispatcher binary not found\nlast successful read: 2026-09-08T14:05:14Z\nevent counts: not yet counted"
+        );
+    }
+
+    #[test]
+    fn tui_event_sources_roster_names_known_event_counts_by_type() {
+        // livespec-console-beads-fabro-mx9u.20.2 AC1/AC3: a source with a
+        // KNOWN entry in the poller-computed aggregate, fed via
+        // `TuiInteractionState::with_source_event_counts` exactly as the
+        // composition root's poller feeds it. The not-observed SHARE is
+        // stated as a percentage so the ratio is legible without the
+        // operator doing arithmetic.
+        let events = [ConsoleEvent::fixture(
+            "evt_github_ok",
+            EventType::GithubPullRequestSnapshotObserved,
+            "github",
+        )];
+        let mut event_counts = std::collections::BTreeMap::new();
+        event_counts.insert(
+            "github".to_owned(),
+            super::SourceEventCounts {
+                observed: 4,
+                not_observed: 1,
+            },
+        );
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources)
+            .with_source_event_counts(event_counts);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(model.view_items()[0].title(), "github — healthy");
+        assert_eq!(
+            model.view_items()[0].detail(),
+            "event counts: 4 observed, 1 not-observed (20% not-observed)"
         );
     }
 

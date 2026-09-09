@@ -23,6 +23,7 @@ use console_application::build_identity::{BuildStaleness, build_identity_segment
 use console_application::source_adapters::{
     Lane, OrphanedFactoryRun, event_source_roster_help_lines,
 };
+use console_application::source_event_counts::SourceEventCounts;
 use console_application::source_staleness::SourceStaleness;
 use console_application::writer_identity::WriterLeaseStatus;
 use console_application::{
@@ -104,6 +105,7 @@ pub fn run_interactive_tui(
         BuildStaleness::Unknown,
         SourceStaleness::AllObserved,
         BTreeMap::new(),
+        BTreeMap::new(),
         &mut effect_sink,
     )
 }
@@ -125,6 +127,7 @@ pub fn run_interactive_tui_with_effect_sink(
     build_staleness: BuildStaleness,
     source_staleness: SourceStaleness,
     source_last_success: BTreeMap<String, String>,
+    source_event_counts: BTreeMap<String, SourceEventCounts>,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
@@ -152,6 +155,7 @@ pub fn run_interactive_tui_with_effect_sink(
         build_staleness,
         source_staleness,
         source_last_success,
+        source_event_counts,
         session,
     );
     let raw_mode_result = disable_raw_mode();
@@ -176,6 +180,7 @@ fn run_terminal_loop(
     build_staleness: BuildStaleness,
     source_staleness: SourceStaleness,
     source_last_success: BTreeMap<String, String>,
+    source_event_counts: BTreeMap<String, SourceEventCounts>,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
@@ -186,6 +191,7 @@ fn run_terminal_loop(
         .with_build_staleness(build_staleness)
         .with_source_staleness(source_staleness)
         .with_source_last_success(source_last_success)
+        .with_source_event_counts(source_event_counts)
         // Seeded from the session BEFORE the first frame draws
         // (livespec-console-beads-fabro-pzbdbo.27): the very first `terminal.draw`
         // below must already say so if the background poller has not completed
@@ -263,6 +269,11 @@ fn run_terminal_loop(
         // (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster) is the
         // SAME poller-computed fact, unsummarized -- taken here the same way.
         apply_source_last_success(&mut state, session.take_source_last_success());
+        // Same cadence again: the Event sources roster's per-source event
+        // counts by type (livespec-console-beads-fabro-mx9u.20.2) is the SAME
+        // poller sweep's already-loaded events, folded once more -- taken
+        // here the same way.
+        apply_source_event_counts(&mut state, session.take_source_event_counts());
         // Same cadence: a cheap, non-blocking check of whether the session's
         // first background ingest is still in flight, so the header's
         // `event sources: loading` tell clears the moment that sweep lands
@@ -693,6 +704,22 @@ fn apply_source_last_success(
     }
 }
 
+/// Fold a freshly re-probed per-source event-counts-by-type map into the
+/// loop's state, for the Event sources roster's per-source counts column
+/// (livespec-console-beads-fabro-mx9u.20.2).
+///
+/// Split out for the same reason `apply_source_last_success` is, and with the
+/// SAME `None`-is-a-no-op contract.
+#[cfg(any(test, not(coverage)))]
+fn apply_source_event_counts(
+    state: &mut TuiInteractionState,
+    fresh: Option<BTreeMap<String, SourceEventCounts>>,
+) {
+    if let Some(event_counts) = fresh {
+        *state = state.clone().with_source_event_counts(event_counts);
+    }
+}
+
 /// Fold the session's current startup-ingest status into the loop's state.
 ///
 /// Split out for the same reason `apply_build_staleness` is: the loop around
@@ -933,6 +960,20 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// `run_interactive_tui` entry point and every test double that has no
     /// probe to report.
     fn take_source_last_success(&mut self) -> Option<BTreeMap<String, String>> {
+        None
+    }
+
+    /// Read the latest background-probed per-source event-counts-by-type
+    /// map, for the Event sources roster's per-source counts column
+    /// (livespec-console-beads-fabro-mx9u.20.2).
+    ///
+    /// Called every tick, same as [`Self::take_source_last_success`] and just
+    /// as cheap -- see
+    /// `console_application::source_event_counts::SharedSourceEventCounts`.
+    /// Defaults to `None` -- unchanged state -- for the legacy
+    /// `run_interactive_tui` entry point and every test double that has no
+    /// probe to report.
+    fn take_source_event_counts(&mut self) -> Option<BTreeMap<String, SourceEventCounts>> {
         None
     }
 
@@ -4204,9 +4245,9 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 mod tests {
     use crate::{
         ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, apply_build_staleness,
-        apply_dispatcher_settings_reread, apply_sink_outcome, apply_source_last_success,
-        apply_source_staleness, apply_startup_ingest_pending, apply_worker_status,
-        apply_writer_lease_status,
+        apply_dispatcher_settings_reread, apply_sink_outcome, apply_source_event_counts,
+        apply_source_last_success, apply_source_staleness, apply_startup_ingest_pending,
+        apply_worker_status, apply_writer_lease_status,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -4560,6 +4601,48 @@ mod tests {
     }
 
     #[test]
+    fn a_freshly_probed_source_event_counts_replaces_the_state_the_operator_sees() {
+        // livespec-console-beads-fabro-mx9u.20.2: the render loop's fold for
+        // the Event sources roster's per-source counts column, exercised the
+        // same way `apply_source_last_success` is above.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("source-event-counts-test".to_owned());
+        let mut fresh = BTreeMap::new();
+        fresh.insert(
+            "dispatcher".to_owned(),
+            console_application::source_event_counts::SourceEventCounts {
+                observed: 3,
+                not_observed: 1,
+            },
+        );
+
+        apply_source_event_counts(&mut state, Some(fresh.clone()));
+
+        assert_eq!(state.source_event_counts(), &fresh);
+    }
+
+    #[test]
+    fn an_absent_source_event_counts_probe_leaves_the_state_alone() {
+        // MUST-NOT-FLAG CONTROL, same shape as `an_absent_source_last_success_probe_leaves_the_state_alone`
+        // above.
+        let mut seeded = BTreeMap::new();
+        seeded.insert(
+            "dispatcher".to_owned(),
+            console_application::source_event_counts::SourceEventCounts {
+                observed: 3,
+                not_observed: 1,
+            },
+        );
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("source-event-counts-test".to_owned())
+            .with_source_event_counts(seeded.clone());
+
+        apply_source_event_counts(&mut state, None);
+
+        assert_eq!(state.source_event_counts(), &seeded);
+    }
+
+    #[test]
     // livespec-console-beads-fabro-pzbdbo.27: the render loop's fold for the
     // startup-ingest tell, exercised the same way `apply_build_staleness` is --
     // the loop itself is terminal-bound and excluded from tests, this seam is
@@ -4666,6 +4749,18 @@ mod tests {
         check(
             session.take_source_last_success().is_none(),
             "a session with no probe behind it reports no source last success",
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_probe_behind_it_reports_no_source_event_counts() {
+        // The trait default (livespec-console-beads-fabro-mx9u.20.2), same
+        // reasoning as the source-last-success default above.
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_source_event_counts().is_none(),
+            "a session with no probe behind it reports no source event counts",
         );
     }
 

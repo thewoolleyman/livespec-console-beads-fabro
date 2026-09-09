@@ -60,6 +60,7 @@ use console_application::{
         parse_reconcile_runs_observation, reconcile_runs_snapshot_payload_json, run_adapter_poll,
         source_observed_event, work_item_snapshot_payload_json,
     },
+    source_event_counts::{SourceEventCounts, source_event_counts},
     source_staleness::{SourceStaleness, oldest_unavailable_since},
     writer_identity::WriterIdentity,
 };
@@ -2379,24 +2380,43 @@ pub fn checkpoint_source_last_success(
         .collect())
 }
 
+/// The three facts [`source_health_and_last_success`] reads together: the
+/// header's current unavailable-sources tally, the per-source
+/// last-successful-read map, and the per-source event-counts-by-type map.
+/// Factored into a named type per `clippy::type_complexity` rather than an
+/// inline tuple.
+type SourceHealthLastSuccessAndCounts = (
+    Vec<String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, SourceEventCounts>,
+);
+
 /// The shared read behind both [`source_staleness_snapshot`] and
 /// [`source_last_success_snapshot`]: the header's current unavailable-sources
 /// tally ([`project_tui_events`]/`unavailable_sources`), and the per-source
 /// last-successful-read map dating it ([`last_successful_observed_at`], the
-/// SAME derivation `doctor` uses). ONE read shared by both callers, so the
-/// header's stale-since rider and the Event sources roster's stale-since
-/// column can never disagree with each other or with `doctor` about the
-/// identical condition.
+/// SAME derivation `doctor` uses), and the per-source event-counts-by-type
+/// map (`console_application::source_event_counts::source_event_counts`,
+/// livespec-console-beads-fabro-mx9u.20.2) folded from the SAME `events`
+/// list rather than a second `list_console_events` read. ONE read shared by
+/// all three callers, so the header's stale-since rider, the Event sources
+/// roster's stale-since column, and its per-source counts can never
+/// disagree with each other or with `doctor` about the identical condition.
 fn source_health_and_last_success(
     store: &SqliteEventStore,
-) -> EventStoreResult<(Vec<String>, BTreeMap<String, String>)> {
+) -> EventStoreResult<SourceHealthLastSuccessAndCounts> {
     let events = store.list_console_events()?;
     let projection = project_tui_events(&events, None);
     let events_with_observed_at = store.list_console_events_with_observed_at()?;
     let checkpoint_last_success = checkpoint_source_last_success(store)?;
     let last_success =
         last_successful_observed_at(&events_with_observed_at, &checkpoint_last_success);
-    Ok((projection.unavailable_sources().to_vec(), last_success))
+    let event_counts = source_event_counts(&events);
+    Ok((
+        projection.unavailable_sources().to_vec(),
+        last_success,
+        event_counts,
+    ))
 }
 
 /// Read the console's current [`SourceStaleness`] straight from `store`
@@ -2411,7 +2431,7 @@ fn source_health_and_last_success(
 /// # Errors
 /// Returns an error when either store read fails.
 pub fn source_staleness_snapshot(store: &SqliteEventStore) -> EventStoreResult<SourceStaleness> {
-    let (unavailable_sources, last_success) = source_health_and_last_success(store)?;
+    let (unavailable_sources, last_success, _event_counts) = source_health_and_last_success(store)?;
     Ok(oldest_unavailable_since(
         &unavailable_sources,
         &last_success,
@@ -2431,8 +2451,32 @@ pub fn source_staleness_snapshot(store: &SqliteEventStore) -> EventStoreResult<S
 pub fn source_last_success_snapshot(
     store: &SqliteEventStore,
 ) -> EventStoreResult<BTreeMap<String, String>> {
-    let (_unavailable_sources, last_success) = source_health_and_last_success(store)?;
+    let (_unavailable_sources, last_success, _event_counts) =
+        source_health_and_last_success(store)?;
     Ok(last_success)
+}
+
+/// Read the console's current per-source event-counts-by-type map straight
+/// from `store` (livespec-console-beads-fabro-mx9u.20.2): the Event sources
+/// roster's per-source counts column.
+///
+/// Shares [`source_health_and_last_success`]'s ONE read with
+/// [`source_staleness_snapshot`] and [`source_last_success_snapshot`] --
+/// called on the SAME background poller cadence, never from the render
+/// thread. The fold itself
+/// (`console_application::source_event_counts::source_event_counts`) is an
+/// O(n) in-memory pass over the events list that read already fetches, so
+/// this adds no additional `SQLite` query beyond what the other two
+/// snapshots already pay for on this cadence.
+///
+/// # Errors
+/// Returns an error when either store read fails.
+pub fn source_event_counts_snapshot(
+    store: &SqliteEventStore,
+) -> EventStoreResult<BTreeMap<String, SourceEventCounts>> {
+    let (_unavailable_sources, _last_success, event_counts) =
+        source_health_and_last_success(store)?;
+    Ok(event_counts)
 }
 
 /// Return the doctor report value.
@@ -4139,9 +4183,10 @@ mod tests {
         DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, WriterIdentity,
         checkpoint_load_failed, checkpoint_save_failed, checkpoint_source_last_success,
         effect_may_persist_command, effect_sink_io_error, resolve_console_invoker,
-        sink_outcome_for_persist_error, source_last_success_snapshot, source_staleness_snapshot,
-        tolerate_transient_refresh,
+        sink_outcome_for_persist_error, source_event_counts_snapshot, source_last_success_snapshot,
+        source_staleness_snapshot, tolerate_transient_refresh,
     };
+    use console_application::source_event_counts::SourceEventCounts;
     use console_application::source_staleness::SourceStaleness;
 
     use std::cell::RefCell;
@@ -12755,6 +12800,65 @@ mod tests {
     }
 
     #[test]
+    fn source_event_counts_snapshot_reports_an_empty_map_over_a_fresh_store() {
+        // livespec-console-beads-fabro-mx9u.20.2: the roster's per-source
+        // counts column, over the sibling function to
+        // `source_last_success_snapshot` that shares its ONE read.
+        let (path, store) = file_store("source-event-counts-fresh-store");
+
+        let event_counts = source_event_counts_snapshot(&store).ok_test();
+
+        assert_eq!(event_counts, BTreeMap::new());
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn source_event_counts_snapshot_counts_a_not_observed_marker_over_a_real_store() {
+        use console_application::source_adapters::{
+            NotObservedFinding, SourceAdapterKind, not_observed_finding_payload_json,
+        };
+
+        // The non-empty angle `source_event_counts_snapshot_reports_an_empty_map_over_a_fresh_store`
+        // does not exercise: a store holding one not-observed marker reports
+        // it back through the shared read, proving the fold actually runs
+        // over what `list_console_events` returns rather than a stub.
+        let (path, mut store) = file_store("source-event-counts-real-not-observed");
+        let finding = NotObservedFinding::new(
+            "livespec-console-beads-fabro",
+            SourceAdapterKind::Dispatcher,
+            "dispatcher binary not found",
+        );
+        let event = ConsoleEvent::fixture(
+            "evt_dispatcher_not_observed",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )
+        .with_payload_json(not_observed_finding_payload_json(&finding));
+        let append = event_append_from_console_event(&event, "2026-09-09T00:00:00Z");
+        store.append_event(&append).ok_test();
+
+        let event_counts = source_event_counts_snapshot(&store).ok_test();
+
+        let dispatcher_counts = event_counts.get("dispatcher").copied().unwrap_or_default();
+        assert_eq!(dispatcher_counts.not_observed, 1);
+        assert_eq!(dispatcher_counts.observed, 0);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_source_event_counts_snapshot_propagates_missing_checkpoints_table_errors() {
+        // Same shared read `real_store_source_last_success_snapshot_propagates_missing_checkpoints_table_errors`
+        // exercises, through the sibling function's OWN `?` call site.
+        let (path, store) = file_store("source-event-counts-missing-checkpoints-table");
+        corrupt_store(&path, "drop table checkpoints");
+
+        let error = err_eventstore_source_event_counts(source_event_counts_snapshot(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
     fn real_store_needs_attention_ingest_reports_missing_event_table_errors() {
         let (path, mut store) = file_store("needs-attention-missing-events");
         let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
@@ -13873,6 +13977,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "err_eventstore_source_event_counts failed")]
+    fn err_eventstore_source_event_counts_panics() {
+        err_eventstore_source_event_counts(Ok(BTreeMap::new()));
+    }
+
+    #[test]
     #[should_panic(expected = "err_runtime_usize failed")]
     fn err_runtime_usize_panics() {
         err_runtime_usize(Ok(0));
@@ -14003,6 +14113,14 @@ mod tests {
     #[should_panic(expected = "ok_eventstore_source_last_success_snapshot failed")]
     fn ok_eventstore_source_last_success_snapshot_panics() {
         let result: EventStoreResult<BTreeMap<String, String>> =
+            Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_source_event_counts_snapshot failed")]
+    fn ok_eventstore_source_event_counts_snapshot_panics() {
+        let result: EventStoreResult<BTreeMap<String, SourceEventCounts>> =
             Err(EventStoreError::InvalidSequence);
         result.ok_test();
     }
@@ -14433,6 +14551,20 @@ mod tests {
                 Ok(value) => value,
                 Err(error) => {
                     panic!("ok_eventstore_source_last_success_snapshot failed: {error:?}")
+                }
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<BTreeMap<String, SourceEventCounts>> {
+        type Output = BTreeMap<String, SourceEventCounts>;
+
+        #[track_caller]
+        fn ok_test(self) -> BTreeMap<String, SourceEventCounts> {
+            match self {
+                Ok(value) => value,
+                Err(error) => {
+                    panic!("ok_eventstore_source_event_counts_snapshot failed: {error:?}")
                 }
             }
         }
@@ -14920,6 +15052,16 @@ mod tests {
     ) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_eventstore_source_last_success failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_source_event_counts(
+        result: EventStoreResult<BTreeMap<String, SourceEventCounts>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_source_event_counts failed"),
             Err(error) => error,
         }
     }
