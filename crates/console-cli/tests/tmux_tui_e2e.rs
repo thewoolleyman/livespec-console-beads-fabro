@@ -269,13 +269,13 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
         "help from Lanes must auto-focus the Lanes section:\n{lanes}"
     );
     assert!(
-        !lanes.contains("event timeline"),
+        !lanes.contains("container for two sub-views"),
         "the Lanes section must not show the Events text:\n{lanes}"
     );
 
     // --- navigating the left menu switches the right pane's content (down) ---
     console.send_keys(&["Down"])?; // section Lanes -> Events
-    let events = console.wait_for_settled("event timeline", render_timeout())?;
+    let events = console.wait_for_settled("container for two sub-views", render_timeout())?;
     assert!(
         events.contains("> Events"),
         "Down must move the menu selection to Events:\n{events}"
@@ -290,7 +290,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     console.send_keys(&["Down"])?;
     let after_right = console.wait_for_settled("> Events", render_timeout())?;
     assert!(
-        after_right.contains("event timeline") && !after_right.contains("lane board"),
+        after_right.contains("container for two sub-views") && !after_right.contains("lane board"),
         "Down with Help text focused must not change the selected section:\n{after_right}"
     );
 
@@ -642,14 +642,32 @@ fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()
     assert_no_baked_doc_prose(&lanes, "Lanes");
 
     // --- case 2: the Events pane renders its operational count, no doc prose ---
-    // One Down moves the nav selection Lanes -> Events.
+    // One Down moves the nav selection Lanes -> Events. Events is now a
+    // container (livespec-console-beads-fabro-mx9u.20.1): it lands on its own
+    // "Stored events" / "Event sources" picker home first; Enter focuses the
+    // Content pane, a second Enter drills into the (first, already-selected)
+    // "Stored events" sub-view -- the same focus-then-drill idiom the Lanes
+    // board uses -- which is where the swept operational count lives.
     console.send_keys(&["Down"])?;
-    let events = console.wait_for_settled("view: Events", render_timeout())?;
+    console.wait_for_settled("view: Events", render_timeout())?;
+    console.send_keys(&["Enter", "Enter"])?;
+    let events = console.wait_for_settled("Stored events:", render_timeout())?;
     assert!(
         events.contains("Stored events:"),
         "the Events pane must render its operational stored-event count:\n{events}"
     );
     assert_no_baked_doc_prose(&events, "Events");
+    // Back out to the container overview so the Down below resumes the nav
+    // walk from the Views pane, exactly as it did before Events grew
+    // sub-views. Each Escape is sent (and settled) separately: the first
+    // returns the drilled sub-view to the container overview WITHOUT moving
+    // focus off Content (AC4), so only the second actually reaches the Views
+    // pane -- collapsing them into one `send_keys` risks observing the
+    // in-between frame instead.
+    console.send_keys(&["Escape"])?;
+    console.wait_for_settled("enter drill", render_timeout())?;
+    console.send_keys(&["Escape"])?;
+    console.wait_for_settled("Views [focus]", render_timeout())?;
 
     // --- case 3: the Repos pane renders its operational roster, no doc prose ---
     // One Down moves the nav selection Events -> Repos.

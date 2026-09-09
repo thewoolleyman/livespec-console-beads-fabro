@@ -248,6 +248,59 @@ pub enum LaneFocus {
     Lane(Lane),
 }
 
+/// Which sub-view the `Events` container is showing.
+///
+/// Either its own picker home (the "Stored events" / "Event sources" row
+/// list), or one of the two sub-views drilled into. Mirrors [`LaneFocus`]'s
+/// overview/drilled-in shape -- the same escape-returns-to-overview,
+/// session-only-persistence pattern the `Lanes` view already proved out.
+///
+/// Maintainer ruling 2026-09-09: top-level `Events` becomes a container so the
+/// per-source health the header only ellipsifies today (`sources: 3
+/// unavailable (dispatcher, +2 more)`) has somewhere to be shown in full. This
+/// value carries ONLY the navigation model; the "Event sources" roster's real
+/// content (health, cause, last-successful-read, per-row actions) is a sibling
+/// item (`livespec-console-beads-fabro-pzbdbo.29`,
+/// `livespec-console-beads-fabro-mx9u.20.2`) and deliberately renders as an
+/// empty/skeleton state here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventsFocus {
+    /// The container's own picker home, listing its two named sub-views.
+    Overview,
+    /// The "Stored events" sub-view -- exactly what the `Events` view rendered
+    /// before it became a container. No behaviour change to its content.
+    StoredEvents,
+    /// The "Event sources" sub-view -- the per-source roster. Its content is a
+    /// sibling item; this carries only the navigation model and an
+    /// empty/skeleton state, structured so a per-row action surface can be
+    /// added later without a reshape.
+    EventSources,
+}
+
+impl EventsFocus {
+    #[must_use]
+    /// Return the canonical ordered set of drillable sub-views (excluding the
+    /// container's own overview, which is not itself a sub-view).
+    pub const fn all() -> &'static [Self] {
+        &[Self::StoredEvents, Self::EventSources]
+    }
+
+    #[must_use]
+    /// Return the stable display label for this sub-view. The container's own
+    /// overview has no single sub-view name of its own, so it borrows the
+    /// container's.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Overview => "Events",
+            Self::StoredEvents => "Stored events",
+            // Maintainer ruling 2026-09-09: SOURCES is always presented in the
+            // UI as "EVENT SOURCES", for clarity against the event-sourcing
+            // architecture the console is built on.
+            Self::EventSources => "Event sources",
+        }
+    }
+}
+
 /// Which pane the arrow keys drive.
 ///
 /// The cockpit body is three side-by-side panes — the left **Views** navigation
@@ -997,6 +1050,13 @@ pub enum TuiInteraction {
     DrillIntoLane,
     /// Return to lane overview variant.
     ReturnToLaneOverview,
+    /// Drill the `Events` container's overview into its selected sub-view
+    /// (`Stored events` or `Event sources`). Mirrors [`Self::DrillIntoLane`].
+    DrillIntoEventsSubView,
+    /// Return a drilled-in `Events` sub-view to the container's own overview
+    /// (the `Esc`/`left` step-out this AC requires). Mirrors
+    /// [`Self::ReturnToLaneOverview`].
+    ReturnToEventsOverview,
     /// Move focus from the Views nav to the Content pane (the `Enter`/`right`
     /// dive-in from the nav).
     FocusContent,
@@ -1130,6 +1190,8 @@ pub struct TuiInteractionState {
     selected_lane_index: usize,
     selected_lane_item_index: usize,
     selected_lane_item_id: Option<String>,
+    events_focus: EventsFocus,
+    selected_events_index: usize,
     focus: FocusPane,
     detail_scroll: usize,
     detail_max_scroll: usize,
@@ -1163,6 +1225,8 @@ impl TuiInteractionState {
             selected_lane_index: 0,
             selected_lane_item_index: 0,
             selected_lane_item_id: None,
+            events_focus: EventsFocus::Overview,
+            selected_events_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -1200,6 +1264,8 @@ impl TuiInteractionState {
             selected_lane_index: 0,
             selected_lane_item_index: 0,
             selected_lane_item_id: None,
+            events_focus: EventsFocus::Overview,
+            selected_events_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -1363,6 +1429,26 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn with_selected_lane_index(mut self, selected_lane_index: usize) -> Self {
         self.selected_lane_index = selected_lane_index;
+        self
+    }
+
+    /// Replace which sub-view the `Events` container is showing, preserving
+    /// every other field. Mirrors [`Self::with_lane_focus`]: a NEW view switch
+    /// does not reset this (see [`view_interaction_state`]), so returning to
+    /// `Events` later in the same session lands back on whatever sub-view was
+    /// last active -- the session-only "remembers the last sub-view" AC.
+    #[must_use]
+    pub const fn with_events_focus(mut self, events_focus: EventsFocus) -> Self {
+        self.events_focus = events_focus;
+        self
+    }
+
+    /// Replace the container's own picker-row cursor (which of the two named
+    /// sub-views is highlighted while `events_focus` is
+    /// [`EventsFocus::Overview`]), preserving every other field.
+    #[must_use]
+    pub const fn with_selected_events_index(mut self, selected_events_index: usize) -> Self {
+        self.selected_events_index = selected_events_index;
         self
     }
 
@@ -1597,6 +1683,19 @@ impl TuiInteractionState {
     /// Return the stored value.
     pub const fn selected_lane_index(&self) -> usize {
         self.selected_lane_index
+    }
+
+    #[must_use]
+    /// Which sub-view the `Events` container is showing.
+    pub const fn events_focus(&self) -> EventsFocus {
+        self.events_focus
+    }
+
+    #[must_use]
+    /// The container's own picker-row cursor, meaningful only while
+    /// `events_focus` is [`EventsFocus::Overview`].
+    pub const fn selected_events_index(&self) -> usize {
+        self.selected_events_index
     }
 
     #[must_use]
@@ -1978,6 +2077,8 @@ pub struct TuiScreenModel {
     selected_lane_index: Option<usize>,
     selected_lane_item_index: Option<usize>,
     missing_selected_lane_item_id: Option<String>,
+    events_focus: EventsFocus,
+    selected_events_index: usize,
     focus: FocusPane,
     detail_scroll: usize,
     header_scroll: usize,
@@ -2081,6 +2182,22 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_lane_index(&self) -> Option<usize> {
         self.selected_lane_index
+    }
+
+    /// Which sub-view the `Events` container is showing (its own picker home,
+    /// or one of the two sub-views drilled into).
+    #[must_use]
+    pub const fn events_focus(&self) -> EventsFocus {
+        self.events_focus
+    }
+
+    /// The container's own picker-row cursor -- which of the two named
+    /// sub-views is highlighted while `events_focus` is
+    /// [`EventsFocus::Overview`]. Clamped by the renderer, so it is always a
+    /// valid index into [`EventsFocus::all`].
+    #[must_use]
+    pub const fn selected_events_index(&self) -> usize {
+        self.selected_events_index
     }
 
     /// The selected work-item row within a drilled-in lane, present only while
@@ -2626,7 +2743,20 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
         TuiView::Settings => Cow::Owned(with_global_status_hint(
             "up/down move | enter/space edit row",
         )),
-        TuiView::Spec | TuiView::Events | TuiView::Repos => Cow::Owned(with_global_status_hint(
+        // The container's own overview selects a SUB-VIEW, mirroring the lane
+        // overview above: `enter` is the one new key, named here exactly as the
+        // lane overview names its own. A drilled-in sub-view names its own
+        // step-out key instead, per AC4 (Escape returns to the container, not
+        // out of the view).
+        TuiView::Events => match model.events_focus {
+            EventsFocus::Overview => Cow::Owned(with_global_status_hint(
+                "up/down move | enter drill | left/right focus | / search",
+            )),
+            EventsFocus::StoredEvents | EventsFocus::EventSources => Cow::Owned(
+                with_global_status_hint("esc sub-view list | left/right focus | / search"),
+            ),
+        },
+        TuiView::Spec | TuiView::Repos => Cow::Owned(with_global_status_hint(
             "up/down move | left/right focus | / search",
         )),
     }
@@ -4324,6 +4454,10 @@ pub fn render_tui_model(
         ),
         _ => None,
     };
+    let events_focus = state.events_focus();
+    let selected_events_index = state
+        .selected_events_index()
+        .min(EventsFocus::all().len() - 1);
     // The Status line is ONE channel, and its rule is that the most recent thing
     // to contradict the operator's expectation is what it says. A cursor that
     // moved out from under them because the anchored row left the list is
@@ -4347,12 +4481,19 @@ pub fn render_tui_model(
         attention_total: projection.attention_total,
         selected_attention_index,
         detail,
-        view_items: view_summary_items(active_view, events),
+        view_items: view_summary_items(
+            active_view,
+            events_focus,
+            &projection.unavailable_sources,
+            events,
+        ),
         lane_board,
         lane_focus,
         selected_lane_index,
         selected_lane_item_index,
         missing_selected_lane_item_id,
+        events_focus,
+        selected_events_index,
         focus: state.focus(),
         detail_scroll: state.detail_scroll(),
         header_scroll: state.header_scroll(),
@@ -5366,6 +5507,10 @@ fn reduce_interaction_state(
         }
         TuiInteraction::DrillIntoLane => drill_into_lane(state, model),
         TuiInteraction::ReturnToLaneOverview => state.clone().with_lane_focus(LaneFocus::Overview),
+        TuiInteraction::DrillIntoEventsSubView => drill_into_events_sub_view(state),
+        TuiInteraction::ReturnToEventsOverview => {
+            state.clone().with_events_focus(EventsFocus::Overview)
+        }
         TuiInteraction::FocusContent => state.clone().with_focus(FocusPane::Content),
         TuiInteraction::FocusNav => state.clone().with_focus(FocusPane::Nav),
         TuiInteraction::FocusDetail => state.clone().with_focus(FocusPane::Detail),
@@ -5494,6 +5639,8 @@ fn content_selection_cursor(state: &TuiInteractionState, model: &TuiScreenModel)
             state.selected_setting_index(),
             DispatcherSettingRow::all().len(),
         )
+    } else if is_events_overview(state) {
+        (state.selected_events_index(), EventsFocus::all().len())
     } else {
         (
             current_attention_index(state, model),
@@ -5789,6 +5936,17 @@ fn is_settings_view(state: &TuiInteractionState) -> bool {
     state.active_view() == TuiView::Settings
 }
 
+/// Whether the `Events` container is showing its own overview home (the
+/// "Stored events" / "Event sources" picker), where up/down moves the
+/// selected sub-view row rather than the attention selection. A drilled-in
+/// sub-view falls through to the SAME attention-cursor routing every other
+/// summary view (`Spec`, `Repos`) already used before this container existed
+/// — see [`select_next`] — so "Stored events" keeps its pre-container up/down
+/// behaviour exactly (AC3: no behaviour change to its content).
+fn is_events_overview(state: &TuiInteractionState) -> bool {
+    state.active_view() == TuiView::Events && state.events_focus() == EventsFocus::Overview
+}
+
 /// Move the selection down, routed to the lane overview row or the settings row
 /// when one of those views is active, else to the attention list.
 fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiInteractionState {
@@ -5812,6 +5970,13 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
             .with_selected_setting_index(move_selection_down(
                 DispatcherSettingRow::all().len(),
                 state.selected_setting_index(),
+            ))
+    } else if is_events_overview(state) {
+        state
+            .clone()
+            .with_selected_events_index(move_selection_down(
+                EventsFocus::all().len(),
+                state.selected_events_index(),
             ))
     } else {
         select_attention_at(
@@ -5846,6 +6011,10 @@ fn select_previous(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIn
         state
             .clone()
             .with_selected_setting_index(move_selection_up(state.selected_setting_index()))
+    } else if is_events_overview(state) {
+        state
+            .clone()
+            .with_selected_events_index(move_selection_up(state.selected_events_index()))
     } else {
         select_attention_at(
             state,
@@ -5901,6 +6070,17 @@ fn drill_into_lane(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIn
         return drilled.with_selected_lane_item(0, item.work_item_id());
     }
     drilled
+}
+
+/// Drill the `Events` container overview's selected row into the named
+/// sub-view it names. Unlike [`drill_into_lane`] there is no per-item identity
+/// to anchor: the two sub-views are fixed and named, not a dynamic work-item
+/// list.
+fn drill_into_events_sub_view(state: &TuiInteractionState) -> TuiInteractionState {
+    let sub_view = EventsFocus::all()[state
+        .selected_events_index()
+        .min(EventsFocus::all().len() - 1)];
+    state.clone().with_events_focus(sub_view)
 }
 
 fn select_lane_item_at(
@@ -9493,16 +9673,68 @@ fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
         .collect()
 }
 
-fn view_summary_items(active_view: TuiView, events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
+fn view_summary_items(
+    active_view: TuiView,
+    events_focus: EventsFocus,
+    unavailable_sources: &[String],
+    events: &[ConsoleEvent],
+) -> Vec<ViewSummaryItem> {
     match active_view {
         TuiView::Spec => spec_view_items(events),
-        TuiView::Events => events_view_items(events),
+        TuiView::Events => events_container_items(events_focus, unavailable_sources, events),
         TuiView::Repos => repos_view_items(events),
         // The Attention, Lanes, and Settings views render their own projections
         // (the attention list / detail, the lane board, the dispatcher-settings
         // rows), not summary rows.
         TuiView::Attention | TuiView::Lanes | TuiView::Settings => Vec::new(),
     }
+}
+
+/// The `Events` container's content rows, keyed on which sub-view is showing.
+///
+/// `Overview` lists the two sub-views by name -- the container's own picker
+/// home. `StoredEvents` is EXACTLY [`events_view_items`], the pre-container
+/// Events content, unchanged (AC3). `EventSources` is an empty/skeleton state
+/// only: the real per-source roster (health, cause, last-successful-read, and
+/// per-row actions) is a sibling item
+/// (`livespec-console-beads-fabro-pzbdbo.29`,
+/// `livespec-console-beads-fabro-mx9u.20.2`); this renders just the source
+/// names so the sub-view is not empty of structure, without claiming detail it
+/// does not carry.
+fn events_container_items(
+    events_focus: EventsFocus,
+    unavailable_sources: &[String],
+    events: &[ConsoleEvent],
+) -> Vec<ViewSummaryItem> {
+    match events_focus {
+        EventsFocus::Overview => EventsFocus::all()
+            .iter()
+            .map(|sub_view| ViewSummaryItem::new(sub_view.label().to_owned(), String::new()))
+            .collect(),
+        EventsFocus::StoredEvents => events_view_items(events),
+        EventsFocus::EventSources => event_sources_skeleton_items(unavailable_sources),
+    }
+}
+
+/// The "Event sources" sub-view's empty/skeleton state: a plain name-only row
+/// per source this build has observed as unavailable, from the SAME
+/// projection the header's `sources: N unavailable` segment and `doctor` read
+/// (`TuiProjection::unavailable_sources`) -- never a second encoding of source
+/// health. A healthy source currently has no positive "observed present"
+/// signal to list it by, so the roster is a skeleton, not the full per-source
+/// line (health, last status/cause, last successful read) the sibling item
+/// builds.
+fn event_sources_skeleton_items(unavailable_sources: &[String]) -> Vec<ViewSummaryItem> {
+    if unavailable_sources.is_empty() {
+        return vec![ViewSummaryItem::new(
+            "No event sources observed yet".to_owned(),
+            String::new(),
+        )];
+    }
+    unavailable_sources
+        .iter()
+        .map(|source| ViewSummaryItem::new(source.clone(), String::new()))
+        .collect()
 }
 
 fn spec_view_items(events: &[ConsoleEvent]) -> Vec<ViewSummaryItem> {
@@ -9791,7 +10023,7 @@ mod tests {
         DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettingWriteState,
-        DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead,
+        DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead, EventsFocus,
         FactoryDispatchItemPort, FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest,
         FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
         FocusPane, HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HINT_OVERFLOW_KEY, HelpFocus,
@@ -11943,7 +12175,6 @@ mod tests {
         // row's detail is the live repo roster (operational, retained).
         for (view, expected_title, expected_detail) in [
             (TuiView::Spec, "LiveSpec next snapshots: 1", ""),
-            (TuiView::Events, "Stored events: 8", ""),
             (
                 TuiView::Repos,
                 "Repos observed: 2",
@@ -11957,12 +12188,37 @@ mod tests {
             assert_eq!(model.view_items()[0].title(), expected_title);
             assert_eq!(model.view_items()[0].detail(), expected_detail);
         }
+
+        // Events is a container: its own overview lists the two sub-view names
+        // (AC2), and the pre-container stored-event count only reappears once
+        // drilled into "Stored events" (AC3: unchanged content).
+        let overview = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+        );
+        assert_eq!(overview.view_items()[0].title(), "Stored events");
+        assert_eq!(overview.view_items()[1].title(), "Event sources");
+
+        let drilled = build_tui_model_for_state(&events, &events_stored_events_state());
+        assert_eq!(drilled.view_items()[0].title(), "Stored events: 8");
+        assert_eq!(drilled.view_items()[0].detail(), "");
+    }
+
+    /// A `TuiInteractionState` on the `Events` view, drilled into the "Stored
+    /// events" sub-view -- the pre-container content every `tui_events_*` test
+    /// below asserts is unchanged (AC3).
+    fn events_stored_events_state() -> TuiInteractionState {
+        reduce_tui_interaction(
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+            &[],
+            TuiInteraction::DrillIntoEventsSubView,
+        )
     }
 
     #[test]
     fn tui_events_view_latest_row_carries_operational_detail_only() {
         let events = view_summary_events();
-        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        let state = events_stored_events_state();
         let model = build_tui_model_for_state(&events, &state);
 
         // The Events view's second row is the live latest-event summary: an
@@ -12058,7 +12314,7 @@ mod tests {
 
     #[test]
     fn tui_events_view_reports_empty_and_latest_event_detail() {
-        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        let state = events_stored_events_state();
         let empty_model = build_tui_model_for_state(&[], &state);
 
         assert_eq!(empty_model.view_items()[1].detail(), "none");
@@ -12070,6 +12326,103 @@ mod tests {
         assert_eq!(
             model.view_items()[1].detail(),
             "Factory drain failed from console:factory-command-handler on factory:livespec-console-beads-fabro"
+        );
+    }
+
+    #[test]
+    fn events_focus_label_and_all_are_stable() {
+        // `EventsFocus::Overview` borrows the container's OWN label, since it
+        // is not itself a named sub-view; `all()` names only the two it is
+        // NOT (the drillable set the container overview lists and the picker
+        // cursor moves over).
+        assert_eq!(EventsFocus::Overview.label(), "Events");
+        assert_eq!(EventsFocus::StoredEvents.label(), "Stored events");
+        // Maintainer ruling 2026-09-09: SOURCES is always "EVENT SOURCES".
+        assert_eq!(EventsFocus::EventSources.label(), "Event sources");
+        assert_eq!(
+            EventsFocus::all(),
+            [EventsFocus::StoredEvents, EventsFocus::EventSources]
+        );
+    }
+
+    #[test]
+    fn tui_events_overview_arrows_move_the_selected_sub_view_not_the_attention_list() {
+        // Mirrors `tui_lanes_overview_arrows_move_the_selected_lane_not_the_attention_list`:
+        // the container's own overview has a real per-row cursor (AC2), and
+        // moving it must not disturb the (unrelated, hidden-behind-this-view)
+        // Attention selection.
+        let events = fabro_gate_events();
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None);
+        assert_eq!(state.events_focus(), EventsFocus::Overview);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(state.selected_events_index(), 1);
+        assert_eq!(model.selected_events_index(), 1);
+        assert_eq!(state.selected_attention_index(), 0);
+
+        // Only two sub-views exist, so a further SelectNext clamps at the last.
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectNext);
+        assert_eq!(state.selected_events_index(), 1);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::SelectPrevious);
+        assert_eq!(state.selected_events_index(), 0);
+    }
+
+    #[test]
+    fn tui_events_drill_into_event_sources_and_return_to_overview() {
+        // AC2 + AC4, exercising the SECOND sub-view (`EventSources`), which the
+        // "Stored events" fixtures above never reach: drilling from the
+        // overview's second row opens "Event sources" fed from the SAME
+        // `unavailable_sources` projection the header segment reads, and
+        // `ReturnToEventsOverview` (Esc's reducer target) restores the picker.
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_dispatcher_down",
+                EventType::SourceNotObservedFindingObserved,
+                "dispatcher",
+            ),
+            ConsoleEvent::fixture(
+                "evt_livespec_down",
+                EventType::SourceNotObservedFindingObserved,
+                "livespec",
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_selected_events_index(1);
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::DrillIntoEventsSubView);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(state.events_focus(), EventsFocus::EventSources);
+        assert_eq!(model.events_focus(), EventsFocus::EventSources);
+        let titles: Vec<&str> = model
+            .view_items()
+            .iter()
+            .map(super::ViewSummaryItem::title)
+            .collect();
+        assert_eq!(titles, ["dispatcher", "livespec"]);
+        assert_eq!(model.unavailable_sources(), ["dispatcher", "livespec"]);
+
+        let state = reduce_tui_interaction(&state, &events, TuiInteraction::ReturnToEventsOverview);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(state.events_focus(), EventsFocus::Overview);
+        assert_eq!(model.events_focus(), EventsFocus::Overview);
+    }
+
+    #[test]
+    fn tui_event_sources_sub_view_states_an_empty_projection() {
+        // No source has ever been observed unavailable: the skeleton says so
+        // plainly rather than rendering an empty list (AC5 of the parent
+        // epic's roster item still owns the full per-source line; this is the
+        // navigation model's own empty state).
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources);
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert_eq!(model.view_items().len(), 1);
+        assert_eq!(
+            model.view_items()[0].title(),
+            "No event sources observed yet"
         );
     }
 
@@ -12327,6 +12680,8 @@ mod tests {
             selected_lane_index: None,
             selected_lane_item_index: None,
             missing_selected_lane_item_id: None,
+            events_focus: super::EventsFocus::Overview,
+            selected_events_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             header_scroll: 0,
@@ -12383,6 +12738,8 @@ mod tests {
             selected_lane_index: None,
             selected_lane_item_index: None,
             missing_selected_lane_item_id: None,
+            events_focus: super::EventsFocus::Overview,
+            selected_events_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             header_scroll: 0,
@@ -17977,10 +18334,32 @@ mod tests {
         // The read-only nav views surface select + focus-move + search.
         let read_only = "up/down move | left/right focus | / search | 1-6 view | ? help | q quit";
         assert!(read_only.contains("left/right focus") && read_only.contains("search"));
-        for view in [TuiView::Spec, TuiView::Events, TuiView::Repos] {
+        for view in [TuiView::Spec, TuiView::Repos] {
             let model = view_model(view);
             assert_eq!(model.footer(), read_only);
         }
+        // Events is a container: its own overview names the new `enter drill`
+        // key exactly as the lane overview names its own, and a drilled-in
+        // sub-view names its own step-out key instead of the shared hint above.
+        let events_overview = view_model(TuiView::Events);
+        assert_eq!(events_overview.events_focus(), EventsFocus::Overview);
+        assert_eq!(
+            events_overview.footer(),
+            "up/down move | enter drill | left/right focus | / search | 1-6 view | ? help | q quit"
+        );
+        let events_drilled = build_tui_model_for_state(
+            &[],
+            &reduce_tui_interaction(
+                &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+                &[],
+                TuiInteraction::DrillIntoEventsSubView,
+            ),
+        );
+        assert_eq!(events_drilled.events_focus(), EventsFocus::StoredEvents);
+        assert_eq!(
+            events_drilled.footer(),
+            "esc sub-view list | left/right focus | / search | 1-6 view | ? help | q quit"
+        );
     }
 
     #[test]
@@ -20971,6 +21350,8 @@ mod tests {
             selected_lane_index: None,
             selected_lane_item_index: None,
             missing_selected_lane_item_id: None,
+            events_focus: EventsFocus::Overview,
+            selected_events_index: 0,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,
@@ -21205,6 +21586,8 @@ mod tests {
             selected_lane_index: Some(0),
             selected_lane_item_index: None,
             missing_selected_lane_item_id: None,
+            events_focus: EventsFocus::Overview,
+            selected_events_index: 0,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,
