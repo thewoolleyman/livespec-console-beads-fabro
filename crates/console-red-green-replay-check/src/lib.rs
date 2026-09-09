@@ -29,6 +29,39 @@ const RED_TRAILER_TOKEN: &str = "TDD-Red-Test-File-Checksum:";
 const GREEN_VERIFIED_KEY: &str = "TDD-Green-Verified-At";
 const GREEN_TRAILER_TOKEN: &str = "TDD-Green-Verified-At:";
 const SUITE_TRAILER_TOKEN: &str = "TDD-Suite-Green-Captured-At:";
+/// Binds a Green or Suite-Green attestation to the DIFF it describes, via
+/// `git patch-id --stable` of the commit's changes relative to its parent.
+/// Written by `handle_green` and `handle_suite_green` at the moment
+/// verification succeeds, and checked by `commit_violates` against the
+/// commit's ACTUAL patch-id in the range check.
+///
+/// This is deliberately a patch-id, NOT a full-tree hash. An earlier version
+/// of this fix bound to `git write-tree`'s tree object, which changes
+/// whenever ANY file anywhere in the repo differs -- including files this
+/// commit never touched. That broke the repo's own mandated merge path:
+/// `gh pr merge --rebase` (this repo's rebase-merge discipline) replays the
+/// branch commit onto whatever master has become, and master gains
+/// `chore(deps)` commits many times an hour, so EVERY rebase-merge of a
+/// product-Rust PR would have produced a commit whose recorded tree no
+/// longer matched -- rejecting every future merge, verified empirically
+/// 2026-09-09 (a clean rebase-merge past four unrelated `chore(deps)`
+/// commits reproduced the mismatch). `git patch-id` exists precisely to
+/// answer "is this still the same change" across exactly that kind of
+/// rebase: it ignores line-number and blob-abbreviation drift caused by
+/// unrelated commits, but changes when the diff's own content changes (a
+/// conflicted rebase's resolution, or an amend that edits the diff) --
+/// verified both ways in the same session.
+///
+/// This narrows what the attestation can prove: it shows the tested DIFF is
+/// unaltered, not that the diff is still compatible with everything master
+/// has gained since (a clean rebase CAN still break the build via an
+/// unrelated file, as the mx9u.1 case that broadened this item's scope
+/// showed -- no static hash can catch that without re-running the suite on
+/// the final tree). That residual risk is covered by a DIFFERENT gate this
+/// repo already has: `ci.yml` triggers on `push: branches: [master]` as well
+/// as `pull_request`, so the actual merged tree is compiled and tested again
+/// after every merge, on master itself (livespec-console-beads-fabro-pzbdbo.37).
+const DIFF_TRAILER_KEY: &str = "TDD-Verified-Patch-Id";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
@@ -60,6 +93,11 @@ impl CommandOutput {
 pub trait Runner {
     fn git(&self, args: &[&str]) -> Result<CommandOutput, String>;
     fn cargo_test(&self, scope: TestScope) -> Result<CommandOutput, String>;
+    /// The `git patch-id --stable` identity of the diff from `base` to
+    /// `target` (each anything `git diff-tree` accepts: a commit, `HEAD^`, a
+    /// tree object from `git write-tree`, ...). Stable across a rebase onto
+    /// an unrelated moving base; changes when the diff's own content changes.
+    fn patch_id(&self, base: &str, target: &str) -> Result<CommandOutput, String>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,11 +287,17 @@ fn handle_green(runner: &impl Runner, msg_path: &Path) -> Result<(), String> {
         );
     }
     let parent = current_head_sha(runner)?;
+    // The amend keeps its ORIGINAL parent (HEAD^, the Red commit's own
+    // parent) -- HEAD itself is the Red commit being replaced, not the
+    // finished commit's parent.
+    let tree = git_stdout(runner, &["write-tree"])?;
+    let diff_id = diff_identity(runner, "HEAD^", &tree)?;
     write_trailers(
         msg_path,
         &[
             ("TDD-Green-Verified-At", &utc_timestamp()),
             ("TDD-Green-Parent-Reflog", &parent),
+            (DIFF_TRAILER_KEY, &diff_id),
         ],
     )
 }
@@ -266,6 +310,8 @@ fn handle_suite_green(runner: &impl Runner, msg_path: &Path) -> Result<(), Strin
             summary(&result.combined())
         ));
     }
+    let tree = git_stdout(runner, &["write-tree"])?;
+    let diff_id = diff_identity(runner, "HEAD", &tree)?;
     write_trailers(
         msg_path,
         &[
@@ -275,8 +321,36 @@ fn handle_suite_green(runner: &impl Runner, msg_path: &Path) -> Result<(), Strin
                 &text_checksum(&result.combined()),
             ),
             ("TDD-Suite-Green-Captured-At", &utc_timestamp()),
+            (DIFF_TRAILER_KEY, &diff_id),
         ],
     )
+}
+
+/// The `git patch-id --stable` identity of the diff from `base` to `target`,
+/// as a plain string suitable for a trailer value. See `DIFF_TRAILER_KEY` for
+/// why this is a patch-id and not a tree hash.
+fn diff_identity(runner: &impl Runner, base: &str, target: &str) -> Result<String, String> {
+    let output = runner.patch_id(base, target)?;
+    if output.code != 0 {
+        return Err(format!(
+            "red-green-replay-patch-id-failed: git patch-id ({base}..{target}): {}",
+            summary(&output.stderr)
+        ));
+    }
+    let id = output.stdout.split_whitespace().next().unwrap_or_default();
+    if id.is_empty() {
+        // The pipe's exit code is `git patch-id`'s own, and patch-id exits 0
+        // on empty input -- so an upstream `git diff-tree` failure (a bad
+        // revision, most commonly) surfaces here as an empty id with a 0
+        // exit code, not as the `output.code != 0` branch above. Fold the
+        // pipe's stderr in so that failure is still named, not just "empty".
+        return Err(format!(
+            "red-green-replay-patch-id-empty: git patch-id produced no output for \
+             {base}..{target}: {}",
+            summary(&output.stderr)
+        ));
+    }
+    Ok(id.to_owned())
 }
 
 fn staged_files(runner: &impl Runner) -> Result<Vec<String>, String> {
@@ -366,7 +440,40 @@ fn commit_violates(runner: &impl Runner, sha: &str) -> Result<bool, String> {
     let message = git_stdout(runner, &["log", "-1", "--format=%B", sha])?;
     let has_pair = message.contains(RED_TRAILER_TOKEN) && message.contains(GREEN_TRAILER_TOKEN);
     let has_suite = message.contains(SUITE_TRAILER_TOKEN);
-    Ok(!(has_pair || has_suite))
+    if !(has_pair || has_suite) {
+        return Ok(true);
+    }
+    // Token presence is not evidence on its own: `git rebase` -- conflicted
+    // or clean, and every branch in this repo is rebased before merge --
+    // replays a commit with its ORIGINAL message onto a different base. The
+    // trailers travel unchanged; whether the commit's own DIFF still matches
+    // what was recorded does not. Bind the attestation to that diff via its
+    // patch-id (see `DIFF_TRAILER_KEY` for why a patch-id and not a tree
+    // hash: a tree hash rejects every ordinary rebase-merge past this repo's
+    // constant `chore(deps)` churn, not just a genuinely altered commit).
+    // Commits written before this binding existed recorded no
+    // `TDD-Verified-Patch-Id` at all -- treat that absence as already-decided
+    // history rather than retroactively failing `just check` on commits this
+    // range check already accepted (livespec-console-beads-fabro-pzbdbo.37).
+    let Some(recorded_diff) = message_trailer_value(&message, DIFF_TRAILER_KEY) else {
+        return Ok(false);
+    };
+    let actual_diff = diff_identity(runner, &format!("{sha}^"), sha)?;
+    Ok(recorded_diff != actual_diff)
+}
+
+/// Reads a trailer's value directly from a raw commit message, without
+/// invoking git's trailer parser. `commit_violates` already has the message
+/// in hand from `%B`; this mirrors "final trailer block wins" by preferring
+/// the LAST matching line, without a second git round-trip per commit in the
+/// range.
+fn message_trailer_value(message: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}: ");
+    message
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .map(str::to_owned)
 }
 
 fn write_trailers(msg_path: &Path, trailers: &[(&str, &str)]) -> Result<(), String> {
@@ -654,6 +761,42 @@ impl Runner for ProcessRunner {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
+
+    // A single `sh -c '... | ...'` invocation, exactly like `git` and
+    // `cargo_test` above: one spawn, one `.output()`, one error path. An
+    // earlier version ran `git diff-tree` and `git patch-id` as two
+    // separately-spawned processes joined by a hand-fed pipe
+    // (`Stdio::piped()` + `stdin.write_all` + `wait_with_output`), which
+    // opened FOUR additional fallible steps (patch-id's spawn, the
+    // defensive "no stdin handle" `Option::take`, the write, the final
+    // wait) with no way to trigger any of them independently through this
+    // struct's one test lever (`workdir`) -- a bad workdir always fails at
+    // the FIRST spawn, before the later steps are ever reached, so they sat
+    // permanently uncovered (`just check-coverage`, 2026-09-09). The shell
+    // absorbs the pipe plumbing, `base`/`target` are passed as `$1`/`$2`
+    // positional parameters (never interpolated into the script text), so
+    // this carries no more injection surface than the two-`Command` version
+    // despite reading like string concatenation.
+    #[allow(clippy::or_fun_call)]
+    fn patch_id(&self, base: &str, target: &str) -> Result<CommandOutput, String> {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            r#"git diff-tree -p --full-index "$1" "$2" | git patch-id --stable"#,
+            "sh",
+            base,
+            target,
+        ]);
+        command.current_dir(self.workdir.as_deref().unwrap_or(Path::new(".")));
+        let output = command
+            .output()
+            .map_err(|err| format!("git diff-tree | git patch-id ({base}..{target}): {err}"))?;
+        Ok(CommandOutput {
+            code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -692,6 +835,18 @@ mod tests {
                 .borrow_mut()
                 .pop_front()
                 .ok_or_else(|| "missing fake cargo output".to_owned())
+        }
+
+        fn patch_id(&self, _base: &str, _target: &str) -> Result<CommandOutput, String> {
+            // Routed through the SAME queue as `git`: from the caller's side
+            // a patch-id lookup is just one more git-shaped round trip, and
+            // reusing the queue keeps every existing test's call-counting
+            // pattern (append one more entry per new git-ish call) working
+            // unchanged.
+            self.git
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| "missing fake git output".to_owned())
         }
     }
 
@@ -859,6 +1014,8 @@ mod tests {
                 CommandOutput::success(&test_path.to_string_lossy()),
                 CommandOutput::success(&checksum.unwrap_or_default()),
                 CommandOutput::success("abc123"),
+                CommandOutput::success("tree-abc123\n"),
+                CommandOutput::success("patchid-abc123 0000000000000000000000000000000000000000\n"),
             ],
             vec![CommandOutput::success("pass")],
         );
@@ -877,6 +1034,15 @@ mod tests {
             .ok()
             .and_then(|text| trailer_value(text, "TDD-Green-Verified-At"));
         assert!(verified_at.is_some_and(|value| value.ends_with('Z') && value != "now"));
+        // The diff binding this item added: the value written is the FIRST
+        // token of `git patch-id --stable`'s output -- the patch-id of the
+        // diff from the amend's parent to its finished tree
+        // (livespec-console-beads-fabro-pzbdbo.37).
+        let verified_diff = msg
+            .as_ref()
+            .ok()
+            .and_then(|text| trailer_value(text, "TDD-Verified-Patch-Id"));
+        assert_eq!(verified_diff.as_deref(), Some("patchid-abc123"));
         let _ = fs::remove_file(test_path);
         let _ = fs::remove_file(msg_path);
     }
@@ -955,6 +1121,37 @@ mod tests {
                 .is_err_and(|err| err.contains("missing fake git output"))
         );
 
+        // The diff binding this item added: `git write-tree` failing must
+        // fail the whole leg rather than writing a Green attestation with no
+        // tree to compute a patch-id against.
+        let tree_error = FakeRunner::new(
+            vec![
+                CommandOutput::success(&test_path.to_string_lossy()),
+                CommandOutput::success(&checksum),
+                CommandOutput::success("parent"),
+            ],
+            vec![CommandOutput::success("pass")],
+        );
+        assert!(
+            handle_green(&tree_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        // ...and `git patch-id` itself failing must too.
+        let patch_id_error = FakeRunner::new(
+            vec![
+                CommandOutput::success(&test_path.to_string_lossy()),
+                CommandOutput::success(&checksum),
+                CommandOutput::success("parent"),
+                CommandOutput::success("tree-oid\n"),
+            ],
+            vec![CommandOutput::success("pass")],
+        );
+        assert!(
+            handle_green(&patch_id_error, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
         let _ = fs::remove_file(test_path);
         let _ = fs::remove_file(msg_path);
     }
@@ -980,7 +1177,13 @@ mod tests {
     #[test]
     fn suite_green_writes_suite_trailers_only_when_full_cargo_test_passes() {
         let msg_path = temp_file("msg-suite", "chore: x\n");
-        let green = FakeRunner::new(Vec::new(), vec![CommandOutput::success("pass")]);
+        let green = FakeRunner::new(
+            vec![
+                CommandOutput::success("tree-suite\n"),
+                CommandOutput::success("patchid-suite 0000000000000000000000000000000000000000\n"),
+            ],
+            vec![CommandOutput::success("pass")],
+        );
         assert!(handle_suite_green(&green, &msg_path).is_ok());
         let msg = fs::read_to_string(&msg_path);
         assert!(
@@ -992,6 +1195,14 @@ mod tests {
             .ok()
             .and_then(|text| trailer_value(text, "TDD-Suite-Green-Captured-At"));
         assert!(captured_at.is_some_and(|value| value.ends_with('Z') && value != "now"));
+        // The diff binding this item added: the value written is the FIRST
+        // token of `git patch-id --stable`'s output for the diff from HEAD to
+        // the finished tree (livespec-console-beads-fabro-pzbdbo.37).
+        let verified_diff = msg
+            .as_ref()
+            .ok()
+            .and_then(|text| trailer_value(text, "TDD-Verified-Patch-Id"));
+        assert_eq!(verified_diff.as_deref(), Some("patchid-suite"));
         let red = FakeRunner::new(Vec::new(), vec![CommandOutput::failure("fail")]);
         assert!(handle_suite_green(&red, &msg_path).is_err_and(|err| err.contains("suite-red")));
         let _ = fs::remove_file(msg_path);
@@ -1006,6 +1217,49 @@ mod tests {
                 .is_err_and(|err| err.contains("missing fake cargo output"))
         );
         let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn suite_green_propagates_write_tree_runner_failure() {
+        // The diff binding this item added: `git write-tree` failing must
+        // fail the whole leg rather than writing a Suite-Green attestation
+        // with no tree to compute a patch-id against.
+        let msg_path = temp_file("msg-suite-tree-error", "chore: x\n");
+        let runner = FakeRunner::new(Vec::new(), vec![CommandOutput::success("pass")]);
+        assert!(
+            handle_suite_green(&runner, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn suite_green_propagates_patch_id_runner_failure() {
+        // ...and `git patch-id` itself failing must too.
+        let msg_path = temp_file("msg-suite-patch-id-error", "chore: x\n");
+        let runner = FakeRunner::new(
+            vec![CommandOutput::success("tree-suite\n")],
+            vec![CommandOutput::success("pass")],
+        );
+        assert!(
+            handle_suite_green(&runner, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+        let _ = fs::remove_file(msg_path);
+    }
+
+    #[test]
+    fn diff_identity_reports_a_failed_patch_id_command_and_an_empty_result() {
+        let failing = FakeRunner::new(vec![CommandOutput::failure("bad revision")], Vec::new());
+        assert!(
+            diff_identity(&failing, "HEAD^", "abc123")
+                .is_err_and(|err| err.contains("red-green-replay-patch-id-failed"))
+        );
+        let empty = FakeRunner::new(vec![CommandOutput::success("  \n")], Vec::new());
+        assert!(
+            diff_identity(&empty, "HEAD^", "abc123")
+                .is_err_and(|err| err.contains("red-green-replay-patch-id-empty"))
+        );
     }
 
     #[test]
@@ -1045,6 +1299,14 @@ mod tests {
 
     #[test]
     fn no_arg_range_accepts_pair_suite_and_non_product_commits() {
+        // Neither trailer block here carries a `TDD-Verified-Patch-Id` value
+        // -- this is exactly the shape of history already on `origin/master`
+        // (and of commits mid-flight on other branches) at the moment the
+        // diff binding landed. The range check must keep accepting them:
+        // retroactively requiring a trailer no commit before this fix could
+        // have written would redden `just check` on already-accepted history
+        // (livespec-console-beads-fabro-pzbdbo.37, AC discussion point on
+        // existing history).
         let runner = FakeRunner::new(
             vec![
                 CommandOutput::success("origin/master\n"),
@@ -1060,6 +1322,223 @@ mod tests {
             Vec::new(),
         );
         assert!(validate_default_range(&runner).is_ok());
+    }
+
+    /// AC1 + AC4 (a legitimate, freshly-verified commit still passes) for the
+    /// Suite-Green shape: `commit_violates` must bind the attestation to the
+    /// DIFF it claims to describe, not merely to token presence. Bound to a
+    /// patch-id rather than a tree hash specifically so this rejection fires
+    /// on a genuinely altered diff and NOT on the routine rebase-merge case
+    /// covered by `commit_violates_accepts_suite_green_survives_a_clean_rebase_merge_past_unrelated_commits`.
+    #[test]
+    fn commit_violates_rejects_suite_green_when_recorded_patch_id_does_not_match_actual_diff() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "feat: x\n\n",
+                    "TDD-Suite-Green-Scope: full-suite\n",
+                    "TDD-Suite-Green-Output-Checksum: sha256:whatever\n",
+                    "TDD-Suite-Green-Captured-At: 2026-09-08T14:50:41Z\n",
+                    "TDD-Verified-Patch-Id: patchid-old\n",
+                )),
+                CommandOutput::success("patchid-new 0000000000000000000000000000000000000000\n"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&runner, "deadbeef"), Ok(true));
+    }
+
+    #[test]
+    fn commit_violates_accepts_suite_green_when_recorded_patch_id_matches_actual_diff() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "feat: x\n\n",
+                    "TDD-Suite-Green-Scope: full-suite\n",
+                    "TDD-Suite-Green-Output-Checksum: sha256:whatever\n",
+                    "TDD-Suite-Green-Captured-At: 2026-09-08T14:50:41Z\n",
+                    "TDD-Verified-Patch-Id: patchid-same\n",
+                )),
+                CommandOutput::success("patchid-same 0000000000000000000000000000000000000000\n"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&runner, "deadbeef"), Ok(false));
+    }
+
+    /// THE central blast-radius fix (team-lead ruling 2026-09-09): a tree-hash
+    /// binding rejects this exact case, because `gh pr merge --rebase`
+    /// replays the branch commit onto whatever master has become, and master
+    /// gains `chore(deps)` commits constantly -- every rebase-merge would
+    /// then produce a commit whose full tree differs from what was recorded,
+    /// wedging every future product-Rust merge. `git patch-id` is stable
+    /// across exactly this: an unrelated commit landing on the base changes
+    /// `<sha>`'s TREE but not the PATCH this commit itself introduces, so the
+    /// recorded value still matches. Verified empirically in a real
+    /// throwaway repo (real `git rebase`, the real compiled binary) before
+    /// writing this unit test: a tree-hash binding failed this exact
+    /// scenario; a patch-id binding passes it.
+    #[test]
+    fn commit_violates_accepts_suite_green_surviving_a_clean_rebase_merge_past_unrelated_commits() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "feat: x\n\n",
+                    "TDD-Suite-Green-Scope: full-suite\n",
+                    "TDD-Suite-Green-Captured-At: 2026-09-08T14:50:41Z\n",
+                    "TDD-Verified-Patch-Id: patchid-stable-across-rebase\n",
+                )),
+                // The diff THIS commit introduces is unchanged by the
+                // rebase-merge, even though `chore(deps)` commits landed on
+                // the base in between and moved the commit's actual TREE.
+                CommandOutput::success(
+                    "patchid-stable-across-rebase 0000000000000000000000000000000000000000\n",
+                ),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&runner, "deadbeef"), Ok(false));
+    }
+
+    /// AC2: a commit `git rebase --continue` (conflicted) or a clean `git
+    /// rebase` carries the pair's trailers forward VERBATIM, including a
+    /// `TDD-Verified-Patch-Id` recorded against the pre-rebase diff. A
+    /// CONFLICTED rebase's resolution changes the diff this commit introduces
+    /// relative to its new parent (even when the final file content matches
+    /// what the author intended), so the patch-id changes and the stale
+    /// recorded value is caught -- verified with a real conflicted `git
+    /// rebase --continue` before writing this unit test.
+    #[test]
+    fn commit_violates_rejects_pair_when_recorded_patch_id_does_not_match_actual_diff() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "fix: x\n\n",
+                    "TDD-Red-Test: crates/x/tests/y.rs\n",
+                    "TDD-Red-Test-File-Checksum: sha256:a\n",
+                    "TDD-Green-Verified-At: 2026-09-08T14:50:41Z\n",
+                    "TDD-Green-Parent-Reflog: parent-sha\n",
+                    "TDD-Verified-Patch-Id: patchid-before-conflict\n",
+                )),
+                CommandOutput::success(
+                    "patchid-after-conflict-resolution 0000000000000000000000000000000000000000\n",
+                ),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&runner, "deadbeef"), Ok(true));
+    }
+
+    #[test]
+    fn commit_violates_accepts_pair_when_recorded_patch_id_matches_actual_diff() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "fix: x\n\n",
+                    "TDD-Red-Test: crates/x/tests/y.rs\n",
+                    "TDD-Red-Test-File-Checksum: sha256:a\n",
+                    "TDD-Green-Verified-At: 2026-09-08T14:50:41Z\n",
+                    "TDD-Green-Parent-Reflog: parent-sha\n",
+                    "TDD-Verified-Patch-Id: patchid-same\n",
+                )),
+                CommandOutput::success("patchid-same 0000000000000000000000000000000000000000\n"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&runner, "deadbeef"), Ok(false));
+    }
+
+    /// Existing-history compatibility, isolated to `commit_violates` itself
+    /// (the range-level version of this lives in
+    /// `no_arg_range_accepts_pair_suite_and_non_product_commits`): a commit
+    /// with no `TDD-Verified-Patch-Id` trailer at all never reaches the
+    /// `git patch-id` call, so it costs no extra git round-trip and is
+    /// accepted as already-decided history.
+    #[test]
+    fn commit_violates_accepts_suite_green_with_no_recorded_patch_id_at_all() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success("chore: x\n\nTDD-Suite-Green-Captured-At: now\n"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&runner, "deadbeef"), Ok(false));
+    }
+
+    #[test]
+    fn commit_violates_propagates_actual_patch_id_lookup_failure() {
+        let runner = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(concat!(
+                    "feat: x\n\n",
+                    "TDD-Suite-Green-Captured-At: now\n",
+                    "TDD-Verified-Patch-Id: patchid-old\n",
+                )),
+                // The `git patch-id` call has no further output queued.
+            ],
+            Vec::new(),
+        );
+        assert!(
+            commit_violates(&runner, "deadbeef")
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+    }
+
+    /// AC3: `git commit --amend --no-edit` with nothing newly staged short-
+    /// circuits `check_commit_msg` to `Decision::Pass`, which leaves the
+    /// message file -- and its `TDD-Verified-Patch-Id` -- untouched. That is
+    /// correct rather than a laundering route: the amend changed nothing, so
+    /// the commit's actual diff did not move either, and the previously
+    /// recorded value still matches it at range-check time. (The OTHER half
+    /// of AC3 -- an amend that DOES change content re-verifies -- is the
+    /// `commit_msg_mode_routes_all_outer_branches` Green/Suite-Green cases:
+    /// `decide` cannot reach `Decision::Pass` once product Rust is staged,
+    /// so re-verification and a fresh patch-id trailer are unavoidable.)
+    #[test]
+    fn pass_leaves_an_unchanged_attestation_valid_because_the_diff_is_unchanged() {
+        let msg_path = temp_file(
+            "msg-amend-no-op",
+            concat!(
+                "chore: x\n\n",
+                "TDD-Suite-Green-Scope: full-suite\n",
+                "TDD-Suite-Green-Output-Checksum: sha256:whatever\n",
+                "TDD-Suite-Green-Captured-At: 2026-09-08T14:50:41Z\n",
+                "TDD-Verified-Patch-Id: patchid-same\n",
+            ),
+        );
+        // `git diff --cached` against the commit being amended is empty, so
+        // `staged_files` reports no product Rust and `decide` short-circuits
+        // to `Decision::Pass` before ever touching the message file.
+        let pass = FakeRunner::new(vec![CommandOutput::success("")], Vec::new());
+        assert!(check_commit_msg(&pass, &msg_path).is_ok());
+        let read_back = fs::read_to_string(&msg_path);
+        check(
+            read_back.is_ok(),
+            &format!("must read the message file back: {read_back:?}"),
+        );
+        let after_pass = read_back.unwrap_or_default();
+        assert!(after_pass.contains("TDD-Verified-Patch-Id: patchid-same"));
+
+        // The commit's diff genuinely did not move, so the recorded value
+        // still matches at range-check time -- a still-valid attestation,
+        // not a laundered one.
+        let violates = FakeRunner::new(
+            vec![
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success(&after_pass),
+                CommandOutput::success("patchid-same 0000000000000000000000000000000000000000\n"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(commit_violates(&violates, "deadbeef"), Ok(false));
+        let _ = fs::remove_file(msg_path);
     }
 
     #[test]
@@ -1259,6 +1738,8 @@ mod tests {
                 CommandOutput::success("head\n"),
                 CommandOutput::success(""),
                 CommandOutput::success(""),
+                CommandOutput::success("tree-suite\n"),
+                CommandOutput::success("patchid-suite 0000000000000000000000000000000000000000\n"),
             ],
             vec![CommandOutput::success("pass")],
         );
@@ -1278,6 +1759,8 @@ mod tests {
                 CommandOutput::success(&green_test.to_string_lossy()),
                 CommandOutput::success(&checksum.unwrap_or_default()),
                 CommandOutput::success("parent"),
+                CommandOutput::success("tree-green\n"),
+                CommandOutput::success("patchid-green 0000000000000000000000000000000000000000\n"),
             ],
             vec![CommandOutput::success("pass")],
         );
@@ -1579,5 +2062,64 @@ mod tests {
         ))
         .cargo_test(TestScope::Workspace);
         assert!(result.is_err_and(|err| err.starts_with("cargo nextest run")));
+    }
+
+    #[test]
+    // See the `or_fun_call` note on
+    // process_runner_git_runs_a_real_git_process_in_the_configured_workdir.
+    #[allow(clippy::or_fun_call)]
+    fn process_runner_patch_id_runs_real_git_diff_tree_and_patch_id_in_the_configured_workdir() {
+        // `HEAD^`/`HEAD` are stable, universally-present revisions in any
+        // repository with at least one commit -- this workspace's own repo,
+        // unlike `process_runner_cargo_test_runs_real_nextest_against_the_divergence_fixture`,
+        // needs no dedicated fixture because `git patch-id` cares only about
+        // the diff text, not which two commits produced it.
+        let result = ProcessRunner::with_workdir(Path::new(".")).patch_id("HEAD^", "HEAD");
+        check(result.is_ok(), &format!("git patch-id: {result:?}"));
+        let output = result.unwrap_or(CommandOutput::failure("did not run"));
+        check(
+            output.code == 0,
+            &format!("git patch-id exit code: {output:?}"),
+        );
+    }
+
+    #[test]
+    fn process_runner_patch_id_reports_a_spawn_failure() {
+        let result = ProcessRunner::with_workdir(Path::new(
+            "/console-red-green-replay-check-nonexistent-workdir",
+        ))
+        .patch_id("HEAD^", "HEAD");
+        assert!(result.is_err_and(|err| err.starts_with("git diff-tree | git patch-id")));
+    }
+
+    #[test]
+    // See the `or_fun_call` note on
+    // process_runner_git_runs_a_real_git_process_in_the_configured_workdir.
+    #[allow(clippy::or_fun_call)]
+    fn process_runner_patch_id_surfaces_an_upstream_diff_tree_failure_via_empty_output() {
+        // The pipe's exit code is `git patch-id`'s own: patch-id exits 0 on
+        // empty input, so an unresolvable revision on the `git diff-tree`
+        // side of the pipe is NOT a non-zero exit here (see the doc comment
+        // on `patch_id` and on `diff_identity`'s empty-id branch) -- it is a
+        // ZERO exit with empty stdout and the diff-tree failure on stderr.
+        let result =
+            ProcessRunner::with_workdir(Path::new(".")).patch_id("not-a-real-revision", "HEAD");
+        check(
+            result.is_ok(),
+            &format!("the pipe itself must not error: {result:?}"),
+        );
+        let output = result.unwrap_or(CommandOutput::failure("did not run"));
+        check(
+            output.code == 0,
+            &format!("patch-id's own exit code for empty input is 0: {output:?}"),
+        );
+        check(
+            output.stdout.trim().is_empty(),
+            &format!("no patch data for an empty diff: {output:?}"),
+        );
+        check(
+            output.stderr.contains("not-a-real-revision"),
+            &format!("expected the diff-tree failure to survive onto stderr: {output:?}"),
+        );
     }
 }

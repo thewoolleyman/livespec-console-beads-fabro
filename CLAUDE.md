@@ -753,6 +753,102 @@ When a hook refusal does not reproduce under `just check`/CI (or vice versa),
 this is the first thing to re-verify — read `nextest_runner_parity.rs`'s
 current pass/fail state before assuming a NEW divergence class.
 
+### A rebase carries TDD trailers forward; only the range check catches it
+
+`git rebase` — CONFLICTED or CLEAN, and every branch in this repo is rebased
+before merge — replays a commit with its ORIGINAL message onto a new base.
+The commit-msg hook does NOT run for a replayed commit (only `git commit`
+itself invokes it, which is why `git rebase --continue` after resolving a
+conflict does not re-verify either): the message, and every `TDD-Red-*` /
+`TDD-Green-*` / `TDD-Suite-Green-*` trailer in it, travels forward BYTE-FOR-
+BYTE. The replayed commit's timestamp and checksum trailers do not move, and
+nothing warns — even when the rebase reports no conflict at all, because the
+commit's TREE still changed (it now sits on top of whatever the new base
+added) even though the diff *this* commit introduces did not. Measured
+2026-09-08: a clean rebase carried a `TDD-Green-Verified-At` captured 90
+minutes earlier past a base-branch landing that touched the very code this
+commit modified, and separately, a clean rebase produced a commit that did
+not even COMPILE while still carrying a full-suite-green attestation from
+before the rebase (`livespec-console-beads-fabro-pzbdbo.37`).
+
+**What this means for you.** After ANY rebase of a branch carrying TDD
+trailers — conflicted or clean — do not trust a carried-forward attestation.
+Re-verify with a genuine fresh commit: `git reset --soft HEAD^` back to the
+correct base with everything staged, then commit again through the hook so it
+re-runs the tests and writes fresh trailers. Do not `git commit --amend
+--no-edit` to "fix" it — an amend with an empty diff against its target hits
+`Decision::Pass` and short-circuits without re-verifying anything, so the
+stale trailers survive that too.
+
+**The mechanical fix binds to the DIFF, not the tree.** `commit_violates` (the
+range check backing `just check`'s `check-red-green-replay`, and the same
+logic path the commit-msg hook feeds) does not merely check for TOKEN
+PRESENCE anymore. `handle_green` and `handle_suite_green` record a
+`TDD-Verified-Patch-Id` trailer — the `git patch-id --stable` identity of the
+commit's own diff relative to its parent — at the moment verification
+succeeds, and the range check recomputes that same patch-id for the commit's
+ACTUAL parent/diff pair before accepting a pair or suite attestation. A
+rebase-carried-forward trailer whose diff genuinely changed (a conflicted
+rebase's resolution, an edited amend) no longer matches, so it is refused; a
+freshly-verified commit's recorded patch-id always matches its own.
+
+A FIRST version of this fix bound to the commit's full TREE hash
+(`git write-tree` / `<sha>^{tree}`) instead of a patch-id, and it was wrong:
+`git patch-id` exists specifically because a tree hash changes whenever ANY
+file anywhere in the repo differs, including files the commit never touched.
+This repo's own mandated merge path — `gh pr merge --rebase` — replays every
+PR's commits onto whatever master has become, and master gains
+`chore(deps)` commits many times an hour, so a tree-hash binding rejected
+EVERY ordinary rebase-merge of a product-Rust PR, not just a genuinely
+altered one: verified empirically 2026-09-09 by simulating the repo's own
+merge discipline in a throwaway repo (earn a real attestation, land four
+`chore(deps)` commits on master, rebase the branch onto master and
+fast-forward master to it, then run the range check) — the tree-hash version
+failed that with `red-green-replay-range-missing-trailers`, wedging every
+future product-Rust merge the moment it landed. `git patch-id --stable`
+ignores exactly the line-number and blob-abbreviation drift an unrelated
+rebase introduces, while still changing when the diff's own content changes
+— verified both ways in the same session (a real conflicted `git rebase
+--continue`'s stale patch-id rejected; the same content re-verified through
+`git reset --soft HEAD^` plus a fresh commit accepted; the same rebase-merge
+simulation accepted once the trailer held a patch-id instead of a tree hash).
+
+**What this narrower binding does NOT prove.** A patch-id match shows the
+tested DIFF is unaltered — not that it is still compatible with everything
+master has gained since. A clean rebase CAN still break the build via a
+file the commit never touched (the mx9u.1 case that broadened this item's
+scope: an incompatible signature change landed on the base with no textual
+conflict). No static hash can catch that without re-running the suite
+against the final tree, and this checker deliberately does not try —
+`ci.yml` already triggers on `push: branches: [master]` as well as
+`pull_request`, so the actual merged tree is compiled and tested again after
+every merge, on master itself. The `TDD-Suite-Green-*` / `TDD-Verified-Patch-Id`
+trailers are a developer-time discipline signal, not a substitute for that
+gate.
+
+Commits already on `origin/master` (and any mid-flight on other branches)
+when this landed never wrote a diff trailer at all — the range check treats
+that absence as already-decided history, not as a defect to backfill, so it
+does not retroactively redden `just check` on existing commits, and an
+in-flight branch's pre-fix attestation survives being rebased past new
+master commits exactly as it always did.
+
+**Amending an already-attested commit needs the SAME remedy as a stale
+rebase.** `handle_suite_green` predicts its finished commit's parent as
+`HEAD` — correct for a fresh commit, but WRONG if this `commit-msg`
+invocation is itself `git commit --amend -m/-F ...` of a commit that already
+carries Suite-Green/pair trailers (HEAD is then the commit being REPLACED,
+not the parent the amended commit keeps). There is no way to tell the two
+apart from inside the hook: `githooks(5)` documents that `prepare-commit-msg`
+reports the amend's source commit ONLY when no message is given (the editor
+path); the moment `-m`/`-F` supplies one — which is how every commit in this
+repo is made — the source reports as `message`, identical to a fresh commit,
+and `GIT_REFLOG_ACTION` is not exported to hooks at all. Verified empirically
+2026-09-09 against real amends with both mechanisms. So this case fails
+CLOSED rather than being guessed at: the wrong base produces a patch-id
+`commit_violates` will not match against the real `<sha>^` at push time, and
+the fix is the prescribed remedy above — `git reset --soft HEAD^` with
+everything staged, then a genuinely fresh commit, not another amend.
 
 ## `git stash` is repo-wide, so it corrupts concurrent worktrees
 
