@@ -135,6 +135,7 @@ pub fn run_with_store(
     work_item_port: &mut dyn OrchestratorActionPort,
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
+    identity: &WriterIdentity,
 ) -> RunOutput {
     let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
     run_with_store_and_dispatch_port(
@@ -147,6 +148,7 @@ pub fn run_with_store(
         work_item_port,
         decisions_port,
         needs_attention,
+        identity,
     )
 }
 
@@ -162,6 +164,7 @@ pub fn run_with_store_and_dispatch_port(
     work_item_port: &mut dyn OrchestratorActionPort,
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
+    identity: &WriterIdentity,
 ) -> RunOutput {
     match command_name(args) {
         Some("serve") => run_runtime_result(
@@ -174,6 +177,7 @@ pub fn run_with_store_and_dispatch_port(
                 work_item_port,
                 decisions_port,
                 needs_attention,
+                identity,
             ),
             "serve",
         ),
@@ -2427,6 +2431,7 @@ pub fn serve_report(
     work_item_port: &mut dyn OrchestratorActionPort,
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
+    identity: &WriterIdentity,
 ) -> ConsoleRuntimeResult<String> {
     let mut dispatch_item_port = CompatibilityNotWiredDispatchItemPort;
     serve_report_with_dispatch_port(
@@ -2438,6 +2443,7 @@ pub fn serve_report(
         work_item_port,
         decisions_port,
         needs_attention,
+        identity,
     )
 }
 
@@ -2452,24 +2458,27 @@ pub fn serve_report_with_dispatch_port(
     work_item_port: &mut dyn OrchestratorActionPort,
     decisions_port: &dyn AutonomousDecisionsPort,
     needs_attention: &NeedsAttentionIngest<'_>,
+    identity: &WriterIdentity,
 ) -> ConsoleRuntimeResult<String> {
     // Run the full ingest/reflect sequence unconditionally on every serve (Bug A
     // fix): like the interactive launch, the headless report must reflect the
     // CURRENT ledger, not a first-run snapshot. Checkpointed/idempotent re-ingest
     // (Scenario 3) keeps this safe on a non-empty log.
     //
-    // Like `backfill_source_report`, this is a one-shot headless report, not
-    // the sustained TUI poller mx9u.23's writer lease targets -- it still
-    // takes part in the lease (through `refresh_sources`), just under the
-    // sentinel identity rather than a real one threaded through this
-    // command's own call sites.
+    // `serve` is NOT a one-shot in the way `backfill` is: it is the
+    // documented way to launch a long-running cockpit, and a `serve`
+    // invocation with no TTY attached (piped stdout, a detached
+    // supervisor) is exactly the process shape the mx9u.23 postmortem
+    // measured -- a sustained writer with no name in the store. So THIS
+    // path carries a real, caller-supplied identity all the way through,
+    // unlike `backfill_source_report`'s deliberate sentinel.
     let ingestion = ingest_and_reflect(
         store,
         observed_at,
         sources,
         needs_attention,
         decisions_port,
-        &WriterIdentity::unknown(),
+        identity,
     )?;
     let backfill_event_count: usize = ingestion
         .iter()
@@ -4391,6 +4400,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &test_writer_identity(),
         )
     }
 
@@ -5005,6 +5015,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &test_writer_identity(),
         );
 
         check((output.code()) == (0), "assert_eq failed");
@@ -5043,6 +5054,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &test_writer_identity(),
         );
 
         check(
@@ -9536,6 +9548,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &test_writer_identity(),
         );
 
         check(
@@ -15562,6 +15575,7 @@ mod tests {
             &mut work_item_port,
             &empty_decisions_port(),
             &needs_attention,
+            &test_writer_identity(),
         );
 
         check(format!("{outcome:?}").contains("Adapter"), "assert failed");

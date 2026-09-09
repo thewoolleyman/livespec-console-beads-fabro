@@ -14,6 +14,7 @@ use console_application::source_adapters::{
     AttentionHandoff, AttentionItemSnapshot, AttentionSourceRef, NeedsAttentionReadOutcome,
     NeedsAttentionSnapshotPort, SourceProbe, SourceProbeOutcome,
 };
+use console_application::writer_identity::WriterIdentity;
 use console_application::{
     ApplicationError, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
     JournalAutonomousDecisionsPort, OrchestratorActionOutcome, OrchestratorActionPort,
@@ -24,6 +25,15 @@ use livespec_console_beads_fabro::{
     ConsoleRuntimeError, DISPATCHER_JOURNAL_PATH, NeedsAttentionIngest, serve_report,
 };
 use sha2::{Digest, Sha256};
+
+fn test_writer_identity() -> WriterIdentity {
+    WriterIdentity::new(
+        4242,
+        "/opt/console/test-binary",
+        "/data/projects/repo",
+        "test1234",
+    )
+}
 
 const PRODUCER_FIXTURE_SHA256: &str =
     "ebbd867d419348986db81ab220ddbea14c32aa0891c3241bd21538dfc1b42fd4";
@@ -128,6 +138,7 @@ fn scenario_15_orchestrator_auto_dispositions_reflect_and_surface_escalations()
         &mut work_item,
         &decisions,
         &needs_attention,
+        &test_writer_identity(),
     )?;
 
     assert_eq!(
@@ -150,6 +161,7 @@ fn scenario_15_orchestrator_auto_dispositions_reflect_and_surface_escalations()
         &mut work_item,
         &decisions,
         &needs_attention,
+        &test_writer_identity(),
     )?;
     let second_inbox: Vec<String> = project_attention(&store.list_console_events()?)
         .iter()
