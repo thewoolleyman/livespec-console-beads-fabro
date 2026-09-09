@@ -14,7 +14,7 @@ use console_tui::{TuiLiveSession, TuiRuntimeEffect};
 use livespec_console_beads_fabro::{
     ConsoleRuntimeError, NeedsAttentionIngest, PendingCommandRequester, SourceAdapterRef,
     SourcePollRequester, TuiSessionOutcome, TuiSessionRunner, backfill_source_report,
-    handle_pending_factory_commands, run_store_backed_tui_session,
+    handle_pending_factory_commands, refresh_sources, run_store_backed_tui_session,
 };
 
 /// A poll requester that drops every request — this scenario does not exercise
@@ -128,13 +128,24 @@ fn scenario_4_snapshot_only_source_emits_completeness_finding() -> Result<(), Co
 }
 
 #[test]
-fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_command()
+// Renamed from "...backfills_presents..." (livespec-console-beads-fabro-
+// pzbdbo.27): `run_store_backed_tui_session` no longer backfills sources
+// itself -- the `refresh_sources` call below stands in for the background
+// poller's sweep, run BEFORE the session so the store already holds its
+// events by the time the first frame draws.
+fn scenario_5_tui_first_workflow_presents_a_pre_seeded_store_and_dispatches_operator_command()
 -> Result<(), ConsoleRuntimeError> {
     let mut store = SqliteEventStore::open_in_memory()?;
     let source = ScriptedWorkItemSource::new("9")?;
     let sources: Vec<SourceAdapterRef<'_>> = vec![("orchestrator:fleet", &source)];
     let empty_attention = EmptyNeedsAttentionPort;
     let needs_attention = NeedsAttentionIngest::new(&empty_attention, "fleet");
+    refresh_sources(
+        &mut store,
+        "2026-07-07T23:59:59Z",
+        &sources,
+        &needs_attention,
+    )?;
     let mut runner = CommandingTuiRunner::default();
     let mut port = CompletingDrainPort::default();
     let mut work_item_port = NoWorkItemActionPort;
@@ -145,16 +156,16 @@ fn scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_comm
         "2026-07-08T00:00:00Z",
         "operator",
         &mut runner,
-        &sources,
         &mut port,
         &mut work_item_port,
         &decisions_port,
-        &needs_attention,
         &NoopPollRequester,
         &NoopCommandRequester,
     )?;
 
-    assert_eq!(outcome, TuiSessionOutcome::new(2, 2, 1, 1, 5, 0));
+    // `0` backfilled: this call performs no ingest of its own -- everything it
+    // presents was already in the store from the `refresh_sources` call above.
+    assert_eq!(outcome, TuiSessionOutcome::new(0, 2, 1, 1, 5, 0));
     assert_eq!(runner.observed_requested_by, "operator");
     assert_eq!(runner.observed_events, 2);
     assert_eq!(store.list_commands()?[0].status(), "completed");

@@ -1149,6 +1149,15 @@ pub struct TuiInteractionState {
     list_edge: Option<ListEdge>,
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
+    // Whether the session's FIRST background source ingest is still in flight.
+    // `false` by construction (every existing caller), so a session with no
+    // opinion on the matter renders exactly as before. The composition root
+    // seeds this `true` for an interactive launch (livespec-console-beads-fabro-
+    // pzbdbo.27 -- the first frame now draws from whatever the store already
+    // holds, BEFORE the background poller's first sweep lands) and clears it
+    // once that sweep completes, so the header's `sources: loading` tell never
+    // outlives the condition it names.
+    startup_ingest_pending: bool,
 }
 
 impl TuiInteractionState {
@@ -1182,6 +1191,7 @@ impl TuiInteractionState {
             list_edge: None,
             build_identity: None,
             build_staleness: BuildStaleness::Unknown,
+            startup_ingest_pending: false,
         }
     }
 
@@ -1219,6 +1229,7 @@ impl TuiInteractionState {
             list_edge: None,
             build_identity: None,
             build_staleness: BuildStaleness::Unknown,
+            startup_ingest_pending: false,
         }
     }
 
@@ -1477,6 +1488,17 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with whether the session's first background source
+    /// ingest is still in flight replaced. The composition root re-checks this
+    /// every tick (a cheap atomic read, never a store or CLI call) and folds the
+    /// answer in here, exactly as it re-reads dispatcher settings after a
+    /// settled write -- see [`Self::with_build_staleness`].
+    pub const fn with_startup_ingest_pending(mut self, startup_ingest_pending: bool) -> Self {
+        self.startup_ingest_pending = startup_ingest_pending;
+        self
+    }
+
+    #[must_use]
     /// Return this value with the transient header status replaced.
     pub fn with_transient_status(mut self, transient_status: Option<String>) -> Self {
         self.transient_status = transient_status;
@@ -1653,6 +1675,13 @@ impl TuiInteractionState {
     /// Return the build's observed staleness against the repo's current HEAD.
     pub const fn build_staleness(&self) -> BuildStaleness {
         self.build_staleness
+    }
+
+    #[must_use]
+    /// Return whether the session's first background source ingest is still
+    /// in flight. See [`Self::with_startup_ingest_pending`].
+    pub const fn startup_ingest_pending(&self) -> bool {
+        self.startup_ingest_pending
     }
 }
 
@@ -1997,6 +2026,7 @@ pub struct TuiScreenModel {
     orphaned_factory_runs: Vec<OrphanedFactoryRun>,
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
+    startup_ingest_pending: bool,
 }
 
 impl TuiScreenModel {
@@ -2318,6 +2348,19 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// Whether the session's FIRST background source ingest is still in
+    /// flight -- `true` only for the brief window between the first frame
+    /// drawing from whatever the store already held and the background
+    /// poller's first sweep landing (livespec-console-beads-fabro-pzbdbo.27).
+    /// Renderers use this to show a still-loading source as LOADING rather
+    /// than unavailable or silently empty; it is never derived from the event
+    /// log, because a persisted store from a previous session already carries
+    /// real history that this session has not yet re-confirmed.
+    pub const fn startup_ingest_pending(&self) -> bool {
+        self.startup_ingest_pending
+    }
+
+    #[must_use]
     /// Compose the header to fit `width` display columns without ever truncating
     /// mid-field.
     ///
@@ -2344,6 +2387,7 @@ impl TuiScreenModel {
             self.transient_status.as_deref(),
             &self.unavailable_sources,
             self.build_staleness,
+            self.startup_ingest_pending,
             width,
         )
     }
@@ -4369,14 +4413,15 @@ pub fn render_tui_model(
         // The build IDENTITY itself is not one of these fields -- it lives in
         // the header pane's block title instead; see `fit_header_line`'s doc.
         header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}",
+            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}",
             header_repo_label(state.selected_repo()),
             active_view.label(),
             projection.attention_total,
             factory_activity_segment(projection.factory_activity.as_deref()),
             transient_status_segment(transient_status.as_deref()),
             build_staleness_header_segment(state.build_staleness()),
-            source_health_header_segment(&projection.unavailable_sources)
+            source_health_header_segment(&projection.unavailable_sources),
+            startup_ingest_header_segment(state.startup_ingest_pending())
         ),
         unavailable_sources: projection.unavailable_sources.clone(),
         factory_activity: projection.factory_activity.clone(),
@@ -4386,6 +4431,7 @@ pub fn render_tui_model(
         orphaned_factory_runs: projection.orphaned_factory_runs.clone(),
         build_identity: state.build_identity().cloned(),
         build_staleness: state.build_staleness(),
+        startup_ingest_pending: state.startup_ingest_pending(),
     }
 }
 
@@ -4591,6 +4637,27 @@ fn source_health_header_segment(unavailable_sources: &[String]) -> String {
             unavailable_sources.len(),
             unavailable_sources.join(", ")
         )
+    }
+}
+
+/// The header's startup-ingest tell text, without its leading separator.
+///
+/// Exported so a consumer that needs to recognize the tell (a rendered-text
+/// test, or the e2e tmux harness's own settling logic, which must not mistake
+/// a still-loading frame for a converged one) never hand-copies the literal.
+pub const STARTUP_INGEST_LOADING_TELL: &str = "sources: loading";
+
+/// The header's startup-ingest tell: while the session's first background
+/// source sweep has not yet landed, the frame is drawn from whatever the store
+/// already held rather than a fresh read, so this says so instead of letting a
+/// stale-or-empty screen pass as current (livespec-console-beads-fabro-
+/// pzbdbo.27). Empty once that first sweep completes, exactly like
+/// [`source_health_header_segment`] is empty once every source is observed.
+fn startup_ingest_header_segment(startup_ingest_pending: bool) -> String {
+    if startup_ingest_pending {
+        format!(" | {STARTUP_INGEST_LOADING_TELL}")
+    } else {
+        String::new()
     }
 }
 
@@ -4977,6 +5044,7 @@ fn fit_header_line(
     transient_status: Option<&str>,
     unavailable_sources: &[String],
     build_staleness: BuildStaleness,
+    startup_ingest_pending: bool,
     width: usize,
 ) -> String {
     // Fixed display order; `None` means the whole field was
@@ -5020,11 +5088,22 @@ fn fit_header_line(
             text: tell,
             priority: HeaderSegmentPriority::TransientState,
         }),
+        // Same tier again: a still-loading first sweep is a live, transient
+        // condition on par with a factory alert or a stale build, not an
+        // identity fact, and it is gone the moment the sweep lands
+        // (livespec-console-beads-fabro-pzbdbo.27). Kept whole or dropped
+        // whole like every other field here -- there is no partial form,
+        // unlike the source-health segment's multi-step degrade, because this
+        // tell is binary (the WHOLE first sweep is in flight or it is not).
+        startup_ingest_pending.then(|| HeaderField {
+            text: STARTUP_INGEST_LOADING_TELL.to_owned(),
+            priority: HeaderSegmentPriority::TransientState,
+        }),
     ];
     let source_forms = source_health_segment_forms(unavailable_sources);
     let mut source_idx = 0usize; // 0 = widest (full names)
 
-    let compose = |fields: &[Option<HeaderField>; 8], source_idx: usize| -> String {
+    let compose = |fields: &[Option<HeaderField>; 9], source_idx: usize| -> String {
         let mut line = fields
             .iter()
             .filter_map(|field| field.as_ref().map(|field| field.text.as_str()))
@@ -12348,6 +12427,7 @@ mod tests {
             orphaned_factory_runs: Vec::new(),
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            startup_ingest_pending: false,
         };
 
         assert_eq!(model.selected_operator_action(), None);
@@ -12402,6 +12482,7 @@ mod tests {
             orphaned_factory_runs: vec![run.clone()],
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            startup_ingest_pending: false,
         };
 
         assert_eq!(model.orphaned_factory_runs(), [run]);
@@ -17582,6 +17663,34 @@ mod tests {
     }
 
     #[test]
+    // livespec-console-beads-fabro-pzbdbo.27 AC1: the screen model renders a
+    // complete frame BEFORE any source has returned data, with the header
+    // naming that sources are still loading. Built at t=0 -- an empty event
+    // log, exactly what the store holds before the background poller's first
+    // sweep has landed -- so this is the very first frame the fix draws.
+    fn header_names_loading_sources_before_any_source_has_returned_data() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(true);
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert!(model.header().contains("sources: loading"));
+        // A width wide enough for everything renders the same content as the
+        // canonical header -- the fitted and unfitted forms must agree.
+        assert_eq!(model.header_line(300), model.header());
+    }
+
+    #[test]
+    // Companion to the above: once the first sweep lands (the composition root
+    // clears the flag), the tell disappears -- it never outlives the condition
+    // it names.
+    fn header_drops_the_loading_tell_once_startup_ingest_completes() {
+        let state =
+            TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(false);
+        let model = build_tui_model_for_state(&[], &state);
+
+        assert!(!model.header().contains("sources: loading"));
+    }
+
+    #[test]
     fn header_line_names_the_single_unavailable_source_without_a_more_marker() {
         // A single unavailable source has no name to elide, so there is no
         // `+N more` abbreviation tier: the header shows the one name, then only
@@ -20992,6 +21101,7 @@ mod tests {
             orphaned_factory_runs: Vec::new(),
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            startup_ingest_pending: false,
         };
 
         assert_eq!(
@@ -21224,6 +21334,7 @@ mod tests {
             orphaned_factory_runs: Vec::new(),
             build_identity: None,
             build_staleness: super::BuildStaleness::Unknown,
+            startup_ingest_pending: false,
         };
 
         let overlay = super::open_command_modal(&model);

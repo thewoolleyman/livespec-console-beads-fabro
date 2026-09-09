@@ -134,8 +134,8 @@
   {
     "scenario": "Scenario 5 -- TUI-first operator workflow",
     "scenario_file": "scenarios.md",
-    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_5_tui_first_workflow_backfills_presents_and_dispatches_operator_command",
-    "reason": "Top-of-pyramid integration coverage for the store-backed TUI loop: source backfill, presentation to the runner, command persistence, and dispatch handling.",
+    "test": "crates/console-cli/tests/scenarios_2_3_4_5_8_operator_acceptance.rs::scenario_5_tui_first_workflow_presents_a_pre_seeded_store_and_dispatches_operator_command",
+    "reason": "Top-of-pyramid integration coverage for the store-backed TUI loop: presentation of a pre-seeded store to the runner, command persistence, and dispatch handling. Renamed livespec-console-beads-fabro-pzbdbo.27: the session itself no longer backfills sources (that moved to the background poller), so the test seeds the store directly before invoking it.",
     "clauses": [
       {
         "gap_id": "gap-lqcxsqk5",

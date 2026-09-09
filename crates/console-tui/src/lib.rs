@@ -172,7 +172,13 @@ fn run_terminal_loop(
         .with_dispatcher_settings(dispatcher_settings)
         .with_plugin_resolution(plugin_resolution)
         .with_build_identity(build_identity)
-        .with_build_staleness(build_staleness);
+        .with_build_staleness(build_staleness)
+        // Seeded from the session BEFORE the first frame draws
+        // (livespec-console-beads-fabro-pzbdbo.27): the very first `terminal.draw`
+        // below must already say so if the background poller has not completed
+        // its first sweep yet, rather than warming up silent and correcting
+        // itself a tick later.
+        .with_startup_ingest_pending(session.first_ingest_in_progress());
     // The event log is OWNED and re-projected every iteration (Bug B fix): each
     // projection reduces over the LATEST events, not a snapshot frozen at
     // startup, so the board and detail panes stay live.
@@ -234,6 +240,12 @@ fn run_terminal_loop(
         // why that cadence, not this tick, is where the IO belongs
         // (livespec-console-beads-fabro-mx9u.26).
         apply_build_staleness(&mut state, session.take_build_staleness());
+        // Same cadence: a cheap, non-blocking check of whether the session's
+        // first background ingest is still in flight, so the header's
+        // `sources: loading` tell clears the moment that sweep lands rather
+        // than lingering a tick behind it (livespec-console-beads-fabro-
+        // pzbdbo.27).
+        apply_startup_ingest_pending(&mut state, session.first_ingest_in_progress());
         // Whether -- and how -- this tick's outcome warrants a store refresh.
         // `LoopTick::HandledInput` (one or more keys handled, none mutating)
         // skips it entirely: no store read, no backing-CLI call on the
@@ -621,6 +633,20 @@ fn apply_build_staleness(state: &mut TuiInteractionState, fresh: Option<BuildSta
     }
 }
 
+/// Fold the session's current startup-ingest status into the loop's state.
+///
+/// Split out for the same reason `apply_build_staleness` is: the loop around
+/// it is excluded from tests and coverage. Unlike that one this reads
+/// UNCONDITIONALLY every tick rather than gating on `Some` -- every
+/// [`TuiLiveSession`] has an opinion (`first_ingest_in_progress` defaults
+/// `false`), so there is no "session has nothing to say" case to skip, and the
+/// read is a cheap atomic load behind the real session
+/// (livespec-console-beads-fabro-pzbdbo.27).
+#[cfg(any(test, not(coverage)))]
+fn apply_startup_ingest_pending(state: &mut TuiInteractionState, pending: bool) {
+    *state = state.clone().with_startup_ingest_pending(pending);
+}
+
 /// Fold a fresh effective-policy read into the loop's state.
 ///
 /// Split out of the terminal-bound loop for the same reason `apply_sink_outcome`
@@ -808,6 +834,27 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// renders.
     fn refresh_dispatcher_settings(&mut self) -> std::io::Result<Option<DispatcherSettingsRead>> {
         Ok(None)
+    }
+
+    /// Whether the session's FIRST background source ingest is still in
+    /// flight (livespec-console-beads-fabro-pzbdbo.27).
+    ///
+    /// The interactive launch used to run that first ingest SYNCHRONOUSLY
+    /// before drawing anything at all, which is exactly what left the
+    /// operator staring at a blank pane for 30-60+ seconds. Now the first
+    /// frame draws from whatever the store already holds and the ingest runs
+    /// on the background poller instead; this is how the terminal loop finds
+    /// out whether that first sweep has landed yet, so it can seed and clear
+    /// [`console_application::TuiInteractionState::with_startup_ingest_pending`]
+    /// honestly rather than presenting a not-yet-confirmed screen as current.
+    ///
+    /// A cheap, non-blocking read (an atomic flag behind the real session),
+    /// checked every tick exactly like [`Self::take_worker_status`]. Sessions
+    /// with no background poller behind them -- every test double, and the
+    /// legacy no-store path -- default to `false`: already caught up, nothing
+    /// to wait for.
+    fn first_ingest_in_progress(&self) -> bool {
+        false
     }
 }
 
@@ -3554,14 +3601,34 @@ fn render_navigation(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     );
 }
 
+/// The Attention pane's placeholder row while the session's first background
+/// ingest has not landed and the list is empty.
+///
+/// An EMPTY list is ambiguous on its own: it is indistinguishable from a
+/// genuinely idle inbox with nothing needing attention. This row disambiguates
+/// the two (livespec-console-beads-fabro-pzbdbo.27 AC2/AC3): a source that has
+/// not returned yet reads LOADING, never as an unlabeled blank pane and never
+/// as the unavailable tell (which means a source was polled and failed, not
+/// that this session has not asked it yet). It disappears the moment either
+/// the first sweep lands (whether or not it found anything) or the operator
+/// narrows an empty inbox with a search query -- neither of which this
+/// function can tell apart from the other, deliberately: both mean the
+/// still-loading condition no longer holds.
+const ATTENTION_LOADING_PLACEHOLDER: &str =
+    "Loading… waiting for the first source poll to complete";
+
 fn render_attention(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
     let inner_width = usize::from(area.width.saturating_sub(2));
-    let items = model
-        .attention_items()
-        .iter()
-        .enumerate()
-        .map(|(index, item)| attention_item_line(model, index, item, inner_width))
-        .collect::<Vec<_>>();
+    let items = if model.attention_items().is_empty() && model.startup_ingest_pending() {
+        vec![ListItem::new(ATTENTION_LOADING_PLACEHOLDER)]
+    } else {
+        model
+            .attention_items()
+            .iter()
+            .enumerate()
+            .map(|(index, item)| attention_item_line(model, index, item, inner_width))
+            .collect::<Vec<_>>()
+    };
     let count = items.len();
     let title = focus_title("Attention", content_focused(model));
     let list = List::new(items).block(Block::new().borders(Borders::ALL).title(title));
@@ -3939,8 +4006,9 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 #[cfg(test)]
 mod tests {
     use crate::{
-        HELP_MODAL_MARGIN, apply_build_staleness, apply_dispatcher_settings_reread,
-        apply_sink_outcome, apply_worker_status,
+        ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, apply_build_staleness,
+        apply_dispatcher_settings_reread, apply_sink_outcome, apply_startup_ingest_pending,
+        apply_worker_status,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -4221,6 +4289,25 @@ mod tests {
     }
 
     #[test]
+    // livespec-console-beads-fabro-pzbdbo.27: the render loop's fold for the
+    // startup-ingest tell, exercised the same way `apply_build_staleness` is --
+    // the loop itself is terminal-bound and excluded from tests, this seam is
+    // not.
+    fn apply_startup_ingest_pending_folds_the_sessions_current_reading_every_tick() {
+        let mut state =
+            TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(true);
+        apply_startup_ingest_pending(&mut state, true);
+        assert!(state.startup_ingest_pending());
+
+        // Unlike `apply_build_staleness`, there is no `None`/"no opinion" case
+        // to leave alone: every session answers `first_ingest_in_progress`
+        // (defaulting `false`), so the fold always applies what it is given --
+        // including the transition that matters, first sweep landed:
+        apply_startup_ingest_pending(&mut state, false);
+        assert!(!state.startup_ingest_pending());
+    }
+
+    #[test]
     fn a_session_with_no_worker_behind_it_reports_no_worker_status() {
         // The trait default. A legacy no-store session has no command worker, so
         // it must report nothing rather than inventing a failure — the same
@@ -4244,6 +4331,20 @@ mod tests {
         check(
             session.take_build_staleness().is_none(),
             "a session with no probe behind it reports no build staleness",
+        );
+    }
+
+    #[test]
+    // livespec-console-beads-fabro-pzbdbo.27: the trait default. The legacy
+    // no-store session has no background poller to have a first sweep at all,
+    // so it must report nothing PENDING -- already caught up, same reasoning
+    // as the worker-status and build-staleness defaults above.
+    fn a_session_with_no_poller_behind_it_reports_no_first_ingest_pending() {
+        let session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            !session.first_ingest_in_progress(),
+            "a session with no poller behind it reports no first ingest pending",
         );
     }
 
@@ -7170,6 +7271,33 @@ mod tests {
                 .map(|rendered| rendered.contains("No attention item selected")),
             Ok(true)
         );
+        // A GENUINELY empty inbox (the session is not loading) must not look
+        // like a still-loading one -- livespec-console-beads-fabro-pzbdbo.27
+        // AC3, the counterpart to the loading case below.
+        let rendered = output.unwrap_or_default();
+        assert!(!rendered.contains(ATTENTION_LOADING_PLACEHOLDER));
+    }
+
+    #[test]
+    // livespec-console-beads-fabro-pzbdbo.27 AC2: a source that has not
+    // returned yet is shown as LOADING, not as unavailable and not as an
+    // unlabeled empty pane -- distinguishing this from the true-empty case
+    // right above it is the whole point.
+    fn render_to_text_shows_loading_not_empty_while_startup_ingest_is_pending() {
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_startup_ingest_pending(true);
+        let model = build_tui_model_for_state(&[], &state);
+
+        // Wide enough that the placeholder is not clipped by the Attention
+        // pane's width -- this asserts the TEXT, not the pane's truncation
+        // behaviour (which `attention_item_line`'s own elision tests cover).
+        let rendered = render_to_text(&model, 200, 16).unwrap_or_default();
+
+        assert!(
+            rendered.contains(ATTENTION_LOADING_PLACEHOLDER),
+            "an empty inbox during startup ingest must read as loading, not \
+             empty: {rendered}"
+        );
+        assert!(!rendered.contains("unavailable"));
     }
 
     #[test]
