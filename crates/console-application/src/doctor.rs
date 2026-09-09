@@ -12,10 +12,17 @@
 //! SAME projection [`crate::build_tui_model`] renders into the header -- so
 //! `doctor` can never disagree with what the header already shows the
 //! operator. The one exception is each unavailable source's last-successful-
-//! read timestamp, which needs the store's raw `observed_at` column (no
-//! [`ConsoleEvent`] carries a timestamp of its own); that reuses the exact
-//! same event classification ([`crate::is_positive_source_observation`])
-//! `unavailable_sources` uses to decide a source is down in the first place.
+//! read timestamp, which needs two things beyond that projection: the
+//! store's raw `observed_at` column (no [`ConsoleEvent`] carries a timestamp
+//! of its own), reusing the exact same event classification
+//! ([`crate::is_positive_source_observation`]) `unavailable_sources` uses to
+//! decide a source is down in the first place; and, since
+//! livespec-console-beads-fabro-mx9u.25, the checkpoint store's per-source
+//! `advanced_at`, because a healthy source whose data never changes between
+//! polls appends no new event at all (its content-addressed events dedupe
+//! away), so the event angle alone pins "last successful read" to the last
+//! time something NEW happened rather than the last time the source was
+//! actually read. See [`build_doctor_report`] for how the two angles combine.
 //!
 //! Since livespec-console-beads-fabro-mx9u.12, `ingest_needs_attention`
 //! emits the same `source.not_observed_finding_observed` /
@@ -99,13 +106,26 @@ impl DoctorReport {
 ///
 /// `events` is the event log [`crate::build_tui_model`] projects for the
 /// header; `events_with_observed_at` is the store's `observed_at`-paired
-/// read, used ONLY to date each unavailable source's last successful read.
+/// read, used to date each source's last successful read from the events it
+/// actually landed. `checkpoint_last_success` supplies the SAME fact from a
+/// second angle -- the composition root's pre-filtered
+/// `(source, advanced_at)` pairs, one per adapter whose checkpoint currently
+/// reads as a successful poll (via
+/// [`crate::source_adapters::checkpoint_reflects_a_successful_poll`]) -- so a
+/// healthy source whose data never changes between polls still advances its
+/// last-successful-read on every cycle, instead of pinning to the last time
+/// something NEW happened to land (livespec-console-beads-fabro-mx9u.25).
+/// Passed in already-filtered rather than read here: `console-application`
+/// may depend on nothing but `console-domain`, so the checkpoint store itself
+/// is out of reach from this projection.
 pub fn build_doctor_report(
     events: &[ConsoleEvent],
     events_with_observed_at: &[(ConsoleEvent, String)],
+    checkpoint_last_success: &[(String, String)],
 ) -> DoctorReport {
     let projection = project_tui_events(events, None);
-    let last_success = last_successful_observed_at(events_with_observed_at);
+    let last_success =
+        last_successful_observed_at(events_with_observed_at, checkpoint_last_success);
 
     let mut findings: Vec<DoctorFinding> = projection
         .unavailable_sources()
@@ -165,18 +185,42 @@ fn latest_not_observed_reason(events: &[ConsoleEvent], source: &str) -> Option<S
         .map(ToOwned::to_owned)
 }
 
-/// For every source, the `observed_at` of its MOST RECENT positive
-/// observation ([`is_positive_source_observation`]) -- the moment its
-/// projections were last known current, before whatever unavailability
-/// followed (if any).
+/// For every source, the latest timestamp EITHER angle can affirm as a
+/// successful read: the `observed_at` of its most recent positive event
+/// observation ([`is_positive_source_observation`]), or the `advanced_at` of
+/// its most recent successful checkpoint poll (`checkpoint_last_success`,
+/// already filtered by the composition root to polls that actually reached
+/// the source) -- whichever is later.
+///
+/// The two angles cover each other's blind spot. A steady-state healthy
+/// source polls successfully every cycle but appends no new event once its
+/// content-addressed data dedupes away, so only the checkpoint angle
+/// advances there. A source with no checkpoint at all (`needs-attention`,
+/// which diffs a snapshot rather than polling through
+/// [`crate::source_adapters::SourceCheckpointPort`]) has only the event
+/// angle. And a source that is currently failing writes a fresh, but
+/// NOT-successful, checkpoint every cycle -- excluded from
+/// `checkpoint_last_success` by construction -- so its last real success
+/// stays pinned to whichever angle recorded it before the failure started.
 fn last_successful_observed_at(
     events_with_observed_at: &[(ConsoleEvent, String)],
+    checkpoint_last_success: &[(String, String)],
 ) -> BTreeMap<String, String> {
     let mut last_success = BTreeMap::new();
     for (event, observed_at) in events_with_observed_at {
         if is_positive_source_observation(*event.event_type()) {
             last_success.insert(event.source().to_owned(), observed_at.clone());
         }
+    }
+    for (source, advanced_at) in checkpoint_last_success {
+        last_success
+            .entry(source.clone())
+            .and_modify(|existing: &mut String| {
+                if advanced_at > existing {
+                    existing.clone_from(advanced_at);
+                }
+            })
+            .or_insert_with(|| advanced_at.clone());
     }
     last_success
 }
@@ -280,7 +324,7 @@ mod tests {
         let events = [attention_worthy_work_item_event(
             "livespec-console-beads-fabro-a1",
         )];
-        let report = build_doctor_report(&events, &[]);
+        let report = build_doctor_report(&events, &[], &[]);
 
         // The single attention-worthy work item has no needs-attention
         // counterpart, so console (1) and source (0) genuinely disagree here
@@ -295,7 +339,7 @@ mod tests {
             attention_worthy_work_item_event("livespec-console-beads-fabro-a1"),
             needs_attention_item_event("livespec-console-beads-fabro-a1"),
         ];
-        let report = build_doctor_report(&events, &[]);
+        let report = build_doctor_report(&events, &[], &[]);
         check(
             !report.has_findings(),
             "expected no findings on a healthy fixture",
@@ -359,7 +403,7 @@ mod tests {
             not_observed_event(SourceAdapterKind::Dispatcher, "dispatcher binary not found"),
             not_observed_event(SourceAdapterKind::GitHub, "gh: command not found"),
         ];
-        let report = build_doctor_report(&events, &[]);
+        let report = build_doctor_report(&events, &[], &[]);
 
         let messages = finding_messages(report.findings());
         check(
@@ -375,7 +419,7 @@ mod tests {
             "expected a finding naming github and its reason",
         );
 
-        let clean_report = build_doctor_report(&[], &[]);
+        let clean_report = build_doctor_report(&[], &[], &[]);
         check(
             !clean_report.has_findings(),
             "expected no findings when every source is available",
@@ -395,7 +439,7 @@ mod tests {
             // survive past, not the not-observed event's own time.
             (events[0].clone(), "2026-09-08T14:00:00Z".to_owned()),
         ];
-        let report = build_doctor_report(&events, &events_with_observed_at);
+        let report = build_doctor_report(&events, &events_with_observed_at, &[]);
 
         let messages = finding_messages(report.findings());
         check(
@@ -408,6 +452,137 @@ mod tests {
     }
 
     #[test]
+    fn last_successful_observed_at_prefers_the_later_of_the_event_and_checkpoint_timestamps() {
+        let events_with_observed_at = [positive_observation_event(
+            SourceAdapterKind::Dispatcher,
+            "2026-09-08T12:00:00Z",
+        )];
+
+        // The checkpoint angle is later: it must win.
+        let checkpoint_later = [(
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            "2026-09-08T13:00:00Z".to_owned(),
+        )];
+        let later = super::last_successful_observed_at(&events_with_observed_at, &checkpoint_later);
+        check(
+            later
+                .get(SourceAdapterKind::Dispatcher.source_name())
+                .map(String::as_str)
+                == Some("2026-09-08T13:00:00Z"),
+            "expected the later checkpoint timestamp to win",
+        );
+
+        // The event angle is later: it must survive, not be overwritten by
+        // an older checkpoint reading.
+        let checkpoint_earlier = [(
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            "2026-09-08T11:00:00Z".to_owned(),
+        )];
+        let earlier =
+            super::last_successful_observed_at(&events_with_observed_at, &checkpoint_earlier);
+        check(
+            earlier
+                .get(SourceAdapterKind::Dispatcher.source_name())
+                .map(String::as_str)
+                == Some("2026-09-08T12:00:00Z"),
+            "expected the later event timestamp to survive an older checkpoint reading",
+        );
+    }
+
+    #[test]
+    fn ac2_and_ac4_last_successful_observed_at_advances_across_poll_cycles_for_a_healthy_quiet_source()
+     {
+        // A healthy, quiet source: its data never changes between polls, so
+        // its content-addressed events dedupe away and no NEW positive event
+        // is ever recorded for it -- `events_with_observed_at` stays empty
+        // across both cycles below. Only the checkpoint angle sees each poll
+        // cycle, via the composition root's `list_checkpoints` read
+        // (mx9u.25 AC1, AC2, AC4).
+        let events_with_observed_at: [(ConsoleEvent, String); 0] = [];
+
+        let cycle_1 = [(
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            "2026-09-09T00:00:00Z".to_owned(),
+        )];
+        let after_cycle_1 = super::last_successful_observed_at(&events_with_observed_at, &cycle_1);
+        check(
+            after_cycle_1
+                .get(SourceAdapterKind::Dispatcher.source_name())
+                .map(String::as_str)
+                == Some("2026-09-09T00:00:00Z"),
+            "expected the first poll cycle's checkpoint timestamp",
+        );
+
+        let cycle_2 = [(
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            "2026-09-09T00:05:00Z".to_owned(),
+        )];
+        let after_cycle_2 = super::last_successful_observed_at(&events_with_observed_at, &cycle_2);
+        check(
+            after_cycle_2
+                .get(SourceAdapterKind::Dispatcher.source_name())
+                .map(String::as_str)
+                == Some("2026-09-09T00:05:00Z"),
+            "expected the second poll cycle's checkpoint timestamp to have advanced past the \
+             first, even though every data event dedupes away in both cycles",
+        );
+        check(
+            after_cycle_2.get(SourceAdapterKind::Dispatcher.source_name())
+                > after_cycle_1.get(SourceAdapterKind::Dispatcher.source_name()),
+            "expected the last-successful-read to advance between poll cycles",
+        );
+    }
+
+    #[test]
+    fn ac3_last_successful_read_does_not_advance_while_the_source_keeps_failing() {
+        // Cycle 1: the source polls successfully.
+        let cycle_1_checkpoint = [(
+            SourceAdapterKind::Dispatcher.source_name().to_owned(),
+            "2026-09-09T00:00:00Z".to_owned(),
+        )];
+        check(
+            super::last_successful_observed_at(&[], &cycle_1_checkpoint)
+                .get(SourceAdapterKind::Dispatcher.source_name())
+                .map(String::as_str)
+                == Some("2026-09-09T00:00:00Z"),
+            "sanity: cycle 1's successful poll is recorded",
+        );
+
+        // Cycle 2: the source is now failing. Its checkpoint DID advance --
+        // to a not-observed envelope -- but
+        // `checkpoint_reflects_a_successful_poll` reads that as NOT a
+        // success, so the composition root excludes it from
+        // `checkpoint_last_success` entirely. This is the trap the ticket
+        // names: "advance on poll" must not become "advance always".
+        let report = build_doctor_report(
+            &[not_observed_event(
+                SourceAdapterKind::Dispatcher,
+                "dispatcher binary not found",
+            )],
+            &[
+                positive_observation_event(SourceAdapterKind::Dispatcher, "2026-09-09T00:00:00Z"),
+                (
+                    not_observed_event(
+                        SourceAdapterKind::Dispatcher,
+                        "dispatcher binary not found",
+                    ),
+                    "2026-09-09T00:05:00Z".to_owned(),
+                ),
+            ],
+            &[], // cycle 2's checkpoint excluded: it is not a successful poll.
+        );
+
+        let messages = finding_messages(report.findings());
+        check(
+            messages
+                .iter()
+                .any(|message| message.contains("last successful read: 2026-09-09T00:00:00Z")),
+            "expected the failing source's last-successful-read to stay pinned to its last \
+             real success, not advance to when it started failing",
+        );
+    }
+
+    #[test]
     fn ac3_exit_code_gates_on_whether_any_finding_is_present() {
         let unhealthy = build_doctor_report(
             &[not_observed_event(
@@ -415,13 +590,14 @@ mod tests {
                 "dispatcher binary not found",
             )],
             &[],
+            &[],
         );
         check(
             unhealthy.has_findings(),
             "expected findings to gate a non-zero exit",
         );
 
-        let healthy = build_doctor_report(&[], &[]);
+        let healthy = build_doctor_report(&[], &[], &[]);
         check(
             !healthy.has_findings(),
             "expected no findings to gate a zero exit",
@@ -437,7 +613,7 @@ mod tests {
             attention_worthy_work_item_event("livespec-console-beads-fabro-a2"),
             needs_attention_item_event("livespec-console-beads-fabro-a1"),
         ];
-        let report = build_doctor_report(&events, &[]);
+        let report = build_doctor_report(&events, &[], &[]);
 
         check(
             report.attention_line() == "2 (source reports 1)",
@@ -454,7 +630,7 @@ mod tests {
             attention_worthy_work_item_event("livespec-console-beads-fabro-a1"),
             needs_attention_item_event("livespec-console-beads-fabro-a1"),
         ];
-        let agreeing = build_doctor_report(&agreeing_events, &[]);
+        let agreeing = build_doctor_report(&agreeing_events, &[], &[]);
         check(
             agreeing.attention_line() == "1",
             "expected a bare count when the two agree",
@@ -472,7 +648,7 @@ mod tests {
         ];
 
         let model = build_tui_model(&events, 0);
-        let report = build_doctor_report(&events, &[]);
+        let report = build_doctor_report(&events, &[], &[]);
 
         let mut doctor_sources: Vec<&str> = report
             .findings()

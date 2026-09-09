@@ -1060,6 +1060,43 @@ impl SqliteEventStore {
         )?;
         Ok(())
     }
+
+    /// List every adapter's `(adapter_id, checkpoint_json, advanced_at)` row
+    /// from the backing store.
+    ///
+    /// `advanced_at` is written by [`Self::save_checkpoint`] on every poll
+    /// cycle of that adapter -- success OR an honest not-observed finding,
+    /// and whether or not the poll yielded any new event -- so, unlike an
+    /// event's own `observed_at`, it does not depend on new content landing
+    /// in the log. `checkpoint_json` is the raw envelope
+    /// `console-application`'s `ObservedSourceAdapter` writes there, which
+    /// callers read with `checkpoint_reflects_a_successful_poll` to tell a
+    /// poll that actually reached the source from one that recorded a
+    /// not-observed finding at the same cadence -- this store has no opinion
+    /// on that shape, only on the columns.
+    ///
+    /// That distinction is what `console-application`'s `doctor` diagnostic
+    /// (livespec-console-beads-fabro-mx9u.25) needs for a per-source
+    /// "last successful read": a healthy, quiet source's checkpoint still
+    /// advances every poll cycle even though its content-addressed data
+    /// events dedupe away, while a source whose poll keeps failing writes a
+    /// not-observed checkpoint every cycle too, so its `advanced_at` alone
+    /// cannot be trusted as evidence of success.
+    pub fn list_checkpoints(&self) -> EventStoreResult<Vec<(String, String, String)>> {
+        let sql =
+            "select adapter_id, checkpoint_json, advanced_at from checkpoints order by adapter_id";
+        let mut statement = self.connection.prepare(sql)?;
+        // `raw_query` binds nothing and returns rows infallibly for this
+        // parameterless statement, so it avoids a permanently-unreachable `?`
+        // arm that `query([])` would introduce; step and row-decode errors
+        // still surface through `rows.next()?` below.
+        let mut rows = statement.raw_query();
+        let mut checkpoints = Vec::new();
+        while let Some(row) = rows.next()? {
+            checkpoints.push((row.get(0)?, row.get(1)?, row.get(2)?));
+        }
+        Ok(checkpoints)
+    }
 }
 
 fn initialize_connection(connection: &Connection, busy_timeout: Duration) -> EventStoreResult<()> {
@@ -2263,6 +2300,68 @@ mod tests {
     }
 
     #[test]
+    fn list_checkpoints_returns_every_adapters_latest_row_sorted_by_adapter_id() {
+        let mut store = ok_store(SqliteEventStore::open_in_memory());
+
+        ok_eventstore_unit(store.save_checkpoint(
+            "fabro:repo",
+            r#"{"cursor":"run_1"}"#,
+            "2026-06-24T00:00:02Z",
+        ));
+        ok_eventstore_unit(store.save_checkpoint(
+            "dispatcher:repo",
+            r#"{"version":1}"#,
+            "2026-06-24T00:00:00Z",
+        ));
+        // A second save for the same adapter overwrites, rather than
+        // duplicating, its row -- `list_checkpoints` must report only the
+        // LATEST row, matching `load_checkpoint`'s own latest-value
+        // contract.
+        ok_eventstore_unit(store.save_checkpoint(
+            "dispatcher:repo",
+            r#"{"version":2}"#,
+            "2026-06-24T00:00:01Z",
+        ));
+
+        let checkpoints = ok_checkpoints(store.list_checkpoints());
+
+        check(
+            checkpoints
+                == vec![
+                    (
+                        "dispatcher:repo".to_owned(),
+                        r#"{"version":2}"#.to_owned(),
+                        "2026-06-24T00:00:01Z".to_owned(),
+                    ),
+                    (
+                        "fabro:repo".to_owned(),
+                        r#"{"cursor":"run_1"}"#.to_owned(),
+                        "2026-06-24T00:00:02Z".to_owned(),
+                    ),
+                ],
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn list_checkpoints_is_empty_over_a_fresh_store() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+
+        check(
+            ok_checkpoints(store.list_checkpoints()).is_empty(),
+            "eventstore test assertion",
+        );
+    }
+
+    #[test]
+    fn list_checkpoints_reports_sqlite_failure() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        ok_sqlite_unit(store.connection.execute_batch("drop table checkpoints"));
+
+        check_sqlite_error(err_checkpoints(store.list_checkpoints()));
+    }
+
+    #[test]
     fn checkpoint_save_reports_sqlite_failure() {
         let mut store = ok_store(SqliteEventStore::open_in_memory());
         ok_sqlite_unit(store.connection.execute_batch("drop table checkpoints"));
@@ -2742,6 +2841,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_checkpoints_reports_bad_row_values() {
+        let store = ok_store(SqliteEventStore::open_in_memory());
+        for column_name in ["adapter_id", "checkpoint_json", "advanced_at"] {
+            replace_checkpoints_for_list_checkpoints(&store, column_name);
+
+            let error = err_checkpoints(store.list_checkpoints());
+
+            check_sqlite_error(error);
+        }
+    }
+
     // livespec-console-beads-fabro-txtzn5.14: the residual production `?`-arm
     // regions that drop-table/bad-row injection did not reach — the duplicate
     // and insert sequence-conversion arms, the transaction commit arms, the
@@ -2943,6 +3054,15 @@ mod tests {
                     store.append_event(&event_append(&format!("evt_{index}"), None)),
                 );
             }
+            // A checkpoints row too, so the corruption below also exercises
+            // `list_checkpoints`'s own `rows.next()` step -- a distinct source
+            // location from `list_events`'s and
+            // `list_console_events_with_observed_at`'s.
+            ok_eventstore_unit(store.save_checkpoint(
+                "dispatcher:repo",
+                r#"{"version":1}"#,
+                "2026-06-24T00:00:00Z",
+            ));
             // Fold the WAL back into the main file so the corruption below is the
             // only copy of the table data the reopened store can read.
             ok_sqlite_unit(
@@ -2966,6 +3086,7 @@ mod tests {
         check_sqlite_error(err_console_events_with_observed_at(
             store.list_console_events_with_observed_at(),
         ));
+        check_sqlite_error(err_checkpoints(store.list_checkpoints()));
         let _ignored = std::fs::remove_dir_all(&dir);
     }
 
@@ -3202,6 +3323,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "ok_checkpoints failed")]
+    fn ok_checkpoints_panics() {
+        ok_checkpoints(Err(EventStoreError::InvalidSequence));
+    }
+
+    #[test]
     #[should_panic(expected = "ok_eventstore_unit failed")]
     fn ok_eventstore_unit_panics() {
         ok_eventstore_unit(Err(EventStoreError::InvalidSequence));
@@ -3350,6 +3477,12 @@ mod tests {
     #[should_panic(expected = "err_checkpoint failed")]
     fn err_checkpoint_panics() {
         err_checkpoint(Ok(None));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_checkpoints failed")]
+    fn err_checkpoints_panics() {
+        err_checkpoints(Ok(Vec::new()));
     }
 
     #[track_caller]
@@ -3526,6 +3659,16 @@ mod tests {
     }
 
     #[track_caller]
+    fn ok_checkpoints(
+        result: EventStoreResult<Vec<(String, String, String)>>,
+    ) -> Vec<(String, String, String)> {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("ok_checkpoints failed: {error:?}"),
+        }
+    }
+
+    #[track_caller]
     fn ok_eventstore_unit(result: EventStoreResult<()>) {
         match result {
             Ok(()) => {}
@@ -3692,6 +3835,14 @@ mod tests {
     }
 
     #[track_caller]
+    fn err_checkpoints(result: EventStoreResult<Vec<(String, String, String)>>) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_checkpoints failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
     fn err_status_update(result: EventStoreResult<CommandStatusUpdateOutcome>) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_status_update failed"),
@@ -3837,6 +3988,24 @@ mod tests {
             } else {
                 "null".to_owned()
             }
+        )));
+    }
+
+    fn replace_checkpoints_for_list_checkpoints(store: &SqliteEventStore, bad_column: &str) {
+        let value = |column: &str, text: &str| sql_text_or_blob(text, bad_column == column);
+        ok_sqlite_unit(store.connection.execute_batch(&format!(
+            "drop table checkpoints;
+             create table checkpoints (
+               adapter_id,
+               checkpoint_json,
+               advanced_at
+             );
+             insert into checkpoints values (
+               {}, {}, {}
+             );",
+            value("adapter_id", "dispatcher:repo"),
+            value("checkpoint_json", r#"{"version":1}"#),
+            value("advanced_at", "2026-06-24T00:00:00Z"),
         )));
     }
 

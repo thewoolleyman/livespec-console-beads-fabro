@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
+use console_application::source_adapters::checkpoint_reflects_a_successful_poll;
 #[cfg(test)]
 use console_application::source_adapters::{
     AcceptancePolicy, AdapterPoll, AdapterPollRequest, AdmissionPolicy, DispatcherJournalEntry,
@@ -2159,6 +2160,39 @@ impl DoctorRunResult {
     }
 }
 
+/// Return every source's `(source, advanced_at)` pair, for doctor's
+/// last-successful-read finding.
+///
+/// This is the composition root's half of
+/// livespec-console-beads-fabro-mx9u.25: `console-application` may depend on
+/// nothing but `console-domain`, so it cannot read the checkpoint store
+/// itself. Here -- where both `console-eventstore` and `console-application`
+/// are in reach -- each checkpoint row is read, filtered down to the ones
+/// [`checkpoint_reflects_a_successful_poll`] affirms as an actual successful
+/// poll (never one recording an honest not-observed finding at the same
+/// cadence), and its `adapter_id` (`"{source}:{repo}"`, the convention
+/// `refresh_sources` mints adapter ids under, above) is reduced to the bare
+/// source name `doctor`'s findings key on.
+fn checkpoint_source_last_success(
+    store: &SqliteEventStore,
+) -> EventStoreResult<Vec<(String, String)>> {
+    Ok(store
+        .list_checkpoints()?
+        .into_iter()
+        .filter_map(|(adapter_id, checkpoint_json, advanced_at)| {
+            if !checkpoint_reflects_a_successful_poll(&checkpoint_json) {
+                return None;
+            }
+            let source = adapter_id
+                .split(':')
+                .next()
+                .unwrap_or(&adapter_id)
+                .to_owned();
+            Some((source, advanced_at))
+        })
+        .collect())
+}
+
 /// Return the doctor report value.
 ///
 /// Findings are derived from the SAME in-process state the header renders
@@ -2171,8 +2205,9 @@ impl DoctorRunResult {
 pub fn doctor_report(store: &SqliteEventStore) -> EventStoreResult<DoctorRunResult> {
     let events = store.list_console_events()?;
     let events_with_observed_at = store.list_console_events_with_observed_at()?;
+    let checkpoint_last_success = checkpoint_source_last_success(store)?;
     let commands = store.list_commands()?;
-    let report = build_doctor_report(&events, &events_with_observed_at);
+    let report = build_doctor_report(&events, &events_with_observed_at, &checkpoint_last_success);
     let has_findings = report.has_findings();
 
     let mut lines = Vec::new();
@@ -3821,8 +3856,9 @@ mod tests {
 
     use crate::{
         DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, checkpoint_load_failed,
-        checkpoint_save_failed, effect_may_persist_command, effect_sink_io_error,
-        resolve_console_invoker, sink_outcome_for_persist_error, tolerate_transient_refresh,
+        checkpoint_save_failed, checkpoint_source_last_success, effect_may_persist_command,
+        effect_sink_io_error, resolve_console_invoker, sink_outcome_for_persist_error,
+        tolerate_transient_refresh,
     };
 
     use std::cell::RefCell;
@@ -4987,6 +5023,84 @@ mod tests {
                 .message()
                 .contains("last successful read: never observed"),
             "expected the staleness annotation naming no prior successful read",
+        );
+    }
+
+    #[test]
+    fn checkpoint_source_last_success_keeps_only_successful_polls_and_bares_the_source_name() {
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+
+        // A real `ObservedSourceAdapter` checkpoint envelope that reads as a
+        // successful poll: its adapter id is included, reduced to the bare
+        // source name.
+        store
+            .save_checkpoint(
+                "dispatcher:livespec-console-beads-fabro",
+                r#"{"schema_version":1,"source_checkpoint":"observed_idle","availability":"observed","transition_epoch":1}"#,
+                "2026-09-09T00:00:00Z",
+            )
+            .ok_test();
+        // The same shape but `not_observed`: `save_checkpoint` writes this on
+        // every failing poll too, so it must be excluded rather than read as
+        // evidence of success (AC3's trap).
+        store
+            .save_checkpoint(
+                "github:livespec-console-beads-fabro",
+                r#"{"schema_version":1,"source_checkpoint":"not_observed","availability":"not_observed","transition_epoch":1}"#,
+                "2026-09-09T00:00:01Z",
+            )
+            .ok_test();
+        // An adapter id with no `:repo` suffix: the bare-source-name split
+        // falls back to the whole id rather than panicking or dropping the
+        // row.
+        store
+            .save_checkpoint(
+                "solo",
+                r#"{"schema_version":1,"source_checkpoint":"observed_idle","availability":"observed","transition_epoch":1}"#,
+                "2026-09-09T00:00:02Z",
+            )
+            .ok_test();
+
+        let last_success = checkpoint_source_last_success(&store).ok_test();
+
+        check(
+            last_success
+                == vec![
+                    ("dispatcher".to_owned(), "2026-09-09T00:00:00Z".to_owned()),
+                    ("solo".to_owned(), "2026-09-09T00:00:02Z".to_owned()),
+                ],
+            "expected only the successful-poll checkpoints, keyed by bare source name",
+        );
+    }
+
+    #[test]
+    fn store_backed_doctor_advances_a_healthy_quiet_sources_last_successful_read_via_its_checkpoint()
+     {
+        // mx9u.25: a source with a saved `observed` checkpoint but no
+        // `not_observed` event ever recorded is not in the unavailable-source
+        // tally, so its checkpoint-derived last-successful-read is not itself
+        // rendered by `doctor` -- but the read must still be wired all the
+        // way through and not error, matching the pre-mx9u.25 healthy-console
+        // output exactly (livespec-console-beads-fabro-mx9u.14's "no
+        // findings" contract is undisturbed by a purely-additional data
+        // source).
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        store
+            .save_checkpoint(
+                "dispatcher:livespec-console-beads-fabro",
+                r#"{"schema_version":1,"source_checkpoint":"observed_idle","availability":"observed","transition_epoch":1}"#,
+                "2026-09-09T00:00:00Z",
+            )
+            .ok_test();
+
+        let output =
+            run_with_store_scripted(&command_args(&["bin", "doctor"]), &mut store, "unused");
+
+        check((output.code()) == (0), "assert_eq failed");
+        check(
+            (output.message())
+                == ("doctor: no findings\nstore events: 0\ncommands: 0\nattention: 0"),
+            "expected a healthy checkpoint-only store to still report no findings",
         );
     }
 
@@ -11896,6 +12010,21 @@ mod tests {
     }
 
     #[test]
+    fn real_store_doctor_propagates_missing_checkpoints_table_errors() {
+        // mx9u.25: `doctor_report` now also reads the checkpoint store, via
+        // `checkpoint_source_last_success`'s `list_checkpoints` call --
+        // exercise that read's OWN failure path, distinct from the
+        // events/commands table failures covered above.
+        let (path, store) = file_store("doctor-missing-checkpoints-table");
+        corrupt_store(&path, "drop table checkpoints");
+
+        let error = err_eventstore_doctor(doctor_report(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
     fn real_store_needs_attention_ingest_reports_missing_event_table_errors() {
         let (path, mut store) = file_store("needs-attention-missing-events");
         let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
@@ -13043,6 +13172,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "ok_eventstore_unit failed")]
+    fn ok_eventstore_unit_panics() {
+        let result: EventStoreResult<()> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_source_last_success failed")]
+    fn ok_eventstore_source_last_success_panics() {
+        let result: EventStoreResult<Vec<(String, String)>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
     #[should_panic(expected = "ok_eventstore_doctor failed")]
     fn ok_eventstore_doctor_panics() {
         let result: EventStoreResult<DoctorRunResult> = Err(EventStoreError::InvalidSequence);
@@ -13407,6 +13550,30 @@ mod tests {
             match self {
                 Ok(value) => value,
                 Err(error) => panic!("ok_eventstore_string failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<()> {
+        type Output = ();
+
+        #[track_caller]
+        fn ok_test(self) {
+            match self {
+                Ok(()) => {}
+                Err(error) => panic!("ok_eventstore_unit failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<Vec<(String, String)>> {
+        type Output = Vec<(String, String)>;
+
+        #[track_caller]
+        fn ok_test(self) -> Vec<(String, String)> {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_source_last_success failed: {error:?}"),
             }
         }
     }

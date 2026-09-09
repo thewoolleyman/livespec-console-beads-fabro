@@ -1916,6 +1916,32 @@ impl AvailabilityCheckpoint {
     }
 }
 
+/// Whether `checkpoint_json` records a poll that actually reached its
+/// source, rather than one that recorded an honest not-observed finding.
+///
+/// `checkpoint_json` is an [`ObservedSourceAdapter`]-shaped checkpoint
+/// envelope, as persisted through [`SourceCheckpointPort`] and read back
+/// from the store's `checkpoints` table; a reached source reads
+/// `availability: "observed"`. Every wired source
+/// ([`SourceAdapterKind::Orchestrator`], [`SourceAdapterKind::Dispatcher`],
+/// [`SourceAdapterKind::Fabro`], [`SourceAdapterKind::GitHub`],
+/// [`SourceAdapterKind::LiveSpec`], [`SourceAdapterKind::Reconciler`]) writes
+/// this same envelope via
+/// [`ObservedSourceAdapter::poll`], which succeeds (`Ok`) on EVERY poll cycle
+/// -- so a checkpoint's mere presence, or its `advanced_at` alone, cannot
+/// distinguish a genuine success from a poll that reached nothing and
+/// recorded that honestly. Unrecognized or malformed JSON reports `false`: a
+/// checkpoint this reader cannot positively affirm as a real success must
+/// never be read as evidence of one
+/// (livespec-console-beads-fabro-mx9u.25).
+#[must_use]
+pub fn checkpoint_reflects_a_successful_poll(checkpoint_json: &str) -> bool {
+    matches!(
+        AvailabilityCheckpoint::from_previous(Some(checkpoint_json)).1,
+        Some(checkpoint) if checkpoint.availability == AvailabilityState::Observed
+    )
+}
+
 fn availability_transition(
     previous_checkpoint: Option<&str>,
     next_state: AvailabilityState,
@@ -4693,6 +4719,45 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
             3
+        );
+    }
+
+    #[test]
+    fn checkpoint_reflects_a_successful_poll_is_true_over_an_observed_checkpoint() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed("[]", true));
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        check(
+            super::checkpoint_reflects_a_successful_poll(poll.checkpoint()),
+            "expected an idle-but-observed checkpoint to read as a successful poll",
+        );
+    }
+
+    #[test]
+    fn checkpoint_reflects_a_successful_poll_is_false_over_a_not_observed_checkpoint() {
+        let probe = StubProbe::command(SourceProbeOutcome::unavailable("orchestrator not found"));
+        let adapter = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        check(
+            !super::checkpoint_reflects_a_successful_poll(poll.checkpoint()),
+            "expected a not-observed checkpoint to NOT read as a successful poll -- \
+             `save_checkpoint` writes this same envelope on every poll cycle, success \
+             or failure, so `advanced_at` alone cannot carry this distinction",
+        );
+    }
+
+    #[test]
+    fn checkpoint_reflects_a_successful_poll_is_false_over_malformed_or_legacy_json() {
+        check(
+            !super::checkpoint_reflects_a_successful_poll("not json"),
+            "expected malformed checkpoint JSON to read as not a successful poll",
+        );
+        check(
+            !super::checkpoint_reflects_a_successful_poll("ck-legacy-source-position"),
+            "expected a legacy pre-availability-envelope checkpoint to read as not a \
+             successful poll -- it cannot be positively affirmed as one",
         );
     }
 
