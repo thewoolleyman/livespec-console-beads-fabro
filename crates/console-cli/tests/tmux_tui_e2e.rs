@@ -831,8 +831,16 @@ fn tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers() -> HarnessResu
         program_env.as_str(),
     )];
 
+    // `launch_with_env_unchecked`, not `launch_with_env`: the latter's
+    // automatic `assert_source_health` (livespec-console-beads-fabro-mx9u.28)
+    // waits for a SETTLED frame first, which -- thanks to this item's own
+    // `poll_settled` fix -- never settles while the startup-ingest tell is
+    // present. Using it here would make the harness itself wait out the slow
+    // source before ever handing back the console, defeating the entire
+    // point of this scene. The health check runs explicitly below, AFTER
+    // convergence, instead.
     let started = Instant::now();
-    let console = TmuxConsole::launch_with_env(&repo, &extra_env)?;
+    let console = TmuxConsole::launch_with_env_unchecked(&repo, &extra_env)?;
     let elapsed = started.elapsed();
 
     assert!(
@@ -861,6 +869,10 @@ fn tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers() -> HarnessResu
         "the console must still be alive and rendering once the slow source \
          answers:\n{settled}"
     );
+    // Now that convergence is proven, the deferred harness precondition:
+    // every source (including the one that was merely SLOW, not broken)
+    // ended up healthy.
+    console.assert_source_health(&[])?;
 
     console.send_keys(&["q"])?;
     console.wait_for("TUI_EXIT=0", render_timeout())?;
