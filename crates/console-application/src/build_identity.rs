@@ -142,9 +142,21 @@ pub fn build_staleness_from_rev_list_count(outcome: &SourceProbeOutcome) -> Buil
 /// Observe [`BuildStaleness`] for `build_sha` against `repo_path`'s current
 /// HEAD, through `probe` -- the one IO seam this module ever crosses.
 ///
-/// Run ONCE at session startup, the same way the selected repo and dispatcher
-/// settings are: the running build does not change mid-session, so nothing
-/// justifies a per-keystroke (or even per-poll-cadence) `git` shell-out here.
+/// `livespec-console-beads-fabro-mx9u.26`: this used to run ONCE at session
+/// startup, on the theory that the running build never changes mid-session so
+/// nothing justifies a repeat `git` shell-out. That theory conflated the two
+/// halves of "stale": the BUILD sha is indeed fixed for the process's life,
+/// but the repo's HEAD is not, and staleness is a function of both. Probed
+/// once, the tell measures the gap at the one moment it is guaranteed to be
+/// zero -- right after the pane's own build -- and then never again, no
+/// matter how far HEAD moves under a session left running for hours (which is
+/// the documented, intended usage; see `CLAUDE.md`'s pane-recreation recipe
+/// and the "left running between dogfood passes" directive).
+///
+/// So this is now called REPEATEDLY, on the caller's chosen cadence -- but
+/// the ORIGINAL objection was legitimate for the cadence it was rejecting:
+/// see [`SharedBuildStaleness`] for where the periodic call actually lives
+/// and why that cadence, not this one, is the right place to re-probe.
 #[must_use]
 pub fn observe_build_staleness(
     probe: &dyn SourceProbe,
@@ -164,11 +176,96 @@ pub fn observe_build_staleness(
     build_staleness_from_rev_list_count(&outcome)
 }
 
+/// A thread-shared cell holding the most recently observed [`BuildStaleness`].
+///
+/// This is the seam that answers `livespec-console-beads-fabro-mx9u.26`'s
+/// cadence question. [`observe_build_staleness`] shells out to `git`, so it
+/// must never run on the render thread -- the console already learned that
+/// lesson for the SOURCE polls (`livespec-console-beads-fabro-pzbdbo.25`,
+/// `mx9u.8`/`mx9u.9`: a per-keystroke or per-render shell-out dropped
+/// keystrokes and regressed input latency from 91ms back toward 577ms). The
+/// fix there was a background poller thread with its own cadence, writing
+/// into the store for the render thread to re-read; this reuses that EXACT
+/// thread and EXACT cadence (the composition root's `POLLER_CADENCE`, 2
+/// seconds) rather than inventing a second timer, because that cadence
+/// already governs a sweep of far heavier CLI shell-outs (six backing CLIs
+/// plus the orchestrator's `needs-attention` snapshot) every cycle. Measured
+/// locally against this repo, `git rev-list --count <sha>..HEAD` costs
+/// 10-60ms -- a small fraction of a 2-second window that already tolerates
+/// slower calls than this one, and it runs on the same thread that already
+/// pays that cost, never on the thread the operator's keystrokes depend on.
+///
+/// A per-render or per-keystroke cadence remains wrong for the same reason it
+/// always was: the render thread's `event::poll` must stay responsive, and a
+/// `git` shell-out is IO this process does not control the latency of (a
+/// contended disk, an NFS-backed checkout, or simply a slow host would all
+/// show up as dropped keystrokes). The 2-second background cadence is slow
+/// enough that it costs nothing perceptible and fast enough that a session
+/// left running for hours -- the case this item exists for -- learns it has
+/// fallen behind within a couple of poll cycles rather than never.
+///
+/// The render thread never shells out to read this: it takes a `Mutex` lock
+/// around a `Copy` enum and releases it immediately, on its own existing
+/// idle-tick cadence (`event::poll`'s 250ms timeout already wakes it that
+/// often). Starts at [`BuildStaleness::Unknown`] so a session rendered before
+/// the first background probe completes shows nothing rather than a false
+/// `Current` -- silence-by-design stays intact even for the brief startup
+/// window (though the composition root also runs one synchronous probe
+/// before the first frame, so this window is not normally observed in
+/// practice).
+#[derive(Clone, Debug)]
+pub struct SharedBuildStaleness(std::sync::Arc<std::sync::Mutex<BuildStaleness>>);
+
+impl SharedBuildStaleness {
+    #[must_use]
+    /// Construct a new cell, unset (reads as [`BuildStaleness::Unknown`] until
+    /// the first [`Self::set`]).
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            BuildStaleness::Unknown,
+        )))
+    }
+
+    /// Overwrite the shared value with a freshly observed staleness.
+    ///
+    /// Called from the background poller thread, once per its cadence. A
+    /// poisoned lock -- unreachable here since the critical section is a
+    /// single assignment that cannot panic, but not provably so to the
+    /// compiler -- is swallowed rather than propagated: this module's
+    /// contract is silence on failure, never a crash, and a lost write simply
+    /// leaves the previous value in place for one more cycle.
+    pub fn set(&self, staleness: BuildStaleness) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = staleness;
+        }
+    }
+
+    /// Read the latest shared value.
+    ///
+    /// Called from the render thread, once per idle tick. A poisoned lock
+    /// degrades to [`BuildStaleness::Unknown`] -- the same silence-by-design
+    /// fallback [`build_staleness_from_rev_list_count`] uses for every other
+    /// unprovable case, rather than a panic that would take the whole render
+    /// loop down over a stale-build tell.
+    #[must_use]
+    pub fn get(&self) -> BuildStaleness {
+        self.0
+            .lock()
+            .map_or(BuildStaleness::Unknown, |guard| *guard)
+    }
+}
+
+impl Default for SharedBuildStaleness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BuildIdentity, BuildStaleness, build_identity_segment, build_staleness_from_rev_list_count,
-        build_staleness_segment, observe_build_staleness,
+        BuildIdentity, BuildStaleness, SharedBuildStaleness, build_identity_segment,
+        build_staleness_from_rev_list_count, build_staleness_segment, observe_build_staleness,
     };
     use crate::source_adapters::{SourceProbe, SourceProbeOutcome};
 
@@ -306,5 +403,63 @@ mod tests {
                 ]
             ))
         );
+    }
+
+    #[test]
+    fn shared_build_staleness_starts_unknown_and_reads_back_a_write() {
+        let shared = SharedBuildStaleness::new();
+        assert_eq!(shared.get(), BuildStaleness::Unknown);
+
+        shared.set(BuildStaleness::Behind(3));
+        assert_eq!(shared.get(), BuildStaleness::Behind(3));
+
+        // A later write overwrites, not accumulates -- AC3's "1 behind, then 5"
+        // is exactly this: the render thread sees whatever was written last.
+        shared.set(BuildStaleness::Current);
+        assert_eq!(shared.get(), BuildStaleness::Current);
+    }
+
+    #[test]
+    fn shared_build_staleness_default_matches_new() {
+        assert_eq!(
+            SharedBuildStaleness::default().get(),
+            BuildStaleness::Unknown
+        );
+    }
+
+    #[test]
+    fn shared_build_staleness_clones_share_the_same_cell() {
+        let shared = SharedBuildStaleness::new();
+        let handle = shared.clone();
+        handle.set(BuildStaleness::Behind(7));
+        // The clone is a handle to the SAME cell (an `Arc`), not an independent
+        // copy -- this is what lets the poller thread's clone and the render
+        // thread's clone see each other's writes at all.
+        assert_eq!(shared.get(), BuildStaleness::Behind(7));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    fn shared_build_staleness_survives_a_poisoned_lock() {
+        let shared = SharedBuildStaleness::new();
+        let other_handle = shared.clone();
+        // Poison the mutex by panicking while it is held, exactly as a future
+        // caller's own panic-inducing bug would -- this is the ONLY way to
+        // reach `set`'s and `get`'s `Err` branch honestly rather than by
+        // annotation.
+        let join_result = std::thread::spawn(move || {
+            other_handle.set(BuildStaleness::Current);
+            let _guard = other_handle.0.lock().unwrap();
+            panic!("deliberately poisoning the lock for the fallback test");
+        })
+        .join();
+        assert!(join_result.is_err());
+
+        // `get` degrades to `Unknown` rather than propagating the poison...
+        assert_eq!(shared.get(), BuildStaleness::Unknown);
+        // ...and a later `set` is silently swallowed rather than panicking the
+        // caller, per the module's silence-on-failure contract.
+        shared.set(BuildStaleness::Behind(9));
+        assert_eq!(shared.get(), BuildStaleness::Unknown);
     }
 }

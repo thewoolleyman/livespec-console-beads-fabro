@@ -23,7 +23,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 #[cfg(all(not(test), not(coverage)))]
-use console_application::build_identity::{BuildStaleness, observe_build_staleness};
+use console_application::build_identity::{
+    BuildStaleness, SharedBuildStaleness, observe_build_staleness,
+};
 #[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
@@ -333,21 +335,27 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         .unwrap_or(DispatcherSettingsRead::NotObserved);
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let invoker = console_invoker(args);
-    // Resolved ONCE at startup, like `dispatcher_settings` above: the running
-    // binary's build does not change mid-session, so nothing justifies
-    // re-shelling `git` per frame or per poll cadence.
-    // livespec-console-beads-fabro-mx9u.13.
-    let build_staleness = observe_build_staleness(
+    // A ONE-TIME synchronous probe so the FIRST frame already carries a real
+    // staleness reading (matching the `ingest_and_reflect` startup ingest just
+    // above) rather than rendering nothing for the ~2s until the poller's
+    // first cycle. Everything AFTER the first frame is the poller's job, on
+    // its own cadence: see `SharedBuildStaleness` and the poller-thread spawn
+    // below (livespec-console-beads-fabro-mx9u.26 — a build's sha is fixed for
+    // the session, but the repo's HEAD is not, so this can no longer be a
+    // one-shot startup read the way `dispatcher_settings` above still is).
+    let build_staleness_cell = SharedBuildStaleness::new();
+    build_staleness_cell.set(observe_build_staleness(
         &probe,
         repo_path.as_str(),
         livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
-    );
+    ));
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo.clone(),
         dispatcher_settings,
         plugin_resolution: plugin_resolution_for_tui(resolution.plugin_resolution()),
         build_identity: livespec_console_beads_fabro::build_identity::embedded_build_identity(),
-        build_staleness,
+        build_staleness: build_staleness_cell.get(),
+        build_staleness_cell: build_staleness_cell.clone(),
     };
     // Move the SLOW CLI-shelling source polls onto a background thread so the UI
     // thread never blocks on them (dropped keystrokes were the move-doesn't-land
@@ -370,7 +378,7 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // it end the session (livespec-console-beads-fabro-ddfbcx.1). The UI thread pings it (via `ChannelPollRequester`) after a
     // ledger-mutating effect, and the channel doubles as the shutdown signal.
     let (poll_tx, poll_rx) = std::sync::mpsc::channel::<PollMessage>();
-    let poller = std::thread::spawn(move || poller_loop(&poll_rx));
+    let poller = std::thread::spawn(move || poller_loop(&poll_rx, build_staleness_cell));
     let requester = ChannelPollRequester {
         tx: poll_tx.clone(),
     };
@@ -465,8 +473,18 @@ fn hostname() -> String {
 /// and keystrokes are never dropped. Terminal-adjacent + thread-bound, so
 /// `#[cfg]`-excluded from tests; the polling logic it drives (`refresh_sources`)
 /// is exercised directly.
+///
+/// `livespec-console-beads-fabro-mx9u.26`: this is also where the build-staleness
+/// re-probe now lives, and deliberately so rather than on a timer of its own. The
+/// cadence here already shells six-plus backing CLIs every `POLLER_CADENCE`
+/// window; one more cheap `git rev-list --count` (measured 10-60ms locally) costs
+/// a small fraction of a budget this thread already spends, and — the property
+/// that actually matters — it runs HERE, never on the render thread the
+/// operator's keystrokes depend on. See
+/// `console_application::build_identity::SharedBuildStaleness` for the full
+/// cadence rationale.
 #[cfg(all(not(test), not(coverage)))]
-fn poller_loop(poll_rx: &Receiver<PollMessage>) {
+fn poller_loop(poll_rx: &Receiver<PollMessage>, build_staleness: SharedBuildStaleness) {
     let resolution = match BackingCliResolution::from_environment() {
         Ok(resolution) => resolution,
         Err(error) => {
@@ -505,11 +523,15 @@ fn poller_loop(poll_rx: &Receiver<PollMessage>) {
     let needs_attention_port =
         ProbeNeedsAttentionPort::new(&probe, resolution.programs().needs_attention(), &["--json"]);
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
+    let repo_path = resolution.drive_repo_arg();
     let mut host = ChannelSourcePollHost {
         poll_rx,
         store: &mut store,
         sources: &sources,
         needs_attention: &needs_attention,
+        probe: &probe,
+        repo_path: repo_path.as_str(),
+        build_staleness,
     };
     // The PACING lives in the library (`source_poller`), where it is testable;
     // this thread supplies only the effects — the CLI-shelling poll, the
@@ -528,11 +550,27 @@ struct ChannelSourcePollHost<'a> {
     store: &'a mut SqliteEventStore,
     sources: &'a [SourceAdapterRef<'a>],
     needs_attention: &'a NeedsAttentionIngest<'a>,
+    /// The seam `observe_build_staleness` shells `git` through, same as every
+    /// other source probe on this thread.
+    probe: &'a dyn SourceProbe,
+    repo_path: &'a str,
+    /// Shared with the render thread — see [`SharedBuildStaleness`] for why
+    /// the re-probe lives on THIS cadence rather than a per-render one.
+    build_staleness: SharedBuildStaleness,
 }
 
 #[cfg(all(not(test), not(coverage)))]
 impl SourcePollHost for ChannelSourcePollHost<'_> {
     fn poll_sources(&mut self) {
+        // Re-probe staleness EVERY sweep, unconditionally: unlike the source
+        // refresh below it needs no `observed_at` clock read, and a failed
+        // probe already degrades to `BuildStaleness::Unknown` internally
+        // (silent by design — AC4), so there is nothing here to gate on.
+        self.build_staleness.set(observe_build_staleness(
+            self.probe,
+            self.repo_path,
+            livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
+        ));
         // A source poll failure (transient CLI/store hiccup) must NEVER crash the
         // poller — ignore it and try again next cycle.
         if let Ok(observed_at) = current_requested_at() {
@@ -970,7 +1008,13 @@ struct InteractiveTuiRunner {
     dispatcher_settings: DispatcherSettingsRead,
     plugin_resolution: TuiPluginResolution,
     build_identity: console_application::build_identity::BuildIdentity,
+    /// The FIRST frame's staleness -- a plain snapshot, used only to seed
+    /// [`console_tui::TuiInteractionState`] before the loop's first tick.
     build_staleness: BuildStaleness,
+    /// The LIVE cell the background poller keeps current; every tick after
+    /// the first reads through here instead
+    /// (livespec-console-beads-fabro-mx9u.26).
+    build_staleness_cell: SharedBuildStaleness,
 }
 
 #[cfg(all(not(test), not(coverage)))]
@@ -981,6 +1025,10 @@ impl TuiSessionRunner for InteractiveTuiRunner {
         requested_by: &str,
         session: &mut dyn console_tui::TuiLiveSession,
     ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
+        let mut live_session = BuildStalenessAwareSession {
+            inner: session,
+            build_staleness: self.build_staleness_cell.clone(),
+        };
         console_tui::run_interactive_tui_with_effect_sink(
             events,
             requested_by,
@@ -989,9 +1037,62 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             self.plugin_resolution.clone(),
             Some(self.build_identity.clone()),
             self.build_staleness,
-            session,
+            &mut live_session,
         )
         .map_err(ConsoleRuntimeError::tui_runtime_io_failed)
+    }
+}
+
+/// Wraps the real [`console_tui::TuiLiveSession`] with the ONE method it does
+/// not itself know how to answer: the live build-staleness read.
+///
+/// `StoreBackedTuiRuntimeEffectSink` (the concrete `session` this wraps) is
+/// constructed inside the library's `run_store_backed_tui_session`, which has
+/// no reason to know about a background poller's shared cell — that wiring is
+/// a composition-root concern, so it stays here rather than growing that
+/// function's already-long parameter list for every command lane that never
+/// runs a live TUI. Every other method delegates straight through to `inner`,
+/// unchanged (livespec-console-beads-fabro-mx9u.26).
+#[cfg(all(not(test), not(coverage)))]
+struct BuildStalenessAwareSession<'a> {
+    inner: &'a mut dyn console_tui::TuiLiveSession,
+    build_staleness: SharedBuildStaleness,
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl console_tui::TuiRuntimeEffectSink for BuildStalenessAwareSession<'_> {
+    fn handle_runtime_effect(
+        &mut self,
+        effect: &console_tui::TuiRuntimeEffect,
+    ) -> std::io::Result<console_tui::TuiRuntimeEffectSinkOutcome> {
+        self.inner.handle_runtime_effect(effect)
+    }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl console_tui::TuiLiveSession for BuildStalenessAwareSession<'_> {
+    fn refresh_events(
+        &mut self,
+        request_poll: bool,
+    ) -> std::io::Result<Option<Vec<console_domain::ConsoleEvent>>> {
+        self.inner.refresh_events(request_poll)
+    }
+
+    fn take_worker_status(&mut self) -> Option<String> {
+        self.inner.take_worker_status()
+    }
+
+    fn refresh_dispatcher_settings(&mut self) -> std::io::Result<Option<DispatcherSettingsRead>> {
+        self.inner.refresh_dispatcher_settings()
+    }
+
+    fn take_build_staleness(&mut self) -> Option<BuildStaleness> {
+        // The ONE non-passthrough method: a cheap, non-blocking `Mutex` read
+        // of whatever the background poller last wrote. Always `Some` -- the
+        // cell always holds a value (starting at `Unknown`) -- so the render
+        // loop applies it every tick, same cost as reapplying an unchanged
+        // field.
+        Some(self.build_staleness.get())
     }
 }
 
