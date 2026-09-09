@@ -23,6 +23,7 @@ use console_application::build_identity::{BuildStaleness, build_identity_segment
 use console_application::source_adapters::{
     Lane, OrphanedFactoryRun, event_source_roster_help_lines,
 };
+use console_application::source_staleness::SourceStaleness;
 use console_application::writer_identity::WriterLeaseStatus;
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, EventsFocus,
@@ -43,6 +44,7 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState, StatefulWidget, Widget, Wrap,
 };
+use std::collections::BTreeMap;
 
 const UNAVAILABLE_HERE_MARKER: &str = "  (unavailable here)";
 
@@ -100,6 +102,8 @@ pub fn run_interactive_tui(
         PluginResolution::unresolved(),
         None,
         BuildStaleness::Unknown,
+        SourceStaleness::AllObserved,
+        BTreeMap::new(),
         &mut effect_sink,
     )
 }
@@ -119,6 +123,8 @@ pub fn run_interactive_tui_with_effect_sink(
     plugin_resolution: PluginResolution,
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
+    source_staleness: SourceStaleness,
+    source_last_success: BTreeMap<String, String>,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
@@ -144,6 +150,8 @@ pub fn run_interactive_tui_with_effect_sink(
         plugin_resolution,
         build_identity,
         build_staleness,
+        source_staleness,
+        source_last_success,
         session,
     );
     let raw_mode_result = disable_raw_mode();
@@ -166,6 +174,8 @@ fn run_terminal_loop(
     plugin_resolution: PluginResolution,
     build_identity: Option<BuildIdentity>,
     build_staleness: BuildStaleness,
+    source_staleness: SourceStaleness,
+    source_last_success: BTreeMap<String, String>,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
@@ -174,6 +184,8 @@ fn run_terminal_loop(
         .with_plugin_resolution(plugin_resolution)
         .with_build_identity(build_identity)
         .with_build_staleness(build_staleness)
+        .with_source_staleness(source_staleness)
+        .with_source_last_success(source_last_success)
         // Seeded from the session BEFORE the first frame draws
         // (livespec-console-beads-fabro-pzbdbo.27): the very first `terminal.draw`
         // below must already say so if the background poller has not completed
@@ -241,6 +253,16 @@ fn run_terminal_loop(
         // why that cadence, not this tick, is where the IO belongs
         // (livespec-console-beads-fabro-mx9u.26).
         apply_build_staleness(&mut state, session.take_build_staleness());
+        // Same cadence again: the header's stale-since rider
+        // (livespec-console-beads-fabro-mx9u.17) needs two `SQLite` reads
+        // beyond the cheap event re-list below, so it too is computed off this
+        // thread, on the source poller's cadence, and just taken here as a
+        // non-blocking `Mutex` read.
+        apply_source_staleness(&mut state, session.take_source_staleness());
+        // Same cadence again: the Event sources roster's stale-since COLUMN
+        // (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster) is the
+        // SAME poller-computed fact, unsummarized -- taken here the same way.
+        apply_source_last_success(&mut state, session.take_source_last_success());
         // Same cadence: a cheap, non-blocking check of whether the session's
         // first background ingest is still in flight, so the header's
         // `event sources: loading` tell clears the moment that sweep lands
@@ -638,6 +660,39 @@ fn apply_build_staleness(state: &mut TuiInteractionState, fresh: Option<BuildSta
     }
 }
 
+/// Fold a freshly re-probed [`SourceStaleness`] into the loop's state
+/// (livespec-console-beads-fabro-mx9u.17).
+///
+/// Split out for the same reason `apply_build_staleness` is: the loop around
+/// it is excluded from tests and coverage. `None` means the session behind
+/// [`TuiLiveSession`] has no live probe at all (the legacy `run_interactive_tui`
+/// entry point, and every test double that does not override the trait's
+/// default) -- in that case the state keeps whatever
+/// [`TuiInteractionState::with_source_staleness`] was seeded with at launch
+/// and this is a no-op, exactly like a build staleness nobody re-probed.
+#[cfg(any(test, not(coverage)))]
+fn apply_source_staleness(state: &mut TuiInteractionState, fresh: Option<SourceStaleness>) {
+    if let Some(staleness) = fresh {
+        *state = state.clone().with_source_staleness(staleness);
+    }
+}
+
+/// Fold a freshly re-probed per-source last-successful-read map into the
+/// loop's state, for the Event sources roster's stale-since column
+/// (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster).
+///
+/// Split out for the same reason `apply_source_staleness` is, and with the
+/// SAME `None`-is-a-no-op contract.
+#[cfg(any(test, not(coverage)))]
+fn apply_source_last_success(
+    state: &mut TuiInteractionState,
+    fresh: Option<BTreeMap<String, String>>,
+) {
+    if let Some(last_success) = fresh {
+        *state = state.clone().with_source_last_success(last_success);
+    }
+}
+
 /// Fold the session's current startup-ingest status into the loop's state.
 ///
 /// Split out for the same reason `apply_build_staleness` is: the loop around
@@ -847,6 +902,37 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// state -- for the legacy entry point and every test double with no
     /// lease to report.
     fn take_writer_lease_status(&mut self) -> Option<WriterLeaseStatus> {
+        None
+    }
+
+    /// Read the latest background-probed [`SourceStaleness`], if this session
+    /// has a live probe behind it.
+    ///
+    /// `livespec-console-beads-fabro-mx9u.17`: whether the picture rendered
+    /// from a currently-unavailable event source is current or STALE is a
+    /// function of what the store's checkpoints and observed-at columns say
+    /// right now, not a fact fixed at launch. Called every tick, same as
+    /// [`Self::take_build_staleness`] and just as cheap: the real
+    /// implementation is a non-blocking `Mutex` lock around a value that only
+    /// changes on the background source poller's own cadence -- see
+    /// `console_application::source_staleness::SharedSourceStaleness`.
+    /// Defaults to `None` -- unchanged state -- for the legacy
+    /// `run_interactive_tui` entry point and every test double that has no
+    /// probe to report.
+    fn take_source_staleness(&mut self) -> Option<SourceStaleness> {
+        None
+    }
+
+    /// Read the latest background-probed per-source last-successful-read
+    /// map, for the Event sources roster's stale-since column
+    /// (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster).
+    ///
+    /// Called every tick, same as [`Self::take_source_staleness`] and just as
+    /// cheap -- see `console_application::source_staleness::SharedSourceLastSuccess`.
+    /// Defaults to `None` -- unchanged state -- for the legacy
+    /// `run_interactive_tui` entry point and every test double that has no
+    /// probe to report.
+    fn take_source_last_success(&mut self) -> Option<BTreeMap<String, String>> {
         None
     }
 
@@ -3068,6 +3154,15 @@ fn header_help_lines() -> Vec<Line<'static>> {
         Line::from("else on screen moves -- so \"unavailable right now\" and \"broke once"),
         Line::from("earlier today\" are never the same reading."),
         Line::from(""),
+        Line::from("While any source stays unavailable, the header also carries `STALE, not"),
+        Line::from("current -- last successful read: <...>`, naming WHEN its projections"),
+        Line::from("stopped being current -- the same words and the same timestamp `doctor`"),
+        Line::from("reports for the identical condition, so the two can never describe it"),
+        Line::from("differently. When that source has never had a successful read at all this"),
+        Line::from("reads `last successful read: never observed` rather than naming a moment"),
+        Line::from("that was never actually measured. The rider clears the instant every"),
+        Line::from("source is observed again."),
+        Line::from(""),
         Line::from("The event sources, and what each observes:"),
     ];
     lines.extend(event_source_roster_help_lines().into_iter().map(Line::from));
@@ -4102,8 +4197,9 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 mod tests {
     use crate::{
         ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, apply_build_staleness,
-        apply_dispatcher_settings_reread, apply_sink_outcome, apply_startup_ingest_pending,
-        apply_worker_status, apply_writer_lease_status,
+        apply_dispatcher_settings_reread, apply_sink_outcome, apply_source_last_success,
+        apply_source_staleness, apply_startup_ingest_pending, apply_worker_status,
+        apply_writer_lease_status,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -4131,6 +4227,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+    use std::collections::BTreeMap;
 
     use super::{
         DeferredTuiRuntimeEffectSink, ITEM_FIELD_ABSENT, InputSource, LANE_OVERVIEW_PREVIEW,
@@ -4387,6 +4484,75 @@ mod tests {
     }
 
     #[test]
+    fn a_freshly_probed_source_staleness_replaces_the_state_the_operator_sees() {
+        // livespec-console-beads-fabro-mx9u.17: the render loop's fold for the
+        // header's stale-since rider, exercised the same way
+        // `apply_build_staleness` is above.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("source-staleness-test".to_owned())
+            .with_source_staleness(super::SourceStaleness::AllObserved);
+
+        apply_source_staleness(
+            &mut state,
+            Some(super::SourceStaleness::Since(
+                "2026-09-08T14:05:14Z".to_owned(),
+            )),
+        );
+
+        assert_eq!(
+            state.source_staleness(),
+            &super::SourceStaleness::Since("2026-09-08T14:05:14Z".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_absent_source_staleness_probe_leaves_the_state_alone() {
+        // MUST-NOT-FLAG CONTROL, same shape as `an_absent_staleness_probe_leaves_the_state_alone`
+        // above: `None` is what every session with no live probe behind it
+        // reports.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("source-staleness-test".to_owned())
+            .with_source_staleness(super::SourceStaleness::NeverObserved);
+
+        apply_source_staleness(&mut state, None);
+
+        assert_eq!(
+            state.source_staleness(),
+            &super::SourceStaleness::NeverObserved
+        );
+    }
+
+    #[test]
+    fn a_freshly_probed_source_last_success_replaces_the_state_the_operator_sees() {
+        // livespec-console-beads-fabro-mx9u.17: the render loop's fold for the
+        // Event sources roster's stale-since column, exercised the same way
+        // `apply_source_staleness` is above.
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("source-last-success-test".to_owned());
+        let mut fresh = BTreeMap::new();
+        fresh.insert("dispatcher".to_owned(), "2026-09-08T14:05:14Z".to_owned());
+
+        apply_source_last_success(&mut state, Some(fresh.clone()));
+
+        assert_eq!(state.source_last_success(), &fresh);
+    }
+
+    #[test]
+    fn an_absent_source_last_success_probe_leaves_the_state_alone() {
+        // MUST-NOT-FLAG CONTROL, same shape as `an_absent_source_staleness_probe_leaves_the_state_alone`
+        // above.
+        let mut seeded = BTreeMap::new();
+        seeded.insert("dispatcher".to_owned(), "2026-09-08T14:05:14Z".to_owned());
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo("source-last-success-test".to_owned())
+            .with_source_last_success(seeded.clone());
+
+        apply_source_last_success(&mut state, None);
+
+        assert_eq!(state.source_last_success(), &seeded);
+    }
+
+    #[test]
     // livespec-console-beads-fabro-pzbdbo.27: the render loop's fold for the
     // startup-ingest tell, exercised the same way `apply_build_staleness` is --
     // the loop itself is terminal-bound and excluded from tests, this seam is
@@ -4466,6 +4632,33 @@ mod tests {
         check(
             session.take_build_staleness().is_none(),
             "a session with no probe behind it reports no build staleness",
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_probe_behind_it_reports_no_source_staleness() {
+        // The trait default (livespec-console-beads-fabro-mx9u.17), same
+        // reasoning as the build-staleness default above: the legacy no-store
+        // session has no background poller to read a stale-since rider from,
+        // so it must leave the loop's seeded state alone rather than
+        // manufacturing a reading.
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_source_staleness().is_none(),
+            "a session with no probe behind it reports no source staleness",
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_probe_behind_it_reports_no_source_last_success() {
+        // The trait default (livespec-console-beads-fabro-mx9u.17), same
+        // reasoning as the source-staleness default above.
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_source_last_success().is_none(),
+            "a session with no probe behind it reports no source last success",
         );
     }
 
@@ -11088,6 +11281,49 @@ mod tests {
         assert!(text.contains("holds no truth of its own"));
         assert!(text.contains("shells out to"));
         assert!(text.contains("STALE, not current"));
+    }
+
+    #[test]
+    fn header_help_and_doctors_stale_finding_describe_the_same_condition_in_the_same_words() {
+        // AC4 of livespec-console-beads-fabro-mx9u.17: rendered from ONE
+        // fixture -- an unavailable source with a known reason -- Help's
+        // header section and `doctor`'s STALE finding must never describe the
+        // identical condition in different words.
+        let events = [ConsoleEvent::fixture(
+            "evt_dispatcher_not_observed",
+            EventType::SourceNotObservedFindingObserved,
+            "dispatcher",
+        )
+        .with_payload_json(
+            r#"{"reason":"dispatcher binary not found","repo":"livespec-console-beads-fabro"}"#
+                .to_owned(),
+        )];
+        let report = console_application::doctor::build_doctor_report(&events, &[], &[], &[]);
+        // An empty fallback rather than a panic on a missing finding: the
+        // assertions below then fail HONESTLY on an empty message, naming
+        // exactly what went missing, instead of a bare panic
+        // (livespec-console-beads-fabro doctor.rs's own tests use the same
+        // sentinel-fallback idiom to keep every branch here a total
+        // function).
+        let doctor_message = report
+            .findings()
+            .iter()
+            .map(console_application::doctor::DoctorFinding::message)
+            .find(|message| message.starts_with("event source unavailable: dispatcher"))
+            .unwrap_or("")
+            .to_owned();
+
+        let help_text = header_help_text();
+        for shared_phrase in ["STALE, not current", "last successful read"] {
+            assert!(
+                doctor_message.contains(shared_phrase),
+                "expected doctor's finding to say {shared_phrase:?}: {doctor_message}"
+            );
+            assert!(
+                help_text.contains(shared_phrase),
+                "expected the Help header section to say {shared_phrase:?}"
+            );
+        }
     }
 
     #[test]

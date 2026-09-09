@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -36,7 +37,7 @@ use console_application::{
     DispatcherSettingsRead, FactoryDispatchItemPort, FactoryDrainPolicy, FactoryDrainPort,
     MAX_TRANSIENT_STATUS_CHARS, OrchestratorActionPort, autonomous_reflection_attention_id,
     build_tui_model,
-    doctor::build_doctor_report,
+    doctor::{build_doctor_report, last_successful_observed_at},
     handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
     handle_factory_drain_command, handle_work_item_accept_command,
     handle_work_item_approve_command, handle_work_item_move_command,
@@ -44,7 +45,7 @@ use console_application::{
     handle_work_item_set_acceptance_command, handle_work_item_set_admission_command,
     handle_work_item_set_dispatcher_override_command,
     handle_work_item_set_workflow_scope_override_command, plan_page_url, project_attention,
-    project_plan_page, render_plan_page_html,
+    project_plan_page, project_tui_events, render_plan_page_html,
     source_adapters::{
         AdapterError, AdapterIngestionSummary, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
@@ -59,6 +60,7 @@ use console_application::{
         parse_reconcile_runs_observation, reconcile_runs_snapshot_payload_json, run_adapter_poll,
         source_observed_event, work_item_snapshot_payload_json,
     },
+    source_staleness::{SourceStaleness, oldest_unavailable_since},
     writer_identity::WriterIdentity,
 };
 use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -2351,7 +2353,13 @@ impl DoctorRunResult {
 /// cadence), and its `adapter_id` (`"{source}:{repo}"`, the convention
 /// `refresh_sources` mints adapter ids under, above) is reduced to the bare
 /// source name `doctor`'s findings key on.
-fn checkpoint_source_last_success(
+///
+/// `pub` (not private): livespec-console-beads-fabro-mx9u.17's
+/// [`source_staleness_snapshot`] needs this same read, off the background
+/// source poller's own cadence rather than `doctor`'s on-demand CLI
+/// invocation, so it stays a free function callable from the binary's poller
+/// loop.
+pub fn checkpoint_source_last_success(
     store: &SqliteEventStore,
 ) -> EventStoreResult<Vec<(String, String)>> {
     Ok(store
@@ -2369,6 +2377,62 @@ fn checkpoint_source_last_success(
             Some((source, advanced_at))
         })
         .collect())
+}
+
+/// The shared read behind both [`source_staleness_snapshot`] and
+/// [`source_last_success_snapshot`]: the header's current unavailable-sources
+/// tally ([`project_tui_events`]/`unavailable_sources`), and the per-source
+/// last-successful-read map dating it ([`last_successful_observed_at`], the
+/// SAME derivation `doctor` uses). ONE read shared by both callers, so the
+/// header's stale-since rider and the Event sources roster's stale-since
+/// column can never disagree with each other or with `doctor` about the
+/// identical condition.
+fn source_health_and_last_success(
+    store: &SqliteEventStore,
+) -> EventStoreResult<(Vec<String>, BTreeMap<String, String>)> {
+    let events = store.list_console_events()?;
+    let projection = project_tui_events(&events, None);
+    let events_with_observed_at = store.list_console_events_with_observed_at()?;
+    let checkpoint_last_success = checkpoint_source_last_success(store)?;
+    let last_success =
+        last_successful_observed_at(&events_with_observed_at, &checkpoint_last_success);
+    Ok((projection.unavailable_sources().to_vec(), last_success))
+}
+
+/// Read the console's current [`SourceStaleness`] straight from `store`
+/// (livespec-console-beads-fabro-mx9u.17): the header's own stale-since
+/// rider.
+///
+/// Called from the background source poller's own cadence (see
+/// `SharedSourceStaleness` in `console_application::source_staleness`), never
+/// from the render thread: like `doctor`, this is two `SQLite` reads beyond
+/// the cheap event re-list the render loop already performs every tick.
+///
+/// # Errors
+/// Returns an error when either store read fails.
+pub fn source_staleness_snapshot(store: &SqliteEventStore) -> EventStoreResult<SourceStaleness> {
+    let (unavailable_sources, last_success) = source_health_and_last_success(store)?;
+    Ok(oldest_unavailable_since(
+        &unavailable_sources,
+        &last_success,
+    ))
+}
+
+/// Read the console's current per-source last-successful-read map straight
+/// from `store` (livespec-console-beads-fabro-mx9u.17): the Event sources
+/// roster's stale-since COLUMN (pzbdbo.29's roster).
+///
+/// Shares [`source_health_and_last_success`]'s ONE read with
+/// [`source_staleness_snapshot`] -- called on the SAME background poller
+/// cadence, never from the render thread.
+///
+/// # Errors
+/// Returns an error when either store read fails.
+pub fn source_last_success_snapshot(
+    store: &SqliteEventStore,
+) -> EventStoreResult<BTreeMap<String, String>> {
+    let (_unavailable_sources, last_success) = source_health_and_last_success(store)?;
+    Ok(last_success)
 }
 
 /// Return the doctor report value.
@@ -4075,8 +4139,10 @@ mod tests {
         DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, WriterIdentity,
         checkpoint_load_failed, checkpoint_save_failed, checkpoint_source_last_success,
         effect_may_persist_command, effect_sink_io_error, resolve_console_invoker,
-        sink_outcome_for_persist_error, tolerate_transient_refresh,
+        sink_outcome_for_persist_error, source_last_success_snapshot, source_staleness_snapshot,
+        tolerate_transient_refresh,
     };
+    use console_application::source_staleness::SourceStaleness;
 
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -12595,6 +12661,100 @@ mod tests {
     }
 
     #[test]
+    fn source_staleness_snapshot_reports_all_observed_over_a_fresh_store() {
+        // livespec-console-beads-fabro-mx9u.17: a store with no history at all
+        // has no unavailable source to be stale about -- the composition
+        // root's read must agree with `oldest_unavailable_since`'s own empty
+        // case rather than reporting an error or a fabricated staleness.
+        let (path, store) = file_store("source-staleness-fresh-store");
+
+        let staleness = source_staleness_snapshot(&store).ok_test();
+
+        assert_eq!(staleness, SourceStaleness::AllObserved);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_source_staleness_snapshot_propagates_missing_checkpoints_table_errors() {
+        // Same failure family `real_store_doctor_propagates_missing_checkpoints_table_errors`
+        // exercises for `doctor_report`: this composition-root read shares the
+        // SAME `checkpoint_source_last_success` call, so it must propagate the
+        // identical store error rather than papering over it.
+        let (path, store) = file_store("source-staleness-missing-checkpoints-table");
+        corrupt_store(&path, "drop table checkpoints");
+
+        let error = err_eventstore_source_staleness(source_staleness_snapshot(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_source_staleness_snapshot_propagates_missing_event_table_errors() {
+        // The FIRST `?` (`list_console_events`) -- distinct from the
+        // `observed_at`-column-only failure below, where that first read
+        // still succeeds.
+        let (path, store) = file_store("source-staleness-missing-events-table");
+        corrupt_store(&path, "drop table events");
+
+        let error = err_eventstore_source_staleness(source_staleness_snapshot(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_source_staleness_snapshot_propagates_a_list_console_events_with_observed_at_error()
+     {
+        // The SECOND `?` (`list_console_events_with_observed_at`) specifically
+        // -- same fixture `doctor_report_propagates_a_list_console_events_with_observed_at_error`
+        // uses: a table missing `observed_at` lets `list_console_events`
+        // succeed (it never selects that column) while
+        // `list_console_events_with_observed_at` fails to prepare its own
+        // query.
+        let (path, store) = file_store("source-staleness-missing-observed-at-column");
+        corrupt_store(
+            &path,
+            "drop table events; \
+             create table events (global_seq integer, event_id, schema_version, context, type, \
+             source, stream_id, stream_seq, payload_json); \
+             insert into events values (1, 'evt_1', 1, 'ctx', 'fabro.human_gate_observed', \
+             'src', 'st', 1, '{}');",
+        );
+
+        let error = err_eventstore_source_staleness(source_staleness_snapshot(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn source_last_success_snapshot_reports_an_empty_map_over_a_fresh_store() {
+        // livespec-console-beads-fabro-mx9u.17: the roster's stale-since
+        // column, over the sibling function to `source_staleness_snapshot`
+        // that shares its ONE read.
+        let (path, store) = file_store("source-last-success-fresh-store");
+
+        let last_success = source_last_success_snapshot(&store).ok_test();
+
+        assert_eq!(last_success, BTreeMap::new());
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn real_store_source_last_success_snapshot_propagates_missing_checkpoints_table_errors() {
+        // Same shared read `real_store_source_staleness_snapshot_propagates_missing_checkpoints_table_errors`
+        // exercises, through the sibling function's OWN `?` call site.
+        let (path, store) = file_store("source-last-success-missing-checkpoints-table");
+        corrupt_store(&path, "drop table checkpoints");
+
+        let error = err_eventstore_source_last_success(source_last_success_snapshot(&store));
+
+        check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
     fn real_store_needs_attention_ingest_reports_missing_event_table_errors() {
         let (path, mut store) = file_store("needs-attention-missing-events");
         let port = ScriptedNeedsAttentionPort::observing(vec![attention_item_fixture(
@@ -13701,6 +13861,18 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "err_eventstore_source_staleness failed")]
+    fn err_eventstore_source_staleness_panics() {
+        err_eventstore_source_staleness(Ok(SourceStaleness::AllObserved));
+    }
+
+    #[test]
+    #[should_panic(expected = "err_eventstore_source_last_success failed")]
+    fn err_eventstore_source_last_success_panics() {
+        err_eventstore_source_last_success(Ok(BTreeMap::new()));
+    }
+
+    #[test]
     #[should_panic(expected = "err_runtime_usize failed")]
     fn err_runtime_usize_panics() {
         err_runtime_usize(Ok(0));
@@ -13817,6 +13989,21 @@ mod tests {
     #[should_panic(expected = "ok_eventstore_source_last_success failed")]
     fn ok_eventstore_source_last_success_panics() {
         let result: EventStoreResult<Vec<(String, String)>> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_source_staleness failed")]
+    fn ok_eventstore_source_staleness_panics() {
+        let result: EventStoreResult<SourceStaleness> = Err(EventStoreError::InvalidSequence);
+        result.ok_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "ok_eventstore_source_last_success_snapshot failed")]
+    fn ok_eventstore_source_last_success_snapshot_panics() {
+        let result: EventStoreResult<BTreeMap<String, String>> =
+            Err(EventStoreError::InvalidSequence);
         result.ok_test();
     }
 
@@ -14221,6 +14408,32 @@ mod tests {
             match self {
                 Ok(value) => value,
                 Err(error) => panic!("ok_eventstore_doctor failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<SourceStaleness> {
+        type Output = SourceStaleness;
+
+        #[track_caller]
+        fn ok_test(self) -> SourceStaleness {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("ok_eventstore_source_staleness failed: {error:?}"),
+            }
+        }
+    }
+
+    impl TestOk for EventStoreResult<BTreeMap<String, String>> {
+        type Output = BTreeMap<String, String>;
+
+        #[track_caller]
+        fn ok_test(self) -> BTreeMap<String, String> {
+            match self {
+                Ok(value) => value,
+                Err(error) => {
+                    panic!("ok_eventstore_source_last_success_snapshot failed: {error:?}")
+                }
             }
         }
     }
@@ -14687,6 +14900,26 @@ mod tests {
     fn err_eventstore_doctor(result: EventStoreResult<DoctorRunResult>) -> EventStoreError {
         match result {
             Ok(_value) => panic!("err_eventstore_doctor failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_source_staleness(
+        result: EventStoreResult<SourceStaleness>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_source_staleness failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[track_caller]
+    fn err_eventstore_source_last_success(
+        result: EventStoreResult<BTreeMap<String, String>>,
+    ) -> EventStoreError {
+        match result {
+            Ok(_value) => panic!("err_eventstore_source_last_success failed"),
             Err(error) => error,
         }
     }
