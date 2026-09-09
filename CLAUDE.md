@@ -123,9 +123,17 @@ still ended its turn on a "still outstanding" list).
    (2026-07-22 and 2026-09-08 both: items reported as "still yours" that the
    session could act on itself). If the reason it is the maintainer's cannot
    be stated in one sentence with a current fact, act on it.
-6. **The maintainer watches the console TUI in a tmux pane beside the plan
-   session; recreate it on every restart.** (Maintainer ruling 2026-09-08.)
-   The plan session's tmux window carries the TUI in a RIGHT-hand pane at
+6. **Console-TUI dogfood pane — the
+   `retire-overseer-and-redesign-control-plane-around-console` plan ONLY, not
+   every plan.** (Maintainer ruling 2026-09-08; SCOPE CORRECTED 2026-09-09 —
+   the ruling was mis-generalised into this global list. Items 1–5 above bind
+   on every session of every plan; THIS item binds ONLY on sessions of the
+   `retire-overseer-and-redesign-control-plane-around-console` plan / epic
+   `livespec-console-beads-fabro-pzbdbo`. No other plan's session creates,
+   recreates, watches, or dogfoods a console pane, and none treats a missing
+   pane as a defect.) For that plan's session only: the maintainer watches the
+   console TUI in a tmux pane beside the plan session, recreated on every
+   restart. The plan session's tmux window carries the TUI in a RIGHT-hand pane
    at half of the window width (maintainer changed this from two thirds on 2026-09-08), left running between dogfood passes on
    the Attention view. Right after the STATUS RE-PRINT, check
    `tmux list-panes -t <session> -F '#{pane_id} #{pane_width} #{pane_current_command}'`:
