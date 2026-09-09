@@ -610,6 +610,13 @@ impl TmuxConsole {
         // starvation (settle clocks that used to start at launch).
         let ready_context = format!(" in tmux session {}", console.session);
         poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
+        // Harness-level precondition (livespec-console-beads-fabro-mx9u.28
+        // AC1): `launch`/`launch_sized` promise every default stub is
+        // reachable-and-idle, so every scene that uses them gets this check
+        // for free, with nothing to remember. See
+        // `TmuxConsole::assert_source_health` for why it reads the store
+        // rather than the (truncating) rendered header.
+        console.assert_source_health(&[])?;
         Ok(console)
     }
 
@@ -696,6 +703,139 @@ impl TmuxConsole {
     pub fn store_path(&self) -> &Path {
         &self.store_path
     }
+
+    /// Assert every backing source this run has observed is healthy, except
+    /// those explicitly named in `allowed_unavailable`.
+    ///
+    /// Waits for ANY settled frame (two identical consecutive captures, via
+    /// [`Self::wait_for_settled`] with an empty needle -- every string
+    /// `contains("")`, so this settles on stability alone) rather than one
+    /// carrying the repo header needle: at a NARROW pinned width the header's
+    /// shrink-to-fit sheds the tenant field to make room for a `sources: N
+    /// unavailable` segment (see `fit_header_line` in
+    /// `console-application`), so gating this check on the tenant needle would
+    /// make the very degradation it exists to catch starve out its own
+    /// precondition -- measured directly:
+    /// `tmux_tui_e2e_top_pane_focus_hscroll`'s 56-column pane turned a clear
+    /// "needs-attention unavailable" failure into an opaque
+    /// `timed out ... waiting for "repo: e2e-top-pane"` one the first time this
+    /// was tried gated that way. Then reads this run's isolated store directly
+    /// and folds its events through the SAME projection the shipped TUI
+    /// renders from (`console_application::build_tui_model`) -- never the
+    /// rendered header TEXT, which ALSO truncates to a `+1 more` summary once
+    /// several sources are down (measured the same way: with two sources down
+    /// at once, the fabro-only B1 scene's own `"sources: 1 unavailable"`
+    /// needle stopped matching because the count had become two). Reading the
+    /// store WHILE the console is still running is safe: it opens in WAL mode
+    /// (`console_eventstore::initialize_connection`), so a reader here never
+    /// blocks, or is blocked by, the live writer.
+    ///
+    /// This is the harness-level precondition
+    /// livespec-console-beads-fabro-mx9u.28 AC1 asks for: baked into
+    /// [`Self::launch_sized`] and [`Self::launch_with_env`] rather than left to
+    /// each scene to remember, it runs for EVERY scene the moment it launches,
+    /// so a broken default stub (the historical defect: needs-attention's
+    /// bare `{}`) or a newly-registered source the harness fails to stub with
+    /// a shape it actually accepts fails the run immediately -- naming the
+    /// source and, per AC4, the reason
+    /// livespec-console-beads-fabro-pzbdbo.29 durably persists -- instead of
+    /// the run passing on whatever the scene itself happens to assert.
+    ///
+    /// # Errors
+    /// Returns a message naming every unexpectedly-unavailable source (and its
+    /// captured reason, when one was persisted) if any source outside
+    /// `allowed_unavailable` is unavailable, or if the settle wait times out,
+    /// or if the store cannot be opened or read.
+    pub fn assert_source_health(&self, allowed_unavailable: &[&str]) -> HarnessResult<()> {
+        self.wait_for_settled("", render_timeout())?;
+        let store =
+            console_eventstore::SqliteEventStore::open(&self.store_path).map_err(|error| {
+                format!("open isolated store for source-health check failed: {error:?}")
+            })?;
+        let events = store.list_console_events().map_err(|error| {
+            format!("read isolated store for source-health check failed: {error:?}")
+        })?;
+        let unexpected = unexpected_unavailable_sources(&events, allowed_unavailable);
+        if unexpected.is_empty() {
+            return Ok(());
+        }
+        let mut message = format!(
+            "harness precondition failed in tmux session {}: {} source(s) unavailable \
+             that this scene did not expect: {}",
+            self.session,
+            unexpected.len(),
+            unexpected
+                .iter()
+                .map(|(source, _reason)| source.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        {
+            use std::fmt::Write as _;
+            for (source, reason) in &unexpected {
+                let reason = reason.as_deref().unwrap_or("(no reason captured)");
+                // Writing to a String is infallible; the Result is discarded.
+                let _ = write!(message, "\n  - {source}: {reason}");
+            }
+        }
+        Err(message)
+    }
+}
+
+/// The pure core of [`TmuxConsole::assert_source_health`]: fold `events`
+/// through the SAME projection the shipped TUI renders from
+/// (`console_application::build_tui_model`) and return every unavailable
+/// source outside `allowed_unavailable`, paired with its captured reason
+/// (`latest_not_observed_reason`) when one was persisted.
+///
+/// Split out from the `tmux`-driving method so the mechanism can be proven
+/// directly, in a fast unit test, against a SYNTHETIC event log naming a
+/// source this codebase has never registered -- no `tmux` session or release
+/// binary required. That is the decisive form of
+/// livespec-console-beads-fabro-mx9u.28 AC3: the check does not special-case
+/// the seven `SourceAdapterKind` variants that exist today, it flags ANY
+/// source name whose most recent observation was a
+/// `SourceNotObservedFindingObserved` marker -- see
+/// `source_health_tests::a_source_this_codebase_has_never_registered_is_still_caught`
+/// below.
+fn unexpected_unavailable_sources(
+    events: &[console_domain::ConsoleEvent],
+    allowed_unavailable: &[&str],
+) -> Vec<(String, Option<String>)> {
+    let model = console_application::build_tui_model(events, 0);
+    model
+        .unavailable_sources()
+        .iter()
+        .filter(|source| !allowed_unavailable.contains(&source.as_str()))
+        .map(|source| {
+            let reason = latest_not_observed_reason(events, source);
+            (source.clone(), reason)
+        })
+        .collect()
+}
+
+/// The most recent captured reason for `source`'s
+/// `SourceNotObservedFindingObserved` marker, if any --
+/// livespec-console-beads-fabro-pzbdbo.29 AC3 durably persists the backing
+/// command's captured stderr as this event's JSON `reason` field, so this is
+/// usually `Some` and gives [`TmuxConsole::assert_source_health`]'s AC4 "why"
+/// for free.
+fn latest_not_observed_reason(
+    events: &[console_domain::ConsoleEvent],
+    source: &str,
+) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.source() == source
+                && event.event_type()
+                    == &console_domain::EventType::SourceNotObservedFindingObserved
+        })
+        .and_then(|event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload_json()).ok()?;
+            payload.get("reason")?.as_str().map(str::to_owned)
+        })
 }
 
 impl Drop for TmuxConsole {
@@ -819,6 +959,46 @@ fn write_needs_attention_idle_stub(scratch: &Path) -> HarnessResult<PathBuf> {
     Ok(stub)
 }
 
+/// Build the `export LIVESPEC_CONSOLE_*_PROGRAM=...\n` lines for every backing
+/// CLI override, one per name in
+/// `livespec_console_beads_fabro::PROGRAM_OVERRIDE_ENV_VARS` -- the production
+/// resolver's own enumeration of the seven overrides it honors
+/// (`crates/console-cli/src/backing_cli.rs`) -- rather than the seven
+/// hand-typed `export` lines this function used to carry.
+///
+/// This is the structural half of closing
+/// livespec-console-beads-fabro-mx9u.28 AC3: a backing CLI added to the
+/// production resolver is automatically exported here too (defaulted to the
+/// generic idle `stub`), so it can no longer be missing from the launcher
+/// entirely just because nobody remembered to add a line for it. The needs-
+/// attention override is matched by `NEEDS_ATTENTION_PROGRAM_ENV` -- the same
+/// constant the resolver defines -- and alone gets `needs_attention_stub`,
+/// because unlike the other six (`is_idle_payload` treats bare `{}` as
+/// reachable-but-empty) its parser requires the `{"attention": [...]}`
+/// envelope [`write_needs_attention_idle_stub`] writes.
+///
+/// Automatic coverage is NOT a substitute for the runtime precondition
+/// [`assert_no_unexpected_unavailable_sources`]: a newly-added source might
+/// need its OWN dedicated envelope shape the way needs-attention does, and the
+/// generic `{}` default would silently misclassify it exactly as the historical
+/// mx9u.28 bug did. That residual case is what the runtime check, not this
+/// export list, catches.
+fn program_override_export_lines(stub: &str, needs_attention_stub: &str) -> String {
+    use std::fmt::Write as _;
+    livespec_console_beads_fabro::PROGRAM_OVERRIDE_ENV_VARS
+        .iter()
+        .fold(String::new(), |mut lines, name| {
+            let value = if *name == livespec_console_beads_fabro::NEEDS_ATTENTION_PROGRAM_ENV {
+                needs_attention_stub
+            } else {
+                stub
+            };
+            // Writing to a String is infallible; the Result is discarded.
+            let _ = writeln!(lines, "export {name}={value}");
+            lines
+        })
+}
+
 /// Write the pane launcher script and return its path. It sets a HERMETIC PATH
 /// (the scratch dir front, then only the coreutils dirs — NOT the ambient PATH),
 /// so the `gh` stub shadows the github backing CLI AND no source can silently
@@ -848,6 +1028,7 @@ fn write_launcher(
     let launcher = scratch.join("launch.sh");
     let stub = shell_quote(&stub.display().to_string());
     let needs_attention_stub = shell_quote(&needs_attention_stub.display().to_string());
+    let program_overrides = program_override_export_lines(&stub, &needs_attention_stub);
     let body = format!(
         "#!/usr/bin/env bash\n\
          cd {repo_path} || exit 97\n\
@@ -856,13 +1037,7 @@ fn write_launcher(
          export {busy_timeout_env}={busy_timeout_ms}\n\
          export LIVESPEC_CONSOLE_REPO={tenant}\n\
          export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
-         export LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_LIVESPEC_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_FABRO_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_DRAIN_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_DRIVE_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={needs_attention_stub}\n\
-         export LIVESPEC_CONSOLE_GH_PROGRAM={stub}\n\
+         {program_overrides}\
          {binary} serve\n\
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
          sleep 300\n",
@@ -907,7 +1082,19 @@ impl TmuxConsole {
     /// Launch like [`Self::launch`], but append `extra_env` exports AFTER the
     /// default `{}`-stub `*_PROGRAM` exports so a caller can repoint one backing
     /// source (for example at a nonexistent binary) while the rest stay idle.
-    pub fn launch_with_env(repo: &RepoFixture, extra_env: &[(&str, &str)]) -> HarnessResult<Self> {
+    ///
+    /// `allowed_unavailable` names the sources THIS scene deliberately made
+    /// unreachable (for example `&["fabro"]` for the B1 "unreachable source"
+    /// scene) -- everything else is still required to be healthy by
+    /// [`Self::assert_source_health`], run automatically before this returns
+    /// (livespec-console-beads-fabro-mx9u.28 AC1). Pass `&[]` when `extra_env`
+    /// overrides something orthogonal to source health (a store path, a
+    /// lifecycle fixture's data-bearing stub, ...).
+    pub fn launch_with_env(
+        repo: &RepoFixture,
+        extra_env: &[(&str, &str)],
+        allowed_unavailable: &[&str],
+    ) -> HarnessResult<Self> {
         // Claimed BEFORE anything is spawned, so a queued test contributes no
         // load of its own while it waits its turn.
         let slot = ConsoleSlot::acquire()?;
@@ -981,6 +1168,7 @@ impl TmuxConsole {
         // starvation (settle clocks that used to start at launch).
         let ready_context = format!(" in tmux session {}", console.session);
         poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
+        console.assert_source_health(allowed_unavailable)?;
         Ok(console)
     }
 }
@@ -1010,6 +1198,7 @@ fn write_launcher_with_env(
     let launcher = scratch.join("launch.sh");
     let stub = shell_quote(&stub.display().to_string());
     let needs_attention_stub = shell_quote(&needs_attention_stub.display().to_string());
+    let program_overrides = program_override_export_lines(&stub, &needs_attention_stub);
     let mut extra = String::new();
     for (key, value) in extra_env {
         // Writing to a String is infallible; the Result is discarded.
@@ -1023,13 +1212,7 @@ fn write_launcher_with_env(
          export {busy_timeout_env}={busy_timeout_ms}\n\
          export LIVESPEC_CONSOLE_REPO={tenant}\n\
          export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
-         export LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_LIVESPEC_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_FABRO_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_DRAIN_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_DRIVE_PROGRAM={stub}\n\
-         export LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM={needs_attention_stub}\n\
-         export LIVESPEC_CONSOLE_GH_PROGRAM={stub}\n\
+         {program_overrides}\
          {extra}\
          {binary} serve\n\
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
@@ -1214,5 +1397,66 @@ impl TmuxConsole {
             ));
         }
         Ok(console)
+    }
+}
+
+#[cfg(test)]
+mod source_health_tests {
+    use super::unexpected_unavailable_sources;
+    use console_domain::{ConsoleEvent, EventType};
+
+    /// Proves livespec-console-beads-fabro-mx9u.28 AC3 directly:
+    /// `unexpected_unavailable_sources` (the pure core of
+    /// [`super::TmuxConsole::assert_source_health`]) is not a hand-copied list
+    /// of the seven sources this codebase registers today -- it flags ANY
+    /// source name whose most recent observation degraded, including one this
+    /// codebase has never seen. A source added to the console in the future
+    /// with no matching harness stub degrades to EXACTLY this shape (a
+    /// `SourceNotObservedFindingObserved` marker under its own source name),
+    /// so this is what "detected, not silently skipped" reduces to.
+    #[test]
+    fn a_source_this_codebase_has_never_registered_is_still_caught() {
+        let event = ConsoleEvent::fixture(
+            "e1",
+            EventType::SourceNotObservedFindingObserved,
+            "a-hypothetical-future-source",
+        )
+        .with_payload_json(
+            r#"{"reason":"a-hypothetical-future-source: command not found"}"#.to_owned(),
+        );
+
+        let unexpected = unexpected_unavailable_sources(std::slice::from_ref(&event), &[]);
+
+        assert_eq!(unexpected.len(), 1, "got {unexpected:?}");
+        assert_eq!(unexpected[0].0, "a-hypothetical-future-source");
+        assert_eq!(
+            unexpected[0].1.as_deref(),
+            Some("a-hypothetical-future-source: command not found")
+        );
+    }
+
+    /// A source a scene explicitly names in `allowed_unavailable` (the B1
+    /// "genuinely unreachable" scenes) is not flagged -- the mechanism reports
+    /// DRIFT, not every degraded source unconditionally.
+    #[test]
+    fn a_source_named_in_allowed_unavailable_is_not_flagged() {
+        let event =
+            ConsoleEvent::fixture("e1", EventType::SourceNotObservedFindingObserved, "fabro");
+
+        let unexpected = unexpected_unavailable_sources(std::slice::from_ref(&event), &["fabro"]);
+
+        assert!(unexpected.is_empty(), "got {unexpected:?}");
+    }
+
+    /// A source that has only ever been positively observed is not flagged --
+    /// this precondition reports DEGRADED sources, not merely-quiet ones (see
+    /// `tmux_tui_e2e_input_and_quit_survive_a_blocked_source_poll`, whose
+    /// needs-attention poll is deliberately still in flight when this would
+    /// run).
+    #[test]
+    fn a_source_with_no_events_at_all_is_not_flagged() {
+        let unexpected = unexpected_unavailable_sources(&[], &[]);
+
+        assert!(unexpected.is_empty(), "got {unexpected:?}");
     }
 }

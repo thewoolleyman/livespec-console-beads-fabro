@@ -77,8 +77,8 @@ mod source_probe_diagnostics;
 
 pub use backing_cli::{
     BackingCliPrograms, BackingCliResolution, BackingCliResolutionError, CommandShape,
-    ConsoleInvokerResolution, PluginResolution, ResolveInputs, python_normalized_invocation,
-    resolve_console_invoker,
+    ConsoleInvokerResolution, NEEDS_ATTENTION_PROGRAM_ENV, PROGRAM_OVERRIDE_ENV_VARS,
+    PluginResolution, ResolveInputs, python_normalized_invocation, resolve_console_invoker,
 };
 pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
 pub use source_probe_diagnostics::{
@@ -3870,7 +3870,8 @@ mod tests {
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, DoctorRunResult, ErroringPullSource, EventAppendStore,
         FactoryCommandStore, InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN,
-        LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS, NeedsAttentionIngest, PendingCommandOutcome,
+        LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS, NEEDS_ATTENTION_PROGRAM_ENV,
+        NeedsAttentionIngest, PROGRAM_OVERRIDE_ENV_VARS, PendingCommandOutcome,
         PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
         ScriptedSource, SessionTailCounts, SharedSqliteStore, SourceAdapterRef,
         SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
@@ -10208,6 +10209,38 @@ mod tests {
         check(
             (resolution.programs().github()) == ("/custom/gh"),
             "assert_eq failed",
+        );
+    }
+
+    #[test]
+    /// `PROGRAM_OVERRIDE_ENV_VARS` is the single source of truth the E2E tmux
+    /// harness derives its "did I stub every backing CLI" launcher from
+    /// (livespec-console-beads-fabro-mx9u.28, AC3) rather than hand-copying the
+    /// seven env var names into a second list in the test crate. Pin its exact
+    /// membership here -- against the SAME seven literals the override test
+    /// above exercises -- so a change to this array (a new backing CLI wired
+    /// in, or one renamed) is a visible, intentional edit to a Rust test, not a
+    /// silent divergence discovered only by the E2E harness quietly failing to
+    /// stub the new source.
+    fn program_override_env_vars_names_exactly_the_seven_backing_clis() {
+        check(
+            (PROGRAM_OVERRIDE_ENV_VARS)
+                == ([
+                    "LIVESPEC_CONSOLE_LIST_WORK_ITEMS_PROGRAM",
+                    "LIVESPEC_CONSOLE_LIVESPEC_PROGRAM",
+                    "LIVESPEC_CONSOLE_FABRO_PROGRAM",
+                    "LIVESPEC_CONSOLE_DRAIN_PROGRAM",
+                    "LIVESPEC_CONSOLE_DRIVE_PROGRAM",
+                    "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM",
+                    "LIVESPEC_CONSOLE_GH_PROGRAM",
+                ]),
+            "assert_eq failed",
+        );
+        check(
+            PROGRAM_OVERRIDE_ENV_VARS.contains(&NEEDS_ATTENTION_PROGRAM_ENV),
+            "the needs-attention override must be one of the seven -- the harness \
+             matches this exact constant to single it out for its dedicated \
+             {\"attention\": []} idle stub rather than the generic {} one",
         );
     }
 

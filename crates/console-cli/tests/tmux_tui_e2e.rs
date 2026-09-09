@@ -746,7 +746,7 @@ fn tmux_tui_e2e_first_frame_survives_a_store_open_held_past_the_busy_timeout() -
     let store_env = store_path.display().to_string();
     let started = Instant::now();
     let console =
-        TmuxConsole::launch_with_env(&repo, &[("LIVESPEC_CONSOLE_STORE_PATH", &store_env)])?;
+        TmuxConsole::launch_with_env(&repo, &[("LIVESPEC_CONSOLE_STORE_PATH", &store_env)], &[])?;
     let elapsed = started.elapsed();
 
     let screen = console.wait_for_settled(&format!("repo: {}", repo.tenant()), render_timeout())?;
@@ -994,6 +994,7 @@ fn tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned() -> HarnessRes
             "LIVESPEC_CONSOLE_FABRO_PROGRAM",
             "/nonexistent/livespec-console-fabro-missing",
         )],
+        &["fabro"],
     )?;
 
     let screen = console.wait_for("sources: 1 unavailable", render_timeout())?;
@@ -1215,7 +1216,7 @@ fn launch_lifecycle_on_lanes_item(label: &str, initial_lane: &str) -> HarnessRes
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
         .collect();
-    let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
+    let console = TmuxConsole::launch_with_env(&repo, &borrowed, &[])?;
     console.wait_for_settled("view: Attention", render_timeout())?;
     console.send_keys(&["Down", "Down"])?;
     console.wait_for_settled("view: Lanes", render_timeout())?;
@@ -1317,7 +1318,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
         .collect();
-    let console = TmuxConsole::launch_with_env(repo, &borrowed)?;
+    let console = TmuxConsole::launch_with_env(repo, &borrowed, &[])?;
 
     // --- Step 1: the item is waiting, and the header counts it ---------------
     console.wait_for("LiveSpec Console", render_timeout())?;
@@ -1496,7 +1497,7 @@ fn tmux_tui_e2e_hint_honesty_on_a_row_carrying_no_work_item() -> HarnessResult<(
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
         .collect();
-    let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
+    let console = TmuxConsole::launch_with_env(&repo, &borrowed, &[])?;
 
     let screen = console.wait_for_settled("view: Attention", render_timeout())?;
 
@@ -1596,7 +1597,7 @@ fn tmux_tui_e2e_deduped_work_item_row_still_carries_the_advertised_valve() -> Ha
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
         .collect();
-    let console = TmuxConsole::launch_with_env(&repo, &borrowed)?;
+    let console = TmuxConsole::launch_with_env(&repo, &borrowed, &[])?;
 
     let screen = console.wait_for_settled("view: Attention", render_timeout())?;
 
@@ -1682,20 +1683,32 @@ impl BlockingAttentionCli {
             .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
         let program = scratch.join("blocking-needs-attention.sh");
         let spawns = scratch.join("spawns");
+        // This script is ONLY ever handed to
+        // `LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM`, so both returns emit the
+        // needs-attention-specific idle envelope (`{"attention": []}`), not the
+        // generic bare `{}` the other six sources treat as reachable-but-empty
+        // -- a bare `{}` is UNINTERPRETABLE to the needs-attention parser (see
+        // `write_needs_attention_idle_stub`) and degrades it to a not-observed
+        // finding. The first invocation used to return bare `{}`, which meant
+        // this scene's needs-attention source was *always* branded unavailable
+        // from its very first poll, entirely incidentally to what the scene
+        // means to test (a poll blocked mid-flight) -- exactly the
+        // silently-dead-source shape livespec-console-beads-fabro-mx9u.28
+        // exists to catch, caught here by its own harness-level precondition.
         let body = format!(
             "#!/usr/bin/env bash\n\
              first={first}\n\
              spawns={spawns}\n\
              if [ ! -e \"$first\" ]; then\n\
              \x20 : >\"$first\"\n\
-             \x20 printf '{{}}\\n'\n\
+             \x20 printf '{{\"attention\": []}}\\n'\n\
              \x20 exit 0\n\
              fi\n\
              printf '{blocked}\\n' >>\"$spawns\"\n\
              parent=$PPID\n\
              while kill -0 \"$parent\" 2>/dev/null; do sleep 0.1; done\n\
              printf '{returned}\\n' >>\"$spawns\"\n\
-             printf '{{}}\\n'\n",
+             printf '{{\"attention\": []}}\\n'\n",
             first = shell_quoted(&scratch.join("first-invocation-done")),
             spawns = shell_quoted(&spawns),
             blocked = Self::BLOCKED,
@@ -1790,6 +1803,7 @@ fn tmux_tui_e2e_input_and_quit_survive_a_blocked_source_poll() -> HarnessResult<
             "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM",
             attention.program().as_str(),
         )],
+        &[],
     )?;
     console.wait_for_settled("view: Attention", render_timeout())?;
 

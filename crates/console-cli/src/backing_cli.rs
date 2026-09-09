@@ -16,9 +16,37 @@ const LIVESPEC_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_LIVESPEC_PROGRAM";
 const FABRO_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_FABRO_PROGRAM";
 const DRAIN_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRAIN_PROGRAM";
 const DRIVE_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRIVE_PROGRAM";
-const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
+/// Public so the E2E harness can single out this one program override.
+///
+/// Unlike the other six (a bare `{}` is a reachable-but-empty envelope to
+/// them), the needs-attention parser requires an `{"attention": [...]}`
+/// envelope, so the harness must point this override at a DIFFERENT idle stub
+/// than the rest (see `write_needs_attention_idle_stub` in
+/// `crates/console-cli/tests/support/mod.rs`).
+pub const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
 const GH_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_GH_PROGRAM";
 const INVOKER_ENV: &str = "LIVESPEC_INVOKER";
+
+/// Every `LIVESPEC_CONSOLE_*_PROGRAM` override env var this module honors.
+///
+/// One per backing CLI a live source shells out to -- the same seven surfaces
+/// `console_application::source_adapters::SourceAdapterKind` names.
+///
+/// This is the single source of truth the E2E harness derives its "did I stub
+/// every backing CLI" launcher from
+/// (`crates/console-cli/tests/support/mod.rs`), instead of hand-copying the
+/// env var names into a second list that can silently drift out of step with
+/// this one the moment a new backing CLI is wired in here
+/// (livespec-console-beads-fabro-mx9u.28).
+pub const PROGRAM_OVERRIDE_ENV_VARS: [&str; 7] = [
+    LIST_WORK_ITEMS_PROGRAM_ENV,
+    LIVESPEC_PROGRAM_ENV,
+    FABRO_PROGRAM_ENV,
+    DRAIN_PROGRAM_ENV,
+    DRIVE_PROGRAM_ENV,
+    NEEDS_ATTENTION_PROGRAM_ENV,
+    GH_PROGRAM_ENV,
+];
 
 /// Home-relative install locations probed for the `fabro` binary, in order,
 /// when it is not overridden by [`FABRO_PROGRAM_ENV`]. The cockpit runs under
