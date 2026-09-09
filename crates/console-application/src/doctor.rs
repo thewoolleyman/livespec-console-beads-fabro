@@ -33,7 +33,7 @@
 //! `unavailable_source_finding` line here like any other source. That closes
 //! the attribution gap the attention-disagreement finding below could not
 //! close on its own: when the needs-attention read is failing, the operator
-//! now sees BOTH "source unavailable: needs-attention (...)" (why) and the
+//! now sees BOTH "event source unavailable: needs-attention (...)" (why) and the
 //! attention-count disagreement (its effect on the inbox), rather than only
 //! the latter with no named cause.
 //!
@@ -165,7 +165,7 @@ fn unavailable_source_finding(
         .unwrap_or_else(|| "no reason recorded".to_owned());
     let since = last_success.map_or_else(|| "never observed".to_owned(), Clone::clone);
     DoctorFinding::new(format!(
-        "source unavailable: {source} ({reason}) -- its projections are STALE, not current; \
+        "event source unavailable: {source} ({reason}) -- its projections are STALE, not current; \
          last successful read: {since}"
     ))
 }
@@ -672,9 +672,9 @@ mod tests {
             .findings()
             .iter()
             .map(DoctorFinding::message)
-            .filter(|message| message.starts_with("source unavailable: "))
+            .filter(|message| message.starts_with("event source unavailable: "))
             .map(|message| {
-                let rest = message.trim_start_matches("source unavailable: ");
+                let rest = message.trim_start_matches("event source unavailable: ");
                 // `split(' ')` over a non-empty string always yields at least
                 // one item, so the fallback (the whole trimmed message) is
                 // never actually reached -- it exists only so this stays a

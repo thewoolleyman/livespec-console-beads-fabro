@@ -27,6 +27,26 @@ pub enum SourceAdapterKind {
 
 impl SourceAdapterKind {
     #[must_use]
+    /// Every source kind the console polls, in the order the operator-facing
+    /// roster (Help's event-source enumeration, livespec-console-beads-fabro-
+    /// mx9u.19) lists them. Adding a variant here is the ONLY change needed to
+    /// keep that roster complete: `event_source_roster_help_lines` below folds
+    /// over this array rather than naming variants itself, and the parity test
+    /// (`the_help_roster_names_every_source_kind_the_code_can_emit`) fails the
+    /// moment a variant is added to the enum but not to this array.
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Orchestrator,
+            Self::Dispatcher,
+            Self::Fabro,
+            Self::GitHub,
+            Self::LiveSpec,
+            Self::NeedsAttention,
+            Self::Reconciler,
+        ]
+    }
+
+    #[must_use]
     /// Return the stable source name used in event envelopes.
     pub const fn source_name(&self) -> &'static str {
         match self {
@@ -39,6 +59,51 @@ impl SourceAdapterKind {
             Self::Reconciler => "reconcile-runs",
         }
     }
+
+    #[must_use]
+    /// One operator-facing sentence naming what this source observes -- the
+    /// answer Help gives beside the source's name
+    /// (livespec-console-beads-fabro-mx9u.19). Kept beside [`Self::source_name`]
+    /// so the two can never drift into naming a source Help does not also
+    /// describe.
+    pub const fn observes(&self) -> &'static str {
+        match self {
+            Self::Orchestrator => {
+                "the work-item roster (ready/blocked/done state), via the orchestrator's \
+                 work-item snapshot feed"
+            }
+            Self::Dispatcher => "the fabro dispatch journal: what the factory dispatched, and why",
+            Self::Fabro => {
+                "fabro's own run records: dispatch/review/merge progress for each factory run"
+            }
+            Self::GitHub => "GitHub pull-request status for the fleet's open PRs",
+            Self::LiveSpec => "the livespec CLI's next/revise status for the spec side",
+            Self::NeedsAttention => {
+                "the orchestrator's needs-attention gather: the merged, ranked attention list"
+            }
+            Self::Reconciler => {
+                "the orchestrator's run reconciler (`reconcile-runs --dry-run --json`)"
+            }
+        }
+    }
+}
+
+/// Help's event-source roster: one line per [`SourceAdapterKind`], name and
+/// [`SourceAdapterKind::observes`] description, in [`SourceAdapterKind::all`]
+/// order.
+///
+/// Lives here rather than being hand-typed into the Help text so the two
+/// cannot drift: `all()` is the ground truth a parity test checks the rendered
+/// Help text against, and this is the ONE place that turns it into the
+/// rendered line shape (`name` padded, then the description) so Help and any
+/// future non-TUI surface (docs generation, a `--json` dump) render the exact
+/// same sentence for the exact same source.
+#[must_use]
+pub fn event_source_roster_help_lines() -> Vec<String> {
+    SourceAdapterKind::all()
+        .iter()
+        .map(|kind| format!("  {:<15}{}", kind.source_name(), kind.observes()))
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4123,16 +4188,16 @@ mod tests {
         SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome, UNKNOWN_STATUS_KIND,
         WorkItemDetail, WorkItemSnapshot, attention_item_snapshot_from_payload_json,
         diff_needs_attention, dispatcher_journal_from_payload_json,
-        dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
-        materialize_attention_items, normalize_dispatcher_journal_entry,
-        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
-        normalize_livespec_next_snapshot, normalize_work_item_snapshot, not_observed_event,
-        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
-        parse_orchestrator_observation, parse_reconcile_runs_observation,
-        parse_reconcile_runs_snapshot, reconcile_runs_snapshot_from_payload_json,
-        reconcile_runs_snapshot_payload_json, run_adapter_poll,
-        work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        dispatcher_journal_payload_json, event_source_roster_help_lines,
+        fabro_run_snapshot_payload_json, materialize_attention_items,
+        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
+        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
+        normalize_work_item_snapshot, not_observed_event, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
+        parse_reconcile_runs_observation, parse_reconcile_runs_snapshot,
+        reconcile_runs_snapshot_from_payload_json, reconcile_runs_snapshot_payload_json,
+        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -5221,6 +5286,49 @@ mod tests {
         assert_eq!(AcceptancePolicy::AiThenHuman.label(), "ai-then-human");
         assert_eq!(AcceptancePolicy::AiOnly.label(), "ai-only");
         assert_eq!(AcceptancePolicy::HumanOnly.label(), "human-only");
+    }
+
+    #[test]
+    fn all_lists_every_source_adapter_kind_exactly_once() {
+        // Ground truth for the Help roster (mx9u.19): every variant, no
+        // duplicates, so an added-but-unlisted source cannot silently drop out
+        // of `event_source_roster_help_lines` or any Help text built from it.
+        let names: Vec<&str> = SourceAdapterKind::all()
+            .iter()
+            .map(SourceAdapterKind::source_name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "orchestrator",
+                "dispatcher",
+                "fabro",
+                "github",
+                "livespec",
+                "needs-attention",
+                "reconcile-runs",
+            ]
+        );
+        // No duplicates: sorting and deduping loses nothing.
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len());
+    }
+
+    #[test]
+    fn event_source_roster_help_lines_names_and_describes_every_source() {
+        let lines = event_source_roster_help_lines();
+        assert_eq!(lines.len(), SourceAdapterKind::all().len());
+        for kind in SourceAdapterKind::all() {
+            let expected = format!("  {:<15}{}", kind.source_name(), kind.observes());
+            check(
+                lines.contains(&expected),
+                &format!(
+                    "expected the roster to carry {kind:?}'s line: {expected:?}, got {lines:?}"
+                ),
+            );
+        }
     }
 
     #[test]

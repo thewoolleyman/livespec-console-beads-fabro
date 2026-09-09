@@ -171,7 +171,7 @@ Nothing to press. The item is now the factory's: it moves `ready` → `active`,
 does the work, and parks the result in `acceptance` for a human to judge because
 Step 3 set the item to `ai-then-human`.
 
-The console polls its sources every 2 seconds, so the change appears on its own.
+The console polls its event sources every 2 seconds, so the change appears on its own.
 When it does, the item is back in your inbox:
 
 ```
