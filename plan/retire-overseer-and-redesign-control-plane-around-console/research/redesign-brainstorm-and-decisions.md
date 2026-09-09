@@ -177,6 +177,22 @@ structured verdict). The overseer repo is **frozen whole** rather than triaged
 plan-by-plan; every tmux-class plan is marked superseded-by-transport; the
 named capabilities transfer into orchestrator/console plans; the rest archives.
 
+**D5 AMENDED 2026-09-09 (maintainer ruling; supersedes the paragraph above
+wherever the two conflict).** The overseer skill SURVIVES and the overseer repo
+stays live under its current name. Maintainer, verbatim: "I will probably keep
+the overseer skill, and the caam skill(s), and the new drain-backlog skill. And
+I will keep the repo name, it's good enough for now. Everything else will get
+deprecated and deleted (supervisor and foreman skills and anything only used by
+them)." Consequently: (a) "the overseer repo is **frozen whole**" does NOT hold
+— the repo is not frozen; (b) caam does NOT become an orchestrator `accounts`
+primitive, and the caam skills stay in `livespec-overseer`, as does the new
+`drain-backlog` skill; (c) what is deprecated and deleted is the supervisor and
+foreman skills, and anything used only by them; (d) the pending overseer freeze
+scope event must be REWRITTEN to say this before it is filed. A session proposal
+to re-charter the repo around "keep the fleet running unattended" and rename it
+at overseer-skill deletion was REJECTED by the same ruling; it rested on reading
+D5 as retiring the overseer skill, which it does not.
+
 **D6 — Retire the plan operation; epics are plans.** The plan operation
 existed because beads lacked a human surface; that left garbage in the ledger.
 Replace it with:
@@ -262,8 +278,8 @@ day-to-day questions, status and rulings.
 | Worker seat | Handoffs / scope events | typed `next_action` metadata; scope-event comments | contract change (D6) |
 | Supervisor seat | Adversarial review with durable verdict | review **workflow variant** with structured verdict (unifies the completeness reviewer and core's auto-spawn ratification review) | unify |
 | Grooming seat | Bounded backlog drain + revise pending proposals | `groom` + core `revise` as dispatchable workflow runs, triggered by the §15 staleness facts | no seat |
-| caam loop | Account rotation on limits | orchestrator `accounts status \| rotate`, driven by rate-limit events, multi-provider | generalize |
-| overseerd | Context-floor restart, registry, pane classification, ready files | **none** for overseer sessions (they no longer exist); fabro/adapters own node context; re-dispatch on `transient_infra` is dispatcher policy | deleted with transport |
+| caam loop | Account rotation on limits | **stays in `livespec-overseer`** (D5 amended 2026-09-09); may generalize multi-provider there | not moved |
+| overseerd | Context-floor restart, registry, pane classification, ready files | **retained** as part of the surviving overseer skill (D5 amended 2026-09-09); the console does not depend on it; re-dispatch on `transient_infra` remains dispatcher policy | retained |
 | fabro reviewers / fix nodes | In-workflow quality gates | unchanged, inside the workflow payload | unchanged |
 
 Genuinely new surface after retractions: `context` (read-only loader inside

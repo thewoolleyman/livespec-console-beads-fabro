@@ -111,10 +111,10 @@ what; none of these has a ledger item yet except b4:
   `bd-ib-yqpdrt`): revise / gap-capture with interview consent, then panel /
   review. Its only open child is a version-pin task — it needs a re-scope and
   fresh children before it can be "central".
-- **b5** — valve policy on attention items; `accounts` (caam generalized,
-  event-driven off rate-limit signals); re-dispatch on `transient_infra`;
+- **b5** — valve policy on attention items; re-dispatch on `transient_infra`;
   starvation → dispatch cadence (rule prose in overseer `7ranbh`, closed —
-  re-home).
+  re-home). (`accounts` was REMOVED from b5 on 2026-09-09: caam stays in
+  `livespec-overseer` per D5 as amended.)
 
 **Console hold, exactly:** no new console feature tracks until b1–b3 land.
 Allowed: the console spec propose-change (drop the overseer-orthogonality
@@ -142,7 +142,7 @@ whole).
 | `pluggable-factory-workflow-configs` | orchestrator `bd-ib-yqpdrt` | b4, central under D3 | Re-scope; fresh children per variant. |
 | `acceptance-evidence-admissibility` | orchestrator `bd-ib-vq6z` | keep/defer call | Five backlog children, unstarted; the sweep decides. |
 | `orchestrator-backlog-sweep-for-console-control-plane` | orchestrator `bd-ib-j81s` | (c) | Verdict summary → one comment on `-pzbdbo`. |
-| overseer freeze | overseer tenant, one scope event (pending) | D5 | Precondition nearly met: `m7qrgp` closed, `7ranbh` closed, `nbzgrk` blocked with no children, `zidpiu` has `.5` (do not start) and `.6`. Capabilities transfer by name: caam → `accounts` (b5); panel → workflow variant (b4); starvation / `transient_infra` rules → dispatcher (b5). |
+| overseer disposition | overseer tenant, one scope event (pending — MUST be rewritten before filing) | D5 as amended 2026-09-09 | NOT a freeze. The repo stays live under its current name; the overseer, caam and drain-backlog skills are KEPT. Deprecated and deleted: the supervisor and foreman skills and anything used only by them. caam does NOT transfer to orchestrator `accounts`. Panel → workflow variant (b4) and the starvation / `transient_infra` rules → dispatcher (b5) still stand. |
 | `steady-state-loop-hardening` | homelab `hl-eufbpx` | exit gate (D8) | Stays blocked with "homelab moves one real fleet item ready → done under the console-driven loop" as its far gate. The phase-0 finding note must be written by a fresh hand — the seat is marked do-not-restart. |
 | fabro upstream | — | constraint | Stable-frozen since v0.254.0; fork-only. |
 
