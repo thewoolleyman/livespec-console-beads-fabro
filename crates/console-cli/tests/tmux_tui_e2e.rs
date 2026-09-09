@@ -1087,6 +1087,12 @@ fn tmux_tui_e2e_all_reachable_sources_are_idle_not_unavailable() -> HarnessResul
         "an all-idle header must keep `mode: tui` (no phantom unavailability \
          suffix forcing a shrink):\n{screen}"
     );
+    // The bare `sources:` substring is deliberately kept here, unlike the
+    // positive assertions elsewhere in this file: a NEGATIVE check against a
+    // substring is STRICTER than one against the full "event sources:"
+    // literal (absence of the substring implies absence of any string
+    // containing it), so it stays exactly as able to catch a regression back
+    // to the un-renamed segment as it is today.
     assert!(
         !screen.contains("unavailable") && !screen.contains("sources:"),
         "an all-idle header must carry NO source-unavailability indicator:\n{screen}"
@@ -1134,7 +1140,12 @@ fn tmux_tui_e2e_unreachable_source_is_counted_named_and_reasoned() -> HarnessRes
         &["fabro"],
     )?;
 
-    let screen = console.wait_for("sources: 1 unavailable", render_timeout())?;
+    // The FULL renamed literal, not the bare `sources: 1 unavailable`
+    // substring: that substring is satisfied by BOTH the correct
+    // "event sources: 1 unavailable" and the pre-rename "sources: 1
+    // unavailable", so it could not have told a vocabulary regression apart
+    // from a pass (livespec-console-beads-fabro-mx9u.19's rename).
+    let screen = console.wait_for("event sources: 1 unavailable", render_timeout())?;
     assert!(
         screen.contains("fabro"),
         "the header must NAME the one unavailable source (fabro):\n{screen}"
