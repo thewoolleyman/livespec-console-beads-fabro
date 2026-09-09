@@ -37,6 +37,8 @@ use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
 #[cfg(all(not(test), not(coverage)))]
+use console_application::source_event_counts::{SharedSourceEventCounts, SourceEventCounts};
+#[cfg(all(not(test), not(coverage)))]
 use console_application::source_staleness::{
     SharedSourceLastSuccess, SharedSourceStaleness, SourceStaleness,
 };
@@ -62,7 +64,8 @@ use livespec_console_beads_fabro::{
     SourcePollHost, SourcePollRequester, SourcePollWake, TuiSessionRunner, append_lane_diagnostic,
     bounded_operator_status, lane_diagnostics_path, lane_open_failure_line,
     lane_startup_failure_line, resolve_console_invoker, run_command_lane,
-    run_paced_source_poll_loop, source_last_success_snapshot, source_staleness_snapshot,
+    run_paced_source_poll_loop, source_event_counts_snapshot, source_last_success_snapshot,
+    source_staleness_snapshot,
 };
 
 /// A message to the off-thread source poller: run a source poll now (on demand),
@@ -361,6 +364,11 @@ fn open_console_store(path: &Path) -> Result<SqliteEventStore, String> {
 }
 
 #[cfg(all(not(test), not(coverage)))]
+// Every new poller-shared cell (build staleness, writer lease, source
+// staleness/last-success, now per-source event counts -- mx9u.20.2) adds a
+// few lines of composition-root wiring here by the established pattern; the
+// cadence rationale lives on each cell's own type, not duplicated per-site.
+#[allow(clippy::too_many_lines)]
 fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let path = console_store_path();
     create_store_parent(&path)?;
@@ -444,6 +452,9 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // unsummarized (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's
     // roster).
     let source_last_success_cell = SharedSourceLastSuccess::new();
+    // Same reasoning again -- per-source event counts by type
+    // (livespec-console-beads-fabro-mx9u.20.2), folded from the SAME events.
+    let source_event_counts_cell = SharedSourceEventCounts::new();
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo,
         dispatcher_settings,
@@ -455,6 +466,8 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         source_staleness_cell: source_staleness_cell.clone(),
         source_last_success: source_last_success_cell.get(),
         source_last_success_cell: source_last_success_cell.clone(),
+        source_event_counts: source_event_counts_cell.get(),
+        source_event_counts_cell: source_event_counts_cell.clone(),
         first_ingest_pending: Arc::clone(&first_ingest_pending),
         writer_lease_status_cell: writer_lease_status_cell.clone(),
     };
@@ -488,6 +501,7 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
             build_staleness_cell,
             source_staleness_cell,
             source_last_success_cell,
+            source_event_counts_cell,
             poller_first_ingest_pending,
             &poller_writer_identity,
             poller_writer_lease_status,
@@ -596,11 +610,13 @@ fn hostname() -> String {
 /// `console_application::build_identity::SharedBuildStaleness` for the full
 /// cadence rationale.
 #[cfg(all(not(test), not(coverage)))]
+#[allow(clippy::too_many_arguments)]
 fn poller_loop(
     poll_rx: &Receiver<PollMessage>,
     build_staleness: SharedBuildStaleness,
     source_staleness: SharedSourceStaleness,
     source_last_success: SharedSourceLastSuccess,
+    source_event_counts: SharedSourceEventCounts,
     first_ingest_pending: Arc<AtomicBool>,
     writer_identity: &WriterIdentity,
     writer_lease_status: SharedWriterLeaseStatus,
@@ -657,6 +673,7 @@ fn poller_loop(
         build_staleness,
         source_staleness,
         source_last_success,
+        source_event_counts,
         first_ingest_pending,
         writer_identity,
         writer_lease_status,
@@ -694,6 +711,11 @@ struct ChannelSourcePollHost<'a> {
     /// COLUMN (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster) --
     /// the SAME fact as `source_staleness` above, unsummarized.
     source_last_success: SharedSourceLastSuccess,
+    /// Shared with the render thread: the Event sources roster's per-source
+    /// event counts by type (livespec-console-beads-fabro-mx9u.20.2), folded
+    /// from the SAME events list this sweep already reads for
+    /// `source_last_success` above -- no additional `SQLite` query.
+    source_event_counts: SharedSourceEventCounts,
     /// Shared with the render thread: flipped `false` the moment this thread
     /// completes its FIRST sweep, whether or not that sweep found anything
     /// (livespec-console-beads-fabro-pzbdbo.27). Unlike `build_staleness` this
@@ -743,6 +765,11 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
         // (pzbdbo.29's roster) -- the SAME fact, unsummarized.
         if let Ok(last_success) = source_last_success_snapshot(self.store) {
             self.source_last_success.set(last_success);
+        }
+        // Same reasoning again, for the Event sources roster's per-source
+        // event counts by type (livespec-console-beads-fabro-mx9u.20.2).
+        if let Ok(event_counts) = source_event_counts_snapshot(self.store) {
+            self.source_event_counts.set(event_counts);
         }
         // Cleared unconditionally, success or failure: an ATTEMPTED first
         // sweep is what the header's `event sources: loading` tell promises
@@ -1255,6 +1282,14 @@ struct InteractiveTuiRunner {
     /// the first reads through here instead, same handoff as
     /// `source_staleness_cell` above.
     source_last_success_cell: SharedSourceLastSuccess,
+    /// The FIRST frame's per-source event-counts map -- a plain snapshot,
+    /// used only to seed [`console_tui::TuiInteractionState`] before the
+    /// loop's first tick (livespec-console-beads-fabro-mx9u.20.2).
+    source_event_counts: BTreeMap<String, SourceEventCounts>,
+    /// The LIVE cell the background poller keeps current; every tick after
+    /// the first reads through here instead, same handoff as
+    /// `source_last_success_cell` above.
+    source_event_counts_cell: SharedSourceEventCounts,
     /// The SAME handle the poller thread flips `false` once its first sweep
     /// completes (livespec-console-beads-fabro-pzbdbo.27).
     first_ingest_pending: Arc<AtomicBool>,
@@ -1276,6 +1311,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             build_staleness: self.build_staleness_cell.clone(),
             source_staleness: self.source_staleness_cell.clone(),
             source_last_success: self.source_last_success_cell.clone(),
+            source_event_counts: self.source_event_counts_cell.clone(),
             first_ingest_pending: Arc::clone(&self.first_ingest_pending),
             writer_lease_status: self.writer_lease_status_cell.clone(),
         };
@@ -1289,6 +1325,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             self.build_staleness,
             self.source_staleness.clone(),
             self.source_last_success.clone(),
+            self.source_event_counts.clone(),
             &mut live_session,
         )
         .map_err(ConsoleRuntimeError::tui_runtime_io_failed)
@@ -1313,6 +1350,7 @@ struct PollerAwareSession<'a> {
     build_staleness: SharedBuildStaleness,
     source_staleness: SharedSourceStaleness,
     source_last_success: SharedSourceLastSuccess,
+    source_event_counts: SharedSourceEventCounts,
     first_ingest_pending: Arc<AtomicBool>,
     writer_lease_status: SharedWriterLeaseStatus,
 }
@@ -1363,6 +1401,12 @@ impl console_tui::TuiLiveSession for PollerAwareSession<'_> {
         // Same shape again, for the Event sources roster's stale-since column
         // (pzbdbo.29's roster).
         Some(self.source_last_success.get())
+    }
+
+    fn take_source_event_counts(&mut self) -> Option<BTreeMap<String, SourceEventCounts>> {
+        // Same shape again, for the Event sources roster's per-source event
+        // counts by type (livespec-console-beads-fabro-mx9u.20.2).
+        Some(self.source_event_counts.get())
     }
 
     fn first_ingest_in_progress(&self) -> bool {
