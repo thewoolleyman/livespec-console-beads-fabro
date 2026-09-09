@@ -422,6 +422,17 @@ Never hand-hunt the secret or reach around the seam with raw `mysql` / `dolt` /
 persist env into later tool-call shells). A `CALL DOLT_BACKUP … command denied`
 warning is correct-by-design (tenant users lack SUPER) — ignore it.
 
+**`bd`'s own `chmod 700 .beads` advice is WRONG here — following it causes an
+outage.** Every `bd` invocation prints `Warning: .../.beads has permissions 0770
+(recommended: 0700). Run: chmod 700 ...`. Do NOT. `.beads` carries a POSIX ACL
+(`getfacl .beads`) granting `user:ci-writer:rwx` and `user:beads-web:r-x`, plus
+matching `default:` entries; `chmod 700` rewrites the ACL mask and revokes both,
+breaking the CI writer's ledger ingress and the beads-web UI. The `0770` mode is
+deliberate and load-bearing, and bd's check is a false positive against any
+ACL-bearing directory. The warning is unavoidable local noise and is harmless:
+the orchestrator's `raise_for_status` only LOGS on a zero exit with stderr
+(`bd exited zero with stderr`), it never fails the command. Verified 2026-09-09.
+
 **The wrapper execs in a CLEAN environment — set variables INSIDE it, not in
 front of it.** Anything exported ahead of `with-livespec-env.sh` is dropped
 before the wrapped program runs, and this is not limited to `LIVESPEC_*`:
