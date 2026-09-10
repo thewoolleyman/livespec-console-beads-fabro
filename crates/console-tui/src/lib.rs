@@ -1699,9 +1699,16 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                 };
             }
             if model.active_view() == TuiView::Attention {
-                return model.selected_work_item_id().map(|_work_item_id| {
-                    TuiTerminalInput::Interaction(TuiInteraction::OpenWorkItemDetail)
-                });
+                // A GROUP row (livespec-console-beads-fabro-mx9u.6) has no
+                // work-item record to open: Enter expands or collapses it.
+                let interaction = if model.selected_attention_group_key().is_some() {
+                    Some(TuiInteraction::ToggleAttentionGroup)
+                } else {
+                    model
+                        .selected_work_item_id()
+                        .map(|_work_item_id| TuiInteraction::OpenWorkItemDetail)
+                };
+                return interaction.map(TuiTerminalInput::Interaction);
             }
             // A Settings row edit is an ordinary recorded write resolved on
             // `Confirm`; the read-only summary views have no Enter action.
@@ -4084,7 +4091,10 @@ fn attention_item_line(
     // narrower than the shared tenant prefix rendered a dozen consecutive rows
     // as the same string, so the operator had to walk them one at a time and
     // read the Detail pane to find the one to act on.
-    let token = console_application::attention_row_token(item.work_item_id())
+    // A GROUP row (livespec-console-beads-fabro-mx9u.6) leads with its class
+    // (`stale-worktree`) the same way.
+    let token = item
+        .row_token()
         .map_or_else(String::new, |token| format!("{token}  "));
     // With the id at the FRONT, the copy the orchestrator's title carries is
     // duplication, and it is what pushes the kind of item off the pane.
@@ -11476,6 +11486,97 @@ mod tests {
         assert_eq!(closed.overlay(), &TuiOverlay::None);
         assert_eq!(closed.selected_attention_index(), 1);
         assert_eq!(closed.active_view(), TuiView::Attention);
+    }
+
+    /// A singleton finding plus three `stale-worktree` findings with no
+    /// work-item behind them (livespec-console-beads-fabro-mx9u.6).
+    fn grouped_hygiene_events() -> Vec<ConsoleEvent> {
+        [
+            ("hygiene:idle-factory", "Factory idle"),
+            ("hygiene:stale-worktree:/w/a", "Remove clean worktree /w/a"),
+            ("hygiene:stale-worktree:/w/b", "Remove clean worktree /w/b"),
+            ("hygiene:stale-worktree:/w/c", "Remove clean worktree /w/c"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, (id, summary))| {
+            let item = AttentionItemSnapshot::new(
+                id,
+                "hygiene",
+                "low",
+                summary,
+                AttentionSourceRef::new("console", None, None),
+                AttentionHandoff::new("run", None, "fix"),
+            );
+            ConsoleEvent::fixture(
+                &format!("evt_group_{index}"),
+                EventType::AttentionItemAppeared,
+                "needs-attention",
+            )
+            .with_payload_json(attention_item_payload_json(&item))
+        })
+        .collect()
+    }
+
+    /// livespec-console-beads-fabro-mx9u.6: Enter on a group row toggles it
+    /// (AC1's key mapping), and the header's `attention:` count is the
+    /// UNGROUPED inbox total whether the group is collapsed or expanded (AC3).
+    #[test]
+    fn attention_enter_on_a_group_row_toggles_it_and_the_header_counts_every_row() {
+        let events = grouped_hygiene_events();
+        let collapsed_state =
+            TuiInteractionState::for_view(TuiView::Attention, 1, TuiOverlay::None)
+                .with_focus(FocusPane::Content);
+        let collapsed = build_tui_model_for_state(&events, &collapsed_state);
+        check(
+            key_event_to_terminal_input(key(KeyCode::Enter), &collapsed)
+                == Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::ToggleAttentionGroup,
+                )),
+            "Enter on a group row toggles it",
+        );
+        let collapsed_frame = render_to_text(&collapsed, 200, 30).unwrap_or_default();
+        check(
+            header_row(&collapsed_frame).contains("attention: 4"),
+            &format!("collapsed header: {}", header_row(&collapsed_frame)),
+        );
+        check(
+            collapsed_frame
+                .contains("> stale-worktree  (3) Remove clean worktree … [enter expand]"),
+            &format!("collapsed frame:\n{collapsed_frame}"),
+        );
+
+        let expanded_state = reduce_tui_interaction(
+            &collapsed_state,
+            &events,
+            TuiInteraction::ToggleAttentionGroup,
+        );
+        let expanded = build_tui_model_for_state(&events, &expanded_state);
+        let expanded_frame = render_to_text(&expanded, 200, 30).unwrap_or_default();
+        check(
+            header_row(&expanded_frame).contains("attention: 4"),
+            &format!("expanded header: {}", header_row(&expanded_frame)),
+        );
+        check(
+            expanded_frame.contains("[enter collapse]")
+                && !expanded_frame.contains("[enter expand]"),
+            &format!("expanded frame:\n{expanded_frame}"),
+        );
+        check(
+            expanded.attention_items().len() == 5,
+            "the group row is followed by its three members",
+        );
+
+        // Enter on an ordinary row with no work-item behind it stays inert.
+        let ordinary = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Attention, 0, TuiOverlay::None)
+                .with_focus(FocusPane::Content),
+        );
+        check(
+            key_event_to_terminal_input(key(KeyCode::Enter), &ordinary).is_none(),
+            "Enter on a verb-free ordinary row is inert",
+        );
     }
 
     #[test]
