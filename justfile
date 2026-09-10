@@ -319,13 +319,11 @@ check-nextest:
     just ensure-rust-quality-tools || exit $?
     cargo nextest run --workspace --all-features
 
-# Line coverage. The 100% requirement for ATTRIBUTABLE lines is unchanged; a
-# single nameable uncovered line still fails. What `--fail-under-lines 100`
-# cannot express is llvm-cov counting misses no listing surface can NAME, so the
-# summary and the listing are compared explicitly and that one signature is
-# capped by a recorded, reasoned disposition. See
-# tests/fixtures/coverage-unnameable-disposition.json and ledger item
-# livespec-console-beads-fabro-3yx.
+# Line and region coverage: ZERO uncovered, no allowance, no exclusions. Both are
+# measured in the merged cross-instantiation view rather than llvm-cov's own
+# summary, whose instantiation-group scalar-max merge reports "missed" lines that
+# name no source line (ledger item livespec-console-beads-fabro-3yx). That is why
+# a bare `--fail-under-lines 100` is not used. See dev-tooling/coverage-gate.py.
 #
 # Coverage-pincer reminder: do not satisfy llvm-cov by fighting another gate. If
 # a grouped or-pattern arm (`A | B => ...`) is reported uncovered, keep the arm
@@ -346,8 +344,7 @@ check-coverage:
     # One instrumented run; the listing reuses its profdata.
     cargo llvm-cov --workspace --all-features --lib --json --output-path "${export_json}" || exit 1
     cargo llvm-cov report --show-missing-lines | tee "${missing_txt}" || exit 1
-    python3 dev-tooling/coverage-gate.py \
-        "${export_json}" "${missing_txt}" tests/fixtures/coverage-unnameable-disposition.json
+    python3 dev-tooling/coverage-gate.py "${export_json}" "${missing_txt}"
 
 # errexit is deliberately omitted; dependency checks are guarded directly.
 check-deps:
