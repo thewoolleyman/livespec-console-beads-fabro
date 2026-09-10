@@ -1,7 +1,7 @@
 ---
 topic: coverage-line-gate-merged-view
 author: claude-opus-5
-created_at: 2026-09-10T15:55:00Z
+created_at: 2026-09-10T13:55:00Z
 ---
 
 ## Proposal: Line coverage is 100% in the merged per-line view, with no allowance; the region gate is a present gate
