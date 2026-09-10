@@ -12017,12 +12017,20 @@ mod tests {
     /// A needs-attention finding with NO work-item behind it -- the hygiene
     /// shape livespec-console-beads-fabro-mx9u.6 groups.
     fn hygiene_attention_item(id: &str, summary: &str) -> AttentionItemSnapshot {
+        hygiene_attention_item_in_repo(id, summary, "console")
+    }
+
+    fn hygiene_attention_item_in_repo(
+        id: &str,
+        summary: &str,
+        repo: &str,
+    ) -> AttentionItemSnapshot {
         AttentionItemSnapshot::new(
             id,
             "hygiene",
             "low",
             summary,
-            AttentionSourceRef::new("console", None, None),
+            AttentionSourceRef::new(repo, None, None),
             AttentionHandoff::new("run", None, &format!("fix {id}")),
         )
     }
@@ -12095,6 +12103,56 @@ mod tests {
                 detail.actions().is_empty() && detail.valve_commands().is_empty()
             }),
             "nothing is pressable on a group row",
+        );
+    }
+
+    /// A group row's repo field names every repo its members span, each once
+    /// and in one stable order, so a group reaching across repos does not read
+    /// as belonging to whichever member happened to come first
+    /// (livespec-console-beads-fabro-mx9u.6).
+    #[test]
+    fn a_group_row_names_every_repo_its_members_span_exactly_once() {
+        let events = [
+            (
+                "hygiene:stale-worktree:/w/a",
+                "Remove clean worktree /w/a",
+                "beta",
+            ),
+            (
+                "hygiene:stale-worktree:/w/b",
+                "Remove clean worktree /w/b",
+                "alpha",
+            ),
+            (
+                "hygiene:stale-worktree:/w/c",
+                "Remove clean worktree /w/c",
+                "alpha",
+            ),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, (id, summary, repo))| {
+            attention_appeared(
+                &format!("evt_group_repo_{index}"),
+                &hygiene_attention_item_in_repo(id, summary, repo),
+            )
+        })
+        .collect::<Vec<_>>();
+        let model =
+            build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None));
+        let group = &model.attention_items()[0];
+        check(
+            group.group_key() == Some("hygiene:stale-worktree"),
+            &format!("expected the group row first: {:?}", attention_ids(&model)),
+        );
+        check(
+            group.source_reference() == "alpha, beta",
+            &format!("group row repos: {}", group.source_reference()),
+        );
+        let detail = model.detail();
+        check(
+            detail.map(AttentionDetail::repo) == Some("alpha, beta"),
+            &format!("group detail repo: {detail:?}"),
         );
     }
 
