@@ -1885,8 +1885,12 @@ fn tmux_tui_e2e_deduped_work_item_row_still_carries_the_advertised_valve() -> Ha
         "the pending-approval work-item must reach the inbox as the single \
          deduped row -- without it nothing below proves anything:\n{screen}"
     );
+    // Both tokens, not the glued `Work item: <id>` phrase: since mx9u.2 the
+    // Attention list takes half the body, so at this fixture's width the Detail
+    // pane wraps a 34-character id onto its own row. The pane still NAMES the
+    // work item, which is what this asserts; the row now names it too.
     assert!(
-        screen.contains(&format!("Work item: {ITEM_ID}")),
+        screen.contains("Work item:") && screen.contains(ITEM_ID),
         "the Detail pane must name the work-item behind the row:\n{screen}"
     );
 

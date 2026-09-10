@@ -2172,6 +2172,54 @@ const NAVIGATION_PANE_WIDTH: u16 = 18;
 /// feedback beneath it.
 const SEARCH_OVERLAY_ROWS: u16 = 2;
 
+/// The width beyond which the Attention view stops giving the Detail pane the
+/// larger share (livespec-console-beads-fabro-mx9u.2).
+///
+/// Below it, the Detail pane is where the operator reads a row's account at
+/// all, and starving it makes a narrow terminal worse rather than better. Above
+/// it there is room for both, and the list -- the thing being SCANNED -- should
+/// not be the smaller of the two, which is what the 38/62 split made it:
+/// measured 2026-09-08, the Attention pane held 38 columns at a 105-column
+/// terminal and 57 at 159, while the Detail pane took 45 and 79.
+const WIDE_BODY_COLUMNS: u16 = 100;
+
+/// The body's horizontal split: the fixed navigation pane, then the content and
+/// detail panes.
+///
+/// A pure function of the view and the body width so the split can be asserted
+/// directly rather than inferred from a rendered frame. Only the ATTENTION view
+/// widens: the other list/detail views were not what mx9u.2 measured, and
+/// changing a split nobody complained about would be scope this item did not
+/// buy.
+///
+/// # What "half" is measured against, and why
+///
+/// The list takes half of what is left AFTER the navigation pane — the space
+/// this split actually divides — rather than half of the whole body. Measured
+/// against the whole body it would take 56 of a 112-column terminal and leave
+/// the Detail pane 38, which wraps a 34-character work-item id across two rows
+/// and re-creates, one pane to the right, exactly the defect this item exists
+/// to remove. Half of the divided space still answers mx9u.2's finding, which
+/// was that the pane being SCANNED was the smaller of the two: it never is now.
+/// Rounded UP, so on an odd remainder the list is the larger pane rather than
+/// the smaller one by a column.
+#[must_use]
+fn body_split_constraints(view: TuiView, width: u16) -> [Constraint; 3] {
+    if view == TuiView::Attention && width > WIDE_BODY_COLUMNS {
+        let divided = width.saturating_sub(NAVIGATION_PANE_WIDTH);
+        return [
+            Constraint::Length(NAVIGATION_PANE_WIDTH),
+            Constraint::Length(divided.div_ceil(2)),
+            Constraint::Min(3),
+        ];
+    }
+    [
+        Constraint::Length(NAVIGATION_PANE_WIDTH),
+        Constraint::Percentage(38),
+        Constraint::Percentage(62),
+    ]
+}
+
 /// Render the body panes and return the Detail pane's maximum scroll offset
 /// (`0` for the Lanes view, which has no Detail pane).
 fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
@@ -2191,11 +2239,7 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize
     }
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(NAVIGATION_PANE_WIDTH),
-            Constraint::Percentage(38),
-            Constraint::Percentage(62),
-        ])
+        .constraints(body_split_constraints(model.active_view(), area.width))
         .split(area);
     render_navigation(model, horizontal[0], buffer);
     let detail_focused = model.focus() == FocusPane::Detail;
@@ -3954,9 +3998,20 @@ fn attention_item_line(
     } else {
         " "
     };
+    // The row LEADS with the token that tells this item apart from its
+    // neighbours (livespec-console-beads-fabro-mx9u.2). Before this, a pane
+    // narrower than the shared tenant prefix rendered a dozen consecutive rows
+    // as the same string, so the operator had to walk them one at a time and
+    // read the Detail pane to find the one to act on.
+    let token = console_application::attention_row_token(item.work_item_id())
+        .map_or_else(String::new, |token| format!("{token}  "));
+    // With the id at the FRONT, the copy the orchestrator's title carries is
+    // duplication, and it is what pushes the kind of item off the pane.
+    let title =
+        console_application::attention_row_title_without_its_id(item.title(), item.work_item_id());
     let label = item.next_action().map_or_else(
-        || format!("{marker} {}", item.title()),
-        |action| format!("{marker} {} [{}]", item.title(), action.label()),
+        || format!("{marker} {token}{title}"),
+        |action| format!("{marker} {token}{title} [{}]", action.label()),
     );
     let label = elide_to_width(&label, inner_width);
     ListItem::new(label).style(if Some(index) == model.selected_attention_index() {
@@ -4240,7 +4295,15 @@ fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
     // `resolve-blocked` valve, because the run it would have attached to no
     // longer exists (scenarios.md Scenario 30).
     for command in detail.valve_commands() {
-        lines.push(Line::from(format!("Valve: {command}")));
+        // The PROGRAM path is elided, the arguments are not
+        // (livespec-console-beads-fabro-mx9u.2): the fully-resolved
+        // plugin-cache path wrapped across four rows of this pane and pushed
+        // the action -- the part the operator reads -- out of view, and having
+        // no spaces it could not word-wrap out of the way either.
+        lines.push(Line::from(format!(
+            "Valve: {}",
+            console_application::elide_command_program_path(command)
+        )));
     }
     if !detail.actions().is_empty() {
         lines.push(Line::from(format!(
@@ -4296,12 +4359,14 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 #[cfg(test)]
 mod tests {
     use console_application::DISPATCHER_SETTINGS_NOT_YET_READ_TELL;
+    use ratatui::layout::Constraint;
 
     use crate::{
-        ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, apply_build_staleness,
-        apply_dispatcher_settings_reread, apply_sink_outcome, apply_source_event_counts,
-        apply_source_last_success, apply_source_staleness, apply_startup_ingest_pending,
-        apply_worker_status, apply_writer_lease_status,
+        ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, NAVIGATION_PANE_WIDTH,
+        apply_build_staleness, apply_dispatcher_settings_reread, apply_sink_outcome,
+        apply_source_event_counts, apply_source_last_success, apply_source_staleness,
+        apply_startup_ingest_pending, apply_worker_status, apply_writer_lease_status,
+        body_split_constraints,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -7137,11 +7202,17 @@ mod tests {
                 .map(|rendered| rendered.contains("> 1 Attention")),
             Ok(true)
         );
+        // The Attention row leads with its own token
+        // (livespec-console-beads-fabro-mx9u.2); at this deliberately NARROW
+        // 96-column terminal the pane keeps the 38/62 split, so the row's tail
+        // elides -- which is the point of asserting the identifying head of it
+        // rather than the whole string.
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("Blocked: needs-human")),
-            Ok(true)
+                .map(|rendered| rendered.contains("> blocked  Blocked")),
+            Ok(true),
+            "{output:?}"
         );
         assert_eq!(
             output.as_ref().map(|rendered| rendered.contains("Detail")),
@@ -7277,12 +7348,15 @@ mod tests {
         assert_eq!(model.selected_attention_index(), Some(last));
 
         // The selected row is visible only because the list scrolled to it: the
-        // `>` marker on a Blocked row appears nowhere else on the screen.
+        // `>` marker on a Blocked row appears nowhere else on the screen. The
+        // row's own discriminating token is asserted with it
+        // (livespec-console-beads-fabro-mx9u.2), which pins that the row in
+        // view is the SELECTED one rather than merely some blocked row.
         let output = render_to_text(&model, 112, 28);
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("> Blocked: needs-human")),
+                .map(|rendered| rendered.contains(&format!("> {last:03}  Blocked: needs-human"))),
             Ok(true)
         );
     }
@@ -8403,7 +8477,13 @@ mod tests {
 
         let rendered = format!("{:?}", attention_item_line(&model, 0, &item, 80));
 
-        assert!(rendered.contains("> Needs review [Approve work-item]"));
+        // The row now LEADS with the work-item token
+        // (livespec-console-beads-fabro-mx9u.2); the title and the optional
+        // next-action label still follow it, in that order.
+        assert!(
+            rendered.contains("> item  Needs review [Approve work-item]"),
+            "{rendered}"
+        );
     }
 
     /// Scenario 32 at the RENDER: the projected account rides the detail WHOLE
@@ -8435,6 +8515,160 @@ mod tests {
         // The account's own lines survive as their own rows, whole and in order.
         assert!(rendered.contains(&format!("Account:\n{ACCOUNT}")));
         assert!(rendered.contains(ANSWER_COMMENT));
+    }
+
+    /// livespec-console-beads-fabro-mx9u.2 AC1: at 105 columns, two rows for
+    /// DIFFERENT work items are told apart inside the pane's visible width.
+    ///
+    /// The measured defect: twelve consecutive inbox rows rendering as the
+    /// identical `Host-route work-item livespec-conso…`, because every
+    /// character that distinguished them sat past the pane's edge. Two rows of
+    /// the same LANE share a title by construction here, which is exactly the
+    /// shape that failed.
+    #[test]
+    fn two_rows_for_different_work_items_differ_within_a_105_column_pane() {
+        const REPO: &str = "livespec-console-beads-fabro";
+        let events = [
+            lane_event(
+                "evt_a",
+                "livespec-console-beads-fabro-547r5",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a0",
+                "blocked",
+            ),
+            lane_event(
+                "evt_b",
+                "livespec-console-beads-fabro-9k2p1",
+                Lane::Blocked,
+                Some(LaneReason::NeedsHuman),
+                "a1",
+                "blocked",
+            ),
+        ];
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_selected_repo(REPO.to_owned())
+            .with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&events, &state);
+        assert_eq!(model.attention_items().len(), 2);
+
+        let rendered = render_to_text(&model, 105, 24).unwrap_or_default();
+        let rows = rendered
+            .lines()
+            .filter(|line| line.contains("Blocked"))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2, "expected two inbox rows:\n{rendered}");
+        // `check` rather than a message-carrying `assert_ne!`: the assertion's
+        // format arm is only evaluated on failure, which llvm-cov reports as an
+        // uncovered line.
+        check(
+            rows[0] != rows[1],
+            &format!("the two rows must be distinguishable on screen:\n{rendered}"),
+        );
+        // Each row carries its OWN discriminating token, before any elision.
+        assert!(rows[0].contains("547r5"), "{rendered}");
+        assert!(rows[1].contains("9k2p1"), "{rendered}");
+        // The shared tenant prefix is not what the operator is scanning, and
+        // spending 29 columns per row on it is what caused the defect.
+        assert!(
+            !rows[0].contains("livespec-console-beads-fabro-547r5"),
+            "{rendered}"
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.2 AC2, layout half: past 100 columns
+    /// the ATTENTION list -- the pane being scanned -- is no longer the smaller
+    /// of the two. Below that width the Detail pane keeps the larger share,
+    /// because on a narrow terminal it is where a row's account is legible at
+    /// all.
+    #[test]
+    fn the_attention_list_takes_at_least_half_the_body_once_it_is_wide() {
+        // 105 columns: 18 for the navigation pane leaves 87 to divide, so the
+        // list takes 44 and the Detail pane 43 -- the list is the larger of the
+        // two, which is the finding this item was filed on.
+        assert_eq!(
+            body_split_constraints(TuiView::Attention, 105),
+            [
+                Constraint::Length(NAVIGATION_PANE_WIDTH),
+                Constraint::Length(44),
+                Constraint::Min(3),
+            ]
+        );
+        // Exactly at the threshold, and below it, the previous split stands.
+        let narrow = [
+            Constraint::Length(NAVIGATION_PANE_WIDTH),
+            Constraint::Percentage(38),
+            Constraint::Percentage(62),
+        ];
+        assert_eq!(body_split_constraints(TuiView::Attention, 100), narrow);
+        assert_eq!(body_split_constraints(TuiView::Attention, 96), narrow);
+        // Only the Attention view widens: mx9u.2 measured that pane, and
+        // re-splitting views nobody complained about is scope it did not buy.
+        assert_eq!(body_split_constraints(TuiView::Repos, 159), narrow);
+
+        // And the split reaches the frame: at 159 columns the rendered
+        // Attention pane is at least half the body.
+        let state = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Content);
+        let model = build_tui_model_for_state(&demo_events(), &state);
+        let rendered = render_to_text(&model, 159, 24).unwrap_or_default();
+        let header_row = rendered
+            .lines()
+            .find(|line| line.contains("Attention") && line.contains("Detail"))
+            .unwrap_or_default()
+            .to_owned();
+        let attention_start = header_row.find("Attention").unwrap_or_default();
+        let detail_start = header_row.find("Detail").unwrap_or_default();
+        let attention_width = detail_start.saturating_sub(attention_start);
+        let detail_width = header_row.chars().count().saturating_sub(detail_start);
+        check(
+            attention_width >= detail_width,
+            &format!(
+                "the Attention pane must not be the smaller of the two \
+                 ({attention_width} vs {detail_width}): {header_row}"
+            ),
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.2 AC3 (and AC2's wrap half): a
+    /// `Valve:` line shows the program by name, not by plugin-cache path, and
+    /// what remains wraps at word boundaries instead of mid-token.
+    #[test]
+    fn a_valve_line_elides_its_program_path_and_wraps_at_word_boundaries() {
+        const CACHED_DRIVE: &str = "/home/ubuntu/.claude/plugins/cache/livespec-orchestrator-beads-fabro/livespec-orchestrator-beads-fabro/d6ca5151c2bf/scripts/bin/drive.py";
+        let detail = AttentionDetail::new(
+            "livespec-console-beads-fabro".to_owned(),
+            "livespec-console-beads-fabro-547r5".to_owned(),
+            "01RUN".to_owned(),
+            None,
+            vec![format!(
+                "{CACHED_DRIVE} --repo /data/projects/livespec-console-beads-fabro --action approve:livespec-console-beads-fabro-547r5"
+            )],
+            vec![],
+            vec![],
+        );
+        let area = Rect::new(0, 0, 60, 12);
+        let mut buffer = Buffer::empty(area);
+        let _scroll = render_detail(Some(&detail), 0, false, area, &mut buffer);
+        let rendered = buffer_to_text(&buffer, area);
+
+        assert!(
+            rendered.contains("…/scripts/bin/drive.py"),
+            "the program must be named, not pathed:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(".claude/plugins/cache"),
+            "the cache path must not survive:\n{rendered}"
+        );
+        // Word-boundary wrapping: each argument survives as a whole token on
+        // whichever row it lands on. A mid-token break would split these.
+        assert!(rendered.contains("--repo"), "{rendered}");
+        assert!(rendered.contains("--action"), "{rendered}");
+        // The action arrives as its own token rather than being split across a
+        // wrap: a mid-token break would leave no `approve:` prefix intact.
+        check(
+            rendered.contains("approve:"),
+            &format!("the action must remain readable:\n{rendered}"),
+        );
     }
 
     /// A row that cannot hold its label elides it WITH AN INDICATOR, and one

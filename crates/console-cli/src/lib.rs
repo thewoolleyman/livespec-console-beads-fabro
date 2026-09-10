@@ -4731,8 +4731,11 @@ mod tests {
             "assert failed",
         );
         check(output.message().contains("> 1 Attention"), "assert failed");
+        // The row leads with the discriminating token — this fleet's ids are
+        // `<tenant>-<token>`, so `console-blocked` renders as `blocked`
+        // (livespec-console-beads-fabro-mx9u.2).
         check(
-            output.message().contains("> Blocked: needs-human"),
+            output.message().contains("> blocked  Blocked: needs-human"),
             "assert failed",
         );
         check(output.message().contains("Repo: console"), "assert failed");
