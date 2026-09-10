@@ -518,6 +518,23 @@ them what they were allowed to decide.
   maintainer question.** If you can state the options, the costs, and which one
   you would pick, you have already done the deciding work. Decide it, record
   the reasoning where the work is tracked, and report it as decided.
+- **Stop the line for breakages.** When shared factory or fleet tooling is
+  BROKEN — a bad model or adapter config, a stale-but-fixable plugin build a
+  session dispatches through, a mint or credential outage, a gate wedged by a
+  defect — HALT, fix the root cause or notify its owner and WAIT for the fix,
+  and resume only on the NORMAL path once the fix rolls out through the ordinary
+  channel (release → `ensure-plugins` → reload → normal dispatch). Never pin a
+  build, re-route, or otherwise route around a breakage to keep your own work
+  moving: a broken-window workaround normalizes the outage, hides it from a real
+  fix, and validates only your private path, not the one every other session and
+  fleet member uses. A transient (a rate-limit window that resets, an
+  intermittent ENOSPC) is waited out and retried on the normal path; a permanent
+  tool limitation is designed within — neither is a bypass. This is the
+  fleet-general form of the ⛔ never-work-around-an-upstream-dependency rule at
+  the top of this file, and it does not soften the momentum directive below:
+  momentum means moving on the NORMAL path, not around a break. Fleet source:
+  the livespec `agent-disciplines.md` discipline §"A factory or tooling BREAKAGE
+  stops the line" (maintainer ruling 2026-09-10).
 
 ### Standing maintainer directives (binding until countermanded)
 
