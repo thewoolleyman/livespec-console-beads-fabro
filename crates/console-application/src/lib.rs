@@ -105,6 +105,7 @@ pub struct AttentionItem {
     source: String,
     source_reference: String,
     next_action: Option<OperatorAction>,
+    group_key: Option<String>,
 }
 
 impl AttentionItem {
@@ -125,7 +126,34 @@ impl AttentionItem {
             source,
             source_reference,
             next_action,
+            group_key: None,
         }
+    }
+
+    /// This row as the GROUP row standing for every needs-attention row that
+    /// shares `group_key` (livespec-console-beads-fabro-mx9u.6).
+    fn with_group_key(mut self, group_key: &str) -> Self {
+        self.group_key = Some(group_key.to_owned());
+        self
+    }
+
+    #[must_use]
+    /// The group key (`<kind>:<class>`) when this row is a GROUP row collapsing
+    /// several needs-attention rows of one kind, else `None` for an ordinary
+    /// row. Enter on a group row expands or collapses it.
+    pub fn group_key(&self) -> Option<&str> {
+        self.group_key.as_deref()
+    }
+
+    #[must_use]
+    /// The discriminating token the row leads with: the CLASS segment for a
+    /// group row (`stale-worktree`), else [`attention_row_token`] over the
+    /// row's work-item id.
+    pub fn row_token(&self) -> Option<String> {
+        self.group_key().map_or_else(
+            || attention_row_token(self.work_item_id()),
+            |key| Some(attention_group_class(key).to_owned()),
+        )
     }
 
     #[must_use]
@@ -1330,6 +1358,10 @@ pub enum TuiInteraction {
     /// Cycle the valve-confirm modal's payload valve to its next (`true`) or
     /// previous (`false`) mode/policy. Inert for a payload-free valve.
     CycleValveOption(bool),
+    /// Expand the selected Attention GROUP row into its member rows, or
+    /// collapse it back (the `Enter` key on a group row --
+    /// livespec-console-beads-fabro-mx9u.6). Inert on an ordinary row.
+    ToggleAttentionGroup,
 }
 
 /// Which end of a list a selection move was refused at.
@@ -1430,6 +1462,11 @@ pub struct TuiInteractionState {
     /// to date it (livespec-console-beads-fabro-mx9u.3). Supplied by whoever
     /// holds the store and a clock — the projection has neither.
     factory_outcome: Option<factory_outcome::FactoryOutcomeTell>,
+    // The Attention group rows the operator has EXPANDED, by group key
+    // (livespec-console-beads-fabro-mx9u.6). Collapsed is the default, so this
+    // starts empty; it survives source refreshes, and a key whose group has
+    // since vanished is simply inert.
+    expanded_attention_groups: BTreeSet<String>,
 }
 
 impl TuiInteractionState {
@@ -1471,6 +1508,7 @@ impl TuiInteractionState {
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
             factory_outcome: None,
+            expanded_attention_groups: BTreeSet::new(),
         }
     }
 
@@ -1516,6 +1554,7 @@ impl TuiInteractionState {
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
             factory_outcome: None,
+            expanded_attention_groups: BTreeSet::new(),
         }
     }
 
@@ -1525,6 +1564,24 @@ impl TuiInteractionState {
     pub const fn with_active_view(mut self, active_view: TuiView) -> Self {
         self.active_view = active_view;
         self
+    }
+
+    /// Expand the Attention group `group_key` when it is collapsed, or collapse
+    /// it when it is expanded (livespec-console-beads-fabro-mx9u.6), preserving
+    /// every other field.
+    #[must_use]
+    pub fn with_attention_group_toggled(mut self, group_key: &str) -> Self {
+        if !self.expanded_attention_groups.remove(group_key) {
+            self.expanded_attention_groups.insert(group_key.to_owned());
+        }
+        self
+    }
+
+    /// The Attention group keys currently EXPANDED; every other group renders
+    /// collapsed.
+    #[must_use]
+    pub const fn expanded_attention_groups(&self) -> &BTreeSet<String> {
+        &self.expanded_attention_groups
     }
 
     /// Replace which pane the arrow keys drive, preserving every other field.
@@ -2669,6 +2726,17 @@ impl TuiScreenModel {
             TuiView::Lanes => self.selected_lane_item().map(LaneWorkItem::work_item_id),
             TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
         }
+    }
+
+    /// The group key of the selected Attention row when that row is a GROUP
+    /// row (livespec-console-beads-fabro-mx9u.6), else `None`. Enter on such a
+    /// row toggles the group rather than opening a work-item record, which a
+    /// group row does not have.
+    #[must_use]
+    pub fn selected_attention_group_key(&self) -> Option<&str> {
+        self.selected_attention_index
+            .and_then(|index| self.attention_items.get(index))
+            .and_then(AttentionItem::group_key)
     }
 
     /// The move-status valve the operator may open on the selected drilled-in
@@ -4864,12 +4932,8 @@ pub fn render_tui_model(
         projection.factory_activity.as_deref(),
         state.factory_outcome(),
     );
-    let (selected_attention_index, displaced_attention_id) =
-        selected_attention_for_state(&projection.attention_entries, state);
-    let detail = selected_attention_index.map(|index| {
-        projection.attention_entries[index]
-            .to_detail(events, &projection.needs_attention_by_work_item)
-    });
+    let (attention_items, selected_attention_index, displaced_attention_id, detail) =
+        displayed_attention(projection, events, state);
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
     let lane_board = projection.lane_board.clone();
@@ -4915,7 +4979,7 @@ pub fn render_tui_model(
     TuiScreenModel {
         active_view,
         navigation: TuiView::all().to_vec(),
-        attention_items: projection.attention_items.clone(),
+        attention_items,
         attention_total: projection.attention_total,
         selected_attention_index,
         detail,
@@ -5019,6 +5083,38 @@ pub fn project_orphaned_factory_runs(events: &[ConsoleEvent]) -> Vec<OrphanedFac
         .unwrap_or_default()
 }
 
+/// The Attention list as DISPLAYED (livespec-console-beads-fabro-mx9u.6), its
+/// resolved cursor, the anchor that cursor displaced (if any), and the selected
+/// row's detail.
+///
+/// Repeated needs-attention rows of one kind collapse into a group row unless
+/// the operator expanded it. The list, the cursor, and the detail all index the
+/// SAME displayed rows, so a selected index never means one row in the list and
+/// a different one in the detail pane.
+fn displayed_attention(
+    projection: &TuiProjection,
+    events: &[ConsoleEvent],
+    state: &TuiInteractionState,
+) -> (
+    Vec<AttentionItem>,
+    Option<usize>,
+    Option<String>,
+    Option<AttentionDetail>,
+) {
+    let rows = attention_rows(
+        &projection.attention_entries,
+        projection.search_query.is_some(),
+        state.expanded_attention_groups(),
+    );
+    let items = rows
+        .iter()
+        .map(|row| row.to_item(projection))
+        .collect::<Vec<_>>();
+    let (selected, displaced) = selected_attention_for_state(&rows, &items, state);
+    let detail = selected.map(|index| rows[index].to_detail(projection, events));
+    (items, selected, displaced, detail)
+}
+
 /// Resolve the Attention list's cursor for this rebuild, by IDENTITY.
 ///
 /// Returns the selected row and, when the anchored item is no longer listed,
@@ -5033,18 +5129,28 @@ pub fn project_orphaned_factory_runs(events: &[ConsoleEvent]) -> Vec<OrphanedFac
 /// item used to be, since the rows behind it have shifted up into its place.
 /// With no anchor at all (a fresh state, or a position-only caller) this is the
 /// pure positional behaviour it replaced.
+///
+/// Resolved over the DISPLAYED rows (livespec-console-beads-fabro-mx9u.6). An
+/// anchored row that is not displayed because a collapsed group now holds it
+/// (a refresh turned a lone finding into the second of its kind) lands on that
+/// group row: the item is still in the inbox, so it did not leave the list.
 fn selected_attention_for_state(
-    entries: &[AttentionEntry],
+    rows: &[AttentionRow<'_>],
+    items: &[AttentionItem],
     state: &TuiInteractionState,
 ) -> (Option<usize>, Option<String>) {
-    let fallback = selected_index(entries.len(), state.selected_attention_index());
+    let fallback = selected_index(items.len(), state.selected_attention_index());
     let Some(anchor) = state.selected_attention_id() else {
         return (fallback, None);
     };
-    if let Some(index) = entries.iter().position(|entry| entry.row_id() == anchor) {
-        return (Some(index), None);
-    }
-    (fallback, Some(anchor.to_owned()))
+    items
+        .iter()
+        .position(|item| item.id() == anchor)
+        .or_else(|| rows.iter().position(|row| row.holds_member(anchor)))
+        .map_or_else(
+            || (fallback, Some(anchor.to_owned())),
+            |index| (Some(index), None),
+        )
 }
 
 /// The Status-line report for an Attention cursor displaced by a refresh.
@@ -6040,6 +6146,42 @@ fn view_interaction_state(
     state.clone().with_active_view(view).with_detail_scroll(0)
 }
 
+/// The header pane's horizontal scroll and the Detail pane's vertical scroll,
+/// each clamped to the maximum the renderer measured and fed back.
+fn scroll_interaction_state(
+    state: &TuiInteractionState,
+    interaction: TuiInteraction,
+) -> TuiInteractionState {
+    match interaction {
+        TuiInteraction::ScrollHeaderRight => {
+            // Clamp to the render-measured maximum (the full header width minus
+            // the pane's inner width), fed back each frame exactly like the Detail
+            // pane's vertical clamp, so the right edge reached is the true clip
+            // point at the current viewport width.
+            state.clone().with_header_scroll(
+                (state.header_scroll() + HEADER_SCROLL_STEP).min(state.header_max_scroll()),
+            )
+        }
+        TuiInteraction::ScrollHeaderLeft => state
+            .clone()
+            .with_header_scroll(state.header_scroll().saturating_sub(HEADER_SCROLL_STEP)),
+        TuiInteraction::ScrollDetailDown => {
+            // Clamp to the render-measured wrapped max scroll (the largest offset
+            // that keeps the pane's last wrapped row visible), NOT a width-agnostic
+            // logical line count. The renderer measures it via `Paragraph::line_count`
+            // — the SAME count that sizes the scrollbar — and the interactive loop
+            // feeds it back into the state, so the scroll range and the scrollbar
+            // agree and the true bottom of a wrapping detail is reachable (Finding G).
+            state
+                .clone()
+                .with_detail_scroll((state.detail_scroll() + 1).min(state.detail_max_scroll()))
+        }
+        _detail_up => state
+            .clone()
+            .with_detail_scroll(state.detail_scroll().saturating_sub(1)),
+    }
+}
+
 fn reduce_interaction_state(
     state: &TuiInteractionState,
     model: &TuiScreenModel,
@@ -6095,34 +6237,12 @@ fn reduce_interaction_state(
         TuiInteraction::FocusPreviousPane => state
             .clone()
             .with_focus(previous_focus_pane(state.focus(), state.active_view())),
-        TuiInteraction::ScrollHeaderRight => {
-            // Clamp to the render-measured maximum (the full header width minus
-            // the pane's inner width), fed back each frame exactly like the Detail
-            // pane's vertical clamp, so the right edge reached is the true clip
-            // point at the current viewport width.
-            state.clone().with_header_scroll(
-                (state.header_scroll() + HEADER_SCROLL_STEP).min(state.header_max_scroll()),
-            )
-        }
-        TuiInteraction::ScrollHeaderLeft => state
-            .clone()
-            .with_header_scroll(state.header_scroll().saturating_sub(HEADER_SCROLL_STEP)),
+        TuiInteraction::ScrollHeaderRight
+        | TuiInteraction::ScrollHeaderLeft
+        | TuiInteraction::ScrollDetailDown
+        | TuiInteraction::ScrollDetailUp => scroll_interaction_state(state, interaction),
         TuiInteraction::OpenEventSourcesFromHeader => open_event_sources_from_header(state),
         TuiInteraction::OpenFactoryOutcome => open_factory_outcome(state, model),
-        TuiInteraction::ScrollDetailDown => {
-            // Clamp to the render-measured wrapped max scroll (the largest offset
-            // that keeps the pane's last wrapped row visible), NOT a width-agnostic
-            // logical line count. The renderer measures it via `Paragraph::line_count`
-            // — the SAME count that sizes the scrollbar — and the interactive loop
-            // feeds it back into the state, so the scroll range and the scrollbar
-            // agree and the true bottom of a wrapping detail is reachable (Finding G).
-            state
-                .clone()
-                .with_detail_scroll((state.detail_scroll() + 1).min(state.detail_max_scroll()))
-        }
-        TuiInteraction::ScrollDetailUp => state
-            .clone()
-            .with_detail_scroll(state.detail_scroll().saturating_sub(1)),
         TuiInteraction::OpenHelp => state.clone().with_overlay(open_help_overlay(state)),
         TuiInteraction::HelpSelectNextSection
         | TuiInteraction::HelpSelectPreviousSection
@@ -6154,7 +6274,21 @@ fn reduce_interaction_state(
         TuiInteraction::CycleValveOption(forward) => state
             .clone()
             .with_overlay(cycle_valve_option(state.overlay(), forward)),
+        TuiInteraction::ToggleAttentionGroup => toggle_attention_group_state(state, model),
     }
+}
+
+/// Expand or collapse the selected Attention group row
+/// (livespec-console-beads-fabro-mx9u.6); inert when the selected row is an
+/// ordinary row.
+fn toggle_attention_group_state(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+) -> TuiInteractionState {
+    model.selected_attention_group_key().map_or_else(
+        || state.clone(),
+        |group_key| state.clone().with_attention_group_toggled(group_key),
+    )
 }
 
 /// The list edge an `up`/`down` keystroke was refused at, or `None` when the
@@ -9519,17 +9653,6 @@ impl AttentionEntry {
         }
     }
 
-    /// The row's stable identity — the same id [`Self::to_attention_item`] puts
-    /// on the projected [`AttentionItem`], read WITHOUT building the row (which
-    /// costs an event scan per entry). This is the Attention cursor's anchor
-    /// across refreshes.
-    fn row_id(&self) -> &str {
-        match self {
-            Self::WorkItem(entry) => entry.snapshot.work_item_id(),
-            Self::NeedsAttention(item) => item.id(),
-        }
-    }
-
     /// The detail-pane projection: the rich fabro / timeline / valve detail for a
     /// work-item, or the composed repo + subject + operator-handoff detail for a
     /// needs-attention item.
@@ -9585,6 +9708,221 @@ fn unified_attention_entries(
         entries.push(AttentionEntry::NeedsAttention(item.clone()));
     }
     entries
+}
+
+/// The prefix a GROUP row's id carries. Orchestrator needs-attention ids are
+/// `<kind>:<class>:<subject>` and work-item ids carry no `group:` kind, so a
+/// group row's id never collides with a real row's.
+const ATTENTION_GROUP_ROW_PREFIX: &str = "group:";
+
+/// One row of the Attention list as DISPLAYED (livespec-console-beads-fabro-mx9u.6).
+///
+/// Presentation over the orchestrator's rows, never a re-derivation of them: an
+/// `Entry` is the projection's own row at that index, and a `Group` stands for
+/// several of them at once.
+enum AttentionRow<'a> {
+    Entry(usize),
+    Group(AttentionGroup<'a>),
+}
+
+/// Two or more needs-attention rows sharing one group key, in list order.
+struct AttentionGroup<'a> {
+    key: &'a str,
+    members: Vec<(usize, &'a AttentionItemSnapshot)>,
+    expanded: bool,
+}
+
+impl AttentionRow<'_> {
+    fn to_item(&self, projection: &TuiProjection) -> AttentionItem {
+        match self {
+            Self::Entry(index) => projection.attention_items[*index].clone(),
+            Self::Group(group) => group.to_item(),
+        }
+    }
+
+    fn to_detail(&self, projection: &TuiProjection, events: &[ConsoleEvent]) -> AttentionDetail {
+        match self {
+            Self::Entry(index) => projection.attention_entries[*index]
+                .to_detail(events, &projection.needs_attention_by_work_item),
+            Self::Group(group) => group.to_detail(),
+        }
+    }
+
+    /// Whether this is a group row holding the row with id `row_id`.
+    fn holds_member(&self, row_id: &str) -> bool {
+        matches!(
+            self,
+            Self::Group(group) if group.members.iter().any(|(_index, member)| member.id() == row_id)
+        )
+    }
+}
+
+impl AttentionGroup<'_> {
+    /// The repos the members name, de-duplicated, so a group spanning several
+    /// repos says so rather than naming only the first.
+    fn repos(&self) -> String {
+        self.members
+            .iter()
+            .map(|(_index, member)| member.source_ref().repo())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The group row: led by the class token, titled with the member count
+    /// FIRST, then what the members' summaries share, then the Enter
+    /// affordance. The count leads because the renderer elides a row from the
+    /// right to fit the pane: dogfooded at 159 columns against the real inbox,
+    /// a trailing count rendered as `release-adoption … (1…`, cutting off the
+    /// one fact the row exists to carry. When the summaries share nothing the
+    /// title is the count alone -- the class is already the row's token, and
+    /// repeating it read as `release-adoption  release-adoption …`.
+    fn to_item(&self) -> AttentionItem {
+        let (_first_index, first) = self.members[0];
+        let shared = common_word_prefix(
+            first.summary(),
+            self.members[1..]
+                .iter()
+                .map(|(_index, member)| member.summary()),
+        );
+        let count = self.members.len();
+        let verb = if self.expanded { "collapse" } else { "expand" };
+        let title = if shared.is_empty() {
+            format!("({count}) [enter {verb}]")
+        } else {
+            format!("({count}) {shared} … [enter {verb}]")
+        };
+        AttentionItem::new(
+            format!("{ATTENTION_GROUP_ROW_PREFIX}{}", self.key),
+            None,
+            title,
+            first.kind().to_owned(),
+            self.repos(),
+            None,
+        )
+        .with_group_key(self.key)
+    }
+
+    /// The group row's detail: the key and count, and every member's summary.
+    /// It carries no valve commands and no actions -- a group row has no
+    /// work-item behind it, so nothing is pressable on it.
+    fn to_detail(&self) -> AttentionDetail {
+        let summaries = self
+            .members
+            .iter()
+            .map(|(_index, member)| member.summary())
+            .collect::<Vec<_>>()
+            .join("\n");
+        AttentionDetail::new(
+            self.repos(),
+            format!("{} ({} rows)", self.key, self.members.len()),
+            "-".to_owned(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_account(Some(summaries))
+    }
+}
+
+/// The group key of a needs-attention id: the id with its FINAL `:`-segment
+/// removed, for ids with at least three segments (`hygiene:stale-worktree:<path>`
+/// groups under `hygiene:stale-worktree`). A shorter id (`hygiene:idle-factory`)
+/// names a singleton finding and has no group.
+fn attention_group_key(id: &str) -> Option<&str> {
+    id.rsplit_once(':')
+        .map(|(key, _subject)| key)
+        .filter(|key| key.contains(':'))
+}
+
+/// The CLASS segment of a group key -- the token a group row leads with.
+fn attention_group_class(group_key: &str) -> &str {
+    group_key
+        .rsplit_once(':')
+        .map_or(group_key, |(_kind, class)| class)
+}
+
+/// The group key an entry would collapse under, with the snapshot it carries.
+/// Only a needs-attention row with NO work-item id is groupable: a work-item
+/// row, or any row a valve acts on, is always its own row.
+fn groupable_attention_entry(entry: &AttentionEntry) -> Option<(&str, &AttentionItemSnapshot)> {
+    let AttentionEntry::NeedsAttention(item) = entry else {
+        return None;
+    };
+    if item.source_ref().work_item().is_some() {
+        return None;
+    }
+    attention_group_key(item.id()).map(|key| (key, item))
+}
+
+/// The longest run of leading words `first` shares with every one of `others`.
+fn common_word_prefix<'a>(first: &'a str, others: impl Iterator<Item = &'a str>) -> String {
+    let mut words = first.split_whitespace().collect::<Vec<_>>();
+    for other in others {
+        let shared = words
+            .iter()
+            .zip(other.split_whitespace())
+            .take_while(|(word, theirs)| **word == *theirs)
+            .count();
+        words.truncate(shared);
+    }
+    words.join(" ")
+}
+
+/// The Attention list as DISPLAYED for this render (livespec-console-beads-fabro-mx9u.6).
+///
+/// Every key with two or more members collapses into ONE group row, placed where
+/// its first member sits; everything else keeps its relative order. An EXPANDED
+/// group is followed by its members as ordinary rows. A key with a single member
+/// stays an ordinary row -- there is no group of one.
+///
+/// While a search is active nothing is grouped: the operator is looking for a
+/// specific row, and the search overlay's `N of M` counts the rows shown.
+fn attention_rows<'a>(
+    entries: &'a [AttentionEntry],
+    search_active: bool,
+    expanded: &BTreeSet<String>,
+) -> Vec<AttentionRow<'a>> {
+    if search_active {
+        return (0..entries.len()).map(AttentionRow::Entry).collect();
+    }
+    let mut groups: BTreeMap<&str, Vec<(usize, &AttentionItemSnapshot)>> = BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if let Some((key, item)) = groupable_attention_entry(entry) {
+            groups.entry(key).or_default().push((index, item));
+        }
+    }
+    groups.retain(|_key, members| members.len() > 1);
+    let group_of: BTreeMap<usize, &str> = groups
+        .iter()
+        .flat_map(|(key, members)| members.iter().map(move |(index, _item)| (*index, *key)))
+        .collect();
+    let mut rows = Vec::with_capacity(entries.len());
+    for index in 0..entries.len() {
+        let Some(key) = group_of.get(&index) else {
+            rows.push(AttentionRow::Entry(index));
+            continue;
+        };
+        // The FIRST member places the group; the key is then taken, so the
+        // later members (already represented) add no row of their own.
+        if let Some(members) = groups.remove(key) {
+            let expanded = expanded.contains(*key);
+            let member_rows = members
+                .iter()
+                .map(|(member, _item)| AttentionRow::Entry(*member))
+                .filter(|_member| expanded)
+                .collect::<Vec<_>>();
+            rows.push(AttentionRow::Group(AttentionGroup {
+                key,
+                members,
+                expanded,
+            }));
+            rows.extend(member_rows);
+        }
+    }
+    rows
 }
 
 /// Whether a needs-attention item matches the active search query, mirroring the
@@ -11674,6 +12012,296 @@ mod tests {
             "needs-attention",
         )
         .with_payload_json(attention_resolved_payload_json(id))
+    }
+
+    /// A needs-attention finding with NO work-item behind it -- the hygiene
+    /// shape livespec-console-beads-fabro-mx9u.6 groups.
+    fn hygiene_attention_item(id: &str, summary: &str) -> AttentionItemSnapshot {
+        AttentionItemSnapshot::new(
+            id,
+            "hygiene",
+            "low",
+            summary,
+            AttentionSourceRef::new("console", None, None),
+            AttentionHandoff::new("run", None, &format!("fix {id}")),
+        )
+    }
+
+    /// Eight findings: a three-member `stale-worktree` kind whose summaries
+    /// share a prefix, a two-member `release-adoption` kind whose summaries
+    /// share nothing, a lone three-segment finding (no group of one), a
+    /// two-segment singleton, and an id with no `:` at all.
+    fn grouped_hygiene_events() -> Vec<ConsoleEvent> {
+        [
+            ("hygiene:idle-factory", "Factory idle"),
+            ("hygiene:release-adoption:alpha", "Adopt release in alpha"),
+            ("hygiene:release-adoption:beta", "Bump beta pin"),
+            ("hygiene:stale-worktree:/w/a", "Remove clean worktree /w/a"),
+            ("hygiene:stale-worktree:/w/b", "Remove clean worktree /w/b"),
+            ("hygiene:stale-worktree:/w/c", "Remove clean worktree /w/c"),
+            ("hygiene:untriaged-backlog:x", "Triage backlog x"),
+            ("spec-revise", "Spec revision owed"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, (id, summary))| {
+            attention_appeared(
+                &format!("evt_group_{index}"),
+                &hygiene_attention_item(id, summary),
+            )
+        })
+        .collect()
+    }
+
+    fn attention_ids(model: &TuiScreenModel) -> Vec<&str> {
+        model
+            .attention_items()
+            .iter()
+            .map(AttentionItem::id)
+            .collect()
+    }
+
+    /// A group row's Detail lists its members' summaries and offers nothing to
+    /// press, and a group whose summaries share no leading word is titled by
+    /// its class (livespec-console-beads-fabro-mx9u.6).
+    #[test]
+    fn a_group_row_detail_lists_its_members_and_offers_nothing_to_press() {
+        let events = grouped_hygiene_events();
+        let model =
+            build_tui_model_for_state(&events, &TuiInteractionState::new(2, TuiOverlay::None));
+        let adoption = &model.attention_items()[1];
+        check(
+            adoption.title() == "(2) [enter expand]",
+            &format!("adoption title: {}", adoption.title()),
+        );
+        check(
+            model.selected_work_item_id().is_none(),
+            "a group row has no work-item id, so the valves are inert on it",
+        );
+        let detail = model.detail();
+        check(
+            detail.map(AttentionDetail::work_item) == Some("hygiene:stale-worktree (3 rows)"),
+            &format!("group detail: {detail:?}"),
+        );
+        check(
+            detail.and_then(AttentionDetail::account)
+                == Some(
+                    "Remove clean worktree /w/a\nRemove clean worktree /w/b\nRemove clean worktree /w/c",
+                ),
+            &format!("group detail account: {detail:?}"),
+        );
+        check(
+            detail.is_some_and(|detail| {
+                detail.actions().is_empty() && detail.valve_commands().is_empty()
+            }),
+            "nothing is pressable on a group row",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.6 AC1: N needs-attention rows sharing
+    /// a kind prefix and no work-item id render as ONE group row carrying the
+    /// count; Enter on it expands it and Enter again collapses it.
+    #[test]
+    fn repeated_needs_attention_rows_collapse_into_a_group_row_enter_toggles() {
+        let events = grouped_hygiene_events();
+        let collapsed_state = TuiInteractionState::new(2, TuiOverlay::None);
+        let collapsed = build_tui_model_for_state(&events, &collapsed_state);
+        let collapsed_ids = attention_ids(&collapsed);
+        let collapsed_expected = [
+            "hygiene:idle-factory",
+            "group:hygiene:release-adoption",
+            "group:hygiene:stale-worktree",
+            "hygiene:untriaged-backlog:x",
+            "spec-revise",
+        ];
+        check(
+            collapsed_ids == collapsed_expected,
+            &format!("collapsed rows: {collapsed_ids:?}"),
+        );
+        let group = &collapsed.attention_items()[2];
+        check(
+            group.title() == "(3) Remove clean worktree … [enter expand]",
+            &format!("group title: {}", group.title()),
+        );
+        check(
+            group.row_token().as_deref() == Some("stale-worktree"),
+            &format!("group token: {:?}", group.row_token()),
+        );
+        check(
+            group.group_key() == Some("hygiene:stale-worktree") && group.work_item_id().is_none(),
+            &format!("group row: {group:?}"),
+        );
+        check(
+            collapsed.selected_attention_group_key() == Some("hygiene:stale-worktree"),
+            "the cursor sits on the group row",
+        );
+        check(collapsed.attention_total() == 8, "collapsed total");
+
+        // Enter expands the group: its members follow it as ordinary rows.
+        let expanded_state = reduce_tui_interaction(
+            &collapsed_state,
+            &events,
+            TuiInteraction::ToggleAttentionGroup,
+        );
+        check(
+            expanded_state
+                .expanded_attention_groups()
+                .contains("hygiene:stale-worktree"),
+            "the toggle records the expansion",
+        );
+        let expanded = build_tui_model_for_state(&events, &expanded_state);
+        let expanded_ids = attention_ids(&expanded);
+        let expanded_expected = [
+            "hygiene:idle-factory",
+            "group:hygiene:release-adoption",
+            "group:hygiene:stale-worktree",
+            "hygiene:stale-worktree:/w/a",
+            "hygiene:stale-worktree:/w/b",
+            "hygiene:stale-worktree:/w/c",
+            "hygiene:untriaged-backlog:x",
+            "spec-revise",
+        ];
+        check(
+            expanded_ids == expanded_expected,
+            &format!("expanded rows: {expanded_ids:?}"),
+        );
+        check(
+            expanded.attention_items()[2].title() == "(3) Remove clean worktree … [enter collapse]",
+            &format!("expanded title: {}", expanded.attention_items()[2].title()),
+        );
+        check(
+            expanded.selected_attention_index() == Some(2),
+            "the cursor stays on the group row",
+        );
+        check(expanded.attention_total() == 8, "expanded total");
+
+        // Enter again collapses it.
+        let recollapsed_state = reduce_tui_interaction(
+            &expanded_state,
+            &events,
+            TuiInteraction::ToggleAttentionGroup,
+        );
+        check(
+            recollapsed_state.expanded_attention_groups().is_empty(),
+            "the second toggle clears the expansion",
+        );
+        let recollapsed = build_tui_model_for_state(&events, &recollapsed_state);
+        check(
+            attention_ids(&recollapsed) == collapsed_expected,
+            "collapsing restores the grouped rows",
+        );
+
+        // The toggle is inert on an ordinary row.
+        let ordinary = TuiInteractionState::new(0, TuiOverlay::None);
+        check(
+            reduce_tui_interaction(&ordinary, &events, TuiInteraction::ToggleAttentionGroup)
+                == ordinary,
+            "toggling an ordinary row changes nothing",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.6 AC2: work-item-backed rows -- lane
+    /// rows and needs-attention rows naming a work-item -- are never grouped,
+    /// even when their ids share a kind prefix.
+    #[test]
+    fn work_item_backed_attention_rows_are_never_grouped() {
+        let events = vec![
+            needs_human_lane_event("evt_1", "console-a", None),
+            needs_human_lane_event("evt_2", "console-b", None),
+            attention_appeared(
+                "evt_3",
+                &attention_item("human-valve:approve:console-c", "human-valve", "Approve c"),
+            ),
+            attention_appeared(
+                "evt_4",
+                &attention_item("human-valve:approve:console-d", "human-valve", "Approve d"),
+            ),
+        ];
+        let model =
+            build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None));
+        let ids = attention_ids(&model);
+        check(
+            ids == [
+                "console-a",
+                "console-b",
+                "human-valve:approve:console-c",
+                "human-valve:approve:console-d",
+            ],
+            &format!("rows: {ids:?}"),
+        );
+        check(
+            model
+                .attention_items()
+                .iter()
+                .all(|item| item.group_key().is_none() && item.work_item_id().is_some()),
+            "every row keeps its work-item id and none is a group row",
+        );
+    }
+
+    /// While a search is active nothing is grouped: the matching rows show flat.
+    #[test]
+    fn an_active_search_shows_grouped_rows_flat() {
+        let events = grouped_hygiene_events();
+        let state = TuiInteractionState::new(
+            0,
+            TuiOverlay::Search {
+                query: "worktree".to_owned(),
+            },
+        );
+        let model = build_tui_model_for_state(&events, &state);
+        let ids = attention_ids(&model);
+        check(
+            ids == [
+                "hygiene:stale-worktree:/w/a",
+                "hygiene:stale-worktree:/w/b",
+                "hygiene:stale-worktree:/w/c",
+            ],
+            &format!("search rows: {ids:?}"),
+        );
+        check(model.attention_total() == 8, "search total");
+    }
+
+    /// A refresh that folds the anchored row into a new collapsed group lands
+    /// the cursor on that group row: the item is still in the inbox, so no
+    /// "left the list" report fires.
+    #[test]
+    fn an_anchored_row_a_refresh_folds_into_a_group_lands_on_the_group_row() {
+        let mut events = vec![
+            attention_appeared(
+                "evt_1",
+                &hygiene_attention_item("hygiene:idle-factory", "Factory idle"),
+            ),
+            attention_appeared(
+                "evt_2",
+                &hygiene_attention_item(
+                    "hygiene:stale-worktree:/w/a",
+                    "Remove clean worktree /w/a",
+                ),
+            ),
+        ];
+        let state = reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            &events,
+            TuiInteraction::SelectNext,
+        );
+        check(
+            state.selected_attention_id() == Some("hygiene:stale-worktree:/w/a"),
+            "the lone finding is anchored",
+        );
+        events.push(attention_appeared(
+            "evt_3",
+            &hygiene_attention_item("hygiene:stale-worktree:/w/b", "Remove clean worktree /w/b"),
+        ));
+        let model = build_tui_model_for_state(&events, &state);
+        check(
+            model.selected_attention_index() == Some(1)
+                && model.selected_attention_group_key() == Some("hygiene:stale-worktree"),
+            &format!("cursor: {:?}", model.selected_attention_index()),
+        );
+        check(
+            !model.header().contains("left the list"),
+            &format!("header: {}", model.header()),
+        );
     }
 
     // Build a snapshot-observation event by writing the canonical `payload_json`
