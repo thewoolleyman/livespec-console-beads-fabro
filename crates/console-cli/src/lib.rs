@@ -2456,6 +2456,26 @@ pub fn source_last_success_snapshot(
     Ok(last_success)
 }
 
+/// Derive the header's factory tell straight from `store`, dated against
+/// `observed_now` (livespec-console-beads-fabro-mx9u.3).
+///
+/// Reads the events WITH their persisted `observed_at`, because
+/// `ConsoleEvent` deliberately carries no timestamp of its own (see
+/// `SqliteEventStore::list_console_events_with_observed_at`). Called on the
+/// SAME background poller cadence as the source snapshots above, never from
+/// the render thread: it costs one store read plus an O(n) reverse scan for
+/// the newest factory event.
+///
+/// # Errors
+/// Returns an error when the store read fails.
+pub fn factory_outcome_snapshot(
+    store: &SqliteEventStore,
+    observed_now: &str,
+) -> EventStoreResult<Option<console_application::factory_outcome::FactoryOutcomeTell>> {
+    let events = store.list_console_events_with_observed_at()?;
+    Ok(console_application::factory_outcome::latest_factory_outcome(&events, observed_now))
+}
+
 /// Read the console's current per-source event-counts-by-type map straight
 /// from `store` (livespec-console-beads-fabro-mx9u.20.2): the Event sources
 /// roster's per-source counts column.
@@ -4182,9 +4202,9 @@ mod tests {
     use crate::{
         DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, WriterIdentity,
         checkpoint_load_failed, checkpoint_save_failed, checkpoint_source_last_success,
-        effect_may_persist_command, effect_sink_io_error, resolve_console_invoker,
-        sink_outcome_for_persist_error, source_event_counts_snapshot, source_last_success_snapshot,
-        source_staleness_snapshot, tolerate_transient_refresh,
+        effect_may_persist_command, effect_sink_io_error, factory_outcome_snapshot,
+        resolve_console_invoker, sink_outcome_for_persist_error, source_event_counts_snapshot,
+        source_last_success_snapshot, source_staleness_snapshot, tolerate_transient_refresh,
     };
     use console_application::source_event_counts::SourceEventCounts;
     use console_application::source_staleness::SourceStaleness;
@@ -12773,6 +12793,23 @@ mod tests {
         let error = err_eventstore_source_staleness(source_staleness_snapshot(&store));
 
         check_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    /// livespec-console-beads-fabro-mx9u.3: the poller's derivation of the
+    /// header's factory tell, over the store read that carries the persisted
+    /// `observed_at` the domain envelope deliberately does not.
+    #[test]
+    fn factory_outcome_snapshot_dates_the_latest_factory_event_and_is_silent_without_one() {
+        let (path, store) = file_store("factory-outcome-snapshot");
+
+        // A fresh store has no factory event, so there is no tell to derive.
+        let derived = factory_outcome_snapshot(&store, "2026-09-10T12:00:00Z");
+        check(
+            derived.is_ok_and(|outcome| outcome.is_none()),
+            "a fresh store carries no factory event, so there is no tell",
+        );
+
         cleanup_store(&path);
     }
 

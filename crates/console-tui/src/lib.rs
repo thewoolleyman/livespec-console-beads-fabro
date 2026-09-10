@@ -20,6 +20,7 @@
 #[cfg(all(not(test), not(coverage)))]
 use console_application::build_identity::BuildIdentity;
 use console_application::build_identity::{BuildStaleness, build_identity_segment};
+use console_application::factory_outcome::FactoryOutcomeTell;
 use console_application::source_adapters::{
     Lane, OrphanedFactoryRun, event_source_roster_help_lines,
 };
@@ -285,6 +286,11 @@ fn run_terminal_loop(
         // as the build staleness above: a non-blocking `Mutex` read, never IO
         // on this thread (livespec-console-beads-fabro-mx9u.23 AC3).
         apply_writer_lease_status(&mut state, session.take_writer_lease_status());
+        // The header's factory tell, re-dated every tick: the AGE it carries
+        // keeps changing even when the outcome does not
+        // (livespec-console-beads-fabro-mx9u.3). A cheap, non-blocking `Mutex`
+        // read of what the poller last derived.
+        apply_factory_outcome(&mut state, session.take_factory_outcome());
         // The session's background effective-policy read, folded in the tick it
         // lands (livespec-console-beads-fabro-mx9u.29). A cheap, non-blocking
         // take -- the ~6s `drive --action config` shell-out that produces it
@@ -758,6 +764,22 @@ fn apply_writer_lease_status(state: &mut TuiInteractionState, fresh: Option<Writ
     }
 }
 
+/// Fold the poller's latest factory outcome into the loop's state
+/// (livespec-console-beads-fabro-mx9u.3).
+///
+/// `None` means "nothing new to apply" and leaves the state alone. It does NOT
+/// need to mean "retire the tell": the header composes its tell from the EVENT
+/// LOG, and attaches an outcome's age and cause only when the two describe the
+/// same activity, so an outcome the log has moved past is already inert. Split
+/// out of the terminal-bound loop for the same reason its neighbours are: the
+/// loop is excluded from tests and coverage.
+#[cfg(any(test, not(coverage)))]
+fn apply_factory_outcome(state: &mut TuiInteractionState, outcome: Option<FactoryOutcomeTell>) {
+    if outcome.is_some() {
+        *state = state.clone().with_factory_outcome(outcome);
+    }
+}
+
 /// Fold a fresh effective-policy read into the loop's state.
 ///
 /// Split out of the terminal-bound loop for the same reason `apply_sink_outcome`
@@ -957,6 +979,20 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// Defaults to `None` -- unchanged state -- for the legacy entry point and
     /// every test double with no background reader behind it.
     fn take_dispatcher_settings(&mut self) -> Option<DispatcherSettingsRead> {
+        None
+    }
+
+    /// Read the latest background-derived factory outcome, if this session has
+    /// a live poller behind it (livespec-console-beads-fabro-mx9u.3).
+    ///
+    /// Deriving it needs a store read AND a clock, so it happens off this
+    /// thread on the poller's cadence; the render loop takes a cheap,
+    /// non-blocking snapshot each tick, exactly as it does for the build
+    /// staleness. Re-read every tick rather than taken once, because the AGE it
+    /// carries keeps changing even when the outcome does not. Defaults to
+    /// `None` -- unchanged state -- for the legacy entry point and every test
+    /// double with no poller behind it.
+    fn take_factory_outcome(&mut self) -> Option<FactoryOutcomeTell> {
         None
     }
 
@@ -1340,6 +1376,7 @@ fn confirm_operator_action(
         // The work-item detail modal is READ-ONLY: `enter_input` yields no
         // `Confirm` while it is open, so it never actually reaches here.
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         // The menu confirm returned above; this arm is unreachable for it.
         | TuiOverlay::Menu { .. }
         // Nothing to confirm on any of these: each is read-only or has already
@@ -1556,6 +1593,7 @@ const fn up_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollUp(1),
         TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. } => return None,
         TuiOverlay::None => match model.focus() {
@@ -1586,6 +1624,7 @@ const fn down_interaction(model: &TuiScreenModel) -> Option<TuiInteraction> {
         TuiOverlay::WorkItemDetail { .. } => TuiInteraction::WorkItemDetailScrollDown(1),
         TuiOverlay::CommandExplainer { .. }
         | TuiOverlay::DriverHandoff { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::FactoryDrainConfirm { .. }
         | TuiOverlay::FactoryDispatchItemConfirm { .. } => return None,
         TuiOverlay::None => match model.focus() {
@@ -1613,9 +1652,10 @@ fn enter_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         | TuiOverlay::Menu { .. }
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. } => Some(TuiTerminalInput::Confirm),
-        TuiOverlay::Search { .. } | TuiOverlay::Help { .. } | TuiOverlay::WorkItemDetail { .. } => {
-            None
-        }
+        TuiOverlay::Search { .. }
+        | TuiOverlay::Help { .. }
+        | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. } => None,
         TuiOverlay::None => enter_content_input(model),
     }
 }
@@ -1672,11 +1712,21 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
         }
         // Enter is inert on the Detail pane.
         FocusPane::Detail => None,
-        // On the focused Header pane, Enter opens the "Event sources" roster
-        // directly (livespec-console-beads-fabro-pzbdbo.29 AC2) -- the
-        // header's own drill-down for the source-health tell it renders.
+        // On the focused Header pane, Enter drills into whichever tell the
+        // header is currently SAYING. A factory tell exists only when something
+        // factory-related happened, and while it is on screen it is the most
+        // urgent thing the header carries, so Enter opens its full outcome
+        // (livespec-console-beads-fabro-mx9u.3 AC3). With no factory tell --
+        // the steady state -- Enter opens the "Event sources" roster exactly as
+        // pzbdbo.29 AC2 left it. Neither surface becomes unreachable: the
+        // roster's own home is the Events view's `Event sources` sub-view,
+        // reachable with `4`.
         FocusPane::Header => Some(TuiTerminalInput::Interaction(
-            TuiInteraction::OpenEventSourcesFromHeader,
+            if model.factory_tell().is_some() {
+                TuiInteraction::OpenFactoryOutcome
+            } else {
+                TuiInteraction::OpenEventSourcesFromHeader
+            },
         )),
     }
 }
@@ -1820,6 +1870,7 @@ const fn page_scroll_input(overlay: &TuiOverlay, down: bool) -> Option<TuiTermin
             TuiInteraction::WorkItemDetailPageUp
         })),
         TuiOverlay::None
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Search { .. }
         | TuiOverlay::CommandPalette { .. }
         | TuiOverlay::CommandModal { .. }
@@ -2137,6 +2188,7 @@ fn render_menu_bar(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. } => None,
     };
     render_menu_bar_for_top(selected_top, area, buffer);
@@ -2566,9 +2618,13 @@ fn render_overlay(
             OverlayScrollExtents::ZERO
         }
         TuiOverlay::CommandPalette { query } => {
-            render_prompt_overlay("Command Palette", format!(":{query}"), area, buffer);
-            OverlayScrollExtents::ZERO
+            prompt_overlay("Command Palette", format!(":{query}"), area, buffer)
         }
+        // The whole outcome behind the header's factory tell, untruncated --
+        // what the header had to cut to fit (livespec-console-beads-fabro-mx9u.3
+        // AC3). Read-only, so it carries no action list and no scroll extent:
+        // the text is a handful of lines, and Esc is the only key that acts.
+        TuiOverlay::FactoryOutcome { text } => factory_outcome_overlay(text, area, buffer),
         TuiOverlay::ActionInvoker { selected_action } => {
             render_action_invoker(model, *selected_action, overlay_rect(area), buffer);
             OverlayScrollExtents::ZERO
@@ -3465,12 +3521,37 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
     }
 }
 
-fn render_prompt_overlay(title: &'static str, value: String, area: Rect, buffer: &mut Buffer) {
+/// Draw the factory-outcome overlay: the tell's full text, one line per row,
+/// inside a titled block (livespec-console-beads-fabro-mx9u.3 AC3).
+///
+/// `Wrap` is on, so a long cause folds at word boundaries rather than being cut
+/// — the whole point of this surface is that it holds what the header could
+/// not.
+fn factory_outcome_overlay(text: &str, area: Rect, buffer: &mut Buffer) -> OverlayScrollExtents {
+    let area = overlay_rect(area);
+    Clear.render(area, buffer);
+    let lines = text.lines().map(Line::from).collect::<Vec<_>>();
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::new().borders(Borders::ALL).title("Factory outcome"))
+        .render(area, buffer);
+    // Read-only and short: nothing here scrolls.
+    OverlayScrollExtents::ZERO
+}
+
+fn prompt_overlay(
+    title: &'static str,
+    value: String,
+    area: Rect,
+    buffer: &mut Buffer,
+) -> OverlayScrollExtents {
     let overlay = overlay_rect(area);
     Clear.render(overlay, buffer);
     Paragraph::new(value)
         .block(Block::new().borders(Borders::ALL).title(title))
         .render(overlay, buffer);
+    // A one-line prompt: nothing here scrolls.
+    OverlayScrollExtents::ZERO
 }
 
 /// Render the generic action-invoker roster: EVERY registered action, in
@@ -4363,10 +4444,10 @@ mod tests {
 
     use crate::{
         ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, NAVIGATION_PANE_WIDTH,
-        apply_build_staleness, apply_dispatcher_settings_reread, apply_sink_outcome,
-        apply_source_event_counts, apply_source_last_success, apply_source_staleness,
-        apply_startup_ingest_pending, apply_worker_status, apply_writer_lease_status,
-        body_split_constraints,
+        apply_build_staleness, apply_dispatcher_settings_reread, apply_factory_outcome,
+        apply_sink_outcome, apply_source_event_counts, apply_source_last_success,
+        apply_source_staleness, apply_startup_ingest_pending, apply_worker_status,
+        apply_writer_lease_status, body_split_constraints,
     };
     use console_application::DispatcherSettingWriteState;
     #[cfg(test)]
@@ -8665,6 +8746,114 @@ mod tests {
         check(
             rendered.contains("approve:"),
             &format!("the action must remain readable:\n{rendered}"),
+        );
+    }
+
+    /// The loop's per-tick fold of the poller's factory outcome
+    /// (livespec-console-beads-fabro-mx9u.3): a session with nothing to say
+    /// leaves the state exactly as it was.
+    #[test]
+    fn the_factory_outcome_fold_leaves_the_state_alone_when_there_is_nothing_new() {
+        let tell = console_application::factory_outcome::FactoryOutcomeTell::new(
+            "drain failed".to_owned(),
+            None,
+            "2026-09-10T11:00:00Z".to_owned(),
+            "2026-09-10T12:00:00Z".to_owned(),
+        );
+        let mut state = TuiInteractionState::new(0, TuiOverlay::None);
+        apply_factory_outcome(&mut state, Some(tell.clone()));
+        assert_eq!(state.factory_outcome(), Some(&tell));
+
+        // A session with nothing to say leaves what the state already holds --
+        // and does not need to retire it, because the header attaches an
+        // outcome only to the activity the EVENT LOG currently reports.
+        apply_factory_outcome(&mut state, None);
+        assert_eq!(state.factory_outcome(), Some(&tell));
+    }
+
+    /// A session with no poller behind it reports no factory outcome, so the
+    /// header renders exactly the bare tell it always did.
+    #[test]
+    fn a_session_with_no_poller_behind_it_reports_no_factory_outcome() {
+        let mut session = DeferredTuiRuntimeEffectSink;
+        check(
+            session.take_factory_outcome().is_none(),
+            "a session with no poller behind it reports no factory outcome",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.3 AC3: with the header focused, Enter
+    /// opens an overlay showing the FULL outcome text — including the cause the
+    /// header itself had to cut — and Esc closes it.
+    ///
+    /// It also pins the key's resolution: Enter on the header opens the factory
+    /// outcome only while a factory tell is on screen; with none, it still opens
+    /// the Event sources roster, which is what pzbdbo.29 AC2 bound it to.
+    #[test]
+    fn enter_on_the_focused_header_opens_the_whole_factory_outcome_and_esc_closes_it() {
+        const LONG_CAUSE: &str = "the dispatcher refused the item because it is not in the ready                                   set and its dependency is still blocked upstream";
+        let failed = ConsoleEvent::fixture(
+            "evt_dispatch_failed",
+            EventType::FactoryDispatchItemFailed,
+            "console:factory-command-handler",
+        )
+        .with_payload_json(format!(r#"{{"summary":"{LONG_CAUSE}"}}"#));
+        let outcome = console_application::factory_outcome::FactoryOutcomeTell::new(
+            "dispatch item failed".to_owned(),
+            Some(LONG_CAUSE.to_owned()),
+            "2026-09-10T09:00:00Z".to_owned(),
+            "2026-09-10T12:00:00Z".to_owned(),
+        );
+        let state = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_focus(FocusPane::Header)
+            .with_factory_outcome(Some(outcome));
+        let events = [failed];
+        let model = build_tui_model_for_state(&events, &state);
+
+        // The header carries the tell, CUT to its budget: the whole cause does
+        // not fit, which is why the overlay exists.
+        let header = model.header().to_owned();
+        assert!(header.contains("dispatch item failed 3h ago"), "{header}");
+        assert!(!header.contains(LONG_CAUSE), "{header}");
+
+        // Enter resolves to the factory outcome, not the roster, because a
+        // factory tell is on screen.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenFactoryOutcome
+            ))
+        );
+        let opened = reduce_tui_interaction(&state, &events, TuiInteraction::OpenFactoryOutcome);
+        let opened_model = build_tui_model_for_state(&events, &opened);
+        let rendered = render_to_text(&opened_model, 120, 24).unwrap_or_default();
+        assert!(rendered.contains("Factory outcome"), "{rendered}");
+        assert!(
+            rendered.contains("dispatch item failed 3h ago"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("2026-09-10T09:00:00Z"), "{rendered}");
+        // The WHOLE cause, which the overlay wraps rather than cuts.
+        assert!(rendered.contains("not in the ready"), "{rendered}");
+        assert!(rendered.contains("blocked upstream"), "{rendered}");
+
+        // Esc closes it and leaves nothing behind.
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Esc), &opened_model),
+            Some(TuiTerminalInput::Interaction(TuiInteraction::CloseOverlay))
+        );
+        let closed = reduce_tui_interaction(&opened, &events, TuiInteraction::CloseOverlay);
+        assert_eq!(closed.overlay(), &TuiOverlay::None);
+
+        // With NO factory tell on screen, Enter on the header still opens the
+        // Event sources roster — pzbdbo.29 AC2, unchanged.
+        let quiet = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Header);
+        let quiet_model = build_tui_model_for_state(&[], &quiet);
+        assert_eq!(
+            key_event_to_terminal_input(key(KeyCode::Enter), &quiet_model),
+            Some(TuiTerminalInput::Interaction(
+                TuiInteraction::OpenEventSourcesFromHeader
+            ))
         );
     }
 
