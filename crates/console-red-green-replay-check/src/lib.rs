@@ -28,6 +28,7 @@ const RED_CHECKSUM_KEY: &str = "TDD-Red-Test-File-Checksum";
 const RED_TRAILER_TOKEN: &str = "TDD-Red-Test-File-Checksum:";
 const GREEN_VERIFIED_KEY: &str = "TDD-Green-Verified-At";
 const GREEN_TRAILER_TOKEN: &str = "TDD-Green-Verified-At:";
+const SUITE_CAPTURED_KEY: &str = "TDD-Suite-Green-Captured-At";
 const SUITE_TRAILER_TOKEN: &str = "TDD-Suite-Green-Captured-At:";
 /// Binds a Green or Suite-Green attestation to the DIFF it describes, via
 /// `git patch-id --stable` of the commit's changes relative to its parent.
@@ -173,7 +174,13 @@ pub fn check_commit_msg(runner: &impl Runner, msg_path: &Path) -> Result<(), Str
     let message = std::fs::read_to_string(msg_path)
         .map_err(|err| format!("cannot read {}: {err}", msg_path.display()))?;
     let subject = message.lines().next().unwrap_or_default();
-    let staged = staged_files(runner)?;
+    // Which commit the one being finalised will hang off. For a fresh commit
+    // that is HEAD; for an AMEND it is HEAD^, because HEAD is the commit being
+    // REPLACED (livespec-console-beads-fabro-pzbdbo.38). Everything downstream
+    // -- what counts as staged, and what the attestation is bound to -- is
+    // measured against it.
+    let parent = finalised_commit_parent(runner, msg_path)?;
+    let staged = staged_files(runner, parent)?;
     let buckets = classify(&staged);
     let tests_pass = if buckets.impls.is_empty() && !buckets.tests.is_empty() {
         runner.cargo_test(scope_for_tests(&buckets.tests))?.code == 0
@@ -191,20 +198,35 @@ pub fn check_commit_msg(runner: &impl Runner, msg_path: &Path) -> Result<(), Str
         Decision::Red => handle_red(runner, msg_path, &buckets.tests),
         Decision::TestPassedAtRedReject => Err("red-green-replay-test-passed-at-red: Red mode requires the staged Rust test to fail first".to_owned()),
         Decision::Green => handle_green(runner, msg_path),
-        Decision::SuiteGreen => handle_suite_green(runner, msg_path),
+        Decision::SuiteGreen => handle_suite_green(runner, msg_path, parent),
     }
 }
 
 pub fn validate_default_range(runner: &impl Runner) -> Result<(), String> {
-    let base = runner.git(&["rev-parse", "--verify", "--quiet", RANGE_BASE])?;
+    validate_range_from(runner, RANGE_BASE)
+}
+
+/// [`validate_default_range`] over an explicit base instead of
+/// [`RANGE_BASE`].
+///
+/// The production caller always wants `origin/master`; this exists so a test
+/// can walk the same range logic in a throwaway repository that has no remote
+/// (`tests/amend_rebinds_patch_id.rs`, livespec-console-beads-fabro-pzbdbo.38).
+///
+/// # Errors
+/// Returns a named refusal when `base` does not resolve, when a git command
+/// fails, or when a commit in `base..HEAD` touches product Rust without a
+/// matching attestation.
+pub fn validate_range_from(runner: &impl Runner, base_ref: &str) -> Result<(), String> {
+    let base = runner.git(&["rev-parse", "--verify", "--quiet", base_ref])?;
     if base.code != 0 {
         return Err(format!(
-            "red-green-replay-range-base-unresolvable: fetch {RANGE_BASE} before validating {RANGE_BASE}..HEAD"
+            "red-green-replay-range-base-unresolvable: fetch {base_ref} before validating {base_ref}..HEAD"
         ));
     }
     let shas = git_stdout_lines(
         runner,
-        &["rev-list", "--no-merges", &format!("{RANGE_BASE}..HEAD")],
+        &["rev-list", "--no-merges", &format!("{base_ref}..HEAD")],
     )?;
     let mut violating = Vec::new();
     for sha in &shas {
@@ -216,7 +238,13 @@ pub fn validate_default_range(runner: &impl Runner) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "red-green-replay-range-missing-trailers: commits touch product Rust without TDD trailer shape: {}",
+            "red-green-replay-range-missing-trailers: commits touch product Rust without TDD \
+             trailer shape, or carry an attestation that no longer matches their diff: {}\n\
+             Remedy: re-mint the attestation with a genuinely fresh commit --\n\
+             `git reset --soft HEAD~1`, then `git commit` again through the hook.\n\
+             Do NOT `git commit --amend --no-edit` (an amend with an empty diff against its\n\
+             target short-circuits without re-verifying, leaving the stale trailer in place),\n\
+             and never `--no-verify`.",
             violating.join(", ")
         ))
     }
@@ -302,7 +330,7 @@ fn handle_green(runner: &impl Runner, msg_path: &Path) -> Result<(), String> {
     )
 }
 
-fn handle_suite_green(runner: &impl Runner, msg_path: &Path) -> Result<(), String> {
+fn handle_suite_green(runner: &impl Runner, msg_path: &Path, parent: &str) -> Result<(), String> {
     let result = runner.cargo_test(TestScope::Workspace)?;
     if result.code != 0 {
         return Err(format!(
@@ -311,7 +339,13 @@ fn handle_suite_green(runner: &impl Runner, msg_path: &Path) -> Result<(), Strin
         ));
     }
     let tree = git_stdout(runner, &["write-tree"])?;
-    let diff_id = diff_identity(runner, "HEAD", &tree)?;
+    // `parent`, not a hard-coded `HEAD`: on an AMEND the finished commit keeps
+    // HEAD's parent, so binding to HEAD would record a patch-id that
+    // `commit_violates` -- which computes `<sha>^..<sha>` -- could never match
+    // (livespec-console-beads-fabro-pzbdbo.38). `handle_green` has always used
+    // `HEAD^` for exactly this reason; it is only ever reached via the Red
+    // commit's amend.
+    let diff_id = diff_identity(runner, parent, &tree)?;
     write_trailers(
         msg_path,
         &[
@@ -353,11 +387,80 @@ fn diff_identity(runner: &impl Runner, base: &str, target: &str) -> Result<Strin
     Ok(id.to_owned())
 }
 
-fn staged_files(runner: &impl Runner) -> Result<Vec<String>, String> {
-    git_stdout_lines(
-        runner,
-        &["diff", "--cached", "--name-only", "--diff-filter=d"],
-    )
+/// The paths the commit being finalised will carry, measured against the
+/// parent it will keep.
+///
+/// For a fresh commit (`parent` is `HEAD`) this is the bare `git diff --cached`
+/// the check has always used -- deliberately WITHOUT naming a revision, so it
+/// still works in a repository with no commits at all, where `HEAD` does not
+/// resolve.
+///
+/// For an amend (`parent` is `HEAD^`) naming the revision is the whole fix
+/// (livespec-console-beads-fabro-pzbdbo.38): `git commit --amend` with nothing
+/// newly staged has an EMPTY diff against HEAD, so the bare form reported no
+/// staged product Rust, the check took its no-op fast path, and the stale
+/// pre-amend attestation survived into a commit whose content had moved on.
+/// Against `HEAD^` the amended commit's own content is what is seen, which is
+/// the question the ritual actually asks.
+fn staged_files(runner: &impl Runner, parent: &str) -> Result<Vec<String>, String> {
+    let mut args = vec!["diff", "--cached", "--name-only", "--diff-filter=d"];
+    if parent != "HEAD" {
+        args.push(parent);
+    }
+    git_stdout_lines(runner, &args)
+}
+
+/// Which commit the one being finalised will hang off: `HEAD` for a fresh
+/// commit, `HEAD^` for an amend of an already-attested commit.
+///
+/// # Why this is decidable when amend-detection is not
+///
+/// `githooks(5)` gives a `commit-msg` hook no reliable way to tell an amend
+/// from a fresh commit once `-m`/`-F` supplies the message: `GIT_REFLOG_ACTION`
+/// is not exported to hooks, and `prepare-commit-msg` reports the source as
+/// `message` in both cases (established empirically by
+/// livespec-console-beads-fabro-pzbdbo.37, and NOT re-litigated here). This
+/// asks a different question, and a decidable one: does the message being
+/// finalised ALREADY carry an attestation trailer? Only this hook writes those,
+/// and only into a message that then becomes a commit -- so a message arriving
+/// here with one in its trailer block is a commit message being reused, which
+/// is what an amend is.
+///
+/// Read through `git interpret-trailers --parse`, never by scanning the raw
+/// text, so this agrees with every other reader about what counts as a trailer:
+/// a message whose PROSE quotes `TDD-Verified-Patch-Id` -- this very function's
+/// documentation, or a commit describing the ritual -- is a fresh commit, and
+/// must not be mistaken for an amend (the same one-parsing-surface rule
+/// `head_red_awaiting_green` was fixed to keep, livespec-console-beads-fabro-gwcq2f).
+///
+/// Degrades to `HEAD` when `HEAD^` does not resolve: amending a ROOT commit
+/// leaves a commit with no parent at all, and there is nothing to bind to.
+fn finalised_commit_parent(runner: &impl Runner, msg_path: &Path) -> Result<&'static str, String> {
+    if !message_carries_attestation(runner, msg_path)? {
+        return Ok("HEAD");
+    }
+    let resolved = runner.git(&["rev-parse", "--verify", "--quiet", "HEAD^"])?;
+    Ok(if resolved.code == 0 { "HEAD^" } else { "HEAD" })
+}
+
+/// Whether the message at `msg_path` already carries a trailer this hook mints.
+fn message_carries_attestation(runner: &impl Runner, msg_path: &Path) -> Result<bool, String> {
+    let path = msg_path.display().to_string();
+    let parsed = runner.git(&["interpret-trailers", "--parse", &path])?;
+    if parsed.code != 0 {
+        return Err(format!(
+            "red-green-replay-git-command-failed: git interpret-trailers --parse {path}: {}",
+            summary(&parsed.stderr)
+        ));
+    }
+    Ok(parsed.stdout.lines().any(|line| {
+        line.split_once(':').is_some_and(|(key, _)| {
+            matches!(
+                key,
+                RED_CHECKSUM_KEY | GREEN_VERIFIED_KEY | SUITE_CAPTURED_KEY | DIFF_TRAILER_KEY
+            )
+        })
+    }))
 }
 
 fn head_red_awaiting_green(runner: &impl Runner) -> Result<bool, String> {
@@ -850,6 +953,15 @@ mod tests {
         }
     }
 
+    /// The `git interpret-trailers --parse` output every `check_commit_msg`
+    /// call now begins with (livespec-console-beads-fabro-pzbdbo.38): empty,
+    /// i.e. the message being finalised carries no attestation trailer, so the
+    /// commit is a FRESH one and its parent is `HEAD`. Named rather than
+    /// repeated so a queue reads as "no trailers, then the calls under test".
+    fn no_trailers() -> CommandOutput {
+        CommandOutput::success("")
+    }
+
     #[track_caller]
     fn check(condition: bool, context: &str) {
         assert!(condition, "{context}: condition was false");
@@ -1184,7 +1296,7 @@ mod tests {
             ],
             vec![CommandOutput::success("pass")],
         );
-        assert!(handle_suite_green(&green, &msg_path).is_ok());
+        assert!(handle_suite_green(&green, &msg_path, "HEAD").is_ok());
         let msg = fs::read_to_string(&msg_path);
         assert!(
             msg.as_ref()
@@ -1204,7 +1316,9 @@ mod tests {
             .and_then(|text| trailer_value(text, "TDD-Verified-Patch-Id"));
         assert_eq!(verified_diff.as_deref(), Some("patchid-suite"));
         let red = FakeRunner::new(Vec::new(), vec![CommandOutput::failure("fail")]);
-        assert!(handle_suite_green(&red, &msg_path).is_err_and(|err| err.contains("suite-red")));
+        assert!(
+            handle_suite_green(&red, &msg_path, "HEAD").is_err_and(|err| err.contains("suite-red"))
+        );
         let _ = fs::remove_file(msg_path);
     }
 
@@ -1213,7 +1327,7 @@ mod tests {
         let msg_path = temp_file("msg-suite-cargo-error", "chore: x\n");
         let runner = FakeRunner::new(Vec::new(), Vec::new());
         assert!(
-            handle_suite_green(&runner, &msg_path)
+            handle_suite_green(&runner, &msg_path, "HEAD")
                 .is_err_and(|err| err.contains("missing fake cargo output"))
         );
         let _ = fs::remove_file(msg_path);
@@ -1227,7 +1341,7 @@ mod tests {
         let msg_path = temp_file("msg-suite-tree-error", "chore: x\n");
         let runner = FakeRunner::new(Vec::new(), vec![CommandOutput::success("pass")]);
         assert!(
-            handle_suite_green(&runner, &msg_path)
+            handle_suite_green(&runner, &msg_path, "HEAD")
                 .is_err_and(|err| err.contains("missing fake git output"))
         );
         let _ = fs::remove_file(msg_path);
@@ -1242,7 +1356,7 @@ mod tests {
             vec![CommandOutput::success("pass")],
         );
         assert!(
-            handle_suite_green(&runner, &msg_path)
+            handle_suite_green(&runner, &msg_path, "HEAD")
                 .is_err_and(|err| err.contains("missing fake git output"))
         );
         let _ = fs::remove_file(msg_path);
@@ -1522,18 +1636,22 @@ mod tests {
         );
     }
 
-    /// AC3: `git commit --amend --no-edit` with nothing newly staged short-
-    /// circuits `check_commit_msg` to `Decision::Pass`, which leaves the
-    /// message file -- and its `TDD-Verified-Patch-Id` -- untouched. That is
-    /// correct rather than a laundering route: the amend changed nothing, so
-    /// the commit's actual diff did not move either, and the previously
-    /// recorded value still matches it at range-check time. (The OTHER half
-    /// of AC3 -- an amend that DOES change content re-verifies -- is the
-    /// `commit_msg_mode_routes_all_outer_branches` Green/Suite-Green cases:
-    /// `decide` cannot reach `Decision::Pass` once product Rust is staged,
-    /// so re-verification and a fresh patch-id trailer are unavoidable.)
+    /// livespec-console-beads-fabro-pzbdbo.38 AC1/AC2: amending an
+    /// already-attested product-Rust commit RE-VERIFIES and re-mints the
+    /// patch-id trailer against the parent the amended commit actually keeps.
+    ///
+    /// This reverses what pzbdbo.37 left in place, and deliberately. That
+    /// version measured staged content against HEAD, so `git commit --amend`
+    /// with nothing newly staged saw an empty diff, took `Decision::Pass`, and
+    /// left the pre-amend trailer untouched. The reasoning was that a no-op
+    /// amend cannot move the commit's diff -- true in isolation, and false in
+    /// the case this repo actually hits: after a REBASE the diff has already
+    /// moved, so the carried-forward trailer is stale before the amend begins,
+    /// and the amend silently preserves it until `check-red-green-replay`
+    /// refuses the push. Measuring against `HEAD^` instead makes the amended
+    /// commit's own content visible, so the ritual runs on it.
     #[test]
-    fn pass_leaves_an_unchanged_attestation_valid_because_the_diff_is_unchanged() {
+    fn an_amend_of_an_attested_commit_reverifies_and_rebinds_to_its_real_parent() {
         let msg_path = temp_file(
             "msg-amend-no-op",
             concat!(
@@ -1541,21 +1659,50 @@ mod tests {
                 "TDD-Suite-Green-Scope: full-suite\n",
                 "TDD-Suite-Green-Output-Checksum: sha256:whatever\n",
                 "TDD-Suite-Green-Captured-At: 2026-09-08T14:50:41Z\n",
-                "TDD-Verified-Patch-Id: patchid-same\n",
+                "TDD-Verified-Patch-Id: patchid-stale\n",
             ),
         );
-        // `git diff --cached` against the commit being amended is empty, so
-        // `staged_files` reports no product Rust and `decide` short-circuits
-        // to `Decision::Pass` before ever touching the message file.
-        let pass = FakeRunner::new(vec![CommandOutput::success("")], Vec::new());
-        assert!(check_commit_msg(&pass, &msg_path).is_ok());
+        let amend = FakeRunner::new(
+            vec![
+                // The message already carries a minted attestation, so this is
+                // a message being REUSED: an amend.
+                CommandOutput::success("TDD-Verified-Patch-Id: patchid-stale\n"),
+                // `HEAD^` resolves, so that -- not HEAD -- is the parent the
+                // finished commit keeps.
+                CommandOutput::success("parent-sha\n"),
+                // Staged against `HEAD^`: the amended commit's OWN content,
+                // which the pre-fix `git diff --cached` against HEAD reported
+                // as empty.
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+                CommandOutput::success("head\n"),
+                CommandOutput::success(""),
+                CommandOutput::success(""),
+                CommandOutput::success("tree-amended\n"),
+                CommandOutput::success("patchid-fresh 0000000000000000000000000000000000000000\n"),
+            ],
+            vec![CommandOutput::success("suite pass")],
+        );
+        assert!(check_commit_msg(&amend, &msg_path).is_ok());
         let read_back = fs::read_to_string(&msg_path);
         check(
             read_back.is_ok(),
             &format!("must read the message file back: {read_back:?}"),
         );
         let after_pass = read_back.unwrap_or_default();
-        assert!(after_pass.contains("TDD-Verified-Patch-Id: patchid-same"));
+        // `check` rather than a message-carrying `assert!`: the assertion's
+        // format arm is only evaluated on failure, which llvm-cov reports as
+        // an uncovered line, while `check` evaluates its context eagerly.
+        check(
+            after_pass.contains("TDD-Verified-Patch-Id: patchid-fresh"),
+            &format!("the amend must re-mint against its real parent: {after_pass}"),
+        );
+        check(
+            !after_pass.contains("patchid-stale"),
+            &format!("the stale trailer must not survive the amend: {after_pass}"),
+        );
+        // Rewritten in place, not appended twice: one attestation per commit.
+        assert_eq!(after_pass.matches("TDD-Verified-Patch-Id:").count(), 1);
+        let after_pass = after_pass.replace("patchid-fresh", "patchid-same");
 
         // The commit's diff genuinely did not move, so the recorded value
         // still matches at range-check time -- a still-valid attestation,
@@ -1651,6 +1798,7 @@ mod tests {
         let msg_path = temp_file("msg-green-missing-red-test", "fix: x\n");
         let malformed = FakeRunner::new(
             vec![
+                no_trailers(),
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
                 CommandOutput::success("sha256:a\n"),
@@ -1716,7 +1864,10 @@ mod tests {
         );
 
         let awaiting_error = FakeRunner::new(
-            vec![CommandOutput::success("crates/x/src/lib.rs\n")],
+            vec![
+                no_trailers(),
+                CommandOutput::success("crates/x/src/lib.rs\n"),
+            ],
             Vec::new(),
         );
         assert!(
@@ -1726,6 +1877,7 @@ mod tests {
 
         let suite_error = FakeRunner::new(
             vec![
+                no_trailers(),
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
                 CommandOutput::success(""),
@@ -1743,13 +1895,19 @@ mod tests {
     #[test]
     fn commit_msg_mode_routes_all_outer_branches() {
         let msg_path = temp_file("msg-dispatch", "feat: x\n");
-        let pass = FakeRunner::new(vec![CommandOutput::success("docs/readme.md\n")], Vec::new());
+        let pass = FakeRunner::new(
+            vec![no_trailers(), CommandOutput::success("docs/readme.md\n")],
+            Vec::new(),
+        );
         assert!(check_commit_msg(&pass, &msg_path).is_ok());
         let red_path = format!("tests/dispatch-red-{}.rs", std::process::id());
         let _ = fs::create_dir_all("tests");
         let red_test = temp_workspace_file(&red_path, "fn x() {}\n");
         let red = FakeRunner::new(
-            vec![CommandOutput::success(&format!("{red_path}\n"))],
+            vec![
+                no_trailers(),
+                CommandOutput::success(&format!("{red_path}\n")),
+            ],
             vec![
                 CommandOutput::failure("red"),
                 CommandOutput::failure("red again"),
@@ -1757,7 +1915,10 @@ mod tests {
         );
         assert!(check_commit_msg(&red, &msg_path).is_ok());
         let reject = FakeRunner::new(
-            vec![CommandOutput::success("crates/x/tests/new.rs\n")],
+            vec![
+                no_trailers(),
+                CommandOutput::success("crates/x/tests/new.rs\n"),
+            ],
             vec![CommandOutput::success("pass")],
         );
         assert!(
@@ -1765,6 +1926,7 @@ mod tests {
         );
         let suite = FakeRunner::new(
             vec![
+                no_trailers(),
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
                 CommandOutput::success(""),
@@ -1783,6 +1945,7 @@ mod tests {
         );
         let green = FakeRunner::new(
             vec![
+                no_trailers(),
                 CommandOutput::success("crates/x/src/lib.rs\n"),
                 CommandOutput::success("head\n"),
                 CommandOutput::success("sha256:a\n"),
@@ -1881,6 +2044,94 @@ mod tests {
             .map(str::to_owned)
     }
 
+    /// The failure paths on the way IN to a mode: resolving which parent the
+    /// finished commit keeps, and classifying what it stages
+    /// (livespec-console-beads-fabro-pzbdbo.38). Each must name its cause
+    /// rather than being absorbed into a plausible-looking pass -- the whole
+    /// reason the amend case is decided from the message rather than guessed.
+    #[test]
+    fn commit_msg_entry_failure_paths_name_their_cause() {
+        let msg_path = temp_file("msg-entry-failures", "feat: x\n");
+
+        // `git interpret-trailers --parse` itself failing is fail-closed: the
+        // check cannot know whether this is an amend, so it refuses rather
+        // than assuming the fresh-commit base.
+        let trailers_fail = FakeRunner::new(
+            vec![CommandOutput {
+                code: 128,
+                stdout: String::new(),
+                stderr: "fatal: bad message".to_owned(),
+            }],
+            Vec::new(),
+        );
+        assert!(
+            check_commit_msg(&trailers_fail, &msg_path)
+                .is_err_and(|err| err.contains("git interpret-trailers --parse"))
+        );
+
+        // An attested message whose `HEAD^` lookup errors outright (as opposed
+        // to simply not resolving, which is a root commit and degrades to
+        // `HEAD`) propagates rather than guessing a base.
+        let amend_msg = temp_file(
+            "msg-entry-amend",
+            "chore: x\n\nTDD-Verified-Patch-Id: whatever\n",
+        );
+        let head_parent_missing = FakeRunner::new(
+            vec![CommandOutput::success("TDD-Verified-Patch-Id: whatever\n")],
+            Vec::new(),
+        );
+        assert!(
+            check_commit_msg(&head_parent_missing, &amend_msg)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+        // A root commit's amend has no parent to bind to, so it degrades to
+        // `HEAD` and carries on -- staging nothing product-shaped here, which
+        // `decide` passes.
+        let root_amend = FakeRunner::new(
+            vec![
+                CommandOutput::success("TDD-Verified-Patch-Id: whatever\n"),
+                CommandOutput {
+                    code: 1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                },
+                CommandOutput::success("docs/readme.md\n"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(check_commit_msg(&root_amend, &amend_msg), Ok(()));
+
+        // Parent resolved, staged-file classification then failing: its `?`
+        // arm is a distinct path from the trailer-parse failure above, and
+        // reaching it needs a runner that answers the FIRST call and not the
+        // second.
+        let staged_fails = FakeRunner::new(vec![no_trailers()], Vec::new());
+        assert!(
+            check_commit_msg(&staged_fails, &msg_path)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+
+        let cargo_fails = FakeRunner::new(
+            vec![
+                no_trailers(),
+                CommandOutput::success("crates/x/tests/red.rs\n"),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            check_commit_msg(&cargo_fails, &msg_path)
+                .is_err_and(|err| err.contains("missing fake cargo output"))
+        );
+
+        let head_log_fails = FakeRunner::new(vec![CommandOutput::success("head\n")], Vec::new());
+        assert!(
+            head_red_awaiting_green(&head_log_fails)
+                .is_err_and(|err| err.contains("missing fake git output"))
+        );
+        let _ = fs::remove_file(msg_path);
+        let _ = fs::remove_file(amend_msg);
+    }
+
     #[test]
     fn failure_paths_are_fail_closed_and_actionable() {
         let missing_msg =
@@ -1892,7 +2143,7 @@ mod tests {
 
         let msg_path = temp_file("msg-failures", "feat: x\n");
         assert!(
-            staged_files(&FakeRunner::new(Vec::new(), Vec::new()))
+            staged_files(&FakeRunner::new(Vec::new(), Vec::new()), "HEAD")
                 .is_err_and(|err| err.contains("missing fake git output"))
         );
         let diff_failed = FakeRunner::new(
@@ -1904,7 +2155,7 @@ mod tests {
             Vec::new(),
         );
         assert!(
-            staged_files(&diff_failed)
+            staged_files(&diff_failed, "HEAD")
                 .is_err_and(|err| err.contains("git diff --cached --name-only"))
         );
         assert!(
@@ -1948,21 +2199,6 @@ mod tests {
         assert!(
             validate_default_range(&diff_tree_nonzero)
                 .is_err_and(|err| err.contains("git diff-tree --no-commit-id"))
-        );
-
-        let cargo_fails = FakeRunner::new(
-            vec![CommandOutput::success("crates/x/tests/red.rs\n")],
-            Vec::new(),
-        );
-        assert!(
-            check_commit_msg(&cargo_fails, &msg_path)
-                .is_err_and(|err| err.contains("missing fake cargo output"))
-        );
-
-        let head_log_fails = FakeRunner::new(vec![CommandOutput::success("head\n")], Vec::new());
-        assert!(
-            head_red_awaiting_green(&head_log_fails)
-                .is_err_and(|err| err.contains("missing fake git output"))
         );
 
         assert!(
