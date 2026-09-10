@@ -4369,11 +4369,27 @@ fn render_scrollable_detail(
 }
 
 fn detail_lines(detail: &AttentionDetail) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(format!("Repo: {}", detail.repo())),
-        Line::from(format!("Work item: {}", detail.work_item())),
-        Line::from(format!("Fabro run: {}", detail.fabro_run())),
-    ];
+    // A GROUP row's detail is labelled for what it is
+    // (livespec-console-beads-fabro-mx9u.31). It has no work item and no run,
+    // so it renders its own `Group:` heading and neither of those two lines --
+    // rather than printing a class token under `Work item:`, which said a
+    // class was a work item in the one pane an operator opens to learn what a
+    // row is.
+    let mut lines = detail.group().map_or_else(
+        || {
+            vec![
+                Line::from(format!("Repo: {}", detail.repo())),
+                Line::from(format!("Work item: {}", detail.work_item())),
+                Line::from(format!("Fabro run: {}", detail.fabro_run())),
+            ]
+        },
+        |group| {
+            vec![
+                Line::from(format!("Repo: {}", detail.repo())),
+                Line::from(format!("Group: {group}")),
+            ]
+        },
+    );
     // The factory is a SEPARATE line rather than a suffix on the run: it names
     // the server the run lives on, and a triager reading a bare run id against
     // a multi-factory fleet has no way to tell which host holds it.
@@ -8515,6 +8531,34 @@ mod tests {
         assert!(!rendered.contains("Valve:"));
         // The retired handoff must not come back under any spelling.
         assert!(!rendered.contains("Attach"));
+    }
+
+    /// livespec-console-beads-fabro-mx9u.31: a GROUP row's detail names the
+    /// group as a group. It never labels the class token a work item, and it
+    /// offers no run line, because a group has neither.
+    #[test]
+    fn detail_lines_label_a_group_row_as_a_group_and_claim_no_work_item_or_run() {
+        let detail = AttentionDetail::new(
+            "livespec-console-beads-fabro".to_owned(),
+            String::new(),
+            String::new(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+        )
+        .with_group("hygiene:release-adoption (13 rows)".to_owned());
+
+        let rendered = detail_lines(&detail)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Group: hygiene:release-adoption (13 rows)"));
+        assert!(rendered.contains("Repo: livespec-console-beads-fabro"));
+        assert!(!rendered.contains("Work item:"));
+        assert!(!rendered.contains("Fabro run:"));
     }
 
     /// Scenario 30 at the RENDER: the valve the projection advertises reaches

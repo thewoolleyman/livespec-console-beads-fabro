@@ -2209,6 +2209,7 @@ pub struct AttentionDetail {
     actions: Vec<OperatorAction>,
     account: Option<String>,
     answer_comments: Vec<String>,
+    group: Option<String>,
 }
 
 impl AttentionDetail {
@@ -2233,7 +2234,30 @@ impl AttentionDetail {
             actions,
             account: None,
             answer_comments: Vec::new(),
+            group: None,
         }
+    }
+
+    #[must_use]
+    /// This detail describing a GROUP ROW rather than one work item
+    /// (livespec-console-beads-fabro-mx9u.31): `group` is the group's own
+    /// heading, already carrying its key and member count.
+    ///
+    /// A group row has no work item behind it, so the class token used to be
+    /// passed as `work_item` and rendered under a `Work item:` label -- the one
+    /// pane that exists to say what a row IS called a class a work item.
+    /// Carrying it in its own field lets the renderer label it truthfully and
+    /// drop the fields a group has no answer for.
+    pub fn with_group(mut self, group: String) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    #[must_use]
+    /// The group heading when this detail describes a group row, else `None`
+    /// for an ordinary work-item-backed or finding row.
+    pub fn group(&self) -> Option<&str> {
+        self.group.as_deref()
     }
 
     #[must_use]
@@ -9807,6 +9831,14 @@ impl AttentionGroup<'_> {
     /// The group row's detail: the key and count, and every member's summary.
     /// It carries no valve commands and no actions -- a group row has no
     /// work-item behind it, so nothing is pressable on it.
+    ///
+    /// The key and count go in the detail's own `group` field, NOT in
+    /// `work_item` (livespec-console-beads-fabro-mx9u.31). Passing them as the
+    /// work item rendered `Work item: hygiene:release-adoption (13 rows)`,
+    /// which tells the operator a CLASS is a work item in the one pane they
+    /// open to find out what a row is. `fabro_run` is left empty for the same
+    /// reason: a group has no run, and a literal `-` under a `Fabro run:` label
+    /// reads as a run whose id is unknown rather than as no run at all.
     fn to_detail(&self) -> AttentionDetail {
         let summaries = self
             .members
@@ -9816,13 +9848,14 @@ impl AttentionGroup<'_> {
             .join("\n");
         AttentionDetail::new(
             self.repos(),
-            format!("{} ({} rows)", self.key, self.members.len()),
-            "-".to_owned(),
+            String::new(),
+            String::new(),
             None,
             Vec::new(),
             Vec::new(),
             Vec::new(),
         )
+        .with_group(format!("{} ({} rows)", self.key, self.members.len()))
         .with_account(Some(summaries))
     }
 }
@@ -12088,8 +12121,19 @@ mod tests {
         );
         let detail = model.detail();
         check(
-            detail.map(AttentionDetail::work_item) == Some("hygiene:stale-worktree (3 rows)"),
+            detail.and_then(AttentionDetail::group) == Some("hygiene:stale-worktree (3 rows)"),
             &format!("group detail: {detail:?}"),
+        );
+        // livespec-console-beads-fabro-mx9u.31: the key and count are the
+        // GROUP heading, and a group answers neither of these two fields, so
+        // it claims nothing under them.
+        check(
+            detail.map(AttentionDetail::work_item) == Some(""),
+            &format!("a group names no work item: {detail:?}"),
+        );
+        check(
+            detail.map(AttentionDetail::fabro_run) == Some(""),
+            &format!("a group names no run: {detail:?}"),
         );
         check(
             detail.and_then(AttentionDetail::account)
