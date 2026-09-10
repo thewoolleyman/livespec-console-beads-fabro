@@ -357,11 +357,11 @@ close, so it always describes the current context rather than a fixed summary.
 | Context | Hint |
 |---|---|
 | Header focused | `enter event sources \| left/right scroll \| esc/tab leave \| 1-6 view \| ? help \| q quit` |
-| Attention, backlog work-item selected | `up/down move \| enter open \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
-| Attention, pending-approval work-item selected | `up/down move \| enter open \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
-| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| enter open \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
-| Attention, acceptance work-item selected | `up/down move \| enter open \| s move-status \| c accept \| r reject \| 1-6 view \| ? help \| q quit` |
-| Attention, blocked work-item selected | `up/down move \| enter open \| s move-status \| 1-6 view \| ? help \| q quit` |
+| Attention, backlog work-item selected | `up/down move \| ]/[ jump \| enter open \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Attention, pending-approval work-item selected | `up/down move \| ]/[ jump \| enter open \| s move-status \| p approve \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Attention, dispatcher-admitted pending-approval work-item selected | `up/down move \| ]/[ jump \| enter open \| s move-status \| r reject \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |
+| Attention, acceptance work-item selected | `up/down move \| ]/[ jump \| enter open \| s move-status \| c accept \| r reject \| 1-6 view \| ? help \| q quit` |
+| Attention, blocked work-item selected | `up/down move \| ]/[ jump \| enter open \| s move-status \| 1-6 view \| ? help \| q quit` |
 | Attention, no work-item selected | `1-6 view \| ? help \| q quit` |
 | Lanes, lane overview | `up/down move \| enter drill \| 1-6 view \| ? help \| q quit` |
 | Lanes, drilled into a backlog item | `up/down move \| enter item \| esc lane list \| h handoff \| s move-status \| m set-admission \| g merge cap \| f fix cap \| n set-acceptance \| k rework cap \| 1-6 view \| ? help \| q quit` |

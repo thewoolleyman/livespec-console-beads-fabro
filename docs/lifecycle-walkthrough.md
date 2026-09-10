@@ -94,11 +94,15 @@ The middle pane's title becomes `Attention [focus]`, and the Status line at the
 bottom changes to offer the per-item keys:
 
 ```
-up/down move | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit
+up/down move | ]/[ jump | enter open | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit
 ```
 
 Use `↑` / `↓` here if you have more than one item; the walkthrough acts on the
-selected row.
+selected row. `]` and `[` skip straight to the next / previous row you can act
+on — a group row, or a row a valve acts on — so a long inbox does not have to
+be walked one row at a time. They jump the cursor into the list too, so `]`
+alone does the work of the `Enter` above plus the arrow presses that followed
+it.
 
 > **Select a valve row, not just any row.** A real inbox mixes work-item valve
 > rows (`valve:approve:<id>`, `valve:accept:<id>`) with rows that name no

@@ -1542,7 +1542,12 @@ pub fn key_event_to_terminal_input(
         // generated menu; they are registry entries now, so the generic arm
         // resolves them. Space stays: it is argued out in the gate's carve-out
         // fixture as pure focus movement, so it has no registry entry to find.
+        // The two Attention jump keys sit beside it for the same reason: they
+        // move a cursor and mutate nothing, so they are argued out there rather
+        // than registered as operator actions.
         KeyCode::Char(' ') => space_input(model, overlay),
+        KeyCode::Char(']') => attention_jump_input(model, true),
+        KeyCode::Char('[') => attention_jump_input(model, false),
         KeyCode::Char(value) => {
             action_registry::action_for_chord(action_registry::KeyChord::plain(value)).map_or_else(
                 || text_input(value, overlay),
@@ -1902,6 +1907,32 @@ fn space_input(model: &TuiScreenModel, overlay: &TuiOverlay) -> Option<TuiTermin
         return None;
     }
     text_input(' ', overlay)
+}
+
+/// `]` / `[`: jump the Attention cursor to the next / previous ACTIONABLE row
+/// (livespec-console-beads-fabro-mx9u.32).
+///
+/// Behind an open text overlay the character stays a LITERAL — a search for a
+/// path containing a bracket must still be typeable — which is the same rule
+/// every registry hotkey follows. Outside the `Attention` view the key is
+/// inert: no other list carries the group / valve distinction the jump is
+/// defined over, so answering elsewhere would move a cursor by a rule that does
+/// not apply there.
+fn attention_jump_input(model: &TuiScreenModel, forward: bool) -> Option<TuiTerminalInput> {
+    let overlay = model.overlay();
+    if !matches!(overlay, TuiOverlay::None) {
+        return text_input(
+            if forward {
+                action_registry::ATTENTION_JUMP_NEXT_KEY
+            } else {
+                action_registry::ATTENTION_JUMP_PREVIOUS_KEY
+            },
+            overlay,
+        );
+    }
+    (model.active_view() == TuiView::Attention).then_some(TuiTerminalInput::Interaction(
+        TuiInteraction::JumpToActionableAttentionRow(forward),
+    ))
 }
 
 /// A registered action's hotkey: with no overlay open, stage the action for
@@ -3450,6 +3481,16 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
                 Line::from("list across the fleet, with the selected item's detail on the right."),
                 Line::from(""),
                 Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+                // The jump keys are named from the registry-held constants, so
+                // this line, the Status hint and the generated key/action
+                // reference cannot advertise different characters
+                // (livespec-console-beads-fabro-mx9u.32).
+                Line::from(format!(
+                    "{:<13}jump to the next / previous ACTIONABLE row -- a group",
+                    action_registry::attention_jump_keys_display()
+                )),
+                Line::from("             row, or a row a valve acts on -- skipping the rows"),
+                Line::from("             that only need reading. Neither wraps."),
                 Line::from("enter        open the command modal for the selected work-item"),
             ];
             lines.extend(registry_help_lines(
@@ -6247,6 +6288,81 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::BackTab), &overlaid),
             None
         );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.32: the two jump keys reach the
+    /// Attention cursor, stay LITERALS behind a text overlay, and answer on no
+    /// other view.
+    ///
+    /// The characters come from the registry constants rather than being typed
+    /// again here, so a rebinding that missed the key handler reddens instead
+    /// of leaving the test pinning the old key.
+    #[test]
+    fn keymap_jump_keys_move_the_attention_cursor_and_nothing_else() {
+        let model = attention_model(TuiOverlay::None);
+        for (key_char, forward) in [
+            (action_registry::ATTENTION_JUMP_NEXT_KEY, true),
+            (action_registry::ATTENTION_JUMP_PREVIOUS_KEY, false),
+        ] {
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char(key_char)), &model),
+                Some(TuiTerminalInput::Interaction(
+                    TuiInteraction::JumpToActionableAttentionRow(forward)
+                )),
+                "{key_char:?} must jump the Attention cursor"
+            );
+            // Behind the search field the character is text: a query naming a
+            // path with a bracket in it must still be typeable.
+            let searching = attention_model(TuiOverlay::Search {
+                query: String::new(),
+            });
+            assert_eq!(
+                key_event_to_terminal_input(key(KeyCode::Char(key_char)), &searching),
+                Some(TuiTerminalInput::Interaction(TuiInteraction::TypeChar(
+                    key_char
+                )))
+            );
+            // No other list carries the group / valve distinction the jump is
+            // defined over, so it is inert there.
+            assert_eq!(
+                key_event_to_terminal_input(
+                    key(KeyCode::Char(key_char)),
+                    &lanes_model(LaneFocus::Overview, TuiOverlay::None)
+                ),
+                None
+            );
+        }
+    }
+
+    /// livespec-console-beads-fabro-mx9u.32 AC5: the modal Help's ATTENTION
+    /// section advertises the jump key and its opposite beside the other
+    /// navigation keys, in the RENDERED text.
+    #[test]
+    fn help_attention_section_lists_the_jump_keys_beside_the_other_navigation_keys() {
+        let model = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::Help {
+                    focus: HelpFocus::Text,
+                    selected_section: help_section_for_view(TuiView::Attention),
+                    scroll: 0,
+                },
+            ),
+        );
+        let frame = render_to_text(&model, 120, 40).unwrap_or_default();
+        assert!(
+            frame.contains("up / down    move the Content selection"),
+            "the Attention help section is not on screen:\n{frame}"
+        );
+        assert!(
+            frame.contains(&format!(
+                "{:<13}jump to the next / previous ACTIONABLE row",
+                action_registry::attention_jump_keys_display()
+            )),
+            "the Attention help section does not advertise the jump keys:\n{frame}"
+        );
+        assert!(frame.contains("enter        open the command modal"));
     }
 
     /// The header content row of a rendered frame (row 0 is the top border, row 1

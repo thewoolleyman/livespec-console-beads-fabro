@@ -39,6 +39,14 @@
       "reason": "PURE FOCUS MOVEMENT / row activation within a pane. Structural residue explicitly named excludable by the 2026-08-03 ruling."
     },
     {
+      "key": "Char(']')",
+      "reason": "PURE CURSOR MOVEMENT. Jumps the Attention cursor to the next ACTIONABLE row (a group row, or a row a valve acts on) and skips the rows that only need reading. It selects; it stages nothing and mutates nothing a work-item or the factory can observe, exactly like Up/Down, and a menu item for 'move my cursor' describes the list rather than an operator action (livespec-console-beads-fabro-mx9u.32)."
+    },
+    {
+      "key": "Char('[')",
+      "reason": "PURE CURSOR MOVEMENT. The documented opposite of Char(']') -- jumps the Attention cursor to the PREVIOUS actionable row -- same rationale (livespec-console-beads-fabro-mx9u.32)."
+    },
+    {
       "key": "PageUp",
       "reason": "VIEWPORT PAGING. Scrolls the content already on screen. A menu entry for 'look further down' describes the viewport, not an operator action."
     },
