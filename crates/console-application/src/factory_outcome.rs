@@ -476,6 +476,44 @@ mod tests {
         assert_eq!(latest_factory_outcome(&unrelated, NOW), None);
     }
 
+    /// Every way the overlay can decline to open, and the one way it opens
+    /// (livespec-console-beads-fabro-mx9u.3 AC3).
+    #[test]
+    fn the_overlay_opens_only_when_the_outcome_describes_what_the_header_says() {
+        let tell = FactoryOutcomeTell::new(
+            "drain failed".to_owned(),
+            Some("the dispatcher refused".to_owned()),
+            "2026-09-10T11:00:00Z".to_owned(),
+            NOW.to_owned(),
+        );
+
+        // Agreement: the overlay carries the WHOLE outcome.
+        let opened = super::overlay_text(
+            Some(&tell),
+            Some("drain failed 1h ago — the dispatcher refused"),
+        );
+        check(
+            opened
+                .as_deref()
+                .is_some_and(|text| text.contains("the dispatcher refused")),
+            &format!("opened with {opened:?}"),
+        );
+
+        // The header has moved on to a different activity: nothing opens.
+        assert_eq!(
+            super::overlay_text(Some(&tell), Some("dispatch item completed")),
+            None
+        );
+
+        // The header is saying nothing about the factory at all -- the log
+        // carries no factory event -- so there is nothing to drill into, even
+        // though an outcome from earlier is still in hand.
+        assert_eq!(super::overlay_text(Some(&tell), None), None);
+
+        // And with no outcome supplied at all.
+        assert_eq!(super::overlay_text(None, Some("drain failed")), None);
+    }
+
     #[test]
     fn the_shared_cell_starts_unset_and_reflects_the_latest_set() {
         let cell = super::SharedFactoryOutcome::new();
