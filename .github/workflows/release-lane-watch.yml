@@ -1,0 +1,35 @@
+# release-lane-watch.yml — this repo's shim onto the shared release-lane watcher.
+#
+# Authority: livespec plan/fleet-delivery-lane-visibility (epic livespec-n33rwg),
+#   carrier livespec-n33rwg.5; local tracking item livespec-console-beads-fabro-h389.
+#   Delegates to livespec-dev-tooling's reusable-release-lane-watch.yml, which
+#   surveys each named lane and reconciles ONE durable `release-lane-red` issue
+#   for this repo (opening/updating it while a lane is failing or unmeasurable,
+#   closing it on recovery). That issue is READ by needs-attention-internal
+#   Signal 9 Shape C.
+#
+# WATCHED SET — release-binary.yml, this repo's binary-publish lane. It publishes
+#   NO release object (a binary artifact, not a tagged GitHub release), so
+#   Signal 9 — which reads the latest release's tag commit — structurally cannot
+#   see it. This is exactly the no-release-object lane the carrier's amendment
+#   requires, and this is the 30-day-stall repo where the value concentrates.
+#
+# NO `secrets: inherit`: the watcher runs on github.token with actions:read and
+# issues:write and needs no App secrets.
+
+name: Release lane watch
+
+on:
+  schedule:
+    - cron: '41 8 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  watch:
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: thewoolleyman/livespec-dev-tooling/.github/workflows/reusable-release-lane-watch.yml@v1.80.0
+    with:
+      workflows: "release-binary.yml"
