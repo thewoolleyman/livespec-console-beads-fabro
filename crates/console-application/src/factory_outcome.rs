@@ -345,6 +345,72 @@ mod tests {
             .with_payload_json(payload_json.to_owned())
     }
 
+    /// The age rolls over ON the minute and ON the day, not a second either
+    /// side: 59 seconds is still `just now` and 60 is `1m ago`; 23 hours is
+    /// `23h ago` and 24 is `1d ago`.
+    #[test]
+    fn the_age_rolls_over_exactly_on_the_minute_and_the_day() {
+        assert_eq!(
+            relative_age(NOW, "2026-09-10T11:59:01Z"),
+            Some("just now".to_owned())
+        );
+        assert_eq!(
+            relative_age(NOW, "2026-09-10T11:59:00Z"),
+            Some("1m ago".to_owned())
+        );
+        assert_eq!(
+            relative_age(NOW, "2026-09-09T13:00:00Z"),
+            Some("23h ago".to_owned())
+        );
+        assert_eq!(
+            relative_age(NOW, "2026-09-09T12:00:00Z"),
+            Some("1d ago".to_owned())
+        );
+    }
+
+    /// A cause longer than the budget is cut to EXACTLY the budget, its last
+    /// character the ellipsis, so the header's atomic field never overruns.
+    #[test]
+    fn a_cause_over_budget_is_cut_to_exactly_the_budget() {
+        let long = "x".repeat(super::FACTORY_TELL_CAUSE_BUDGET + 12);
+        let elided = super::elide_cause(&long);
+        assert_eq!(elided.chars().count(), super::FACTORY_TELL_CAUSE_BUDGET);
+        check(elided.ends_with('…'), &format!("elided was {elided}"));
+    }
+
+    /// A `CommandRejected` is the drain's rejection ONLY on the fleet drain
+    /// stream; a rejection on any other stream is not a factory tell at all.
+    #[test]
+    fn a_rejection_is_a_drain_tell_only_on_the_fleet_drain_stream() {
+        let on_fleet = ConsoleEvent::new(
+            "evt_drain_rejected".to_owned(),
+            1,
+            "factory".to_owned(),
+            EventType::CommandRejected,
+            "console:factory-command-handler".to_owned(),
+            "fleet:livespec".to_owned(),
+            1,
+        );
+        assert_eq!(
+            crate::factory_activity_label(&on_fleet),
+            Some("drain rejected".to_owned())
+        );
+        let elsewhere = event("evt_other_rejected", EventType::CommandRejected, "{}");
+        assert_eq!(crate::factory_activity_label(&elsewhere), None);
+    }
+
+    /// The model reports exactly the tell its header carries, and nothing when
+    /// the log holds no factory event.
+    #[test]
+    fn the_model_reports_the_tell_its_header_carries_and_none_without_one() {
+        let state = crate::TuiInteractionState::new(0, crate::TuiOverlay::None);
+        let failed = event("evt_drain_failed", EventType::FactoryDrainFailed, "{}");
+        let model = crate::build_tui_model_for_state(std::slice::from_ref(&failed), &state);
+        assert_eq!(model.factory_tell(), Some("drain failed"));
+        let quiet = crate::build_tui_model_for_state(&[], &state);
+        assert_eq!(quiet.factory_tell(), None);
+    }
+
     /// The age is COARSE by design: the operator is asking "is this fresh or is
     /// it left over from this morning".
     #[test]
