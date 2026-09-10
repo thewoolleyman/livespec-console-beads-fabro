@@ -160,6 +160,126 @@ impl AttentionItem {
     }
 }
 
+/// The DISCRIMINATING token an Attention row leads with
+/// (livespec-console-beads-fabro-mx9u.2).
+///
+/// # Why a row needs one
+///
+/// Every work-item id in a tenant begins with that tenant's name, and the
+/// titles the orchestrator composes repeat it: measured 2026-09-08 at 105
+/// columns, twelve consecutive inbox rows all rendered as the identical
+/// `Host-route work-item livespec-conso…`, and at 159 columns they clipped at
+/// `...livespec-console-beads-fabro-547r5…` with the id half visible. Every
+/// character that distinguishes one row from another sat past the pane's edge,
+/// so choosing which row to act on meant walking them one at a time and reading
+/// the Detail pane.
+///
+/// # Why the LAST segment, and not the id minus the repo name
+///
+/// This fleet's ids are `<tenant>-<token>` (`livespec-console-beads-fabro-547r5`,
+/// `bd-ib-wcuauj.2`), so the segment after the final `-` is the part that
+/// discriminates and the rest is shared boilerplate the operator is not
+/// scanning for. An earlier version stripped the SELECTED REPO's name instead,
+/// which is the same thing only when the console's repo label happens to equal
+/// the id's tenant -- true in this tenant, and false wherever they differ,
+/// where the whole id survived and crowded the lane off the row (caught by the
+/// tmux E2E scenes, whose fixture pairs `livespec-console-beads-fabro-dummy1`
+/// with a repo named `e2e-alpha`). Keying on the id alone removes that
+/// dependence.
+///
+/// The Detail pane still carries the id in full, so nothing is lost; and two
+/// items would have to share a final segment to render alike, which this
+/// fleet's ids do not.
+///
+/// Returns `None` for a row with no work-item behind it (a hygiene finding,
+/// say) rather than inventing a token — those rows are discriminated by their
+/// own text, which is livespec-console-beads-fabro-mx9u.6's subject.
+#[must_use]
+pub fn attention_row_token(work_item_id: Option<&str>) -> Option<String> {
+    let id = work_item_id?;
+    // An id ENDING in `-` has no final segment to take; it is used whole rather
+    // than rendering an empty leading token.
+    let token = id
+        .rsplit_once('-')
+        .map(|(_prefix, last)| last)
+        .filter(|last| !last.is_empty())
+        .unwrap_or(id);
+    Some(token.to_owned())
+}
+
+/// The Attention row's title with the work-item id REMOVED, when the row is
+/// already leading with that id's token (livespec-console-beads-fabro-mx9u.2).
+///
+/// The orchestrator composes titles that end in the id — `Host-route work-item
+/// livespec-console-beads-fabro-547r5` — which is why the shared tenant prefix
+/// ate the row in the first place. Once [`attention_row_token`] has put the
+/// discriminating part at the FRONT, the copy inside the title is pure
+/// duplication, and it is the duplication that pushes the kind of item ("what
+/// is this row asking of me") off the pane.
+///
+/// Nothing else about the title is touched: no re-wording, no re-casing, no
+/// re-ordering. A title that does not contain the id comes back unchanged.
+#[must_use]
+pub fn attention_row_title_without_its_id(title: &str, work_item_id: Option<&str>) -> String {
+    let Some(id) = work_item_id else {
+        return title.to_owned();
+    };
+    if !title.contains(id) {
+        return title.to_owned();
+    }
+    let stripped = title.replace(id, "");
+    let tidied = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    // A title that was ONLY the id would render as an empty row; keep the
+    // original in that case, since a blank row says less than a duplicated one.
+    if tidied.is_empty() {
+        title.to_owned()
+    } else {
+        tidied
+    }
+}
+
+/// How many trailing path segments an elided program path keeps.
+///
+/// Three is what makes the program recognizable in this fleet
+/// (`…/scripts/bin/drive.py`): the file, the directory that says which
+/// interface it is, and one above that. Fewer loses the interface; more
+/// re-introduces the cache path this exists to hide.
+const ELIDED_PATH_SEGMENTS: usize = 3;
+
+/// A `Valve:` command with its leading PROGRAM PATH elided to its last
+/// [`ELIDED_PATH_SEGMENTS`] segments (livespec-console-beads-fabro-mx9u.2).
+///
+/// The orchestrator advertises its valve commands with a fully-resolved
+/// program path, which in this fleet means a plugin-cache path carrying the
+/// marketplace name twice and a build sha —
+/// `/home/ubuntu/.claude/plugins/cache/livespec-orchestrator-beads-fabro/livespec-orchestrator-beads-fabro/d6ca5151c2bf/scripts/bin/drive.py`.
+/// Measured in the Detail pane, that one path wrapped across four rows and
+/// pushed the part the operator actually reads — the action — off the visible
+/// area, and it cannot word-wrap, having no spaces in it.
+///
+/// Only the FIRST token is touched, and only when it is a path with more
+/// segments than are kept: the arguments are the operator's answer to "what
+/// will this do", so nothing after the program is altered, shortened or
+/// reordered.
+#[must_use]
+pub fn elide_command_program_path(command: &str) -> String {
+    let (program, rest) = command
+        .split_once(char::is_whitespace)
+        .map_or((command, None), |(program, rest)| (program, Some(rest)));
+    let segments = program.split('/').collect::<Vec<_>>();
+    if segments.len() <= ELIDED_PATH_SEGMENTS {
+        return command.to_owned();
+    }
+    let elided = format!(
+        "…/{}",
+        segments[segments.len() - ELIDED_PATH_SEGMENTS..].join("/")
+    );
+    rest.map_or_else(
+        || elided.clone(),
+        |rest| format!("{elided} {}", rest.trim_start()),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Variants for tui view state or outcome values.
 pub enum TuiView {
@@ -10725,9 +10845,10 @@ mod tests {
         OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
         OverrideInt, PendingValve, PluginResolution, RejectMode, STARTUP_INGEST_LOADING_TELL,
         SettingRow, SettingRowStatus, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiScreenModel, TuiView, action_registry, build_tui_model, build_tui_model_for_state,
-        command_outcome_notice, command_palette_query_opens_action_invoker,
-        dispatcher_setting_rows, dispatcher_setting_write_settled, drilldown_item_count,
+        TuiScreenModel, TuiView, action_registry, attention_row_title_without_its_id,
+        attention_row_token, build_tui_model, build_tui_model_for_state, command_outcome_notice,
+        command_palette_query_opens_action_invoker, dispatcher_setting_rows,
+        dispatcher_setting_write_settled, drilldown_item_count, elide_command_program_path,
         factory_dispatch_item_command, fit_footer_line, fold_dispatcher_setting_reread,
         handle_config_dispatcher_setting_set_command, handle_factory_dispatch_item_command,
         handle_factory_drain_command, handle_work_item_accept_command,
@@ -10872,6 +10993,107 @@ mod tests {
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].id(), "wi-a");
         assert_eq!(projected[0].title(), "new summary");
+    }
+
+    /// livespec-console-beads-fabro-mx9u.2: the row's leading token is the part
+    /// of the id that DISCRIMINATES — this fleet's ids are `<tenant>-<token>`,
+    /// so that is the segment after the final `-`, whatever the console's repo
+    /// label happens to be.
+    #[test]
+    fn the_row_token_is_the_ids_final_discriminating_segment() {
+        assert_eq!(
+            attention_row_token(Some("livespec-console-beads-fabro-547r5")),
+            Some("547r5".to_owned())
+        );
+        // A dotted child id keeps its whole final segment: `mx9u.20.2` is what
+        // tells that child from its siblings.
+        assert_eq!(
+            attention_row_token(Some("livespec-console-beads-fabro-mx9u.20.2")),
+            Some("mx9u.20.2".to_owned())
+        );
+        // A DIFFERENT tenant's id needs no special case: the rule keys on the
+        // id, not on whether its prefix matches the console's repo label.
+        assert_eq!(
+            attention_row_token(Some("bd-ib-wcuauj.2")),
+            Some("wcuauj.2".to_owned())
+        );
+        // An id with no `-` at all, and one ENDING in `-`, are used whole
+        // rather than rendering a blank leading token.
+        assert_eq!(attention_row_token(Some("solo")), Some("solo".to_owned()));
+        assert_eq!(
+            attention_row_token(Some("trailing-")),
+            Some("trailing-".to_owned())
+        );
+        // A row with no work item behind it gets no invented token; those rows
+        // are discriminated by their own text (mx9u.6's subject).
+        assert_eq!(attention_row_token(None), None);
+    }
+
+    /// livespec-console-beads-fabro-mx9u.2: once the id leads the row, the copy
+    /// inside the title is duplication, and it is the duplication that pushes
+    /// the KIND of item off a narrow pane.
+    #[test]
+    fn the_row_title_drops_the_id_the_row_already_leads_with() {
+        assert_eq!(
+            attention_row_title_without_its_id(
+                "Host-route work-item livespec-console-beads-fabro-547r5",
+                Some("livespec-console-beads-fabro-547r5")
+            ),
+            "Host-route work-item"
+        );
+        // Interior occurrences close up rather than leaving a double space.
+        assert_eq!(
+            attention_row_title_without_its_id("before wcuauj after", Some("wcuauj")),
+            "before after"
+        );
+        // A title that never mentioned the id is untouched, and so is one with
+        // no work item behind it.
+        assert_eq!(
+            attention_row_title_without_its_id("Blocked: needs-human", Some("x-1")),
+            "Blocked: needs-human"
+        );
+        assert_eq!(
+            attention_row_title_without_its_id("Blocked: needs-human", None),
+            "Blocked: needs-human"
+        );
+        // A title that was ONLY the id keeps it: a blank row says less than a
+        // duplicated one.
+        assert_eq!(
+            attention_row_title_without_its_id("x-1", Some("x-1")),
+            "x-1"
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.2 AC3: the valve command's PROGRAM is
+    /// named, its arguments are untouched.
+    #[test]
+    fn a_valve_commands_program_path_is_elided_and_its_arguments_are_not() {
+        assert_eq!(
+            elide_command_program_path(
+                "/home/ubuntu/.claude/plugins/cache/livespec-orchestrator-beads-fabro/\
+                 livespec-orchestrator-beads-fabro/d6ca5151c2bf/scripts/bin/drive.py \
+                 --action approve:x"
+                    .replace(char::is_whitespace, " ")
+                    .replace("  ", "")
+                    .as_str()
+            ),
+            "…/scripts/bin/drive.py --action approve:x"
+        );
+        // A program that is not a deep path is left exactly as advertised --
+        // including a bare command name, which has no segments to elide.
+        assert_eq!(
+            elide_command_program_path("drive resolve-blocked:work-item:ready"),
+            "drive resolve-blocked:work-item:ready"
+        );
+        assert_eq!(
+            elide_command_program_path("bin/drive.py --action x"),
+            "bin/drive.py --action x"
+        );
+        // A bare deep path with no arguments still elides.
+        assert_eq!(
+            elide_command_program_path("/a/b/c/d/scripts/bin/drive.py"),
+            "…/scripts/bin/drive.py"
+        );
     }
 
     #[test]

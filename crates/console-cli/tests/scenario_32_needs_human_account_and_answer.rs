@@ -76,9 +76,13 @@ fn the_needs_human_account_is_rendered_elided_on_the_row_and_whole_in_the_detail
     // The row: at the pinned 112x28 viewport the account cannot fit, so the row
     // elides it WITH AN INDICATOR rather than stopping mid-sentence in silence.
     let narrow = rendered(&model, 112, 28);
+    // Matched by the row's leading marker plus the lane word, not by the whole
+    // `Blocked: needs-human` phrase: since mx9u.2 the row leads with the work
+    // item's own token, so at this deliberately narrow pane the lane phrase is
+    // itself one of the things that elides -- which is the property under test.
     let row = narrow
         .lines()
-        .find(|line| line.contains("Blocked: needs-human"))
+        .find(|line| line.contains("> ") && line.contains("Blocked"))
         .unwrap_or_default()
         .to_owned();
     assert!(
@@ -91,9 +95,14 @@ fn the_needs_human_account_is_rendered_elided_on_the_row_and_whole_in_the_detail
     );
 
     // The detail: given a viewport whose Detail pane can hold it, the whole
-    // account renders, untruncated.
+    // account renders, untruncated. The viewport is wider than it used to need
+    // to be because the Attention view now splits its body 50/50 rather than
+    // 38/62 (livespec-console-beads-fabro-mx9u.2) -- the Detail pane is half of
+    // what is left after the navigation pane, so holding a ~380-character
+    // account on one line takes about 800 columns. What is under test is
+    // unchanged: given room, the account renders WHOLE.
     assert!(
-        rendered(&model, 640, 32).contains(ACCOUNT),
+        rendered(&model, 820, 32).contains(ACCOUNT),
         "the drilled-in detail must render the whole summary"
     );
     Ok(())
