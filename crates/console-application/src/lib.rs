@@ -1362,6 +1362,11 @@ pub enum TuiInteraction {
     /// collapse it back (the `Enter` key on a group row --
     /// livespec-console-beads-fabro-mx9u.6). Inert on an ordinary row.
     ToggleAttentionGroup,
+    /// Jump the Attention cursor to the next (`true`) or previous (`false`)
+    /// ACTIONABLE row, skipping every row that only needs reading
+    /// (livespec-console-beads-fabro-mx9u.32). Inert outside the `Attention`
+    /// view, and inert when no actionable row lies that way — it never wraps.
+    JumpToActionableAttentionRow(bool),
 }
 
 /// Which end of a list a selection move was refused at.
@@ -2761,6 +2766,69 @@ impl TuiScreenModel {
         self.selected_attention_index
             .and_then(|index| self.attention_items.get(index))
             .and_then(AttentionItem::group_key)
+    }
+
+    /// Whether the DISPLAYED Attention row at `index` is one the operator
+    /// ACTS on (livespec-console-beads-fabro-mx9u.32).
+    ///
+    /// Two shapes qualify, and nothing else. A GROUP row
+    /// (livespec-console-beads-fabro-mx9u.6) is actionable because `Enter`
+    /// expands it, and since mx9u.30 folded the `hygiene:<class>` findings that
+    /// name a work item, a group row is a common row in the real inbox rather
+    /// than an edge case. A row a VALVE acts on is actionable because a
+    /// per-item key fires on it.
+    ///
+    /// "A valve acts on it" is asked of the SAME registry derivation the
+    /// Status-line hints and the key handlers already consult — a row is
+    /// valve-actionable exactly when at least one keyed per-item action is
+    /// available for it. Re-deriving it from lanes or ids here would be a
+    /// second encoding of availability, and the jump would then land on rows
+    /// whose every verb is inert (or skip rows that do admit one).
+    ///
+    /// Indexed over `attention_items`, which is the DISPLAYED row list, so an
+    /// expanded group's members and a search's flattened rows are judged as
+    /// they render.
+    #[must_use]
+    pub fn attention_row_is_actionable(&self, index: usize) -> bool {
+        let Some(item) = self.attention_items.get(index) else {
+            return false;
+        };
+        if item.group_key().is_some() {
+            return true;
+        }
+        item.work_item_id()
+            .and_then(|work_item_id| self.work_item_by_id(work_item_id))
+            .is_some_and(|work_item| {
+                let ctx = action_registry::ActionContext::for_item(
+                    work_item,
+                    action_registry::ActionSurface::Attention,
+                    self.lane_board
+                        .column(Lane::Ready)
+                        .map_or(0, LaneColumn::count),
+                );
+                !action_registry::available_hint_tokens(&ctx).is_empty()
+            })
+    }
+
+    /// The next actionable Attention row after `from` (`forward`), or the last
+    /// one before it, in DISPLAYED order — `None` when there is none that way
+    /// (livespec-console-beads-fabro-mx9u.32).
+    ///
+    /// Strictly past `from` and never wrapping: an operator sitting on the last
+    /// actionable row and pressing the key again stays where they are rather
+    /// than being thrown back to the top of a list they have just walked.
+    /// `None` is what makes the keystroke inert, so the caller leaves the state
+    /// untouched.
+    #[must_use]
+    pub fn actionable_attention_row_from(&self, from: usize, forward: bool) -> Option<usize> {
+        let candidates = if forward {
+            (from.saturating_add(1)..self.attention_items.len()).collect::<Vec<_>>()
+        } else {
+            (0..from.min(self.attention_items.len())).rev().collect()
+        };
+        candidates
+            .into_iter()
+            .find(|index| self.attention_row_is_actionable(*index))
     }
 
     /// The move-status valve the operator may open on the selected drilled-in
@@ -6299,7 +6367,46 @@ fn reduce_interaction_state(
             .clone()
             .with_overlay(cycle_valve_option(state.overlay(), forward)),
         TuiInteraction::ToggleAttentionGroup => toggle_attention_group_state(state, model),
+        TuiInteraction::JumpToActionableAttentionRow(forward) => {
+            jump_to_actionable_attention_row_state(state, model, forward)
+        }
     }
+}
+
+/// Move the Attention cursor to the next / previous ACTIONABLE row
+/// (livespec-console-beads-fabro-mx9u.32).
+///
+/// Focus moves to the Content pane with the cursor. That is what makes the jump
+/// worth a key: the console starts with focus on the Views nav, where `Enter`
+/// dives into the content rather than acting on a row, so a jump that left
+/// focus behind would still cost the operator the `Enter` that the fourteen
+/// keystrokes began with. Landing focused is what reduces "reach the
+/// `release-adoption (13)` group and expand it" to the jump plus `Enter`.
+///
+/// With no actionable row that way the whole keystroke is inert — the returned
+/// state is the one passed in, so neither the cursor, the focus, nor the Detail
+/// scroll moves.
+fn jump_to_actionable_attention_row_state(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+    forward: bool,
+) -> TuiInteractionState {
+    if state.active_view() != TuiView::Attention {
+        return state.clone();
+    }
+    let from = current_attention_index(state, model);
+    model
+        .actionable_attention_row_from(from, forward)
+        .map_or_else(
+            || state.clone(),
+            |index| {
+                select_attention_at(state, model, index)
+                    // A different row is selected, so the Detail pane shows
+                    // different content (see `select_next`).
+                    .with_detail_scroll(0)
+                    .with_focus(FocusPane::Content)
+            },
+        )
 }
 
 /// Expand or collapse the selected Attention group row
@@ -12324,6 +12431,251 @@ mod tests {
             reduce_tui_interaction(&ordinary, &events, TuiInteraction::ToggleAttentionGroup)
                 == ordinary,
             "toggling an ordinary row changes nothing",
+        );
+    }
+
+    /// The real inbox's shape: ordinary findings the operator only reads,
+    /// interleaved with the rows they act on -- two group rows and a
+    /// work-item-backed row a valve fires on.
+    fn mixed_actionable_inbox_events() -> Vec<ConsoleEvent> {
+        let mut events = grouped_hygiene_events();
+        events.push(needs_human_lane_event("evt_blocked", "console-a", None));
+        events
+    }
+
+    /// A search-active Attention state, used to pin AC3's flattened rows. The
+    /// query stays empty, which matches every row -- the point is that a search
+    /// is ACTIVE, which is what suppresses grouping.
+    fn search_attention_state(events: &[ConsoleEvent]) -> TuiInteractionState {
+        reduce_tui_interaction(
+            &TuiInteractionState::new(0, TuiOverlay::None),
+            events,
+            TuiInteraction::OpenSearch,
+        )
+    }
+
+    /// livespec-console-beads-fabro-mx9u.32 AC1/AC2/AC4: one keypress moves the
+    /// Attention cursor to the next row the operator ACTS on -- a group row, or
+    /// a row a valve acts on -- and its documented opposite moves back, with
+    /// every read-only row in between skipped.
+    ///
+    /// AC4 is the observation this item was filed on: reaching the
+    /// `release-adoption` group from the top of the real inbox cost `Enter`
+    /// plus twelve `Down` presses plus `Enter`. Here it costs the jump plus
+    /// `Enter`, which is why the jump also carries focus into the Content pane
+    /// -- from the Views nav `Enter` only dives into the list, so a jump that
+    /// left focus behind would still owe that first keystroke.
+    #[test]
+    fn a_jump_key_steps_the_attention_cursor_over_the_rows_an_operator_acts_on() {
+        let events = mixed_actionable_inbox_events();
+        let start = TuiInteractionState::new(0, TuiOverlay::None);
+        let model = build_tui_model_for_state(&events, &start);
+        let ids = attention_ids(&model);
+        check(
+            ids == [
+                "console-a",
+                "hygiene:idle-factory",
+                "group:hygiene:release-adoption",
+                "group:hygiene:stale-worktree",
+                "hygiene:untriaged-backlog:x",
+                "spec-revise",
+            ],
+            &format!("rows: {ids:?}"),
+        );
+        let actionable = (0..ids.len())
+            .filter(|index| model.attention_row_is_actionable(*index))
+            .collect::<Vec<_>>();
+        check(
+            actionable == [0, 2, 3],
+            &format!("actionable rows: {actionable:?}"),
+        );
+        check(
+            !model.attention_row_is_actionable(ids.len()),
+            "a row past the end of the list is nothing to act on",
+        );
+
+        // ONE keypress from the top row reaches the first group row, skipping
+        // the ordinary finding between them, and lands with the list focused.
+        let jumped = reduce_tui_interaction(
+            &start,
+            &events,
+            TuiInteraction::JumpToActionableAttentionRow(true),
+        );
+        let jumped_model = build_tui_model_for_state(&events, &jumped);
+        check(
+            jumped_model.selected_attention_index() == Some(2),
+            &format!("landed on {:?}", jumped_model.selected_attention_index()),
+        );
+        check(
+            jumped.focus() == FocusPane::Content,
+            "the jump carries focus into the list",
+        );
+        // ...and the SECOND keypress is the Enter that expands it: two keys.
+        let expanded =
+            reduce_tui_interaction(&jumped, &events, TuiInteraction::ToggleAttentionGroup);
+        check(
+            expanded
+                .expanded_attention_groups()
+                .contains("hygiene:release-adoption"),
+            "jump then enter expands the group",
+        );
+
+        // The next jump walks on to the second group row; the two rows after
+        // it only need reading, so nothing lies further forward.
+        let second = reduce_tui_interaction(
+            &jumped,
+            &events,
+            TuiInteraction::JumpToActionableAttentionRow(true),
+        );
+        check(
+            build_tui_model_for_state(&events, &second).selected_attention_index() == Some(3),
+            "the second jump reaches the second group row",
+        );
+
+        // The documented opposite walks back over the same rows, again
+        // skipping the read-only finding.
+        let back = reduce_tui_interaction(
+            &second,
+            &events,
+            TuiInteraction::JumpToActionableAttentionRow(false),
+        );
+        check(
+            build_tui_model_for_state(&events, &back).selected_attention_index() == Some(2),
+            "the reverse jump returns to the first group row",
+        );
+        let back_again = reduce_tui_interaction(
+            &back,
+            &events,
+            TuiInteraction::JumpToActionableAttentionRow(false),
+        );
+        let back_again_model = build_tui_model_for_state(&events, &back_again);
+        check(
+            back_again_model.selected_attention_index() == Some(0),
+            "the reverse jump skips the read-only finding to the valve row",
+        );
+        check(
+            back_again_model
+                .selected_action_context()
+                .is_some_and(|ctx| !action_registry::available_hint_tokens(&ctx).is_empty()),
+            "the row it landed on is one a valve acts on",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.32 AC3: the jump respects what is
+    /// DISPLAYED. An expanded group's member rows are jumped over as they
+    /// render, and while a search flattens the list nothing is grouped, so the
+    /// only actionable rows left are the ones a valve acts on.
+    #[test]
+    fn the_jump_reads_the_displayed_rows_not_the_projection_order() {
+        let events = mixed_actionable_inbox_events();
+        let from_group = TuiInteractionState::new(2, TuiOverlay::None)
+            .with_attention_group_toggled("hygiene:release-adoption");
+        let expanded_model = build_tui_model_for_state(&events, &from_group);
+        let ids = attention_ids(&expanded_model);
+        check(
+            ids == [
+                "console-a",
+                "hygiene:idle-factory",
+                "group:hygiene:release-adoption",
+                "hygiene:release-adoption:alpha",
+                "hygiene:release-adoption:beta",
+                "group:hygiene:stale-worktree",
+                "hygiene:untriaged-backlog:x",
+                "spec-revise",
+            ],
+            &format!("expanded rows: {ids:?}"),
+        );
+        // The member rows the expansion revealed are read-only, so a jump from
+        // the expanded group row steps OVER them to the next group row at its
+        // RENDERED position -- not the position it held while collapsed.
+        let jumped = reduce_tui_interaction(
+            &from_group,
+            &events,
+            TuiInteraction::JumpToActionableAttentionRow(true),
+        );
+        check(
+            build_tui_model_for_state(&events, &jumped).selected_attention_index() == Some(5),
+            "the jump lands on the rendered position of the next group row",
+        );
+
+        let search_state = search_attention_state(&events);
+        let search_model = build_tui_model_for_state(&events, &search_state);
+        check(
+            search_model
+                .attention_items()
+                .iter()
+                .all(|item| item.group_key().is_none()),
+            "a search flattens every group",
+        );
+        let search_actionable = (0..search_model.attention_items().len())
+            .filter(|index| search_model.attention_row_is_actionable(*index))
+            .collect::<Vec<_>>();
+        check(
+            search_actionable == [0],
+            &format!("flattened actionable rows: {search_actionable:?}"),
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.32 AC2: with no actionable row that
+    /// way the key is INERT -- the cursor stays, the list is unchanged, and it
+    /// never wraps around into a surprise. Also inert outside `Attention`,
+    /// whose group / valve row distinction is the only place the jump is
+    /// defined.
+    #[test]
+    fn the_jump_is_inert_when_no_actionable_row_lies_that_way() {
+        let events = mixed_actionable_inbox_events();
+        // On the LAST actionable row, forward finds nothing.
+        let last = TuiInteractionState::new(3, TuiOverlay::None).with_focus(FocusPane::Content);
+        check(
+            reduce_tui_interaction(
+                &last,
+                &events,
+                TuiInteraction::JumpToActionableAttentionRow(true),
+            ) == last,
+            "forward from the last actionable row changes nothing",
+        );
+        // On the FIRST actionable row, backward finds nothing.
+        let first = TuiInteractionState::new(0, TuiOverlay::None).with_focus(FocusPane::Content);
+        check(
+            reduce_tui_interaction(
+                &first,
+                &events,
+                TuiInteraction::JumpToActionableAttentionRow(false),
+            ) == first,
+            "backward from the first actionable row changes nothing",
+        );
+        // An inbox holding nothing to act on, and an empty one: inert both ways.
+        let read_only = [attention_appeared(
+            "evt_lonely",
+            &hygiene_attention_item("hygiene:idle-factory", "Factory idle"),
+        )];
+        for forward in [true, false] {
+            check(
+                reduce_tui_interaction(
+                    &first,
+                    &read_only,
+                    TuiInteraction::JumpToActionableAttentionRow(forward),
+                ) == first,
+                "an inbox with nothing to act on leaves the cursor alone",
+            );
+            check(
+                reduce_tui_interaction(
+                    &first,
+                    &[],
+                    TuiInteraction::JumpToActionableAttentionRow(forward),
+                ) == first,
+                "an empty inbox leaves the cursor alone",
+            );
+        }
+        // Another view's list is not the Attention list.
+        let lanes = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None);
+        check(
+            reduce_tui_interaction(
+                &lanes,
+                &events,
+                TuiInteraction::JumpToActionableAttentionRow(true),
+            ) == lanes,
+            "the jump is inert outside the Attention view",
         );
     }
 
@@ -21811,7 +22163,7 @@ mod tests {
         let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Done);
         assert_eq!(
             hint,
-            "up/down move | enter open | 1-6 view | ? help | q quit"
+            "up/down move | ]/[ jump | enter open | 1-6 view | ? help | q quit"
         );
     }
 
@@ -21894,43 +22246,43 @@ mod tests {
                 Attention,
                 Lane::Backlog,
                 true,
-                "up/down move | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::PendingApproval,
                 false,
-                "up/down move | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Ready,
                 false,
-                "up/down move | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Active,
                 false,
-                "up/down move | enter open | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Acceptance,
                 false,
-                "up/down move | enter open | s move-status | c accept | r reject | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | c accept | r reject | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Blocked,
                 false,
-                "up/down move | enter open | s move-status | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | 1-6 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Done,
                 false,
-                "up/down move | enter open | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | 1-6 view | ? help | q quit",
             ),
             (
                 LaneDrill,
@@ -22021,7 +22373,7 @@ mod tests {
         let hint = selected_item_hint(&auto, TEST_LIST_ROWS);
         assert_eq!(
             hint,
-            "up/down move | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit"
+            "up/down move | ]/[ jump | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit"
         );
         let approve = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &auto));
         assert_eq!(approve, Some(None));

@@ -4,6 +4,10 @@ Generated from `console_application::action_registry` by `just generate-key-acti
 
 The menu bar is generated from the registry's menu taxonomy. Open it with `v`; from the Views pane, `Left` also opens the menu bar as the hotkey-free entry path.
 
+## Attention List Navigation
+
+`]` moves the Attention cursor to the next ACTIONABLE row and `[` to the previous one -- a group row, or a row a valve acts on -- skipping the rows that only need reading. Neither wraps, and neither is a registry action: they move the cursor and mutate nothing.
+
 ## Global Status Hint Tokens
 
 `1-6 view | ? help | q quit`

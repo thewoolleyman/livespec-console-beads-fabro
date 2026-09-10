@@ -906,6 +906,48 @@ pub fn global_status_hint() -> String {
     global_status_hint_tokens().join(" | ")
 }
 
+/// The key that jumps the Attention cursor FORWARD to the next actionable row
+/// (livespec-console-beads-fabro-mx9u.32).
+///
+/// # Why `]` / `[` and not `Tab` / `Shift-Tab`
+///
+/// The filed item recommended `Tab` / `Shift-Tab` as "free". They are not:
+/// `Tab` and `BackTab` already cycle the pane FOCUS ring — the one ring that
+/// includes the top/header pane — and rebinding them would take away the only
+/// way to focus the header. `]` and `[` are genuinely unbound, cannot be
+/// mistaken for one of the ten mutating valve/policy letters, and carry the
+/// established "next / previous thing of interest" meaning (`]]` / `[[`,
+/// `]c` / `[c`) an operator already has for jumping over rows they do not
+/// need to read.
+///
+/// Held HERE, beside the registry that owns every other key, so the Status
+/// hint, the modal Help and the generated reference all advertise the same
+/// character rather than three independently-typed copies of it.
+pub const ATTENTION_JUMP_NEXT_KEY: char = ']';
+
+/// The key that jumps the Attention cursor BACKWARD to the previous actionable
+/// row — the documented opposite of [`ATTENTION_JUMP_NEXT_KEY`].
+pub const ATTENTION_JUMP_PREVIOUS_KEY: char = '[';
+
+/// How the two jump keys are named to the operator, wherever they are
+/// advertised as a pair.
+#[must_use]
+pub fn attention_jump_keys_display() -> String {
+    format!("{ATTENTION_JUMP_NEXT_KEY} / {ATTENTION_JUMP_PREVIOUS_KEY}")
+}
+
+/// What the jump keys DO, in one sentence, for the surfaces that explain them.
+#[must_use]
+pub fn attention_jump_description() -> String {
+    format!(
+        "`{ATTENTION_JUMP_NEXT_KEY}` moves the Attention cursor to the next \
+         ACTIONABLE row and `{ATTENTION_JUMP_PREVIOUS_KEY}` to the previous \
+         one -- a group row, or a row a valve acts on -- skipping the rows \
+         that only need reading. Neither wraps, and neither is a registry \
+         action: they move the cursor and mutate nothing."
+    )
+}
+
 /// The NAVIGATION fragment of a selected work-item's Status-line hint.
 ///
 /// Composed from the LIST the selection sits in — the surface it is hosted on
@@ -925,9 +967,18 @@ pub fn global_status_hint() -> String {
 /// one row still drops the fragment — there is nowhere to move to, which is the
 /// honest reading of the Status-line contract, and the same condition an empty
 /// lane already reported.
+///
+/// The Attention multi-row arm also names the actionable-row jump
+/// ([`ATTENTION_JUMP_NEXT_KEY`] / [`ATTENTION_JUMP_PREVIOUS_KEY`]), which moves
+/// the same cursor `up`/`down` move and is advertised beside them for the same
+/// reason. It is absent from the single-row arm exactly as `up/down move` is:
+/// with one row there is nowhere to jump. The characters are spelled inline
+/// because this is a `const fn` over `&'static str`; `jump_keys_are_named_in_
+/// the_attention_navigation_hint` binds the literal back to the constants so
+/// the two cannot drift.
 const fn navigation_hint_prefix(surface: ActionSurface, row_count: usize) -> &'static str {
     match (surface, row_count > 1) {
-        (ActionSurface::Attention, true) => "up/down move | enter open",
+        (ActionSurface::Attention, true) => "up/down move | ]/[ jump | enter open",
         (ActionSurface::Attention, false) => "enter open",
         (ActionSurface::LaneDrill, true) => "up/down move | enter item | esc lane list",
         (ActionSurface::LaneDrill, false) => "enter item | esc lane list",
@@ -1200,6 +1251,10 @@ pub fn operator_key_action_reference_markdown() -> String {
         "The menu bar is generated from the registry's menu taxonomy. Open it \
          with `v`; from the Views pane, `Left` also opens the menu bar as the \
          hotkey-free entry path.",
+        "",
+        "## Attention List Navigation",
+        "",
+        &attention_jump_description(),
         "",
         "## Global Status Hint Tokens",
         "",
@@ -1606,6 +1661,56 @@ mod tests {
         assert!(markdown.contains(&format!("`{}`", global_status_hint_tokens().join(" | "))));
     }
 
+    /// livespec-console-beads-fabro-mx9u.32 AC5: the Attention navigation hint
+    /// names BOTH jump keys, and it names the ones the constants hold.
+    ///
+    /// [`navigation_hint_prefix`] is a `const fn` over `&'static str`, so it
+    /// cannot interpolate the constants and the characters are spelled inline.
+    /// This is the seam that keeps that spelling honest -- the hint, the modal
+    /// Help and the generated reference all advertise
+    /// [`ATTENTION_JUMP_NEXT_KEY`] / [`ATTENTION_JUMP_PREVIOUS_KEY`], and a
+    /// change to either constant that forgot the hint reddens here rather than
+    /// telling an operator to press a key nothing is bound to.
+    ///
+    /// The single-row arm names neither, exactly as it names no `up/down move`:
+    /// with one row there is nowhere to jump.
+    #[test]
+    fn jump_keys_are_named_in_the_attention_navigation_hint() {
+        // Every advertising surface is asked for the SAME two characters. A
+        // rebinding that updated the constants and forgot one of these reddens
+        // here rather than telling an operator to press an unbound key.
+        let advertised = [
+            super::navigation_hint_prefix(ActionSurface::Attention, 7).to_owned(),
+            super::attention_jump_keys_display(),
+            super::attention_jump_description(),
+            super::operator_key_action_reference_markdown(),
+        ];
+        // ...and the surfaces the jump is NOT part of stay clear of them: the
+        // one-row Attention list (nowhere to jump, exactly as it names no
+        // `up/down move`) and the drilled-in lane, another list entirely.
+        let silent = [
+            super::navigation_hint_prefix(ActionSurface::Attention, 1),
+            super::navigation_hint_prefix(ActionSurface::LaneDrill, 7),
+        ];
+        // The offending KEY rides in the compared value rather than in an
+        // assertion message: a message only a failing run formats is a region
+        // a green suite can never cover.
+        let keys = [
+            super::ATTENTION_JUMP_NEXT_KEY,
+            super::ATTENTION_JUMP_PREVIOUS_KEY,
+        ];
+        let unadvertised = keys
+            .into_iter()
+            .filter(|key| advertised.iter().any(|text| !text.contains(*key)))
+            .collect::<Vec<char>>();
+        assert_eq!(unadvertised, Vec::new());
+        let leaked = keys
+            .into_iter()
+            .filter(|key| silent.iter().any(|text| text.contains(*key)))
+            .collect::<Vec<char>>();
+        assert_eq!(leaked, Vec::new());
+    }
+
     #[test]
     fn the_navigation_hint_is_composed_from_the_list_not_from_the_action_set() {
         // The reported defect, quantified: with the LIST held fixed, varying
@@ -1614,7 +1719,10 @@ mod tests {
         // several, and both must name the same movement, because the cursor
         // moves identically over both.
         for (surface, prefix) in [
-            (ActionSurface::Attention, "up/down move | enter open"),
+            (
+                ActionSurface::Attention,
+                "up/down move | ]/[ jump | enter open",
+            ),
             (
                 ActionSurface::LaneDrill,
                 "up/down move | enter item | esc lane list",
@@ -1673,7 +1781,7 @@ mod tests {
             (
                 ActionSurface::Attention,
                 "enter open",
-                "up/down move | enter open",
+                "up/down move | ]/[ jump | enter open",
             ),
         ] {
             let hint_for = |row_count: usize| {
