@@ -9877,14 +9877,39 @@ fn attention_group_class(group_key: &str) -> &str {
         .map_or(group_key, |(_kind, class)| class)
 }
 
+/// The `<kind>` an attention id leads with: the namespace that says whether a
+/// row IS the thing (`impl:<id>`, `human-valve:...`) or is a FINDING ABOUT
+/// something (`hygiene:<class>:<subject>`).
+fn attention_id_kind(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(kind, _rest)| kind)
+}
+
+/// Findings, whose row is a complaint about a subject rather than the subject
+/// itself, and which therefore group by class even when a member names the
+/// work item it complains about (livespec-console-beads-fabro-mx9u.30).
+const ATTENTION_FINDING_KIND: &str = "hygiene";
+
 /// The group key an entry would collapse under, with the snapshot it carries.
-/// Only a needs-attention row with NO work-item id is groupable: a work-item
-/// row, or any row a valve acts on, is always its own row.
+///
+/// A row a valve acts on is always its own row: there the work-item id IS the
+/// row, and folding it away would hide the thing the operator acts on.
+///
+/// A `hygiene:<class>` FINDING groups by class whether or not it carries a
+/// work-item id (livespec-console-beads-fabro-mx9u.30, narrowing mx9u.6's AC2).
+/// The original rule keyed on "carries a work-item id" as a proxy for "is a
+/// row you act on individually", and the two came apart on the real inbox:
+/// every `hygiene:untriaged-backlog:<id>` row names the item it complains
+/// about, so six near-identical rows stayed unfolded beside a folded
+/// `release-adoption (13)` -- two grouping behaviours on one screen, for rows
+/// of one kind. What the operator acts on there is the CLASS; the member rows
+/// are still reachable, and still drill into their own items, one Enter away.
 fn groupable_attention_entry(entry: &AttentionEntry) -> Option<(&str, &AttentionItemSnapshot)> {
     let AttentionEntry::NeedsAttention(item) = entry else {
         return None;
     };
-    if item.source_ref().work_item().is_some() {
+    if item.source_ref().work_item().is_some()
+        && attention_id_kind(item.id()) != ATTENTION_FINDING_KIND
+    {
         return None;
     }
     attention_group_key(item.id()).map(|key| (key, item))
@@ -10818,7 +10843,7 @@ fn event_sources_roster_items(
 ) -> Vec<ViewSummaryItem> {
     if observed_sources.is_empty() {
         return vec![ViewSummaryItem::new(
-            "No sources have reported any events yet".to_owned(),
+            "No event sources have reported any events yet".to_owned(),
             String::new(),
         )];
     }
@@ -12302,11 +12327,15 @@ mod tests {
         );
     }
 
-    /// livespec-console-beads-fabro-mx9u.6 AC2: work-item-backed rows -- lane
-    /// rows and needs-attention rows naming a work-item -- are never grouped,
-    /// even when their ids share a kind prefix.
+    /// livespec-console-beads-fabro-mx9u.6 AC2, as narrowed by mx9u.30: a LANE
+    /// row and a row a VALVE acts on are never grouped, even when their ids
+    /// share a kind prefix, because there the work-item id IS the row. The
+    /// broader "anything carrying a work-item id" reading of AC2 is gone --
+    /// `hygiene:<class>` findings that name the item they complain about DO
+    /// group, which `hygiene_findings_group_by_class_even_when_each_names_a_work_item`
+    /// pins.
     #[test]
-    fn work_item_backed_attention_rows_are_never_grouped() {
+    fn lane_and_valve_rows_are_never_grouped_though_they_carry_work_item_ids() {
         let events = vec![
             needs_human_lane_event("evt_1", "console-a", None),
             needs_human_lane_event("evt_2", "console-b", None),
@@ -12337,6 +12366,117 @@ mod tests {
                 .iter()
                 .all(|item| item.group_key().is_none() && item.work_item_id().is_some()),
             "every row keeps its work-item id and none is a group row",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.30: a `hygiene:<class>` FINDING groups
+    /// by class even though each member names the work item it complains about,
+    /// while a valve row carrying a work-item id still stays its own row. Both
+    /// shapes appear here together, because the bug was that ONE screen showed
+    /// both behaviours for rows of one kind.
+    #[test]
+    fn hygiene_findings_group_by_class_even_when_each_names_a_work_item() {
+        let events = [
+            (
+                "hygiene:untriaged-backlog:console-a",
+                "Un-triaged backlog work-item at P2",
+            ),
+            (
+                "hygiene:untriaged-backlog:console-b",
+                "Un-triaged backlog work-item at P2",
+            ),
+            (
+                "hygiene:untriaged-backlog:console-c",
+                "Un-triaged backlog work-item at P3",
+            ),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, (id, summary))| {
+            attention_appeared(
+                &format!("evt_finding_{index}"),
+                &AttentionItemSnapshot::new(
+                    id,
+                    "hygiene",
+                    "low",
+                    summary,
+                    // The finding NAMES the item it complains about -- the
+                    // shape the old rule read as "never group me".
+                    AttentionSourceRef::new("console", Some("console-a"), None),
+                    AttentionHandoff::new("triage", None, &format!("triage {id}")),
+                ),
+            )
+        })
+        .chain([attention_appeared(
+            "evt_valve",
+            &attention_item("human-valve:approve:console-z", "human-valve", "Approve z"),
+        )])
+        .collect::<Vec<_>>();
+        let model =
+            build_tui_model_for_state(&events, &TuiInteractionState::new(0, TuiOverlay::None));
+        let ids = attention_ids(&model);
+        // The valve row leads because the projection ranks by urgency and it is
+        // `high` against these findings' `low` -- grouping changes what a row
+        // IS, never where the ranking puts it.
+        check(
+            ids == [
+                "human-valve:approve:console-z",
+                "group:hygiene:untriaged-backlog",
+            ],
+            &format!("rows: {ids:?}"),
+        );
+        let group = &model.attention_items()[1];
+        check(
+            group.group_key() == Some("hygiene:untriaged-backlog"),
+            &format!("group key: {:?}", group.group_key()),
+        );
+        // The count leads, then the words all three members share -- which
+        // stop at `at`, since they diverge at P2 vs P3.
+        check(
+            group.title() == "(3) Un-triaged backlog work-item at … [enter expand]",
+            &format!("group title: {}", group.title()),
+        );
+        // The valve row is the control: it carries a work-item id too, and it
+        // must still be its own row.
+        check(
+            model.attention_items()[0].group_key().is_none(),
+            "a valve row is never folded into a group",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.30: expanding the group still reaches
+    /// each member's own row, so folding a finding that names a work item hides
+    /// nothing the operator could act on before.
+    #[test]
+    fn an_expanded_hygiene_group_still_reaches_each_member_row() {
+        let events = ["console-a", "console-b"]
+            .iter()
+            .enumerate()
+            .map(|(index, subject)| {
+                attention_appeared(
+                    &format!("evt_expand_{index}"),
+                    &AttentionItemSnapshot::new(
+                        &format!("hygiene:untriaged-backlog:{subject}"),
+                        "hygiene",
+                        "low",
+                        "Un-triaged backlog work-item at P2",
+                        AttentionSourceRef::new("console", Some(subject), None),
+                        AttentionHandoff::new("triage", None, "triage"),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expanded = TuiInteractionState::new(0, TuiOverlay::None)
+            .with_attention_group_toggled("hygiene:untriaged-backlog");
+        let model = build_tui_model_for_state(&events, &expanded);
+        let ids = attention_ids(&model);
+        check(
+            ids == [
+                "group:hygiene:untriaged-backlog",
+                "hygiene:untriaged-backlog:console-a",
+                "hygiene:untriaged-backlog:console-b",
+            ],
+            &format!("expanded rows: {ids:?}"),
         );
     }
 
@@ -14569,7 +14709,7 @@ mod tests {
         assert_eq!(model.view_items().len(), 1);
         assert_eq!(
             model.view_items()[0].title(),
-            "No sources have reported any events yet"
+            "No event sources have reported any events yet"
         );
     }
 
