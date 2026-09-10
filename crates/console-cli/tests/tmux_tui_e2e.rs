@@ -30,7 +30,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use console_application::STARTUP_INGEST_LOADING_TELL;
+use console_application::{DISPATCHER_SETTINGS_NOT_YET_READ_TELL, STARTUP_INGEST_LOADING_TELL};
 use console_domain::EventType;
 use console_eventstore::SqliteEventStore;
 use livespec_console_beads_fabro::{lane_diagnostics_path, lane_failures_in};
@@ -857,9 +857,13 @@ fn tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers() -> HarnessResu
     // source before ever handing back the console, defeating the entire
     // point of this scene. The health check runs explicitly below, AFTER
     // convergence, instead.
-    let started = Instant::now();
     let console = TmuxConsole::launch_with_env_unchecked(&repo, &extra_env)?;
-    let elapsed = started.elapsed();
+    // The harness measures this INSIDE the launch, after its console slot is
+    // claimed. A clock started around the whole call would include the wait in
+    // that queue behind any other scene holding the slot, which is not a
+    // property of the console under test at all -- see
+    // `TmuxConsole::time_to_first_frame` (livespec-console-beads-fabro-mx9u.29).
+    let elapsed = console.time_to_first_frame();
 
     assert!(
         elapsed < slow_sleep,
@@ -896,6 +900,132 @@ fn tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers() -> HarnessResu
     console.wait_for("TUI_EXIT=0", render_timeout())?;
     let _ignored = std::fs::remove_dir_all(&scratch);
     Ok(())
+}
+
+/// livespec-console-beads-fabro-mx9u.29: the first frame paints WITHOUT waiting
+/// for the effective-policy read, and the Settings view says so until it lands.
+///
+/// # The defect this reproduces
+///
+/// `pzbdbo.27` took the synchronous SOURCE ingest off the pre-first-frame path
+/// and left one other blocking call there deliberately: the composition root's
+/// `DispatcherSettingsPort::read_settings()`, one `drive --action config`
+/// shell-out. Measured 2026-09-09 against real backing CLIs, that one call was
+/// ~6s of the remaining ~10.6s time-to-first-frame.
+///
+/// # How it is reproduced deterministically
+///
+/// The stateful lifecycle fixture's `drive.sh` already answers the `config`
+/// read with the six real settings; this scene WRAPS that same script in a stub
+/// that sleeps [`support::slow_source_sleep`] first. Wrapping rather than
+/// reimplementing keeps the payload identical to every other scene's, so what
+/// this test varies is exactly one thing: how long the read takes to answer.
+///
+/// # Why all three assertions are needed
+///
+/// The elapsed bound proves the read is off the first-frame path. The
+/// not-yet-read tell proves the console does not fill the gap with the settings
+/// DEFAULTS, which would present six values the operator never chose as though
+/// they were live policy. The convergence assertion proves the background read
+/// actually lands -- a console that painted fast by simply never reading the
+/// policy would satisfy the first two on its own.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_first_frame_paints_before_the_effective_policy_read_answers() -> HarnessResult<()> {
+    let repo = RepoFixture::new(
+        "e2e-slow-config",
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    );
+    let fixture = LifecycleFixture::new("slow-config", "backlog")?;
+    let scratch = std::env::temp_dir().join(format!("lc-e2e-slow-config-{}", std::process::id()));
+    let _ignored = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch)
+        .map_err(|error| format!("create scratch dir {} failed: {error}", scratch.display()))?;
+
+    let slow_sleep = slow_source_sleep();
+    let env = fixture.env();
+    let real_drive = env
+        .iter()
+        .find(|(key, _value)| *key == "LIVESPEC_CONSOLE_DRIVE_PROGRAM")
+        .map(|(_key, value)| value.clone())
+        .ok_or_else(|| "the lifecycle fixture must export a drive program".to_owned())?;
+    let stub = write_slow_drive_stub(&scratch, Path::new(&real_drive), slow_sleep)?;
+    let stub_path = stub.display().to_string();
+    let borrowed: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(key, value)| {
+            if *key == "LIVESPEC_CONSOLE_DRIVE_PROGRAM" {
+                (*key, stub_path.as_str())
+            } else {
+                (*key, value.as_str())
+            }
+        })
+        .collect();
+
+    // Unchecked, for the same reason the slow-source scene above is: the
+    // checked entry point waits for a SETTLED frame, and this scene exists to
+    // inspect the console before it has converged.
+    let console = TmuxConsole::launch_with_env_unchecked(&repo, &borrowed)?;
+    // Measured inside the launch, after the console slot is claimed -- see
+    // `TmuxConsole::time_to_first_frame`.
+    let elapsed = console.time_to_first_frame();
+    assert!(
+        elapsed < slow_sleep,
+        "the first frame must paint WITHOUT waiting for the effective-policy \
+         read: painted after {elapsed:?}, the config read alone sleeps \
+         {slow_sleep:?} -- a launch that still blocked on it would exceed this bound"
+    );
+
+    // The Settings view, captured while the read is provably still in flight.
+    console.send_keys(&["6"])?;
+    let in_flight = console.wait_for("view: Settings", render_timeout())?;
+    assert!(
+        in_flight.contains(DISPATCHER_SETTINGS_NOT_YET_READ_TELL),
+        "the Settings view must name that the policy is not read YET:\n{in_flight}"
+    );
+    assert!(
+        !in_flight.contains("WIP cap"),
+        "no setting value may render before the read answers:\n{in_flight}"
+    );
+
+    // Convergence: the background read lands and the real values replace the
+    // tell, with no keystroke and no restart.
+    let settled = wait_until_absent(
+        &console,
+        DISPATCHER_SETTINGS_NOT_YET_READ_TELL,
+        slow_sleep + render_timeout(),
+    )?;
+    assert!(
+        settled.contains("WIP cap"),
+        "the effective policy must appear once the slow read answers:\n{settled}"
+    );
+
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
+    let _ignored = std::fs::remove_dir_all(&scratch);
+    Ok(())
+}
+
+/// Wrap `real` in a stub that sleeps `sleep` and then execs it, arguments
+/// untouched -- so the payload the console parses is byte-identical to the one
+/// every other lifecycle-fixture scene gets, and only its LATENCY differs.
+fn write_slow_drive_stub(scratch: &Path, real: &Path, sleep: Duration) -> HarnessResult<PathBuf> {
+    let stub = scratch.join("stub-slow-drive.sh");
+    let body = format!(
+        "#!/usr/bin/env bash\nsleep {}\nexec {} \"$@\"\n",
+        sleep.as_secs(),
+        real.display()
+    );
+    std::fs::write(&stub, body)
+        .map_err(|error| format!("write stub {} failed: {error}", stub.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&stub, permissions)
+            .map_err(|error| format!("chmod {} failed: {error}", stub.display()))?;
+    }
+    Ok(stub)
 }
 
 /// Write a needs-attention stub that sleeps `sleep` before emitting the

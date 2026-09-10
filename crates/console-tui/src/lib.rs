@@ -27,13 +27,14 @@ use console_application::source_event_counts::SourceEventCounts;
 use console_application::source_staleness::SourceStaleness;
 use console_application::writer_identity::WriterLeaseStatus;
 use console_application::{
-    ApplicationError, AttentionDetail, AttentionItem, DispatcherSettingsRead, EventsFocus,
-    FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn, LaneExecutionState, LaneFocus,
-    LaneWorkItem, OperatorAction, OperatorActionOutcome, PendingValve, PluginResolution,
-    SettingRow, TimelineEntry, TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel,
-    TuiView, ViewSummaryItem, action_registry, build_tui_model_for_state, dispatcher_setting_rows,
-    header_help_section, reduce_tui_interaction, resolve_command_palette_action,
-    resolve_dispatcher_setting_edit, resolve_valve_action, validate_operator_action,
+    ApplicationError, AttentionDetail, AttentionItem, DISPATCHER_SETTINGS_NOT_YET_READ_TELL,
+    DispatcherSettingsRead, EventsFocus, FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn,
+    LaneExecutionState, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome,
+    PendingValve, PluginResolution, SettingRow, TimelineEntry, TuiInteraction, TuiInteractionState,
+    TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, action_registry,
+    build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
+    reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
+    resolve_valve_action, validate_operator_action,
 };
 use console_domain::{CommandEnvelope, ConsoleEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -284,6 +285,15 @@ fn run_terminal_loop(
         // as the build staleness above: a non-blocking `Mutex` read, never IO
         // on this thread (livespec-console-beads-fabro-mx9u.23 AC3).
         apply_writer_lease_status(&mut state, session.take_writer_lease_status());
+        // The session's background effective-policy read, folded in the tick it
+        // lands (livespec-console-beads-fabro-mx9u.29). A cheap, non-blocking
+        // take -- the ~6s `drive --action config` shell-out that produces it
+        // ran off this thread, which is the whole point of the item. It yields
+        // a value at most once per read, so it cannot clobber the post-write
+        // re-read below.
+        if let Some(fresh) = session.take_dispatcher_settings() {
+            apply_dispatcher_settings_reread(&mut state, fresh);
+        }
         // Whether -- and how -- this tick's outcome warrants a store refresh.
         // `LoopTick::HandledInput` (one or more keys handled, none mutating)
         // skips it entirely: no store read, no backing-CLI call on the
@@ -929,6 +939,24 @@ pub trait TuiLiveSession: TuiRuntimeEffectSink {
     /// state -- for the legacy entry point and every test double with no
     /// lease to report.
     fn take_writer_lease_status(&mut self) -> Option<WriterLeaseStatus> {
+        None
+    }
+
+    /// Take the session's background effective-policy read, if one has landed
+    /// since the last tick (livespec-console-beads-fabro-mx9u.29).
+    ///
+    /// Reading the effective policy is a `drive --action config` shell-out
+    /// measured at ~6s, so the interactive composition root no longer makes it
+    /// before the first frame -- it starts a background read and the answer
+    /// arrives HERE, mid-session, the way every other off-thread fact does.
+    /// Unlike [`Self::take_build_staleness`] this genuinely TAKES: it yields
+    /// its value once and `None` thereafter, so it cannot overwrite the fresher
+    /// read [`Self::refresh_dispatcher_settings`] performs after an operator's
+    /// own settings write (see
+    /// `console_application::dispatcher_settings_cell::SharedDispatcherSettingsRead`).
+    /// Defaults to `None` -- unchanged state -- for the legacy entry point and
+    /// every test double with no background reader behind it.
+    fn take_dispatcher_settings(&mut self) -> Option<DispatcherSettingsRead> {
         None
     }
 
@@ -4023,6 +4051,19 @@ fn render_settings(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
             StatefulWidget::render(list, area, buffer, &mut list_state);
             render_vertical_scrollbar(area, buffer, count, list_state.offset());
         }
+        // The two non-observed states render DIFFERENT sentences on purpose
+        // (livespec-console-beads-fabro-mx9u.29): one says the read has not
+        // happened yet, the other that it happened and produced nothing
+        // trustworthy. NEITHER renders a setting value, so no default is ever
+        // presented as though it were the operator's live policy.
+        DispatcherSettingsRead::NotYetRead => {
+            Paragraph::new(vec![
+                plugin_resolution_line(model.plugin_resolution()),
+                Line::from(DISPATCHER_SETTINGS_NOT_YET_READ_TELL),
+            ])
+            .block(block)
+            .render(area, buffer);
+        }
         DispatcherSettingsRead::NotObserved => {
             Paragraph::new(vec![
                 plugin_resolution_line(model.plugin_resolution()),
@@ -4079,10 +4120,21 @@ fn render_settings_detail(
 /// can be exercised directly.
 fn settings_detail_lines(model: &TuiScreenModel) -> Vec<Line<'static>> {
     let mut lines = plugin_resolution_detail_lines(model.plugin_resolution());
-    let DispatcherSettingsRead::Observed(settings) = model.dispatcher_settings() else {
-        lines.push(Line::from(String::new()));
-        lines.push(Line::from("Dispatcher settings not observed"));
-        return lines;
+    let settings = match model.dispatcher_settings() {
+        DispatcherSettingsRead::Observed(settings) => settings,
+        // Mirrors the content pane above, and must: the two panes cannot be
+        // allowed to disagree about whether the policy is unread or unreadable
+        // (livespec-console-beads-fabro-mx9u.29).
+        DispatcherSettingsRead::NotYetRead => {
+            lines.push(Line::from(String::new()));
+            lines.push(Line::from(DISPATCHER_SETTINGS_NOT_YET_READ_TELL));
+            return lines;
+        }
+        DispatcherSettingsRead::NotObserved => {
+            lines.push(Line::from(String::new()));
+            lines.push(Line::from("Dispatcher settings not observed"));
+            return lines;
+        }
     };
     let rows = dispatcher_setting_rows(settings, model.dispatcher_setting_write());
     lines.push(Line::from(String::new()));
@@ -4243,6 +4295,8 @@ fn buffer_to_text(buffer: &Buffer, area: Rect) -> String {
 
 #[cfg(test)]
 mod tests {
+    use console_application::DISPATCHER_SETTINGS_NOT_YET_READ_TELL;
+
     use crate::{
         ATTENTION_LOADING_PLACEHOLDER, HELP_MODAL_MARGIN, apply_build_staleness,
         apply_dispatcher_settings_reread, apply_sink_outcome, apply_source_event_counts,
@@ -4722,6 +4776,22 @@ mod tests {
         check(
             session.take_build_staleness().is_none(),
             "a session with no probe behind it reports no build staleness",
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_background_reader_behind_it_reports_no_dispatcher_settings() {
+        // The trait default (livespec-console-beads-fabro-mx9u.29), same
+        // reasoning as the build-staleness default above: a session with no
+        // background effective-policy reader behind it must leave the loop's
+        // seeded state alone rather than manufacturing a read. It is also what
+        // keeps the take ONE-SHOT for the sessions that do have one -- `None`
+        // means "nothing new", never "assume the default".
+        let mut session = DeferredTuiRuntimeEffectSink;
+
+        check(
+            session.take_dispatcher_settings().is_none(),
+            "a session with no background reader behind it reports no dispatcher settings",
         );
     }
 
@@ -11777,6 +11847,64 @@ mod tests {
         assert_eq!(
             rendered.map(|value| value.contains("Dispatcher settings not observed")),
             Ok(true)
+        );
+    }
+
+    #[test]
+    fn the_not_yet_read_window_names_itself_and_renders_no_values() {
+        // livespec-console-beads-fabro-mx9u.29 AC2. The effective-policy read
+        // now happens in the background, so the first frame paints before the
+        // console knows the policy. Filling that gap with the six DEFAULTS
+        // would present values the operator never chose as though they were
+        // live configuration -- the same class of lie mx9u.22, mx9u.24,
+        // mx9u.14 and mx9u.17 each closed. `renders_six_settings_rows_...`
+        // above is the control that makes the absence assertions here
+        // discriminating: an observed read really does put "WIP cap" on screen.
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_selected_setting_index(0)
+            .with_dispatcher_settings(DispatcherSettingsRead::NotYetRead);
+        let model = build_tui_model_for_state(&[], &state);
+        let rendered = render_to_text(&model, 120, 24).unwrap_or_default();
+        assert!(
+            rendered.contains(DISPATCHER_SETTINGS_NOT_YET_READ_TELL),
+            "the not-yet-read window must name itself: {rendered}"
+        );
+        assert!(
+            !rendered.contains("WIP cap"),
+            "no setting row may render before the read answers: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Dispatcher settings not observed"),
+            "a read still in flight must not be reported as a FAILED read: {rendered}"
+        );
+        // The detail pane carries the SAME sentence: the two panes cannot be
+        // allowed to disagree about whether the policy is unread or unreadable.
+        assert!(
+            settings_detail_lines(&model)
+                .contains(&Line::from(DISPATCHER_SETTINGS_NOT_YET_READ_TELL)),
+            "the detail pane must mirror the content pane"
+        );
+    }
+
+    #[test]
+    fn a_failed_read_is_not_softened_into_the_not_yet_read_wording() {
+        // livespec-console-beads-fabro-mx9u.29 AC3. A read that HAPPENED and
+        // produced nothing trustworthy keeps saying so; softening it into the
+        // in-flight wording would leave a broken read surface looking like a
+        // merely slow one for the rest of the session.
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_dispatcher_settings(DispatcherSettingsRead::NotObserved);
+        let model = build_tui_model_for_state(&[], &state);
+        let rendered = render_to_text(&model, 120, 24).unwrap_or_default();
+        assert!(
+            rendered.contains("Dispatcher settings not observed"),
+            "a failed read must keep saying so: {rendered}"
+        );
+        assert!(
+            !rendered.contains(DISPATCHER_SETTINGS_NOT_YET_READ_TELL),
+            "a failed read must not be presented as one still in flight: {rendered}"
         );
     }
 

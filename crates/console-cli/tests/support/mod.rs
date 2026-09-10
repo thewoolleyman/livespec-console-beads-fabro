@@ -558,6 +558,11 @@ pub struct TmuxConsole {
     socket: String,
     scratch: PathBuf,
     store_path: PathBuf,
+    /// How long THIS console took to paint its first frame, measured from
+    /// after its [`ConsoleSlot`] was claimed (livespec-console-beads-fabro-
+    /// mx9u.29). See [`Self::time_to_first_frame`] for why a scene must use
+    /// this rather than its own clock.
+    first_frame: Duration,
     _slot: ConsoleSlot,
 }
 
@@ -572,6 +577,9 @@ impl TmuxConsole {
         // Claimed BEFORE anything is spawned, so a queued test contributes no
         // load of its own while it waits its turn.
         let slot = ConsoleSlot::acquire()?;
+        // The first-frame clock starts HERE, after the queue, never before it:
+        // see `TmuxConsole::time_to_first_frame`.
+        let spawn_started = Instant::now();
         let tmux = resolve_tmux()?;
         let binary = resolve_binary()?;
         if !binary.is_file() {
@@ -639,12 +647,13 @@ impl TmuxConsole {
             return Err(format!("tmux new-session exited unsuccessfully: {status}"));
         }
 
-        let console = Self {
+        let mut console = Self {
             tmux,
             session,
             socket,
             scratch,
             store_path,
+            first_frame: Duration::ZERO,
             _slot: slot,
         };
         // Readiness gate: block until the TUI has painted its FIRST frame before
@@ -654,6 +663,7 @@ impl TmuxConsole {
         // starvation (settle clocks that used to start at launch).
         let ready_context = format!(" in tmux session {}", console.session);
         poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
+        console.first_frame = spawn_started.elapsed();
         // Harness-level precondition (livespec-console-beads-fabro-mx9u.28
         // AC1): `launch`/`launch_sized` promise every default stub is
         // reachable-and-idle, so every scene that uses them gets this check
@@ -1164,6 +1174,9 @@ impl TmuxConsole {
         // Claimed BEFORE anything is spawned, so a queued test contributes no
         // load of its own while it waits its turn.
         let slot = ConsoleSlot::acquire()?;
+        // The first-frame clock starts HERE, after the queue, never before it:
+        // see `TmuxConsole::time_to_first_frame`.
+        let spawn_started = Instant::now();
         let tmux = resolve_tmux()?;
         let binary = resolve_binary()?;
         if !binary.is_file() {
@@ -1219,12 +1232,13 @@ impl TmuxConsole {
             return Err(format!("tmux new-session exited unsuccessfully: {status}"));
         }
 
-        let console = Self {
+        let mut console = Self {
             tmux,
             session,
             socket,
             scratch,
             store_path,
+            first_frame: Duration::ZERO,
             _slot: slot,
         };
         // Readiness gate: block until the TUI has painted its FIRST frame before
@@ -1234,7 +1248,25 @@ impl TmuxConsole {
         // starvation (settle clocks that used to start at launch).
         let ready_context = format!(" in tmux session {}", console.session);
         poll_ready(|| console.capture(), ready_timeout(), &ready_context)?;
+        console.first_frame = spawn_started.elapsed();
         Ok(console)
+    }
+
+    /// How long this console took to paint its first frame.
+    ///
+    /// Measured INSIDE the launch, from after its [`ConsoleSlot`] was claimed
+    /// to the readiness gate returning -- deliberately not from a clock the
+    /// scene starts itself (livespec-console-beads-fabro-mx9u.29). The slot
+    /// serializes consoles, so a scene that timed the whole
+    /// `launch_*` call would be measuring its own wait in the queue behind
+    /// whatever scene held the slot, and would fail its bound for a reason
+    /// that has nothing to do with the console under test. That is exactly
+    /// what happened when a second deliberately-slow scene was added beside
+    /// `tmux_tui_e2e_first_frame_paints_before_a_slow_source_answers`: it
+    /// reported a 36s first frame against a 30s bound, all of it queueing.
+    #[must_use]
+    pub const fn time_to_first_frame(&self) -> Duration {
+        self.first_frame
     }
 }
 
@@ -1377,6 +1409,9 @@ impl TmuxConsole {
         ready_timeout: Duration,
     ) -> HarnessResult<Self> {
         let slot = ConsoleSlot::acquire()?;
+        // The first-frame clock starts HERE, after the queue, never before it:
+        // see `TmuxConsole::time_to_first_frame`.
+        let spawn_started = Instant::now();
         let tmux = resolve_tmux()?;
         let binary = match binary_override {
             Some(path) => path.to_path_buf(),
@@ -1439,12 +1474,13 @@ impl TmuxConsole {
             return Err(format!("tmux new-session exited unsuccessfully: {status}"));
         }
 
-        let console = Self {
+        let mut console = Self {
             tmux,
             session,
             socket,
             scratch,
             store_path,
+            first_frame: Duration::ZERO,
             _slot: slot,
         };
         let ready_context = format!(" in tmux session {}", console.session);
@@ -1461,6 +1497,7 @@ impl TmuxConsole {
                 "{error}\n---- last capture ----\n{last}\n---- end capture ----"
             ));
         }
+        console.first_frame = spawn_started.elapsed();
         Ok(console)
     }
 }
