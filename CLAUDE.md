@@ -2,6 +2,21 @@
 
 > ⛔ NEVER WORK AROUND AN UPSTREAM ORCHESTRATOR DEPENDENCY — never again in this plan. (Maintainer ruling 2026-09-02, binding on every item owned by epic livespec-console-beads-fabro-pzbdbo.) The console CONSUMES orchestrator primitives (charter D2); it never rebuilds, substitutes, hand-bridges, or writes a literal in place of one. When work hits a missing or broken orchestrator primitive: STOP. File the orchestrator item. Create the console proxy item (BLOCKED-ON livespec-orchestrator-beads-fabro/<id>) and make this item depends_on it so the dispatcher refuses to run it. Hand the maintainer the path as a comment on the epic — an ASK left in a backlog is NOT a handoff. A recorded deviation with no linked proxy is a defect. Console feature work is HELD until orchestrator b1–b3 land. Full postmortem and the mechanical rules: https://github.com/thewoolleyman/livespec-console-beads-fabro/blob/master/plan/retire-overseer-and-redesign-control-plane-around-console/research/never-work-around-upstream-dependencies.md
 
+**Stop the line for breakages.** The rule above is the console-specific case of a
+fleet-general one: when shared factory or fleet tooling is BROKEN — a bad model or
+adapter config, a stale-but-fixable plugin build a session dispatches through, a
+mint or credential outage, a gate wedged by a defect — HALT, fix the root cause or
+notify its owner and WAIT for the fix, and resume only on the NORMAL path once the
+fix rolls out through the ordinary channel (release → `ensure-plugins` → reload →
+normal dispatch). Never pin a build, re-route, or otherwise route around a breakage
+to keep your own work moving: a broken-window workaround normalizes the outage,
+hides it from a real fix, and validates only your private path, not the one every
+other session and fleet member uses. A transient (a rate-limit window that resets,
+an intermittent ENOSPC) is waited out and retried on the normal path; a permanent
+tool limitation is designed within — neither is a bypass. Fleet source: the
+livespec `agent-disciplines.md` discipline §"A factory or tooling BREAKAGE stops
+the line" (maintainer ruling 2026-09-10).
+
 ## Upstream-dependency proxies — the mechanical contract
 
 The guard above is the reminder layer. These are the layers that REFUSE, and
