@@ -773,12 +773,13 @@ before the rebase (`livespec-console-beads-fabro-pzbdbo.37`).
 
 **What this means for you.** After ANY rebase of a branch carrying TDD
 trailers — conflicted or clean — do not trust a carried-forward attestation.
-Re-verify with a genuine fresh commit: `git reset --soft HEAD^` back to the
-correct base with everything staged, then commit again through the hook so it
-re-runs the tests and writes fresh trailers. Do not `git commit --amend
---no-edit` to "fix" it — an amend with an empty diff against its target hits
-`Decision::Pass` and short-circuits without re-verifying anything, so the
-stale trailers survive that too.
+Re-verify: **`git commit --amend` now re-runs the ritual and re-mints the
+trailer** (livespec-console-beads-fabro-pzbdbo.38), so amending the rebased
+commit is enough; `git reset --soft HEAD^` with everything staged followed by a
+fresh commit is equally correct and is what the refusal message names. Both
+work because the hook measures the commit it is FINALISING, not just what is
+newly staged — see the amend paragraph below for the predicate that makes that
+decidable. Never reach for `--no-verify`.
 
 **The mechanical fix binds to the DIFF, not the tree.** `commit_violates` (the
 range check backing `just check`'s `check-red-green-replay`, and the same
@@ -833,22 +834,39 @@ does not retroactively redden `just check` on existing commits, and an
 in-flight branch's pre-fix attestation survives being rebased past new
 master commits exactly as it always did.
 
-**Amending an already-attested commit needs the SAME remedy as a stale
-rebase.** `handle_suite_green` predicts its finished commit's parent as
-`HEAD` — correct for a fresh commit, but WRONG if this `commit-msg`
-invocation is itself `git commit --amend -m/-F ...` of a commit that already
-carries Suite-Green/pair trailers (HEAD is then the commit being REPLACED,
-not the parent the amended commit keeps). There is no way to tell the two
-apart from inside the hook: `githooks(5)` documents that `prepare-commit-msg`
-reports the amend's source commit ONLY when no message is given (the editor
-path); the moment `-m`/`-F` supplies one — which is how every commit in this
-repo is made — the source reports as `message`, identical to a fresh commit,
-and `GIT_REFLOG_ACTION` is not exported to hooks at all. Verified empirically
-2026-09-09 against real amends with both mechanisms. So this case fails
-CLOSED rather than being guessed at: the wrong base produces a patch-id
-`commit_violates` will not match against the real `<sha>^` at push time, and
-the fix is the prescribed remedy above — `git reset --soft HEAD^` with
-everything staged, then a genuinely fresh commit, not another amend.
+**Amending an already-attested commit RE-VERIFIES it**
+(livespec-console-beads-fabro-pzbdbo.38). The hook resolves which commit the one
+it is finalising will hang off — `HEAD` for a fresh commit, `HEAD^` for an amend
+— and measures both the staged content (`git diff --cached <parent>`) and the
+recorded `TDD-Verified-Patch-Id` against it. So an amend after a rebase sees the
+amended commit's OWN content, re-runs the suite, and writes a trailer that
+matches. Before this, staged content was measured only against `HEAD`, so an
+amend with nothing newly staged showed an EMPTY diff, took `Decision::Pass`, and
+carried the stale pre-rebase trailer into the commit — the push then refused it,
+correctly but only much later, and the cost recurred on essentially every
+product-Rust branch, since this repo rebase-merges and master gains
+`chore(deps)` commits many times an hour.
+
+**How amend-vs-fresh is decided, and what was NOT re-litigated.** Not by
+detecting the amend: `githooks(5)` gives a `commit-msg` hook no reliable signal
+once `-m`/`-F` supplies the message (`GIT_REFLOG_ACTION` is not exported to
+hooks; `prepare-commit-msg` reports the source as `message`, identical to a
+fresh commit) — established empirically by pzbdbo.37 and still true. The
+decidable question is a different one: **does the message being finalised
+already carry a trailer this hook mints?** Only the hook writes
+`TDD-Verified-Patch-Id` / `TDD-Suite-Green-Captured-At` / the pair trailers, and
+only into a message that then becomes a commit, so a message arriving at the
+hook carrying one is a commit message being REUSED — which is what an amend is.
+It is read through `git interpret-trailers --parse`, never by scanning the raw
+text, so a message whose PROSE quotes a trailer name (a commit describing the
+ritual, this section included) is still a fresh commit; that is the same
+one-parsing-surface rule `head_red_awaiting_green` was fixed to keep. Amending a
+ROOT commit degrades to `HEAD`, since there is no parent to bind to. Proven
+against real git — a real rebase, a real amend, and
+`git show HEAD | git patch-id --stable` compared with the recorded trailer — in
+`crates/console-red-green-replay-check/tests/amend_rebinds_patch_id.rs`, which
+also pins both directions: a trailer carried onto genuinely different content is
+still refused, and the refusal now NAMES the remedy.
 
 ## `git stash` is repo-wide, so it corrupts concurrent worktrees
 
