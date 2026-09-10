@@ -551,6 +551,31 @@ mod tests {
         .join();
         assert!(join.is_err());
         assert_eq!(cell.get(), None);
+        // A later sweep's `set` on the poisoned cell is swallowed, never a
+        // crashed poller, and the header keeps rendering the bare tell.
+        cell.set(Some(blank_tell()));
+        assert_eq!(cell.get(), None);
+    }
+
+    /// An unreadable timestamp yields NO age in either rendering -- the header
+    /// tell and the overlay both drop it rather than fabricate one -- while
+    /// the activity and the cause still show.
+    #[test]
+    fn an_unreadable_timestamp_renders_without_an_age() {
+        let tell = FactoryOutcomeTell::new(
+            "drain failed".to_owned(),
+            Some("the dispatcher refused".to_owned()),
+            "not a timestamp".to_owned(),
+            NOW.to_owned(),
+        );
+        assert_eq!(
+            super::factory_tell_text(Some("drain failed"), Some(&tell)),
+            Some("drain failed — the dispatcher refused".to_owned())
+        );
+        assert_eq!(
+            tell.full_text(),
+            "drain failed\nobserved at not a timestamp\ncause: the dispatcher refused"
+        );
     }
 
     #[test]
