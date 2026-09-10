@@ -35,6 +35,8 @@ use console_application::build_identity::{
 #[cfg(all(not(test), not(coverage)))]
 use console_application::dispatcher_settings_cell::SharedDispatcherSettingsRead;
 #[cfg(all(not(test), not(coverage)))]
+use console_application::factory_outcome::{FactoryOutcomeTell, SharedFactoryOutcome};
+#[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
@@ -460,6 +462,12 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     // unsummarized (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's
     // roster).
     let source_last_success_cell = SharedSourceLastSuccess::new();
+    // Same reasoning again, for the header's factory tell
+    // (livespec-console-beads-fabro-mx9u.3): deriving it needs a store read AND
+    // a clock, so the poller derives it every sweep and the render thread takes
+    // a snapshot. Starts unset, which renders exactly the bare tell the header
+    // rendered before this item.
+    let factory_outcome_cell = SharedFactoryOutcome::new();
     // Same reasoning again -- per-source event counts by type
     // (livespec-console-beads-fabro-mx9u.20.2), folded from the SAME events.
     let source_event_counts_cell = SharedSourceEventCounts::new();
@@ -479,6 +487,7 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         source_staleness_cell: source_staleness_cell.clone(),
         source_last_success: source_last_success_cell.get(),
         source_last_success_cell: source_last_success_cell.clone(),
+        factory_outcome_cell: factory_outcome_cell.clone(),
         source_event_counts: source_event_counts_cell.get(),
         source_event_counts_cell: source_event_counts_cell.clone(),
         first_ingest_pending: Arc::clone(&first_ingest_pending),
@@ -515,6 +524,7 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
             source_staleness_cell,
             source_last_success_cell,
             source_event_counts_cell,
+            factory_outcome_cell,
             poller_first_ingest_pending,
             &poller_writer_identity,
             poller_writer_lease_status,
@@ -688,6 +698,7 @@ fn poller_loop(
     source_staleness: SharedSourceStaleness,
     source_last_success: SharedSourceLastSuccess,
     source_event_counts: SharedSourceEventCounts,
+    factory_outcome: SharedFactoryOutcome,
     first_ingest_pending: Arc<AtomicBool>,
     writer_identity: &WriterIdentity,
     writer_lease_status: SharedWriterLeaseStatus,
@@ -745,6 +756,7 @@ fn poller_loop(
         source_staleness,
         source_last_success,
         source_event_counts,
+        factory_outcome,
         first_ingest_pending,
         writer_identity,
         writer_lease_status,
@@ -782,6 +794,10 @@ struct ChannelSourcePollHost<'a> {
     /// COLUMN (livespec-console-beads-fabro-mx9u.17, pzbdbo.29's roster) --
     /// the SAME fact as `source_staleness` above, unsummarized.
     source_last_success: SharedSourceLastSuccess,
+    /// Shared with the render thread: the header's factory tell, re-derived
+    /// and re-dated every sweep because the AGE it carries keeps changing even
+    /// when the outcome does not (livespec-console-beads-fabro-mx9u.3).
+    factory_outcome: SharedFactoryOutcome,
     /// Shared with the render thread: the Event sources roster's per-source
     /// event counts by type (livespec-console-beads-fabro-mx9u.20.2), folded
     /// from the SAME events list this sweep already reads for
@@ -836,6 +852,18 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
         // (pzbdbo.29's roster) -- the SAME fact, unsummarized.
         if let Ok(last_success) = source_last_success_snapshot(self.store) {
             self.source_last_success.set(last_success);
+        }
+        // The header's factory tell, re-derived and re-dated every sweep
+        // (livespec-console-beads-fabro-mx9u.3). Needs the store's own
+        // `observed_at` column, which the domain envelope deliberately does not
+        // carry, plus a clock — neither of which belongs on the render thread.
+        // A read failure leaves the previous value for one more cycle, the same
+        // as its neighbours.
+        if let Ok(observed_now) = current_requested_at()
+            && let Ok(outcome) =
+                livespec_console_beads_fabro::factory_outcome_snapshot(self.store, &observed_now)
+        {
+            self.factory_outcome.set(outcome);
         }
         // Same reasoning again, for the Event sources roster's per-source
         // event counts by type (livespec-console-beads-fabro-mx9u.20.2).
@@ -1361,6 +1389,9 @@ struct InteractiveTuiRunner {
     /// the first reads through here instead, same handoff as
     /// `source_staleness_cell` above.
     source_last_success_cell: SharedSourceLastSuccess,
+    /// The LIVE cell the poller keeps current with the header's factory tell
+    /// (livespec-console-beads-fabro-mx9u.3).
+    factory_outcome_cell: SharedFactoryOutcome,
     /// The FIRST frame's per-source event-counts map -- a plain snapshot,
     /// used only to seed [`console_tui::TuiInteractionState`] before the
     /// loop's first tick (livespec-console-beads-fabro-mx9u.20.2).
@@ -1392,6 +1423,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             source_staleness: self.source_staleness_cell.clone(),
             source_last_success: self.source_last_success_cell.clone(),
             source_event_counts: self.source_event_counts_cell.clone(),
+            factory_outcome: self.factory_outcome_cell.clone(),
             first_ingest_pending: Arc::clone(&self.first_ingest_pending),
             writer_lease_status: self.writer_lease_status_cell.clone(),
         };
@@ -1434,6 +1466,8 @@ struct PollerAwareSession<'a> {
     source_staleness: SharedSourceStaleness,
     source_last_success: SharedSourceLastSuccess,
     source_event_counts: SharedSourceEventCounts,
+    /// The header's factory tell (livespec-console-beads-fabro-mx9u.3).
+    factory_outcome: SharedFactoryOutcome,
     first_ingest_pending: Arc<AtomicBool>,
     writer_lease_status: SharedWriterLeaseStatus,
 }
@@ -1486,6 +1520,12 @@ impl console_tui::TuiLiveSession for PollerAwareSession<'_> {
         // last wrote, same shape as `take_build_staleness` above
         // (livespec-console-beads-fabro-mx9u.17).
         Some(self.source_staleness.get())
+    }
+
+    fn take_factory_outcome(&mut self) -> Option<FactoryOutcomeTell> {
+        // Same shape as `take_source_last_success` below: a cheap, non-blocking
+        // `Mutex` read of what the poller last derived.
+        self.factory_outcome.get()
     }
 
     fn take_source_last_success(&mut self) -> Option<BTreeMap<String, String>> {

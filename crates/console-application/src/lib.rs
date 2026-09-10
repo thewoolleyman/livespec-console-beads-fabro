@@ -38,6 +38,11 @@ pub mod dispatcher_settings_cell;
 /// The `doctor` diagnostic: console-health findings derived from the SAME
 /// in-process projection the header renders.
 pub mod doctor;
+/// The header's factory tell: what happened, when, and why.
+///
+/// livespec-console-beads-fabro-mx9u.3 — the tell carries the outcome's age and
+/// the cause its payload recorded, so a stale failure cannot read as a fresh one.
+pub mod factory_outcome;
 /// Module containing source-adapters support.
 pub mod source_adapters;
 pub mod source_event_counts;
@@ -912,6 +917,18 @@ pub enum TuiOverlay {
         /// Index of the currently selected action within the modal's action list.
         selected_action_index: usize,
     },
+    /// Factory outcome variant: the WHOLE text behind the header's factory
+    /// tell — what happened, when, and the full cause the outcome's payload
+    /// recorded, untruncated (livespec-console-beads-fabro-mx9u.3 AC3).
+    ///
+    /// Opened by Enter on the FOCUSED header while a factory tell is on screen,
+    /// and closed by Esc. Read-only: it offers no action, because everything it
+    /// shows already happened.
+    FactoryOutcome {
+        /// The outcome text, exactly as
+        /// [`factory_outcome::FactoryOutcomeTell::full_text`] composed it.
+        text: String,
+    },
     /// Command explainer variant.
     CommandExplainer {
         /// Index of the selected action within the modal's action list.
@@ -1042,6 +1059,7 @@ impl TuiOverlay {
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
+            | Self::FactoryOutcome { .. }
             | Self::Help { .. }
             | Self::Menu { .. } => None,
         }
@@ -1054,6 +1072,7 @@ impl TuiOverlay {
         match self {
             Self::WorkItemDetail { scroll, .. } => Some(*scroll),
             Self::None
+            | Self::FactoryOutcome { .. }
             | Self::Search { .. }
             | Self::CommandPalette { .. }
             | Self::CommandModal { .. }
@@ -1087,6 +1106,7 @@ impl TuiOverlay {
             | Self::ValveConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
+            | Self::FactoryOutcome { .. }
             | Self::Help { .. }
             | Self::Menu { .. } => None,
         }
@@ -1108,6 +1128,7 @@ impl TuiOverlay {
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
+            | Self::FactoryOutcome { .. }
             | Self::Help { .. }
             | Self::Menu { .. } => None,
         }
@@ -1133,6 +1154,7 @@ impl TuiOverlay {
             | Self::FactoryDispatchItemConfirm { .. }
             | Self::DriverHandoff { .. }
             | Self::WorkItemDetail { .. }
+            | Self::FactoryOutcome { .. }
             | Self::Help { .. }
             | Self::Menu { .. } => None,
         }
@@ -1226,6 +1248,22 @@ pub enum TuiInteraction {
     /// sub-view (bypassing the container's own overview picker), and moves
     /// focus to the Content pane so the roster is what the operator lands on.
     OpenEventSourcesFromHeader,
+    /// Open the factory-outcome overlay from the focused Header pane
+    /// (livespec-console-beads-fabro-mx9u.3 AC3): the WHOLE outcome behind the
+    /// header's factory tell, including the cause the tell had to cut.
+    ///
+    /// # Why this shares Enter with [`Self::OpenEventSourcesFromHeader`]
+    ///
+    /// pzbdbo.29 AC2 gave Enter-on-header to the Event sources roster, and
+    /// mx9u.3 AC3 asks for the same key. Both are drill-downs on what the
+    /// header is SAYING, so the key resolves to whichever tell is actually on
+    /// screen: a factory tell is present only when something factory-related
+    /// happened, and while it is there it is the most urgent thing the header
+    /// carries. With no factory tell — the steady state — Enter still opens the
+    /// roster, exactly as pzbdbo.29 left it. Nothing becomes unreachable: the
+    /// roster's own home is the Events view's `Event sources` sub-view, which
+    /// pzbdbo.29 built as a first-class surface reachable with `4`.
+    OpenFactoryOutcome,
     /// Scroll the focused Detail pane's content down one line (the `down` key
     /// while the Detail pane holds focus), revealing content clipped below.
     ScrollDetailDown,
@@ -1388,6 +1426,10 @@ pub struct TuiInteractionState {
     // tell never outlives the condition it names.
     startup_ingest_pending: bool,
     writer_lease_status: WriterLeaseStatus,
+    /// The latest factory outcome, with the two moments the header's tell needs
+    /// to date it (livespec-console-beads-fabro-mx9u.3). Supplied by whoever
+    /// holds the store and a clock — the projection has neither.
+    factory_outcome: Option<factory_outcome::FactoryOutcomeTell>,
 }
 
 impl TuiInteractionState {
@@ -1428,6 +1470,7 @@ impl TuiInteractionState {
             source_event_counts: BTreeMap::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
+            factory_outcome: None,
         }
     }
 
@@ -1472,6 +1515,7 @@ impl TuiInteractionState {
             source_event_counts: BTreeMap::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
+            factory_outcome: None,
         }
     }
 
@@ -1502,6 +1546,28 @@ impl TuiInteractionState {
 
     /// Replace the Detail pane's scroll offset (the topmost visible detail line),
     /// preserving every other field. Reset to `0` whenever the selection or view
+    /// changes so a scroll never carries onto a different item's details.
+    /// Replace the latest factory outcome — the fact the header's tell dates
+    /// and explains itself from (livespec-console-beads-fabro-mx9u.3).
+    ///
+    /// Not `const`: the tell owns two timestamps and an optional cause.
+    #[must_use]
+    pub fn with_factory_outcome(
+        mut self,
+        factory_outcome: Option<factory_outcome::FactoryOutcomeTell>,
+    ) -> Self {
+        self.factory_outcome = factory_outcome;
+        self
+    }
+
+    #[must_use]
+    /// The latest factory outcome, when one has been supplied.
+    pub const fn factory_outcome(&self) -> Option<&factory_outcome::FactoryOutcomeTell> {
+        self.factory_outcome.as_ref()
+    }
+
+    /// Replace the Detail pane's vertical scroll offset, preserving every other
+    /// field. Reset by the interaction reducer whenever the selected item
     /// changes so a scroll never carries onto a different item's details.
     #[must_use]
     pub const fn with_detail_scroll(mut self, detail_scroll: usize) -> Self {
@@ -2719,6 +2785,18 @@ impl TuiScreenModel {
     }
 
     #[must_use]
+    /// The header's factory tell, when the header is carrying one
+    /// (livespec-console-beads-fabro-mx9u.3).
+    ///
+    /// The COMPOSED text — activity, and the age and cause when the runtime
+    /// supplied an outcome that describes that same activity — so a caller
+    /// asking "is the header saying anything about the factory right now"
+    /// cannot get a different answer than the header itself gives.
+    pub fn factory_tell(&self) -> Option<&str> {
+        self.factory_activity.as_deref()
+    }
+
+    #[must_use]
     /// Return the running binary's build identity, when one was resolved.
     pub const fn build_identity(&self) -> Option<&BuildIdentity> {
         self.build_identity.as_ref()
@@ -2967,6 +3045,10 @@ fn overlay_footer_hint(overlay: &TuiOverlay) -> Cow<'static, str> {
         TuiOverlay::DriverHandoff { .. } => {
             Cow::Borrowed("enter copy sent to terminal | esc cancel")
         }
+        // Read-only, and it says so: the outcome already happened, so the only
+        // key that acts here is the one that closes it
+        // (livespec-console-beads-fabro-mx9u.3).
+        TuiOverlay::FactoryOutcome { .. } => Cow::Borrowed("esc close"),
         TuiOverlay::WorkItemDetail { .. } => {
             Cow::Borrowed("up/down scroll | PgUp/PgDn page | esc close item")
         }
@@ -4775,6 +4857,13 @@ pub fn render_tui_model(
 ) -> TuiScreenModel {
     #[cfg(test)]
     TUI_RENDER_COUNT.with(|count| count.set(count.get() + 1));
+    // Composed ONCE, so the untruncated header below and the shrink-to-fit
+    // `header_line` cannot disagree about what the factory tell says
+    // (livespec-console-beads-fabro-mx9u.3).
+    let tell = factory_outcome::factory_tell_text(
+        projection.factory_activity.as_deref(),
+        state.factory_outcome(),
+    );
     let (selected_attention_index, displaced_attention_id) =
         selected_attention_for_state(&projection.attention_entries, state);
     let detail = selected_attention_index.map(|index| {
@@ -4861,22 +4950,16 @@ pub fn render_tui_model(
         // information-value priority, not by this string's field positions.
         // The build IDENTITY itself is not one of these fields -- it lives in
         // the header pane's block title instead; see `fit_header_line`'s doc.
-        header: format!(
-            "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}{}{}",
-            header_repo_label(state.selected_repo()),
-            active_view.label(),
-            projection.attention_total,
-            factory_activity_segment(projection.factory_activity.as_deref()),
-            transient_status_segment(transient_status.as_deref()),
-            build_staleness_header_segment(state.build_staleness()),
-            source_health_header_segment(&projection.unavailable_sources),
-            source_staleness_header_wide_segment(state.source_staleness()),
-            writer_lease_status_header_segment(state.writer_lease_status()),
-            startup_ingest_header_segment(state.startup_ingest_pending())
+        header: canonical_header(
+            projection,
+            state,
+            active_view,
+            tell.as_deref(),
+            transient_status.as_deref(),
         ),
         unavailable_sources: projection.unavailable_sources.clone(),
         observed_source_names: projection.observed_source_names.clone(),
-        factory_activity: projection.factory_activity.clone(),
+        factory_activity: tell,
         transient_status,
         list_edge: state.list_edge(),
         command_outcome: projection.command_outcome.clone(),
@@ -5135,6 +5218,34 @@ fn startup_ingest_header_segment(startup_ingest_pending: bool) -> String {
     }
 }
 
+/// The canonical, untruncated header line.
+///
+/// Extracted from [`render_tui_model`] so that function stays inside the
+/// too-many-lines budget; the field ORDER here is the display order
+/// `header_line` keeps for wide terminals, and it is the one place that order
+/// is written down.
+fn canonical_header(
+    projection: &TuiProjection,
+    state: &TuiInteractionState,
+    active_view: TuiView,
+    factory_tell: Option<&str>,
+    transient_status: Option<&str>,
+) -> String {
+    format!(
+        "fleet: livespec | mode: tui | repo: {} | view: {} | attention: {}{}{}{}{}{}{}{}",
+        header_repo_label(state.selected_repo()),
+        active_view.label(),
+        projection.attention_total,
+        factory_activity_segment(factory_tell),
+        transient_status_segment(transient_status),
+        build_staleness_header_segment(state.build_staleness()),
+        source_health_header_segment(&projection.unavailable_sources),
+        source_staleness_header_wide_segment(state.source_staleness()),
+        writer_lease_status_header_segment(state.writer_lease_status()),
+        startup_ingest_header_segment(state.startup_ingest_pending())
+    )
+}
+
 fn factory_activity_segment(activity: Option<&str>) -> String {
     activity.map_or_else(String::new, |value| format!(" | factory: {value}"))
 }
@@ -5341,28 +5452,38 @@ fn work_item_action_name(payload_json: &str) -> String {
 }
 
 fn factory_drain_activity(events: &[ConsoleEvent]) -> Option<String> {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match event.event_type() {
-            EventType::FactoryDrainRequested | EventType::FactoryDrainStarted => {
-                Some("drain in flight".to_owned())
-            }
-            EventType::FactoryDispatchItemRequested | EventType::FactoryDispatchItemStarted => {
-                Some("dispatch item in flight".to_owned())
-            }
-            EventType::FactoryDrainCompleted => Some("drain completed".to_owned()),
-            EventType::FactoryDrainFailed => Some("drain failed".to_owned()),
-            EventType::FactoryDrainAwaitingHuman => Some("drain awaiting human".to_owned()),
-            EventType::FactoryDrainNotWired => Some("drain not wired".to_owned()),
-            EventType::FactoryDispatchItemCompleted => Some("dispatch item completed".to_owned()),
-            EventType::FactoryDispatchItemFailed => Some("dispatch item failed".to_owned()),
-            EventType::FactoryDispatchItemNotWired => Some("dispatch item not wired".to_owned()),
-            EventType::CommandRejected if event.stream_id() == "fleet:livespec" => {
-                Some("drain rejected".to_owned())
-            }
-            _other => None,
-        })
+    events.iter().rev().find_map(factory_activity_label)
+}
+
+/// The factory tell's label for ONE event, or `None` when the event is not one
+/// the tell speaks for.
+///
+/// Split out of [`factory_drain_activity`] so
+/// [`factory_outcome::latest_factory_outcome`] — which scans the same log
+/// paired with each event's observed-at — selects the SAME event by the SAME
+/// rule (livespec-console-beads-fabro-mx9u.3). Two scans that disagreed about
+/// which event is the current tell would put an age and a cause beside an
+/// activity from a different event.
+fn factory_activity_label(event: &ConsoleEvent) -> Option<String> {
+    match event.event_type() {
+        EventType::FactoryDrainRequested | EventType::FactoryDrainStarted => {
+            Some("drain in flight".to_owned())
+        }
+        EventType::FactoryDispatchItemRequested | EventType::FactoryDispatchItemStarted => {
+            Some("dispatch item in flight".to_owned())
+        }
+        EventType::FactoryDrainCompleted => Some("drain completed".to_owned()),
+        EventType::FactoryDrainFailed => Some("drain failed".to_owned()),
+        EventType::FactoryDrainAwaitingHuman => Some("drain awaiting human".to_owned()),
+        EventType::FactoryDrainNotWired => Some("drain not wired".to_owned()),
+        EventType::FactoryDispatchItemCompleted => Some("dispatch item completed".to_owned()),
+        EventType::FactoryDispatchItemFailed => Some("dispatch item failed".to_owned()),
+        EventType::FactoryDispatchItemNotWired => Some("dispatch item not wired".to_owned()),
+        EventType::CommandRejected if event.stream_id() == "fleet:livespec" => {
+            Some("drain rejected".to_owned())
+        }
+        _other => None,
+    }
 }
 
 /// The source-health segment's degradation forms, widest first, for the header
@@ -5987,6 +6108,7 @@ fn reduce_interaction_state(
             .clone()
             .with_header_scroll(state.header_scroll().saturating_sub(HEADER_SCROLL_STEP)),
         TuiInteraction::OpenEventSourcesFromHeader => open_event_sources_from_header(state),
+        TuiInteraction::OpenFactoryOutcome => open_factory_outcome(state, model),
         TuiInteraction::ScrollDetailDown => {
             // Clamp to the render-measured wrapped max scroll (the largest offset
             // that keeps the pane's last wrapped row visible), NOT a width-agnostic
@@ -6555,6 +6677,27 @@ fn open_event_sources_from_header(state: &TuiInteractionState) -> TuiInteraction
         .with_events_focus(EventsFocus::EventSources)
         .with_focus(FocusPane::Content)
         .with_detail_scroll(0)
+}
+
+/// Open the factory-outcome overlay over the CURRENT tell
+/// (livespec-console-beads-fabro-mx9u.3 AC3).
+///
+/// The decision — is there an outcome, and does it still describe what the
+/// header is saying — lives in
+/// [`factory_outcome::overlay_text`], so this is the single expression that
+/// either opens the overlay or returns the state untouched.
+fn open_factory_outcome(
+    state: &TuiInteractionState,
+    model: &TuiScreenModel,
+) -> TuiInteractionState {
+    factory_outcome::overlay_text(state.factory_outcome(), model.factory_tell()).map_or_else(
+        || state.clone(),
+        |text| {
+            state
+                .clone()
+                .with_overlay(TuiOverlay::FactoryOutcome { text })
+        },
+    )
 }
 
 fn select_lane_item_at(
@@ -9662,6 +9805,7 @@ fn search_query(overlay: &TuiOverlay) -> Option<&str> {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. }
         | TuiOverlay::Menu { .. } => None,
     }
@@ -9688,6 +9832,7 @@ fn normalize_overlay(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> 
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. }
         | TuiOverlay::Menu { .. } => overlay.clone(),
     }
@@ -9804,6 +9949,7 @@ fn help_select_section(overlay: &TuiOverlay, down: bool) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
@@ -9837,6 +9983,7 @@ fn help_scroll(overlay: &TuiOverlay, rows: usize, down: bool, max_scroll: usize)
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
@@ -9864,6 +10011,7 @@ fn help_focus(overlay: &TuiOverlay, focus: HelpFocus) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Menu { .. } => overlay.clone(),
     }
 }
@@ -9894,6 +10042,7 @@ fn type_overlay_char(overlay: &TuiOverlay, value: char) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. }
         | TuiOverlay::Menu { .. } => overlay.clone(),
     }
@@ -9922,6 +10071,7 @@ fn backspace_overlay_query(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. }
         | TuiOverlay::Menu { .. } => overlay.clone(),
     }
@@ -9963,6 +10113,7 @@ fn move_action_down(overlay: &TuiOverlay, detail: Option<&AttentionDetail>) -> T
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -10037,6 +10188,7 @@ fn move_action_up(overlay: &TuiOverlay) -> TuiOverlay {
         | TuiOverlay::ValveConfirm { .. }
         | TuiOverlay::DriverHandoff { .. }
         | TuiOverlay::WorkItemDetail { .. }
+        | TuiOverlay::FactoryOutcome { .. }
         | TuiOverlay::Help { .. } => overlay.clone(),
     }
 }
@@ -10821,6 +10973,7 @@ mod tests {
     use proptest::proptest;
 
     use super::doctor;
+    use super::factory_outcome;
     use super::failure_cause;
     use super::source_adapters::{
         AcceptancePolicy, AdmissionPolicy, AttentionHandoff, AttentionItemSnapshot,
@@ -11094,6 +11247,194 @@ mod tests {
             elide_command_program_path("/a/b/c/d/scripts/bin/drive.py"),
             "…/scripts/bin/drive.py"
         );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.3 AC1/AC2, at the HEADER: the factory
+    /// tell carries the outcome's age and the cause its payload recorded, in
+    /// BOTH the untruncated header and the shrink-to-fit one, and a later
+    /// outcome replaces it.
+    ///
+    /// The measured defect: `factory: dispatch item failed` sat in the header
+    /// of every capture across two restarts and five and a half hours, with no
+    /// time, no cause and no key that explained it.
+    #[test]
+    fn the_header_factory_tell_carries_the_outcomes_age_and_cause() {
+        const NOW: &str = "2026-09-10T12:00:00Z";
+        let failed = ConsoleEvent::fixture(
+            "evt_dispatch_failed",
+            EventType::FactoryDispatchItemFailed,
+            "console:factory-command-handler",
+        )
+        .with_payload_json(
+            r#"{"domain_error":"dispatch_refused","summary":"the item is not in the ready set"}"#
+                .to_owned(),
+        );
+        let state = TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+            .with_factory_outcome(Some(factory_outcome::FactoryOutcomeTell::new(
+                "dispatch item failed".to_owned(),
+                Some("the item is not in the ready set".to_owned()),
+                "2026-09-10T09:00:00Z".to_owned(),
+                NOW.to_owned(),
+            )));
+
+        let model = build_tui_model_for_state(std::slice::from_ref(&failed), &state);
+        let header = model.header().to_owned();
+        check(
+            header.contains("factory: dispatch item failed 3h ago"),
+            &format!("the tell must date itself: {header}"),
+        );
+        check(
+            header.contains("the item is not in the"),
+            &format!("the tell must say WHY: {header}"),
+        );
+        // The shrink-to-fit header renders the SAME tell, so the two cannot
+        // disagree at any width that keeps the field.
+        check(
+            model
+                .header_line(240)
+                .contains("dispatch item failed 3h ago"),
+            &format!("fitted header was {}", model.header_line(240)),
+        );
+
+        // A LATER outcome replaces it: the event log moves on, and the tell the
+        // runtime supplied no longer matches, so the header degrades to the
+        // bare activity rather than dating one event with another's moment.
+        let completed = ConsoleEvent::fixture(
+            "evt_dispatch_done",
+            EventType::FactoryDispatchItemCompleted,
+            "console:factory-command-handler",
+        );
+        let later_events = [failed, completed];
+        let later = build_tui_model_for_state(&later_events, &state);
+        check(
+            later.header().contains("factory: dispatch item completed"),
+            &format!("header was {}", later.header()),
+        );
+        check(
+            !later.header().contains("3h ago"),
+            &format!(
+                "a superseded outcome must not date the new one: {}",
+                later.header()
+            ),
+        );
+
+        // The overlay refuses for the SAME reason the header does: with the
+        // outcome describing an activity the log has moved past, opening it
+        // leaves the state untouched rather than showing a stale cause under a
+        // fresh heading.
+        let unchanged = reduce_tui_interaction(
+            &state.clone().with_focus(FocusPane::Header),
+            &later_events,
+            TuiInteraction::OpenFactoryOutcome,
+        );
+        assert_eq!(unchanged.overlay(), &TuiOverlay::None);
+
+        // And with NO outcome supplied at all -- a session whose poller has not
+        // derived one yet -- there is likewise nothing to open.
+        let bare = reduce_tui_interaction(
+            &state
+                .with_factory_outcome(None)
+                .with_focus(FocusPane::Header),
+            &later_events,
+            TuiInteraction::OpenFactoryOutcome,
+        );
+        assert_eq!(bare.overlay(), &TuiOverlay::None);
+    }
+
+    /// AC2's other half: the header and the status line read ONE cause. A
+    /// payload that recorded none says so, and only then.
+    #[test]
+    fn the_header_and_the_status_line_report_the_same_cause() {
+        const PAYLOAD: &str =
+            r#"{"domain_error":"dispatch_refused","summary":"the item is not in the ready set"}"#;
+        let from_reader = failure_cause(PAYLOAD);
+        check(
+            from_reader
+                .as_deref()
+                .is_some_and(|cause| cause.contains("the item is not in the ready set")),
+            &format!("reader gave {from_reader:?}"),
+        );
+        // The header's tell is composed from that same reader's output.
+        let tell = factory_outcome::factory_tell_text(
+            Some("dispatch item failed"),
+            Some(&factory_outcome::FactoryOutcomeTell::new(
+                "dispatch item failed".to_owned(),
+                from_reader,
+                "2026-09-10T09:00:00Z".to_owned(),
+                "2026-09-10T12:00:00Z".to_owned(),
+            )),
+        )
+        .unwrap_or_default();
+        // The header carries as much of that one cause as its budget holds --
+        // the opening, which is the part that names the refusal -- and says so
+        // when it cut the rest. The WHOLE cause is one keystroke away.
+        check(
+            tell.contains("dispatch_refused"),
+            &format!("tell was {tell}"),
+        );
+        check(
+            tell.contains("the item is not in the"),
+            &format!("tell was {tell}"),
+        );
+
+        // An empty payload: the absence is STATED, in both places, and the
+        // header does not invent a cause clause at all.
+        assert_eq!(failure_cause("{}"), None);
+        let absent = factory_outcome::factory_tell_text(
+            Some("drain failed"),
+            Some(&factory_outcome::FactoryOutcomeTell::new(
+                "drain failed".to_owned(),
+                None,
+                "2026-09-10T11:00:00Z".to_owned(),
+                "2026-09-10T12:00:00Z".to_owned(),
+            )),
+        )
+        .unwrap_or_default();
+        assert_eq!(absent, "drain failed 1h ago");
+    }
+
+    /// A cause longer than the header's budget is CUT with an indicator rather
+    /// than dropping the whole field: the header's fields are atomic, so the
+    /// bound is applied before the field exists.
+    #[test]
+    fn a_long_cause_is_cut_to_the_headers_budget_with_an_indicator() {
+        let long = "a".repeat(factory_outcome::FACTORY_TELL_CAUSE_BUDGET + 40);
+        let tell = factory_outcome::factory_tell_text(
+            Some("drain failed"),
+            Some(&factory_outcome::FactoryOutcomeTell::new(
+                "drain failed".to_owned(),
+                Some(long.clone()),
+                "2026-09-10T11:00:00Z".to_owned(),
+                "2026-09-10T12:00:00Z".to_owned(),
+            )),
+        )
+        .unwrap_or_default();
+        check(tell.ends_with('…'), &format!("tell was {tell}"));
+        check(!tell.contains(&long), &format!("tell was {tell}"));
+        // A multi-line cause is flattened: the header is one line, and a raw
+        // newline would break the field apart.
+        let flattened = factory_outcome::factory_tell_text(
+            Some("drain failed"),
+            Some(&factory_outcome::FactoryOutcomeTell::new(
+                "drain failed".to_owned(),
+                Some("first line\nsecond line".to_owned()),
+                "2026-09-10T11:00:00Z".to_owned(),
+                "2026-09-10T12:00:00Z".to_owned(),
+            )),
+        )
+        .unwrap_or_default();
+        check(
+            flattened.contains("first line second line"),
+            &format!("tell was {flattened}"),
+        );
+
+        // With no outcome supplied at all the tell is exactly what it was
+        // before this item -- the bare activity.
+        assert_eq!(
+            factory_outcome::factory_tell_text(Some("drain failed"), None),
+            Some("drain failed".to_owned())
+        );
+        assert_eq!(factory_outcome::factory_tell_text(None, None), None);
     }
 
     #[test]
