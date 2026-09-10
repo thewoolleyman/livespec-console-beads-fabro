@@ -33,6 +33,8 @@ use console_application::build_identity::{
     BuildStaleness, SharedBuildStaleness, observe_build_staleness,
 };
 #[cfg(all(not(test), not(coverage)))]
+use console_application::dispatcher_settings_cell::SharedDispatcherSettingsRead;
+#[cfg(all(not(test), not(coverage)))]
 use console_application::source_adapters::{
     ObservedSourceAdapter, ProbeNeedsAttentionPort, PullSourcePort, SourceProbe, SourceProbeOutcome,
 };
@@ -394,9 +396,15 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         resolution.programs().drive(),
         &["--repo", repo_path.as_str(), "--json"],
     );
-    let dispatcher_settings = DispatcherSettingsPort::new(&mut drive)
-        .read_settings()
-        .unwrap_or(DispatcherSettingsRead::NotObserved);
+    // NO synchronous effective-policy read here any more
+    // (livespec-console-beads-fabro-mx9u.29). This was one
+    // `drive --action config` shell-out, measured at ~6 of the ~10.6 seconds
+    // this console still took to paint its first frame after pzbdbo.27 moved
+    // the source ingest off the same path. It now runs on a background reader
+    // (spawned below) and lands in this cell; the first frame is drawn from
+    // `NotYetRead`, which the Settings view names honestly rather than filling
+    // the gap with the settings DEFAULTS.
+    let dispatcher_settings_cell = SharedDispatcherSettingsRead::new();
     let decisions = JournalAutonomousDecisionsPort::new(&probe, journal_path.as_str());
     let invoker = console_invoker(args);
     // This process's identity, stamped onto every availability marker this
@@ -457,7 +465,12 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
     let source_event_counts_cell = SharedSourceEventCounts::new();
     let mut runner = InteractiveTuiRunner {
         selected_repo: repo,
-        dispatcher_settings,
+        // The FIRST frame's honest state: this session has not read the
+        // effective policy yet. The background reader's answer arrives through
+        // `dispatcher_settings_cell` a few seconds later
+        // (livespec-console-beads-fabro-mx9u.29).
+        dispatcher_settings: DispatcherSettingsRead::NotYetRead,
+        dispatcher_settings_cell: dispatcher_settings_cell.clone(),
         plugin_resolution: plugin_resolution_for_tui(resolution.plugin_resolution()),
         build_identity: livespec_console_beads_fabro::build_identity::embedded_build_identity(),
         build_staleness: build_staleness_cell.get(),
@@ -507,6 +520,15 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
             poller_writer_lease_status,
         );
     });
+    // The background effective-policy read (livespec-console-beads-fabro-mx9u.29),
+    // on a thread of its OWN rather than folded into the poller above. Two
+    // reasons: it is a ONE-SHOT read, not a cadence (the only thing that
+    // re-reads the policy afterwards is the operator's own settings write, on
+    // its own gated path), and putting a ~6s shell-out at the head of the
+    // poller's first sweep would delay the source ingest -- and with it the
+    // header's `event sources: loading` tell clearing -- by exactly the time
+    // this item exists to give back.
+    spawn_effective_policy_reader(dispatcher_settings_cell);
     let requester = ChannelPollRequester {
         tx: poll_tx.clone(),
     };
@@ -590,6 +612,55 @@ fn os_user() -> String {
 #[cfg(all(not(test), not(coverage)))]
 fn hostname() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_error| "unknown".to_owned())
+}
+
+/// Start the background effective-policy read on a thread of its own and let it
+/// go (livespec-console-beads-fabro-mx9u.29).
+///
+/// Deliberately UNJOINED, like the factory command lane: a quit must never wait
+/// out a slow orchestrator read. The handle is dropped at once rather than held
+/// and ignored, so nothing later mistakes this for a thread anyone joins.
+#[cfg(all(not(test), not(coverage)))]
+fn spawn_effective_policy_reader(cell: SharedDispatcherSettingsRead) {
+    drop(std::thread::spawn(move || {
+        read_effective_policy_into(&cell);
+    }));
+}
+
+/// Read the effective dispatcher settings through the orchestrator's published
+/// `config` action and publish the outcome to the render thread
+/// (livespec-console-beads-fabro-mx9u.29).
+///
+/// Self-contained the same way [`poller_loop`] is: it re-resolves its OWN
+/// backing-CLI resolution and probe rather than borrowing the composition
+/// root's, so nothing non-`Send` crosses the thread boundary and the UI thread
+/// keeps sole use of the `drive` port it hands the session.
+///
+/// Every failure ends in a published [`DispatcherSettingsRead::NotObserved`],
+/// never in silence: a console that cannot read the effective policy has to say
+/// so, and leaving the cell empty would leave the Settings view showing the
+/// not-yet-read tell for the rest of the session as though the read were merely
+/// slow. Terminal-adjacent + thread-bound, so `#[cfg]`-excluded from tests; the
+/// read it drives (`DispatcherSettingsPort::read_settings`) is exercised
+/// directly.
+#[cfg(all(not(test), not(coverage)))]
+fn read_effective_policy_into(cell: &SharedDispatcherSettingsRead) {
+    let Ok(resolution) = BackingCliResolution::from_environment() else {
+        cell.set(DispatcherSettingsRead::NotObserved);
+        return;
+    };
+    let probe = SystemSourceProbe::new(resolution.selected_repo_path());
+    let repo_path = resolution.drive_repo_arg();
+    let mut drive = DispatcherOrchestratorActionPort::new(
+        &probe,
+        resolution.programs().drive(),
+        &["--repo", repo_path.as_str(), "--json"],
+    );
+    cell.set(
+        DispatcherSettingsPort::new(&mut drive)
+            .read_settings()
+            .unwrap_or(DispatcherSettingsRead::NotObserved),
+    );
 }
 
 /// The background source poller: it owns its own store connection and adapters
@@ -1255,7 +1326,15 @@ fn console_repo() -> String {
 #[cfg(all(not(test), not(coverage)))]
 struct InteractiveTuiRunner {
     selected_repo: String,
+    /// The FIRST frame's effective-policy knowledge -- `NotYetRead` for the
+    /// interactive path, used only to seed `console_tui`'s state before the
+    /// loop's first tick (livespec-console-beads-fabro-mx9u.29).
     dispatcher_settings: DispatcherSettingsRead,
+    /// The cell the background reader publishes the real read into, taken by
+    /// the render loop on the tick it lands. One-shot, unlike
+    /// `build_staleness_cell` below -- see
+    /// `console_application::dispatcher_settings_cell`.
+    dispatcher_settings_cell: SharedDispatcherSettingsRead,
     plugin_resolution: TuiPluginResolution,
     build_identity: console_application::build_identity::BuildIdentity,
     /// The FIRST frame's staleness -- a plain snapshot, used only to seed
@@ -1308,6 +1387,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
     ) -> Result<Vec<console_tui::TuiRuntimeEffect>, ConsoleRuntimeError> {
         let mut live_session = PollerAwareSession {
             inner: session,
+            dispatcher_settings: self.dispatcher_settings_cell.clone(),
             build_staleness: self.build_staleness_cell.clone(),
             source_staleness: self.source_staleness_cell.clone(),
             source_last_success: self.source_last_success_cell.clone(),
@@ -1347,6 +1427,9 @@ impl TuiSessionRunner for InteractiveTuiRunner {
 #[cfg(all(not(test), not(coverage)))]
 struct PollerAwareSession<'a> {
     inner: &'a mut dyn console_tui::TuiLiveSession,
+    /// The background effective-policy read's landing point
+    /// (livespec-console-beads-fabro-mx9u.29).
+    dispatcher_settings: SharedDispatcherSettingsRead,
     build_staleness: SharedBuildStaleness,
     source_staleness: SharedSourceStaleness,
     source_last_success: SharedSourceLastSuccess,
@@ -1380,6 +1463,14 @@ impl console_tui::TuiLiveSession for PollerAwareSession<'_> {
 
     fn refresh_dispatcher_settings(&mut self) -> std::io::Result<Option<DispatcherSettingsRead>> {
         self.inner.refresh_dispatcher_settings()
+    }
+
+    fn take_dispatcher_settings(&mut self) -> Option<DispatcherSettingsRead> {
+        // A cheap, non-blocking `Mutex` take of whatever the background reader
+        // published. `Some` at most ONCE per read -- see
+        // `console_application::dispatcher_settings_cell` for why re-delivering
+        // it every tick would overwrite the operator's own post-write re-read.
+        self.dispatcher_settings.take()
     }
 
     fn take_build_staleness(&mut self) -> Option<BuildStaleness> {

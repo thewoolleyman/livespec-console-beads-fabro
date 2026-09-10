@@ -30,6 +30,11 @@ use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
 pub mod action_registry;
 /// The running binary's build identity and its staleness against the repo.
 pub mod build_identity;
+/// The background effective-policy read's landing point.
+///
+/// The thread-shared cell the session's background effective-policy read lands
+/// in (livespec-console-beads-fabro-mx9u.29).
+pub mod dispatcher_settings_cell;
 /// The `doctor` diagnostic: console-health findings derived from the SAME
 /// in-process projection the header renders.
 pub mod doctor;
@@ -3046,6 +3051,12 @@ pub enum ApplicationError {
     /// Settings view while the orchestrator's read surface had not produced a
     /// trustworthy read, so there is no effective value to edit.
     DispatcherSettingsNotObserved,
+    /// Dispatcher settings not yet read variant -- an edit was attempted on the
+    /// Settings view before this session's background effective-policy read
+    /// answered. Deliberately NOT reported as a failed read
+    /// (livespec-console-beads-fabro-mx9u.29): nothing is broken, the value is
+    /// simply not known yet, and a moment later it will be.
+    DispatcherSettingsNotYetRead,
     /// No selected dispatcher setting variant -- an edit was attempted with no
     /// Settings row selected.
     NoSelectedDispatcherSetting,
@@ -6467,8 +6478,10 @@ pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
 ///
 /// # Errors
 /// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
-/// blank, [`ApplicationError::DispatcherSettingsNotObserved`] when no
-/// trustworthy read produced the effective values, and
+/// blank, [`ApplicationError::DispatcherSettingsNotObserved`] when a read was
+/// attempted and produced no trustworthy values,
+/// [`ApplicationError::DispatcherSettingsNotYetRead`] when this session's
+/// background read has not answered yet, and
 /// [`ApplicationError::NoSelectedDispatcherSetting`] when no Settings row is
 /// selected.
 pub fn resolve_dispatcher_setting_edit(
@@ -6476,8 +6489,18 @@ pub fn resolve_dispatcher_setting_edit(
     requested_by: &str,
 ) -> ApplicationResult<OperatorActionOutcome> {
     validate_operator_action(requested_by)?;
-    let DispatcherSettingsRead::Observed(settings) = model.dispatcher_settings() else {
-        return Err(ApplicationError::DispatcherSettingsNotObserved);
+    let settings = match model.dispatcher_settings() {
+        DispatcherSettingsRead::Observed(settings) => settings,
+        // The two non-observed states refuse DIFFERENTLY: a read still in
+        // flight has not failed at anything, and telling the operator it did
+        // would send them investigating an orchestrator surface that is fine
+        // (livespec-console-beads-fabro-mx9u.29).
+        DispatcherSettingsRead::NotYetRead => {
+            return Err(ApplicationError::DispatcherSettingsNotYetRead);
+        }
+        DispatcherSettingsRead::NotObserved => {
+            return Err(ApplicationError::DispatcherSettingsNotObserved);
+        }
     };
     let index = model
         .selected_setting_index()
@@ -8520,15 +8543,36 @@ impl DispatcherSettings {
 }
 
 /// The honest outcome of reading the effective dispatcher settings.
+///
+/// THREE states, not two (livespec-console-beads-fabro-mx9u.29). Reading the
+/// effective policy costs one `drive --action config` shell-out -- measured at
+/// ~6s against real backing CLIs -- so it no longer happens before the
+/// interactive console paints its first frame. That created a window in which
+/// the console has not read the policy YET, which is a different fact from
+/// having tried and failed, and the operator has to be able to tell them apart:
+/// one is a slow read, the other is a broken read surface worth reporting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatcherSettingsRead {
     /// The orchestrator reported all settings.
     Observed(DispatcherSettings),
+    /// The read has not been ATTEMPTED yet -- the background read this session
+    /// starts at launch has not answered. Distinct from [`Self::NotObserved`]
+    /// on purpose: nothing has failed, and nothing is known, so no value may be
+    /// rendered (livespec-console-beads-fabro-mx9u.29).
+    NotYetRead,
     /// No trustworthy read was produced (the surface is not wired, the action
     /// failed, or its payload could not be parsed). The caller degrades to a
     /// named not-observed finding rather than an assumed value.
     NotObserved,
 }
+
+/// The Settings view's not-yet-read placeholder text
+/// (livespec-console-beads-fabro-mx9u.29).
+///
+/// Exported for the same reason [`STARTUP_INGEST_LOADING_TELL`] is: the render
+/// path and every test or harness that has to recognize the tell read the SAME
+/// bytes rather than hand-copying a literal that can drift.
+pub const DISPATCHER_SETTINGS_NOT_YET_READ_TELL: &str = "Dispatcher settings not yet read";
 
 /// Reads and writes the API-configurable dispatcher settings THROUGH the
 /// orchestrator's published `drive` config actions, riding the shared
@@ -8996,7 +9040,13 @@ pub fn handle_config_dispatcher_setting_set_command(
     // read surface yields a null `previous` rather than a fabricated value.
     let previous_value = match settings_port.read_settings()? {
         DispatcherSettingsRead::Observed(settings) => previous_setting_value_json(&settings, write),
-        DispatcherSettingsRead::NotObserved => serde_json::Value::Null,
+        // `read_settings` itself never returns `NotYetRead` -- that state
+        // belongs to the SESSION (has this console asked yet?), not to a read
+        // that has just been performed here. Both non-observed cases record a
+        // null `previous` rather than a fabricated value.
+        DispatcherSettingsRead::NotObserved | DispatcherSettingsRead::NotYetRead => {
+            serde_json::Value::Null
+        }
     };
     let mut events = vec![config_command_event(
         command,
@@ -21407,6 +21457,25 @@ mod tests {
         assert_eq!(
             resolve_dispatcher_setting_edit(&model, "operator"),
             Err(ApplicationError::DispatcherSettingsNotObserved)
+        );
+    }
+
+    #[test]
+    fn editing_during_the_not_yet_read_window_is_refused_as_not_yet_read() {
+        // livespec-console-beads-fabro-mx9u.29 AC2, at the one place the
+        // distinction can actually mislead an operator into acting: the
+        // effective-policy read now happens in the background, so a keypress
+        // can land before it answers. That refusal must not claim the read
+        // FAILED -- nothing is broken, the value is simply not known yet, and
+        // only one of those two facts is worth investigating.
+        let state = TuiInteractionState::for_view(TuiView::Settings, 0, TuiOverlay::None)
+            .with_selected_repo(CONFIRM_REPO.to_owned())
+            .with_selected_setting_index(0)
+            .with_dispatcher_settings(DispatcherSettingsRead::NotYetRead);
+        let model = build_tui_model_for_state(&[], &state);
+        assert_eq!(
+            resolve_dispatcher_setting_edit(&model, "operator"),
+            Err(ApplicationError::DispatcherSettingsNotYetRead)
         );
     }
 
