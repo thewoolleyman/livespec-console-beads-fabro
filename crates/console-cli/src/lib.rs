@@ -12810,6 +12810,14 @@ mod tests {
             "a fresh store carries no factory event, so there is no tell",
         );
 
+        // A store whose read fails propagates the error to the poller rather
+        // than reporting "no factory event".
+        corrupt_store(&path, "drop table events");
+        check(
+            factory_outcome_snapshot(&store, "2026-09-10T12:00:00Z").is_err(),
+            "a failing store read surfaces as an error, not as an absent tell",
+        );
+
         cleanup_store(&path);
     }
 
