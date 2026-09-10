@@ -5041,11 +5041,8 @@ mod tests {
     /// NOT generic over the `Ok` type -- one non-generic function per return
     /// shape, like `check_refresh_none` / `check_deferred_outcome` above,
     /// rather than one `expect_io<T>` monomorphized per call site. A generic
-    /// helper here would give the coverage gate's instantiation-group
-    /// accounting a NEW multi-monomorphization signature (the same
-    /// scalar-merge artifact `tests/fixtures/coverage-unnameable-disposition.json`
-    /// already tracks one instance of) for no benefit -- these two callers
-    /// are the only ones this file has.
+    /// helper here would add an instantiation per caller for no benefit --
+    /// these two callers are the only ones this file has.
     #[track_caller]
     #[allow(clippy::panic)]
     fn expect_tick(result: std::io::Result<LoopTick>, context: &str) -> LoopTick {

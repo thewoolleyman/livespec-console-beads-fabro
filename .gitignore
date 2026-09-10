@@ -5,6 +5,7 @@
 # `git add -A` sweeps ~5000 lines of build artifacts into a commit.
 /mutants.out.old/
 /.venv/
+__pycache__/
 /.beads/metadata.json
 /.DS_Store
 /tmp/
