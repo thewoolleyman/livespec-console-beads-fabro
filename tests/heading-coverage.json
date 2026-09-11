@@ -282,9 +282,11 @@
   {
     "scenario": "Contributor Scenario A -- Functional / non-functional placement boundary",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid contributor acceptance test should exercise the spec placement boundary by validating that operator-observable content routes to the functional files while contributor-only constraints route to non-functional-requirements.md. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-spec-check/src/tests.rs::evaluate_partitions_clause_audiences",
+      "crates/console-spec-check/src/tests.rs::evaluate_flags_unlinked_and_resolves_links"
+    ],
+    "reason": "Top-of-pyramid control-armed coverage in console-spec-check for the functional/non-functional placement boundary. evaluate_partitions_clause_audiences constructs a contributor (NFR) clause deliberately mis-linked to an operator scenario and asserts it stays unlinked, then links it to the correct-audience NFR scenario and asserts it resolves -- proving operator-observable content and contributor-only content are held to their audience-appropriate files. evaluate_flags_unlinked_and_resolves_links arms the dangling-link case (a link resolving to no live H2 counts as unlinked). The litmus the scenario states is enforced as the agreement between a clause's file placement and the audience partition its link must resolve within.",
     "clauses": [
       {
         "gap_id": "gap-cwfojsth",
@@ -319,9 +321,13 @@
   {
     "scenario": "Contributor Scenario B -- Red-Green-Replay gates Rust product commits",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid hook/check acceptance test should cover accepted Red-Green-Replay evidence, rejected malformed product commits, and the non-product exemption once the Rust replay checker lands. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-red-green-replay-check/src/lib.rs::tests::no_arg_range_accepts_pair_suite_and_non_product_commits",
+      "crates/console-red-green-replay-check/src/lib.rs::tests::no_arg_range_rejects_unresolvable_base_and_missing_trailer_shape",
+      "crates/console-red-green-replay-check/src/lib.rs::tests::decision_tree_covers_pass_red_reject_green_and_suite_green",
+      "crates/console-red-green-replay-check/src/lib.rs::tests::classify_splits_rust_tests_and_product_impl"
+    ],
+    "reason": "The Rust Red-Green-Replay checker (console-red-green-replay-check) is built and first-class; the stale 'until that check is wired' framing no longer holds. no_arg_range_accepts_pair_suite_and_non_product_commits arms the accepted well-formed Red->Green->Suite sequence; no_arg_range_rejects_unresolvable_base_and_missing_trailer_shape and decision_tree_covers_pass_red_reject_green_and_suite_green arm the rejection of a product commit missing a required staged phase or trailer (including a red-phase test that passes); classify_splits_rust_tests_and_product_impl arms the non-product exemption (docs and non-Rust changes reach neither impl bucket). Content, not the subject prefix, is the trigger.",
     "clauses": [
       {
         "gap_id": "gap-7y6ca6tv",
@@ -486,7 +492,7 @@
     "scenario": "Contributor Scenario E -- Beads/Fabro family secret convention",
     "scenario_file": "non-functional-requirements.md",
     "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid CI/work-items access acceptance test should verify the single bare BEADS_DOLT_PASSWORD convention without echoing or committing secrets. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "reason": "Test tier: a top-of-pyramid CI and work-items-access acceptance test should verify the single bare BEADS_DOLT_PASSWORD convention -- no per-tenant BEADS_DOLT_PASSWORD_<tenant> variable, secrets never committed or echoed, and CI holding no work-items credential (the SSH-key-only ingress). Verified 2026-09-12 that no mechanical check enforces this today: the convention lives only as spec prose and inert staleness-fixture data, and no crate or .github/workflows file references the secret. A sound check must parse variable declarations and CI env structurally to avoid false-positiving on the spec prose that names BEADS_DOLT_PASSWORD_<tenant> only to forbid it; a bare grep would be a hollow, fragile test. Remains TODO pending a first-class secret-convention checker rather than a text-scan placeholder.",
     "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
@@ -514,9 +520,11 @@
   {
     "scenario": "Contributor Scenario F -- Implementation language and the unsafe-code ban",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify product crates are Rust crates and declare #![forbid(unsafe_code)] unless a future spec revision grants an exception. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-arch-check/src/main.rs::tests::forbid_unsafe_absent_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::forbid_unsafe_present_passes"
+    ],
+    "reason": "console-arch-check enforces the unsafe-code ban at the Rust AST level over every scanned product crate entrypoint. forbid_unsafe_absent_is_flagged arms the rule -- it parses an entrypoint carrying no attribute and asserts a finding -- and forbid_unsafe_present_passes is the passing control. Product code being Rust is implicit in the checker scanning only .rs entrypoints; the falsifiable obligation is the forbid(unsafe_code) declaration.",
     "clauses": [
       {
         "gap_id": "gap-asgj526f",
@@ -531,9 +539,11 @@
   {
     "scenario": "Contributor Scenario G -- Railway-oriented error handling",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify typed Result rails, panic/unwrap/expect exclusions, rejection-versus-infrastructure error separation, and pipeline-shaped use cases. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-arch-check/src/main.rs::tests::unwrap_call_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::expect_call_is_flagged"
+    ],
+    "reason": "The unwrap/expect ban -- the mechanically-enforceable core of the railway-oriented error discipline -- is checked at the Rust AST level by console-arch-check. unwrap_call_is_flagged and expect_call_is_flagged construct real .unwrap()/.expect() method calls and assert findings, while unwrap_or, string-literal, and cfg(test) occurrences are the negative controls, so the ban tells real calls apart from substrings and holds outside tests and startup wiring. Panics being bugs rather than domain control flow follows from this ban plus the workspace clippy denies (panic/todo/unimplemented). The typed-Result-return and rejection-versus-infrastructure separation are realized as a design property of the domain and application error types rather than a dedicated arch rule, and are exercised throughout the application-layer use-case tests.",
     "clauses": [
       {
         "gap_id": "gap-elbrtgyb",
@@ -556,9 +566,14 @@
   {
     "scenario": "Contributor Scenario H -- Domain-driven boundaries are preserved",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid architecture acceptance test should verify bounded-context ownership, domain infrastructure isolation, source-adapter isolation, UI source isolation, and the zero-Beads-knowledge read path. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-arch-check/src/main.rs::tests::layering_flags_a_forbidden_reverse_edge",
+      "crates/console-arch-check/src/main.rs::tests::layering_flags_infra_dependency_in_domain",
+      "crates/console-arch-check/src/main.rs::tests::adapter_isolation_flags_a_cross_module_reference",
+      "crates/console-arch-check/src/main.rs::tests::backing_cli_default_bd_program_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::beads_native_dot_beads_path_is_flagged"
+    ],
+    "reason": "console-arch-check enforces the bounded-context layering invariants and each control-armed test constructs a violating fixture and asserts the finding: layering_flags_a_forbidden_reverse_edge (a domain crate depending on the TUI) and layering_flags_infra_dependency_in_domain (a purity-constrained crate depending on infrastructure) cover contexts staying in their lanes and domain's freedom from infrastructure; adapter_isolation_flags_a_cross_module_reference covers per-source-adapter isolation at the in-use module granularity; backing_cli_default_bd_program_is_flagged and beads_native_dot_beads_path_is_flagged cover the zero-Beads-knowledge rule (no crate defaults to the bd CLI, no Beads-native read path). The crate-graph rules are sourced from cargo metadata and the source rules from a syn AST walk.",
     "clauses": [
       {
         "gap_id": "gap-h4eusndl",
@@ -585,9 +600,14 @@
   {
     "scenario": "Contributor Scenario I -- Architecture tests enforce the layering invariants",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: the top-of-pyramid architecture-check acceptance test should verify the compiled check enforces the Domain-Driven Design rule set from structured crate metadata and Rust AST inspection. Registered now because the contributor scenario is a live H2 and console-spec-check requires every live scenario to carry a non-empty test registration.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-arch-check/src/main.rs::tests::layering_flags_a_forbidden_reverse_edge",
+      "crates/console-arch-check/src/main.rs::tests::crate_graph_that_reads_no_workspace_packages_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::unwrap_call_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::expect_call_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::event_type_enum_outside_domain_is_flagged"
+    ],
+    "reason": "console-arch-check is the first-class compiled architecture check, and each rule is stated falsifiably -- a reviewer can name the input that fails it. layering_flags_a_forbidden_reverse_edge proves the crate-graph rules are enforced from a structured cargo-metadata source (a CrateNode graph carrying a forbidden edge), and crate_graph_that_reads_no_workspace_packages_is_flagged is the anti-vacuity guard. unwrap_call_is_flagged and expect_call_is_flagged prove the source-level rules run at the Rust AST level (unwrap_or and string-literal substrings are their negative controls, so real calls are told apart from substrings). event_type_enum_outside_domain_is_flagged proves event/command-type placement is enforced structurally.",
     "clauses": [
       {
         "gap_id": "gap-sbflemi5",
@@ -830,9 +850,13 @@
   {
     "scenario": "Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: top-of-pyramid acceptance test pending for the per-item override valve: an override beating the global default, the `wip_cap` rejection (a per-repo concurrency ceiling admits none), the one-console-command-per-overridable-setting rule, and the TUI driving all six Work-item Lifecycle commands. The six-command TUI clause binds here rather than to Scenario 11 because Scenario 11 is fully covered by built tests while the sixth (override) scene is not yet built. Owner: W3 Settings-surface code child, which lands the per-item override control under crates/console-cli/tests/.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-application/src/lib.rs::tests::dispatcher_override_handler_rejects_non_overridable_settings_bad_values_and_empty_ids",
+      "crates/console-application/src/lib.rs::tests::dispatcher_override_handler_maps_each_cap_setting_and_clear_onto_its_action_id",
+      "crates/console-application/src/lib.rs::tests::dispatcher_override_action_id_rejects_missing_value_and_bad_rework_cap",
+      "crates/console-application/src/lib.rs::tests::dispatcher_override_valve_outcome_carries_the_setting_and_value_payload"
+    ],
+    "reason": "The per-item override valve is built. dispatcher_override_handler_rejects_non_overridable_settings_bad_values_and_empty_ids is the control-armed wip_cap-rejection proof -- it feeds a wip_cap override (and auto_approve_ready, acceptance_mode, unknown, wrong-typed, zero-int, empty id) and asserts the handler rejects before invoking the port, so a per-repo concurrency ceiling admits no per-item override. dispatcher_override_handler_maps_each_cap_setting_and_clear_onto_its_action_id proves one console command per overridable setting mapping 1:1 onto the published drive action (the effective-value precedence is the orchestrator's to report, not re-derived by the console). dispatcher_override_action_id_rejects_missing_value_and_bad_rework_cap and dispatcher_override_valve_outcome_carries_the_setting_and_value_payload arm the value validation and outcome payload. The six-command TUI drive is covered by the per-item verb and move-status surfaces bound under Scenarios 17, 25, and 31.",
     "clauses": [
       {
         "gap_id": "gap-6i3hqmed",
@@ -963,9 +987,11 @@
   {
     "scenario": "Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: top-of-pyramid acceptance test pending for the factory-drain launcher argv: the drain port invokes the Dispatcher with NO per-run policy-arming argument, leaving dispatch-time policy to the orchestrator-owned `dispatcher.*` settings the Dispatcher reads itself. A per-run flag writes no setting, so this is a distinct obligation from the settings-write scenarios and earns its own bound test. Owner: drain-launcher code child under crates/console-cli/tests/; W1 already fixed the shipped launcher, so this test pins that fix against regression rather than driving new behavior.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-application/src/lib.rs::tests::dispatcher_drain_port_never_passes_a_mode_flag",
+      "crates/console-application/src/lib.rs::tests::dispatcher_drain_port_threads_requested_budget_and_parallel"
+    ],
+    "reason": "The shipped drain launcher was fixed to pass no per-run policy-arming argument; this binds the regression proof. dispatcher_drain_port_never_passes_a_mode_flag is control-armed against the strongest violating context -- a probe config with the autonomous-mode permission key enabled -- and asserts the recorded argv is exactly loop --budget 1 --parallel 1 with no policy flag, so dispatch-time policy is left to the orchestrator-owned dispatcher.* settings the Dispatcher reads itself. dispatcher_drain_port_threads_requested_budget_and_parallel pins the only two arguments the port appends.",
     "clauses": [
       {
         "gap_id": "gap-xgf6bv6m",
@@ -1152,9 +1178,12 @@
   {
     "scenario": "Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: top-of-pyramid acceptance coverage is owed by the menu-shell implementation (plan/02-menu-shell-primacy/): the generic menu-traversal E2E driving every registered action's menu path, plus the hotkey-free-build reachability run, are the integration/acceptance tests this scenario names. Registered as TODO at ratification time because the menu system this scenario specifies does not exist yet -- the registry (plan/01) and menu shell (plan/02) are the implementing plans, and the scenario is ratified ahead of them by deliberate maintainer decision (2026-08-02).",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-cli/tests/menu_completeness.rs::every_operator_reachable_behaviour_is_menu_drivable_or_argued",
+      "crates/console-cli/tests/menu_completeness.rs::every_carved_out_behaviour_states_its_reason",
+      "crates/console-cli/tests/menu_unavailable_refusal.rs::enter_on_an_unavailable_menu_row_renders_the_registry_refusal"
+    ],
+    "reason": "The menu shell is built and the completeness gate is live. every_operator_reachable_behaviour_is_menu_drivable_or_argued quantifies over every KeyCode arm of the shipped key handler (not over the registry's own generated rows, which would pass by construction) and fails naming any operator-reachable behaviour that is neither a menu-carrying registry hotkey, an argued carveout, nor inert -- so every action is menu-reachable and hotkeys are only additional. every_carved_out_behaviour_states_its_reason arms the reason requirement, and enter_on_an_unavailable_menu_row_renders_the_registry_refusal proves an action stays menu-reachable and renders the registry refusal when unavailable. The 2026-08-02 'ratified ahead of the menu system' note is stale: the registry and menu-shell plans landed.",
     "clauses": [
       {
         "gap_id": "gap-pdamcd6a",
@@ -1201,9 +1230,12 @@
   {
     "scenario": "Contributor Scenario J -- Cross-repo action-surface parity",
     "scenario_file": "non-functional-requirements.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance/integration test lands with the parity check itself (plan/01-action-registry-and-invoker slice A ships crates/console-cli/tests/drive_surface_parity.rs, born red against the currently-unbound valve actions as its red demonstration, then green with bindings and reasoned omissions). Registered as TODO until that slice merges; the test name is recorded here at merge time.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-cli/tests/drive_surface_parity.rs::every_captured_human_action_is_registered_or_deliberately_omitted",
+      "crates/console-cli/tests/drive_surface_parity.rs::every_recorded_omission_carries_a_reason",
+      "crates/console-cli/tests/drive_surface_parity.rs::every_registry_action_is_accounted_for_in_the_capture"
+    ],
+    "reason": "The cross-repo action-surface parity check is built (drive_surface_parity.rs against the captured orchestrator human-action surface) and was born red against the shipped-but-unbound set-workflow-scope-override action before the console bound it -- its demonstrated red run. every_captured_human_action_is_registered_or_deliberately_omitted arms the forward direction (an unbound published action fails naming the missing binding); every_recorded_omission_carries_a_reason arms the allowlist-with-reasons idiom (an empty-reason omission fails); every_registry_action_is_accounted_for_in_the_capture arms the reverse direction (a registry action absent from the reviewed capture is red).",
     "clauses": [
       {
         "gap_id": "gap-3hzrpeqq",
@@ -1230,9 +1262,8 @@
   {
     "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance test would need to prove a UI absence -- that the console's Settings surface never gains a `livespec-overseer` foreman/overseer configuration lever (for example `foreman_valve_disposition`) and that no console code path invokes the overseer/foreman layer. This v040 Scope Boundary clause is bound here because Scenario 11 is the console's other orthogonal-system boundary case (the orchestrator's ratified action surface, which the console maps commands onto and never bypasses); the overseer/foreman clause is the same shape of boundary against a second, independent system. Coverage today is structural rather than behavioral: console-arch-check enforces that the Settings surface stays limited to the orchestrator-declared `dispatcher.*` levers (Scenario 14), and no `livespec-overseer` client exists in this crate tree for a test to invoke. Registered now, pending, per the console-spec-check requirement that every live clause bind to a scenario.",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "test": "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_settings_row_absent_from_the_declared_key_set",
+    "reason": "This row carries the orthogonal-system boundary case (the v040 scope-boundary clauses were folded into the v046 control-plane boundary, Scenario 29). Its enforceable, control-armed guard is the completeness check: evaluate_names_a_settings_row_absent_from_the_declared_key_set constructs a Settings row absent from the orchestrator's config-manifest declared-key set and asserts it is flagged -- so the Settings surface stays limited to orchestrator-declared dispatcher.* levers and a livespec-overseer foreman lever (for example foreman_valve_disposition) cannot be added as a Settings row. No livespec-overseer client exists in this crate tree for a test to invoke, so the no-console-into-overseer half holds structurally: there is nothing to call.",
     "clauses": []
   },
   {
@@ -1306,9 +1337,13 @@
   {
     "scenario": "Scenario 29 -- The console is the control-plane surface, not a deciding agent",
     "scenario_file": "scenarios.md",
-    "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance test should prove the control-plane boundary ratified in v046: the roster / attention / valve surfaces render from orchestrator-published projections only, every disposition the console issues is a recorded operator command, no console component issues a valve / selects a next action / answers a run question on its own initiative, no session is driven or observed through a terminal multiplexer or screen-scraping transport, and no local realization exists for a capability the orchestrator has not published (including run questions, whose wire form the orchestrator has not ratified). Registered pending at ratification time because the console-spec-check requires every live scenario to carry a non-empty test registration; the implementing work is the console phase-1 children of plan retire-overseer-and-redesign-control-plane-around-console (epic livespec-console-beads-fabro-pzbdbo), and the structural half is already enforced by console-arch-check (Scenario 14 keeps the Settings surface on orchestrator-declared levers).",
-    "work_item": "livespec-console-beads-fabro-y9hc",
+    "tests": [
+      "crates/console-arch-check/src/main.rs::tests::a_direct_valve_staging_outside_the_registry_path_is_flagged",
+      "crates/console-arch-check/src/main.rs::tests::a_direct_driver_handoff_staging_outside_the_registry_path_is_flagged",
+      "crates/console-completeness-check/src/lib.rs::tests::evaluate_names_a_settings_row_absent_from_the_declared_key_set",
+      "crates/console-arch-check/src/main.rs::tests::tmux_invocation_without_private_socket_is_flagged"
+    ],
+    "reason": "The control-plane boundary is enforced by cross-cutting control-armed checks. a_direct_valve_staging_outside_the_registry_path_is_flagged and a_direct_driver_handoff_staging_outside_the_registry_path_is_flagged prove no console component issues a valve on its own initiative -- every disposition must ride the registry staging path (a recorded operator command) and a direct staging is a red build. evaluate_names_a_settings_row_absent_from_the_declared_key_set proves no local realization exists for a capability the orchestrator has not published (the Settings surface is bounded to the declared key set). tmux_invocation_without_private_socket_is_flagged proves no session is driven or observed through a shared terminal multiplexer or screen-scraping transport -- any tmux use is confined to a private-socket test harness. The console has no autonomous decision loop; it acts only on operator keypresses, which the registry-bypass rule guards mechanically.",
     "clauses": [
       {
         "gap_id": "gap-h2s3rdaa",
