@@ -1,0 +1,54 @@
+{
+  "conclusion": "",
+  "createdAt": "2026-09-08T09:59:30Z",
+  "databaseId": 4242424242,
+  "displayTitle": "fix(ci): ci.conclusion on every telemetry span",
+  "event": "push",
+  "headBranch": "master",
+  "headSha": "1a2b3c4d5e6f708192a3b4c5d6e7f80912345678",
+  "jobs": [
+    {
+      "completedAt": "2026-09-08T10:19:00Z",
+      "conclusion": "failure",
+      "databaseId": 2001,
+      "name": "check-e2e-tmux",
+      "startedAt": "2026-09-08T10:00:00Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/thewoolleyman/livespec-console-beads-fabro/actions/runs/4242424242/job/2001"
+    },
+    {
+      "completedAt": "2026-09-08T10:07:00Z",
+      "conclusion": "cancelled",
+      "databaseId": 2002,
+      "name": "check-nextest",
+      "startedAt": "2026-09-08T10:00:00Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/thewoolleyman/livespec-console-beads-fabro/actions/runs/4242424242/job/2002"
+    },
+    {
+      "completedAt": "2026-09-08T10:11:00Z",
+      "conclusion": "",
+      "databaseId": 2003,
+      "name": "check-deps",
+      "startedAt": "2026-09-08T10:00:00Z",
+      "status": "completed",
+      "steps": [],
+      "url": "https://github.com/thewoolleyman/livespec-console-beads-fabro/actions/runs/4242424242/job/2003"
+    },
+    {
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "databaseId": 2004,
+      "name": "export-telemetry",
+      "startedAt": "2026-09-08T10:20:00Z",
+      "status": "in_progress",
+      "steps": [],
+      "url": "https://github.com/thewoolleyman/livespec-console-beads-fabro/actions/runs/4242424242/job/2004"
+    }
+  ],
+  "startedAt": "2026-09-08T10:00:00Z",
+  "status": "in_progress",
+  "updatedAt": "2026-09-08T10:20:05Z"
+}

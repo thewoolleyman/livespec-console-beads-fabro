@@ -1,0 +1,69 @@
+{
+  "total_count": 4,
+  "jobs": [
+    {
+      "id": 2001,
+      "run_id": 4242424242,
+      "workflow_name": "CI",
+      "name": "check-e2e-tmux",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T10:00:00Z",
+      "completed_at": "2026-09-08T10:19:00Z",
+      "runner_id": 41,
+      "runner_name": "livespec-console-beads-k3s-nx8fj-runner-9wqcv",
+      "runner_group_id": 1,
+      "runner_group_name": "Default",
+      "labels": ["livespec-console-beads-k3s"],
+      "steps": []
+    },
+    {
+      "id": 2002,
+      "run_id": 4242424242,
+      "workflow_name": "CI",
+      "name": "check-nextest",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "started_at": "2026-09-08T10:00:00Z",
+      "completed_at": "2026-09-08T10:07:00Z",
+      "runner_id": 42,
+      "runner_name": "livespec-console-beads-k3s-nx8fj-runner-b2k7p",
+      "runner_group_id": 1,
+      "runner_group_name": "Default",
+      "labels": ["livespec-console-beads-k3s"],
+      "steps": []
+    },
+    {
+      "id": 2003,
+      "run_id": 4242424242,
+      "workflow_name": "CI",
+      "name": "check-deps",
+      "status": "completed",
+      "conclusion": null,
+      "started_at": "2026-09-08T10:00:00Z",
+      "completed_at": "2026-09-08T10:11:00Z",
+      "runner_id": 43,
+      "runner_name": "livespec-console-beads-k3s-nx8fj-runner-q4m1x",
+      "runner_group_id": 1,
+      "runner_group_name": "Default",
+      "labels": ["livespec-console-beads-k3s"],
+      "steps": []
+    },
+    {
+      "id": 2004,
+      "run_id": 4242424242,
+      "workflow_name": "CI",
+      "name": "export-telemetry",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-09-08T10:20:00Z",
+      "completed_at": null,
+      "runner_id": 7,
+      "runner_name": "GitHub Actions 3",
+      "runner_group_id": 2,
+      "runner_group_name": "GitHub Actions",
+      "labels": ["ubuntu-latest"],
+      "steps": []
+    }
+  ]
+}
