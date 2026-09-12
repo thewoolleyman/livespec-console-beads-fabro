@@ -27,6 +27,24 @@
 # duration regime change, which makes every before/after comparison (e.g.
 # pre/post-RAID10) a date guess rather than a filter.
 #
+# Every span — `ci.run` and every `ci.job.*` — also carries the OUTCOME of the
+# thing it measures:
+#   ci.conclusion  - success / failure / cancelled / skipped, and NEVER empty
+#                    (see the never-empty contract at the run span below).
+#   ci.run.status  - the enclosing run's status (queued / in_progress /
+#                    completed), repeated onto every job span because Honeycomb
+#                    cannot join a child span to its parent's attributes.
+# `ci.job.conclusion` is retained beside `ci.conclusion` on job spans: the
+# 7,570 job spans emitted before this existed carry only the former, so keeping
+# it lets one query span the change rather than starting the history over.
+#
+# Until this landed, DURATION was the only thing telemetered. A job that got
+# faster by failing earlier was indistinguishable from a genuine optimization,
+# per-job flake rate was unmeasurable (livespec-console-beads-fabro-pis7qu), and
+# superseded-run cancellation was unmeasurable
+# (livespec-console-beads-fabro-s3kwxt) — all three questions this repo's build
+# optimization plan raised, none answerable from its own telemetry.
+#
 # After emitting the job-level spans, the script scans each critical-path job's
 # steps for steps named "Phase: compile", "Phase: test", or "Phase: fuzz" and
 # emits build-telemetry spans conforming to the shared attribute scheme
@@ -83,7 +101,33 @@ run_span_id="$(hex16 "$RUN_ID")"
 run_start="$(iso_to_nanos "$(jq -r '.startedAt // .createdAt' <<<"$run_json")")"
 run_end="$(iso_to_nanos "$(jq -r '.updatedAt' <<<"$run_json")")"
 run_concl="$(jq -r '.conclusion // ""' <<<"$run_json")"
+run_status="$(jq -r '.status // ""' <<<"$run_json")"
 run_code=2; [ "$run_concl" = "success" ] && run_code=1
+
+# `ci.conclusion` must never be EMPTY, on this span or on any job span below.
+# An empty attribute value is indistinguishable in Honeycomb from an attribute
+# that was never emitted: a BREAKDOWN on it returns one anonymous empty group,
+# which is exactly how the hole this guard closes stayed invisible for 457 runs
+# (measured 2026-09-08: 451 of 457 `ci.run` spans carried an empty
+# `ci.conclusion`, and no `ci.job.*` span carried the attribute at all).
+#
+# The run-level value is empty for an ordinary reason, not a bug: the
+# `export-telemetry` job `needs:` every check job and runs `if: !cancelled()`,
+# so it observes its OWN run — and `gh run view` reports an in-flight run's
+# `conclusion` as an empty STRING (which jq's `//` does not replace, `//` only
+# substituting for `null`/`false`). A run cannot know its own verdict while it
+# is still producing it.
+#
+# So this falls back to the run's STATUS (`in_progress`), which is the true and
+# knowable thing, rather than deriving a verdict from the jobs seen so far. A
+# derived value would read as ground truth while being a guess about jobs that
+# had not reported yet. The honest consequence is that RUN-level outcome stays
+# self-observed; JOB-level outcome, emitted below, is the ground truth to query,
+# and it is complete precisely because this job runs after all the others.
+run_outcome="$run_concl"
+[ -n "$run_outcome" ] || run_outcome="$run_status"
+[ -n "$run_outcome" ] || run_outcome="unknown"
+[ -n "$run_status" ] || run_status="unknown"
 
 # `$run_json` carries the whole `jobs` array and MUST reach jq on stdin, never
 # as a `--argjson` value. Passing it on argv died with "jq: Argument list too
@@ -100,13 +144,15 @@ run_code=2; [ "$run_concl" = "success" ] && run_code=1
 run_span="$(jq -c \
   --arg trace "$trace_id" --arg span "$run_span_id" \
   --arg start "$run_start" --arg end "$run_end" \
-  --arg repo "$REPO" --argjson run_id "$RUN_ID" --argjson code "$run_code" '
+  --arg repo "$REPO" --argjson run_id "$RUN_ID" --argjson code "$run_code" \
+  --arg outcome "$run_outcome" --arg run_status "$run_status" '
   {traceId:$trace, spanId:$span, name:"ci.run", kind:1,
    startTimeUnixNano:$start, endTimeUnixNano:$end,
    attributes:[
      {key:"repo",value:{stringValue:$repo}},
      {key:"ci.run_id",value:{intValue:($run_id|tostring)}},
-     {key:"ci.conclusion",value:{stringValue:(.conclusion // "")}},
+     {key:"ci.conclusion",value:{stringValue:$outcome}},
+     {key:"ci.run.status",value:{stringValue:$run_status}},
      {key:"ci.title",value:{stringValue:(.displayTitle // "")}},
      {key:"git.commit.sha",value:{stringValue:(.headSha // "")}},
      {key:"git.branch",value:{stringValue:(.headBranch // "")}},
@@ -132,13 +178,22 @@ job_spans="[]"
 # guard keeps a job that has not finished from emitting a span ending in year 1.
 us=$'\x1f'
 zero_time="0001-01-01T00:00:00Z"
-while IFS="$us" read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
+while IFS="$us" read -r jid jname jconcl jstatus jstart_iso jend_iso jrunner jlabels; do
   [ -n "$jstart_iso" ] && [ "$jstart_iso" != "null" ] && [ "$jstart_iso" != "$zero_time" ] || continue
   [ -n "$jend_iso" ] && [ "$jend_iso" != "null" ] && [ "$jend_iso" != "$zero_time" ] || continue
   jspan_id="$(hex16 "$jid")"
   jstart="$(iso_to_nanos "$jstart_iso")"
   jend="$(iso_to_nanos "$jend_iso")"
   jcode=2; [ "$jconcl" = "success" ] && jcode=1
+  # Same never-empty contract as the run span, and the same fallback order. A
+  # job reaching here has already passed the two timestamp guards above, so it
+  # has genuinely finished and `$jconcl` is populated in practice; the status
+  # fallback is the defensive leg for a job the API reports as completed while
+  # its conclusion is still settling, so that a span can never be emitted with
+  # the empty value that makes a Honeycomb breakdown unreadable.
+  jout="$jconcl"
+  [ -n "$jout" ] || jout="$jstatus"
+  [ -n "$jout" ] || jout="unknown"
   # Matched against the comma-joined label list with the separators restored on
   # both ends, so the test is on a whole label and not on a substring: a
   # hypothetical `ubuntu-latest-arm64` self-hosted label must not read as hosted.
@@ -151,6 +206,7 @@ while IFS="$us" read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
     --arg name "ci.job.$jname" --arg start "$jstart" --arg end "$jend" \
     --arg repo "$REPO" --argjson run_id "$RUN_ID" \
     --arg jname "$jname" --arg jconcl "$jconcl" --argjson code "$jcode" \
+    --arg jout "$jout" --arg run_status "$run_status" \
     --arg jrunner "$jrunner" --arg jlabels "$jlabels" --arg jkind "$jkind" '
     {traceId:$trace, spanId:$span, parentSpanId:$parent, name:$name, kind:1,
      startTimeUnixNano:$start, endTimeUnixNano:$end,
@@ -158,6 +214,8 @@ while IFS="$us" read -r jid jname jconcl jstart_iso jend_iso jrunner jlabels; do
        {key:"repo",value:{stringValue:$repo}},
        {key:"ci.run_id",value:{intValue:($run_id|tostring)}},
        {key:"ci.job.name",value:{stringValue:$jname}},
+       {key:"ci.conclusion",value:{stringValue:$jout}},
+       {key:"ci.run.status",value:{stringValue:$run_status}},
        {key:"ci.job.conclusion",value:{stringValue:$jconcl}},
        {key:"ci.runner.name",value:{stringValue:$jrunner}},
        {key:"ci.runner.labels",value:{stringValue:$jlabels}},
@@ -170,7 +228,8 @@ done < <(jq -r --slurpfile runners "$runners_file" '
   | .jobs[]
   | . as $job
   | ($by_id[($job.databaseId|tostring)] // {}) as $runner
-  | [.databaseId, .name, (.conclusion // ""), (.startedAt // ""), (.completedAt // ""),
+  | [.databaseId, .name, (.conclusion // ""), (.status // ""),
+     (.startedAt // ""), (.completedAt // ""),
      ($runner.runner_name // ""), (($runner.labels // []) | join(","))]
   | map(tostring) | join("\u001f")' <<<"$run_json")
 

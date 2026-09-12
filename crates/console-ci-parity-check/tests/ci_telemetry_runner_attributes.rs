@@ -1,5 +1,5 @@
-//! Every `ci.job.*` span the CI telemetry exporter emits must carry runner
-//! identity.
+//! Every span the CI telemetry exporter emits must carry runner identity and a
+//! non-empty outcome.
 //!
 //! # Why this gate exists
 //!
@@ -105,13 +105,16 @@ fn invalid_data(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidData, message.into())
 }
 
-/// A scratch directory holding the `gh`/`curl` stubs and the captured payload.
+/// A scratch directory holding the `gh`/`curl` stubs and the captured payload,
+/// bound to the pair of GitHub fixtures the stubs replay.
 struct Harness {
     root: PathBuf,
+    run_view: PathBuf,
+    jobs_api: PathBuf,
 }
 
 impl Harness {
-    fn new(name: &str) -> Result<Self> {
+    fn new(name: &str, run_view: &str, jobs_api: &str) -> Result<Self> {
         let mut root = std::env::temp_dir();
         root.push(format!(
             "console-ci-telemetry-{name}-{}-{}",
@@ -125,7 +128,11 @@ impl Harness {
         fs::create_dir_all(&bin)?;
         write_executable(&bin.join("gh"), GH_STUB)?;
         write_executable(&bin.join("curl"), CURL_STUB)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            run_view: fixture(run_view),
+            jobs_api: fixture(jobs_api),
+        })
     }
 
     fn capture_path(&self) -> PathBuf {
@@ -145,8 +152,8 @@ impl Harness {
             .env("REPO", "thewoolleyman/livespec-console-beads-fabro")
             .env("RUN_ID", "4242424242")
             .env("HONEYCOMB_GITHUB_CI_INGEST_KEY_LIVESPEC", "test-ingest-key")
-            .env("STUB_RUN_VIEW", fixture("ci-telemetry-run-view.json"))
-            .env("STUB_JOBS_API", fixture("ci-telemetry-jobs-api.json"))
+            .env("STUB_RUN_VIEW", &self.run_view)
+            .env("STUB_JOBS_API", &self.jobs_api)
             .env("STUB_CAPTURE", self.capture_path())
             .env("STUB_HTTP", http)
             .env("STUB_REJECTED", rejected)
@@ -177,9 +184,9 @@ fn require_jq() -> Result<()> {
     Ok(())
 }
 
-/// The `ci.job.*` spans of an OTLP payload, keyed by `ci.job.name`, each mapped
-/// to its own string attributes.
-fn job_span_attributes(payload: &Value) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+/// Every span of an OTLP payload, keyed by span name, each mapped to its own
+/// string attributes.
+fn span_attributes(payload: &Value) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
     let spans = payload
         .pointer("/resourceSpans/0/scopeSpans/0/spans")
         .and_then(Value::as_array)
@@ -187,9 +194,6 @@ fn job_span_attributes(payload: &Value) -> Result<BTreeMap<String, BTreeMap<Stri
     let mut by_job = BTreeMap::new();
     for span in spans {
         let name = span.get("name").and_then(Value::as_str).unwrap_or_default();
-        if !name.starts_with("ci.job.") {
-            continue;
-        }
         let mut attributes = BTreeMap::new();
         let listed = span
             .get("attributes")
@@ -211,6 +215,20 @@ fn job_span_attributes(payload: &Value) -> Result<BTreeMap<String, BTreeMap<Stri
     Ok(by_job)
 }
 
+/// Just the `ci.job.*` spans, keyed by span name.
+fn job_span_attributes(payload: &Value) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+    let mut by_job = span_attributes(payload)?;
+    by_job.retain(|name, _| name.starts_with("ci.job."));
+    Ok(by_job)
+}
+
+/// The single `ci.run` root span's attributes.
+fn run_span_attributes(payload: &Value) -> Result<BTreeMap<String, String>> {
+    span_attributes(payload)?
+        .remove("ci.run")
+        .ok_or_else(|| invalid_data(format!("no ci.run span in payload: {payload}")))
+}
+
 fn captured_payload(harness: &Harness) -> Result<Value> {
     let raw = fs::read_to_string(harness.capture_path())?;
     serde_json::from_str(&raw).map_err(|err| invalid_data(format!("captured payload: {err}")))
@@ -228,7 +246,11 @@ fn describe(output: &std::process::Output) -> String {
 #[test]
 fn every_ci_job_span_carries_the_runner_identity_of_its_job() -> Result<()> {
     require_jq()?;
-    let harness = Harness::new("runner-identity")?;
+    let harness = Harness::new(
+        "runner-identity",
+        "ci-telemetry-run-view.json",
+        "ci-telemetry-jobs-api.json",
+    )?;
 
     let output = harness.export("200", "0")?;
     assert!(output.status.success(), "{}", describe(&output));
@@ -284,6 +306,139 @@ fn every_ci_job_span_carries_the_runner_identity_of_its_job() -> Result<()> {
     Ok(())
 }
 
+/// Every span must carry a NON-EMPTY `ci.conclusion`.
+///
+/// # Why an empty value is the same defect as a missing one
+///
+/// Honeycomb shows an empty string attribute as one anonymous group in a
+/// BREAKDOWN — indistinguishable from the attribute never having been emitted.
+/// That is how this hole survived: measured 2026-09-08 over 2026-08-25 → now,
+/// all 7,570 `ci.job.*` spans carried no `ci.conclusion` at all (the exporter
+/// named it `ci.job.conclusion`), and 451 of the 457 `ci.run` spans carried it
+/// EMPTY. So the assertion here is on non-emptiness, not merely on presence.
+#[test]
+fn every_span_carries_a_non_empty_conclusion() -> Result<()> {
+    require_jq()?;
+    let harness = Harness::new(
+        "conclusion-present",
+        "ci-telemetry-run-view.json",
+        "ci-telemetry-jobs-api.json",
+    )?;
+
+    let output = harness.export("200", "0")?;
+    assert!(output.status.success(), "{}", describe(&output));
+
+    let payload = captured_payload(&harness)?;
+    let run = run_span_attributes(&payload)?;
+    assert_eq!(
+        run.get("ci.conclusion").map(String::as_str),
+        Some("success"),
+        "{run:?}"
+    );
+    assert_eq!(
+        run.get("ci.run.status").map(String::as_str),
+        Some("completed"),
+        "{run:?}"
+    );
+
+    for (name, attributes) in job_span_attributes(&payload)? {
+        assert_eq!(
+            attributes.get("ci.conclusion").map(String::as_str),
+            Some("success"),
+            "{name}: {attributes:?}"
+        );
+        // Retained beside `ci.conclusion` so one query can span the change.
+        assert_eq!(
+            attributes.get("ci.job.conclusion").map(String::as_str),
+            Some("success"),
+            "{name}: {attributes:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The exporter observes its OWN run, and must still record every other job's
+/// real outcome.
+///
+/// # Why this fixture pair exists
+///
+/// `export-telemetry` `needs:` every check job and runs `if: !cancelled()`, so
+/// it is itself an in-flight job of the run it is exporting. `gh run view`
+/// reports such a run's `conclusion` as an empty STRING — which jq's `//` does
+/// not substitute for, `//` replacing only `null`/`false`. That is the whole
+/// reason 451 of 457 `ci.run` spans were empty, and it is not fixable by
+/// guessing a verdict the run has not reached.
+///
+/// What IS knowable at that moment is every OTHER job's conclusion, because
+/// this job runs after all of them — which is exactly the ground truth the
+/// three unanswerable questions needed. So this pins both halves: the run span
+/// degrades honestly to its STATUS rather than to an empty value or a fabricated
+/// verdict, and each finished job reports its own real outcome, including the
+/// `failure` that per-job flake rate is counted from
+/// (livespec-console-beads-fabro-pis7qu) and the `cancelled` that superseded-run
+/// cancellation is counted from (livespec-console-beads-fabro-s3kwxt).
+#[test]
+fn a_run_observing_itself_still_records_every_finished_job_outcome() -> Result<()> {
+    require_jq()?;
+    let harness = Harness::new(
+        "self-observed-run",
+        "ci-telemetry-run-view-in-progress.json",
+        "ci-telemetry-jobs-api-in-progress.json",
+    )?;
+
+    let output = harness.export("200", "0")?;
+    assert!(output.status.success(), "{}", describe(&output));
+
+    let payload = captured_payload(&harness)?;
+    let run = run_span_attributes(&payload)?;
+    assert_eq!(
+        run.get("ci.conclusion").map(String::as_str),
+        Some("in_progress"),
+        "a self-observed run degrades to its status, never to an empty value: {run:?}"
+    );
+    assert_eq!(
+        run.get("ci.run.status").map(String::as_str),
+        Some("in_progress"),
+        "{run:?}"
+    );
+
+    let by_job = job_span_attributes(&payload)?;
+    assert_eq!(
+        by_job.keys().collect::<Vec<_>>(),
+        vec![
+            "ci.job.check-deps",
+            "ci.job.check-e2e-tmux",
+            "ci.job.check-nextest"
+        ],
+        "the exporter's own unfinished job emits no span (it has no end time yet), \
+         while every finished job does: {payload}"
+    );
+
+    let outcomes = |name: &str| -> Result<String> {
+        by_job
+            .get(name)
+            .and_then(|attributes| attributes.get("ci.conclusion"))
+            .cloned()
+            .ok_or_else(|| invalid_data(format!("{name} has no ci.conclusion: {by_job:?}")))
+    };
+    assert_eq!(outcomes("ci.job.check-e2e-tmux")?, "failure");
+    assert_eq!(outcomes("ci.job.check-nextest")?, "cancelled");
+    // The defensive leg: a job the API reports as completed while its
+    // conclusion is still settling falls back to its STATUS, so no span can
+    // ever carry the empty value that makes a breakdown unreadable.
+    assert_eq!(outcomes("ci.job.check-deps")?, "completed");
+
+    for (name, attributes) in &by_job {
+        assert_eq!(
+            attributes.get("ci.run.status").map(String::as_str),
+            Some("in_progress"),
+            "a job span carries its run's status, because Honeycomb cannot join \
+             a child span to its parent's attributes: {name}: {attributes:?}"
+        );
+    }
+    Ok(())
+}
+
 /// The closed-loop property the exporter exists for: a rejected payload must
 /// redden the job rather than pass quietly. Adding attributes to the span shape
 /// is exactly the kind of change that can start tripping Honeycomb's ingest, so
@@ -291,7 +446,11 @@ fn every_ci_job_span_carries_the_runner_identity_of_its_job() -> Result<()> {
 #[test]
 fn a_rejected_payload_still_fails_the_export() -> Result<()> {
     require_jq()?;
-    let harness = Harness::new("ingest-rejected")?;
+    let harness = Harness::new(
+        "ingest-rejected",
+        "ci-telemetry-run-view.json",
+        "ci-telemetry-jobs-api.json",
+    )?;
 
     let output = harness.export("400", "2")?;
 
