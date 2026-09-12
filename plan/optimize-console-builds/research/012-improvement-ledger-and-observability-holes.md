@@ -123,8 +123,8 @@ job's delta in §1.1 is substrate **plus** the levers in §1.5.
 | 5 | Warmed ASAN `target/` generation (reflink seed + keyed mtime restore) | `ydlant` (#982) | build.check-fuzz.compile P50, n=21 | 78 s | 4 s | −94.9 % | [hBdGTVBtYWv](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/hBdGTVBtYWv) |
 | 6 | Rows 4 + 5 together, end to end | `gqmtwa.1`+`ydlant` | check-fuzz wall P50, n=211 | 403 s | 223 s | −44.7 % | [oqWHXpG1xiL](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/oqWHXpG1xiL) |
 | 7 | Drop the per-job `mise trust` steps | `gqmtwa.2` (#974) | the mise setup step, mean seconds per job | 3.2 s/job (51 s across 16 jobs) | 2.4 s/job (38 s across 16 jobs) | −25.5 % of that step; **−13 s per run** | **HOLE H7** — not in Honeycomb; read by hand from the forge API, one run each side (34018240842 → 34034390394); a second, independently chosen after-run (34025074857) gives the same 38 s |
-| 8 | Per-PR concurrency group (cancel superseded runs) | `s3kwxt` (#936) | share of genuinely-superseded PR runs that were cancelled | 1 of 2 (50 %) | 2 of 2 (100 %) | **n = 2 per side — not acceptance-grade** | **HOLE H1** — not in Honeycomb; derived by hand from forge run timestamps |
-| 9 | tmux e2e harness readiness + ceilings | `pis7qu` (#938) | check-e2e-tmux job failure rate | 1 of 12 (8.3 %) | 0 of 12 (0 %) | −8.3 pp, **n = 12 per side** | **HOLE H1** — not in Honeycomb; sampled by hand from the forge API around the 2026-09-02T10:03Z merge, and twelve runs a side cannot separate a fixed flake from a quiet pool |
+| 8 | Per-PR concurrency group (cancel superseded runs) | `s3kwxt` (#936) | share of genuinely-superseded PR runs that were cancelled | 1 of 2 (50 %) | 2 of 2 (100 %) | **n = 2 per side — not acceptance-grade** | **Still forge-only after `gqmtwa.4`** — a cancelled run cancels its own `export-telemetry` job, so superseded runs emit **no** spans: 0 `cancelled` conclusions over 3 days ([oatw2hQnrw3](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/oatw2hQnrw3)). Cancellation is span-invisible by construction; run-outcome derivation (`gqmtwa.6`) or the forge API is the only path. `s3kwxt` accepted 2026-09-12 on code grounds. |
+| 9 | tmux e2e harness readiness + ceilings | `pis7qu` (#938) | check-e2e-tmux job failure rate | 1 of 12 (8.3 %) | 1 of 198 (0.5 %) | −7.8 pp, **n = 198 after** | **H1 CLOSED** — now read from Honeycomb `ci.job.conclusion` (`gqmtwa.4` shipped the attribute): 195 success / 2 skipped / 1 failure over 198 runs, 2026-09-09→12 ([jC6CNkRQwAc](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/jC6CNkRQwAc)). Supersedes the earlier n=12 forge hand count. |
 | 9b | same item, duration side | `pis7qu` | check-e2e-tmux wall P50, n=211 | 256 s | 135 s | −47.3 % | [oqWHXpG1xiL](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/oqWHXpG1xiL) |
 | 10 | Warmed dev/test `target/` generation | `z2siyn` → `ydlant` bullet 1 | — | — | — | — | **dropped by measurement**, not deferred: `research/009` bounded the remaining headroom at ≤ 20 s/job once sccache took nextest compile to 20 s |
 
@@ -146,9 +146,21 @@ result does not support its acceptance yet.
 So the mechanism looks right on every case it has actually faced, and the sample
 is two runs per side. The motivating incident (five PRs re-pushed at once on
 2026-09-02) has simply not recurred. **This is not evidence the item works; it is
-evidence the item has barely been exercised.** Accepting it on this basis is a
-judgement call for the maintainer, and it is the reason H1 is filed at P1 — with
-job-outcome telemetry, this becomes a standing query instead of a hand count.
+evidence the item has barely been exercised.** `s3kwxt` was accepted 2026-09-12
+on code grounds (the concurrency block is present and correctly shaped in
+`ci.yml`), which is the right basis given the finding below.
+
+**Update 2026-09-12 — H1's job-outcome telemetry does _not_ turn this into a
+standing query, contrary to the hope recorded above.** A superseded run is
+_cancelled_, and a cancelled run cancels its own `export-telemetry` job, so it
+emits no spans at all: over the three days after `gqmtwa.4` landed
+`ci.conclusion`, the console dataset carries **zero** `cancelled` conclusions
+([oatw2hQnrw3](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/oatw2hQnrw3)).
+Cancellation is invisible to job-span telemetry _by construction_. Measuring
+this lever's effect needs either the forge runs API (as row 8's hand count did)
+or the run-level outcome derivation filed as `gqmtwa.6` — which reconstructs a
+run's conclusion from the sibling job conclusions the exporter already holds,
+rather than from a `gh run view` of the still-in-progress self-run.
 
 ---
 
@@ -257,7 +269,7 @@ filled (**HOLE H5**).
 
 | # | Hole | Why it matters here | Item |
 |---|---|---|---|
-| H1 | CI job/run **outcome** is not telemetered: `ci.conclusion` is absent from all 7,570 `ci.job.*` spans and empty on 451 of 457 `ci.run` spans ([3uEU3NC5Fgm](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/3uEU3NC5Fgm), [g3juvnRv8vN](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/g3juvnRv8vN)) | `s3kwxt` and `pis7qu` have no Honeycomb AFTER; and no table in this plan can show whether a speed win cost reliability | `livespec-console-beads-fabro-gqmtwa.4` |
+| ~~H1~~ **CLOSED (job level) 2026-09-12** | CI job outcome is now telemetered: `gqmtwa.4` (PR #1214, `dd168b5`) ships a non-empty `ci.conclusion` on every `ci.job.*` span — verified 196 success / 10 skipped / 2 failure over 12 post-merge runs, all 19 jobs ([x1WcjYi8JoZ](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/x1WcjYi8JoZ), [uvS7RpSmdhV](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/uvS7RpSmdhV)); every other family repo still empty — the causal signature. **Run level still degrades to `ci.conclusion="unknown"`** (self-observing export job, [b7xFXHA8xxN](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/github-ci/result/b7xFXHA8xxN)). | `pis7qu` flake now Honeycomb-measured (row 9, 0.5 % over n=198); `s3kwxt` cancellation stays span-invisible (row 8) | `gqmtwa.4` (closed) → run level `livespec-console-beads-fabro-gqmtwa.6` |
 | H2 | No factory **per-run wall time** — only per-cargo-invocation spans exist | the factory leg has no counterpart to CI's per-job table; flagged in `research/007` at baseline time and never filled | `livespec-console-beads-fabro-gqmtwa.5` (proxy for orchestrator `bd-ib-cp2x`) |
 | H3 | Factory **prepare-phase** spans stopped landing: 8 spans since 2026-09-04T15:00Z against 27+ dispatches ([DRncvSG2uhn](https://ui.honeycomb.io/thewoolleyweb/environments/livespec/datasets/fabro-sandbox/result/DRncvSG2uhn)) | sandbox setup cost is unobservable, so it cannot be optimized or ruled out | `livespec-console-beads-fabro-u6sx` |
 | H4 | No **local** telemetry stream: 7 spans ever, all from one sitting | the local leg is one-shot; no trend, and the eviction effect is not tracked over time | `livespec-console-beads-fabro-xa2l` |
@@ -273,14 +285,14 @@ Counted by **work item that shipped a change**, not by table row.
 
 | Disposition | Count | Items |
 |---|---|---|
-| AFTER measured **in Honeycomb** | 8 | `zzfntv`, `wki5zf`, `gqmtwa.1`, `ydlant`, `qxjdan`, `di6fn5`, `vhtfpe`, `pis7qu` (duration half) |
-| AFTER measured, but **outside Honeycomb** (forge API or `du`) | 3 | `gqmtwa.2` (forge step timestamps), `uybgug` (disk `du`), `pis7qu` flake half (forge job conclusions, n = 12/side) |
-| AFTER **not acceptance-grade** | 1 | `s3kwxt` (n = 2 superseded runs per side, by hand) |
+| AFTER measured **in Honeycomb** | 8 | `zzfntv`, `wki5zf`, `gqmtwa.1`, `ydlant`, `qxjdan`, `di6fn5`, `vhtfpe`, `pis7qu` (duration **and** flake halves — flake now `ci.job.conclusion`, 0.5 % over n=198, since `gqmtwa.4`) |
+| AFTER measured, but **outside Honeycomb** (forge API or `du`) | 2 | `gqmtwa.2` (forge step timestamps), `uybgug` (disk `du`) |
+| AFTER **not acceptance-grade** | 1 | `s3kwxt` (n = 2 superseded runs per side, by hand; **cannot** be brought into Honeycomb — a cancelled run emits no spans, so it stays forge-only or awaits `gqmtwa.6`) |
 | Shipped no production change by design | 1 | `z2siyn` (spike; its go/no-go became `ydlant`) |
 
 | Charter requirement | State |
 |---|---|
-| Req 1 — every optimization proven by a Honeycomb before→after | **met for 8 of 11** shipping items; three are measured only outside Honeycomb, by hand, on samples too small to accept on |
+| Req 1 — every optimization proven by a Honeycomb before→after | **met for 8 of 11** shipping items; two are measured only outside Honeycomb, by hand (`gqmtwa.2` step timing, `uybgug` disk `du`), and `s3kwxt` cancellation is unmeasurable in Honeycomb by construction (a cancelled run emits no spans — forge-only, or awaits `gqmtwa.6`). `pis7qu` flake moved into Honeycomb once `gqmtwa.4` shipped `ci.conclusion` (H1). |
 | Req 2 — bounded, age-based eviction on every tier | policies **shipped** on all five tiers; **observation missing on all five** (H5) |
 | Req 3 — final report + human approval | met: `research/011`, approved 2026-09-06, amended 2026-09-08 |
 
