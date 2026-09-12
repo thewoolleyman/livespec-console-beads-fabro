@@ -2688,6 +2688,29 @@ pub fn not_observed_finding_payload_json(finding: &NotObservedFinding) -> String
 /// mint the SAME `evt:fabro:<repo>:not_observed:<epoch>` id, and the second
 /// would dedupe away as a duplicate of the first -- one factory's outage
 /// silently swallowing the other's.
+///
+/// # Why the CAUSE is part of the identity too
+///
+/// The identity also carries [`cause_discriminator`], for exactly the reason
+/// above one step further in. The transition epoch advances only on a
+/// STATE change, so within one outage every failed poll used to mint the same
+/// id and every one after the first deduped away -- including a poll that
+/// failed for a DIFFERENT reason. The console then went on rendering the
+/// FIRST cause of that outage as though it were current: an operator who
+/// installed the missing `livespec` binary and re-polled still read
+/// `No such file or directory` while the real, current failure was something
+/// else entirely. That is a stale cause presented as current, which is the
+/// defect livespec-console-beads-fabro-mx9u.20.3's re-poll action exists to
+/// make impossible.
+///
+/// The dedupe's purpose is ONE stored fact per unchanged condition, and the
+/// condition includes why. A repeated IDENTICAL failure still dedupes to one
+/// fact; a changed cause is new information and lands. The cost is that a
+/// source whose failure text genuinely differs on every poll writes a marker
+/// per poll -- accepted deliberately, because that cost is VISIBLE (the
+/// roster's own event-counts column, livespec-console-beads-fabro-mx9u.20.2,
+/// shows a source dominated by its own failure markers) while a silently
+/// stale cause is not.
 #[must_use]
 pub fn not_observed_event(
     source: &SourceInstance,
@@ -2697,9 +2720,10 @@ pub fn not_observed_event(
 ) -> NormalizedSourceEvent {
     let finding = NotObservedFinding::for_instance(repo, source, reason);
     let source_name = source.name();
+    let cause = cause_discriminator(reason);
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
-            format!("evt:{source_name}:{repo}:not_observed:{transition_epoch}"),
+            format!("evt:{source_name}:{repo}:not_observed:{transition_epoch}:{cause}"),
             1,
             "source".to_owned(),
             EventType::SourceNotObservedFindingObserved,
@@ -2707,9 +2731,30 @@ pub fn not_observed_event(
             repo_stream(repo),
             1,
         ),
-        format!("{source_name}:{repo}:not_observed:{transition_epoch}"),
+        format!("{source_name}:{repo}:not_observed:{transition_epoch}:{cause}"),
         SourcePayload::NotObservedFinding(finding),
     )
+}
+
+/// A short, stable discriminator for one not-observed REASON, for
+/// [`not_observed_event`]'s identity.
+///
+/// FNV-1a, written out rather than taken from `std::hash::DefaultHasher`,
+/// because this value is PERSISTED: `DefaultHasher`'s output is explicitly not
+/// guaranteed stable across Rust releases, and a toolchain bump that changed
+/// it would re-mint every stored marker's id and make one unchanged outage
+/// look like a fresh one. It is an identity discriminator, never a security
+/// boundary, so a non-cryptographic hash is the right tool; the reason itself
+/// travels verbatim in the payload, so nothing here has to be reversible.
+fn cause_discriminator(reason: &str) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x1000_0000_01b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in reason.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
 }
 
 /// The positive `source.observed_finding_observed` marker for an

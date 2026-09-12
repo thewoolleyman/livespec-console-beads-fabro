@@ -24,6 +24,8 @@ struct NoopPollRequester;
 
 impl SourcePollRequester for NoopPollRequester {
     fn request_poll(&self) {}
+
+    fn request_poll_for_source(&self, _source: &str) {}
 }
 
 /// A command requester that drops every request — this scenario drives deferred
