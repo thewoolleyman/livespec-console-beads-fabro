@@ -1,2 +1,2 @@
-work_item=livespec-console-beads-fabro-mx9u.18
-reason=Adds a dedicated check-real-store-smoke CI job (modelled on check-e2e-tmux) and wires it into ci-green/export-telemetry needs, because mx9u.11's startup regression against a real seeded store merged with 20 green CI checks: the janitor-only gate mx9u.15 added cannot stop the next one pre-merge, only report it after the fact.
+work_item=livespec-console-beads-fabro-3toz
+reason=Adds a fail-closed changed-files classifier so proven code-neutral documentation changes skip the Rust, real-TUI, mutation, and fuzz jobs while preserving the required ci-green context; all other or uncertain changes run the full gate. Maintainer pre-approved this governed workflow edit in the Codex session on 2026-09-10; no product code changes.
