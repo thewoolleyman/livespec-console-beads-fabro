@@ -1434,6 +1434,13 @@ pub struct TuiInteractionState {
     selected_lane_item_id: Option<String>,
     events_focus: EventsFocus,
     selected_events_index: usize,
+    // The Event sources roster's own row cursor
+    // (livespec-console-beads-fabro-mx9u.20.3), held apart from
+    // `selected_events_index` above: that one picks WHICH sub-view the
+    // container's overview opens, this one walks the rows inside the opened
+    // roster. Sharing one cursor between them would have the roster open on
+    // whatever row number the picker happened to rest on.
+    selected_event_source_index: usize,
     focus: FocusPane,
     detail_scroll: usize,
     detail_max_scroll: usize,
@@ -1511,6 +1518,7 @@ impl TuiInteractionState {
             selected_lane_item_id: None,
             events_focus: EventsFocus::Overview,
             selected_events_index: 0,
+            selected_event_source_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -1557,6 +1565,7 @@ impl TuiInteractionState {
             selected_lane_item_id: None,
             events_focus: EventsFocus::Overview,
             selected_events_index: 0,
+            selected_event_source_index: 0,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -1787,6 +1796,17 @@ impl TuiInteractionState {
     #[must_use]
     pub const fn with_selected_events_index(mut self, selected_events_index: usize) -> Self {
         self.selected_events_index = selected_events_index;
+        self
+    }
+
+    /// Replace the Event sources roster's own row cursor
+    /// (livespec-console-beads-fabro-mx9u.20.3), preserving every other field.
+    #[must_use]
+    pub const fn with_selected_event_source_index(
+        mut self,
+        selected_event_source_index: usize,
+    ) -> Self {
+        self.selected_event_source_index = selected_event_source_index;
         self
     }
 
@@ -2094,6 +2114,13 @@ impl TuiInteractionState {
     /// `events_focus` is [`EventsFocus::Overview`].
     pub const fn selected_events_index(&self) -> usize {
         self.selected_events_index
+    }
+
+    #[must_use]
+    /// The Event sources roster's own row cursor, meaningful only while
+    /// `events_focus` is [`EventsFocus::EventSources`].
+    pub const fn selected_event_source_index(&self) -> usize {
+        self.selected_event_source_index
     }
 
     #[must_use]
@@ -2535,6 +2562,13 @@ pub struct TuiScreenModel {
     missing_selected_lane_item_id: Option<String>,
     events_focus: EventsFocus,
     selected_events_index: usize,
+    // The Event sources roster's rows (livespec-console-beads-fabro-mx9u.20.3),
+    // in render order, and the cursor over them. Both are empty / `None`
+    // unless that sub-view is the active surface: no other view has a roster
+    // cursor to move, and a cursor reported where no roster is drawn would let
+    // a key act on a row nobody can see.
+    event_source_rows: Vec<EventSourceHealthRow>,
+    selected_event_source_index: Option<usize>,
     focus: FocusPane,
     detail_scroll: usize,
     header_scroll: usize,
@@ -2658,6 +2692,32 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn selected_events_index(&self) -> usize {
         self.selected_events_index
+    }
+
+    /// The Event sources roster's own row cursor, present only while that
+    /// sub-view is drilled into; `None` everywhere else
+    /// (livespec-console-beads-fabro-mx9u.20.3). Held apart from
+    /// [`Self::selected_events_index`] -- that one picks WHICH sub-view to
+    /// open, this one walks the rows inside the opened one, and sharing a
+    /// cursor between them would have the roster start on whatever row number
+    /// the picker happened to rest on.
+    #[must_use]
+    pub const fn selected_event_source_index(&self) -> Option<usize> {
+        self.selected_event_source_index
+    }
+
+    /// The Event sources roster row the cursor is on, or `None` when that
+    /// sub-view is not showing, when the cursor is past the last row, or when
+    /// the roster is the "nothing observed yet" placeholder -- that line is
+    /// prose, not a source, so there is nothing on it to act on.
+    ///
+    /// This is the ONE place a key resolves what it is about to act on, and it
+    /// reads the same record the row's own title was rendered from, so a row
+    /// can never advertise one action and perform another.
+    #[must_use]
+    pub fn selected_event_source(&self) -> Option<&EventSourceHealthRow> {
+        self.selected_event_source_index
+            .and_then(|index| self.event_source_rows.get(index))
     }
 
     /// The selected work-item row within a drilled-in lane, present only while
@@ -3347,14 +3407,41 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
             EventsFocus::Overview => Cow::Owned(with_global_status_hint(
                 "up/down move | enter drill | left/right focus | / search",
             )),
-            EventsFocus::StoredEvents | EventsFocus::EventSources => Cow::Owned(
-                with_global_status_hint("esc sub-view list | left/right focus | / search"),
-            ),
+            EventsFocus::EventSources => Cow::Owned(event_sources_footer_hint(model)),
+            EventsFocus::StoredEvents => Cow::Owned(with_global_status_hint(
+                "esc sub-view list | left/right focus | / search",
+            )),
         },
         TuiView::Spec | TuiView::Repos => Cow::Owned(with_global_status_hint(
             "up/down move | left/right focus | / search",
         )),
     }
+}
+
+/// The `Event sources` roster's Status-line hints
+/// (livespec-console-beads-fabro-mx9u.20.3).
+///
+/// The roster grew a row cursor and a per-row action, so its band names both:
+/// `up/down move` because up/down now walks the source rows, and the selected
+/// row's own verb for `enter` -- taken from
+/// [`EventSourceHealthRow::action`], the SAME derivation that put the
+/// `[enter <verb>]` affordance on the row, so the footer can never advertise a
+/// key the row does not offer. A row offering nothing (a healthy source, or
+/// the "nothing observed yet" placeholder) names no `enter`, exactly as the
+/// Status-line contract requires of a key that would do nothing.
+fn event_sources_footer_hint(model: &TuiScreenModel) -> String {
+    let action = model
+        .selected_event_source()
+        .and_then(EventSourceHealthRow::action);
+    let Some(action) = action else {
+        return with_global_status_hint(
+            "up/down move | esc sub-view list | left/right focus | / search",
+        );
+    };
+    with_global_status_hint(&format!(
+        "up/down move | enter {} | esc sub-view list | left/right focus | / search",
+        action.verb()
+    ))
 }
 
 /// The Attention pane's Status-line hints: the keys that act on the SELECTED
@@ -3523,6 +3610,16 @@ pub enum OperatorActionOutcome {
     /// Copy driver handoff command variant. This is a terminal-copy effect only,
     /// never a persisted command.
     CopyDriverHandoff(String),
+    /// Re-read ONE named event source now -- the Event sources roster's
+    /// per-row action (livespec-console-beads-fabro-mx9u.20.3). The payload is
+    /// the envelope SOURCE NAME the roster row carries.
+    ///
+    /// Never a persisted command: re-polling a source changes nothing, it
+    /// re-READS the thing the console is already watching (the Adapter
+    /// Contract makes every source observation read-only). What it produces is
+    /// whatever that source's own poll writes -- which is why it can neither
+    /// fabricate health nor leave a stale cause standing.
+    RepollSource(String),
 }
 
 impl OperatorActionOutcome {
@@ -3533,7 +3630,7 @@ impl OperatorActionOutcome {
             Self::PersistCommand(command) | Self::PersistCommandWithPayload { command, .. } => {
                 Some(command)
             }
-            Self::CopyDriverHandoff(_) => None,
+            Self::CopyDriverHandoff(_) | Self::RepollSource(_) => None,
         }
     }
 }
@@ -5121,6 +5218,42 @@ pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -
     }
 }
 
+/// The Event sources roster's rows and its own row cursor, for whichever
+/// surface `state` is on (livespec-console-beads-fabro-mx9u.20.3).
+///
+/// Derived ONCE and handed to BOTH the roster's presentation
+/// ([`event_sources_roster_items`]) and the model's
+/// [`TuiScreenModel::selected_event_source`] accessor, so the action the
+/// operator presses comes from the very record whose title advertised it --
+/// never from a second walk of the source registry that could order or filter
+/// its rows differently.
+///
+/// Empty, with no cursor, unless that sub-view is what the operator is
+/// actually looking at: nothing else reads these rows, the derivation scans
+/// the event log once per source, and a cursor reported where no roster is
+/// drawn would let a key act on a row nobody can see.
+fn displayed_event_source_roster(
+    active_view: TuiView,
+    events_focus: EventsFocus,
+    projection: &TuiProjection,
+    events: &[ConsoleEvent],
+    state: &TuiInteractionState,
+) -> (Vec<EventSourceHealthRow>, Option<usize>) {
+    if active_view != TuiView::Events || events_focus != EventsFocus::EventSources {
+        return (Vec::new(), None);
+    }
+    (
+        event_source_health_rows(
+            &projection.observed_source_names,
+            &projection.unavailable_sources,
+            events,
+            state.source_last_success(),
+            state.source_event_counts(),
+        ),
+        Some(state.selected_event_source_index()),
+    )
+}
+
 #[must_use]
 /// Render `state` against an already-built `projection`.
 ///
@@ -5170,6 +5303,8 @@ pub fn render_tui_model(
     let selected_events_index = state
         .selected_events_index()
         .min(EventsFocus::all().len() - 1);
+    let (event_source_rows, selected_event_source_index) =
+        displayed_event_source_roster(active_view, events_focus, projection, events, state);
     // The Status line is ONE channel, and its rule is that the most recent thing
     // to contradict the operator's expectation is what it says. A cursor that
     // moved out from under them because the anchored row left the list is
@@ -5193,15 +5328,9 @@ pub fn render_tui_model(
         attention_total: projection.attention_total,
         selected_attention_index,
         detail,
-        view_items: view_summary_items(
-            active_view,
-            events_focus,
-            &projection.observed_source_names,
-            &projection.unavailable_sources,
-            events,
-            state.source_last_success(),
-            state.source_event_counts(),
-        ),
+        view_items: view_summary_items(active_view, events_focus, events, &event_source_rows),
+        event_source_rows,
+        selected_event_source_index,
         lane_board,
         lane_focus,
         selected_lane_index,
@@ -6601,6 +6730,11 @@ fn content_selection_cursor(state: &TuiInteractionState, model: &TuiScreenModel)
         )
     } else if is_events_overview(state) {
         (state.selected_events_index(), EventsFocus::all().len())
+    } else if is_event_sources_roster(state) {
+        (
+            state.selected_event_source_index(),
+            model.view_items().len(),
+        )
     } else {
         (
             current_attention_index(state, model),
@@ -6907,6 +7041,16 @@ fn is_events_overview(state: &TuiInteractionState) -> bool {
     state.active_view() == TuiView::Events && state.events_focus() == EventsFocus::Overview
 }
 
+/// Whether the `Events` container is drilled into its `Event sources` roster,
+/// where up/down walks the SOURCE rows (livespec-console-beads-fabro-mx9u.20.3)
+/// rather than falling through to the Attention cursor every other drilled-in
+/// summary surface uses. The roster is the one summary sub-view whose rows are
+/// individually actionable, so it is the one that needs a cursor of its own;
+/// `Stored events` keeps its pre-container behaviour untouched.
+fn is_event_sources_roster(state: &TuiInteractionState) -> bool {
+    state.active_view() == TuiView::Events && state.events_focus() == EventsFocus::EventSources
+}
+
 /// Move the selection down, routed to the lane overview row or the settings row
 /// when one of those views is active, else to the attention list.
 fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiInteractionState {
@@ -6937,6 +7081,13 @@ fn select_next(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIntera
             .with_selected_events_index(move_selection_down(
                 EventsFocus::all().len(),
                 state.selected_events_index(),
+            ))
+    } else if is_event_sources_roster(state) {
+        state
+            .clone()
+            .with_selected_event_source_index(move_selection_down(
+                model.view_items().len(),
+                state.selected_event_source_index(),
             ))
     } else {
         select_attention_at(
@@ -6975,6 +7126,12 @@ fn select_previous(state: &TuiInteractionState, model: &TuiScreenModel) -> TuiIn
         state
             .clone()
             .with_selected_events_index(move_selection_up(state.selected_events_index()))
+    } else if is_event_sources_roster(state) {
+        state
+            .clone()
+            .with_selected_event_source_index(move_selection_up(
+                state.selected_event_source_index(),
+            ))
     } else {
         select_attention_at(
             state,
@@ -7110,6 +7267,36 @@ pub fn validate_operator_action(action: &str) -> ApplicationResult<&str> {
         return Err(ApplicationError::EmptyOperatorAction);
     }
     Ok(trimmed)
+}
+
+/// Resolve the Event sources roster's selected row into its offered action
+/// (livespec-console-beads-fabro-mx9u.20.3).
+///
+/// Presentation and invocation share ONE derivation, exactly as the valve keys
+/// do: the action resolved here is [`EventSourceHealthRow::action`] -- the SAME
+/// call that decides whether the row advertises `[enter <verb>]` at all -- so a
+/// row can never advertise one thing and perform another, and a row that
+/// advertises nothing cannot be made to act by pressing the key anyway.
+///
+/// # Errors
+/// Returns [`ApplicationError::EmptyOperatorAction`] when `requested_by` is
+/// blank, and [`ApplicationError::UnavailableOperatorAction`] when the roster
+/// has no selected row or the selected row offers nothing -- a healthy source,
+/// or the "nothing observed yet" placeholder line.
+pub fn resolve_event_source_action(
+    model: &TuiScreenModel,
+    requested_by: &str,
+) -> ApplicationResult<OperatorActionOutcome> {
+    validate_operator_action(requested_by)?;
+    let row = model
+        .selected_event_source()
+        .ok_or(ApplicationError::UnavailableOperatorAction)?;
+    match row.action() {
+        Some(EventSourceAction::Repoll) => {
+            Ok(OperatorActionOutcome::RepollSource(row.source().to_owned()))
+        }
+        None => Err(ApplicationError::UnavailableOperatorAction),
+    }
 }
 
 /// Resolve the edit of the selected `Settings` row into a single per-setting
@@ -10965,22 +11152,12 @@ fn attention_detail_actions(entry: &AttentionSnapshot) -> Vec<OperatorAction> {
 fn view_summary_items(
     active_view: TuiView,
     events_focus: EventsFocus,
-    observed_sources: &[String],
-    unavailable_sources: &[String],
     events: &[ConsoleEvent],
-    source_last_success: &BTreeMap<String, String>,
-    source_event_counts: &BTreeMap<String, SourceEventCounts>,
+    event_source_rows: &[EventSourceHealthRow],
 ) -> Vec<ViewSummaryItem> {
     match active_view {
         TuiView::Spec => spec_view_items(events),
-        TuiView::Events => events_container_items(
-            events_focus,
-            observed_sources,
-            unavailable_sources,
-            events,
-            source_last_success,
-            source_event_counts,
-        ),
+        TuiView::Events => events_container_items(events_focus, events, event_source_rows),
         TuiView::Repos => repos_view_items(events),
         // The Attention, Lanes, and Settings views render their own projections
         // (the attention list / detail, the lane board, the dispatcher-settings
@@ -11001,11 +11178,8 @@ fn view_summary_items(
 /// and does not yet know.
 fn events_container_items(
     events_focus: EventsFocus,
-    observed_sources: &[String],
-    unavailable_sources: &[String],
     events: &[ConsoleEvent],
-    source_last_success: &BTreeMap<String, String>,
-    source_event_counts: &BTreeMap<String, SourceEventCounts>,
+    event_source_rows: &[EventSourceHealthRow],
 ) -> Vec<ViewSummaryItem> {
     match events_focus {
         EventsFocus::Overview => EventsFocus::all()
@@ -11013,13 +11187,7 @@ fn events_container_items(
             .map(|sub_view| ViewSummaryItem::new(sub_view.label().to_owned(), String::new()))
             .collect(),
         EventsFocus::StoredEvents => events_view_items(events),
-        EventsFocus::EventSources => event_sources_roster_items(
-            observed_sources,
-            unavailable_sources,
-            events,
-            source_last_success,
-            source_event_counts,
-        ),
+        EventsFocus::EventSources => event_sources_roster_items(event_source_rows),
     }
 }
 
@@ -11058,23 +11226,36 @@ fn events_container_items(
 /// this is additive to an unavailable row's existing reason line, never a
 /// second encoding of health.
 ///
-/// A per-row action surface is still deferred (the epic permits this
-/// explicitly): [`EventSourceHealthRow`] is a real record, not a formatted
-/// string, so a sibling item extends it in place instead of re-deriving the
-/// roster.
-fn event_sources_roster_items(
-    observed_sources: &[String],
-    unavailable_sources: &[String],
-    events: &[ConsoleEvent],
-    source_last_success: &BTreeMap<String, String>,
-    source_event_counts: &BTreeMap<String, SourceEventCounts>,
-) -> Vec<ViewSummaryItem> {
-    if observed_sources.is_empty() {
+/// Each row's per-row ACTION surface (livespec-console-beads-fabro-mx9u.20.3)
+/// is derived by [`EventSourceHealthRow::action`] from the row's own facts and
+/// advertised in the row's title. The rows themselves are built ONCE, by
+/// [`event_source_health_rows`], and handed BOTH to this presentation and to
+/// [`TuiScreenModel::selected_event_source`], so what the operator presses is
+/// resolved from the very record whose title advertised it -- never from a
+/// second walk of the source registry that could order or filter its rows
+/// differently.
+fn event_sources_roster_items(rows: &[EventSourceHealthRow]) -> Vec<ViewSummaryItem> {
+    if rows.is_empty() {
         return vec![ViewSummaryItem::new(
             "No event sources have reported any events yet".to_owned(),
             String::new(),
         )];
     }
+    rows.iter().cloned().map(Into::into).collect()
+}
+
+/// The Event sources roster's ROWS, in the order the sub-view renders them.
+///
+/// Empty exactly when no source has ever been observed -- the case
+/// [`event_sources_roster_items`] renders as its one placeholder line, which
+/// is a row of prose rather than a source and so offers nothing to press.
+fn event_source_health_rows(
+    observed_sources: &[String],
+    unavailable_sources: &[String],
+    events: &[ConsoleEvent],
+    source_last_success: &BTreeMap<String, String>,
+    source_event_counts: &BTreeMap<String, SourceEventCounts>,
+) -> Vec<EventSourceHealthRow> {
     observed_sources
         .iter()
         .map(|source| {
@@ -11085,21 +11266,64 @@ fn event_sources_roster_items(
                 source_last_success,
                 source_event_counts,
             )
-            .into()
         })
         .collect()
 }
 
-/// One row of the Event sources roster: a source's identity, its current
-/// health, -- for an unavailable source -- the verbatim reason its latest
-/// poll failed and its own last-successful-read fact
-/// (livespec-console-beads-fabro-mx9u.17), and -- for every row, healthy or
-/// not -- its own event counts by type
-/// (livespec-console-beads-fabro-mx9u.20.2). A real record with named fields
-/// rather than a formatted string, so a sibling item (a diagnose/fix action)
-/// can add a column without re-deriving anything this type already knows.
+/// What an Event sources roster row offers the operator to PRESS
+/// (livespec-console-beads-fabro-mx9u.20.3).
+///
+/// DERIVED from the row's own facts, never invented: the roster offers an
+/// action only where the row's health says there is something to act on, so it
+/// can never advertise a key that fails when pressed. "Nothing determinable"
+/// stays a legitimate outcome -- the 2026-09-09 ruling asked for actions to fix
+/// an unavailable source "if that can be determined", and a healthy source has
+/// nothing to determine.
+///
+/// One variant, and the one that is ALWAYS determinable for an unavailable
+/// source: re-running that source's own configured poll. It needs no guess
+/// about what went wrong, because the answer is the source command's OWN
+/// diagnostic and exit status -- which the resulting
+/// `source.not_observed_finding_observed` reason already carries verbatim (see
+/// `console_cli::source_probe_diagnostics`). It is also safe: the Adapter
+/// Contract makes every source observation read-only, so re-reading one is
+/// never an act on the thing observed. Anything that would REPAIR the
+/// environment instead of re-reading it -- installing a missing program,
+/// editing config, mutating the host -- is deliberately absent: this console
+/// diagnoses, the operator repairs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventSourceAction {
+    /// Re-run this one source's configured poll now.
+    Repoll,
+}
+
+impl EventSourceAction {
+    #[must_use]
+    /// The one word the row's affordance and the Status-line hint both use for
+    /// this action, spelled ONCE here -- the same single-derivation rule
+    /// [`action_registry::attention_group_toggle_verb`] applies to the
+    /// Attention group toggle, so the row and the footer cannot drift into two
+    /// names for one key.
+    pub const fn verb(self) -> &'static str {
+        match self {
+            Self::Repoll => "re-poll",
+        }
+    }
+}
+
+/// One row of the Event sources roster.
+///
+/// It carries a source's identity, its current health, -- for an unavailable
+/// source -- the verbatim reason its latest poll failed and its own
+/// last-successful-read fact (livespec-console-beads-fabro-mx9u.17), and --
+/// for every row, healthy or not -- its own event counts by type
+/// (livespec-console-beads-fabro-mx9u.20.2).
+///
+/// A real record with named fields rather than a formatted string, which is
+/// what let livespec-console-beads-fabro-mx9u.20.3 add the per-row ACTION
+/// ([`Self::action`]) in place rather than re-deriving the roster.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EventSourceHealthRow {
+pub struct EventSourceHealthRow {
     source: String,
     unavailable: bool,
     reason: Option<String>,
@@ -11155,6 +11379,30 @@ impl EventSourceHealthRow {
             event_counts,
         }
     }
+
+    #[must_use]
+    /// The envelope source name this row reports on -- the SAME name the
+    /// header's tally, `doctor` and the source adapters all key on, so an
+    /// action taken from this row targets exactly the source the row names
+    /// rather than a second spelling of it.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// The action this row OFFERS, derived from the row's own health
+    /// (livespec-console-beads-fabro-mx9u.20.3).
+    ///
+    /// An unavailable source can always be re-polled, whatever went wrong, so
+    /// it gets [`EventSourceAction::Repoll`]; a healthy one has nothing to act
+    /// on and offers `None` rather than a placeholder key that would fail when
+    /// pressed. A source whose last successful read is NEVER OBSERVED is
+    /// unavailable like any other and so gets the offer too -- it is the row
+    /// most likely to be genuinely broken, and the one the operator has least
+    /// else to go on for.
+    pub fn action(&self) -> Option<EventSourceAction> {
+        self.unavailable.then_some(EventSourceAction::Repoll)
+    }
 }
 
 impl From<EventSourceHealthRow> for ViewSummaryItem {
@@ -11176,7 +11424,16 @@ impl From<EventSourceHealthRow> for ViewSummaryItem {
         } else {
             "healthy"
         };
-        let title = format!("{} — {health}", row.source);
+        // The row ADVERTISES whatever it offers, in the `[enter <verb>]` form
+        // the Attention group row already uses (see `AttentionGroup::to_item`)
+        // -- livespec-console-beads-fabro-mx9u.20.3 adopts that convention
+        // rather than inventing a second way to say "this row is pressable".
+        // A row offering nothing appends nothing: an empty bracket would read
+        // as a key whose name went missing.
+        let title = match row.action() {
+            Some(action) => format!("{} — {health} [enter {}]", row.source, action.verb()),
+            None => format!("{} — {health}", row.source),
+        };
         // Joined rather than conditionally separated: `reason` and
         // `stale_since` are always BOTH `Some` or BOTH `None` together (see
         // `EventSourceHealthRow::new`), so there is no reachable case where
@@ -11613,17 +11870,18 @@ mod tests {
         DispatcherFactoryDispatchItemPort, DispatcherFactoryDrainPort,
         DispatcherOrchestratorActionPort, DispatcherOverride, DispatcherSettingRow,
         DispatcherSettingSetRequest, DispatcherSettingWrite, DispatcherSettingWriteState,
-        DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead, EventsFocus,
-        FactoryDispatchItemPort, FactoryDispatchItemPortOutcome, FactoryDispatchItemRequest,
-        FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome, FactoryDrainRequest,
-        FocusPane, HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HINT_OVERFLOW_KEY, HelpFocus,
-        JournalAutonomousDecisionsPort, LaneExecutionState, LaneFocus, LaneWorkItem, ListEdge,
-        MAX_TRANSIENT_STATUS_CHARS, OUTCOME_CAUSE_ABSENT, OperatorAction, OperatorActionOutcome,
-        OrchestratorActionOutcome, OrchestratorActionPort, OrchestratorActionRequest, OverrideBool,
-        OverrideInt, PendingValve, PluginResolution, RejectMode, STARTUP_INGEST_LOADING_TELL,
-        SettingRow, SettingRowStatus, TuiInteraction, TuiInteractionState, TuiOverlay,
-        TuiScreenModel, TuiView, action_registry, attention_row_title_without_its_id,
-        attention_row_token, build_tui_model, build_tui_model_for_state, command_outcome_notice,
+        DispatcherSettings, DispatcherSettingsPort, DispatcherSettingsRead, EventSourceAction,
+        EventSourceHealthRow, EventsFocus, FactoryDispatchItemPort, FactoryDispatchItemPortOutcome,
+        FactoryDispatchItemRequest, FactoryDrainPolicy, FactoryDrainPort, FactoryDrainPortOutcome,
+        FactoryDrainRequest, FocusPane, HEADER_SCROLL_STEP, HELP_SECTION_COUNT, HINT_OVERFLOW_KEY,
+        HelpFocus, JournalAutonomousDecisionsPort, LaneExecutionState, LaneFocus, LaneWorkItem,
+        ListEdge, MAX_TRANSIENT_STATUS_CHARS, OUTCOME_CAUSE_ABSENT, OperatorAction,
+        OperatorActionOutcome, OrchestratorActionOutcome, OrchestratorActionPort,
+        OrchestratorActionRequest, OverrideBool, OverrideInt, PendingValve, PluginResolution,
+        RejectMode, STARTUP_INGEST_LOADING_TELL, SettingRow, SettingRowStatus, TuiInteraction,
+        TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, action_registry,
+        attention_row_title_without_its_id, attention_row_token, build_tui_model,
+        build_tui_model_for_state, command_outcome_notice,
         command_palette_query_opens_action_invoker, dispatcher_setting_rows,
         dispatcher_setting_write_settled, drilldown_item_count, elide_command_program_path,
         factory_dispatch_item_command, fit_footer_line, fold_dispatcher_setting_reread,
@@ -11638,9 +11896,10 @@ mod tests {
         overlay_footer_hint, per_item_verb_is_state_valid, plan_page_url, project_action_failures,
         project_attention, project_lane_board, project_orphaned_factory_runs, project_plan_page,
         reduce_tui_interaction, render_plan_page_html, resolve_command_palette_action,
-        resolve_dispatcher_setting_edit, resolve_valve_action, set_acceptance_policy_from_payload,
-        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
-        work_item_action_name, work_item_failure_event, work_item_override_outcome,
+        resolve_dispatcher_setting_edit, resolve_event_source_action, resolve_valve_action,
+        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
+        validate_operator_action, work_item_action_name, work_item_failure_event,
+        work_item_override_outcome,
     };
 
     #[track_caller]
@@ -15306,7 +15565,10 @@ mod tests {
         assert_eq!(model.events_focus(), EventsFocus::EventSources);
         // AC1: each row names the source, its health, and -- for the
         // unavailable one -- the verbatim not-observed reason.
-        assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        assert_eq!(
+            model.view_items()[0].title(),
+            "dispatcher — unavailable [enter re-poll]"
+        );
         // livespec-console-beads-fabro-mx9u.17: the stale-since column, on the
         // SAME line pair `doctor`'s own finding uses. No `source_last_success`
         // entry exists in this fixture, so this is honestly "never observed",
@@ -15382,7 +15644,10 @@ mod tests {
             .with_events_focus(EventsFocus::EventSources);
         let model = build_tui_model_for_state(&events, &state);
 
-        assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        assert_eq!(
+            model.view_items()[0].title(),
+            "dispatcher — unavailable [enter re-poll]"
+        );
         assert_eq!(
             model.view_items()[0].detail(),
             format!(
@@ -15447,7 +15712,7 @@ mod tests {
         let roster_detail = model
             .view_items()
             .iter()
-            .find(|item| item.title() == "dispatcher — unavailable")
+            .find(|item| item.title() == "dispatcher — unavailable [enter re-poll]")
             .map_or_else(String::new, |item| item.detail().to_owned());
         // livespec-console-beads-fabro-mx9u.17: the detail is now TWO lines --
         // the reason, then the stale-since column -- so each is checked
@@ -15463,6 +15728,172 @@ mod tests {
                 && finding.message().contains(roster_stale_since)
         });
         assert!(doctor_agrees);
+    }
+
+    /// The roster's fixture: `dispatcher` down with a verbatim cause,
+    /// `github` healthy. Two rows, one of each kind, which is what every
+    /// per-row-action gate below needs.
+    fn roster_health_events() -> [ConsoleEvent; 2] {
+        [
+            ConsoleEvent::fixture(
+                "evt_dispatcher_down",
+                EventType::SourceNotObservedFindingObserved,
+                "dispatcher",
+            )
+            .with_payload_json(not_observed_finding_payload_json(
+                &NotObservedFinding::new(
+                    "livespec-console-beads-fabro",
+                    SourceAdapterKind::Dispatcher,
+                    "no work-item in journal entry",
+                ),
+            )),
+            ConsoleEvent::fixture(
+                "evt_github_ok",
+                EventType::GithubPullRequestSnapshotObserved,
+                "github",
+            ),
+        ]
+    }
+
+    fn roster_state_at(index: usize) -> TuiInteractionState {
+        TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources)
+            .with_selected_event_source_index(index)
+    }
+
+    #[test]
+    fn the_roster_offers_a_re_poll_on_an_unavailable_row_and_nothing_on_a_healthy_one() {
+        // livespec-console-beads-fabro-mx9u.20.3 AC1/AC2: the offer is DERIVED
+        // from the row's own health. An unavailable source can always be
+        // re-polled; a healthy one offers nothing rather than a placeholder
+        // that would fail when pressed.
+        let events = roster_health_events();
+
+        let down = build_tui_model_for_state(&events, &roster_state_at(0));
+        let healthy = build_tui_model_for_state(&events, &roster_state_at(1));
+
+        let down_row = down.selected_event_source();
+        assert_eq!(
+            down_row.map(EventSourceHealthRow::source),
+            Some("dispatcher")
+        );
+        assert_eq!(
+            down_row.and_then(EventSourceHealthRow::action),
+            Some(EventSourceAction::Repoll)
+        );
+        assert_eq!(EventSourceAction::Repoll.verb(), "re-poll");
+        let healthy_row = healthy.selected_event_source();
+        assert_eq!(
+            healthy_row.map(EventSourceHealthRow::source),
+            Some("github")
+        );
+        assert_eq!(healthy_row.and_then(EventSourceHealthRow::action), None);
+    }
+
+    #[test]
+    fn the_roster_cursor_exists_only_inside_that_sub_view_and_clamps_to_its_rows() {
+        // The cursor is reported ONLY where the roster is drawn -- a cursor
+        // reported elsewhere would let a key act on a row nobody can see --
+        // and a position past the last row resolves to no row rather than to
+        // whichever row now occupies it.
+        let events = roster_health_events();
+
+        let overview = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None),
+        );
+        assert_eq!(overview.selected_event_source_index(), None);
+        assert_eq!(overview.selected_event_source(), None);
+
+        let past_the_end = build_tui_model_for_state(&events, &roster_state_at(7));
+        assert_eq!(past_the_end.selected_event_source_index(), Some(7));
+        assert_eq!(past_the_end.selected_event_source(), None);
+    }
+
+    #[test]
+    fn up_and_down_walk_the_roster_rows_and_stop_at_its_edges() {
+        // The roster used to fall through to the ATTENTION cursor, so up/down
+        // moved a selection on another view entirely. It now has a cursor of
+        // its own (livespec-console-beads-fabro-mx9u.20.3), bounded by the
+        // rows actually rendered.
+        let events = roster_health_events();
+        let top = roster_state_at(0);
+
+        let down = reduce_tui_interaction(&top, &events, TuiInteraction::SelectNext);
+        assert_eq!(down.selected_event_source_index(), 1);
+        let bottom = reduce_tui_interaction(&down, &events, TuiInteraction::SelectNext);
+        assert_eq!(bottom.selected_event_source_index(), 1);
+        assert_eq!(bottom.list_edge(), Some(ListEdge::Bottom));
+
+        let up = reduce_tui_interaction(&down, &events, TuiInteraction::SelectPrevious);
+        assert_eq!(up.selected_event_source_index(), 0);
+        let clamped = reduce_tui_interaction(&up, &events, TuiInteraction::SelectPrevious);
+        assert_eq!(clamped.selected_event_source_index(), 0);
+        assert_eq!(clamped.list_edge(), Some(ListEdge::Top));
+    }
+
+    #[test]
+    fn the_roster_footer_names_enter_only_where_the_row_offers_it() {
+        // The band derives its `enter` token from the SAME
+        // `EventSourceHealthRow::action` call that put the affordance on the
+        // row, so it can never advertise a key the row does not offer.
+        let events = roster_health_events();
+
+        let down = build_tui_model_for_state(&events, &roster_state_at(0));
+        let healthy = build_tui_model_for_state(&events, &roster_state_at(1));
+
+        assert_eq!(
+            down.footer(),
+            "up/down move | enter re-poll | esc sub-view list | left/right focus | / search | \
+             1-6 view | ? help | q quit"
+        );
+        assert_eq!(
+            healthy.footer(),
+            "up/down move | esc sub-view list | left/right focus | / search | 1-6 view | ? help | \
+             q quit"
+        );
+    }
+
+    #[test]
+    fn the_roster_action_resolves_to_a_re_poll_of_the_row_it_was_advertised_on() {
+        // Presentation and invocation share ONE derivation: what resolves here
+        // is the action the row advertised, against the source the row named.
+        let events = roster_health_events();
+        let model = build_tui_model_for_state(&events, &roster_state_at(0));
+
+        assert_eq!(
+            resolve_event_source_action(&model, "operator"),
+            Ok(OperatorActionOutcome::RepollSource("dispatcher".to_owned()))
+        );
+        // A re-poll is never a persisted command: it re-READS a source.
+        assert_eq!(
+            resolve_event_source_action(&model, "operator")
+                .map(|outcome| outcome.command().is_none()),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn the_roster_action_refuses_a_row_that_advertised_nothing_and_a_blank_requester() {
+        let events = roster_health_events();
+        let healthy = build_tui_model_for_state(&events, &roster_state_at(1));
+        let down = build_tui_model_for_state(&events, &roster_state_at(0));
+        let no_row = build_tui_model_for_state(&events, &roster_state_at(7));
+
+        assert_eq!(
+            resolve_event_source_action(&healthy, "operator"),
+            Err(ApplicationError::UnavailableOperatorAction)
+        );
+        assert_eq!(
+            resolve_event_source_action(&no_row, "operator"),
+            Err(ApplicationError::UnavailableOperatorAction)
+        );
+        // The requester is validated FIRST, so a blank one is reported as the
+        // bad request it is rather than absorbed into the refusal above.
+        assert_eq!(
+            resolve_event_source_action(&down, "  "),
+            Err(ApplicationError::EmptyOperatorAction)
+        );
     }
 
     #[test]
@@ -15488,7 +15919,10 @@ mod tests {
             .with_source_last_success(last_success);
         let model = build_tui_model_for_state(&events, &state);
 
-        assert_eq!(model.view_items()[0].title(), "dispatcher — unavailable");
+        assert_eq!(
+            model.view_items()[0].title(),
+            "dispatcher — unavailable [enter re-poll]"
+        );
         assert_eq!(
             model.view_items()[0].detail(),
             "dispatcher binary not found\nlast successful read: 2026-09-08T14:05:14Z\nevent counts: not yet counted"
@@ -15797,6 +16231,8 @@ mod tests {
             missing_selected_lane_item_id: None,
             events_focus: super::EventsFocus::Overview,
             selected_events_index: 0,
+            event_source_rows: Vec::new(),
+            selected_event_source_index: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             header_scroll: 0,
@@ -15859,6 +16295,8 @@ mod tests {
             missing_selected_lane_item_id: None,
             events_focus: super::EventsFocus::Overview,
             selected_events_index: 0,
+            event_source_rows: Vec::new(),
+            selected_event_source_index: None,
             focus: FocusPane::Nav,
             detail_scroll: 0,
             header_scroll: 0,
@@ -24734,6 +25172,8 @@ mod tests {
             missing_selected_lane_item_id: None,
             events_focus: EventsFocus::Overview,
             selected_events_index: 0,
+            event_source_rows: Vec::new(),
+            selected_event_source_index: None,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,
@@ -24974,6 +25414,8 @@ mod tests {
             missing_selected_lane_item_id: None,
             events_focus: EventsFocus::Overview,
             selected_events_index: 0,
+            event_source_rows: Vec::new(),
+            selected_event_source_index: None,
             focus: FocusPane::Content,
             detail_scroll: 0,
             header_scroll: 0,

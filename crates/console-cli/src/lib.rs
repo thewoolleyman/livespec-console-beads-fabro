@@ -385,6 +385,21 @@ pub trait SourcePollRequester {
     /// Request an out-of-band source re-poll. Non-blocking and best-effort — a
     /// dropped request (e.g. the poller has already stopped) is ignored.
     fn request_poll(&self);
+
+    /// Request an out-of-band re-poll of ONE named source — the Event sources
+    /// roster's per-row action (livespec-console-beads-fabro-mx9u.20.3).
+    ///
+    /// `source` is the envelope SOURCE NAME the roster row carries
+    /// (`livespec`, `fabro:hp`), the same name the adapters stamp and the
+    /// header's availability tally keys on. Non-blocking and best-effort on
+    /// the same terms as [`Self::request_poll`]: it runs on the poller thread,
+    /// which is where every backing-CLI invocation belongs, so pressing the
+    /// key never blocks the frame the operator pressed it in.
+    ///
+    /// Deliberately NOT a full sweep. The operator asked about ONE row, and a
+    /// sweep would shell every backing CLI to answer a question about one of
+    /// them.
+    fn request_poll_for_source(&self, source: &str);
 }
 
 /// Port for requesting out-of-band pending-command handling from the UI thread
@@ -610,8 +625,9 @@ impl<'a> StoreBackedTuiRuntimeEffectSink<'a> {
 /// `command_append_from_tui_effect` makes when it decides what to append.
 ///
 /// A pure navigation `Render` (what fires on every Attention selection-change
-/// keystroke), a `CopyDriverHandoff`, a `Quit`, or an `ApplicationError` never
-/// does. `handle_runtime_effect` below short-circuits on exactly this check
+/// keystroke), a `CopyDriverHandoff`, a `RepollSource`, a `Quit`, or an
+/// `ApplicationError` never does. `handle_runtime_effect` below short-circuits
+/// on exactly this check
 /// BEFORE touching the store: `persist_tui_runtime_effects` used to run TWO
 /// local-store reads (`command_count`, `list_commands`) for EVERY effect
 /// regardless of whether anything would ever be appended, which is a ledger
@@ -629,6 +645,15 @@ impl TuiRuntimeEffectSink for StoreBackedTuiRuntimeEffectSink<'_> {
         &mut self,
         effect: &TuiRuntimeEffect,
     ) -> std::io::Result<TuiRuntimeEffectSinkOutcome> {
+        // The Event sources roster's re-poll (livespec-console-beads-fabro-
+        // mx9u.20.3) records NO command: it asks the poller thread to re-READ
+        // one source. Handled ahead of the persist split below for the same
+        // reason that split exists -- it must not touch the store on a path
+        // that appends nothing.
+        if let TuiRuntimeEffect::RepollSource(source) = effect {
+            self.poll_requester.request_poll_for_source(source);
+            return Ok(TuiRuntimeEffectSinkOutcome::Applied);
+        }
         if !effect_may_persist_command(effect) {
             // Nothing below would ever append a command for this effect (see
             // `effect_may_persist_command`), so return WITHOUT the store reads
@@ -856,6 +881,74 @@ pub fn refresh_sources(
         Err(other) => return Err(other),
     }
     Ok(ingestion)
+}
+
+/// The envelope SOURCE NAME an adapter id was minted for.
+///
+/// [`live_source_adapters_with_programs`] mints every id as
+/// `"{source_name}:{repo}"`, and a source name may itself carry a colon (an
+/// instanced factory, `fabro:hp`) while a repo name never does -- so the split
+/// is from the RIGHT. An id with no colon at all is returned whole rather than
+/// discarded: a caller matching on it then simply finds no adapter, which is
+/// the honest outcome for an id this function cannot parse.
+#[must_use]
+pub fn adapter_id_source_name(adapter_id: &str) -> &str {
+    adapter_id
+        .rsplit_once(':')
+        .map_or(adapter_id, |(source, _repo)| source)
+}
+
+/// Re-poll ONE named source -- the Event sources roster's per-row re-poll
+/// action (livespec-console-beads-fabro-mx9u.20.3).
+///
+/// The narrow sibling of [`refresh_sources`]: same writer-lease gate, same
+/// `run_adapter_poll` per adapter, same honest outcome -- a source that comes
+/// back writes its positive observation, and one that does not writes a fresh
+/// `source.not_observed_finding_observed` carrying its command's own verbatim
+/// diagnostic and exit status. Because the roster renders the LATEST such
+/// reason, a failed re-poll REPLACES the cause on the row and the row stays
+/// unavailable; nothing here can fabricate health, because nothing here writes
+/// an availability verdict of its own.
+///
+/// It deliberately runs NEITHER the other sources NOR the needs-attention
+/// ingest: the operator asked about one row, and a full sweep would shell
+/// every backing CLI to answer a question about one of them.
+///
+/// A `source` matching no configured adapter polls nothing and returns an
+/// empty summary list. That is the right answer rather than an error: the
+/// roster lists sources this build has ever OBSERVED, which can outlive the
+/// configuration that produced them (a factory server dropped from
+/// `.livespec.jsonc`), and there is no command left to re-run for such a row.
+///
+/// # Errors
+/// Returns the underlying runtime error when the writer lease cannot be
+/// acquired or an adapter poll cannot be recorded.
+pub fn refresh_one_source(
+    store: &mut SqliteEventStore,
+    observed_at: &str,
+    sources: &[SourceAdapterRef<'_>],
+    source: &str,
+    identity: &WriterIdentity,
+) -> ConsoleRuntimeResult<Vec<AdapterIngestionSummary>> {
+    let lease_identity =
+        WriterLeaseIdentity::new(identity.pid(), identity.exe_path(), identity.build_sha());
+    let lease = store.acquire_or_renew_writer_lease(
+        &lease_identity,
+        observed_at,
+        WRITER_LEASE_TTL_SECONDS,
+    )?;
+    // Another live process holds the lease: degrade to READ-ONLY exactly as
+    // `refresh_sources` does. An operator's explicit keystroke is not a reason
+    // to repeat the measured eleven-hour double-write.
+    if matches!(lease, WriterLeaseOutcome::HeldByOther(_)) {
+        return Ok(Vec::new());
+    }
+    let targeted: Vec<SourceAdapterRef<'_>> = sources
+        .iter()
+        .filter(|(adapter_id, _adapter)| adapter_id_source_name(adapter_id) == source)
+        .copied()
+        .collect();
+    backfill_source_adapters(store, observed_at, &targeted, identity)
 }
 
 /// The full ingest/reflect sequence: the two slow source polls
@@ -3583,6 +3676,9 @@ fn command_append_from_tui_effect(
         }
         TuiRuntimeEffect::Render
         | TuiRuntimeEffect::CopyDriverHandoff(_)
+        // A re-poll re-READS one source; it records no command (see
+        // `TuiRuntimeEffect::RepollSource`).
+        | TuiRuntimeEffect::RepollSource(_)
         | TuiRuntimeEffect::Quit
         | TuiRuntimeEffect::ApplicationError(_) => None,
     }
@@ -4260,10 +4356,11 @@ mod tests {
 
     use crate::{
         DispatcherSettingsRead, MAX_CONSECUTIVE_TRANSIENT_REFRESH_FAILURES, WriterIdentity,
-        checkpoint_load_failed, checkpoint_save_failed, checkpoint_source_last_success,
-        effect_may_persist_command, effect_sink_io_error, factory_outcome_snapshot,
-        resolve_console_invoker, sink_outcome_for_persist_error, source_event_counts_snapshot,
-        source_last_success_snapshot, source_staleness_snapshot, tolerate_transient_refresh,
+        adapter_id_source_name, checkpoint_load_failed, checkpoint_save_failed,
+        checkpoint_source_last_success, effect_may_persist_command, effect_sink_io_error,
+        factory_outcome_snapshot, refresh_one_source, resolve_console_invoker,
+        sink_outcome_for_persist_error, source_event_counts_snapshot, source_last_success_snapshot,
+        source_staleness_snapshot, tolerate_transient_refresh,
     };
     use console_application::source_event_counts::SourceEventCounts;
     use console_application::source_staleness::SourceStaleness;
@@ -6239,6 +6336,381 @@ mod tests {
         check(
             lane_work_item_ids(&second, Lane::Ready).is_empty(),
             "assert failed",
+        );
+    }
+
+    /// A probe whose outcome is scripted per invocation, so a source can be
+    /// made to fail with ONE reason and then a DIFFERENT one --
+    /// livespec-console-beads-fabro-mx9u.20.3 AC4's whole question is which of
+    /// the two the roster ends up showing. Both probe surfaces are scripted
+    /// from the one list: the production adapter set built below polls file
+    /// sources (the dispatch journal) as well as command ones.
+    struct SequencedFailingProbe {
+        reasons: Vec<String>,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl SequencedFailingProbe {
+        fn new(reasons: &[&str]) -> Self {
+            Self {
+                reasons: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
+                calls: std::cell::Cell::new(0),
+            }
+        }
+
+        /// The next scripted reason.
+        ///
+        /// Indexed rather than `get`-and-fall-back: every test below scripts
+        /// exactly as many reasons as its own polls consume, so a script that
+        /// ran out would mean the test polled something it did not mean to --
+        /// which should fail loudly here rather than quietly serve a
+        /// stand-in reason and let the assertion pass for the wrong reason.
+        fn next_reason(&self) -> String {
+            let index = self.calls.get();
+            self.calls.set(index + 1);
+            self.reasons[index].clone()
+        }
+    }
+
+    impl SourceProbe for SequencedFailingProbe {
+        fn run_command(&self, _program: &str, _args: &[&str]) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable(&self.next_reason())
+        }
+
+        fn read_file(&self, _path: &str) -> SourceProbeOutcome {
+            SourceProbeOutcome::unavailable(&self.next_reason())
+        }
+    }
+
+    /// The PRODUCTION adapter set over `probe`, so the targeted-re-poll tests
+    /// match on the adapter ids `live_source_adapters_with_programs` actually
+    /// mints rather than on hand-written stand-ins.
+    fn live_adapters_over<'a>(
+        probe: &'a dyn SourceProbe,
+        programs: &BackingCliPrograms,
+    ) -> Vec<(String, ObservedSourceAdapter<'a>)> {
+        live_source_adapters_with_programs(probe, "console", programs, "/nonexistent/journal")
+            .ok_test()
+    }
+
+    /// The borrowed refs `refresh_one_source` takes, from an owned adapter
+    /// set -- the test-side twin of the binary's own `source_refs`.
+    fn source_adapter_refs<'a>(
+        adapters: &'a [(String, ObservedSourceAdapter<'a>)],
+    ) -> Vec<SourceAdapterRef<'a>> {
+        adapters
+            .iter()
+            .map(|(adapter_id, adapter)| (adapter_id.as_str(), adapter as &dyn PullSourcePort))
+            .collect()
+    }
+
+    /// The Event sources roster row for `source`, as the OPERATOR would read
+    /// it: title (name and health) then detail (the verbatim cause, the
+    /// stale-since fact, the counts), built through the real projection rather
+    /// than by re-deriving any of it here.
+    fn roster_row(store: &SqliteEventStore, source: &str) -> Option<String> {
+        let events = store.list_console_events().ok_test();
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(console_application::EventsFocus::EventSources);
+        let model = build_tui_model_for_state(&events, &state);
+        model
+            .view_items()
+            .iter()
+            .find(|item| item.title().starts_with(&format!("{source} \u{2014} ")))
+            .map(|item| format!("{}\n{}", item.title(), item.detail()))
+    }
+
+    #[test]
+    fn adapter_id_source_name_splits_the_repo_off_the_right() {
+        // Asserted against the ids the PRODUCTION builder mints, not against
+        // hand-written strings: a sole-instance source, and an INSTANCED one
+        // whose own name carries a colon (`fabro:hp` -- the case a left-split
+        // would mangle into `fabro`).
+        let probe = SequencedFailingProbe::new(&["down"]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let names: Vec<&str> = adapters
+            .iter()
+            .map(|(adapter_id, _adapter)| adapter_id_source_name(adapter_id))
+            .collect();
+
+        check(
+            names
+                == [
+                    "orchestrator",
+                    "dispatcher",
+                    "fabro",
+                    "livespec",
+                    "github",
+                    "reconcile-runs",
+                ],
+            "assert_eq failed",
+        );
+        check(
+            adapter_id_source_name("fabro:hp:console") == "fabro:hp",
+            "an instanced source name keeps its own colon",
+        );
+        // An id this function cannot parse is returned whole, so a caller
+        // matching on it finds no adapter rather than matching the wrong one.
+        check(
+            adapter_id_source_name("colonless") == "colonless",
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn refresh_one_source_polls_only_the_named_source() {
+        // livespec-console-beads-fabro-mx9u.20.3 AC3: the roster's re-poll is
+        // about ONE row, so it must not shell every other backing CLI to
+        // answer a question about that row.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let probe = SequencedFailingProbe::new(&["livespec is down"]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let sources = source_adapter_refs(&adapters);
+
+        let summaries = refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:00Z",
+            &sources,
+            "livespec",
+            &test_writer_identity(),
+        )
+        .ok_test();
+
+        check(summaries.len() == 1, "expected exactly one adapter polled");
+        check(
+            roster_row(&store, "livespec").is_some_and(|row| row.contains("livespec is down")),
+            "expected the named source to have been re-read",
+        );
+        check(
+            roster_row(&store, "github").is_none(),
+            "expected every OTHER source to be left alone entirely",
+        );
+    }
+
+    #[test]
+    fn refresh_one_source_replaces_a_stale_cause_and_leaves_the_row_unavailable() {
+        // livespec-console-beads-fabro-mx9u.20.3 AC4: pressing the action never
+        // fabricates health. A re-poll that fails again leaves the source
+        // unavailable and REPLACES the cause with the new attempt's verbatim
+        // reason, so a stale cause is never presented as current.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let probe = SequencedFailingProbe::new(&[
+            "livespec: No such file or directory (os error 2)",
+            "livespec: exited 2: could not read .livespec.jsonc",
+        ]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let sources = source_adapter_refs(&adapters);
+        let identity = test_writer_identity();
+
+        refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:00Z",
+            &sources,
+            "livespec",
+            &identity,
+        )
+        .ok_test();
+        check(
+            roster_row(&store, "livespec")
+                .is_some_and(|row| row.contains("No such file or directory (os error 2)")),
+            "expected the first attempt's reason to stand",
+        );
+
+        refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:05Z",
+            &sources,
+            "livespec",
+            &identity,
+        )
+        .ok_test();
+
+        let row = roster_row(&store, "livespec").unwrap_or_default();
+        check(
+            row.contains("livespec: exited 2: could not read .livespec.jsonc"),
+            "expected the SECOND attempt's verbatim reason to replace the first",
+        );
+        check(
+            !row.contains("No such file or directory"),
+            "expected the stale cause to be GONE, not shown beside the current one",
+        );
+        check(
+            row.contains("livespec \u{2014} unavailable"),
+            "expected the row to stay unavailable after a failed re-poll",
+        );
+    }
+
+    #[test]
+    fn refresh_one_source_degrades_to_read_only_under_another_writer_lease() {
+        // An operator keystroke is not a reason to double-write a store
+        // another live process holds the lease on
+        // (livespec-console-beads-fabro-mx9u.23 AC3), so the targeted re-poll
+        // degrades exactly as `refresh_sources` does.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let probe = SequencedFailingProbe::new(&["livespec is down"]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let sources = source_adapter_refs(&adapters);
+        refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:00Z",
+            &sources,
+            "livespec",
+            &test_writer_identity(),
+        )
+        .ok_test();
+        let after_first = store.list_console_events().ok_test().len();
+
+        let held_off = refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:01Z",
+            &sources,
+            "livespec",
+            &WriterIdentity::new(9999, "/opt/console/other", "/data/projects/repo", "z9z9z9z"),
+        )
+        .ok_test();
+
+        check(
+            held_off.is_empty(),
+            "expected an empty ingestion summary while held off",
+        );
+        check(
+            store.list_console_events().ok_test().len() == after_first,
+            "expected the read-only re-poll to append NOTHING",
+        );
+    }
+
+    #[test]
+    fn refresh_one_source_surfaces_a_store_failure_rather_than_swallowing_it() {
+        // The lease acquisition rides a `?`: a store whose lease row cannot be
+        // read at all is a fault, not a quiet no-op, so the keystroke's
+        // failure reaches the caller instead of looking like "nothing to
+        // re-poll" -- which would read to the operator as a row with no
+        // command left to run rather than as a broken store.
+        let (path, mut store) = file_store("refresh-one-source-missing-lease");
+        let probe = SequencedFailingProbe::new(&["livespec is down"]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let sources = source_adapter_refs(&adapters);
+        corrupt_store(&path, "drop table writer_lease");
+
+        let error = err_runtime_summaries(refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:00Z",
+            &sources,
+            "livespec",
+            &test_writer_identity(),
+        ));
+
+        check_runtime_event_store_error(error);
+        cleanup_store(&path);
+    }
+
+    #[test]
+    fn refresh_one_source_polls_nothing_for_a_source_no_adapter_serves() {
+        // The roster lists sources this build has EVER observed, which can
+        // outlive the configuration that produced them (a factory server
+        // dropped from `.livespec.jsonc`). There is no command left to re-run
+        // for such a row, and inventing one would be exactly the fabrication
+        // this item refuses.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let probe = SequencedFailingProbe::new(&["livespec is down"]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let sources = source_adapter_refs(&adapters);
+
+        let summaries = refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:00Z",
+            &sources,
+            "fabro:retired",
+            &test_writer_identity(),
+        )
+        .ok_test();
+
+        check(summaries.is_empty(), "expected nothing to have been polled");
+        check(
+            roster_row(&store, "livespec").is_none(),
+            "expected no other source to be polled in its place",
+        );
+    }
+
+    #[test]
+    fn refresh_one_source_re_reads_a_file_backed_source_too() {
+        // The dispatch journal is read from a FILE rather than shelled as a
+        // command, and it is one of the three sources
+        // livespec-console-beads-fabro-mx9u.20.3 was filed against -- so the
+        // targeted re-poll must reach that probe surface as well.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let probe = SequencedFailingProbe::new(&["journal missing"]);
+        let programs = BackingCliPrograms::default();
+        let adapters = live_adapters_over(&probe, &programs);
+        let sources = source_adapter_refs(&adapters);
+
+        let summaries = refresh_one_source(
+            &mut store,
+            "2026-09-12T10:00:00Z",
+            &sources,
+            "dispatcher",
+            &test_writer_identity(),
+        )
+        .ok_test();
+
+        check(
+            summaries.len() == 1,
+            "expected the file source to be polled",
+        );
+        check(
+            roster_row(&store, "dispatcher").is_some_and(|row| row.contains("journal missing")),
+            "expected the file source's own verbatim reason",
+        );
+    }
+
+    #[test]
+    fn the_roster_repoll_effect_asks_the_poller_for_that_one_source_only() {
+        // livespec-console-beads-fabro-mx9u.20.3: pressing the roster's action
+        // records NO console command and does NOT fire the full sweep -- it
+        // asks the poller thread (where every backing-CLI invocation belongs)
+        // to re-read the ONE source the row names, so the frame the operator
+        // pressed the key in never blocks on a subprocess.
+        let mut store = SqliteEventStore::open_in_memory().ok_test();
+        let mut factory_port = SimulatedFactoryDrainPort;
+        let mut work_item_port = SimulatedWorkItemActionPort::default();
+        let decisions = empty_decisions_port();
+        let requester = poll_requester();
+        let commands = command_requester();
+        let outcome = {
+            let mut sink = StoreBackedTuiRuntimeEffectSink::new(
+                &mut store,
+                "2026-09-12T10:00:00Z",
+                &mut factory_port,
+                &mut work_item_port,
+                &decisions,
+                &requester,
+                &commands,
+            );
+            sink.handle_runtime_effect(&TuiRuntimeEffect::RepollSource("fabro:hp".to_owned()))
+                .ok()
+        };
+
+        check(
+            outcome == Some(TuiRuntimeEffectSinkOutcome::Applied),
+            "assert_eq failed",
+        );
+        check(
+            requester.targeted_sources() == vec!["fabro:hp".to_owned()],
+            "expected exactly the named source to be re-polled",
+        );
+        check(
+            requester.poll_count() == 0,
+            "expected NO full sweep for a question about one row",
+        );
+        check(
+            store.list_commands().ok_test().is_empty(),
+            "expected a re-poll to record no console command at all",
         );
     }
 
@@ -13997,23 +14469,37 @@ mod tests {
     /// that do not care simply ignore the count).
     struct RecordingPollRequester {
         polls: std::cell::Cell<usize>,
+        /// The sources a TARGETED re-poll was requested for, in request order
+        /// (livespec-console-beads-fabro-mx9u.20.3). Held apart from `polls`
+        /// so a test can prove the roster's key asked about ONE row rather
+        /// than triggering the full sweep.
+        targeted: std::cell::RefCell<Vec<String>>,
     }
 
     impl RecordingPollRequester {
         fn new() -> Self {
             Self {
                 polls: std::cell::Cell::new(0),
+                targeted: std::cell::RefCell::new(Vec::new()),
             }
         }
 
         fn poll_count(&self) -> usize {
             self.polls.get()
         }
+
+        fn targeted_sources(&self) -> Vec<String> {
+            self.targeted.borrow().clone()
+        }
     }
 
     impl SourcePollRequester for RecordingPollRequester {
         fn request_poll(&self) {
             self.polls.set(self.polls.get() + 1);
+        }
+
+        fn request_poll_for_source(&self, source: &str) {
+            self.targeted.borrow_mut().push(source.to_owned());
         }
     }
 

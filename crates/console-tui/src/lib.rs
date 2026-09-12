@@ -29,11 +29,11 @@ use console_application::source_staleness::SourceStaleness;
 use console_application::writer_identity::WriterLeaseStatus;
 use console_application::{
     ApplicationError, AttentionDetail, AttentionItem, DISPATCHER_SETTINGS_NOT_YET_READ_TELL,
-    DispatcherSettingsRead, EventsFocus, FocusPane, HELP_SECTION_COUNT, HelpFocus, LaneColumn,
-    LaneExecutionState, LaneFocus, LaneWorkItem, OperatorAction, OperatorActionOutcome,
-    PendingValve, PluginResolution, SettingRow, TimelineEntry, TuiInteraction, TuiInteractionState,
-    TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem, action_registry,
-    build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
+    DispatcherSettingsRead, EventSourceAction, EventsFocus, FocusPane, HELP_SECTION_COUNT,
+    HelpFocus, LaneColumn, LaneExecutionState, LaneFocus, LaneWorkItem, OperatorAction,
+    OperatorActionOutcome, PendingValve, PluginResolution, SettingRow, TimelineEntry,
+    TuiInteraction, TuiInteractionState, TuiOverlay, TuiScreenModel, TuiView, ViewSummaryItem,
+    action_registry, build_tui_model_for_state, dispatcher_setting_rows, header_help_section,
     reduce_tui_interaction, resolve_command_palette_action, resolve_dispatcher_setting_edit,
     resolve_valve_action, validate_operator_action,
 };
@@ -850,6 +850,22 @@ pub enum TuiRuntimeEffect {
     /// Copy driver handoff command variant. This is render/copy only: it never
     /// becomes a persisted console command and never triggers a source poll.
     CopyDriverHandoff(String),
+    /// Re-run ONE named event source's configured poll now -- the Event
+    /// sources roster's per-row action
+    /// (livespec-console-beads-fabro-mx9u.20.3). The payload is the envelope
+    /// SOURCE NAME the roster row carries (`livespec`, `fabro:hp`), which is
+    /// what the adapters, the header's availability tally and `doctor` all
+    /// key on.
+    ///
+    /// NOT a persisted console command: nothing about the ledger changes. It
+    /// asks the poller to re-READ one source, and the answer is whatever that
+    /// source's own poll writes -- a positive observation if it came back, or
+    /// a fresh `source.not_observed_finding_observed` carrying the command's
+    /// verbatim diagnostic and exit status. Because the roster renders the
+    /// LATEST such reason, a failed re-poll REPLACES the cause on the row
+    /// rather than leaving a stale one presented as current, and it never
+    /// clears the row's unavailability on its own.
+    RepollSource(String),
     /// Quit variant.
     Quit,
     /// Application error variant.
@@ -1364,6 +1380,14 @@ fn confirm_operator_action(
         TuiOverlay::None if model.active_view() == TuiView::Settings => {
             resolve_dispatcher_setting_edit(&model, requested_by)
         }
+        // `Enter` on an Event sources roster row runs the action that row
+        // ADVERTISES (livespec-console-beads-fabro-mx9u.20.3). Reached only
+        // when `enter_content_input` already found an action to offer, but
+        // resolved through the registry-style derivation anyway so the key and
+        // the affordance can never come apart.
+        TuiOverlay::None if model.active_view() == TuiView::Events => {
+            console_application::resolve_event_source_action(&model, requested_by)
+        }
         TuiOverlay::DriverHandoff { command } => Ok(OperatorActionOutcome::CopyDriverHandoff(
             command.to_owned(),
         )),
@@ -1411,6 +1435,7 @@ fn action_outcome_effect(outcome: OperatorActionOutcome) -> TuiRuntimeEffect {
         OperatorActionOutcome::CopyDriverHandoff(command) => {
             TuiRuntimeEffect::CopyDriverHandoff(command)
         }
+        OperatorActionOutcome::RepollSource(source) => TuiRuntimeEffect::RepollSource(source),
     }
 }
 
@@ -1697,10 +1722,21 @@ fn enter_content_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
                     EventsFocus::Overview => Some(TuiTerminalInput::Interaction(
                         TuiInteraction::DrillIntoEventsSubView,
                     )),
-                    // Neither sub-view has a per-row action surface yet (that is
-                    // deferred, not excluded -- see the epic's constraint), so
-                    // Enter is inert once drilled in.
-                    EventsFocus::StoredEvents | EventsFocus::EventSources => None,
+                    // The Event sources roster's selected row runs whatever
+                    // action it ADVERTISES, and only that
+                    // (livespec-console-beads-fabro-mx9u.20.3): the same
+                    // `model.selected_event_source()` derivation that put the
+                    // `[enter <verb>]` affordance on the row decides whether
+                    // the key is live here, so an unadvertised Enter stays
+                    // inert instead of failing when pressed.
+                    EventsFocus::EventSources => model
+                        .selected_event_source()
+                        .and_then(console_application::EventSourceHealthRow::action)
+                        .map(|_action| TuiTerminalInput::Confirm),
+                    // "Stored events" has no per-row action surface (deferred,
+                    // not excluded -- see the epic's constraint), so Enter is
+                    // inert once drilled into it.
+                    EventsFocus::StoredEvents => None,
                 };
             }
             if model.active_view() == TuiView::Attention {
@@ -3569,9 +3605,23 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             Line::from("source events, read-only, exactly as before) and Event sources (the"),
             Line::from("per-source roster)."),
             Line::from(""),
-            Line::from("up / down    move the sub-view selection; inside a drilled-in"),
-            Line::from("             sub-view, scroll the Detail pane"),
-            Line::from("enter        drill into the selected sub-view"),
+            Line::from("Inside Event sources, up / down walk the SOURCE rows and an"),
+            Line::from("UNAVAILABLE row offers an action, advertised on the row itself as"),
+            Line::from(format!(
+                "`[enter {verb}]`. Pressing it re-runs THAT source's own configured",
+                verb = EventSourceAction::Repoll.verb()
+            )),
+            Line::from("poll and shows whatever the attempt reports -- the command's own"),
+            Line::from("diagnostic and exit status -- rather than the console guessing what"),
+            Line::from("went wrong. It cannot make a source look healthy: a re-poll that"),
+            Line::from("fails leaves the row unavailable and replaces the cause with the new"),
+            Line::from("attempt's verbatim reason. A HEALTHY row advertises nothing, because"),
+            Line::from("there is nothing about it to determine."),
+            Line::from(""),
+            Line::from("up / down    move the sub-view selection; inside Event sources, move"),
+            Line::from("             the source row; inside Stored events, scroll the Detail pane"),
+            Line::from("enter        drill into the selected sub-view; on an Event sources row,"),
+            Line::from("             run the action that row advertises"),
             Line::from("esc          return a drilled-in sub-view to the container list"),
             Line::from("left / right move focus; left from Views opens the menu bar"),
         ],
@@ -4126,8 +4176,17 @@ fn render_summary(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
 /// container existed -- an unmarked static list (AC3: no behaviour change to
 /// "Stored events").
 fn summary_selected_index(model: &TuiScreenModel) -> Option<usize> {
-    (model.active_view() == TuiView::Events && model.events_focus() == EventsFocus::Overview)
-        .then(|| model.selected_events_index())
+    if model.active_view() != TuiView::Events {
+        return None;
+    }
+    match model.events_focus() {
+        EventsFocus::Overview => Some(model.selected_events_index()),
+        // The roster's rows are individually actionable
+        // (livespec-console-beads-fabro-mx9u.20.3), so the operator has to be
+        // able to SEE which one Enter would act on.
+        EventsFocus::EventSources => model.selected_event_source_index(),
+        EventsFocus::StoredEvents => None,
+    }
 }
 
 /// The Content pane's block title for a summary view: a breadcrumb
@@ -4590,13 +4649,14 @@ mod tests {
         action_available_for_model, action_outcome_effect, apply_tick_refresh, attention_item_line,
         buffer_to_text, command_explainer_confirm_step, command_explainer_lines,
         command_explanation_for_action, detail_lines, drain_input_burst,
-        effect_triggers_source_poll, elide_to_width, full_width_explainer_rect, global_help_lines,
-        header_help_lines, help_lines_for_view, help_outcome, is_navigation_interaction,
-        key_event_to_terminal_input, menu_confirm_step, registry_action_input,
-        registry_staging_explanation, render_command_explainer, render_command_modal,
-        render_detail, render_footer, render_menu_overlay, render_model, render_summary_detail,
-        render_to_text, render_work_item_detail, settings_detail_lines, staged_action_step,
-        step_tui_runtime, step_tui_runtime_with_model, text_input,
+        effect_triggers_source_poll, elide_to_width, enter_content_input,
+        full_width_explainer_rect, global_help_lines, header_help_lines, help_lines_for_view,
+        help_outcome, is_navigation_interaction, key_event_to_terminal_input, menu_confirm_step,
+        registry_action_input, registry_staging_explanation, render_command_explainer,
+        render_command_modal, render_detail, render_footer, render_menu_overlay, render_model,
+        render_summary_detail, render_to_text, render_work_item_detail, settings_detail_lines,
+        staged_action_step, step_tui_runtime, step_tui_runtime_with_model, summary_selected_index,
+        text_input,
     };
 
     macro_rules! assert {
@@ -7811,6 +7871,98 @@ mod tests {
         assert!(output.contains("dispatcher binary not found"), "{output}");
     }
 
+    /// The roster fixture for the per-row-action gates
+    /// (livespec-console-beads-fabro-mx9u.20.3): one unavailable source, one
+    /// healthy one.
+    fn roster_health_events() -> [ConsoleEvent; 2] {
+        [
+            ConsoleEvent::fixture(
+                "evt_dispatcher_down",
+                EventType::SourceNotObservedFindingObserved,
+                "dispatcher",
+            )
+            .with_payload_json(
+                r#"{"reason":"no work-item in journal entry","repo":"livespec-console-beads-fabro"}"#
+                    .to_owned(),
+            ),
+            ConsoleEvent::fixture(
+                "evt_github_ok",
+                EventType::GithubPullRequestSnapshotObserved,
+                "github",
+            ),
+        ]
+    }
+
+    /// The roster drilled into, cursor on `index`, with the CONTENT pane
+    /// focused -- which is where `enter_content_input` reads the key from.
+    fn roster_state_at(index: usize) -> TuiInteractionState {
+        TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources)
+            .with_selected_event_source_index(index)
+            .with_focus(FocusPane::Content)
+    }
+
+    #[test]
+    fn the_roster_marks_the_row_enter_would_act_on() {
+        // The roster's rows are individually actionable, so the operator has
+        // to be able to SEE which one the key would act on. "Stored events"
+        // has no per-row action and so still renders as an unmarked static
+        // list (AC3 of the container item: no behaviour change to it).
+        let events = roster_health_events();
+
+        let roster = build_tui_model_for_state(&events, &roster_state_at(1));
+        let stored = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+                .with_events_focus(EventsFocus::StoredEvents)
+                .with_focus(FocusPane::Content),
+        );
+
+        assert_eq!(summary_selected_index(&roster), Some(1));
+        assert_eq!(summary_selected_index(&stored), None);
+        let output = render_to_text(&roster, 96, 24).unwrap_or_default();
+        assert!(output.contains("> github — healthy"), "{output}");
+    }
+
+    #[test]
+    fn enter_runs_the_action_an_unavailable_roster_row_advertised() {
+        // The key resolves through the SAME derivation that advertised it, and
+        // produces a re-poll of the source THAT row named -- never a persisted
+        // command (a re-poll re-READS a source; nothing about the ledger
+        // changes).
+        let events = roster_health_events();
+        let state = roster_state_at(0);
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(enter_content_input(&model), Some(TuiTerminalInput::Confirm));
+        let step = step_tui_runtime(&state, &events, TuiTerminalInput::Confirm, "operator");
+
+        assert_eq!(
+            step.effect(),
+            &TuiRuntimeEffect::RepollSource("dispatcher".to_owned())
+        );
+        assert_eq!(persisted_command(step.effect()), None);
+    }
+
+    #[test]
+    fn enter_is_inert_on_a_roster_row_that_advertised_nothing() {
+        // A healthy row offers nothing, so the key that would act on it does
+        // nothing rather than failing when pressed -- the placeholder-action
+        // defect livespec-console-beads-fabro-mx9u.20.3 AC2 forbids.
+        let events = roster_health_events();
+        let model = build_tui_model_for_state(&events, &roster_state_at(1));
+
+        assert_eq!(enter_content_input(&model), None);
+    }
+
+    #[test]
+    fn the_roster_repoll_outcome_maps_to_its_own_effect() {
+        assert_eq!(
+            action_outcome_effect(OperatorActionOutcome::RepollSource("fabro:hp".to_owned())),
+            TuiRuntimeEffect::RepollSource("fabro:hp".to_owned())
+        );
+    }
+
     #[test]
     fn render_to_text_header_enter_reaches_the_event_sources_roster() {
         // pzbdbo.29 AC2, at the rendered-frame layer: focusing the header
@@ -9289,6 +9441,7 @@ mod tests {
             | TuiRuntimeEffect::PersistCommandWithPayload { command, .. } => Some(command),
             TuiRuntimeEffect::Render
             | TuiRuntimeEffect::CopyDriverHandoff(_)
+            | TuiRuntimeEffect::RepollSource(_)
             | TuiRuntimeEffect::Quit
             | TuiRuntimeEffect::ApplicationError(_) => None,
         }
@@ -9301,6 +9454,7 @@ mod tests {
             TuiRuntimeEffect::PersistCommand(_)
             | TuiRuntimeEffect::Render
             | TuiRuntimeEffect::CopyDriverHandoff(_)
+            | TuiRuntimeEffect::RepollSource(_)
             | TuiRuntimeEffect::Quit
             | TuiRuntimeEffect::ApplicationError(_) => None,
         }

@@ -79,6 +79,10 @@ enum PollMessage {
     /// Re-poll the source adapters at once (sent right after a ledger-mutating
     /// operator effect so the ledger's lane change appears promptly).
     PollNow,
+    /// Re-poll ONE named source at once -- the Event sources roster's per-row
+    /// action (livespec-console-beads-fabro-mx9u.20.3). Carries the envelope
+    /// source name the roster row named.
+    PollSourceNow(String),
     /// Stop the poller and let it join.
     Shutdown,
 }
@@ -746,6 +750,7 @@ fn poller_loop(
     let needs_attention = NeedsAttentionIngest::new(&needs_attention_port, &repo);
     let repo_path = resolution.drive_repo_arg();
     let mut host = ChannelSourcePollHost {
+        requested_sources: Vec::new(),
         poll_rx,
         store: &mut store,
         sources: &sources,
@@ -815,46 +820,77 @@ struct ChannelSourcePollHost<'a> {
     /// Shared with the render thread — mirrors `build_staleness` above,
     /// updated every cycle with what this poll's lease acquisition decided.
     writer_lease_status: SharedWriterLeaseStatus,
+    /// Sources the operator asked to re-poll individually from the Event
+    /// sources roster (livespec-console-beads-fabro-mx9u.20.3), accumulated by
+    /// `wait` and drained by the next `poll_sources`.
+    ///
+    /// They ride the SAME paced loop as the ordinary sweep rather than a
+    /// second polling path, so the one-invocation-at-a-time property that loop
+    /// exists for still holds: a keystroke can never start a backing CLI while
+    /// another is mid-flight, however fast the operator presses.
+    requested_sources: Vec<String>,
 }
 
 #[cfg(all(not(test), not(coverage)))]
-impl SourcePollHost for ChannelSourcePollHost<'_> {
-    fn poll_sources(&mut self) {
-        // Re-probe staleness EVERY sweep, unconditionally: unlike the source
-        // refresh below it needs no `observed_at` clock read, and a failed
-        // probe already degrades to `BuildStaleness::Unknown` internally
-        // (silent by design — AC4), so there is nothing here to gate on.
-        self.build_staleness.set(observe_build_staleness(
-            self.probe,
-            self.repo_path,
-            livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
-        ));
-        // A source poll failure (transient CLI/store hiccup) must NEVER crash the
-        // poller — ignore it and try again next cycle.
+impl ChannelSourcePollHost<'_> {
+    /// Re-poll exactly the sources the operator asked about from the Event
+    /// sources roster, then refresh the render thread's derived cells so the
+    /// row they pressed on reflects the attempt
+    /// (livespec-console-beads-fabro-mx9u.20.3).
+    ///
+    /// The request list is drained whether the poll succeeded or not: a
+    /// re-poll that failed still WROTE its outcome (a fresh not-observed
+    /// finding carrying the command's own verbatim diagnostic), and retrying
+    /// behind the operator's back would turn one keystroke into an unbounded
+    /// loop against a source that is genuinely down.
+    fn poll_requested_sources(&mut self) {
+        let requested = std::mem::take(&mut self.requested_sources);
+        // A clock read that fails leaves the requests dropped rather than
+        // stamping an invented `observed_at` onto a stored event; the roster
+        // still shows the previous cause, which is the honest state.
         if let Ok(observed_at) = current_requested_at() {
-            let _ = livespec_console_beads_fabro::refresh_sources(
-                self.store,
-                &observed_at,
-                self.sources,
-                self.needs_attention,
-                self.writer_identity,
-            );
+            for source in &requested {
+                // A poll failure (transient CLI/store hiccup) must never crash
+                // the poller, exactly as in the full sweep.
+                let _ = livespec_console_beads_fabro::refresh_one_source(
+                    self.store,
+                    &observed_at,
+                    self.sources,
+                    source,
+                    self.writer_identity,
+                );
+            }
         }
-        // Re-derive the header's stale-since rider from whatever the store now
-        // holds, every sweep -- livespec-console-beads-fabro-mx9u.17. A read
-        // failure (a transient store hiccup, same family as the refresh above)
-        // must never crash the poller either; it simply leaves the cell at
-        // whatever it last held for one more cycle.
+        self.refresh_render_cells();
+    }
+
+    /// Re-derive every value the RENDER thread reads from the store, after a
+    /// poll -- whether that poll was the full sweep or one targeted re-poll.
+    ///
+    /// Shared by both so the roster a targeted re-poll was pressed on updates
+    /// exactly as it would after an ordinary sweep. Every read degrades
+    /// silently: a transient store hiccup leaves the cell at whatever it last
+    /// held for one more cycle, and must never crash the poller.
+    ///
+    /// `first_ingest_pending` is deliberately NOT cleared here. It is the
+    /// header's `event sources: loading` tell, which promises to wait for an
+    /// attempted FULL sweep (livespec-console-beads-fabro-pzbdbo.27); one
+    /// source re-read does not satisfy that promise, so only `poll_sources`
+    /// clears it.
+    fn refresh_render_cells(&self) {
+        // The header's stale-since rider --
+        // livespec-console-beads-fabro-mx9u.17.
         if let Ok(staleness) = source_staleness_snapshot(self.store) {
             self.source_staleness.set(staleness);
         }
-        // Same reasoning, for the Event sources roster's stale-since column
-        // (pzbdbo.29's roster) -- the SAME fact, unsummarized.
+        // The Event sources roster's stale-since column (pzbdbo.29's roster)
+        // -- the SAME fact, unsummarized.
         if let Ok(last_success) = source_last_success_snapshot(self.store) {
             self.source_last_success.set(last_success);
         }
-        // The header's factory tell, re-derived and re-dated every sweep
-        // (livespec-console-beads-fabro-mx9u.3). Needs the store's own
+        // The header's factory tell, re-derived and re-DATED every time
+        // (livespec-console-beads-fabro-mx9u.3): the age it carries keeps
+        // changing even when the outcome does not. Needs the store's own
         // `observed_at` column, which the domain envelope deliberately does not
         // carry, plus a clock — neither of which belongs on the render thread.
         // A read failure leaves the previous value for one more cycle, the same
@@ -865,28 +901,19 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
         {
             self.factory_outcome.set(outcome);
         }
-        // Same reasoning again, for the Event sources roster's per-source
-        // event counts by type (livespec-console-beads-fabro-mx9u.20.2).
+        // The Event sources roster's per-source event counts by type
+        // (livespec-console-beads-fabro-mx9u.20.2).
         if let Ok(event_counts) = source_event_counts_snapshot(self.store) {
             self.source_event_counts.set(event_counts);
         }
-        // Cleared unconditionally, success or failure: an ATTEMPTED first
-        // sweep is what the header's `event sources: loading` tell promises
-        // to wait for, not a SUCCESSFUL one -- a source that genuinely fails becomes
-        // `unavailable` from here on, which is real information, not a stuck
-        // loading state (livespec-console-beads-fabro-pzbdbo.27). A `store`
-        // is a redundant write on every later sweep, which costs nothing over
-        // an `if` that checks first.
-        self.first_ingest_pending.store(false, Ordering::Relaxed);
-        // Re-derive the header's writer-lease status from whatever
-        // `refresh_sources` just decided, by reading the row back — a
-        // separate, cheap indexed read rather than widening
-        // `refresh_sources`'s return type for every one of its many other
-        // callers (livespec-console-beads-fabro-mx9u.23 AC3). A read failure
-        // degrades to `Writable` silently: this tell is a courtesy, not the
+        // Re-derive the header's writer-lease status from whatever the poll
+        // just decided, by reading the row back — a separate, cheap indexed
+        // read rather than widening the refresh functions' return type for
+        // every one of their many other callers
+        // (livespec-console-beads-fabro-mx9u.23 AC3). A read failure degrades
+        // to `Writable` silently: this tell is a courtesy, not the
         // enforcement — the enforcement already happened (or didn't) inside
-        // `refresh_sources` above regardless of whether this readback
-        // succeeds.
+        // the poll regardless of whether this readback succeeds.
         let status = self.store.read_writer_lease().ok().flatten().map_or(
             WriterLeaseStatus::Writable,
             |(holder, _renewed_at)| {
@@ -914,6 +941,51 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
         );
         self.writer_lease_status.set(status);
     }
+}
+
+#[cfg(all(not(test), not(coverage)))]
+impl SourcePollHost for ChannelSourcePollHost<'_> {
+    fn poll_sources(&mut self) {
+        // An operator's per-row re-poll takes THIS turn of the loop and runs
+        // only the sources they named (livespec-console-beads-fabro-mx9u.20.3):
+        // they asked about one row, and a full sweep would shell every backing
+        // CLI to answer a question about one of them. The ordinary sweep is
+        // never skipped by it -- the cadence reopens immediately afterward, so
+        // the next turn is a normal full poll.
+        if !self.requested_sources.is_empty() {
+            self.poll_requested_sources();
+            return;
+        }
+        // Re-probe staleness EVERY sweep, unconditionally: unlike the source
+        // refresh below it needs no `observed_at` clock read, and a failed
+        // probe already degrades to `BuildStaleness::Unknown` internally
+        // (silent by design — AC4), so there is nothing here to gate on.
+        self.build_staleness.set(observe_build_staleness(
+            self.probe,
+            self.repo_path,
+            livespec_console_beads_fabro::build_identity::BUILD_GIT_SHA,
+        ));
+        // A source poll failure (transient CLI/store hiccup) must NEVER crash the
+        // poller — ignore it and try again next cycle.
+        if let Ok(observed_at) = current_requested_at() {
+            let _ = livespec_console_beads_fabro::refresh_sources(
+                self.store,
+                &observed_at,
+                self.sources,
+                self.needs_attention,
+                self.writer_identity,
+            );
+        }
+        // Cleared unconditionally, success or failure: an ATTEMPTED first
+        // sweep is what the header's `event sources: loading` tell promises
+        // to wait for, not a SUCCESSFUL one -- a source that genuinely fails
+        // becomes `unavailable` from here on, which is real information, not a
+        // stuck loading state (livespec-console-beads-fabro-pzbdbo.27). A
+        // `store` is a redundant write on every later sweep, which costs
+        // nothing over an `if` that checks first.
+        self.first_ingest_pending.store(false, Ordering::Relaxed);
+        self.refresh_render_cells();
+    }
 
     fn wait(&mut self, timeout: Duration) -> SourcePollWake {
         // A ZERO timeout is the loop asking "is there a stop pending?" before
@@ -921,6 +993,15 @@ impl SourcePollHost for ChannelSourcePollHost<'_> {
         // without blocking.
         match self.poll_rx.recv_timeout(timeout) {
             Ok(PollMessage::PollNow) => SourcePollWake::Requested,
+            Ok(PollMessage::PollSourceNow(source)) => {
+                // Queued rather than run here: `wait` is the loop's cadence
+                // wait, and shelling a CLI from it would bypass the very
+                // pacing this host exists to respect.
+                if !self.requested_sources.contains(&source) {
+                    self.requested_sources.push(source);
+                }
+                SourcePollWake::Requested
+            }
             Err(RecvTimeoutError::Timeout) => SourcePollWake::Elapsed,
             Ok(PollMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                 SourcePollWake::Stopped
@@ -968,6 +1049,10 @@ struct ChannelPollRequester {
 impl SourcePollRequester for ChannelPollRequester {
     fn request_poll(&self) {
         let _ = self.tx.send(PollMessage::PollNow);
+    }
+
+    fn request_poll_for_source(&self, source: &str) {
+        let _ = self.tx.send(PollMessage::PollSourceNow(source.to_owned()));
     }
 }
 

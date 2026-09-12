@@ -287,11 +287,17 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     );
 
     // --- right focuses the text pane; down scrolls it without changing section ---
+    // The marker is a line from the MIDDLE of the Events section, not its
+    // first line: once that section grew past the pane's height
+    // (livespec-console-beads-fabro-mx9u.20.3 added the roster's per-row
+    // action to it) a one-row scroll legitimately carries the first line off
+    // the top, and this assertion is about the SELECTED SECTION not changing,
+    // never about the scroll having been refused.
     console.send_keys(&["Right"])?;
     console.send_keys(&["Down"])?;
     let after_right = console.wait_for_settled("> Events", render_timeout())?;
     assert!(
-        after_right.contains("container for two sub-views") && !after_right.contains("lane board"),
+        after_right.contains("per-source roster") && !after_right.contains("lane board"),
         "Down with Help text focused must not change the selected section:\n{after_right}"
     );
 
