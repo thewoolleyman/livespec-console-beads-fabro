@@ -88,6 +88,73 @@ impl SourceAdapterKind {
     }
 }
 
+/// The event-envelope source NAME one polling adapter reports under.
+///
+/// Most source kinds are polled in exactly one place, so their envelope name is
+/// simply [`SourceAdapterKind::source_name`]. The Fabro source is not: the
+/// factories a repo dispatches to are declared in `.livespec.jsonc`
+/// (`dispatcher.factories`) and each one is a separate remote server that can be
+/// reachable or not on its own.
+///
+/// The header's availability tally (`unavailable_sources` in
+/// `console-application`'s `lib.rs`) keys on the envelope source name, and so do
+/// doctor's per-source staleness dating and the lane rows'
+/// observation-confirmed rule. Two factories reporting under the same bare
+/// `fabro` name would therefore let a reachable one CLEAR an unreachable one's
+/// outage: the source would read healthy while every run on the down factory sat
+/// unobserved -- exactly the cockpit-blind screen the Adapter Contract's honesty
+/// rule exists to prevent. An INSTANCE-qualified name (`fabro:hp`) gives each
+/// endpoint its own tally row, its own staleness date, and its own name in the
+/// header's unavailable list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceInstance {
+    kind: SourceAdapterKind,
+    instance: Option<String>,
+}
+
+impl SourceInstance {
+    #[must_use]
+    /// The one and only instance of a source kind polled in a single place.
+    pub const fn sole(kind: SourceAdapterKind) -> Self {
+        Self {
+            kind,
+            instance: None,
+        }
+    }
+
+    #[must_use]
+    /// One NAMED instance of a source kind polled in several places.
+    ///
+    /// A blank name degrades to [`Self::sole`] rather than minting a `fabro:`
+    /// name with nothing after the colon.
+    pub fn named(kind: SourceAdapterKind, instance: &str) -> Self {
+        let instance = instance.trim();
+        if instance.is_empty() {
+            return Self::sole(kind);
+        }
+        Self {
+            kind,
+            instance: Some(instance.to_owned()),
+        }
+    }
+
+    #[must_use]
+    /// Return the source kind this instance belongs to.
+    pub const fn kind(&self) -> SourceAdapterKind {
+        self.kind
+    }
+
+    #[must_use]
+    /// Return the envelope source name: the kind's own name for a sole
+    /// instance, else `<kind>:<instance>`.
+    pub fn name(&self) -> String {
+        self.instance.as_ref().map_or_else(
+            || self.kind.source_name().to_owned(),
+            |instance| format!("{}:{instance}", self.kind.source_name()),
+        )
+    }
+}
+
 /// Help's event-source roster: one line per [`SourceAdapterKind`], name and
 /// [`SourceAdapterKind::observes`] description, in [`SourceAdapterKind::all`]
 /// order.
@@ -1674,6 +1741,20 @@ impl NormalizedSourceEvent {
     }
 
     #[must_use]
+    /// Re-stamp the wrapped envelope's source name, leaving the source event id
+    /// and payload untouched.
+    ///
+    /// Used by an INSTANCED [`ObservedSourceAdapter`] to attribute a
+    /// normalizer's events to the endpoint it actually observed. Only the
+    /// envelope name moves: the source event id is already unique per observed
+    /// record (a Fabro run id is unique across factories), so re-keying it would
+    /// churn identities without buying uniqueness.
+    pub fn with_source(mut self, source: &str) -> Self {
+        self.event = self.event.with_source(source.to_owned());
+        self
+    }
+
+    #[must_use]
     /// Return the wrapped console event.
     pub const fn event(&self) -> &ConsoleEvent {
         &self.event
@@ -2274,7 +2355,7 @@ pub type NormalizeObservation = fn(&ObservedSource) -> Result<ParsedObservation,
 /// snapshot.
 pub struct ObservedSourceAdapter<'a> {
     probe: &'a dyn SourceProbe,
-    source: SourceAdapterKind,
+    source: SourceInstance,
     repo: String,
     plan: SourceObservationPlan,
     normalize: NormalizeObservation,
@@ -2291,11 +2372,44 @@ impl<'a> ObservedSourceAdapter<'a> {
     ) -> AdapterResult<Self> {
         Ok(Self {
             probe,
-            source,
+            source: SourceInstance::sole(source),
             repo: required_text(repo, AdapterError::EmptyRepo)?,
             plan,
             normalize,
         })
+    }
+
+    #[must_use]
+    /// Name this adapter as ONE instance of its source kind, so everything it
+    /// emits is attributed to that endpoint (`fabro:hp`) rather than to the kind
+    /// every endpoint shares. See [`SourceInstance`] for why the distinction is
+    /// load-bearing rather than cosmetic.
+    pub fn at_instance(mut self, instance: &str) -> Self {
+        self.source = SourceInstance::named(self.source.kind(), instance);
+        self
+    }
+
+    /// Re-stamp the NORMALIZER's events with this adapter's envelope source
+    /// name.
+    ///
+    /// The normalizers stamp the bare kind name, which is right for every
+    /// sole-instance source and wrong for an instanced one: a run observed at
+    /// `hp` would land under `fabro`, minting a permanently-healthy tally row
+    /// beside the per-factory rows and telling the lane-row freshness rule that
+    /// a row was confirmed by a source no poll ever reports on. A sole instance
+    /// is returned untouched -- its name already IS what the normalizer stamped.
+    fn attributed_to_instance(
+        &self,
+        events: Vec<NormalizedSourceEvent>,
+    ) -> Vec<NormalizedSourceEvent> {
+        if self.source.instance.is_none() {
+            return events;
+        }
+        let source_name = self.source.name();
+        events
+            .into_iter()
+            .map(|event| event.with_source(&source_name))
+            .collect()
     }
 
     fn observe(&self) -> SourceProbeOutcome {
@@ -2318,7 +2432,7 @@ impl<'a> ObservedSourceAdapter<'a> {
         AdapterPoll {
             checkpoint,
             events: vec![not_observed_event(
-                self.source,
+                &self.source,
                 &self.repo,
                 reason,
                 transition_epoch,
@@ -2343,7 +2457,7 @@ impl<'a> ObservedSourceAdapter<'a> {
         AdapterPoll {
             checkpoint,
             events: vec![source_observed_event(
-                self.source,
+                &self.source,
                 &self.repo,
                 transition_epoch,
             )],
@@ -2374,7 +2488,7 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 // observed. A normalizer that must tell a genuine state change
                 // from a re-observation of the state it already reported reads
                 // it; the rest observe it and ignore it.
-                let observed = ObservedSource::new(self.source, &self.repo, &stdout)
+                let observed = ObservedSource::new(self.source.kind(), &self.repo, &stdout)
                     .with_previous_checkpoint(
                         AvailabilityCheckpoint::from_previous(previous).0.as_deref(),
                     );
@@ -2428,9 +2542,9 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                             AvailabilityState::Observed,
                             &parsed.checkpoint,
                         );
-                        let mut events = parsed.events;
+                        let mut events = self.attributed_to_instance(parsed.events);
                         events.push(source_observed_event(
-                            self.source,
+                            &self.source,
                             &self.repo,
                             transition_epoch,
                         ));
@@ -2499,7 +2613,7 @@ fn is_idle_payload(stdout: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotObservedFinding {
     repo: String,
-    source: SourceAdapterKind,
+    source: SourceInstance,
     reason: String,
 }
 
@@ -2507,9 +2621,17 @@ impl NotObservedFinding {
     #[must_use]
     /// Construct a new value from its required fields.
     pub fn new(repo: &str, source: SourceAdapterKind, reason: &str) -> Self {
+        Self::for_instance(repo, &SourceInstance::sole(source), reason)
+    }
+
+    #[must_use]
+    /// Construct a finding for ONE named instance of a source kind, so the
+    /// recorded payload names the endpoint that could not be observed (`fabro:hp`)
+    /// rather than the kind every endpoint shares. See [`SourceInstance`].
+    pub fn for_instance(repo: &str, source: &SourceInstance, reason: &str) -> Self {
         Self {
             repo: repo.to_owned(),
-            source,
+            source: source.clone(),
             reason: reason.to_owned(),
         }
     }
@@ -2523,7 +2645,7 @@ impl NotObservedFinding {
     #[must_use]
     /// Return the stored value.
     pub const fn source(&self) -> SourceAdapterKind {
-        self.source
+        self.source.kind()
     }
 
     #[must_use]
@@ -2543,10 +2665,7 @@ impl NotObservedFinding {
 pub fn not_observed_finding_payload_json(finding: &NotObservedFinding) -> String {
     let mut object = serde_json::Map::new();
     object.insert("repo".to_owned(), finding.repo.clone().into());
-    object.insert(
-        "source".to_owned(),
-        finding.source.source_name().to_owned().into(),
-    );
+    object.insert("source".to_owned(), finding.source.name().into());
     object.insert("reason".to_owned(), finding.reason.clone().into());
     serde_json::Value::Object(object).to_string()
 }
@@ -2562,31 +2681,33 @@ pub fn not_observed_finding_payload_json(finding: &NotObservedFinding) -> String
 /// `console-application`'s `lib.rs` keys off this event's type and `source`
 /// field; a source that never emits it can never appear in the header's
 /// unavailable-sources tally (livespec-console-beads-fabro-mx9u.12).
+///
+/// `source` is a [`SourceInstance`], not a bare kind, so a kind polled at
+/// SEVERAL endpoints gives each one its own event identity and its own envelope
+/// name. Two factories degrading in the same transition epoch would otherwise
+/// mint the SAME `evt:fabro:<repo>:not_observed:<epoch>` id, and the second
+/// would dedupe away as a duplicate of the first -- one factory's outage
+/// silently swallowing the other's.
 #[must_use]
 pub fn not_observed_event(
-    source: SourceAdapterKind,
+    source: &SourceInstance,
     repo: &str,
     reason: &str,
     transition_epoch: u64,
 ) -> NormalizedSourceEvent {
-    let finding = NotObservedFinding::new(repo, source, reason);
+    let finding = NotObservedFinding::for_instance(repo, source, reason);
+    let source_name = source.name();
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
-            format!(
-                "evt:{}:{repo}:not_observed:{transition_epoch}",
-                source.source_name()
-            ),
+            format!("evt:{source_name}:{repo}:not_observed:{transition_epoch}"),
             1,
             "source".to_owned(),
             EventType::SourceNotObservedFindingObserved,
-            source.source_name().to_owned(),
+            source_name.clone(),
             repo_stream(repo),
             1,
         ),
-        format!(
-            "{}:{repo}:not_observed:{transition_epoch}",
-            source.source_name()
-        ),
+        format!("{source_name}:{repo}:not_observed:{transition_epoch}"),
         SourcePayload::NotObservedFinding(finding),
     )
 }
@@ -2609,27 +2730,22 @@ pub fn not_observed_event(
 /// one any other source reports.
 #[must_use]
 pub fn source_observed_event(
-    source: SourceAdapterKind,
+    source: &SourceInstance,
     repo: &str,
     transition_epoch: u64,
 ) -> NormalizedSourceEvent {
+    let source_name = source.name();
     NormalizedSourceEvent::new(
         ConsoleEvent::new(
-            format!(
-                "evt:{}:{repo}:observed_idle:{transition_epoch}",
-                source.source_name()
-            ),
+            format!("evt:{source_name}:{repo}:observed_idle:{transition_epoch}"),
             1,
             "source".to_owned(),
             EventType::SourceObservedFindingObserved,
-            source.source_name().to_owned(),
+            source_name.clone(),
             repo_stream(repo),
             1,
         ),
-        format!(
-            "{}:{repo}:observed_idle:{transition_epoch}",
-            source.source_name()
-        ),
+        format!("{source_name}:{repo}:observed_idle:{transition_epoch}"),
         SourcePayload::ObservedIdle,
     )
 }
@@ -4204,19 +4320,20 @@ mod tests {
         NormalizedSourceEvent, NotObservedFinding, ObservedSource, ObservedSourceAdapter,
         OrphanedFactoryRun, ParsedObservation, ProbeNeedsAttentionPort, PullSourcePort,
         ReconcileRunsSnapshot, SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort,
-        SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome, UNKNOWN_STATUS_KIND,
-        WorkItemDetail, WorkItemSnapshot, attention_item_snapshot_from_payload_json,
-        diff_needs_attention, dispatcher_journal_from_payload_json,
-        dispatcher_journal_payload_json, event_source_roster_help_lines,
-        fabro_run_snapshot_payload_json, materialize_attention_items,
-        normalize_dispatcher_journal_entry, normalize_fabro_run_snapshot,
-        normalize_github_pull_request_snapshot, normalize_livespec_next_snapshot,
-        normalize_work_item_snapshot, not_observed_event, not_observed_finding_payload_json,
-        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
-        parse_livespec_observation, parse_needs_attention_snapshot, parse_orchestrator_observation,
-        parse_reconcile_runs_observation, parse_reconcile_runs_snapshot,
-        reconcile_runs_snapshot_from_payload_json, reconcile_runs_snapshot_payload_json,
-        run_adapter_poll, work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
+        SourceInstance, SourceObservationPlan, SourcePayload, SourceProbe, SourceProbeOutcome,
+        UNKNOWN_STATUS_KIND, WorkItemDetail, WorkItemSnapshot,
+        attention_item_snapshot_from_payload_json, diff_needs_attention,
+        dispatcher_journal_from_payload_json, dispatcher_journal_payload_json,
+        event_source_roster_help_lines, fabro_run_snapshot_payload_json,
+        materialize_attention_items, normalize_dispatcher_journal_entry,
+        normalize_fabro_run_snapshot, normalize_github_pull_request_snapshot,
+        normalize_livespec_next_snapshot, normalize_work_item_snapshot, not_observed_event,
+        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
+        parse_github_observation, parse_livespec_observation, parse_needs_attention_snapshot,
+        parse_orchestrator_observation, parse_reconcile_runs_observation,
+        parse_reconcile_runs_snapshot, reconcile_runs_snapshot_from_payload_json,
+        reconcile_runs_snapshot_payload_json, run_adapter_poll, source_observed_event,
+        work_item_snapshot_from_payload_json, work_item_snapshot_payload_json,
     };
 
     #[track_caller]
@@ -4938,7 +5055,7 @@ mod tests {
         // its own events away, so nothing short of the unconditional
         // recovery marker (this item's fix) can ever clear it.
         let stale_finding = not_observed_event(
-            SourceAdapterKind::Orchestrator,
+            &SourceInstance::sole(SourceAdapterKind::Orchestrator),
             "console",
             "orchestrator not found",
             1,
@@ -5021,6 +5138,117 @@ mod tests {
         assert!(payload.contains(r#""repo":"livespec-console-beads-fabro""#));
         assert!(payload.contains(r#""source":"fabro""#));
         assert!(payload.contains(r#""reason":"fabro: No such file or directory (os error 2)""#));
+    }
+
+    #[test]
+    fn a_source_instance_qualifies_the_envelope_name_only_when_it_is_named() {
+        let sole = SourceInstance::sole(SourceAdapterKind::Fabro);
+        assert_eq!(sole.kind(), SourceAdapterKind::Fabro);
+        assert_eq!(sole.name(), "fabro");
+
+        let named = SourceInstance::named(SourceAdapterKind::Fabro, " hp ");
+        assert_eq!(named.kind(), SourceAdapterKind::Fabro);
+        assert_eq!(named.name(), "fabro:hp");
+
+        // A blank name degrades rather than minting `fabro:` with nothing after
+        // the colon -- a tally row an operator could never match to a factory.
+        assert_eq!(
+            SourceInstance::named(SourceAdapterKind::Fabro, "   ").name(),
+            "fabro"
+        );
+    }
+
+    #[test]
+    fn an_instanced_not_observed_finding_names_the_endpoint_in_its_payload() {
+        // The KIND accessor still answers `Fabro` -- the instance qualifies the
+        // recorded NAME, it does not invent a new source kind.
+        let finding = NotObservedFinding::for_instance(
+            "livespec-console-beads-fabro",
+            &SourceInstance::named(SourceAdapterKind::Fabro, "vps"),
+            "Connection refused (os error 111)",
+        );
+
+        assert_eq!(finding.source(), SourceAdapterKind::Fabro);
+        assert!(not_observed_finding_payload_json(&finding).contains(r#""source":"fabro:vps""#));
+    }
+
+    #[test]
+    fn two_instances_of_one_kind_degrade_under_distinct_event_identities() {
+        // Two factories failing in the SAME transition epoch used to mint the
+        // same `evt:fabro:<repo>:not_observed:<epoch>` id, so the second deduped
+        // away as a duplicate of the first and one factory's outage silently
+        // swallowed the other's.
+        let hp = not_observed_event(
+            &SourceInstance::named(SourceAdapterKind::Fabro, "hp"),
+            "console",
+            "Connection refused (os error 111)",
+            1,
+        );
+        let vps = not_observed_event(
+            &SourceInstance::named(SourceAdapterKind::Fabro, "vps"),
+            "console",
+            "Connection refused (os error 111)",
+            1,
+        );
+
+        assert_ne!(hp.event().event_id(), vps.event().event_id());
+        assert_ne!(hp.source_event_id(), vps.source_event_id());
+        assert_eq!(hp.event().source(), "fabro:hp");
+        assert_eq!(vps.event().source(), "fabro:vps");
+
+        // The positive marker is instanced on the same terms, or a recovered
+        // `hp` would clear `vps` from the tally.
+        let recovered = source_observed_event(
+            &SourceInstance::named(SourceAdapterKind::Fabro, "hp"),
+            "console",
+            2,
+        );
+        assert_eq!(recovered.event().source(), "fabro:hp");
+        assert!(recovered.source_event_id().starts_with("fabro:hp:console:"));
+    }
+
+    #[test]
+    fn an_instanced_adapter_attributes_its_normalized_events_to_that_instance() {
+        // The normalizers stamp the bare kind name. An instanced adapter
+        // re-stamps them, so the data a factory reported is attributed to THAT
+        // factory -- otherwise a permanently-healthy bare `fabro` tally row
+        // would sit beside the per-factory rows, telling the lane-row freshness
+        // rule that a row was confirmed by a source no poll ever reports on.
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        let adapter =
+            ok_observed_source_adapter(orchestrator_command_adapter(&probe)).at_instance("hp");
+
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        // Every event the poll emits -- the normalizer's snapshot and
+        // completeness finding, AND the adapter's own availability marker.
+        assert_eq!(emitted_source_names(&poll), ["orchestrator:hp"; 3]);
+
+        // The sole-instance adapter is left exactly as the normalizer stamped
+        // it -- the re-stamp is a no-op there, and must stay one.
+        let sole = ok_observed_source_adapter(orchestrator_command_adapter(&probe));
+        let sole_poll = ok_adapter_poll(sole.poll(&ok_adapter_poll_request(cold_request())));
+        assert_eq!(emitted_source_names(&sole_poll), ["orchestrator"; 3]);
+    }
+
+    fn emitted_source_names(poll: &AdapterPoll) -> Vec<&str> {
+        poll.events()
+            .iter()
+            .map(|event| event.event().source())
+            .collect()
+    }
+
+    #[test]
+    fn restamping_a_normalized_event_moves_the_source_and_nothing_else() {
+        let event = work_item_snapshot_event_fixture();
+        let source_event_id = event.source_event_id().to_owned();
+        let event_id = event.event().event_id().to_owned();
+
+        let restamped = event.with_source("orchestrator:second");
+
+        assert_eq!(restamped.event().source(), "orchestrator:second");
+        assert_eq!(restamped.event().event_id(), event_id);
+        assert_eq!(restamped.source_event_id(), source_event_id);
     }
 
     #[test]

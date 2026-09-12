@@ -62,6 +62,21 @@ impl ConsoleEvent {
         self
     }
 
+    /// Re-stamp the envelope's source name.
+    ///
+    /// Used by a polling adapter that observes ONE INSTANCE of a source kind
+    /// (a single factory server out of the several `dispatcher.factories`
+    /// declares) to attribute the normalizer's events to that instance rather
+    /// than to the bare kind. The source name is what the header's availability
+    /// tally and doctor's staleness dating key on, so an instance that reported
+    /// under the bare kind name would let one reachable endpoint clear another
+    /// endpoint's outage.
+    #[must_use]
+    pub fn with_source(mut self, source: String) -> Self {
+        self.source = source;
+        self
+    }
+
     /// Build a deterministic fixture event for tests and demos.
     ///
     /// The fixture uses schema version `1`, the `factory` context, the console
@@ -571,6 +586,21 @@ mod tests {
         );
 
         assert_eq!(event.schema_version(), 7);
+    }
+
+    #[test]
+    fn event_source_can_be_restamped_for_one_instance_of_a_source_kind() {
+        // What an instanced polling adapter does with a normalizer's event: the
+        // run was observed at ONE factory, so it is attributed to that factory
+        // rather than to the kind every factory shares. Nothing else moves.
+        let event = ConsoleEvent::fixture("evt_run", EventType::FabroRunObserved, "fabro")
+            .with_payload_json(r#"{"run_id":"01M2"}"#.to_owned());
+
+        let instanced = event.with_source("fabro:hp".to_owned());
+
+        assert_eq!(instanced.source(), "fabro:hp");
+        assert_eq!(instanced.event_id(), "evt_run");
+        assert_eq!(instanced.payload_json(), r#"{"run_id":"01M2"}"#);
     }
 
     #[test]

@@ -50,13 +50,14 @@ use console_application::{
         AdapterError, AdapterIngestionSummary, AttentionHandoff, AttentionItemSnapshot,
         AttentionSourceRef, NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort,
         NormalizeObservation, NormalizedSourceEvent, ObservedSourceAdapter, PullSourcePort,
-        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceObservationPlan,
-        SourcePayload, SourceProbe, attention_item_payload_json, attention_resolved_payload_json,
-        diff_needs_attention, disambiguate_normalized_source_event,
-        dispatcher_journal_payload_json, fabro_run_snapshot_payload_json,
-        is_availability_marker_payload, materialize_attention_items, not_observed_event,
-        not_observed_finding_payload_json, parse_dispatcher_observation, parse_fabro_observation,
-        parse_github_observation, parse_livespec_observation, parse_orchestrator_observation,
+        SourceAdapterKind, SourceCheckpointPort, SourceEventAppendPort, SourceInstance,
+        SourceObservationPlan, SourcePayload, SourceProbe, attention_item_payload_json,
+        attention_resolved_payload_json, diff_needs_attention,
+        disambiguate_normalized_source_event, dispatcher_journal_payload_json,
+        fabro_run_snapshot_payload_json, is_availability_marker_payload,
+        materialize_attention_items, not_observed_event, not_observed_finding_payload_json,
+        parse_dispatcher_observation, parse_fabro_observation, parse_github_observation,
+        parse_livespec_observation, parse_orchestrator_observation,
         parse_reconcile_runs_observation, reconcile_runs_snapshot_payload_json, run_adapter_poll,
         source_observed_event, work_item_snapshot_payload_json,
     },
@@ -77,6 +78,7 @@ use console_tui::{
 mod backing_cli;
 /// The running binary's build identity, embedded at compile time.
 pub mod build_identity;
+mod factory_servers;
 mod source_poller;
 mod source_probe_diagnostics;
 
@@ -85,6 +87,7 @@ pub use backing_cli::{
     ConsoleInvokerResolution, NEEDS_ATTENTION_PROGRAM_ENV, PROGRAM_OVERRIDE_ENV_VARS,
     PluginResolution, ResolveInputs, python_normalized_invocation, resolve_console_invoker,
 };
+pub use factory_servers::{FactoryServer, factory_servers_at, parse_factory_servers};
 pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
 pub use source_probe_diagnostics::{
     bounded_diagnostic_text, describe_command_failure, redact_secret_env_values,
@@ -1808,6 +1811,61 @@ fn tui_session_outcome_from_final_events(
     ))
 }
 
+/// One source adapter to build: its adapter-id prefix, its kind, the INSTANCE
+/// name to attribute its events to (`None` for a kind polled in a single place),
+/// how it observes its source, and how the payload is normalized.
+type SourceAdapterSpec = (
+    String,
+    SourceAdapterKind,
+    Option<String>,
+    SourceObservationPlan,
+    NormalizeObservation,
+);
+
+/// The Fabro source specs: ONE adapter per factory server the selected repo's
+/// `.livespec.jsonc` declares, each polled with an explicit `--server`.
+///
+/// The factories this repo dispatches to are REMOTE, so a `fabro ps --json` with
+/// no `--server` polls the CLI's `http://127.0.0.1:32276` default, which nothing
+/// on a console host listens on: every poll fails with `Connection refused` and
+/// the console cannot observe ANY factory run, however healthy the factories are
+/// (measured 2026-09-12). A configured factory is therefore addressed
+/// explicitly, and each one becomes its own source INSTANCE (`fabro:hp`) so a
+/// reachable factory can never clear an unreachable one from the header's
+/// availability tally.
+///
+/// A checkout that declares no factories keeps the single unqualified `fabro`
+/// source on the CLI's own default endpoint — the right behavior for a host that
+/// genuinely runs a local fabro server, and the only honest thing to do when
+/// there is no configuration naming a remote one.
+fn fabro_source_specs(programs: &BackingCliPrograms) -> Vec<SourceAdapterSpec> {
+    if programs.factory_servers().is_empty() {
+        return vec![(
+            "fabro".to_owned(),
+            SourceAdapterKind::Fabro,
+            None,
+            SourceObservationPlan::command(programs.fabro(), &["ps", "--json"]),
+            parse_fabro_observation,
+        )];
+    }
+    programs
+        .factory_servers()
+        .iter()
+        .map(|factory| {
+            (
+                format!("fabro:{}", factory.name()),
+                SourceAdapterKind::Fabro,
+                Some(factory.name().to_owned()),
+                SourceObservationPlan::command(
+                    programs.fabro(),
+                    &["ps", "--json", "--server", factory.server()],
+                ),
+                parse_fabro_observation as NormalizeObservation,
+            )
+        })
+        .collect()
+}
+
 /// Build real source adapters with an explicit backing CLI resolution.
 ///
 /// `journal_path` is the ABSOLUTE Dispatcher journal path
@@ -1826,39 +1884,35 @@ pub fn live_source_adapters_with_programs<'a>(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let specs: [(
-        &str,
-        SourceAdapterKind,
-        SourceObservationPlan,
-        NormalizeObservation,
-    ); 6] = [
+    let mut specs: Vec<SourceAdapterSpec> = vec![
         (
-            "orchestrator",
+            "orchestrator".to_owned(),
             SourceAdapterKind::Orchestrator,
+            None,
             SourceObservationPlan::command(programs.list_work_items(), &["--json"]),
             parse_orchestrator_observation,
         ),
         (
-            "dispatcher",
+            "dispatcher".to_owned(),
             SourceAdapterKind::Dispatcher,
+            None,
             SourceObservationPlan::file(journal_path),
             parse_dispatcher_observation,
         ),
+    ];
+    specs.extend(fabro_source_specs(programs));
+    specs.extend([
         (
-            "fabro",
-            SourceAdapterKind::Fabro,
-            SourceObservationPlan::command(programs.fabro(), &["ps", "--json"]),
-            parse_fabro_observation,
-        ),
-        (
-            "livespec",
+            "livespec".to_owned(),
             SourceAdapterKind::LiveSpec,
+            None,
             SourceObservationPlan::command(programs.livespec().program(), &livespec_args),
-            parse_livespec_observation,
+            parse_livespec_observation as NormalizeObservation,
         ),
         (
-            "github",
+            "github".to_owned(),
             SourceAdapterKind::GitHub,
+            None,
             SourceObservationPlan::command(
                 programs.github(),
                 &["pr", "list", "--json", "number,state", "--limit", "1"],
@@ -1874,19 +1928,24 @@ pub fn live_source_adapters_with_programs<'a>(
         // the parser refuses a payload from a wired pass rather than rendering
         // completed terminations as proposals.
         (
-            "reconcile-runs",
+            "reconcile-runs".to_owned(),
             SourceAdapterKind::Reconciler,
+            None,
             SourceObservationPlan::command(
                 programs.dispatcher(),
                 &["reconcile-runs", "--dry-run", "--json"],
             ),
             parse_reconcile_runs_observation,
         ),
-    ];
+    ]);
     specs
         .into_iter()
-        .map(|(prefix, source, plan, normalize)| {
+        .map(|(prefix, source, instance, plan, normalize)| {
             let adapter = ObservedSourceAdapter::new(probe, source, repo, plan, normalize)?;
+            let adapter = match instance {
+                Some(instance) => adapter.at_instance(&instance),
+                None => adapter,
+            };
             Ok((format!("{prefix}:{repo}"), adapter))
         })
         .collect()
@@ -2114,7 +2173,7 @@ pub fn ingest_needs_attention_with_identity(
         NeedsAttentionReadOutcome::Observed(items) => {
             if previous_availability == Some(NeedsAttentionAvailability::NotObserved) {
                 let marker = source_observed_event(
-                    SourceAdapterKind::NeedsAttention,
+                    &SourceInstance::sole(SourceAdapterKind::NeedsAttention),
                     &needs_attention.repo,
                     needs_attention_availability_marker_count(&existing) + 1,
                 );
@@ -2127,7 +2186,7 @@ pub fn ingest_needs_attention_with_identity(
         NeedsAttentionReadOutcome::Unavailable(reason) => {
             if previous_availability != Some(NeedsAttentionAvailability::NotObserved) {
                 let marker = not_observed_event(
-                    SourceAdapterKind::NeedsAttention,
+                    &SourceInstance::sole(SourceAdapterKind::NeedsAttention),
                     &needs_attention.repo,
                     &reason,
                     needs_attention_availability_marker_count(&existing) + 1,
@@ -4232,9 +4291,10 @@ mod tests {
             AttentionSourceRef, DispatcherJournalEntry, DispatcherJournalKind, Lane, LaneReason,
             NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, NormalizedSourceEvent,
             NotObservedFinding, ObservedSourceAdapter, PullSourcePort, SourceAdapterKind,
-            SourceEventAppendPort, SourcePayload, SourceProbe, SourceProbeOutcome,
-            WorkItemSnapshot, diff_needs_attention, disambiguate_normalized_source_event,
-            materialize_attention_items, normalize_work_item_snapshot,
+            SourceEventAppendPort, SourceObservationPlan, SourcePayload, SourceProbe,
+            SourceProbeOutcome, WorkItemSnapshot, diff_needs_attention,
+            disambiguate_normalized_source_event, materialize_attention_items,
+            normalize_work_item_snapshot,
         },
     };
     use console_domain::{CommandEnvelope, CommandType, ConsoleEvent, EventType};
@@ -4253,19 +4313,20 @@ mod tests {
         CommandLaneFailure, CommandLaneReporter, CommandLaneSteps,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, DoctorRunResult, ErroringPullSource, EventAppendStore,
-        FactoryCommandStore, InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN,
-        LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS, NEEDS_ATTENTION_PROGRAM_ENV,
-        NeedsAttentionIngest, PROGRAM_OVERRIDE_ENV_VARS, PendingCommandOutcome,
-        PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
-        ScriptedSource, SessionTailCounts, SharedSqliteStore, SourceAdapterRef,
-        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
-        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
-        append_factory_drain_requested_events, append_lane_diagnostic, backfill_demo_report,
-        backfill_source_adapters, backfill_source_report, bounded_operator_status,
-        command_status_update_runtime_result, command_worker_unreachable_status,
-        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
-        event_append_from_command_event, event_append_from_console_event,
-        event_append_from_normalized_source_event, events_tail_report, factory_command_from_stored,
+        FactoryCommandStore, FactoryServer, InitialSourceSeed, LANE_FAILURE_MARKER,
+        LANE_TIME_UNKNOWN, LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS,
+        NEEDS_ATTENTION_PROGRAM_ENV, NeedsAttentionIngest, PROGRAM_OVERRIDE_ENV_VARS,
+        PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
+        STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts, SharedSqliteStore,
+        SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog, StartupReadout,
+        StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
+        append_demo_events_to_store, append_factory_drain_requested_events, append_lane_diagnostic,
+        backfill_demo_report, backfill_source_adapters, backfill_source_report,
+        bounded_operator_status, command_status_update_runtime_result,
+        command_worker_unreachable_status, config_command_from_stored, demo_events,
+        distinguish_repeatable_command, doctor_report, event_append_from_command_event,
+        event_append_from_console_event, event_append_from_normalized_source_event,
+        events_tail_report, fabro_source_specs, factory_command_from_stored, factory_servers_at,
         final_tui_events_result, flush_session_tail, handle_pending_config_commands,
         handle_pending_control_commands, handle_pending_factory_commands,
         handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
@@ -4275,11 +4336,12 @@ mod tests {
         live_source_adapters_from_resolution, live_source_adapters_with_programs,
         load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
-        persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
-        refresh_sources, render_tui_preview, repo_name_from_git_common_dir_output,
-        resolve_console_repo, run, run_command_lane, run_store_backed_tui_session, run_with_store,
-        serve_report, serve_report_after_ingest, serve_report_with_dispatch_port, snapshot_report,
-        source_polls_from_seed, tolerate_shutdown_contention, tolerate_startup_contention,
+        parse_factory_servers, persist_tui_runtime_effects, plan_page_report,
+        python_normalized_invocation, refresh_sources, render_tui_preview,
+        repo_name_from_git_common_dir_output, resolve_console_repo, run, run_command_lane,
+        run_store_backed_tui_session, run_with_store, serve_report, serve_report_after_ingest,
+        serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
+        tolerate_shutdown_contention, tolerate_startup_contention,
         tui_session_outcome_from_final_events, work_item_command_from_stored,
     };
 
@@ -11292,6 +11354,248 @@ mod tests {
         );
         check(
             (resolution.programs().livespec().args()) == (["next".to_owned(), "--json".to_owned()]),
+            "assert_eq failed",
+        );
+    }
+
+    /// The JSONC shape a governed repo actually carries: comments, `https://`
+    /// server URLs whose `//` is NOT a comment, and the dispatcher settings
+    /// nested under the implementation plugin's own key.
+    const FACTORY_CONFIG: &str = r#"{
+  // The console reads this file; it never writes it.
+  "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
+  /* A block comment, for good measure. */
+  "livespec-orchestrator-beads-fabro": {
+    "dispatcher": {
+      "wip_cap": 1,
+      "factories": {
+        "hp": { "server": "https://hp-xubuntu.perch-rudd.ts.net:32276" },
+        "vps": { "server": "https://vps.perch-rudd.ts.net:32276" }
+      }
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn factory_servers_are_read_from_the_plugin_nested_dispatcher_block() {
+        let factories = parse_factory_servers(FACTORY_CONFIG);
+
+        check((factories.len()) == (2), "assert_eq failed");
+        check((factories[0].name()) == ("hp"), "assert_eq failed");
+        check(
+            (factories[0].server()) == ("https://hp-xubuntu.perch-rudd.ts.net:32276"),
+            "a comment stripper that is not string-aware truncates the URL at its //",
+        );
+        check((factories[1].name()) == ("vps"), "assert_eq failed");
+        check(
+            (factories[1].server()) == ("https://vps.perch-rudd.ts.net:32276"),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn factory_servers_fall_back_to_a_top_level_dispatcher_block() {
+        // A config that declares its dispatcher settings at the top level, with
+        // no implementation plugin named at all, still resolves.
+        let factories = parse_factory_servers(
+            r#"{"dispatcher": {"factories": {"local": {"server": "http://127.0.0.1:32276"}}}}"#,
+        );
+
+        check((factories.len()) == (1), "assert_eq failed");
+        check(
+            (factories[0]) == (FactoryServer::new("local", "http://127.0.0.1:32276")),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn factory_servers_drop_a_factory_the_console_cannot_address() {
+        // A declaration with no usable `server` is dropped rather than polled at
+        // the CLI's localhost default under that factory's name -- a row that
+        // would report an endpoint nobody configured as if it were `vps`.
+        let factories = parse_factory_servers(
+            r#"{"dispatcher": {"factories": {
+                 "blank": {"server": "  "},
+                 "absent": {"note": "no server key"},
+                 "typed": {"server": 32276},
+                 "hp": {"server": "https://hp.example:32276"}
+               }}}"#,
+        );
+
+        check(
+            (factories) == (vec![FactoryServer::new("hp", "https://hp.example:32276")]),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn factory_servers_are_empty_when_the_config_declares_or_parses_none() {
+        // Each of these leaves the fabro source on the CLI's own default
+        // endpoint rather than failing the console's startup: a checkout with no
+        // orchestrator config must still poll every other source.
+        check(
+            parse_factory_servers("{ not json at all").is_empty(),
+            "assert failed",
+        );
+        check(parse_factory_servers("{}").is_empty(), "assert failed");
+        // A lone `/` that opens no comment is carried through verbatim rather
+        // than swallowing the rest of the document, so the config it belongs to
+        // fails to parse honestly instead of silently losing its factories.
+        check(parse_factory_servers("{}/").is_empty(), "assert failed");
+        check(
+            parse_factory_servers(r#"{"dispatcher": {"factories": []}}"#).is_empty(),
+            "assert failed",
+        );
+        check(
+            parse_factory_servers(r#"{"implementation": {"plugin": "other"}, "other": {}}"#)
+                .is_empty(),
+            "assert failed",
+        );
+    }
+
+    #[test]
+    fn factory_servers_at_reads_the_checkout_and_tolerates_a_missing_config() {
+        let temp = resolver_temp_root("factory-servers-at");
+        let configured = temp.join("configured");
+        let bare = temp.join("bare");
+        fs::create_dir_all(&configured).ok_test();
+        fs::create_dir_all(&bare).ok_test();
+        fs::write(configured.join(".livespec.jsonc"), FACTORY_CONFIG).ok_test();
+
+        check(
+            (factory_servers_at(&configured).len()) == (2),
+            "assert_eq failed",
+        );
+        check(factory_servers_at(&bare).is_empty(), "assert failed");
+    }
+
+    #[test]
+    fn this_repos_own_config_resolves_its_remote_factories() {
+        // Ground truth against the REAL commented config this console runs
+        // against, not a fixture: the defect was that the console polled
+        // 127.0.0.1 while every configured factory was remote, and a fixture
+        // alone cannot prove the real file parses.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        let factories = factory_servers_at(&repo_root);
+
+        check(
+            !factories.is_empty(),
+            "this repo declares dispatcher.factories; resolving none means the \
+             console is back on the fabro CLI's localhost default",
+        );
+        check(
+            factories
+                .iter()
+                .all(|factory| factory.server().contains("://") && !factory.name().is_empty()),
+            "every configured factory must resolve to a named, addressable server",
+        );
+    }
+
+    #[test]
+    fn the_fabro_source_is_built_once_per_configured_factory_with_an_explicit_server() {
+        // The production argv, built from a resolution over a real checkout.
+        let temp = resolver_temp_root("fabro-source-specs");
+        let repo = temp.join("repo");
+        fs::create_dir_all(&repo).ok_test();
+        fs::write(repo.join(".livespec.jsonc"), FACTORY_CONFIG).ok_test();
+        let resolution =
+            BackingCliResolution::resolve(&resolver_inputs(resolver_empty_env(), repo, None))
+                .ok_test();
+
+        let specs = fabro_source_specs(resolution.programs());
+
+        let plans: Vec<SourceObservationPlan> = specs
+            .iter()
+            .map(|(_prefix, _kind, _instance, plan, _normalize)| plan.clone())
+            .collect();
+        check(
+            (plans)
+                == (vec![
+                    SourceObservationPlan::command(
+                        "fabro",
+                        &[
+                            "ps",
+                            "--json",
+                            "--server",
+                            "https://hp-xubuntu.perch-rudd.ts.net:32276",
+                        ],
+                    ),
+                    SourceObservationPlan::command(
+                        "fabro",
+                        &[
+                            "ps",
+                            "--json",
+                            "--server",
+                            "https://vps.perch-rudd.ts.net:32276",
+                        ],
+                    ),
+                ]),
+            "each configured factory is polled at its own configured server",
+        );
+        let prefixes: Vec<&str> = specs
+            .iter()
+            .map(|(prefix, _kind, _instance, _plan, _normalize)| prefix.as_str())
+            .collect();
+        check(
+            (prefixes) == (["fabro:hp", "fabro:vps"]),
+            "assert_eq failed",
+        );
+        let instances: Vec<Option<&str>> = specs
+            .iter()
+            .map(|(_prefix, _kind, instance, _plan, _normalize)| instance.as_deref())
+            .collect();
+        check(
+            (instances) == ([Some("hp"), Some("vps")]),
+            "each factory names the source instance its runs are attributed to",
+        );
+
+        // ... and the built adapters carry one id per factory, so each endpoint
+        // keeps its own checkpoint rather than sharing one that a reachable
+        // factory would advance on an unreachable one's behalf.
+        let probe = UnavailableProbe;
+        let adapters = live_source_adapters_with_programs(
+            &probe,
+            "console",
+            resolution.programs(),
+            "/nonexistent/journal",
+        )
+        .ok_test();
+        let adapter_ids: Vec<&str> = adapters
+            .iter()
+            .map(|(adapter_id, _adapter)| adapter_id.as_str())
+            .collect();
+        check(
+            (adapter_ids)
+                == ([
+                    "orchestrator:console",
+                    "dispatcher:console",
+                    "fabro:hp:console",
+                    "fabro:vps:console",
+                    "livespec:console",
+                    "github:console",
+                    "reconcile-runs:console",
+                ]),
+            "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_checkout_keeps_one_unqualified_fabro_source() {
+        // No configuration naming a remote factory: the bare `fabro ps --json`
+        // on the CLI's own default endpoint is the only honest thing left, and
+        // is correct for a host that genuinely runs a local fabro server.
+        let specs = fabro_source_specs(&BackingCliPrograms::default());
+
+        check((specs.len()) == (1), "assert_eq failed");
+        check((specs[0].0) == ("fabro"), "assert_eq failed");
+        check(
+            (specs[0].2).is_none(),
+            "an unconfigured source is not instanced",
+        );
+        check(
+            (specs[0].3) == (SourceObservationPlan::command("fabro", &["ps", "--json"])),
             "assert_eq failed",
         );
     }
