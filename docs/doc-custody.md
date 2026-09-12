@@ -66,6 +66,16 @@ scenes pinning the Detail-pane `Valve:` split. **They do NOT verify that prose
 describing a named behavior is correct**, and there are recorded cases of every
 gate staying green while the description rotted.
 
+## CI lane for this custody record
+
+This file is deliberately one of the narrow code-neutral documentation paths
+recognized by the CI classifier added for
+`livespec-console-beads-fabro-3toz`. A pull request that changes only this
+regular, non-executable Markdown file runs the classifier and the lightweight
+doctor, charter, and plan-record checks while the Rust, real-TUI, mutation, and
+fuzz jobs remain skipped. Any other or uncertain path selects the full gate;
+the required `ci-green` context is the same in either lane.
+
 ## The three mechanisms no gate can catch — even in principle
 
 1. **Rot.** Prose that was true and became false. The lockstep gates catch only
