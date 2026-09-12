@@ -279,6 +279,7 @@ check:
         check-e2e-tmux
         check-real-store-smoke
         check-ci-parity
+        check-docs-only-ci
         check-fork-drift
         check-red-green-replay
     )
@@ -515,6 +516,11 @@ check-plugin-resolution:
 
 check-ci-parity:
     cargo run --quiet --package console-ci-parity-check
+
+# Fail-closed acceptance coverage for the documentation-only CI classifier,
+# workflow lane wiring, and the stable ci-green aggregate.
+check-docs-only-ci:
+    uv run python dev-tooling/check-docs-only-ci.py
 
 # Canonical fleet shell-quality verifier: ShellCheck 0.11.0 over tracked shell
 # files plus the governed justfile recipe policy. The recipe body is deliberately

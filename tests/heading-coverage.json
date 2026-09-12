@@ -352,7 +352,8 @@
       "crates/console-nightly-soak/src/lib.rs::tests::rediscovering_a_finding_resubmits_the_same_fingerprint",
       "crates/console-nightly-soak/src/lib.rs::tests::a_request_line_carries_the_verb_the_fingerprint_and_both_encoded_fields",
       "crates/console-nightly-soak/tests/ssh_ingress.rs::the_nightly_files_a_finding_as_one_create_line_on_the_ssh_ingress",
-      "crates/console-nightly-soak/tests/ssh_ingress.rs::an_unreachable_ssh_ingress_fails_the_nightly_loudly"
+      "crates/console-nightly-soak/tests/ssh_ingress.rs::an_unreachable_ssh_ingress_fails_the_nightly_loudly",
+      "dev-tooling/check-docs-only-ci.py"
     ],
     "reason": "Top-of-pyramid coverage for the v048 nightly soak filing clauses. The fingerprint rendering obligation is covered by the integration suite in crates/console-nightly-soak/tests/fingerprint.rs: fuzz_crash_fingerprints_match_the_ratified_grammar and surviving_mutant_fingerprints_match_the_ratified_grammar assert the ratified grammar ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ over both finding kinds including the adversarial identities the crate does not control (source paths with spaces and non-ASCII, operator strings longer than the whole fingerprint budget, line 0), and the_same_finding_renders_a_stable_fingerprint covers the stable-signature obligation the dedup key rests on. The filing path itself is covered by the unit tests in crates/console-nightly-soak/src/lib.rs: a_fuzz_finding_is_submitted_as_exactly_one_create_request proves a finding reaches the write ingress as exactly one single-verb create request carrying the fingerprint, rediscovering_a_finding_resubmits_the_same_fingerprint pins the host-side-suppression consequence -- the client resubmits the identical dedup key and never reads the ledger, so it holds no work-items database credential -- and a_request_line_carries_the_verb_the_fingerprint_and_both_encoded_fields pins the ratified request shape create <fingerprint> <base64url-title> [<base64url-body>]. The transport clauses are covered end to end by crates/console-nightly-soak/tests/ssh_ingress.rs, which drives the real binary against a fake ssh on PATH: the_nightly_files_a_finding_as_one_create_line_on_the_ssh_ingress asserts the exact single line the ci-writer forced command receives and that filing needs nothing but the SSH destination, and an_unreachable_ssh_ingress_fails_the_nightly_loudly covers the fail-closed obligation that a nightly which cannot reach the on-tailnet ingress fails rather than completing while filing nothing. The v051 coverage-metric clause (gap-ig6lofyo: the line metric MUST NOT be llvm-cov's own scalar-merged line summary) is enforced by the inner-loop gate itself rather than by a test in this list: `just check-coverage` runs dev-tooling/coverage-gate.py, which fails on any line or region left uncovered in the merged cross-instantiation views and never gates on llvm-cov's summary figure.",
     "clauses": [
@@ -442,6 +443,70 @@
       },
       {
         "gap_id": "gap-csny57jm",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-lsbbamuj",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-dh4xb72b",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-mffjww3r",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-nyib225u",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-7suv7xn4",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-ugvpgpnn",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-gz6slp6w",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-njsz66us",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-ylkk4cdb",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-tccjr3tq",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-wmgnxr6h",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-43iep5h4",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-qa5jtl3n",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-ehkng2ft",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-2zdoutl6",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-m6yzg6wu",
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       }
     ]

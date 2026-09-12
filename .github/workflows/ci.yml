@@ -156,8 +156,57 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Fail-closed classifier for the ratified code-neutral documentation lane.
+  # The comparison uses the PR's actual base/head commits (or a canonical push's
+  # before/head commits), not the checkout's synthetic merge commit. The
+  # classifier BODY is loaded from the base commit, so a change cannot classify
+  # itself into the cheap lane or skip its own acceptance test. A base without a
+  # classifier selects the full gate (the safe rollout behavior). A classifier
+  # error fails this job; the heavy jobs treat every output other than literal
+  # true as the full gate, while ci-green independently rejects the failure.
+  classify-changes:
+    name: classify-changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Checkout with comparison history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          classifier="$(mktemp)"
+          trap 'rm -f "$classifier"' EXIT
+          if git show "${BASE_SHA}:.github/scripts/classify-ci-changes.sh" >"$classifier" 2>/dev/null; then
+            set +e
+            docs_only="$(bash "$classifier" "$BASE_SHA" "$HEAD_SHA")"
+            classify_status=$?
+            set -e
+          else
+            echo "base commit has no classifier; selecting the full gate"
+            docs_only=false
+            classify_status=0
+          fi
+          case "$docs_only" in
+            true|false) ;;
+            *)
+              docs_only=false
+              if [ "$classify_status" -eq 0 ]; then classify_status=65; fi
+              ;;
+          esac
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          exit "$classify_status"
+
   check:
     name: ${{ matrix.target }}
+    needs: classify-changes
+    if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     # Hosted by default; set the CI_RUNNER_LABELS repo variable to a conforming
     # self-hosted host's label to route to it instead.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
@@ -205,6 +254,7 @@ jobs:
           - check-shell-quality
           - check-plan-no-tombstone
           - check-plugin-resolution
+          - check-docs-only-ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -342,6 +392,8 @@ jobs:
   # — that no other target does.
   check-doctor-static:
     name: check-doctor-static
+    needs: classify-changes
+    if: ${{ !cancelled() }}
     # Self-hosted in the baked image. The livespec-core checkout below is a fresh
     # PUBLIC clone INSIDE the container (no host mount — containment preserved).
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
@@ -407,6 +459,13 @@ jobs:
           export LIVESPEC_SIBLING_CLONES_ROOT="${GITHUB_WORKSPACE}/.livespec-siblings"
           just check-doctor-static
 
+      - name: Run code-neutral documentation checks
+        run: |
+          just check-charters
+          just check-plan-no-tombstone
+          just check-plan-record-conformance
+          just check-plan-anchor-declared
+
   # Real-TUI end-to-end gate (DELIVERABLE #0): drives the SHIPPED interactive TUI
   # through a real tmux pane (send-keys -> capture-pane -> assert), the first
   # automated coverage of the run_interactive_tui raw-mode/render path that the
@@ -428,6 +487,8 @@ jobs:
   # reopens the exact gap above.
   check-e2e-tmux:
     name: check-e2e-tmux
+    needs: classify-changes
+    if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
       image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.88.0
@@ -487,6 +548,8 @@ jobs:
   # without leaving a hung process to run out GitHub's 360-minute default.
   check-real-store-smoke:
     name: check-real-store-smoke
+    needs: classify-changes
+    if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
       image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.88.0
@@ -526,6 +589,8 @@ jobs:
   # computed against the base ref, and a shallow checkout cannot reach it.
   check-mutants:
     name: check-mutants
+    needs: classify-changes
+    if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
       image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.88.0
@@ -566,6 +631,8 @@ jobs:
   # as its own dedicated job exactly like check-mutants.
   check-fuzz:
     name: check-fuzz
+    needs: classify-changes
+    if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
       # The fuzz-only leaf of the sandbox tree (dev-tooling python-rust-fuzz): the
@@ -660,25 +727,26 @@ jobs:
   # Single all-green gate job (livespec epic livespec-cf4bcu,
   # fleet-ci-aggregate-coverage). This is the SOLE branch-protection
   # required context: it `needs:` every check-bearing job, so requiring
-  # only `ci-green` blocks merges on the entire matrix + dedicated check
-  # jobs via one stable context-name that never churns as checks are
-  # added. Pure GitHub-expression gate (no external action, no direct
-  # tool invocation): `always()` runs it even when a dependency failed,
-  # and the step fails the job iff any dependency failed or was cancelled.
+  # only `ci-green` blocks merges on the classifier, matrix, and dedicated
+  # jobs via one stable context-name that never churns as checks are added.
+  # `always()` makes the job run after failures and skips; the inline verifier
+  # validates the exact success/skipped shape selected by the classifier instead
+  # of treating every skipped dependency as green. Keeping that verifier here
+  # makes every change to branch-protection semantics a governed workflow edit.
   #
   # "needs every check-bearing job" is an INVARIANT TO MAINTAIN, not a
   # property that holds automatically — it was false for the whole span
   # `check-e2e-tmux` sat advisory, and this comment asserted it anyway.
-  # This workflow defines exactly SIX check-bearing jobs and all six
-  # are listed (`check-real-store-smoke` added by
-  # livespec-console-beads-fabro-mx9u.18, for the same reason
-  # `check-e2e-tmux` is here: a gate absent from `ci-green.needs` cannot
-  # block a merge). Adding a seventh without adding it here silently
-  # reopens the gap.
+  # This workflow defines one classifier, one always-applicable lightweight
+  # job, and five full-gate jobs. All seven are listed. The real-store smoke
+  # gate added by livespec-console-beads-fabro-mx9u.18 is code-bearing and
+  # follows the same lane decision as the original real-TUI end-to-end gate.
+  # Adding another job without adding it here silently reopens the gap.
   ci-green:
     name: ci-green
     needs:
       [
+        classify-changes,
         check,
         check-doctor-static,
         check-e2e-tmux,
@@ -689,9 +757,45 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: All required checks passed
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-        run: exit 1
+      - name: Verify the classifier-selected lane passed
+        env:
+          CLASSIFIER_RESULT: ${{ needs.classify-changes.result }}
+          DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          DOCTOR_RESULT: ${{ needs.check-doctor-static.result }}
+          E2E_RESULT: ${{ needs.check-e2e-tmux.result }}
+          REAL_STORE_RESULT: ${{ needs.check-real-store-smoke.result }}
+          MUTANTS_RESULT: ${{ needs.check-mutants.result }}
+          FUZZ_RESULT: ${{ needs.check-fuzz.result }}
+        run: |
+          set -euo pipefail
+          required_result() {
+            name="$1"
+            actual="$2"
+            expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "ci-green: ${name} result is ${actual}, expected ${expected}" >&2
+              return 1
+            fi
+          }
+
+          required_result classify-changes "$CLASSIFIER_RESULT" success
+          required_result check-doctor-static "$DOCTOR_RESULT" success
+
+          case "$DOCS_ONLY" in
+            true) expected_heavy=skipped ;;
+            false) expected_heavy=success ;;
+            *)
+              echo "ci-green: classifier emitted invalid docs_only=${DOCS_ONLY:-<unset>}" >&2
+              exit 1
+              ;;
+          esac
+
+          required_result check "$CHECK_RESULT" "$expected_heavy"
+          required_result check-e2e-tmux "$E2E_RESULT" "$expected_heavy"
+          required_result check-real-store-smoke "$REAL_STORE_RESULT" "$expected_heavy"
+          required_result check-mutants "$MUTANTS_RESULT" "$expected_heavy"
+          required_result check-fuzz "$FUZZ_RESULT" "$expected_heavy"
 
   # Byte-for-byte copy of the livespec CORE reference
   # (.github/scripts/export-ci-telemetry.sh); repo-agnostic, driven by
@@ -701,6 +805,7 @@ jobs:
     name: export-telemetry
     needs:
       [
+        classify-changes,
         check,
         check-doctor-static,
         check-e2e-tmux,
