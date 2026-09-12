@@ -3471,33 +3471,72 @@ fn registry_help_lines(surface: action_registry::ActionSurface) -> Vec<Line<'sta
         .collect()
 }
 
+/// The `Attention` pane's help section: what the inbox shows, plus the keys
+/// usable while it is focused.
+///
+/// Its own function because this section carries the console's ONE
+/// context-dependent key and the prose that explains it
+/// (livespec-console-beads-fabro-mx9u.33), which is more than a `match` arm
+/// beside eight one-shape ones can hold.
+fn attention_help_lines() -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("Attention -- the default view: the merged, ranked needs-attention"),
+        Line::from("list across the fleet, with the selected item's detail on the right."),
+        Line::from(""),
+        Line::from("up / down    move the Content selection, or scroll the Detail pane"),
+        // The jump keys are named from the registry-held constants, so
+        // this line, the Status hint and the generated key/action
+        // reference cannot advertise different characters
+        // (livespec-console-beads-fabro-mx9u.32).
+        Line::from(format!(
+            "{:<13}jump to the next / previous ACTIONABLE row -- a group",
+            action_registry::attention_jump_keys_display()
+        )),
+        Line::from("             row, or a row a valve acts on -- skipping the rows"),
+        Line::from("             that only need reading. Neither wraps."),
+        // `enter` is the one key on this list whose meaning depends on
+        // the row under the cursor, and the divergence is the thing an
+        // operator cannot guess: everywhere else in the console `enter`
+        // goes INTO the selected row. Before
+        // livespec-console-beads-fabro-mx9u.33 the group row's own
+        // `[enter expand]` affordance was the only place it was
+        // described, so it could not be read before the operator had
+        // already found a group row.
+        Line::from("enter        CONTEXT-DEPENDENT on this list: on an ordinary row it"),
+        Line::from("             drills in, opening the selected work-item's record;"),
+        Line::from("             on a GROUP row it toggles that group instead, and"),
+        Line::from("             opens no item."),
+        Line::from(""),
+        Line::from("A GROUP row is one row standing for several needs-attention rows"),
+        Line::from("that share a `<kind>:<class>` key -- the key the Detail pane names"),
+        // The two verbs come from the registry-held derivation the
+        // group ROW itself is titled from, so Help, the row and the
+        // Status hint cannot end up with two names for one key
+        // (livespec-console-beads-fabro-mx9u.33).
+        Line::from(format!(
+            "on its `Group:` line. `enter {}` opens the group in place,",
+            action_registry::attention_group_toggle_verb(false)
+        )),
+        Line::from(format!(
+            "listing its members beneath it as ordinary rows; `enter {}`",
+            action_registry::attention_group_toggle_verb(true)
+        )),
+        Line::from("folds them back again. Members may or may not each name a"),
+        Line::from("work-item of their own; lane rows, and rows a valve acts on,"),
+        Line::from("are never grouped."),
+        Line::from(""),
+    ];
+    lines.extend(registry_help_lines(
+        action_registry::ActionSurface::Attention,
+    ));
+    lines
+}
+
 /// The per-pane help section for `view`: what the pane shows plus the keys usable
 /// while it is focused. Kept in lock-step with the key handler.
 fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
     match view {
-        TuiView::Attention => {
-            let mut lines = vec![
-                Line::from("Attention -- the default view: the merged, ranked needs-attention"),
-                Line::from("list across the fleet, with the selected item's detail on the right."),
-                Line::from(""),
-                Line::from("up / down    move the Content selection, or scroll the Detail pane"),
-                // The jump keys are named from the registry-held constants, so
-                // this line, the Status hint and the generated key/action
-                // reference cannot advertise different characters
-                // (livespec-console-beads-fabro-mx9u.32).
-                Line::from(format!(
-                    "{:<13}jump to the next / previous ACTIONABLE row -- a group",
-                    action_registry::attention_jump_keys_display()
-                )),
-                Line::from("             row, or a row a valve acts on -- skipping the rows"),
-                Line::from("             that only need reading. Neither wraps."),
-                Line::from("enter        open the command modal for the selected work-item"),
-            ];
-            lines.extend(registry_help_lines(
-                action_registry::ActionSurface::Attention,
-            ));
-            lines
-        }
+        TuiView::Attention => attention_help_lines(),
         TuiView::Spec => vec![
             Line::from("Spec -- the spec-side status view (read-only): the specification's"),
             Line::from("lifecycle state for the selected repo."),
@@ -6362,7 +6401,53 @@ mod tests {
             )),
             "the Attention help section does not advertise the jump keys:\n{frame}"
         );
-        assert!(frame.contains("enter        open the command modal"));
+        assert!(frame.contains("enter        CONTEXT-DEPENDENT on this list"));
+    }
+
+    /// livespec-console-beads-fabro-mx9u.33 AC1 / AC2: the modal Help's
+    /// ATTENTION section explains what a GROUP row is and that `Enter` toggles
+    /// one, in the RENDERED text.
+    ///
+    /// The reported defect: the group row's own `[enter expand]` affordance was
+    /// the ONLY place the feature was described, so `?` — the surface graded on
+    /// whether it answers the question the operator has right now — was silent
+    /// on the one row where "what is this and what will Enter do" is the whole
+    /// question.
+    #[test]
+    fn help_attention_section_explains_group_rows_and_the_enter_toggle() {
+        let model = build_tui_model_for_state(
+            &demo_events(),
+            &TuiInteractionState::new(
+                0,
+                TuiOverlay::Help {
+                    focus: HelpFocus::Text,
+                    selected_section: help_section_for_view(TuiView::Attention),
+                    scroll: 0,
+                },
+            ),
+        );
+        let frame = render_to_text(&model, 120, 40).unwrap_or_default();
+        assert!(
+            frame.contains("A GROUP row is one row standing for several needs-attention rows")
+                && frame.contains("that share a `<kind>:<class>` key"),
+            "the Attention help section does not say what a group row IS:\n{frame}"
+        );
+        // AC2: the DIVERGENCE is spelled out, not left to be inferred from the
+        // row that happens to be under the cursor.
+        assert!(
+            frame.contains("enter        CONTEXT-DEPENDENT on this list: on an ordinary row it")
+                && frame.contains("on a GROUP row it toggles that group instead, and"),
+            "the Attention help section does not say `enter` diverges:\n{frame}"
+        );
+        // Both directions of the toggle, named with the SAME verbs the row
+        // itself is titled with.
+        for expanded in [false, true] {
+            let verb = action_registry::attention_group_toggle_verb(expanded);
+            assert!(
+                frame.contains(&format!("`enter {verb}`")),
+                "the Attention help section does not name `enter {verb}`:\n{frame}"
+            );
+        }
     }
 
     /// The header content row of a rendered frame (row 0 is the top border, row 1
@@ -11737,6 +11822,57 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Enter), &ordinary).is_none(),
             "Enter on a verb-free ordinary row is inert",
         );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.33 AC3: the Status band advertises the
+    /// `Enter` toggle while the cursor sits on a GROUP row, at the report's own
+    /// 105-column pane and at the wide 211-column one.
+    ///
+    /// A group row carries no work-item, so the band used to fall through to
+    /// the bare globals and the only key that does anything on that row was
+    /// advertised nowhere but on the row itself. The hint follows the row
+    /// BOTH ways round — `enter expand` while collapsed, `enter collapse` once
+    /// open — and at 105 columns it survives the mx9u.1 shed ladder intact,
+    /// since every segment it carries is ranked with the navigation keys.
+    #[test]
+    fn the_status_band_advertises_the_group_row_enter_toggle_at_both_widths() {
+        let events = grouped_hygiene_events();
+        let collapsed_state =
+            TuiInteractionState::for_view(TuiView::Attention, 1, TuiOverlay::None)
+                .with_focus(FocusPane::Content);
+        let collapsed = build_tui_model_for_state(&events, &collapsed_state);
+        check(
+            collapsed.selected_attention_group_key() == Some("hygiene:stale-worktree"),
+            "the fixture's cursor is not on the group row",
+        );
+        let expanded_state = reduce_tui_interaction(
+            &collapsed_state,
+            &events,
+            TuiInteraction::ToggleAttentionGroup,
+        );
+        let expanded = build_tui_model_for_state(&events, &expanded_state);
+
+        for width in [105, 211] {
+            let collapsed_band = status_band_drawn_at(&collapsed, width);
+            check(
+                collapsed_band.contains("enter expand"),
+                &format!("collapsed band at {width}:\n{collapsed_band}"),
+            );
+            // The movement keys the row shares with every other Attention row,
+            // and the globals, are still there beside it: nothing was traded
+            // away to make room for the toggle.
+            check(
+                collapsed_band.contains("up/down move")
+                    && collapsed_band.contains("]/[ jump")
+                    && collapsed_band.contains("? help"),
+                &format!("collapsed band at {width}:\n{collapsed_band}"),
+            );
+            let expanded_band = status_band_drawn_at(&expanded, width);
+            check(
+                expanded_band.contains("enter collapse"),
+                &format!("expanded band at {width}:\n{expanded_band}"),
+            );
+        }
     }
 
     #[test]
