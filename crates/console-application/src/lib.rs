@@ -72,8 +72,12 @@ pub enum LaneExecutionState {
     /// The item is not in the `active` lane, so the claim/execution split does
     /// not apply.
     NotActive,
-    /// The item is in the `active` lane, but no dispatcher/Fabro execution
-    /// observation has been ingested for it.
+    /// The item is in the `active` lane with no run CURRENTLY observed
+    /// executing it: either no dispatcher/Fabro execution observation has been
+    /// ingested for it, or every run that was observed running has since been
+    /// observed at some other status kind. It makes no claim about
+    /// finished-ness -- that is [`Self::FinishedUnreconciled`]'s, and only the
+    /// dispatcher journal's explicit terminal status justifies it.
     Claimed,
     /// The item is in the `active` lane and has an observed dispatcher or Fabro
     /// execution signal.
@@ -4835,6 +4839,7 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
 fn observed_execution_states(
     events: &[ConsoleEvent],
 ) -> BTreeMap<(String, String), LaneExecutionState> {
+    let running = items_with_a_run_observed_running(events);
     let mut execution_states = BTreeMap::new();
     for event in events {
         match event.event_type() {
@@ -4856,27 +4861,84 @@ fn observed_execution_states(
             // observation alone says nothing: a run at a terminal status kind
             // has stopped, and marking the item executing off the mere fact
             // that a run was seen is the infer-state-from-an-observation
-            // failure `SPECIFICATION/contracts.md` forbids. A non-running run
-            // leaves the map untouched
-            // rather than asserting some other state the console did not
-            // observe -- the dispatcher journal is what owns finished-ness.
+            // failure `SPECIFICATION/contracts.md` forbids.
+            //
+            // That claim also EXPIRES with the run that justified it
+            // (`livespec-console-beads-fabro-prgntw`). Before, a non-running
+            // observation left the map untouched, so an item observed running
+            // once stayed `executing` forever unless a dispatcher-journal entry
+            // carrying a terminal status happened to arrive -- and for the
+            // measured item it never did, leaving a merged, reworked item
+            // counted against a `wip_cap: 1` repo's WIP. Withdrawing the claim
+            // is not a new inference: `is_running` is the one reading the
+            // console draws from a status kind, and the later observation of
+            // the same run is that reading returning false.
+            //
+            // It withdraws to `Claimed` -- in the active lane, no run currently
+            // observed executing it -- and NEVER to `FinishedUnreconciled`.
+            // That state means a TERMINAL OUTCOME was observed, and only the
+            // dispatcher journal says so explicitly, in its `terminal_status`
+            // field. Fabro's status vocabulary belongs to Fabro
+            // (see `FabroRunState`), so the console cannot tell `succeeded`
+            // from `queued` without inventing the closed enum that type exists
+            // to refuse. Guarding on the current value therefore also keeps a
+            // journal-observed `finished?` standing.
             EventType::FabroRunObserved => {
-                if let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json())
-                    && snapshot.state().is_running()
-                {
-                    execution_states.insert(
-                        (
-                            snapshot.repo().to_owned(),
-                            snapshot.work_item_id().to_owned(),
-                        ),
-                        LaneExecutionState::Executing,
+                if let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json()) {
+                    let key = (
+                        snapshot.repo().to_owned(),
+                        snapshot.work_item_id().to_owned(),
                     );
+                    if running.contains(&key) {
+                        execution_states.insert(key, LaneExecutionState::Executing);
+                    } else if matches!(
+                        execution_states.get(&key),
+                        Some(LaneExecutionState::Executing)
+                    ) {
+                        execution_states.insert(key, LaneExecutionState::Claimed);
+                    }
                 }
             }
             _other => {}
         }
     }
     execution_states
+}
+
+/// The `(repo, work_item_id)` pairs with at least one Fabro run whose LATEST
+/// observation reported it `running`.
+///
+/// Resolved per RUN before the fold rather than per event inside it, because
+/// one item can carry several runs at once -- a reworked item keeps its
+/// finished run beside its live one -- and `fabro ps --json` promises no order
+/// among the runs it reports in a single poll. Reading the item's claim off
+/// whichever run's event landed last would let a finished run's observation
+/// withdraw a genuinely live run's claim, trading the stale-`executing` defect
+/// for an intermittent missing-`executing` one.
+fn items_with_a_run_observed_running(events: &[ConsoleEvent]) -> BTreeSet<(String, String)> {
+    let mut latest_per_run: BTreeMap<String, ((String, String), bool)> = BTreeMap::new();
+    for event in events {
+        if *event.event_type() != EventType::FabroRunObserved {
+            continue;
+        }
+        let Some(snapshot) = fabro_run_snapshot_from_payload_json(event.payload_json()) else {
+            continue;
+        };
+        latest_per_run.insert(
+            snapshot.run_id().to_owned(),
+            (
+                (
+                    snapshot.repo().to_owned(),
+                    snapshot.work_item_id().to_owned(),
+                ),
+                snapshot.state().is_running(),
+            ),
+        );
+    }
+    latest_per_run
+        .into_values()
+        .filter_map(|(key, is_running)| is_running.then_some(key))
+        .collect()
 }
 
 fn execution_state_for_snapshot(
@@ -13337,6 +13399,147 @@ mod tests {
         assert_eq!(active.executing_count(), 0);
         assert_eq!(item.lane(), Lane::Active);
         assert_eq!(item.execution_state().label(), "finished?");
+    }
+
+    /// A Fabro run observation carrying its status kind VERBATIM, as the
+    /// adapter reads it off `fabro ps --json`.
+    fn fabro_run_state_event(
+        event_id: &str,
+        work_item_id: &str,
+        run_id: &str,
+        status_kind: &str,
+    ) -> ConsoleEvent {
+        let payload = format!(
+            r#"{{"repo":"console","work_item_id":"{work_item_id}","run_id":"{run_id}","state":"{status_kind}","source_version":1}}"#
+        );
+        ConsoleEvent::fixture(event_id, EventType::FabroRunObserved, "fabro")
+            .with_payload_json(payload)
+    }
+
+    /// The measured `livespec-console-beads-fabro-prgntw` sequence: a journal
+    /// entry claiming progress with NO terminal status, the run observed
+    /// running, then the SAME run observed at a terminal status kind — and no
+    /// terminal journal entry ever. Both claims lapse, so the item stops
+    /// counting against WIP.
+    ///
+    /// It lands on `claimed`, not `finished?`: the console observed that no run
+    /// is executing this item, which is exactly what `claimed` says. Calling it
+    /// finished would need a TERMINAL OUTCOME, and only the dispatcher
+    /// journal's explicit `terminal_status` reports one — Fabro's status
+    /// vocabulary is Fabro's, so the console cannot separate `succeeded` from
+    /// `queued` without the closed enum `FabroRunState` exists to refuse.
+    #[test]
+    fn a_run_observed_running_then_observed_stopped_stops_counting_as_executing() {
+        let events = [
+            lane_event(
+                "evt_item",
+                "console-reworked",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            dispatcher_execution_event("evt_progress", "console-reworked", "dispatch_1"),
+            fabro_run_state_event("evt_running", "console-reworked", "run_1", "running"),
+            fabro_run_state_event("evt_succeeded", "console-reworked", "run_1", "succeeded"),
+        ];
+
+        let board = project_lane_board(&events);
+        let active = &board.columns()[3];
+        let item = &active.items()[0];
+
+        assert_eq!(active.executing_count(), 0);
+        assert_eq!(active.finished_unreconciled_count(), 0);
+        assert_eq!(active.claimed_count(), 1);
+        assert_eq!(item.execution_state(), LaneExecutionState::Claimed);
+    }
+
+    /// The claim expires with its OWN run. A reworked item carries a finished
+    /// run beside a live one, and `fabro ps --json` promises no order among the
+    /// runs one poll reports, so the live run's claim must survive the finished
+    /// run's observation landing after it.
+    #[test]
+    fn a_stopped_run_leaves_a_sibling_run_still_observed_running_executing() {
+        let events = [
+            lane_event(
+                "evt_item",
+                "console-two-runs",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            fabro_run_state_event("evt_first_running", "console-two-runs", "run_1", "running"),
+            fabro_run_state_event("evt_second_running", "console-two-runs", "run_2", "running"),
+            fabro_run_state_event("evt_first_done", "console-two-runs", "run_1", "succeeded"),
+        ];
+
+        let board = project_lane_board(&events);
+        let active = &board.columns()[3];
+
+        assert_eq!(active.executing_count(), 1);
+        assert_eq!(active.claimed_count(), 0);
+    }
+
+    /// The withdrawal never overwrites `finished?`. That state rests on the
+    /// journal's explicit terminal status — an observed terminal OUTCOME, which
+    /// says strictly more than "no run is executing" — so a later non-running
+    /// run observation leaves it exactly where it is.
+    #[test]
+    fn a_stopped_run_leaves_an_observed_terminal_journal_outcome_standing() {
+        let mut events = vec![
+            lane_event(
+                "evt_item",
+                "console-finished",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            fabro_run_state_event("evt_running", "console-finished", "run_1", "running"),
+        ];
+        events.extend(dispatcher_terminal_events("console-finished", "run_1"));
+        events.push(fabro_run_state_event(
+            "evt_succeeded",
+            "console-finished",
+            "run_1",
+            "succeeded",
+        ));
+
+        let board = project_lane_board(&events);
+        let active = &board.columns()[3];
+        let item = &active.items()[0];
+
+        assert_eq!(active.finished_unreconciled_count(), 1);
+        assert_eq!(active.claimed_count(), 0);
+        assert_eq!(
+            item.execution_state(),
+            LaneExecutionState::FinishedUnreconciled
+        );
+    }
+
+    /// An unparseable run payload contributes no run at all — it neither claims
+    /// execution nor withdraws someone else's claim.
+    #[test]
+    fn an_unreadable_run_payload_neither_claims_nor_withdraws_execution() {
+        let events = [
+            lane_event(
+                "evt_item",
+                "console-executing",
+                Lane::Active,
+                None,
+                "a1",
+                "active",
+            ),
+            dispatcher_execution_event("evt_progress", "console-executing", "dispatch_1"),
+            ConsoleEvent::fixture("evt_corrupt", EventType::FabroRunObserved, "fabro")
+                .with_payload_json("{}".to_owned()),
+        ];
+
+        let board = project_lane_board(&events);
+        let active = &board.columns()[3];
+
+        assert_eq!(active.executing_count(), 1);
     }
 
     #[test]
