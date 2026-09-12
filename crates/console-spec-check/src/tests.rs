@@ -254,20 +254,15 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // Contributor-Scenario-C clause list needed retiring or minting; the
     // retracted and added prose lands entirely on non-keyword lines:
     // 261 normative clauses, 22/150/22/67.
-    // The v051 coverage-line-gate-merged-view revision (livespec-console-
-    // beads-fabro-jvfvkf; maintainer ruling 2026-09-10 that the coverage
-    // allowance is zero) rewrites the Quality Gate coverage bullet: line and
-    // region coverage are both gated at 100% in the merged cross-instantiation
-    // view, and one new clause forbids llvm-cov's own scalar-merged line
-    // summary as the line metric ("The line metric MUST NOT be llvm-cov's
-    // own line summary ..."). The reworded region/diagram/Scenario C text
-    // carries no normative keyword: 262 normative clauses, 22/150/22/68.
+    // The v052 code-neutral documentation lane adds 16 normative clauses
+    // while replacing two earlier unconditional CI clauses, for a net increase
+    // of 14: 276 normative clauses, 22/150/22/82.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
         ("contracts.md", 150),
         ("constraints.md", 22),
-        ("non-functional-requirements.md", 68),
+        ("non-functional-requirements.md", 82),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -277,7 +272,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 262,
+        total, 276,
         "total normative clauses across the console spec"
     );
     Ok(())
