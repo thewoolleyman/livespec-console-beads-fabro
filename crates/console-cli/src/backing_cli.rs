@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::factory_servers::{FactoryServer, factory_servers_at};
+
 const ORCHESTRATOR_PLUGIN_NAME: &str = "livespec-orchestrator-beads-fabro";
 /// The livespec CORE plugin name in the Claude plugin cache. Core ships the
 /// SPEC-side ranking CLI the livespec source observes, at
@@ -65,6 +67,14 @@ pub struct BackingCliPrograms {
     list_work_items: String,
     livespec: CommandShape,
     fabro: String,
+    /// The factory servers the Fabro source polls, read from the selected repo's
+    /// `.livespec.jsonc` `dispatcher.factories`. Empty when the checkout
+    /// declares none, which leaves `fabro` on its own default endpoint.
+    ///
+    /// An argument shape rather than a program: `fabro` is one binary addressing
+    /// several remote servers, and WHICH servers is resolved from the selected
+    /// repo exactly as every other repo-scoped argument here is.
+    factory_servers: Vec<FactoryServer>,
     dispatcher: String,
     drive: String,
     needs_attention: String,
@@ -77,6 +87,7 @@ impl Default for BackingCliPrograms {
             list_work_items: "list-work-items".to_owned(),
             livespec: CommandShape::new("livespec", &["next", "--json"]),
             fabro: "fabro".to_owned(),
+            factory_servers: Vec::new(),
             dispatcher: "livespec-dispatcher-drain".to_owned(),
             drive: "livespec-orchestrator-drive".to_owned(),
             needs_attention: "needs-attention".to_owned(),
@@ -102,6 +113,12 @@ impl BackingCliPrograms {
     /// Return the Fabro program path.
     pub fn fabro(&self) -> &str {
         &self.fabro
+    }
+
+    #[must_use]
+    /// Return the factory servers the Fabro source polls, in config order.
+    pub fn factory_servers(&self) -> &[FactoryServer] {
+        &self.factory_servers
     }
 
     #[must_use]
@@ -208,6 +225,10 @@ impl BackingCliResolution {
         if let Some(resolved) = resolve_livespec_command(inputs, &selected_repo_path)? {
             programs.livespec = resolved;
         }
+        // The factory servers `fabro` is addressed at come from the SELECTED
+        // repo's orchestrator config, so the console polls the same factories
+        // the Dispatcher dispatches to rather than the CLI's localhost default.
+        programs.factory_servers = factory_servers_at(&selected_repo_path);
         apply_program_overrides(&inputs.env, &mut programs);
         Ok(Self {
             selected_repo_path,
@@ -600,6 +621,9 @@ fn programs_from_plugin_bin(bin: &Path) -> BackingCliPrograms {
         // over both.
         livespec: CommandShape::new("livespec", &["next", "--json"]),
         fabro: "fabro".to_owned(),
+        // Resolved from the selected repo's config, not from the plugin bin —
+        // `resolve` fills it in below.
+        factory_servers: Vec::new(),
         dispatcher: bin.join("dispatcher.py").display().to_string(),
         drive: bin.join("drive.py").display().to_string(),
         needs_attention: bin.join("needs_attention.py").display().to_string(),
