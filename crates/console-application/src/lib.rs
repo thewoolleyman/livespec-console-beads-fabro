@@ -106,6 +106,7 @@ pub struct AttentionItem {
     source_reference: String,
     next_action: Option<OperatorAction>,
     group_key: Option<String>,
+    group_expanded: bool,
 }
 
 impl AttentionItem {
@@ -127,14 +128,32 @@ impl AttentionItem {
             source_reference,
             next_action,
             group_key: None,
+            group_expanded: false,
         }
     }
 
     /// This row as the GROUP row standing for every needs-attention row that
-    /// shares `group_key` (livespec-console-beads-fabro-mx9u.6).
-    fn with_group_key(mut self, group_key: &str) -> Self {
+    /// shares `group_key` (livespec-console-beads-fabro-mx9u.6), currently
+    /// `expanded` or collapsed.
+    ///
+    /// The expanded flag rides on the ROW rather than being re-derived from the
+    /// interaction state by each reader: the row's own `[enter expand]` /
+    /// `[enter collapse]` affordance and the Status-line hint
+    /// (livespec-console-beads-fabro-mx9u.33) then answer "which way does Enter
+    /// go from here" from one fact, which is what stops the two surfaces from
+    /// disagreeing mid-frame.
+    fn with_group_key(mut self, group_key: &str, expanded: bool) -> Self {
         self.group_key = Some(group_key.to_owned());
+        self.group_expanded = expanded;
         self
+    }
+
+    #[must_use]
+    /// Whether this row is a GROUP row that is currently EXPANDED — its members
+    /// listed beneath it as ordinary rows, so `Enter` collapses it again.
+    /// Always `false` for an ordinary row, which has no group to toggle.
+    pub const fn group_is_expanded(&self) -> bool {
+        self.group_expanded
     }
 
     #[must_use]
@@ -2768,6 +2787,21 @@ impl TuiScreenModel {
             .and_then(AttentionItem::group_key)
     }
 
+    /// Whether the selected Attention row is a GROUP row and, if so, whether it
+    /// is currently EXPANDED — `None` for an ordinary row, which has no group
+    /// to toggle (livespec-console-beads-fabro-mx9u.33).
+    ///
+    /// The two questions are answered together because the Status-line hint
+    /// needs both: WHETHER `Enter` toggles rather than opens a record, and
+    /// WHICH way it goes from here.
+    #[must_use]
+    pub fn selected_attention_group_expanded(&self) -> Option<bool> {
+        self.selected_attention_index
+            .and_then(|index| self.attention_items.get(index))
+            .filter(|item| item.group_key().is_some())
+            .map(AttentionItem::group_is_expanded)
+    }
+
     /// Whether the DISPLAYED Attention row at `index` is one the operator
     /// ACTS on (livespec-console-beads-fabro-mx9u.32).
     ///
@@ -3277,20 +3311,7 @@ fn valve_confirm_footer_hint(valve: PendingValve) -> Cow<'static, str> {
 /// Settings surfaces its edit key.
 fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
     match model.active_view {
-        // A selected work-item's hints DERIVE from the action registry through
-        // the same availability context the key handlers consult; with no
-        // work-item selected (a non-item Attention row, the lane overview, an
-        // empty drilled-in lane) the per-item keys are alike inert and none is
-        // advertised.
-        TuiView::Attention => model.selected_action_context().map_or_else(
-            || Cow::Owned(action_registry::global_status_hint()),
-            |ctx| {
-                Cow::Owned(action_registry::selected_item_hint(
-                    &ctx,
-                    model.selected_list_row_count(),
-                ))
-            },
-        ),
+        TuiView::Attention => attention_footer_hint(model),
         TuiView::Lanes => match model.lane_focus {
             // The lane OVERVIEW selects a LANE, never a work-item, so every
             // per-item key is inert here and none is advertised.
@@ -3330,6 +3351,41 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
             "up/down move | left/right focus | / search",
         )),
     }
+}
+
+/// The Attention pane's Status-line hints: the keys that act on the SELECTED
+/// row, which is not always a work-item row.
+///
+/// Three cases, and the FIRST of them is why this is a function rather than the
+/// one-armed `map_or_else` it grew out of:
+///
+/// - A GROUP row (livespec-console-beads-fabro-mx9u.6) has no work-item behind
+///   it, so it took the no-selection arm and the band showed the bare globals —
+///   the `Enter` TOGGLE, the only thing the key does on that row, was
+///   advertised nowhere but on the row itself. It is named here
+///   (livespec-console-beads-fabro-mx9u.33), the way round it currently goes.
+/// - A work-item row derives its hints from the action registry through the
+///   same availability context the key handlers consult, so a hidden hint and
+///   an inert key cannot diverge.
+/// - Any other row — a plan thread, a lone hygiene finding, a spec-revise item
+///   — selects no work-item and admits no per-item key, so only the globals are
+///   advertised. Unchanged: nothing about such a row is keyed.
+fn attention_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
+    if let Some(expanded) = model.selected_attention_group_expanded() {
+        return Cow::Owned(action_registry::attention_group_hint(
+            expanded,
+            model.selected_list_row_count(),
+        ));
+    }
+    model.selected_action_context().map_or_else(
+        || Cow::Owned(action_registry::global_status_hint()),
+        |ctx| {
+            Cow::Owned(action_registry::selected_item_hint(
+                &ctx,
+                model.selected_list_row_count(),
+            ))
+        },
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9918,7 +9974,10 @@ impl AttentionGroup<'_> {
                 .map(|(_index, member)| member.summary()),
         );
         let count = self.members.len();
-        let verb = if self.expanded { "collapse" } else { "expand" };
+        // The verb comes from the registry (mx9u.33), so the row, the
+        // Status-line hint and the modal Help all name the toggle with the one
+        // word rather than three independently-typed copies of it.
+        let verb = action_registry::attention_group_toggle_verb(self.expanded);
         let title = if shared.is_empty() {
             format!("({count}) [enter {verb}]")
         } else {
@@ -9932,7 +9991,7 @@ impl AttentionGroup<'_> {
             self.repos(),
             None,
         )
-        .with_group_key(self.key)
+        .with_group_key(self.key, self.expanded)
     }
 
     /// The group row's detail: the key and count, and every member's summary.
@@ -12431,6 +12490,89 @@ mod tests {
             reduce_tui_interaction(&ordinary, &events, TuiInteraction::ToggleAttentionGroup)
                 == ordinary,
             "toggling an ordinary row changes nothing",
+        );
+    }
+
+    /// livespec-console-beads-fabro-mx9u.33: the two facts an advertising
+    /// surface asks the model for -- IS `Enter` a TOGGLE on the selected row,
+    /// and WHICH WAY does it go from here -- are carried by the row itself, in
+    /// BOTH states.
+    ///
+    /// Pinned on the model and not only through the rendered Help and Status
+    /// text, because that text can be produced without ever consulting either
+    /// accessor, and a mutation run PROVED it was: with mx9u.33's rendered-text
+    /// assertions in place, `AttentionItem::group_is_expanded -> true`,
+    /// `-> false`, and `TuiScreenModel::selected_attention_group_expanded ->
+    /// None` all survived. No constant satisfies the pairs below, which is the
+    /// whole reason they are stated as pairs: the SAME group row in the two
+    /// states, and a NON-group row beside it.
+    #[test]
+    fn the_group_row_carries_which_way_its_enter_toggle_goes() {
+        let events = grouped_hygiene_events();
+        let collapsed_state = TuiInteractionState::new(2, TuiOverlay::None);
+        let collapsed = build_tui_model_for_state(&events, &collapsed_state);
+        let collapsed_group = &collapsed.attention_items()[2];
+        check(
+            collapsed_group.group_key() == Some("hygiene:stale-worktree"),
+            &format!("row 2 is not the group row: {collapsed_group:?}"),
+        );
+        check(
+            !collapsed_group.group_is_expanded(),
+            "a group row the operator has not opened reads as collapsed",
+        );
+        check(
+            collapsed.selected_attention_group_expanded() == Some(false),
+            &format!(
+                "selected group row, collapsed: {:?}",
+                collapsed.selected_attention_group_expanded()
+            ),
+        );
+
+        // Enter, and the SAME row answers the other way round.
+        let expanded_state = reduce_tui_interaction(
+            &collapsed_state,
+            &events,
+            TuiInteraction::ToggleAttentionGroup,
+        );
+        let expanded = build_tui_model_for_state(&events, &expanded_state);
+        let expanded_group = &expanded.attention_items()[2];
+        check(
+            expanded_group.group_key() == collapsed_group.group_key(),
+            &format!("the cursor left the group row: {expanded_group:?}"),
+        );
+        check(
+            expanded_group.group_is_expanded(),
+            "the group row reads as expanded once Enter has opened it",
+        );
+        check(
+            expanded.selected_attention_group_expanded() == Some(true),
+            &format!(
+                "selected group row, expanded: {:?}",
+                expanded.selected_attention_group_expanded()
+            ),
+        );
+
+        // A MEMBER row of the open group is an ordinary row: `Enter` there
+        // opens its record, so there is no toggle to advertise and no direction
+        // to report -- `None`, not `Some(false)`, which is why the accessor
+        // answers with an Option at all.
+        let member_state = expanded_state.with_selected_attention_index(3);
+        let member_selected = build_tui_model_for_state(&events, &member_state);
+        let member = &member_selected.attention_items()[3];
+        check(
+            member.id() == "hygiene:stale-worktree:/w/a"
+                && member.group_key().is_none()
+                && !member.group_is_expanded(),
+            &format!("row 3 of the open group is not a plain member: {member:?}"),
+        );
+        check(
+            member_selected
+                .selected_attention_group_expanded()
+                .is_none(),
+            &format!(
+                "selected member row: {:?}",
+                member_selected.selected_attention_group_expanded()
+            ),
         );
     }
 

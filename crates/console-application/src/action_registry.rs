@@ -985,6 +985,60 @@ const fn navigation_hint_prefix(surface: ActionSurface, row_count: usize) -> &'s
     }
 }
 
+/// The Attention list's cursor-MOVEMENT fragment, spelled once.
+///
+/// [`navigation_hint_prefix`] repeats it inline because it is a `const fn` over
+/// `&'static str`; [`attention_group_hint`] composes it, and
+/// `the_group_row_hint_moves_the_cursor_exactly_as_an_ordinary_row_does` binds
+/// the two together, so a group row and an ordinary row can never advertise
+/// different movement keys for the one list they share
+/// (livespec-console-beads-fabro-mx9u.33).
+const ATTENTION_MOVEMENT_HINT: &str = "up/down move | ]/[ jump";
+
+/// The verb naming what `Enter` does to an Attention GROUP row right now:
+/// `expand` while it is collapsed, `collapse` while it is open
+/// (livespec-console-beads-fabro-mx9u.6).
+///
+/// Held HERE, beside the registry that owns every other key's wording, because
+/// THREE surfaces say it: the group row's own `[enter <verb>]` affordance, the
+/// Status-line hint ([`attention_group_hint`]), and the modal Help's Attention
+/// section. Before mx9u.33 only the row said it at all; spelling it once is
+/// what keeps the two new surfaces from drifting into a second name for the
+/// same key.
+#[must_use]
+pub const fn attention_group_toggle_verb(expanded: bool) -> &'static str {
+    if expanded { "collapse" } else { "expand" }
+}
+
+/// The Status-line hint for a selected Attention GROUP row
+/// (livespec-console-beads-fabro-mx9u.33).
+///
+/// A group row has no work-item behind it, so [`selected_item_hint`] never
+/// applies to one and the band used to fall through to the bare globals: the
+/// toggle that is the ONLY thing `Enter` does there was advertised nowhere but
+/// on the row itself. This names it in the footer's own style — the same
+/// movement fragment an ordinary Attention row carries, then the `enter` token
+/// for what `Enter` actually does HERE, then the globals.
+///
+/// `expanded` picks the verb through [`attention_group_toggle_verb`], so the
+/// footer says `enter collapse` exactly when the row does. `row_count` is the
+/// displayed Attention row count, dropping the movement fragment for a
+/// single-row list exactly as [`navigation_hint_prefix`] does.
+///
+/// Every segment is unregistered, so [`hint_priority`] ranks the whole hint as
+/// [`HintPriority::Navigation`] beside the keys it stands with — which is what
+/// keeps the toggle from being shed ahead of a policy dial when the band is
+/// narrow.
+#[must_use]
+pub fn attention_group_hint(expanded: bool, row_count: usize) -> String {
+    let verb = attention_group_toggle_verb(expanded);
+    let suffix = global_status_hint();
+    if row_count > 1 {
+        return format!("{ATTENTION_MOVEMENT_HINT} | enter {verb} | {suffix}");
+    }
+    format!("enter {verb} | {suffix}")
+}
+
 /// The Status-line hint for a selected work-item, derived from the registry.
 ///
 /// The navigation prefix comes from [`navigation_hint_prefix`] — the hosting
@@ -1709,6 +1763,53 @@ mod tests {
             .filter(|key| silent.iter().any(|text| text.contains(*key)))
             .collect::<Vec<char>>();
         assert_eq!(leaked, Vec::new());
+    }
+
+    /// livespec-console-beads-fabro-mx9u.33: a GROUP row is a row of the SAME
+    /// list, so it moves the cursor with the same keys and says so with the
+    /// same words; only the `enter` token differs, because only `enter` does
+    /// something different there.
+    #[test]
+    fn the_group_row_hint_moves_the_cursor_exactly_as_an_ordinary_row_does() {
+        // The ordinary row's hint is the shared movement fragment plus its own
+        // `enter` token and nothing else, so the two rows differ in exactly one
+        // segment. Compared as a VALUE rather than asserted with a message only
+        // a failing run would format: such a message is a region a green suite
+        // can never cover.
+        assert_eq!(
+            super::navigation_hint_prefix(ActionSurface::Attention, 7)
+                .strip_prefix(super::ATTENTION_MOVEMENT_HINT),
+            Some(" | enter open")
+        );
+        for (expanded, verb) in [(false, "expand"), (true, "collapse")] {
+            let hint = super::attention_group_hint(expanded, 7);
+            assert_eq!(
+                hint,
+                format!(
+                    "{} | enter {verb} | {}",
+                    super::ATTENTION_MOVEMENT_HINT,
+                    super::global_status_hint()
+                )
+            );
+            // A one-row list drops the movement fragment exactly as an ordinary
+            // row's hint does -- there is nowhere to move to -- but never the
+            // toggle, which is the one key that still acts.
+            let lone = super::attention_group_hint(expanded, 1);
+            assert_eq!(
+                lone,
+                format!("enter {verb} | {}", super::global_status_hint())
+            );
+        }
+        // The toggle ranks with the navigation keys, so a narrow band sheds it
+        // no earlier than the other keys that say where `enter` goes.
+        assert_eq!(
+            super::hint_priority("enter expand"),
+            super::HintPriority::Navigation
+        );
+        assert_eq!(
+            super::hint_priority("enter collapse"),
+            super::HintPriority::Navigation
+        );
     }
 
     #[test]
