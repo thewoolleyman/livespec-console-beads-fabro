@@ -257,10 +257,18 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // The v052 code-neutral documentation lane adds 16 normative clauses
     // while replacing two earlier unconditional CI clauses, for a net increase
     // of 14: 276 normative clauses, 22/150/22/82.
+    // The v053 plans-as-a-first-class-console-concept revision adds ten
+    // contracts.md TUI-Contract clauses for the Plans view (the roster and its
+    // per-row fields, explicit absence for unpublished fields, the `context`
+    // drill-in, the scoped-Lanes cross-link and its clearing, the Lanes plan
+    // column and its blank-for-plan-less rule, the never-render-"epic" rule,
+    // and no rendering of a plan outside the Plans view); spec.md's Terminology
+    // and control-plane edits carry no new keyword line:
+    // 286 normative clauses, 22/160/22/82.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
-        ("contracts.md", 150),
+        ("contracts.md", 160),
         ("constraints.md", 22),
         ("non-functional-requirements.md", 82),
     ];
@@ -272,7 +280,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 276,
+        total, 286,
         "total normative clauses across the console spec"
     );
     Ok(())
