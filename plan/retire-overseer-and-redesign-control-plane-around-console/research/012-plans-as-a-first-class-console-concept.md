@@ -146,7 +146,7 @@ consumption gap. An earlier draft of this note claimed the omission of
 `list-plans` from the v046 enumeration made the roster un-buildable; that
 overstated it.
 
-## The design question, framed for the discussion (NOT decided here)
+## The design question, and why the plan-less finding decided it
 
 A plan is a *parent*; a lane is a *status*; every leaf work-item has both. A
 plan is therefore a vertical slice (one goal, items in every lane) and a
@@ -168,9 +168,39 @@ partitions of one item set must compose, not compete. Candidate shapes:
 4. **Plan as a global scope filter**, like the repo selector. Cost: no
    roster, and the roster is the stated requirement.
 
-Under v095 a leaf item without a parent plan is a hygiene finding ("a
-non-epic's plan is its parent chain"), not a scope — so an "Unplanned"
-bucket is a needs-attention row, not a navigation target.
+A leaf item without a parent plan is the ORDINARY case, not a finding. An
+earlier version of this note said the opposite — "under v095 a leaf item
+without a parent plan is a hygiene finding" — and the 2026-09-29 02:42Z
+handoff carried it into the shape 3 description as an "Unplanned" scope.
+That was a misread, and it steered a recommendation. The v095 sentence it
+leaned on ("a work-item that is not an epic MUST NOT carry `plan_slug`; its
+plan is its parent chain", orchestrator `SPECIFICATION/contracts.md:1723-1726`,
+commit `f65c4a0e`) forbids duplicating the slug onto children; it does not
+require a parent to exist. The only doctor rule it arms is
+`plan_slug_on_non_epic`, whose own scenario (`scenarios.md:2854`) accepts a
+standalone bug, and no ratified hygiene fact (capacity, capacity-hold,
+idle-factory, merge-hold, model-fallback, ready-aging, unrunnable-acceptance)
+flags a parentless item. Measured in this tenant on 2026-09-29, unioning
+the `parent` edge, the dotted-id form and `parent-child` dependencies: 18 of
+31 open leaf items have no parent plan, both ready bugs among them. A plan is
+an optional tier above the work-item. A Plans surface must not route the
+majority of the work through a pseudo-plan, and nothing renders "no plan" as
+a defect.
+
+With plan-less items as the majority, the shapes re-sort. Shape 3 makes the
+plan tier the door to every lane visit, so the most common path passes
+through a tier most items do not belong to; pinning an "All plans" row
+first removes the pseudo-plan but not the extra step. Shapes 2 and 4 never
+produce a roster. Shape 1 fits the model — Lanes stays the complete home of
+every item, Plans is a view over the optional tier — and its "two peer views"
+cost was overstated, because Plans is a view over a subset. The decision,
+recorded as a scope event on the epic on 2026-09-29, is shape 1 plus one
+cross-link: Enter on a roster row opens Lanes scoped to that plan, Escape
+clears it, and Lanes gains a plan column that is blank for plan-less items.
+It is a strict subset of shape 3 and can grow into it if dogfood shows the
+plan tier should be the entry point; the reverse would be a rewrite. That
+reversibility is the deciding property for a recommendation made right after
+a premise was found wrong.
 
 Whichever shape wins, three things follow and belong in the same decision:
 
