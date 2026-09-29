@@ -1,7 +1,7 @@
 ---
 topic: plans-as-a-first-class-console-concept
 author: claude-fable-5-1
-created_at: 2026-09-29T08:30:00Z
+created_at: 2026-09-29T05:06:47Z
 ---
 
 ## Proposal: Plans as a first-class console concept -- define "plan" once, name the consumed surfaces, and add the Plans view with a scoped-Lanes cross-link

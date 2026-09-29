@@ -1521,5 +1521,54 @@
         "scenario": "Scenario 32 -- The needs-human account is rendered and the operator's answer rides the resolve-blocked valve"
       }
     ]
+  },
+  {
+    "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes",
+    "scenario_file": "scenarios.md",
+    "test": "TODO",
+    "reason": "Test tier: top-of-pyramid acceptance tests under crates/console-cli/tests/ for the Plans view ratified in v053 (shape 1+): the roster renders one row per open plan from consumed list-work-items records with every published field and nothing computed; the Detail drill-in renders the context envelope plus the list-plans research-directory attribute; Enter on a roster row opens Lanes scoped to that plan and Escape clears it with the unscoped Lanes unchanged; a plan-less item shows a blank plan column and no finding; the storage word epic never renders; an unpublished field (last_session today) renders as explicitly absent. Registered pending at ratification time because the implementing children are filed under livespec-console-beads-fabro-adf4nu after ratification, and the three roster fields list-work-items does not yet publish are held on console proxy livespec-console-beads-fabro-pzbdbo.40 (orchestrator bd-ib-wi5b).",
+    "work_item": "livespec-console-beads-fabro-adf4nu",
+    "clauses": [
+      {
+        "gap_id": "gap-jdhsm2e6",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-4f4djnpn",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-z3bfxje2",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-6ubrnmzb",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-3wqidxgd",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-5x2n6zjd",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-4pjc45vw",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-3thot2om",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-hzzcuwgn",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-sywy4dpo",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      }
+    ]
   }
 ]
