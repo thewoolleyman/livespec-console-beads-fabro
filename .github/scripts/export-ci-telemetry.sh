@@ -115,16 +115,36 @@ run_code=2; [ "$run_concl" = "success" ] && run_code=1
 # `export-telemetry` job `needs:` every check job and runs `if: !cancelled()`,
 # so it observes its OWN run — and `gh run view` reports an in-flight run's
 # `conclusion` as an empty STRING (which jq's `//` does not replace, `//` only
-# substituting for `null`/`false`). A run cannot know its own verdict while it
-# is still producing it.
+# substituting for `null`/`false`). A run cannot know its own final verdict
+# while it is still producing it.
 #
-# So this falls back to the run's STATUS (`in_progress`), which is the true and
-# knowable thing, rather than deriving a verdict from the jobs seen so far. A
-# derived value would read as ground truth while being a guess about jobs that
-# had not reported yet. The honest consequence is that RUN-level outcome stays
-# self-observed; JOB-level outcome, emitted below, is the ground truth to query,
-# and it is complete precisely because this job runs after all the others.
+# But it does not have to fall back to a bare `in_progress`. Because this job
+# `needs:` every check job, by the time it runs every OTHER job has a FINAL
+# conclusion; only this job (and any post-export gate) is still in flight.
+# Selecting jobs whose `status == "completed"` therefore excludes exactly this
+# still-running job and reads ground truth over the checks — this is a
+# derivation from settled facts, not a guess about jobs that have not reported.
+# `ci.conclusion` becomes the aggregate outcome of the run's completed check
+# jobs (any failure-like ⇒ failure, any cancelled ⇒ cancelled, else success),
+# which is exactly what the reliability question needs; `ci.run.status` still
+# carries the raw self-observed status for transparency. The one honest caveat:
+# a run whose EXPORT job (or a later gate) fails after this point would have a
+# GitHub run conclusion of `failure` that this derived value, taken over the
+# check jobs alone, does not see — a rare case, and the check-job outcomes are
+# the signal the plan actually queries.
+run_derived="$(jq -r '
+  [ .jobs[]
+    | select(.status == "completed")
+    | (.conclusion // "")
+    | select(. != "") ] as $c
+  | if   ($c | length) == 0 then ""
+    elif ($c | any(. == "failure" or . == "timed_out"
+                     or . == "startup_failure" or . == "action_required"
+                     or . == "stale")) then "failure"
+    elif ($c | any(. == "cancelled")) then "cancelled"
+    else "success" end' <<<"$run_json")"
 run_outcome="$run_concl"
+[ -n "$run_outcome" ] || run_outcome="$run_derived"
 [ -n "$run_outcome" ] || run_outcome="$run_status"
 [ -n "$run_outcome" ] || run_outcome="unknown"
 [ -n "$run_status" ] || run_status="unknown"
