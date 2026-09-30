@@ -371,12 +371,17 @@ fn every_span_carries_a_non_empty_conclusion() -> Result<()> {
 ///
 /// What IS knowable at that moment is every OTHER job's conclusion, because
 /// this job runs after all of them — which is exactly the ground truth the
-/// three unanswerable questions needed. So this pins both halves: the run span
-/// degrades honestly to its STATUS rather than to an empty value or a fabricated
-/// verdict, and each finished job reports its own real outcome, including the
-/// `failure` that per-job flake rate is counted from
-/// (livespec-console-beads-fabro-pis7qu) and the `cancelled` that superseded-run
-/// cancellation is counted from (livespec-console-beads-fabro-s3kwxt).
+/// three unanswerable questions needed. So the run span's `ci.conclusion` is
+/// DERIVED from the completed sibling jobs (livespec-console-beads-fabro-gqmtwa.6):
+/// selecting `status == "completed"` excludes exactly this still-running export
+/// job, so the aggregate is over settled facts, not a guess. Here the fixture's
+/// completed jobs are `check-e2e-tmux` (failure) and `check-nextest` (cancelled)
+/// — `check-deps` completed with an empty conclusion and is skipped — so any
+/// failure ⇒ the run derives to `failure`. `ci.run.status` still carries the
+/// raw self-observed `in_progress` for transparency, and each finished job
+/// reports its own real outcome, including the `failure` per-job flake rate is
+/// counted from (pis7qu) and the `cancelled` superseded-run cancellation is
+/// counted from (s3kwxt).
 #[test]
 fn a_run_observing_itself_still_records_every_finished_job_outcome() -> Result<()> {
     require_jq()?;
@@ -393,13 +398,14 @@ fn a_run_observing_itself_still_records_every_finished_job_outcome() -> Result<(
     let run = run_span_attributes(&payload)?;
     assert_eq!(
         run.get("ci.conclusion").map(String::as_str),
-        Some("in_progress"),
-        "a self-observed run degrades to its status, never to an empty value: {run:?}"
+        Some("failure"),
+        "a self-observed run derives its conclusion from the completed sibling \
+         jobs (a failure is present), never an empty value or a bare status: {run:?}"
     );
     assert_eq!(
         run.get("ci.run.status").map(String::as_str),
         Some("in_progress"),
-        "{run:?}"
+        "the raw self-observed status is still recorded for transparency: {run:?}"
     );
 
     let by_job = job_span_attributes(&payload)?;
