@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use yaml_rust2::{Yaml, YamlLoader, yaml::Hash};
 
 pub const JUSTFILE_PATH: &str = "justfile";
 pub const CI_WORKFLOW_PATH: &str = ".github/workflows/ci.yml";
@@ -164,11 +165,13 @@ pub fn parse_just_recipes(justfile: &str) -> BTreeSet<String> {
 /// Returns a message when the workflow YAML is malformed or does not carry
 /// `jobs`.
 pub fn parse_ci_jobs(ci_yaml: &str) -> Result<BTreeSet<String>, String> {
-    let root: serde_yaml::Value =
-        serde_yaml::from_str(ci_yaml).map_err(|err| format!("{CI_WORKFLOW_PATH}: {err}"))?;
-    let jobs = root
-        .get("jobs")
-        .and_then(serde_yaml::Value::as_mapping)
+    let docs =
+        YamlLoader::load_from_str(ci_yaml).map_err(|err| format!("{CI_WORKFLOW_PATH}: {err}"))?;
+    let jobs = docs
+        .first()
+        .and_then(Yaml::as_hash)
+        .and_then(|root| get(root, "jobs"))
+        .and_then(Yaml::as_hash)
         .ok_or_else(|| format!("{CI_WORKFLOW_PATH}: missing `jobs` mapping"))?;
     let mut names = BTreeSet::new();
 
@@ -176,12 +179,11 @@ pub fn parse_ci_jobs(ci_yaml: &str) -> Result<BTreeSet<String>, String> {
         let job_id = job_id
             .as_str()
             .ok_or_else(|| format!("{CI_WORKFLOW_PATH}: job id is not a string"))?;
-        let Some(job_map) = job.as_mapping() else {
+        let Some(job_map) = job.as_hash() else {
             continue;
         };
-        let name = job_map
-            .get("name")
-            .and_then(serde_yaml::Value::as_str)
+        let name = get(job_map, "name")
+            .and_then(Yaml::as_str)
             .unwrap_or(job_id);
         if name == "${{ matrix.target }}" {
             for target in matrix_targets(job_map)? {
@@ -195,14 +197,18 @@ pub fn parse_ci_jobs(ci_yaml: &str) -> Result<BTreeSet<String>, String> {
     Ok(names)
 }
 
-fn matrix_targets(job_map: &serde_yaml::Mapping) -> Result<Vec<String>, String> {
-    let Some(targets) = job_map
-        .get("strategy")
-        .and_then(serde_yaml::Value::as_mapping)
-        .and_then(|strategy| strategy.get("matrix"))
-        .and_then(serde_yaml::Value::as_mapping)
-        .and_then(|matrix| matrix.get("target"))
-        .and_then(serde_yaml::Value::as_sequence)
+/// Look up a string key in a YAML mapping.
+fn get<'a>(map: &'a Hash, key: &str) -> Option<&'a Yaml> {
+    map.get(&Yaml::String(key.to_owned()))
+}
+
+fn matrix_targets(job_map: &Hash) -> Result<Vec<String>, String> {
+    let Some(targets) = get(job_map, "strategy")
+        .and_then(Yaml::as_hash)
+        .and_then(|strategy| get(strategy, "matrix"))
+        .and_then(Yaml::as_hash)
+        .and_then(|matrix| get(matrix, "target"))
+        .and_then(Yaml::as_vec)
     else {
         return Err(format!(
             "{CI_WORKFLOW_PATH}: `${{ matrix.target }}` job has no `strategy.matrix.target` list"

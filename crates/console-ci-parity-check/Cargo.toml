@@ -11,7 +11,9 @@ publish = false
 
 [dependencies]
 serde_json = "1"
-serde_yaml = "0.9"
+# default-features off: the only default, `encoding`, pulls encoding_rs (BSD-3-Clause,
+# outside deny.toml's allow-list) for the byte decoder this crate never calls.
+yaml-rust2 = { version = "0.13", default-features = false }
 
 [lints]
 workspace = true
