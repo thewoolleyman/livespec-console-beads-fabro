@@ -69,6 +69,13 @@
       "SPECIFICATION/contracts.md §\"Fail-closed cost gate (keyed on `--item` presence)\"",
       "SPECIFICATION/contracts.md §\"The skill surface\"",
       "SPECIFICATION/contracts.md §\"A factory run never awaits a human\""
+    ],
+    // Added 2026-10-20 with v054 `## Factory routing`, which cites the fleet
+    // factory registry. BARE form on purpose: CI clones only the orchestrator
+    // sibling, and a file-qualified entry is validated against a local clone
+    // that does not exist on a runner, so CI would drop it as "not allowlisted".
+    "livespec-dev-tooling": [
+      "§\"Fabro factory registry\""
     ]
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
