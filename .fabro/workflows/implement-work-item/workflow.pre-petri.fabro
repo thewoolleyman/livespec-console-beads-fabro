@@ -1,0 +1,879 @@
+// implement-work-item — the family-discipline phase graph.
+//
+// This is the Fabro Loop half of the Beads/Dolt + Fabro reference
+// orchestrator (livespec spec.md §"Contract + reference implementations
+// architecture"). One run consumes ONE ready work-item and produces one
+// merged-or-failed implementation attempt:
+//
+//   dod_gate (grade the Definition of Done before any implementation spend)
+//   -> implement (Red-Green-Replay) -> janitor hard gate (the repository's
+//   declared check suite, rendered from `inputs.sandbox_check_suite`;
+//   bounded fix loop) -> publish_draft (push the publish branch, open the
+//   DRAFT pull request the proof is captured on) -> proof_capture (author and
+//   execute the reproduction steps, post the Proof of Done record; S5 /
+//   bd-ib-b4u6b7) -> Claude review gate (blocking by default,
+//   merge-on-cap only via explicit escape hatch; work-item bd-ib-egms32) ->
+//   proof_verify (replay those steps on a different adapter; the ONLY route to
+//   publication, so the escape hatch skips the reviewer and never the proof;
+//   S6 / bd-ib-msnlnv) -> PR
+//   marked ready + rebase auto-merge
+//   arming, with a `needs_human` TERMINAL node (plan
+//   ledger-is-the-only-gate, epic bd-ib-n77djm; contracts.md "A factory
+//   run never awaits a human", v093) for outcomes the loop cannot
+//   auto-resolve: the run preserves its tree on a run-scoped ref, emits
+//   the LIVESPEC_NEEDS_HUMAN sentinel and terminates non-green. The
+//   human's decision lives in the LEDGER (the item rests at
+//   blocked / needs-human; the answer is a valve), never in a parked run.
+//
+// The run executes in an ISOLATED Fabro-owned docker sandbox clone
+// (Architecture C, workflow.toml): Fabro clones the repo fresh inside
+// the sandbox and checks out a managed run branch before the first node
+// runs — the graph never creates worktrees and never touches the host.
+// The per-item brief (work-item id, title, description, publish branch)
+// arrives via the run goal (`--goal-file`), which overrides the graph goal.
+// Fabro's adapter-independent non-full-fidelity preamble injects that complete
+// goal into every ACP node; prompts refer to that single injected copy. (Keep
+// brace tokens out of comments BEFORE the digraph line — a brace there breaks
+// Fabro's graph render in the web UI; cosmetic, execution is unaffected. See
+// fabro-sh/fabro#508.)
+//
+// Agent nodes use the ACP backend: the Claude Code adapter reads
+// CLAUDE_CODE_OAUTH_TOKEN from the sandbox environment, injected at
+// dispatch time via the Dispatcher's uncommitted run-config overlay
+// (see workflow.toml §"CREDENTIAL CHANNEL"). Per
+// docs.fabro.sh/core-concepts/agents §"ACP backend", ACP requires a
+// local or Docker sandbox (the Dispatcher runs the docker provider).
+digraph ImplementWorkItem {
+    // Retry discipline (work-item livespec-impl-beads-bn4, 2026-06-12
+    // shakedown): `default_max_retries=0` keeps every node single-shot
+    // EXCEPT the two goal-gated nodes below, which carry an explicit
+    // `max_retries=1`. Fabro's node-retry layer is failure-category-
+    // aware BY ENGINE DESIGN (docs.fabro.sh/execution/failures §"What
+    // gets retried"): only failures classified `transient_infra` (ACP
+    // turn timeout, rate limit, network, 5xx) re-execute the handler;
+    // `deterministic` failures fail immediately WITHOUT consuming the
+    // retry budget and route via the `outcome=failed` edges to the
+    // human gate exactly as before. So: transient -> ONE auto-retry;
+    // categorical -> park at needs-human. `stall_timeout` is 7200s:
+    // it is the zero-EVENT watchdog (cancels the run on 2h of event
+    // silence), not the per-turn ceiling — an active agent turn streams
+    // events continuously, so a longer implement turn does not trip it.
+    //
+    // EVERY DURATION BELOW IS A DEFAULT THE DISPATCHER REWRITES. The
+    // dispatch target's `dispatcher.node_timeouts` table and its
+    // `dispatcher.stall_timeout_seconds` key resolve each value, and the
+    // Dispatcher writes the resolved numbers into the per-dispatch
+    // payload's copy of this graph as literal durations before `fabro run`
+    // sees it (commands/_dispatcher_graph_render.py; contracts.md §"ACP
+    // node timeouts"). The values here are the same 1800s/7200s defaults
+    // that resolution applies, so a DIRECT `fabro run` on the committed
+    // file behaves identically to an unconfigured dispatch.
+    //
+    // DO NOT TEMPLATE A `timeout` FROM A WORKFLOW INPUT the way
+    // `acp.command` is. The pinned Fabro build types a quoted duration at
+    // parse time and its template expansion never re-types a rendered
+    // string, so a templated timeout leaves the node with NO timeout at
+    // all — and reports nothing.
+    graph [
+        goal="Implement one ready work-item per the livespec family discipline"
+        default_max_retries=0
+        stall_timeout="7200s"
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Definition-of-Done gate (S3 / bd-ib-s5fj5e; SPECIFICATION/contracts.md
+    // "Definition-of-Done and Proof-of-Done stages", ratified v114): the FIRST
+    // node after `start` and before `implement`. It grades the item's
+    // Definition of Done section against the rendered goal before a single
+    // implementation turn is spent, and its whole value is the position — a
+    // wrong or ungradeable Definition of Done discovered by the implementer has
+    // already bought the implement turn it was supposed to prevent.
+    //
+    // WHAT IS HERE AND WHAT IS ON THE HOST, because the split is ratified and
+    // not an optimization. The MECHANICAL half — section present, references
+    // resolve, proof modes parse — ALSO runs in the host-side pre-dispatch wall
+    // ("Effective acceptance criteria"), so a malformed item never spends a
+    // sandbox at all and never reaches this node. What is left for this node is
+    // the SEMANTIC half, which no host-side parse can perform: whether a
+    // competent engineer could recognise these assertions as satisfied or
+    // unsatisfied from the referenced heading. So this node is not a second copy
+    // of the wall; it is the only surface that can fail on COHERENCE.
+    //
+    // Runs on `dod_gate_adapter`, whose built-in default is the entry the
+    // workflow declares for its REVIEW input rather than its implementer one
+    // ("Built-in ACP node defaults"). That is deliberate: this is an
+    // adjudication node, and it must not inherit a tier a target moved for
+    // implementation. The shared `acp_adapter` is not a candidate input for it.
+    //
+    // max_retries=1 is the same bn4 retry discipline every ACP node here
+    // carries: a transient ACP blip earns one auto-retry, while a deterministic
+    // failure routes straight to `needs_human` via the Blocked edge below
+    // without consuming the budget. No max_visits and no goal_gate — the node is
+    // entered exactly once per run, from `start`.
+    dod_gate [
+        label="Definition-of-Done gate: grade the section before any implement turn"
+        backend="acp"
+        acp.command="{{ inputs.dod_gate_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        prompt="@prompts/dod-gate.md"
+    ]
+
+    // The implement timeout is the per-turn ceiling for the ACP backend:
+    // two heavy multi-RGR items (dev-tooling p60, git-jsonl tenpup, both
+    // 2026-06-12) died at "ACP turn timed out" at ~120m against the then
+    // 7200s value (the run PARKED at the human gate afterwards, i.e. the
+    // node failed; the stall watchdog by contrast CANCELS the whole run,
+    // so it was not the stall_timeout). It was raised to 14400s for that
+    // headroom and is now the 1800s default of §"ACP node timeouts" — a
+    // DELIBERATE reduction ruled by the maintainer, on a factory whose
+    // implementer no longer dies on Codex compaction. A repository whose
+    // items need the old headroom sets `dispatcher.node_timeouts.implement`
+    // rather than editing this literal; the Dispatcher's own fabro-run
+    // subprocess budget is derived from whatever resolves.
+    //
+    // retry_target: fires ONLY at exit-node goal-gate enforcement (the
+    // `outcome=failed` edge to the needs_human terminal takes precedence
+    // at node failure — docs.fabro.sh/execution/failures §"When failures
+    // become fatal"). With needs_human a dead end, no path reaches exit
+    // with this gate unsatisfied; the attribute stays to satisfy fabro's
+    // goal_gate_has_retry lint alongside the real node-retry budget.
+    implement [
+        label="Implement (Red-Green-Replay)"
+        backend="acp"
+        acp.command="{{ inputs.implement_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        goal_gate=true
+        retry_target="implement"
+        prompt="@prompts/implement.md"
+    ]
+
+    // Dead-implementer circuit breaker (C5 / bd-ib-vdpb): after the
+    // implementer node is done with its own retry budget, require a byte
+    // change relative to the dispatch base BEFORE spending janitor,
+    // review, disposition, or review-fix turns. A real but wrong
+    // implementation has a diff and proceeds normally; a protocol-dead
+    // implementer that left the tree byte-identical emits the sentinel
+    // the Dispatcher journals from the failed `fabro-run` stage detail.
+    // The dispatch base is the governed repository's DEFAULT BRANCH,
+    // rendered from `inputs.default_branch` (the integration contract's
+    // resolved field), never a spelled branch name: an adopter whose
+    // default branch is not this fleet's gets the same breaker.
+    implementation_diff [
+        label="Check implementer changed tree"
+        shape=parallelogram
+        timeout="1800s"
+        script="git diff --quiet origin/{{ inputs.default_branch }}...HEAD; status=$?; if test \"$status\" -eq 0; then echo 'LIVESPEC_DEAD_IMPLEMENTER: implementer terminated without changing the worktree relative to dispatch base origin/{{ inputs.default_branch }}...HEAD; stop before janitor/review/disposition' >&2; exit 1; fi; if test \"$status\" -eq 1; then exit 0; fi; echo 'LIVESPEC_DEAD_IMPLEMENTER_CHECK_FAILED: git diff against origin/{{ inputs.default_branch }}...HEAD failed; fail closed before review' >&2; exit \"$status\""
+    ]
+
+    // Janitor hard gate: the governed repository's IN-SANDBOX check
+    // suite, rendered from `inputs.sandbox_check_suite` — the resolved
+    // `dispatcher.janitor.check_suite` field at its in-sandbox-gate venue
+    // (SPECIFICATION/contracts.md §"Repository integration contract").
+    // This fleet's default suite refuses workflow-file drift before the
+    // rest of its checks, and a non-zero suite MUST prevent the PR stage
+    // (livespec non-functional-requirements.md §"Orchestrator-internal
+    // Dispatcher guidance"). Script outcome routes the edges: exit 0 ->
+    // succeeded -> pr; non-zero -> failed -> fix loop. A node `script`
+    // is a rendered position for the pinned build (maintainer-confirmed
+    // 2026-08-31; dev-tooling/checks/_seam_equivalence_scan.py records
+    // the evidence), unlike the typed `timeout` above.
+    janitor [
+        label="Janitor: declared check suite"
+        shape=parallelogram
+        timeout="1800s"
+        script="{{ inputs.sandbox_check_suite }}"
+    ]
+
+    // max_visits=10 is the ungraceful runaway-loop backstop, raised from 3 by
+    // S6 / bd-ib-msnlnv. It MUST exceed every GRACEFUL bound that routes here,
+    // summed, and three nodes now carry one apiece: the janitor's own `< 3` visit
+    // guard (two Red attempts), `proof_capture` on a capture finding under its
+    // `< 3` guard (two more, added in v115), and `proof_verify` on a
+    // non-reproduction under its own `< 3` guard (two more again). SIX entries are
+    // therefore reachable on the ordinary contract path, and a node that reaches
+    // max_visits ABORTS the run at entry (VisitLimitExceeded) emitting NO outcome
+    // — so the run would die with nothing for any edge to route and nothing in the
+    // record to explain it. The graceful bounds all live on the edges; this is
+    // only the backstop behind them, at the same value `disposition` and
+    // `review_fix` carry for exactly this role.
+    fix [
+        label="Fix gate or proof findings"
+        backend="acp"
+        acp.command="{{ inputs.fix_adapter }}"
+        // Compact omits agent responses, including succeeded proof stages
+        // requesting a fix. Preserve their exact source-labelled findings.
+        fidelity="summary:high"
+        timeout="1800s"
+        max_visits=10
+        prompt="@prompts/fix.md"
+    ]
+
+    // Draft publication (S5 / bd-ib-b4u6b7; SPECIFICATION/contracts.md
+    // "Definition-of-Done and Proof-of-Done stages", ratified v114): a COMMAND
+    // node entered only from a GREEN janitor and exiting only to proof_capture.
+    // It pushes the item's publish branch and, when no pull request for that
+    // branch is open, opens one as a DRAFT.
+    //
+    // WHY A DRAFT, AND WHY HERE. Proof of Done is published as a COMMENT on the
+    // work item's pull request, so a pull request must exist BEFORE the first
+    // capture — and it must not be mergeable yet, because nothing has reviewed
+    // the tree or replayed the proof. A draft is exactly that: a real comment
+    // surface that the repository's auto-merge automation will not take. The pr
+    // node later marks it ready and arms the merge.
+    //
+    // WHY A COMMAND NODE RATHER THAN AN AGENT TURN. The publish is deterministic
+    // and the contract says so: a draft that must exist before any capture can
+    // happen must not be contingent on a model choosing to create it. The cost is
+    // that a script node cannot read the rendered goal, which is where the `pr`
+    // prompt gets the branch name from — hence the environment variable below.
+    //
+    // WHY THE BRANCH COMES FROM THE ENVIRONMENT. `CONTRACT_INPUT_NAMES` is a
+    // CLOSED set carrying no publish-branch name, so there is no input to render
+    // it from, and `verify_pr`'s own comment records why its first leg asks an
+    // ancestry question instead of spelling the branch — and why its merged-pull-
+    // request fallback reads this same variable. The Dispatcher therefore
+    // projects `LIVESPEC_PUBLISH_BRANCH` into the run environment through the
+    // SAME overlay seam that already carries `LIVESPEC_GIT_AUTHOR_NAME` for the
+    // needs_human node's emergency commit. With no value in the environment the
+    // step pushes NOTHING and says so loudly, rather than guessing a ref.
+    //
+    // IDEMPOTENCE ACROSS JANITOR RE-ENTRIES is the contract's explicit
+    // requirement and it is load-bearing rather than tidy: every accepted review
+    // fix round re-enters the janitor, so a green janitor is reached up to four
+    // times in one run. The `gh pr list --head` lookup is the whole of that
+    // idempotence — ask the forge whether an open pull request already exists for
+    // this branch, and create one ONLY when there is none.
+    //
+    // REFRESH THE DEFAULT-BRANCH BASE BEFORE EVERY PUSH. GitHub compares a new
+    // branch's workflow files with the default branch's CURRENT tip. Without
+    // this refresh, a workflow file changed only by master after dispatch looks
+    // like an older workflow-file update from this App and GitHub refuses the
+    // push for lack of workflows permission. A first publication rebases onto
+    // the current default tip. On re-entry, when origin's publish tip is an
+    // ancestor of this run's HEAD, merge the current default tip instead: that
+    // retains the already-published ancestry and keeps the subsequent plain push
+    // fast-forward. This node never force-pushes or rewrites a remote ref.
+    //
+    // THE REFRESH CAN STILL LOSE A RACE, AND THE PUSH SAYS SO (bd-ib-cvge). The
+    // pre-push hook runs between the refresh and GitHub's comparison, and a
+    // default branch that bumps workflow pins several times a day can land a
+    // bump inside that window. GitHub's refusal text is therefore matched on
+    // the push output: one more fetch and refresh, one more push, and a second
+    // refusal fails under LIVESPEC_PUBLISH_DRAFT_WORKFLOW_PERMISSION with a
+    // reason naming the moving default branch. Before this, the refusal fell
+    // through to the PUSH_FAILED arm, whose text blames an unreachable origin
+    // or a non-fast-forward prior run — the wrong remedy for this cause.
+    //
+    // A WORKFLOW FILE CHANGED BY THIS RUN IS THE OPPOSITE CASE. Rebasing cannot
+    // make that edit cease to be the run's, and the App intentionally has no
+    // workflows permission. Detect it against the pre-refresh merge base, name
+    // every workflow path in the refusal, and carry that reason through the
+    // needs_human terminal instead of attempting a push GitHub must reject.
+    //
+    // The case that DIVERGES is a re-DISPATCH whose publish branch still carries a
+    // previous run's work: this run's HEAD is not a descendant of that tip, so the
+    // node refuses before refreshing or pushing. That rejection FAILS CLOSED here
+    // under its own sentinel, which is the conservative answer and the one the
+    // contract asks for. Clearing a stale prior-run branch is a human decision,
+    // and `pr` already owns the one reconciliation the contract permits — proving
+    // the remote tip is this run's own prior push before leasing over it. Do NOT
+    // add a force push here to smooth that case over; it would hand a ref-rewriting
+    // capability to a step that was deliberately not given one.
+    //
+    // Every failure arm exits non-zero under its own sentinel and routes to
+    // needs_human via the conditional edge below, because a capture posted onto
+    // no pull request is not a proof.
+    publish_draft [
+        label="Publish the branch + open the draft PR the proof is captured on"
+        shape=parallelogram
+        timeout="1800s"
+        script="branch=\"${LIVESPEC_PUBLISH_BRANCH:-}\"; if test -z \"$branch\"; then echo 'LIVESPEC_PUBLISH_DRAFT_NO_BRANCH: no LIVESPEC_PUBLISH_BRANCH in this script environment, so the publish branch cannot be named; failing closed before proof capture' >&2; exit 1; fi; reason_path=$(git rev-parse --git-path livespec-needs-human-reason); rm -f \"$reason_path\"; default_branch=\"{{ inputs.default_branch }}\"; git fetch origin \"$default_branch\" --quiet; status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: origin/$default_branch could not be fetched, so the publish branch base cannot be refreshed; failing closed before proof capture\" >&2; exit \"$status\"; fi; base_before=$(git merge-base HEAD \"origin/$default_branch\"); status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: this run's base against origin/$default_branch could not be resolved; failing closed before proof capture\" >&2; exit \"$status\"; fi; workflow_files=$(git diff --name-only \"$base_before\"..HEAD -- .github/workflows | tr '\\n' ' '); if test -n \"$workflow_files\"; then reason=\"publish_draft refuses run-owned workflow file(s) $workflow_files because the GitHub App lacks workflows permission\"; printf '%s\\n' \"$reason\" > \"$reason_path\"; echo \"LIVESPEC_PUBLISH_DRAFT_WORKFLOW_PERMISSION: $reason\" >&2; exit 1; fi; remote_line=$(git ls-remote --heads origin \"refs/heads/$branch\"); status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: origin could not be queried for the existing publish branch $branch; failing closed before proof capture\" >&2; exit \"$status\"; fi; remote_tip=${remote_line%%[[:space:]]*}; preserve_remote_ancestry=false; if test -n \"$remote_tip\"; then git fetch origin \"refs/heads/$branch\" --quiet; status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: origin/$branch could not be fetched before refresh; failing closed before proof capture\" >&2; exit \"$status\"; fi; if git merge-base --is-ancestor \"$remote_tip\" HEAD; then preserve_remote_ancestry=true; else status=$?; if test \"$status\" -eq 1; then echo \"LIVESPEC_PUBLISH_DRAFT_PUSH_FAILED: origin/$branch carries a divergent prior run, so refusing before refresh; preserve or reconcile that stale publish branch, then re-dispatch\" >&2; exit 1; fi; echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: ancestry of origin/$branch could not be resolved; failing closed before proof capture\" >&2; exit \"$status\"; fi; fi; if test \"$preserve_remote_ancestry\" = true; then git merge --no-edit \"origin/$default_branch\"; else git rebase \"origin/$default_branch\"; fi; status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: this run could not be refreshed onto origin/$default_branch; failing closed before proof capture with the git operation state preserved\" >&2; exit \"$status\"; fi; base_after=$(git merge-base HEAD \"origin/$default_branch\"); status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: the refreshed base against origin/$default_branch could not be resolved; failing closed before proof capture\" >&2; exit \"$status\"; fi; echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH: publish_branch=$branch base_before=$base_before base_after=$base_after\" >&2; workflow_refusal='refusing to allow a GitHub App to create or update workflow'; push_out=$(git push -u origin \"HEAD:refs/heads/$branch\" 2>&1); status=$?; printf '%s\\n' \"$push_out\" >&2; if test \"$status\" -ne 0 && printf '%s\\n' \"$push_out\" | grep -qF \"$workflow_refusal\"; then echo \"LIVESPEC_PUBLISH_DRAFT_WORKFLOW_RACE: GitHub refused the publish branch for a workflow file this run did not change, because origin/$default_branch moved its workflow files while the push was in flight; refreshing once more and retrying\" >&2; git fetch origin \"$default_branch\" --quiet; status=$?; if test \"$status\" -eq 0; then if test \"$preserve_remote_ancestry\" = true; then git merge --no-edit \"origin/$default_branch\"; else git rebase \"origin/$default_branch\"; fi; status=$?; fi; if test \"$status\" -ne 0; then echo \"LIVESPEC_PUBLISH_DRAFT_REFRESH_FAILED: this run could not be refreshed again onto origin/$default_branch after the workflows-permission refusal; failing closed before proof capture with the git operation state preserved\" >&2; exit \"$status\"; fi; push_out=$(git push -u origin \"HEAD:refs/heads/$branch\" 2>&1); status=$?; printf '%s\\n' \"$push_out\" >&2; if test \"$status\" -ne 0 && printf '%s\\n' \"$push_out\" | grep -qF \"$workflow_refusal\"; then reason=\"publish_draft push refused twice by GitHub for a workflow file this run did not change, because origin/$default_branch kept changing workflow files during publication and the GitHub App lacks workflows permission; re-dispatch once the default branch is quiet\"; printf '%s\\n' \"$reason\" > \"$reason_path\"; echo \"LIVESPEC_PUBLISH_DRAFT_WORKFLOW_PERMISSION: $reason\" >&2; exit 1; fi; fi; if test \"$status\" -ne 0; then echo 'LIVESPEC_PUBLISH_DRAFT_PUSH_FAILED: origin could not be reached, or refused the publish branch as non-fast-forward because it still carries a previous run of this item; no pull request can carry the Proof of Done record, so failing closed before proof capture. Remedy: clear or reconcile the stale publish branch, then re-dispatch' >&2; exit \"$status\"; fi; existing=$(gh pr list --head \"$branch\" --state open --json number --jq '.[0].number'); status=$?; if test \"$status\" -ne 0; then echo 'LIVESPEC_PUBLISH_DRAFT_LOOKUP_FAILED: the forge could not be asked whether a pull request is already open for the publish branch; failing closed rather than risk opening a second one' >&2; exit \"$status\"; fi; if test -n \"$existing\"; then echo \"LIVESPEC_PUBLISH_DRAFT_EXISTS: pull request #$existing is already open for $branch; pushed this run HEAD and opened nothing\" >&2; exit 0; fi; gh pr create --draft --base \"{{ inputs.default_branch }}\" --head \"$branch\" --title \"$branch\" --body \"Draft opened by the publish_draft stage so the Proof of Done record can be captured on it. The pr stage sets the real title and body, marks this ready and arms auto-merge.\"; status=$?; if test \"$status\" -ne 0; then echo 'LIVESPEC_PUBLISH_DRAFT_CREATE_FAILED: no pull request is open for the publish branch and gh pr create failed; failing closed before proof capture' >&2; exit \"$status\"; fi; exit 0"
+    ]
+
+    // Proof capture (S5 / bd-ib-b4u6b7; SPECIFICATION/contracts.md
+    // "Definition-of-Done and Proof-of-Done stages" and "Proof of Done record",
+    // ratified v114): entered only from publish_draft and exiting only to review.
+    // For every `factory_captured` assertion it authors the reproduction steps,
+    // executes them VERBATIM in this sandbox, captures the proof, and posts ONE
+    // new record comment on the draft pull request.
+    //
+    // WHY IT RUNS BEFORE review RATHER THAN AFTER. The reviewer reviews the
+    // captured record alongside the code, and a captured record older than the
+    // tree under review is a blocking review finding — so the capture has to be
+    // the thing the reviewer reads, not a step that follows its verdict. That is
+    // also why `review_fix` re-enters the janitor: every accepted fix round
+    // re-earns a green janitor and therefore re-enters this pair, which keeps the
+    // record and the tree in lockstep by construction instead of by promise.
+    //
+    // IT MUST NOT MODIFY THE TREE. This node is the one surface that could
+    // quietly make the tree disagree with what the janitor passed and the
+    // reviewer is about to read. A capture that cannot be produced without a code
+    // change is an IMPLEMENTATION DEFECT, and the node reports it by ending
+    // SUCCEEDED with `preferred_label=fix` — which routes to `fix`, where a code
+    // change belongs — rather than by making the change itself.
+    //
+    // Runs on its own `proof_capture_adapter`, whose built-in default is the
+    // IMPLEMENTER entry ("Built-in ACP node defaults"): authoring reproduction
+    // steps for an arbitrary assertion and driving a browser to screenshot the
+    // result is implementation-grade work, not adjudication. It is a separate
+    // input from `implement_adapter` all the same, because the capture is what
+    // the reviewer and the replay are graded against, so its pin is a decision of
+    // its own rather than a consequence of the implementer tier moving.
+    //
+    // max_retries=1 is the same bn4 retry discipline every ACP node here carries.
+    // Deliberately NO max_visits, now for two reasons: the node is reached once
+    // per green janitor, so its visit count tracks the review loop's, and a
+    // max_visits here would hard-abort (VisitLimitExceeded) on the very visit that
+    // must re-capture for a re-reviewed tree — and, since v115, on the very visit
+    // that must route the third capture finding to `non_converged`. The graceful
+    // bound is the `< 3` guard on this node's own visit count below, exactly as
+    // `proof_verify` and the janitor fix loop carry theirs on an edge.
+    proof_capture [
+        label="Capture Proof of Done on the draft PR (read-only on the tree)"
+        backend="acp"
+        acp.command="{{ inputs.proof_capture_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        prompt="@prompts/proof-capture.md"
+    ]
+
+    // Proof replay (S6 / bd-ib-msnlnv; SPECIFICATION/contracts.md
+    // "Definition-of-Done and Proof-of-Done stages" and "Proof of Done record",
+    // ratified v114): entered from `review` and exiting to `pr` ONLY on a
+    // `verified` verdict. It replays the reproduction steps the capture record
+    // published, verbatim, on the tree it receives, and posts its own record
+    // carrying `verified` or `not_reproduced`.
+    //
+    // WHY IT RUNS AFTER review RATHER THAN BEFORE. The capture is what the
+    // reviewer reads (see `proof_capture` above); the REPLAY is what the merge
+    // depends on, so it belongs on the last edge before publication. That
+    // placement is also what makes the ship-on-review-cap escape hatch safe: the
+    // hatch skips the reviewer's approval and CANNOT skip this node, because
+    // every route into `pr` now passes through here.
+    //
+    // IT MUST NOT MODIFY THE TREE, THE STEPS, OR THE DEFINITION OF DONE. A
+    // replay that repairs its own input proves nothing about the record that was
+    // published, and a replay that rewrites the yardstick proves nothing at all.
+    // The prompt carries all three prohibitions; the routing carries the
+    // consequence — a non-reproduction is reported, never repaired here.
+    //
+    // Runs on its own `proof_verify_adapter`, whose built-in default is the entry
+    // this workflow declares for its REVIEW input ("Built-in ACP node defaults"),
+    // NOT the implementer one. The contract requires an adapter distinct from the
+    // implementer's, and the reason is the whole point of the stage: a replay
+    // sharing the implementer's tier is not an independent second leg, and a
+    // repository that pinned a cheap implementer has said nothing about how
+    // carefully its proof should be replayed.
+    //
+    // max_retries=1 is the same bn4 retry discipline every ACP node here carries.
+    // Deliberately NO max_visits: the graceful bound is the `< 3` guard on this
+    // node's own visit count below, and a max_visits here would hard-abort
+    // (VisitLimitExceeded) on the very visit that must route the third
+    // non-reproduction to `non_converged` — the same reason `janitor` carries the
+    // fix-loop guard on an edge rather than as a node attribute.
+    proof_verify [
+        label="Replay the Proof of Done on this tree (read-only on the tree)"
+        backend="acp"
+        acp.command="{{ inputs.proof_verify_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        prompt="@prompts/proof-verify.md"
+    ]
+
+    // max_retries=1 + retry_target: same bn4 retry discipline as the
+    // implement node (transient -> one auto-retry; deterministic ->
+    // park via the Blocked edge). The retry_target is structurally
+    // unreachable here — the only path into exit is
+    // `pr -> verify_pr -> exit`, and pr only falls through to verify_pr
+    // when pr did NOT fail — it exists to satisfy fabro's
+    // goal_gate_has_retry lint alongside the real node-retry budget.
+    //
+    // Runs on `pr_adapter`, NOT an implementer adapter: this node
+    // executes a fixed `git`/`gh` publish recipe (@prompts/pr.md) with no design
+    // judgement in it, so it takes the cheap Codex tier while implement / fix /
+    // review_fix stay on the implementer tier. Both adapters are rendered by the
+    // Dispatcher from the dispatch target's `dispatcher.acp_nodes` /
+    // `dispatcher.codex_models` config (commands/_acp_node_layers.py); the model rides the
+    // adapter's own `-c model=` override because fabro REJECTS `model` /
+    // `reasoning_effort` as acp node attrs, exactly as the review node's
+    // ANTHROPIC_MODEL prefix does on the Claude side.
+    pr [
+        label="Mark the draft PR ready + arm rebase auto-merge"
+        backend="acp"
+        acp.command="{{ inputs.pr_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        goal_gate=true
+        retry_target="pr"
+        prompt="@prompts/pr.md"
+    ]
+
+    // Publish breaker (bd-ib-b6zc, re-landing bd-ib-32xd's intent): the pr
+    // node is an ACP node, and an ACP turn that ERRORS can still be reported
+    // by the pinned fabro build as outcome=succeeded — measured 2026-09-08/09,
+    // when an unsupported pr-tier model slug drew an HTTP 400, the turn died,
+    // the node reported succeeded, the run took pr -> exit and finished GREEN,
+    // and no branch and no PR existed. The Dispatcher then reported a generic
+    // "no PR found for branch", which reads as a defect in the WORK ITEM
+    // rather than in the pr stage. This node is the symmetric counterpart of
+    // implement -> implementation_diff -> dead_implementer, one stage later:
+    // it asserts the pr stage's OWN postcondition before the run is allowed to
+    // reach exit, so a publish that never happened fails LOUD instead of green.
+    //
+    // WHAT IT ASSERTS, and why it is an ancestry question rather than a name
+    // lookup. The publish branch is `feat/<work-item-id>`, and the FIRST leg
+    // asks the question the name was only ever a proxy for: does origin carry a
+    // `feat/*` head that CONTAINS THIS RUN'S WORK? That is strictly stronger
+    // than a name lookup, which a re-dispatch would satisfy against the STALE
+    // branch a previous run of the same item published. This leg costs one
+    // `ls-remote` and no forge call, and it is what every healthy run takes.
+    //
+    // Ancestry rather than sha equality is load-bearing: fabro commits a stage
+    // checkpoint after a node completes, so HEAD moves past the sha the pr
+    // node pushed and an equality test would fail every healthy run. A ref
+    // whose objects are not local (another item's in-flight branch) makes
+    // merge-base fail, which is a non-hit rather than an error — hence the
+    // discarded stderr on that one call only.
+    //
+    // WHY BRANCH-ABSENCE IS NOT PUBLISH-ABSENCE (bd-ib-54ijva, finding F7 of
+    // plan definition-and-proof-of-done). This breaker predates the draft-first
+    // flow: since `publish_draft` opens the pull request EARLY, its CI is
+    // already green when `pr` marks it ready and arms auto-merge, so the merge
+    // can land — and the forge can DELETE the head branch — before this node
+    // ever looks. Measured 2026-10-04 on livespec-dev-tooling-74c65i, hp run
+    // 01M4355ZXMCKY8R1GP5QSW0WB4: every stage succeeded, PR #2308 merged at
+    // 10:54:06Z as 5f1d2a41, the branch was deleted, and the first leg reported
+    // LIVESPEC_PR_NOT_CREATED on work that was already on master; the run went
+    // to needs_human and the Dispatcher rested a MERGED item at
+    // blocked / needs-human, recoverable only through reconcile-merged.
+    //
+    // So a missing branch now falls back to the FORGE: ask for the MERGED pull
+    // requests on the publish branch and require one whose head commit is
+    // contained in this run's HEAD. `--state merged` is load-bearing, because
+    // `gh pr list` defaults to OPEN and the merged case can never answer an
+    // open-only query. The ancestry test on `headRefOid` is what keeps this
+    // from degrading into the name lookup the first leg deliberately avoids: a
+    // pull request a PREVIOUS run of this item merged keeps its `headRefOid`
+    // forever, but after a rebase-merge that object is unreachable from the
+    // default branch and a fresh sandbox clone never fetches it, so merge-base
+    // cannot resolve it and the stale pull request is a non-hit. THIS RUN'S own
+    // merged head is local, because this clone is what pushed it.
+    //
+    // THE BRANCH NAME COMES FROM THE ENVIRONMENT, which is what makes the
+    // fallback expressible at all. `CONTRACT_INPUT_NAMES` is a closed set
+    // carrying no publish-branch name, so there is no input to render it from
+    // and this node's earlier comment recorded that a script node therefore
+    // could not spell the branch. That stopped being true at S5: the Dispatcher
+    // projects `LIVESPEC_PUBLISH_BRANCH` into the run environment for the
+    // `publish_draft` command node, through the same overlay seam that carries
+    // `LIVESPEC_GIT_AUTHOR_NAME`, and this node reads the one value that step
+    // pushed to. A run reaching here with no value in the environment is off
+    // the contract path entirely — `publish_draft` fails closed on exactly that
+    // condition — so it is reported as an INABILITY TO LOOK, never as a publish
+    // that did not happen.
+    //
+    // THE FAILURES ARE TOLD APART DELIBERATELY. Only a REACHABLE origin AND an
+    // answering forge that between them carry no such publish are
+    // LIVESPEC_PR_NOT_CREATED, whose message now NAMES the branch it looked for
+    // so the refusal reads as a pr-stage failure rather than as a defect in the
+    // work item. An `ls-remote` that could not answer, a forge that could not
+    // be asked, and an unnamed publish branch all exit under the distinct
+    // LIVESPEC_PR_NOT_CREATED_CHECK_FAILED sentinel, because "we could not
+    // look" must never be reported as "the publish did not happen". Every arm
+    // fails closed, and all of them route to needs_human via the unconditional
+    // fallback edge below. The merged arm exits 0 under its own
+    // LIVESPEC_PR_MERGED_BEFORE_VERIFY sentinel: the run takes the edge into
+    // exit, and the Dispatcher's own `gh pr view` then reads the pull request as
+    // MERGED, arms nothing, and proceeds to the post-merge janitor.
+    verify_pr [
+        label="Check pr stage published a branch or already merged one"
+        shape=parallelogram
+        timeout="1800s"
+        script="refs=$(git ls-remote --heads origin); status=$?; if test \"$status\" -ne 0; then echo 'LIVESPEC_PR_NOT_CREATED_CHECK_FAILED: git ls-remote origin failed, so the pr stage could not be proven to have published; failing closed before exit' >&2; exit \"$status\"; fi; hits=$(echo \"$refs\" | grep 'refs/heads/feat/' | cut -f1 | while read sha; do git merge-base --is-ancestor \"$sha\" HEAD 2>/dev/null && echo hit; done); if test -n \"$hits\"; then exit 0; fi; branch=\"${LIVESPEC_PUBLISH_BRANCH:-}\"; if test -z \"$branch\"; then echo 'LIVESPEC_PR_NOT_CREATED_CHECK_FAILED: origin carries no publish branch and no LIVESPEC_PUBLISH_BRANCH is in this script environment, so a pull request that already merged and had its branch deleted cannot be told from a publish that never happened; failing closed before exit' >&2; exit 1; fi; oids=$(gh pr list --head \"$branch\" --state merged --json headRefOid --jq 'map(.headRefOid)|join(\" \")'); status=$?; if test \"$status\" -ne 0; then echo \"LIVESPEC_PR_NOT_CREATED_CHECK_FAILED: the forge could not be asked whether a merged pull request exists for $branch, so a publish the forge already merged cannot be told from one that never happened; failing closed before exit\" >&2; exit \"$status\"; fi; for oid in $oids; do if git merge-base --is-ancestor \"$oid\" HEAD 2>/dev/null; then echo \"LIVESPEC_PR_MERGED_BEFORE_VERIFY: origin carries no publish branch $branch because a pull request whose head $oid is contained in this run HEAD already merged and the forge deleted the branch; the pr stage published\" >&2; exit 0; fi; done; echo \"LIVESPEC_PR_NOT_CREATED: pr stage completed but origin carries no publish branch $branch containing this run HEAD, and no merged pull request for $branch carries it either, so no PR was created; likely a pr-adapter or model-refusal failure; see the pr stage output\" >&2; exit 1"
+    ]
+
+    // Review gate (Slice A / bd-ib-egms32): a Claude Opus 4.8 /
+    // high-thinking REVIEW-ONLY node between a green janitor and pr. It
+    // runs on the Claude subscription via the `review_adapter` input,
+    // which env-pins the model: `model`/`reasoning_effort` are API-only
+    // attributes fabro REJECTS on acp nodes (fabro-validate backend_valid
+    // rule), so Opus 4.8 + high effort are pinned through the adapter's
+    // OWN env (ANTHROPIC_MODEL + CLAUDE_CODE_EFFORT_LEVEL) — NOT a node
+    // attr or a model_stylesheet. max_retries=1 gives a transient ACP
+    // blip one auto-retry before the `outcome=failed` edge escalates.
+    // Deliberately NO max_visits: the review<->review_fix loop is bounded
+    // GRACEFULLY by the edge guard below (on review's own visit count); a
+    // max_visits here would hard-abort (VisitLimitExceeded) on the very
+    // visit that must route to either PR (escape hatch) or needs-human
+    // escalation.
+    review [
+        label="Review (Claude Opus 4.8): correctness + senior-engineer design lens"
+        backend="acp"
+        acp.command="{{ inputs.review_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        prompt="@prompts/review.md"
+    ]
+
+    // Disposition (S2 / bd-ib-fe574e): read-only implementation-side
+    // triage of the reviewer's BLOCKING findings before any fix work. It
+    // accepts in-scope correct findings and rejects out-of-scope,
+    // not-applicable, factually wrong, or scope-expanding findings with a
+    // one-line rationale. It has its own adapter input so the maintainer can
+    // pin adjudication independently from both review and implementation.
+    //
+    // max_visits=10 is the ungraceful runaway-loop backstop. It MUST exceed
+    // the largest supported review_fix_visit_cap override; the graceful
+    // bound remains the review edge guard below.
+    disposition [
+        label="Disposition review findings"
+        backend="acp"
+        acp.command="{{ inputs.disposition_adapter }}"
+        timeout="1800s"
+        max_retries=1
+        max_visits=10
+        prompt="@prompts/disposition.md"
+    ]
+
+    // Review-fix (Slice A / bd-ib-egms32, S2 / bd-ib-fe574e): the
+    // implementer addresses ONLY findings the disposition record marks
+    // ACCEPTED, then re-validates through the janitor. A SEPARATE node
+    // from `fix` ON PURPOSE: it keeps the working janitor<->fix hard-gate
+    // loop and its visit budget completely untouched, and decouples the
+    // two fix budgets. Mirrors `fix` (implementer adapter, re-enters
+    // janitor).
+    //
+    // max_visits=10 is the ungraceful runaway-loop backstop. It MUST exceed
+    // the largest supported review_fix_visit_cap override; the graceful
+    // bound remains the review edge guard below.
+    review_fix [
+        label="Implement accepted review findings"
+        backend="acp"
+        acp.command="{{ inputs.review_fix_adapter }}"
+        timeout="1800s"
+        max_visits=10
+        prompt="@prompts/review-fix.md"
+    ]
+
+    // Terminal dead-implementer node (C5 / bd-ib-vdpb): a deliberate
+    // dead end for unchanged implement output. It terminates non-green
+    // before janitor/review/disposition and carries the governing
+    // condition in stderr, which the Dispatcher persists with the
+    // work-item id in the fabro-run journal record.
+    dead_implementer [
+        label="Dead implementer: unchanged tree; stop before review"
+        shape=parallelogram
+        timeout="1800s"
+        script="echo 'LIVESPEC_DEAD_IMPLEMENTER: unchanged tree after implementer; no janitor/review/disposition rounds will run against dispatch base' >&2; exit 1"
+    ]
+
+    // Needs-human TERMINAL node (plan ledger-is-the-only-gate, epic
+    // bd-ib-n77djm; contracts.md "A factory run never awaits a human",
+    // ratified v093, Scenario 103). It REPLACES the former `escalate`
+    // hexagon + `abandon` pair. A hexagon parked the run in Fabro's native
+    // `blocked` status until a human ran `fabro attach`; nothing in the
+    // orchestrator ever looked at a blocked run again, so every park whose
+    // question was overtaken (re-dispatch, hand landing, hand close) held a
+    // scheduler slot until a human happened to notice — measured 17 parks
+    // in nine days in this repo, 16 of them moot by the time anyone looked.
+    //
+    // This node is the same dead-end command shape as `non_converged` and
+    // `dead_implementer`: it (1) pushes the CURRENT tree, best-effort, to a
+    // run-scoped ref `refs/heads/needs-human/<run id>` so the work survives
+    // the sandbox (never the `feat/<work-item-id>` publish branch, which the
+    // pr stage owns), (2) writes the LIVESPEC_NEEDS_HUMAN sentinel to
+    // stderr, and (3) exits 1 with NO outgoing edge, so the run terminates
+    // non-green and the foreground `fabro run` returns. The Dispatcher reads
+    // the sentinel and rests the work-item at `blocked / needs-human`
+    // (the SAME blocked outcome and exit code 4 the gate produced); the
+    // former [R] Retry / [I] Re-implement / [A] Abandon answers are now the
+    // ledger's own valves: `resolve-blocked:<id>:ready` (with rework seeded
+    // from the preserved ref, or from scratch), or leaving the item blocked.
+    // The sentinel string is shared with the Dispatcher consumer
+    // (commands/_dispatcher_plan.NEEDS_HUMAN_MARKER) — keep the two in
+    // lockstep, exactly as LIVESPEC_NON_CONVERGED is.
+    //
+    // The ref is derived ONLY from FABRO_RUN_ID; there is deliberately NO
+    // placeholder fallback. The pinned fabro exports that variable to HOOKS
+    // only, never to script nodes, so a `${FABRO_RUN_ID:-<placeholder>}`
+    // form silently collapsed every run onto ONE shared ref: the second
+    // needs-human exit clobbered or failed against the first, and the
+    // console's needs-human valve could not find the tree it was asked to
+    // rule on. With no id in the environment the step therefore pushes
+    // NOTHING and says so loudly on stderr (LIVESPEC_NEEDS_HUMAN_NO_RUN_ID),
+    // leaving the operator on the preserve-by-reference dump pointer; the
+    // run-scoped ref reappears with no change here once the fork half
+    // (bd-ib-bb41.1) exports the run id to script nodes and is re-pinned.
+    //
+    // On GitHub's workflows-permission refusal the node takes
+    // `.github/workflows` from the default branch in one more commit and pushes
+    // again (bd-ib-cvge; see the reserved graph's needs_human comment).
+    needs_human [
+        label="Needs human: terminate, preserve the tree, route the decision to the ledger"
+        shape=parallelogram
+        timeout="600s"
+        script="if test -n \"${FABRO_RUN_ID:-}\"; then ref=\"refs/heads/needs-human/$FABRO_RUN_ID\"; git add -A >/dev/null 2>&1 || true; GIT_AUTHOR_NAME=\"${LIVESPEC_GIT_AUTHOR_NAME:?missing LIVESPEC_GIT_AUTHOR_NAME}\" GIT_AUTHOR_EMAIL=\"${LIVESPEC_GIT_AUTHOR_EMAIL:?missing LIVESPEC_GIT_AUTHOR_EMAIL}\" git commit -q -m 'needs-human: preserve tree before terminating' >/dev/null 2>&1 || true; push_out=$(git push origin \"HEAD:$ref\" 2>&1); push_status=$?; if test \"$push_status\" -ne 0 && printf '%s\\n' \"$push_out\" | grep -qF 'refusing to allow a GitHub App to create or update workflow'; then default_branch=\"{{ inputs.default_branch }}\"; if git fetch origin \"$default_branch\" --quiet >/dev/null 2>&1 && git restore --source=\"origin/$default_branch\" --staged --worktree -- .github/workflows >/dev/null 2>&1 && GIT_AUTHOR_NAME=\"${LIVESPEC_GIT_AUTHOR_NAME:?missing LIVESPEC_GIT_AUTHOR_NAME}\" GIT_AUTHOR_EMAIL=\"${LIVESPEC_GIT_AUTHOR_EMAIL:?missing LIVESPEC_GIT_AUTHOR_EMAIL}\" git commit -q -m \"needs-human: take .github/workflows from origin/$default_branch so the tree can be preserved without workflows permission\" >/dev/null 2>&1; then echo \"LIVESPEC_NEEDS_HUMAN_WORKFLOWS_RESET: GitHub refused the preserved tree for a workflow file, so .github/workflows was taken from origin/$default_branch; the run's own workflow files remain in the parent commit $ref~1\" >&2; push_out=$(git push origin \"HEAD:$ref\" 2>&1); push_status=$?; fi; fi; if test \"$push_status\" -eq 0; then echo \"LIVESPEC_NEEDS_HUMAN_PRESERVED: $ref\" >&2; else echo 'LIVESPEC_NEEDS_HUMAN_PUSH_FAILED: tree not pushed; rely on the preserve-by-reference dump pointer' >&2; fi; else echo 'LIVESPEC_NEEDS_HUMAN_NO_RUN_ID: no FABRO_RUN_ID in this script environment, so no run-scoped ref exists to push and nothing was pushed; rely on the preserve-by-reference dump pointer' >&2; fi; reason_path=$(git rev-parse --git-path livespec-needs-human-reason); if test -s \"$reason_path\"; then reason=$(head -n 1 \"$reason_path\"); else reason='loop cannot auto-resolve this work-item'; fi; echo \"LIVESPEC_NEEDS_HUMAN: $reason; run terminated, work preserved by reference, decision routed to the ledger (blocked / needs-human)\" >&2; exit 1"
+    ]
+
+    // Terminal non-converged node (work-item livespec-impl-beads-rw75ym,
+    // Scenario 14): the "non-converged" EXIT EDGE that routes a fix-loop-cap
+    // exhaustion BACK to the Dispatcher (-> needs-regroom) within Fabro's
+    // EXISTING DOT vocabulary — a plain dead-end command node, the same
+    // shape the `abandon` terminal uses, requiring NO Fabro platform or
+    // setup change. The fix-loop CAP is the unchanged `< 3` visit guard on
+    // the janitor->fix edge below (two fix attempts); the THIRD Red, which
+    // used to park at the human gate, now routes HERE instead. The script
+    // emits the LIVESPEC_NON_CONVERGED sentinel to stderr and exits 1
+    // (deterministic, never-retried), so the run terminates non-green and
+    // the foreground `fabro run` surfaces the sentinel in its output. The
+    // Dispatcher's `is_non_convergence_outcome` matches that sentinel in
+    // the failed outcome's detail and marks the slice `needs-regroom`
+    // (escalate-don't-drop), never infinite-retrying. The sentinel string
+    // is shared with the Dispatcher consumer
+    // (commands/_dispatcher_plan.NON_CONVERGED_MARKER) — keep the two in
+    // lockstep. A dead end (no outgoing edge) is what makes the run
+    // terminate rather than loop; same fabro-validate-accepted shape as
+    // `abandon`.
+    non_converged [
+        label="Non-converged: fix-loop cap hit; route back to Dispatcher (needs-regroom)"
+        shape=parallelogram
+        timeout="1800s"
+        script="echo 'LIVESPEC_NON_CONVERGED: janitor fix-loop cap hit without converging; routing back to the Dispatcher for needs-regroom' >&2; exit 1"
+    ]
+
+    start -> dod_gate
+
+    // Definition-of-Done gate routing (S3 / bd-ib-s5fj5e). A gate failure is
+    // the structured needs-human ending of @prompts/dod-gate.md, carrying the
+    // Definition-of-Done findings as its failure reason; the Dispatcher reads
+    // them off the failed fabro-run stage detail and rests the item at
+    // `blocked / needs-human` with the findings as the recorded question. A
+    // coherent Definition of Done FALLS THROUGH to implement.
+    //
+    // THE FALLTHROUGH IS UNCONDITIONAL, AND THAT IS LOAD-BEARING RATHER THAN
+    // STYLISTIC. Inserting this node CONSUMED `start`'s own fallthrough, and
+    // fabro rejects a node whose every outgoing edge carries a condition
+    // (`all_conditional_edges`) — the defect that took the whole factory down
+    // twice, on `review` in 2026-07-16 and on `pr`/`verify_pr` in release
+    // 0.146.0, each time dying before any node ran. So the shape here is the one
+    // `implement -> implementation_diff -> dead_implementer` already uses: name
+    // the exceptional route with a condition, and let the ordinary route be the
+    // unconditional fallback that conditional edges outrank.
+    dod_gate -> needs_human [label="Blocked", condition="outcome=failed"]
+    dod_gate -> implement
+
+    // A failed implement (structured needs-human ending, see
+    // prompts/implement.md) routes to the needs_human terminal —
+    // conditional edges take priority over the unconditional fallback;
+    // everything else proceeds to the diff breaker before any downstream
+    // spend.
+    implement -> needs_human [label="Blocked", condition="outcome=failed"]
+    implement -> implementation_diff
+
+    // Changed-tree routing: exit 0 means `git diff --quiet` found a
+    // diff, so the existing janitor -> review path remains intact.
+    // Non-zero means either a byte-identical tree or an inability to
+    // prove the tree changed; both fail closed before review.
+    implementation_diff -> janitor          [label="changed", condition="outcome=succeeded"]
+    implementation_diff -> dead_implementer [label="unchanged or unprovable"]
+
+    // Janitor outcome routing: exit 0 -> Green -> review (-> pr on
+    // approve); non-zero -> Red -> fix while the loop budget remains,
+    // then Exhausted -> non_converged.
+    //
+    // The fix-loop CAP is enforced HERE, as a visit guard on the
+    // janitor's own visit count, NOT by fix's max_visits alone:
+    // verified against fabro v0.254.0 source (fabro-core executor.rs),
+    // a node that reaches max_visits ABORTS the whole run at entry
+    // (Error::VisitLimitExceeded) — it does NOT emit outcome=failed,
+    // so no edge could route the exhaustion onward. Janitor visit N means
+    // N-1 completed fix attempts; the `< 3` guard allows two fix attempts,
+    // then the third Red falls through to the `non_converged` terminal.
+    // fix's max_visits is the abort backstop behind that guard, and it is no
+    // longer sized against this loop alone: `proof_capture` and `proof_verify`
+    // route here too, so it sits at 10 (see the node's own comment above).
+    //
+    // Scenario 14 (work-item livespec-impl-beads-rw75ym): the Exhausted
+    // edge routes to `non_converged` (the non-converged EXIT EDGE back to
+    // the Dispatcher -> needs-regroom), NOT to `escalate`. A non-converging
+    // slice is the empirical "too big" signal and belongs in grooming, not
+    // the in-loop human gate — the Dispatcher marks it `needs-regroom` and
+    // surfaces it (escalate-don't-drop), rather than the operator answering
+    // [R]/[I]/[A] only to face the same non-convergence again.
+    // S5 / bd-ib-b4u6b7: the Green edge now targets `publish_draft`, which
+    // publishes the draft pull request and falls through to `proof_capture`;
+    // `proof_capture` is what reaches `review`. The old direct `janitor -> review`
+    // edge is GONE on purpose — leaving it in place would let every run reach the
+    // reviewer with no draft and no captured record while both new nodes still
+    // existed, and the graph would still look correct.
+    janitor -> publish_draft [label="Green", condition="outcome=succeeded"]
+    janitor -> fix [label="Red", condition="outcome!=succeeded && context.internal.node_visit_count < 3"]
+    janitor -> non_converged [label="Exhausted (fix-loop cap)"]
+    fix -> janitor
+
+    // Draft-publication routing. A publish that could not reach origin parks the
+    // item at needs_human: there is no pull request for a record to land on, and
+    // capturing proof into a void is worse than stopping. The ordinary route is
+    // the UNCONDITIONAL fallthrough, which is what keeps `all_conditional_edges`
+    // from rejecting this node — inserting it CONSUMED the janitor's Green
+    // fallthrough position, so the fallthrough has to reappear here.
+    publish_draft -> needs_human [label="Blocked", condition="outcome=failed"]
+    publish_draft -> proof_capture
+
+    // Proof-capture routing. Four outcomes, and the split between the first two
+    // is the contract's own: a capture that CANNOT be produced without a code
+    // change is an implementation defect, so the node ends SUCCEEDED carrying
+    // `preferred_label=fix` and routes to `fix` where the loop can still
+    // converge; a FAILED outcome is the structured needs-human ending every other
+    // ACP node shares. `review` is the ordinary unconditional fallthrough.
+    //
+    // THE FIX ROUTE IS CAPPED (v115, work-item bd-ib-2s3kkq), and until it was,
+    // this was the one proof edge carrying no bound at all. `proof_verify` has
+    // had a `< 3` guard since S6; this edge had none, so a capture that kept
+    // finding the same defect re-entered `fix` until `fix.max_visits` aborted the
+    // run AT ENTRY (VisitLimitExceeded) emitting NO outcome — the run died with
+    // nothing for any edge to route and nothing in the record to explain it.
+    //
+    // The guard is the same shape and the same literal as the replay's, for the
+    // same two reasons. It reads this node's OWN visit count rather than relying
+    // on `max_visits`, because a max_visits abort cannot be routed onward. And
+    // the bound is a LITERAL 3 rather than a rendered input, because
+    // constraints.md forbids these nodes from referencing an `inputs.*` token
+    // inside an edge condition: the engine expands graph templates at run-create
+    // time, so an un-expanded token in a condition is a guard that never matches
+    // — it would read as present and bound nothing. Visits 1 and 2 route a
+    // capture finding back to `fix`; the THIRD falls to `non_converged`, which the
+    // Dispatcher reads as `needs-regroom` — a Definition of Done that will not
+    // capture three times running is the empirical too-big signal and belongs in
+    // grooming. The two guards are exact complements (`< 3` and `>= 3`), so no
+    // `fix` verdict can slip between them into the `review` fallthrough and reach
+    // the reviewer with the defect unreported.
+    //
+    // THE GUARD COUNTS VISITS, NOT FINDINGS, and the difference is real rather
+    // than pedantic: this node is re-entered once per accepted review-fix round
+    // too, so a run that spends two review rounds before its first capture
+    // finding sends that FIRST finding to `non_converged`. Counting findings would
+    // need state the engine does not carry on an edge, and of the two directions
+    // this is the conservative one — an exhausted slice reaches grooming rather
+    // than looping. The contract calls these visit caps for that reason.
+    proof_capture -> needs_human [label="Blocked", condition="outcome=failed", weight=100]
+    proof_capture -> fix [label="capture needs a code change", condition="preferred_label=fix && context.internal.node_visit_count < 3"]
+    proof_capture -> non_converged [label="Exhausted (proof-capture cap)", condition="preferred_label=fix && context.internal.node_visit_count >= 3"]
+    proof_capture -> review
+
+    // Review gate routing (Slice A / bd-ib-egms32, blocking-by-default
+    // revision bd-ib-6ytmik). The review node emits a routing verdict
+    // (prompts/review.md) -> {"preferred_next_label": "approve"|"fix"}
+    // on its last line. fabro renders the `inputs.*` tokens below at
+    // run-create time; the Dispatcher passes the effective per-item policy
+    // values, and workflow.toml supplies the safe defaults for direct runs.
+    //
+    // `review_fix_visit_cap` is intentionally one larger than the configured
+    // `dispatcher.review_fix_cap`: the setting counts FIX ROUNDS, while
+    // `context.internal.node_visit_count` counts review VISITS including the
+    // first review. The default cap=3 therefore renders as visit guard `< 4`,
+    // allowing exactly three disposition/review_fix rounds before a fourth
+    // blocking review reaches the cap disposition. disposition.max_visits and
+    // review_fix.max_visits are hard abort backstops for the same budget and
+    // MUST exceed the largest supported review_fix_visit_cap override.
+    //
+    // S6 / bd-ib-msnlnv: BOTH former `review -> pr` edges now target
+    // `proof_verify`, and no `review -> pr` edge remains. The contract requires it
+    // of the ship-on-review-cap edge specifically — `merge_on_review_cap` must
+    // skip only the reviewer's approval and never the replay — and the APPROVE
+    // edge moves for the same reason one step sharper: approve is the ORDINARY
+    // path, so leaving it on `pr` would publish almost every run unreplayed while
+    // the escape hatch alone looked correct. Nothing reaches `pr` except through
+    // the replay now, which is what makes "no unreplayed proof ships" a property
+    // of the graph rather than of the reviewer's mood.
+    //
+    // Routing:
+    //   - approve                 -> proof_verify, by explicit condition only.
+    //   - fix & under cap         -> disposition, then accepted findings route
+    //                                to review_fix and all-rejected rounds
+    //                                route directly back to review.
+    //   - fix & cap + escape hatch -> proof_verify, only when merge_on_review_cap
+    //                                is rendered to outcome=succeeded.
+    //   - fix & cap + default      -> needs_human; the reviewer said fix
+    //                                this, so the run must not ship.
+    //   - node failure             -> needs_human; weight=100 keeps that
+    //                                deterministic against other conditions.
+    review -> needs_human [label="Blocked", condition="outcome=failed", weight=100]
+    review -> disposition [label="fix", condition="preferred_label=fix && context.internal.node_visit_count < {{ inputs.review_fix_visit_cap }}"]
+    review -> proof_verify [label="approve", condition="preferred_label=approve"]
+    review -> proof_verify [label="ship on review cap", condition="preferred_label=fix && context.internal.node_visit_count >= {{ inputs.review_fix_visit_cap }} && outcome={{ inputs.merge_on_review_cap_outcome }}"]
+    review -> needs_human [label="needs-human", condition="preferred_label=fix && context.internal.node_visit_count >= {{ inputs.review_fix_visit_cap }} && outcome!={{ inputs.merge_on_review_cap_outcome }}"]
+    review -> needs_human [label="unmatched review outcome"]
+    disposition -> needs_human [label="Blocked", condition="outcome=failed", weight=100]
+    disposition -> review_fix [label="fix accepted", condition="preferred_label=fix"]
+    disposition -> review     [label="all rejected", condition="preferred_label=all_rejected"]
+    disposition -> needs_human [label="unmatched disposition outcome"]
+    review_fix -> janitor
+
+    // Proof-replay routing (S6 / bd-ib-msnlnv). The replay node emits a routing
+    // verdict on its last line (prompts/proof-verify.md), mapping its RECORD
+    // verdict onto the label vocabulary the graph already uses:
+    // `verified` -> approve, `not_reproduced` -> fix. Reusing the existing
+    // vocabulary is what constraints.md asks of these nodes, so the graph stays
+    // loadable on the engine the factory moves onto.
+    //
+    // THE `pr` EDGE CARRIES A CONDITION, AND THAT IS THE WHOLE POINT OF THE NODE.
+    // The contract forbids any route from here to `pr` on a verdict other than
+    // `verified`, so publication cannot be the unconditional fallthrough — a
+    // fallthrough to `pr` would ship every unreadable verdict and every
+    // non-reproduction, which is exactly what this stage exists to stop. The
+    // fallthrough position therefore goes to `needs_human`, which also satisfies
+    // `all_conditional_edges` (a node whose every outgoing edge is conditional is
+    // rejected outright by the engine, before any node runs).
+    //
+    // THE VISIT BOUND IS A LITERAL 3, not a rendered input, because
+    // constraints.md forbids these nodes from referencing an `inputs.*` token
+    // inside an edge condition: the engine expands graph templates at run-create
+    // time and an un-expanded token in a condition is a guard that never matches.
+    // It reads this node's OWN visit count, exactly as the janitor's fix-loop
+    // guard reads the janitor's: visits 1 and 2 route a non-reproduction back to
+    // `fix`, and the THIRD falls to `non_converged`, which the Dispatcher reads as
+    // `needs-regroom` — a proof that will not replay three times running is the
+    // empirical too-big signal and belongs in grooming. The two guards are exact
+    // complements (`< 3` and `>= 3`), so no `fix` verdict can slip between them
+    // into the fallthrough.
+    //
+    // A `fix` round re-enters `janitor`, which re-earns a green janitor and
+    // therefore re-enters `publish_draft`, `proof_capture` and `review` before
+    // returning here — so a proof loop costs a review visit, counted against the
+    // review-fix budget like any other, which is what the contract says it is.
+    proof_verify -> needs_human   [label="Blocked", condition="outcome=failed", weight=100]
+    proof_verify -> pr            [label="verified", condition="preferred_label=approve"]
+    proof_verify -> fix           [label="not reproduced", condition="preferred_label=fix && context.internal.node_visit_count < 3"]
+    proof_verify -> non_converged [label="Exhausted (proof-replay cap)", condition="preferred_label=fix && context.internal.node_visit_count >= 3"]
+    proof_verify -> needs_human   [label="unmatched proof_verify outcome"]
+
+    // A failed pr stage (hook rejection, gh failure — structured
+    // needs-human ending per prompts/pr.md) terminates at needs_human too.
+    // A pr stage that reports success is NOT trusted on its own word: it
+    // falls through to the publish breaker, which owns the only edge into
+    // exit. An unpublished "success" therefore lands at needs_human, carrying
+    // the LIVESPEC_PR_NOT_CREATED sentinel the Dispatcher journals from the
+    // failed fabro-run stage detail, rather than finishing the run green with
+    // nothing published.
+    //
+    // BOTH NODES KEEP AN UNCONDITIONAL FALLBACK, and that is the whole reason
+    // this breaker is landing a second time. bd-ib-32xd (af366d59, released as
+    // 0.146.0) wired `pr -> verify_pr -> exit` with three CONDITIONAL edges and
+    // no fallthrough on either node; fabro rejects that with
+    // `all_conditional_edges` on `pr` AND on `verify_pr`, so every dispatch on
+    // that build died before running a node and the graph was reverted
+    // (bc71a9eb). Note it is both nodes, not just the new one — inserting a
+    // breaker CONSUMES the source node's own fallthrough. The shape below is
+    // the one `implement -> implementation_diff -> dead_implementer` already
+    // uses: name the exceptional route with a condition, and let the ordinary
+    // route be the unconditional fallback that conditional edges outrank.
+    pr -> needs_human [label="Blocked", condition="outcome=failed"]
+    pr -> verify_pr
+    verify_pr -> exit        [label="published", condition="outcome=succeeded"]
+    verify_pr -> needs_human [label="not published or unprovable"]
+}

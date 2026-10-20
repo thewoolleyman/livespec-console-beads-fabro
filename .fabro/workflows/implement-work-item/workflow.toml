@@ -38,8 +38,10 @@
 # [[run.prepare.steps]] block per fleet member (from livespec master's
 # .livespec-fleet-manifest.jsonc, fetched host-side via `gh api`; the dispatch
 # target is excluded) so cross-repo checks resolve family siblings
-# under /workspace/siblings inside the sandbox (work-item
-# livespec-impl-beads-8m2), and (c) APPENDS an
+# under /livespec-siblings inside the sandbox — OUTSIDE the target
+# repository's clone on either engine layout, since the Petri-era engine
+# checks that clone out at the workspace root itself (work-items
+# livespec-impl-beads-8m2, bd-ib-3eleqo), and (c) APPENDS an
 # [environments.livespec-ci.env] table carrying the real
 # CLAUDE_CODE_OAUTH_TOKEN value read from the Dispatcher's process
 # environment and a GITHUB_TOKEN freshly minted from the GitHub App
@@ -162,29 +164,29 @@ pull_requests = "write"
 # defaulted to Haiku. The first dispatch after this default switch lands must
 # verify the resolved model in the run transcript; an adapter string assertion
 # does not prove runtime behavior.
-implement_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
-fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
-review_fix_adapter = "ANTHROPIC_MODEL=claude-opus-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
+implement_adapter = '{"agent": "claude-acp", "model": "claude-opus-5", "effort": "high"}'
+fix_adapter = '{"agent": "claude-acp", "model": "claude-opus-5", "effort": "high"}'
+review_fix_adapter = '{"agent": "claude-acp", "model": "claude-opus-5", "effort": "high"}'
 
-# ACP adapter for the PR node. This is the SINGLE SOURCE of the publish
-# node's fleet default (contracts.md section "Codex ACP node model pins",
-# v107): a Claude adapter pinned to Claude Haiku 4.5 at high effort. Haiku is
-# the cheap model this scripted `git`/`gh` node warrants, it is model-agnostic
-# (no OpenAI/Codex catalog exposure), and pinning it — rather than leaving the
-# model un-set — avoids the silent-smaller-model trap older claude-agent-acp
-# builds had. Its PACKAGE version is pinned by the sandbox image; see the
-# version-less rationale in the adapter-defaults block above. That bare-`fabro
-# run` property is also why these defaults do NOT use `npx --no-install`:
-# outside the family sandbox image there is no baked global, and the download
-# is the intended fallback rather than a failure.
+# NO PUBLICATION ADAPTER INPUT, AND ITS ABSENCE IS THE DECLARATION
+# (contracts.md section "Definition-of-Done and Proof-of-Done stages" ->
+# "Scripted publication and proof-head integrity", ratified v121). Publication
+# for an IMPLEMENTATION workflow is three COMMAND stages — `pr_refresh`,
+# `pr_refresh_head` and `pr` — so there is no adapter to configure and no
+# credential to acquire for them. Declaring the input anyway would make the
+# Dispatcher render an adapter nothing reads, and an operator reading the
+# dispatch record would see a publish tier that decides nothing.
 #
-# The Dispatcher overrides this input via `fabro run --input pr_adapter=...`
-# ONLY when the target repo explicitly configures `dispatcher.codex_models.pr`
-# (routing the publish node to a Codex model) or `dispatcher.acp_nodes.pr`
-# (any adapter); absent that, this default stands. It exists as a SEPARATE
-# input from the implementer adapters so the publish node's model moves
-# independently of theirs.
-pr_adapter = "ANTHROPIC_MODEL=claude-haiku-4-5 CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
+# The retired input SURVIVES on the groom-kind variant alone
+# (`.fabro/workflows/groom-work-item/workflow.toml`, which declares it under
+# its own name), because what that variant's `pr` node publishes is a FILING
+# PLAN for the host rather than a Git branch or a pull request, and encoding an
+# approved cut IS a judgement. A repository-level `dispatcher.acp_nodes.pr`
+# entry is therefore honoured for that variant and IGNORED-and-journaled for
+# this one, while a per-dispatch `--acp-node pr=...` override on this workflow
+# refuses before the item is claimed: it asks for an adapter for a command
+# stage, and silently discarding it would leave the operator reading a journal
+# that said their override was honoured.
 
 # ACP adapter for the REVIEW node (Slice A / bd-ib-egms32) — the Claude
 # subscription, pinned to Opus 4.8 + high thinking. The model CANNOT be set
@@ -219,8 +221,8 @@ pr_adapter = "ANTHROPIC_MODEL=claude-haiku-4-5 CLAUDE_CODE_EFFORT_LEVEL=high npx
 # run does not substitute; CI never runs the review node.
 review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
-# ACP adapter for the DISPOSITION node. Defaults to the same MODEL-un-pinned
-# Claude adapter as `pr_adapter` — the same PACKAGE as `implement_adapter`, but
+# ACP adapter for the DISPOSITION node. Defaults to a MODEL-un-pinned
+# Claude adapter — the same PACKAGE as `implement_adapter`, but
 # with no ANTHROPIC_MODEL / CLAUDE_CODE_EFFORT_LEVEL prefix, so it does not
 # inherit the implementer tier. Maintainers can pin the disposition model
 # independently by prefixing adapter-owned env assignments here, using the same
@@ -228,6 +230,58 @@ review_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=h
 # package version is pinned by the sandbox image, as for every Claude adapter
 # here; see the version-less rationale in the adapter-defaults block above.
 disposition_adapter = "npx -y @agentclientprotocol/claude-agent-acp"
+
+# ACP adapter for the DOD_GATE node (S3 / bd-ib-s5fj5e). Its built-in default is
+# the entry this workflow declares for its REVIEW input — contracts.md section
+# "Built-in ACP node defaults" puts `dod_gate` and `proof_verify` there, not on
+# the implementer entry. The reason is what the node does: grading whether a
+# Definition of Done is coherent against its referenced spec heading is a
+# judgement of the same kind the review node makes, and it must NOT inherit a
+# tier a target moved for IMPLEMENTATION — a repo that pins a cheap implementer
+# has said nothing about how carefully its Definitions of Done should be graded.
+#
+# THIS VALUE IS THEREFORE A DELIBERATE DUPLICATE of `review_adapter` above, and
+# the two are held equal by test, not by hope. Keep them in lockstep: moving the
+# review pin without moving this one silently downgrades the gate. The Opus
+# pin's model-versus-adapter rationale, the API-only-attribute constraint that
+# forces the model into the adapter's own env, and the version-less package
+# rationale all live on `review_adapter` — they are not restated here.
+dod_gate_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
+
+# ACP adapter for the PROOF_CAPTURE node (S5 / bd-ib-b4u6b7). Its built-in
+# default is the entry this workflow declares for its IMPLEMENT input —
+# contracts.md section "Built-in ACP node defaults" groups `proof_capture` with
+# `implement` / `fix` / `review_fix`, NOT with the adjudication nodes. The reason
+# is what the node does: authoring reproduction steps for an arbitrary assertion,
+# driving a headless browser to screenshot the result, and uploading the assets
+# is implementation-grade work, and a capture the node could not produce is
+# reported as an implementation defect rather than adjudicated.
+#
+# THIS VALUE IS THEREFORE A DELIBERATE DUPLICATE of `implement_adapter` above,
+# and the two are held equal by test, not by hope. It is a SEPARATE INPUT all the
+# same: the captured record is what the reviewer reads and what the replay is
+# graded against, so pinning the capture is a decision of its own rather than a
+# consequence of an implementer tier moving. The shared `acp_adapter` is
+# deliberately not a candidate for it.
+proof_capture_adapter = '{"agent": "claude-acp", "model": "claude-opus-5", "effort": "high"}'
+
+# ACP adapter for the PROOF_VERIFY node (S6 / bd-ib-msnlnv). Its built-in default
+# is the entry this workflow declares for its REVIEW input — the same table that
+# puts `dod_gate` there puts this node there, and NOT on the implementer entry its
+# `proof_capture` sibling takes. The contract says so directly: the node MUST run
+# on an adapter distinct from the implementer's, because a replay sharing the
+# implementer's tier is not an independent second leg, and a repository that
+# pinned a cheap implementer has said nothing about how carefully its own proof
+# should be replayed.
+#
+# THIS VALUE IS THEREFORE A DELIBERATE DUPLICATE of `review_adapter` above, held
+# equal to it — and distinct from `implement_adapter` — by test rather than by
+# hope. Keep them in lockstep: moving the review pin without moving this one
+# silently downgrades the last gate before publication. The Opus pin's
+# model-versus-adapter rationale, the API-only-attribute constraint that forces
+# the model into the adapter's own env, and the version-less package rationale all
+# live on `review_adapter` — they are not restated here.
+proof_verify_adapter = "ANTHROPIC_MODEL=claude-opus-4-8[1m] CLAUDE_CODE_EFFORT_LEVEL=high npx -y @agentclientprotocol/claude-agent-acp"
 
 # Review fix rounds count implementer repair rounds, not review visits. The
 # workflow guard reads review node visits, so the default three fix rounds render
@@ -383,15 +437,48 @@ enabled = true
 push = false
 
 [run.checkpoint]
-# Hooks stay ON for checkpoint commits: the corrected content-trigger
-# red-green-replay gate (livespec-dev-tooling v0.11.0, bumped
-# family-wide) passes machine/empty checkpoint commits naturally, so
-# the interim skip_git_hooks=true escape from the probe is retired.
-# Gate-heavy repositories can legitimately spend minutes in those hooks.
-# Fabro's stock 30-second checkpoint budget destroyed completed work when
-# `git add` or `git commit` crossed that ceiling (ledger bd-ib-6ka).
-commit_timeout = "10m"
-skip_git_hooks = false
+# HOOKS ARE SKIPPED for checkpoint commits, which REVERSES the choice this
+# block used to argue for. The run-branch checkpoint is a MACHINE commit of
+# whatever a node left on disk, and with hooks on it ran this repository's
+# pre-commit aggregate as the THIRD run of that suite in one node cycle: the
+# janitor node runs the declared check suite after implement, and
+# `publish_draft`'s pre-push runs the aggregate again. Those two route a
+# failure into a fix loop; this one ended the run at `workflow_error`.
+# Measured on hp from the dispatch journals and per-run `fabro events` of
+# every repo dispatching there, 2026-10-09..12: 27 runs died on a failed
+# checkpoint commit, the `checkpoint.failed` stderr tail naming per-file
+# coverage or coverage in 15 (a node that ended mid-Red-Green -- a REPAIRABLE
+# tree), the master-CI-green gate in 5, the red-green-replay commit-msg gate
+# in 2, and a 900s timeout in 4. Ledger bd-ib-jb53pu; measurement in
+# plan/checkpoint-commit-hook-failures/research/
+# 001-measured-checkpoint-failures-2026-10-12.md. The deployed engine
+# (fabro 0.254.0 8869e88, `sandbox_git.rs`) passes `--no-verify` only when
+# `skip_git_hooks` is true, so this one key is the whole control. What the
+# retired rationale got RIGHT is that the red-green-replay gate passes a
+# machine/empty checkpoint commit naturally; what it missed is that the gate
+# is not the only thing a pre-commit aggregate runs.
+# BUDGET. With the hooks gone, the commit this budget bounds is a bare
+# `git add` plus `git commit`, so the budget no longer has to cover a check
+# aggregate -- which is what the two previous values were sized for, and what
+# made them climb. FLOOR: Fabro's stock 30-second budget destroyed completed
+# work when `git add` or `git commit` crossed that ceiling (ledger bd-ib-6ka),
+# so the value must stay generously above it. CEILING: the Dispatcher's
+# credential-lifetime floor bills this budget three times per attempt
+# (`_dispatcher_credential_requirement.py`), and the Codex freshness gate
+# demands that floor from a ten-day Codex token. Measured on master 5445d418
+# with this repository's own resolver: 15m resolved a 796830-second floor
+# (9.22 days -- most of a Codex token's whole life), 5m resolves 519630 (6.01
+# days), 2m resolves 436470. Five minutes is ten times the stock budget and
+# keeps the margin the "no checkpoint budget expiry" plan assertion needs.
+# The history the climb came from, kept because it says what NOT to re-try:
+# the 10m predecessor died on 2026-10-08/09 (hp runs 01M4F05QCN3J,
+# 01M4FCFHVY7A and 01M4FCCPEABA, ledger bd-ib-ctagnf) because a Green amend
+# staging impl plus more than one test file ran the full check aggregate in
+# pre-commit, 12-40 minutes in a contended sandbox. Raising the budget again
+# to outlast a hook is the move this block retired; `skip_git_hooks` above is
+# the remedy, and `tests/test_factory_checkpoint_declaration.py` binds both.
+commit_timeout = "5m"
+skip_git_hooks = true
 exclude_globs = ["**/.venv/**", "**/node_modules/**", "**/.cache/**"]
 
 # Our pr graph node owns the family `gh pr` flow (body conventions,

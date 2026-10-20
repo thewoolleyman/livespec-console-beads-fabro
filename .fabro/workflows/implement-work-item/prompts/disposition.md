@@ -7,7 +7,16 @@ implementation-side triage step.
 
 ## Your assignment (unchanged)
 
-{{ goal }}
+The complete work-item goal is in the Fabro-injected `Goal:` preamble above.
+
+This node uses `summary:medium` fidelity, so that preamble is a BOUNDED
+per-stage summary rather than the review stage's transcript — deliberately,
+because a review turn's context can outgrow this node's own context window
+and then no disposition decision is reachable at all. The review stage's
+verdict and findings do not arrive through the preamble: they arrive in the
+run-context key named below, which Fabro merges whatever the fidelity. So a
+preamble that does not quote the review is NORMAL and is not a reason to fail
+closed; an absent or malformed `review_findings_r<N>` key is.
 
 ## What to do
 
@@ -58,3 +67,29 @@ finding, or need a human decision, do NOT guess. End instead with the
 structured needs-human ending, as a JSON object on the last line:
 
     {"outcome": "failed", "failure_reason": "<what blocked disposition and what is needed>"}
+
+## Ending the turn — leave nothing running in the background
+
+The ACP turn this stage runs inside cannot COMPLETE while the agent
+session still has work outstanding, so anything you leave running holds
+the turn open until the node's own timeout kills it — and work that had
+already finished is then recorded as a timed-out stage instead of the
+green result it was. Measured repeatedly on this factory: stages that had
+already emitted their final message sat idle for 28, 75 and 89 minutes
+before the ceiling fired, and four further runs were lost in one night to
+a single backgrounded command.
+
+So, in this stage:
+
+- NEVER background a tool call. Do not pass `run_in_background` (or any
+  other detach flag) to a shell tool, and do not start a poller, a
+  watcher, a `tail -f`, or a loop that waits for a condition.
+- Run a long command in the FOREGROUND and raise THAT call's own timeout
+  instead. A full check suite, a dependency install, or a long
+  verification wait belongs in ONE blocking call whose output you read,
+  never in a background job you poll.
+- If something IS still running when you are ready to finish, STOP it
+  before your final message (`TaskStop`, `KillShell`, or whatever kills
+  what you started) and confirm it is gone.
+- Your final message must be the LAST thing the turn does. Do not start
+  any new tool call, probe, or cleanup after it.
