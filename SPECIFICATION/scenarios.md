@@ -1422,3 +1422,37 @@ Scenario: A roster field the orchestrator does not publish stays un-built
   Then the last-session cell renders as explicitly absent
   And the console does not compute a substitute from comments, timestamps, or any other field
 ```
+
+## Scenario 34 -- A dispatch resolves its factory through the host's factory registry
+
+```mermaid
+flowchart LR
+  Committed["committed .livespec.jsonc dispatcher.factories"]
+  Legacy["legacy entry: registry true, no server, no docker_host"]
+  Default["dispatcher.default_factory names legacy"]
+  Rendered["host-rendered /etc/livespec/fabro-factories.json"]
+  Server["Fabro server the registry maps legacy to"]
+
+  Committed --> Legacy
+  Default --> Legacy
+  Legacy --> Rendered --> Server
+```
+
+```gherkin
+Feature: Factory routing names no machine in committed configuration
+  As a LiveSpec operator
+  I want this repository's committed factory table to name no machine
+  So that which Fabro server runs a dispatch is decided only by the fleet's factory registry
+
+Scenario: The committed factory table is registry-backed
+  Given this repository's committed `.livespec.jsonc`
+  When its `dispatcher.factories` table is read
+  Then every entry declares `"registry": true`
+  And no entry carries a `server` or a `docker_host` value
+  And `dispatcher.default_factory` names `legacy`
+
+Scenario: A dispatch with no explicit factory lands where the registry maps legacy
+  Given the dispatching host has rendered `/etc/livespec/fabro-factories.json` from the fleet factory registry
+  When an item of this repository is dispatched with no explicit factory
+  Then its Fabro run is created on the server address that file maps `legacy` to
+```

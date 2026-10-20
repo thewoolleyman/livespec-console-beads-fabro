@@ -265,11 +265,16 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // and no rendering of a plan outside the Plans view); spec.md's Terminology
     // and control-plane edits carry no new keyword line:
     // 286 normative clauses, 22/160/22/82.
+    // The v054 factory-routing revision adds a constraints.md `## Factory
+    // routing` section with two clauses (every committed `dispatcher.factories`
+    // entry is registry-backed and names no machine; `default_factory` names
+    // `legacy`), both carried by Scenario 34:
+    // 288 normative clauses, 22/160/24/82.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
         ("contracts.md", 160),
-        ("constraints.md", 22),
+        ("constraints.md", 24),
         ("non-functional-requirements.md", 82),
     ];
     let mut total = 0;
@@ -280,7 +285,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 286,
+        total, 288,
         "total normative clauses across the console spec"
     );
     Ok(())

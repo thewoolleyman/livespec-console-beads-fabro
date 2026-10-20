@@ -68,3 +68,16 @@ wire form is in `contracts.md` -> Dispatcher Policy Settings.
 - The console MUST NOT reach around the orchestrator to write a setting the
   orchestrator owns; it MUST issue every write through the orchestrator's
   published command surface.
+
+## Factory routing
+
+Every entry this repository commits in `.livespec.jsonc` under
+`dispatcher.factories` MUST be registry-backed: it declares
+`"registry": true` and carries no `server` and no `docker_host` value, so
+no committed factory entry names a machine. Which Fabro server answers to
+a factory name is bound only in the fleet gitops inventory's factory
+registry (livespec-dev-tooling `non-functional-requirements.md`
+§"Fabro factory registry"), which each dispatching host renders as
+`/etc/livespec/fabro-factories.json`; a dispatch resolves a
+registry-backed entry from that file by name.
+`dispatcher.default_factory` MUST name `legacy`.
