@@ -510,7 +510,37 @@ enabled = false
 # Fabro's sandbox clone is hardcoded shallow (GIT_CLONE_DEPTH=10, no
 # config knob in v0.254.0); the RGR range checks and the check suite diff
 # the default branch..HEAD, which needs the default-branch merge-base present.
-script = "git fetch --unshallow --quiet"
+#
+# CONDITIONAL ON THE CLONE ACTUALLY BEING SHALLOW (work-item bd-ib-ukht2p).
+# `git fetch --unshallow` is an ERROR on a complete repository — `fatal:
+# --unshallow on a complete repository does not make sense`, exit 128 — and
+# the clone depth is a CEILING, not a guarantee: a depth-10 clone of a
+# governed repository with ten or fewer commits is already COMPLETE. The
+# unconditional form therefore killed PREPARATION for any such repository,
+# before a single model stage ran, with no PR and nothing to triage but the
+# fatal line. Measured twice on the private fixture
+# thewoolleyman/livespec-tdd-proof (7 genuine setup commits): hp run
+# 01M4VXN5BGZQJQTT57WSXFEEBD at 2026-10-14T01:48:26Z under released 0.196.1,
+# and hp run 01M5EM5NZYSM, which died in 2 seconds.
+#
+# `git rev-parse --is-shallow-repository` is the inspection, so the step asks
+# whether THIS clone is shallow and deepens it only then. Note what is NOT the
+# fix: the live acceptance fixture used to pad twelve commits onto its seed
+# history purely to keep the clone shallow, which evaded the assumption instead
+# of repairing it and left the complete-clone path unexercised.
+#
+# THE POSTURE STAYS FAIL-CLOSED. `set -e` plus an assignment — whose exit
+# status is its command substitution's — means a failed INSPECTION ends
+# preparation non-zero carrying git's own message, and a failed FETCH does the
+# same; neither is swallowed by a successful fallback. Only the one condition
+# that was never an error, a clone that is already complete, now proceeds.
+# Executed under `sh`, so the shape must stay POSIX: no `[[`, no `local`.
+#
+# Ordering is unchanged and the steps around it were re-checked at 86f4e9830b2f:
+# the Dispatcher's separate default-branch refspec fetch does not depend on this
+# fetch happening, and the overlay still places its own steps after this one with
+# the resume checkout last, so nothing is unshallowed out from under.
+script = "set -e; shallow=\"$(git rev-parse --is-shallow-repository)\"; if test \"$shallow\" = true; then git fetch --unshallow --quiet; fi"
 
 [[run.prepare.steps]]
 # Toolchain premise #1 — the version-manager install (the version-manager

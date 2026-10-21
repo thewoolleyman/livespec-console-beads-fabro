@@ -111,19 +111,33 @@ concrete, copy-pasteable action or command. The steps must be:
   asset ordinal it produces, e.g. "produces proof 01". The replay leg
   compares its `verify` asset to the `capture` asset of the SAME ordinal,
   so a step that names no ordinal makes its own proof uncomparable.
-- **Self-contained in its PROGRAM TEXT.** When a step runs a program rather
-  than a bare command — a heredoc into an interpreter (`python -`, `sh -s`),
-  a script you authored in the scratch directory, a `-c` one-liner, a patch
-  or a mutation applied to a file — the record MUST publish that program's
-  COMPLETE SOURCE in a fenced block, as part of the step or beside its
-  proof. Publishing only the invocation line and the program's OUTPUT does
-  not satisfy this: the replayer is a stranger who may not reconstruct a
-  program from its stdout, and may not infer one from the surrounding prose,
-  so a step whose program is absent is UNREPLAYABLE and the assertion it
-  carries is graded `not_reproduced` however correct the implementation is.
-  A phrase such as "with the program shown in the capture" is a PROMISE this
-  bullet makes binding — before you publish, re-read each such step and
-  confirm the source it points at is really there.
+- **Self-contained in its PROGRAM TEXT.** Every program a step executes that
+  is NEITHER tracked in the repository at the commit this record names NOR an
+  installed tool invoked by its name MUST be written into the record itself —
+  its COMPLETE SOURCE in a fenced block, as part of the step or beside its
+  proof — or into a proof asset the record names through the proof asset
+  store. The test is replayability from three things alone: this record, that
+  commit, and the sandbox's installed tools.
+  - **These two are exempt, and naming them is enough.** A program the
+    repository TRACKS at that commit may be invoked by its path, and an
+    INSTALLED tool may be invoked by its name; neither has to be copied into
+    the record, because the replayer has both.
+  - **Everything else is not.** A heredoc into an interpreter (`python -`,
+    `sh -s`), a script you authored in the scratch directory — anything under
+    `"${TMPDIR:-/tmp}/proof-capture"` is untracked by construction — a `-c`
+    one-liner, a patch or a mutation applied to a file: publish the source.
+    Publishing only the invocation line and the program's OUTPUT does not
+    satisfy this: the replayer is a stranger who may not reconstruct a
+    program from its stdout, and may not infer one from the surrounding
+    prose, so a step whose program is absent is UNREPLAYABLE, it is a
+    blocking finding at review, and the assertion it carries is graded
+    `not_reproduced` however correct the implementation is. Measured
+    2026-10-20: records whose steps ran untracked `/tmp/proof-capture/*.py`
+    programs the record never contained were rejected round after round
+    until the run died on its firing budget.
+  - A phrase such as "with the program shown in the capture" is a PROMISE
+    this bullet makes binding — before you publish, re-read each such step
+    and confirm the source it points at is really there.
 
 ## Step 3 — execute the steps verbatim
 
@@ -178,11 +192,11 @@ Write each image into the scratch directory under this EXACT name:
 where `NN` is the two-digit ordinal of the proof within THIS record
 (`01`, `02`, …) and `slug` is a short lowercase-kebab description of what
 the image shows. The run id is part of the name so that no run can ever
-overwrite another run's asset. Resolve it in this order and use the first
-that answers: `$FABRO_RUN_ID`, else `git config --get
-livespec.factoryRunId` (the dispatch id the sandbox's own prepare step
-declared, which is equally unique per dispatch). If neither answers, STOP
-and end with the needs-human protocol rather than inventing one.
+overwrite another run's asset. Read it from `git config --get
+livespec.factoryRunId` — the dispatch id the sandbox's own prepare step
+declared, unique per dispatch, and the ONLY run-id source a shell in this
+sandbox can read. If it answers nothing, STOP and end with the needs-human
+protocol rather than inventing one.
 
 Upload each image to the repository's standing proof-assets prerelease —
 the Dispatcher created it before this dispatch — and keep the URL it
@@ -274,7 +288,7 @@ reads `Body is too long (maximum is 65536 characters)`, and that message is
 wrong in BOTH its number and its unit — the enforced ceiling is four times
 it, and it counts bytes. The figures above were measured against live
 GitHub; the measurement and its controls are in
-`plan/definition-and-proof-of-done/research/005-forge-comment-ceiling-measurement-2026-10-07.md`.
+`plan/archive/definition-and-proof-of-done/research/005-forge-comment-ceiling-measurement-2026-10-07.md`.
 
 Measure in BYTES. `wc -c` counts bytes; `wc -m` counts characters, and on
 multibyte proof — box-drawing tables, `git log --graph` glyphs, em dashes —
@@ -353,7 +367,29 @@ The comment's FIRST LINE must be exactly:
 
     Proof of Done — captured — run <run-id> — <UTC timestamp>
 
-using the run id you resolved in Step 4 and an ISO-8601 UTC timestamp.
+**Write that line with its run id resolved IN THE SAME COMMAND**, so no step
+between resolving the id and writing the header can leave it empty:
+
+    run_id="$(git config --get livespec.factoryRunId || true)"
+    test -n "$run_id" || { echo 'LIVESPEC_PROOF_CAPTURE_NO_RUN_ID' >&2; exit 1; }
+    stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'Proof of Done — captured — run %s — %s\n' "$run_id" "$stamp" > <file>
+
+If that resolution answers nothing, **never post a header with an empty run
+id**: say what you measured and end with the needs-human protocol instead. A
+record comment MUST NOT be edited after posting, so an empty run id cannot be
+repaired within the run.
+
+Do NOT reach for `$FABRO_RUN_ID` here. It is exported to HOOKS only and is
+unset in this shell, so `printf '... run %s ...' "$FABRO_RUN_ID"` writes the
+bare word `run` as the header's publishing identity. The record reader then
+treats the WHOLE comment as no record at all: the replay still runs and still
+publishes `verified`, review still approves, and the run fails two stages
+later at publication with no route back, because a resume restarts at the
+failed stage and never re-enters this one. Measured on
+`livespec-dev-tooling-r6kagr`, run 01M5E8H65Z04. Report the id you wrote by
+quoting the resolved value, never the source you believe it came from — the
+run above reported `$FABRO_RUN_ID` as its source after writing nothing.
 
 The SECOND line must declare, exactly once, the publish-branch head these
 steps ran on:
@@ -522,7 +558,19 @@ deletion of one. Its FIRST LINE must be exactly:
 
     Proof of Done — not_captured — run <run-id> — <UTC timestamp>
 
-using the run id you resolved in Step 4 and an ISO-8601 UTC timestamp.
+written with its run id resolved in the SAME command, exactly as Step 5 writes
+the captured header:
+
+    run_id="$(git config --get livespec.factoryRunId || true)"
+    test -n "$run_id" || { echo 'LIVESPEC_PROOF_CAPTURE_NO_RUN_ID' >&2; exit 1; }
+    stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'Proof of Done — not_captured — run %s — %s\n' "$run_id" "$stamp" > <file>
+
+The same rule binds here and for the same reason: never post a header with an
+empty run id, and end with the needs-human protocol instead if the resolution
+answers nothing. This record is the `fix` stage's only durable account of the
+finding once the preamble is gone, so a header that parses as no record loses
+the work order as surely as a non-record capture loses the proof.
 
 The body then carries, per assertion in Definition of Done order:
 
