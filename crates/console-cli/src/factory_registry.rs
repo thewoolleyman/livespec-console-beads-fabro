@@ -1,12 +1,12 @@
 //! Read the host's rendered Fabro factory registry.
 //!
 //! A committed `dispatcher.factories` entry that declares `"registry": true`
-//! names NO machine (spec `constraints.md` §"Factory routing", Scenario 34,
+//! names NO machine (spec `constraints.md`, Scenario 34 in `scenarios.md`,
 //! coordinator rulings R318/R320). Which Fabro server answers to a factory
 //! NAME is bound only in the fleet gitops inventory's factory registry, which
 //! every dispatching host renders to [`HOST_FACTORY_REGISTRY_PATH`] --
-//! livespec-dev-tooling `non-functional-requirements.md` §"Fabro factory
-//! registry": a JSON object mapping each factory name to
+//! livespec-dev-tooling `non-functional-requirements.md`, which contracts it
+//! as a JSON object mapping each factory name to
 //! `{server, optional docker_host}`.
 //!
 //! Reading that published file is CONSUMING the dev-tooling contract, not
