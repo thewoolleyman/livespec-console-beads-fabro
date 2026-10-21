@@ -15,8 +15,9 @@
 //! never writes `.livespec.jsonc` (every setting change goes through the
 //! orchestrator's published `drive` action surface).
 //!
-//! A committed entry no longer has to CARRY its server. Spec `constraints.md`
-//! §"Factory routing" (v054, Scenario 34) requires every committed entry to be
+//! A committed entry no longer has to CARRY its server. The spec's
+//! `constraints.md` (v054, the factory-routing clauses, with Scenario 34 in
+//! `scenarios.md`) requires every committed entry to be
 //! REGISTRY-BACKED -- `"registry": true`, no `server`, no `docker_host` -- so
 //! the committed table names no machine; such an entry resolves BY NAME through
 //! the host's rendered registry ([`crate::factory_registry`]). The
@@ -169,7 +170,7 @@ fn resolve_factory(
 }
 
 /// Whether the entry declares itself registry-backed (`"registry": true`), the
-/// shape spec §"Factory routing" requires of every committed entry.
+/// shape the spec's `constraints.md` requires of every committed entry.
 fn is_registry_backed(declaration: &serde_json::Value) -> bool {
     declaration
         .get("registry")

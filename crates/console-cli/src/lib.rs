@@ -11977,7 +11977,7 @@ mod tests {
     }
 
     /// A registry-backed committed entry (`"registry": true`, no `server`, no
-    /// `docker_host`) in the shape spec §"Factory routing" requires.
+    /// `docker_host`) in the shape the spec's `constraints.md` requires.
     const REGISTRY_BACKED_CONFIG: &str = r#"{
   "livespec-orchestrator-beads-fabro": {
     "dispatcher": {
