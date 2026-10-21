@@ -4705,7 +4705,10 @@ mod tests {
         let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
 
         assert_not_observed(&poll, "factory `legacy` names no machine");
-        assert!(probe.calls.borrow().is_empty(), "nothing to probe");
+        // No message argument: a failure-only format argument is its own
+        // uncovered region under this repo's zero-allowance region gate, and
+        // the test name already says what an empty call list means.
+        assert!(probe.calls.borrow().is_empty());
     }
 
     #[test]

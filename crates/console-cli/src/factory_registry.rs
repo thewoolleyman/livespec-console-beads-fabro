@@ -3,12 +3,12 @@
 //! A committed `dispatcher.factories` entry is REGISTRY-BACKED: it declares
 //! `"registry": true` and carries no `server` and no `docker_host`, so the
 //! committed configuration names no machine (coordinator rulings R318/R320;
-//! `SPECIFICATION/constraints.md` §"Factory routing"). Which Fabro server
-//! answers for a factory NAME is bound only in the fleet gitops inventory's
-//! factory registry, which each dispatching host renders at
+//! the Factory routing rules in `SPECIFICATION/constraints.md`). Which Fabro
+//! server answers for a factory NAME is bound only in the fleet gitops
+//! inventory's factory registry, which each dispatching host renders at
 //! [`FACTORY_REGISTRY_PATH`] as a JSON object mapping each factory name to
-//! `{server, optional docker_host}` (livespec-dev-tooling
-//! `non-functional-requirements.md` §"Fabro factory registry").
+//! `{server, optional docker_host}` -- the Fabro factory registry contract in
+//! livespec-dev-tooling's `non-functional-requirements.md`.
 //!
 //! Reading that published file CONSUMES the dev-tooling contract; it does not
 //! re-implement an orchestrator primitive. The orchestrator publishes no CLI

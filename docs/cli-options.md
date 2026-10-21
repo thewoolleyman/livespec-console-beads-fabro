@@ -102,7 +102,19 @@ on every poll. See
 | Variable | Purpose | Default |
 |---|---|---|
 | `LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT` | Explicit orchestrator plugin root, used to resolve the backing programs above. | discovered — a repo-local `scripts/bin`, else the installed-plugin record under `~/.claude` |
+| `LIVESPEC_CONSOLE_FACTORY_REGISTRY_PATH` | The host-rendered Fabro factory registry, read to resolve a registry-backed `dispatcher.factories` entry to the server that answers for its name. | `/etc/livespec/fabro-factories.json` |
 | `HOME` | Roots plugin-cache, livespec-core, and Fabro discovery. | — |
+
+A `dispatcher.factories` entry in the selected repo's `.livespec.jsonc` is
+addressed one of two ways. An entry carrying a `server` is polled at it
+directly. An entry declaring `"registry": true` names no machine, and is
+resolved by NAME through the registry file above — a JSON object mapping each
+factory name to `{server, optional docker_host}`, rendered by each dispatching
+host from the fleet gitops inventory. When that file is absent, unreadable, or
+maps no server to the name, the console reports **that factory** unavailable by
+name (`fabro:<name>`), carrying the reason; it does **not** quietly fall back to
+the `fabro` CLI's `http://127.0.0.1:32276` default, which would show one
+healthy-looking source observing nothing.
 
 The credential wrapper supplies `BEADS_DOLT_PASSWORD` for the tenant. The
 console never reads that secret itself; it runs under the wrapper, which
