@@ -89,7 +89,9 @@ pub use backing_cli::{
     PluginResolution, ResolveInputs, python_normalized_invocation, resolve_console_invoker,
 };
 pub use factory_registry::{FactoryRegistry, HOST_FACTORY_REGISTRY_PATH};
-pub use factory_servers::{FactoryServer, factory_servers_at, parse_factory_servers};
+pub use factory_servers::{
+    FactoryAddress, FactoryServer, factory_servers_at, parse_factory_servers,
+};
 pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
 pub use source_probe_diagnostics::{
     bounded_diagnostic_text, describe_command_failure, redact_secret_env_values,
@@ -1933,6 +1935,12 @@ type SourceAdapterSpec = (
 /// source on the CLI's own default endpoint — the right behavior for a host that
 /// genuinely runs a local fabro server, and the only honest thing to do when
 /// there is no configuration naming a remote one.
+///
+/// A factory the host's registry could not resolve is NOT that case. It stays
+/// in the list as its own named instance with an unresolvable observation plan,
+/// so it reads unavailable by name with the reason that failed it, instead of
+/// disappearing and taking the whole list with it — an empty list is what puts
+/// the console back on the localhost default.
 fn fabro_source_specs(programs: &BackingCliPrograms) -> Vec<SourceAdapterSpec> {
     if programs.factory_servers().is_empty() {
         return vec![(
@@ -1947,14 +1955,18 @@ fn fabro_source_specs(programs: &BackingCliPrograms) -> Vec<SourceAdapterSpec> {
         .factory_servers()
         .iter()
         .map(|factory| {
+            let plan = match factory.address() {
+                FactoryAddress::Server(server) => SourceObservationPlan::command(
+                    programs.fabro(),
+                    &["ps", "--json", "--server", server],
+                ),
+                FactoryAddress::Unresolvable(reason) => SourceObservationPlan::unresolvable(reason),
+            };
             (
                 format!("fabro:{}", factory.name()),
                 SourceAdapterKind::Fabro,
                 Some(factory.name().to_owned()),
-                SourceObservationPlan::command(
-                    programs.fabro(),
-                    &["ps", "--json", "--server", factory.server()],
-                ),
+                plan,
                 parse_fabro_observation as NormalizeObservation,
             )
         })
@@ -4412,28 +4424,28 @@ mod tests {
         CommandLaneFailure, CommandLaneReporter, CommandLaneSteps,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, DoctorRunResult, ErroringPullSource, EventAppendStore,
-        FactoryCommandStore, FactoryRegistry, FactoryServer, HOST_FACTORY_REGISTRY_PATH,
-        InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN, LaneStartupStage,
-        MAX_TRANSIENT_STATUS_CHARS, NEEDS_ATTENTION_PROGRAM_ENV, NeedsAttentionIngest,
-        PROGRAM_OVERRIDE_ENV_VARS, PendingCommandOutcome, PendingCommandRequester,
-        PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts,
-        SharedSqliteStore, SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog,
-        StartupReadout, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
-        append_demo_events_to_store, append_factory_drain_requested_events, append_lane_diagnostic,
-        backfill_demo_report, backfill_source_adapters, backfill_source_report,
-        bounded_operator_status, command_status_update_runtime_result,
-        command_worker_unreachable_status, config_command_from_stored, demo_events,
-        distinguish_repeatable_command, doctor_report, event_append_from_command_event,
-        event_append_from_console_event, event_append_from_normalized_source_event,
-        events_tail_report, fabro_source_specs, factory_command_from_stored, factory_servers_at,
-        final_tui_events_result, flush_session_tail, handle_pending_config_commands,
-        handle_pending_control_commands, handle_pending_factory_commands,
-        handle_pending_factory_commands_with_dispatch_port, handle_pending_work_item_commands,
-        ingest_and_reflect, ingest_needs_attention, initial_source_seed,
-        is_failed_once_only_valve_retry, lane_command_failure_line, lane_diagnostics_path,
-        lane_failures_in, lane_open_failure_line, lane_startup_failure_line, live_source_adapters,
-        live_source_adapters_from_resolution, live_source_adapters_with_programs,
-        load_tui_events_from_store, normalized_payload_json,
+        FactoryAddress, FactoryCommandStore, FactoryRegistry, FactoryServer,
+        HOST_FACTORY_REGISTRY_PATH, InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN,
+        LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS, NEEDS_ATTENTION_PROGRAM_ENV,
+        NeedsAttentionIngest, PROGRAM_OVERRIDE_ENV_VARS, PendingCommandOutcome,
+        PendingCommandRequester, PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS,
+        ScriptedSource, SessionTailCounts, SharedSqliteStore, SourceAdapterRef,
+        SourcePollRequester, SqliteSourceEventLog, StartupReadout, StoreBackedTuiRuntimeEffectSink,
+        TuiSessionOutcome, TuiSessionRunner, append_demo_events_to_store,
+        append_factory_drain_requested_events, append_lane_diagnostic, backfill_demo_report,
+        backfill_source_adapters, backfill_source_report, bounded_operator_status,
+        command_status_update_runtime_result, command_worker_unreachable_status,
+        config_command_from_stored, demo_events, distinguish_repeatable_command, doctor_report,
+        event_append_from_command_event, event_append_from_console_event,
+        event_append_from_normalized_source_event, events_tail_report, fabro_source_specs,
+        factory_command_from_stored, factory_servers_at, final_tui_events_result,
+        flush_session_tail, handle_pending_config_commands, handle_pending_control_commands,
+        handle_pending_factory_commands, handle_pending_factory_commands_with_dispatch_port,
+        handle_pending_work_item_commands, ingest_and_reflect, ingest_needs_attention,
+        initial_source_seed, is_failed_once_only_valve_retry, lane_command_failure_line,
+        lane_diagnostics_path, lane_failures_in, lane_open_failure_line, lane_startup_failure_line,
+        live_source_adapters, live_source_adapters_from_resolution,
+        live_source_adapters_with_programs, load_tui_events_from_store, normalized_payload_json,
         observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
         parse_factory_servers, persist_tui_runtime_effects, plan_page_report,
         python_normalized_invocation, refresh_sources, render_tui_preview,
@@ -11858,12 +11870,16 @@ mod tests {
         check((factories.len()) == (2), "assert_eq failed");
         check((factories[0].name()) == ("hp"), "assert_eq failed");
         check(
-            (factories[0].server()) == ("https://hp-xubuntu.perch-rudd.ts.net:32276"),
+            (factories[0].address())
+                == (&FactoryAddress::Server(
+                    "https://hp-xubuntu.perch-rudd.ts.net:32276".to_owned(),
+                )),
             "a comment stripper that is not string-aware truncates the URL at its //",
         );
         check((factories[1].name()) == ("vps"), "assert_eq failed");
         check(
-            (factories[1].server()) == ("https://vps.perch-rudd.ts.net:32276"),
+            (factories[1].address())
+                == (&FactoryAddress::Server("https://vps.perch-rudd.ts.net:32276".to_owned())),
             "assert_eq failed",
         );
     }
@@ -11997,17 +12013,22 @@ mod tests {
         );
 
         check(
-            (registry.server_for("legacy")) == (Some("https://legacy.example:32276")),
+            (registry.resolve("legacy")) == (Ok("https://legacy.example:32276")),
             "a rendered entry binds its name to its server",
         );
         check(
-            (registry.server_for("padded")) == (Some("https://padded.example:32276")),
+            (registry.resolve("padded")) == (Ok("https://padded.example:32276")),
             "a rendered server is trimmed before it becomes a --server argument",
         );
         for unbound in ["blank", "absent", "typed", "never-rendered"] {
+            // The refusal NAMES the factory and the registry file that did not
+            // bind it -- that text is what the operator reads on the dark row.
             check(
-                (registry.server_for(unbound)).is_none(),
-                "a name the registry renders no usable server for binds nothing",
+                registry.resolve(unbound).is_err_and(|reason| {
+                    reason.contains(unbound) && reason.contains("fabro-factories.json")
+                }),
+                "a name the registry renders no usable server for is refused, \
+                 with a reason naming it and the registry",
             );
         }
     }
@@ -12019,17 +12040,21 @@ mod tests {
         // is what makes a registry-backed entry unresolvable rather than
         // silently addressed.
         let temp = resolver_temp_root("factory-registry-unreadable");
+        let absent = FactoryRegistry::read_at(&temp.join("never-rendered.json"));
         check(
-            (FactoryRegistry::read_at(&temp.join("never-rendered.json")))
-                == (FactoryRegistry::default()),
+            absent.resolve("legacy").is_err(),
             "an absent registry binds nothing",
         );
         check(
-            (rendered_registry(&temp, "{ not json at all")) == (FactoryRegistry::default()),
+            rendered_registry(&temp, "{ not json at all")
+                .resolve("legacy")
+                .is_err(),
             "an uninterpretable registry binds nothing",
         );
         check(
-            (rendered_registry(&temp, r#"["legacy"]"#)) == (FactoryRegistry::default()),
+            rendered_registry(&temp, r#"["legacy"]"#)
+                .resolve("legacy")
+                .is_err(),
             "a registry that is not a JSON object of names binds nothing",
         );
     }
@@ -12102,17 +12127,30 @@ mod tests {
                 .to_vec()
         };
 
+        // Both default-path cases read the host contract path, which binds
+        // this name nowhere -- so the factory is reported unresolvable AGAINST
+        // THAT PATH, which is how the reason text names which override (or
+        // lack of one) was in effect.
+        let unresolved_at_the_contract_path = |factories: &[FactoryServer]| {
+            factories
+                == [FactoryServer::unresolvable(
+                    "console-test-unrendered-factory",
+                    &format!(
+                        "factory \"console-test-unrendered-factory\" is registry-backed and \
+                         the host factory registry at {HOST_FACTORY_REGISTRY_PATH} binds no \
+                         server for that name"
+                    ),
+                )]
+        };
         check(
-            (resolved_from(resolver_empty_env())) == (Vec::new()),
-            "with no override the console reads the host contract path, which \
-             binds nothing here",
+            unresolved_at_the_contract_path(&resolved_from(resolver_empty_env())),
+            "with no override the console reads the host contract path",
         );
         check(
-            (resolved_from(BTreeMap::from([(
+            unresolved_at_the_contract_path(&resolved_from(BTreeMap::from([(
                 "LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY".to_owned(),
                 "   ".to_owned(),
-            )])))
-                == (Vec::new()),
+            )]))),
             "a blank override is no override",
         );
         check(
@@ -12150,11 +12188,36 @@ mod tests {
             "this repo declares dispatcher.factories; resolving none means the \
              console is back on the fabro CLI's localhost default",
         );
+        // Every declared factory survives as a NAMED entry whatever its shape.
+        // This holds across the registry switch: before it, each entry carries
+        // its own server; after it, each registry-backed entry is either bound
+        // by this host's registry or honestly reported unresolvable -- and in
+        // NEITHER case does the list go empty, which is the one outcome that
+        // puts the console back on the localhost default.
+        let well_formed = |factory: &FactoryServer| {
+            !factory.name().is_empty()
+                && match factory.address() {
+                    FactoryAddress::Server(server) => server.contains("://"),
+                    FactoryAddress::Unresolvable(reason) => reason.contains(factory.name()),
+                }
+        };
         check(
-            factories
-                .iter()
-                .all(|factory| factory.server().contains("://") && !factory.name().is_empty()),
-            "every configured factory must resolve to a named, addressable server",
+            factories.iter().all(well_formed),
+            "every declared factory must resolve to a named, addressable server \
+             or be reported unresolvable by name",
+        );
+        // Both shapes are acceptable, whichever one the committed table is in
+        // today -- stated here so the switch to a registry-backed table cannot
+        // silently narrow what this ground-truth check accepts.
+        check(
+            well_formed(&FactoryServer::new("hp", "https://hp.example:32276"))
+                && well_formed(&FactoryServer::unresolvable(
+                    "legacy",
+                    "factory \"legacy\" is registry-backed and the host factory \
+                     registry at /etc/livespec/fabro-factories.json binds no server \
+                     for that name",
+                )),
+            "an addressed factory and an unresolvable one are both well formed",
         );
     }
 
@@ -12262,6 +12325,47 @@ mod tests {
         check(
             (specs[0].3) == (SourceObservationPlan::command("fabro", &["ps", "--json"])),
             "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn a_factory_the_registry_cannot_resolve_keeps_its_own_unresolvable_source() {
+        // NOT the unconfigured case above. The checkout DOES declare a factory;
+        // the host's registry simply binds no server for its name. Dropping it
+        // would empty the table and hand the unqualified localhost-default
+        // source back, so the console would poll an endpoint nobody configured
+        // under no factory's name at all.
+        let temp = resolver_temp_root("fabro-source-specs-unresolvable");
+        let repo = temp.join("repo");
+        fs::create_dir_all(&repo).ok_test();
+        fs::write(
+            repo.join(".livespec.jsonc"),
+            r#"{"dispatcher": {"factories": {"legacy": {"registry": true}},
+                 "default_factory": "legacy"}}"#,
+        )
+        .ok_test();
+        let env = BTreeMap::from([(
+            "LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY".to_owned(),
+            temp.join("never-rendered.json").display().to_string(),
+        )]);
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, None)).ok_test();
+
+        let specs = fabro_source_specs(resolution.programs());
+
+        check((specs.len()) == (1), "assert_eq failed");
+        check((specs[0].0) == ("fabro:legacy"), "assert_eq failed");
+        check(
+            (specs[0].2.as_deref()) == (Some("legacy")),
+            "the unresolvable factory still names its source instance",
+        );
+        check(
+            matches!(
+                &specs[0].3,
+                SourceObservationPlan::Unresolvable { reason }
+                    if reason.contains("legacy") && reason.contains("never-rendered.json")
+            ),
+            "the plan carries the reason, so the factory reads unavailable by \
+             name instead of being polled at the CLI's localhost default",
         );
     }
 

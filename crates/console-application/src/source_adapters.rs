@@ -2210,6 +2210,20 @@ pub enum SourceObservationPlan {
         /// Host filesystem path to read for the observation.
         path: String,
     },
+    /// Unresolvable variant: the source INSTANCE could not be addressed at
+    /// all, so there is nothing to run and nothing to read.
+    ///
+    /// This exists so a configured-but-unaddressable instance stays VISIBLE.
+    /// Omitting such an instance would quietly shorten the source list, and
+    /// where the remaining list is built from it (the console's Fabro source,
+    /// whose factories come from `dispatcher.factories`) an empty list falls
+    /// back to a default endpoint nobody configured. An unresolvable instance
+    /// instead polls as [`SourceProbeOutcome::Unavailable`] carrying `reason`,
+    /// so it is counted unavailable BY NAME with an honest cause.
+    Unresolvable {
+        /// Honest reason the instance could not be addressed.
+        reason: String,
+    },
 }
 
 impl SourceObservationPlan {
@@ -2227,6 +2241,14 @@ impl SourceObservationPlan {
     pub fn file(path: &str) -> Self {
         Self::File {
             path: path.to_owned(),
+        }
+    }
+
+    #[must_use]
+    /// Return the unresolvable value.
+    pub fn unresolvable(reason: &str) -> Self {
+        Self::Unresolvable {
+            reason: reason.to_owned(),
         }
     }
 }
@@ -2419,6 +2441,10 @@ impl<'a> ObservedSourceAdapter<'a> {
                 self.probe.run_command(program, &arg_refs)
             }
             SourceObservationPlan::File { path } => self.probe.read_file(path),
+            // Never touches the probe: there is no address to run or read.
+            SourceObservationPlan::Unresolvable { reason } => {
+                SourceProbeOutcome::unavailable(reason)
+            }
         }
     }
 
@@ -4653,6 +4679,33 @@ mod tests {
                 path: "/tmp/journal.jsonl".to_owned(),
             }
         );
+        assert_eq!(
+            SourceObservationPlan::unresolvable("no address for \"legacy\""),
+            SourceObservationPlan::Unresolvable {
+                reason: "no address for \"legacy\"".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_instance_polls_unavailable_without_touching_the_probe() {
+        // A configured instance with no address is still polled, and reads
+        // unavailable carrying its own reason. It must never reach the probe:
+        // there is no command to run and no file to read, and running SOME
+        // default in its place is exactly the silent fallback this plan variant
+        // exists to prevent.
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        let adapter = ok_observed_source_adapter(ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Orchestrator,
+            "console",
+            SourceObservationPlan::unresolvable("the registry binds no server for that name"),
+            stub_normalize,
+        ));
+
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        assert_not_observed(&poll, "the registry binds no server for that name");
     }
 
     #[test]

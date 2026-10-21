@@ -19,14 +19,19 @@
 //! the registry, and never writes `.livespec.jsonc`.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Where each dispatching host renders the fleet factory registry.
 pub const HOST_FACTORY_REGISTRY_PATH: &str = "/etc/livespec/fabro-factories.json";
 
 /// The factory-name → server map the host rendered, as the console read it.
+///
+/// The path it was read FROM is kept so an unresolvable factory can be reported
+/// against the file that failed to bind it -- an operator who sees
+/// `fabro:legacy` go dark needs to know WHICH registry did not name it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FactoryRegistry {
+    path: PathBuf,
     servers: BTreeMap<String, String>,
 }
 
@@ -34,12 +39,13 @@ impl FactoryRegistry {
     #[must_use]
     /// Read the registry rendered at `path`.
     ///
-    /// An absent, unreadable, or uninterpretable file yields an EMPTY registry
-    /// rather than an error: the console must still start and poll every other
-    /// source on a host that renders no registry at all. What it must NOT do
-    /// is quietly substitute an address for a name the registry does not bind:
-    /// an unbound name resolves to nothing here, and
-    /// `crate::factory_servers` decides what the console says about it.
+    /// An absent, unreadable, or uninterpretable file yields a registry that
+    /// binds NOTHING rather than an error: the console must still start and
+    /// poll every other source on a host that renders no registry at all. What
+    /// it must NOT do is quietly substitute an address for a name the registry
+    /// does not bind -- [`Self::resolve`] refuses such a name, and
+    /// `crate::factory_servers` turns that refusal into an unresolvable factory
+    /// rather than a poll at the fabro CLI's localhost default.
     pub fn read_at(path: &Path) -> Self {
         let servers = std::fs::read_to_string(path)
             .ok()
@@ -47,13 +53,26 @@ impl FactoryRegistry {
             .as_ref()
             .and_then(rendered_servers)
             .unwrap_or_default();
-        Self { servers }
+        Self {
+            path: path.to_path_buf(),
+            servers,
+        }
     }
 
-    #[must_use]
-    /// Return the server the registry binds to `name`, if it binds one.
-    pub fn server_for(&self, name: &str) -> Option<&str> {
-        self.servers.get(name).map(String::as_str)
+    /// Return the server the registry binds to `name`.
+    ///
+    /// # Errors
+    /// Returns the honest reason the name is unresolvable -- naming both the
+    /// factory and the registry file that did not bind it -- when the registry
+    /// renders no usable server for it.
+    pub fn resolve(&self, name: &str) -> Result<&str, String> {
+        self.servers.get(name).map(String::as_str).ok_or_else(|| {
+            format!(
+                "factory \"{name}\" is registry-backed and the host factory registry at {} \
+                 binds no server for that name",
+                self.path.display()
+            )
+        })
     }
 }
 
