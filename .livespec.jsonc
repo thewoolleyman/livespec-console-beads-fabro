@@ -216,9 +216,11 @@
     "dispatcher": {
       // Committed mirror of the sandbox image's published capability set, read by
       // the Definition-of-Done gate and by the host-side judgements when
-      // /etc/livespec/sandbox-capabilities is not reachable. MEASURED 2026-10-20 by
-      // `docker run --rm --entrypoint cat ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.94.0
-      // /etc/livespec/sandbox-capabilities`, the image this repository's committed run
+      // /etc/livespec/sandbox-capabilities is not reachable. RE-MEASURED 2026-10-21 by
+      // `docker run --rm --entrypoint cat ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.118.12
+      // /etc/livespec/sandbox-capabilities` (digest sha256:4eee353b94f5), after the
+      // dev-tooling pin bump moved the image from v1.94.0 without re-measuring; the
+      // set is unchanged. That is the image this repository's committed run
       // config resolves. Edit it by hand, in the same change that moves the image.
       "sandbox_capabilities": ["terminal", "tmux", "headless_browser", "herdr"],
       // Detection-coverage anchor (contracts.md "Detection coverage records
