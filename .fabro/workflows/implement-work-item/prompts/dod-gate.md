@@ -142,10 +142,32 @@ question of fact — the spec tree above all.
    engineer, given this repository and that heading, tell whether this
    assertion is satisfied? An assertion a competent engineer could not
    recognise as satisfied or unsatisfied from the referenced heading is
-   INCOHERENT and is a finding. Concretely, treat these as incoherent:
+   INCOHERENT and is a finding.
+
+   **A referenced heading means its WHOLE SECTION, never its lead text
+   alone.** The referenced heading you read is the named H2 together with
+   every nested heading beneath it, each `### ` and deeper, and all of their
+   text, up to the next H2 of that file. Read the whole of that section
+   before judging any assertion against it.
+
+   Text you find in such a nested section GOVERNS THE ASSERTION exactly as
+   the H2's own lead text does. So an assertion whose subject is stated only
+   under a nested heading of the referenced H2 is governed by it, is coherent
+   on that count, and is NOT a finding. That is not a courtesy: check 2
+   admits an H2 and nothing deeper, so a filer whose governing text sits in
+   an H3 has no reference line they could have written instead, and a finding
+   against them prescribes an edit that does not exist.
+
+   When an assertion's governing text lies in a nested section of a
+   referenced H2, any finding you raise about that reference
+   NAMES THE NESTED HEADING AS WELL AS THE H2 — write both, in the form
+   `## <the H2> → ### <the nested heading>`, so the human reads the finding
+   at the level the governing text actually sits at.
+
+   Concretely, treat these as incoherent:
    - An assertion whose subject does not appear in, and cannot be derived
-     from, the referenced heading — the reference resolves but does not
-     govern the claim.
+     from, the referenced heading's whole section, its nested headings
+     included — the reference resolves but does not govern the claim.
    - An assertion with no observable subject at all ("it works", "the design
      is clean", "performance is acceptable").
    - Two assertions that contradict each other, or one that contradicts the

@@ -254,7 +254,7 @@ reads `Body is too long (maximum is 65536 characters)`, and that message is
 wrong in BOTH its number and its unit — the enforced ceiling is four times
 it, and it counts bytes. The figures above were measured against live
 GitHub; the measurement and its controls are in
-`plan/definition-and-proof-of-done/research/005-forge-comment-ceiling-measurement-2026-10-07.md`.
+`plan/archive/definition-and-proof-of-done/research/005-forge-comment-ceiling-measurement-2026-10-07.md`.
 
 Measure in BYTES. `wc -c` counts bytes; `wc -m` counts characters, and on
 multibyte proof the two differ by up to a factor of four, in the direction

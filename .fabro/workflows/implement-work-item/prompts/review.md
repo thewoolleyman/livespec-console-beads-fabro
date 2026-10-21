@@ -108,16 +108,52 @@ pending. If the Definition of Done is unreadable and you cannot build the
 enumeration at all, say THAT as a `[BLOCKING]` finding — never an
 `approve` without it.
 
-### A record older than the tree is `[BLOCKING]`
+### A record that is not CURRENT for the tree is `[BLOCKING]` — compare TREES
 
-If the latest captured record was posted BEFORE the tree you are reviewing —
-or if no captured record exists on the pull request at all — that is a
+If no captured record exists on the pull request at all, that is a
 `[BLOCKING]` finding, not an advisory one, and it is blocking even when the
 code itself is perfect. The whole point of capturing before review is that
-the record and the tree stay in lockstep; a record older than the tree means
-the proof the replay is about to reproduce describes code nobody shipped.
-Compare the record's own timestamp and run id against the branch's commit
-timestamps, and say which you compared in the finding.
+the record and the tree stay in lockstep; a record describing a different
+tree means the proof the replay is about to reproduce describes code nobody
+shipped.
+
+A record is **CURRENT** for the head you are reviewing when **the TREE of the
+commit the record names equals the TREE of that head**. Read the sha off the
+record's own second line — `Publish-branch head: <40-character sha>` — and
+compare the two trees:
+
+    git fetch --quiet origin <the publish branch>
+    git diff --quiet <the record's sha> <the head under review> && echo current
+
+Exit status 0 means the two commits carry the same tree, so the record is
+CURRENT and **no proof-record finding is owed for its head**. Only a
+non-zero status is the finding, and the finding must say which two shas you
+compared and that you compared their trees.
+
+**Do NOT judge currency by timestamp, by sha equality, or by commit order,
+and never require the record to POSTDATE the head.** The engine commits a
+CHECKPOINT after every node, and `proof_capture`'s own checkpoint lands
+AFTER the record is posted — so the head you review is routinely a commit
+or two above the sha the record names, seconds later, with an identical
+tree. Measured 2026-10-20 on two runs: `01M5CE38SZJW` posted its record at
+14:33:47Z for head `ddb5523d` while the reviewed head `90b906e8` was
+committed at 14:33:52Z, and `01M5CDH2FZSE` posted at 16:54:22Z for
+`67f31db` against a reviewed head committed at 16:54:29Z. Both records were
+current — the checkpoints changed no file — and both were rejected round
+after round as "proof predates the reviewed head" until the review-fix
+firing budget ran out. A commit that changes no tree MUST NOT make a record
+stale.
+
+If the record declares NO head at all — the capture prompt tells it to omit
+the label and say so in prose when its clone carried changes the pull
+request did not — that absence is itself the finding, because then nothing
+anchors the proof.
+
+A finding here is about the RECORD rather than the tree, and this graph has
+ONE blocking route for either: say the finding and emit the `fix` label
+exactly as every section above does, and the run **re-enters
+`proof_capture` through the review-fix route**, which is where the
+re-capture is owed.
 
 ## The lens — what a senior engineer weighs
 
